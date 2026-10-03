@@ -135,6 +135,13 @@ beforeEach(() => {
   resizeObserverCallbacks.clear();
 });
 
+
+/** The jobs shelf is closed by default; its toggle's name starts with its visible title. */
+const openJobShelf = (): void => {
+  const toggle = screen.getByRole("button", { name: /^Background jobs/u });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+};
+
 describe("ConnectionBanner", () => {
   it("suppresses brief reconnects, clears on recovery, and shows offline immediately", () => {
     vi.useFakeTimers();
@@ -317,12 +324,15 @@ describe("Chat conversation viewport", () => {
     expect(column).not.toContainElement(stack);
     expect(stack.parentElement).toBe(footer);
     expect(stack.querySelector(".message-actions")).toBeNull();
-    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
+    // Older messages exist: the counts say nothing about it; History's note does.
+    expect(screen.getByText("Older jobs are in earlier messages.")).not.toBeVisible();
+    openJobShelf();
     expect(screen.getByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
   });
 
-  it("isolates same-id job state while retaining history preference through the keyed viewport", () => {
+  it("isolates same-id job state while retaining history preference through the keyed viewport", async () => {
     const first = thread("thread-a", "agent");
     const second = thread("thread-b", "agent");
     const terminal = processJob({ jobId: "same-job" });
@@ -351,6 +361,7 @@ describe("Chat conversation viewport", () => {
     });
 
     const view = render(chatTree());
+    openJobShelf();
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     expect(screen.getByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "true");
@@ -368,8 +379,11 @@ describe("Chat conversation viewport", () => {
       }])],
     });
     view.rerender(chatTree());
-    expect(screen.getByRole("button", { name: "Background job history" }))
-      .toHaveAttribute("aria-pressed", "false");
+    // Thread B keeps its own (closed) shelf and history preferences.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Background jobs/u }))
+      .toHaveAttribute("aria-expanded", "false"));
+    openJobShelf();
+    expect(screen.getByRole("button", { name: "Background job history" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
 
     storeMock.current = chatStore(first, {
@@ -377,8 +391,8 @@ describe("Chat conversation viewport", () => {
       messages: [messageWith(first, [running, old])],
     });
     view.rerender(chatTree());
-    expect(screen.getByRole("button", { name: "Background job history" }))
-      .toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true"));
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
   });
@@ -397,6 +411,12 @@ describe("Chat conversation viewport", () => {
       ([first]) => first === "[mono-agent] conversation render failed",
     )).toHaveLength(1);
 
+    const report = consoleError.mock.calls.find(([label]) => label === "[mono-agent] conversation render failed")?.[1];
+    expect(report).toMatchObject({
+      context: { selectedThreadId: selected.id, detailThreadId: selected.id, runtimeThreadId: selected.id,
+        runtimeRemoteId: selected.id, detail: { messageCount: 2 }, runtime: { messageCount: 2 } },
+    });
+    expect(report.contextError).toBeUndefined();
     messageRenderMock.throwAssistant = false;
     fireEvent.click(screen.getByRole("button", { name: "Reload conversation" }));
     expect(screen.getAllByTestId("thread-message")).toHaveLength(2);
@@ -488,9 +508,11 @@ describe("Chat conversation viewport", () => {
     storeMock.current = chatStore(firstThread, null, true, secondThread.id);
     rerender(chatTree());
 
+    // The viewport now changes with the adapter commit, not the earlier
+    // console selection. Wait for that subscription to publish its snapshot.
+    await waitFor(() => expect(container.querySelector(".thread-viewport")).not.toBe(firstViewport));
     const secondViewport = container.querySelector<HTMLElement>(".thread-viewport");
     expect(secondViewport).not.toBeNull();
-    expect(secondViewport).not.toBe(firstViewport);
     expect(secondViewport!.scrollTop).toBe(0);
 
     storeMock.current = chatStore(secondThread, chatDetail(secondThread, 4));
@@ -1057,7 +1079,7 @@ describe("ModelControls", () => {
     render(<ModelControls />);
 
     fireEvent.click(screen.getByRole("button", {
-      name: "Context usage: 1k tokens, 50%, $0.03",
+      name: "Context usage: 1,000 of 2,000 tokens (50%).",
     }));
     expect(await screen.findByRole("progressbar", { name: "Context window used" })).toHaveAttribute(
       "aria-valuenow",
@@ -1091,11 +1113,11 @@ describe("ModelControls", () => {
     };
     render(<ModelControls />);
 
-    const trigger = screen.getByRole("button", { name: "Context usage: unavailable" });
+    const trigger = screen.getByRole("button", { name: "Context usage: context size not reported." });
     expect(trigger).toHaveTextContent("—");
     fireEvent.click(trigger);
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
     expect(within(popover).queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(within(popover).getByText("Exact context usage has not been reported for this conversation.")).toBeVisible();
+    expect(within(popover).getByText("No reply in this conversation has reported its context size.")).toBeVisible();
   });
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { performWebSearch } from "@mono-agent/agent-runtime/agent/tools/index.js";
+import { createToolContext } from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
 import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -20,9 +21,9 @@ function worker(directory: string) {
 function message(child: ChildProcess): Promise<unknown> { return new Promise((resolve, reject) => { child.once("message", resolve); child.once("error", reject); child.once("exit", (code) => { if (code) reject(new Error(`Worker exited ${code}`)); }); }); }
 
 describe("host web request coordinator", () => {
-  it("admits SearXNG and Ollama as first-class buckets without persisting request material", async () => {
+  it("admits built-in and unknown provider kinds as first-class buckets without persisting request material", async () => {
     const { directory, coordinator } = await setup();
-    for (const kind of ["searxng", "ollama"] as const) {
+    for (const kind of ["searxng", "ollama", "parallel", "custom-provider", "constructor"] as const) {
       const permit = await coordinator.acquire({
         kind,
         key: `${kind}:query-and-credential-sentinel`,
@@ -33,7 +34,7 @@ describe("host web request coordinator", () => {
     const state = await readFile(join(directory, "state.json"), "utf8");
     expect(state).not.toContain("query-and-credential-sentinel");
     const inspection = (await coordinator.inspect()) as { buckets: { backend: string }[] };
-    expect(inspection.buckets.map((bucket) => bucket.backend)).toEqual(["searxng", "ollama"]);
+    expect(inspection.buckets.map((bucket) => bucket.backend)).toEqual(["searxng", "ollama", "parallel", "custom-provider", "constructor"]);
   });
   it("shares cooldowns and quota without persisting request content", async () => {
     const { directory, coordinator } = await setup();
@@ -65,13 +66,19 @@ describe("host web request coordinator", () => {
       },
       coordinator,
       fetchImpl,
-      ctx: {
+      ctx: createToolContext({
         workspace: directory,
         sandbox: {
           mergePolicies: (_base: unknown, requested: unknown) => requested,
+          prepareCommand: async ({ command }) => ({
+            ...command,
+            args: command.args ?? [],
+            cwd: command.cwd ?? process.cwd(),
+            sandboxed: false,
+          }),
           networkAllowsUrl: () => true,
         },
-      },
+      }),
     });
     const expectedRetryAtMs = now + 300_000;
 

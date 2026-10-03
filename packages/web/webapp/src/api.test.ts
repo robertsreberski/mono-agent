@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, NOT_MODIFIED, uploadContent, type ReplyAccessRefreshHandler } from "./api";
+import { api, NOT_MODIFIED, parseThreadUsage, uploadContent, type ReplyAccessRefreshHandler } from "./api";
 import { dataUsage, resetDataUsage } from "./data-usage";
 import { agent, attachment, processJob } from "./test/fixtures";
 
@@ -540,6 +540,35 @@ describe("agent favorites", () => {
   });
 });
 
+describe("reload-safe restart API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses same-origin source/part routes and reads web-owned operation status", async () => {
+    const operation = { id: "web-op", sourceId: "agent/one", stage: "restarting",
+      requestedAt: "2026-09-23T10:00:00Z", deadline: "2026-09-23T10:02:00Z" };
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(Response.json(
+      url.endsWith("/restart") && !url.includes("/parts/") && !fetchMock.mock.calls.at(-1)?.[1]?.method
+        ? { operation } : operation,
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(api.requestAgentRestart("agent/one")).resolves.toEqual(operation);
+    await expect(api.restartFromProposal("thread/one", "message#one", "part:one")).resolves.toEqual(operation);
+    await expect(api.restartStatus("agent/one", "web-op")).resolves.toEqual(operation);
+    await expect(api.latestAgentRestart("agent/one")).resolves.toEqual(operation);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/agents/agent%2Fone/restart",
+      "/api/v1/threads/thread%2Fone/messages/message%23one/parts/part%3Aone/restart",
+      "/api/v1/agents/agent%2Fone/restart/web-op",
+      "/api/v1/agents/agent%2Fone/restart",
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init.headers).toMatchObject({ "X-Mono-Agent-Web-Origin": window.location.origin });
+    }
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe("{}");
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe("{}");
+  });
+});
+
 describe("short-lived reply access", () => {
   const staleResourceUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const staleBridgeUrl = "/api/v1/threads/thread-one/messages/message-one/mcp-apps/app-one/requests?expires=1000000000&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1037,5 +1066,24 @@ describe("standalone Copilot projection parser", () => {
       fetchMock.mockResolvedValueOnce(Response.json({ ...snapshot, providers: [{ ...copilot, ...patch }] }));
       await expect(api.providerUsage("agent")).rejects.toThrow("Invalid provider usage projection");
     }
+  });
+});
+
+describe("conversation usage validator", () => {
+  const response = { total: { tokens: { input: 5, cacheRead: 2, cacheWrite: 0, output: 3 }, costUsd: 0 },
+    subagents: { runs: 1, tokensPartial: true, costUsd: 0 },
+    byModel: [{ model: "atlas/standard", costUsd: 0 }], computedAt: "2026-01-01T00:00:00.000Z" };
+  it("accepts a priced zero and optional partials", () => {
+    expect(parseThreadUsage(response)).toEqual(response);
+    expect(parseThreadUsage({ ...response, settledAssistantTurns: 0 }).settledAssistantTurns).toBe(0);
+    expect(parseThreadUsage({ ...response, subagents: { ...response.subagents, runsWithTokens: 0 } }).subagents?.runsWithTokens).toBe(0);
+  });
+  it("rejects invalid figures, dates and shapes", () => {
+    expect(() => parseThreadUsage({ ...response, total: { costUsd: -1 } })).toThrow();
+    expect(() => parseThreadUsage({ ...response, byModel: [{}], computedAt: "unknown" })).toThrow();
+    expect(() => parseThreadUsage({ ...response, subagents: { runs: 0 } })).toThrow();
+    expect(() => parseThreadUsage({ ...response, settledAssistantTurns: -1 })).toThrow();
+    expect(() => parseThreadUsage({ ...response, subagents: { ...response.subagents, runsWithTokens: 2 } })).toThrow();
+    expect(() => parseThreadUsage({ ...response, total: { tokens: { ...response.total.tokens, input: NaN } } })).toThrow();
   });
 });

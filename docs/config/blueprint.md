@@ -5,9 +5,9 @@ sidebar:
   order: 1
 ---
 
-A single `mono-agent.config.json` brings the agent's runtime, providers, context, memory, tools, sandbox, observability, and channels together. This page shows the major sections in one broad example. Use the [generated config reference](/config/reference/) for the exhaustive field list.
+A single `mono-agent.config.json` brings the agent's runtime, providers, context, memory, tools, sandbox, artifacts, traceability, and channels together. This page shows the major sections in one broad example. Use the [generated config reference](/config/reference/) for the exhaustive field list.
 
-In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **passed environment > JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
+In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
 
 Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but `tui` defaults on at loopback and interaction can auto-start from the selected tool configuration.
 
@@ -52,7 +52,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // service ids, sessions, or provider identity.
   "agent": { "name": "Research Companion" },
 
-  // Subagents the Agent tool can deploy. Allow AgentSend too for persistent continuations.
+  // Subagents the Agent tool can deploy. Allow AgentManage too for persistent continuations.
   "subagents": {
     "enabled": true,
     "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
@@ -101,11 +101,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
                                            // mono-agent doctor warns and names the nearest supported level when a
                                            // configured value is outside the model's advertised set.
                                            // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (validated + forwarded; not consumed by the Pi runtime)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true
-      "triggerRatio": 0.70,                // default 0.70; adaptive safety headroom also applies
+      "triggerRatio": 0.90,                // default 0.90; capped by safety headroom (10% of W, 16k-48k tokens)
       // Omit these three to derive model-window-aware defaults.
       "keepRecentTokens": 12800,
       "summaryMaxTokens": 5120,
@@ -137,7 +136,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
-      // "cacheRetention": "long",       // opt-in Anthropic 1h cache; model support required, 2× write / 0.1× read
+      // "cacheRetention": "short",      // opt out of default Anthropic 1h cache; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
@@ -175,7 +174,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   //   bujo    — raw audit + bounded LLM curation + precise entity graph + auto-scheduled
   //             lightweight consolidation; strictly needs embeddings + an app-level memory.llm.
   "memory": {
-    "backend": "bujo",                     // bujo (built in) | supermemory (external package + server)
+    "backend": "bujo",                     // only supported config backend
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
@@ -188,15 +187,15 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "dim": 768                           // default 768; must match the model output dimension
     },
     "llm": {                               // required for strict bujo; rejected for lite/journal
-      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
+      // Configure the memory LLM in this JSON block.
       "provider": "ollama",                // ollama | agent-host
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. openai-codex:gpt-5.6-terra
       "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
       // For agent-host, use: "model": "openai-codex:gpt-5.6-terra"; omit endpoint.
     },
-    "recallTool": { "enabled": true },      // explicit reads: MemoryRecall everywhere + local MemoryJournal; default on
-    "rememberTool": { "enabled": true },    // agent-callable Remember write tool; bujo backend only, also allowlist-gated
+    "recallTool": { "enabled": true },      // explicit reads: MemoryRecall + MemoryJournal; default on
+    "rememberTool": { "enabled": true },    // agent-callable Remember write tool; local memory only, also allowlist-gated
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
@@ -215,7 +214,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); no-expiry AskUser is exempt
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng | ollama | codex | keyless
+        "backend": ["parallel", "ollama"], // name (strict) or ordered chain; keyless is opt-in
         "codex": { "model": "gpt-5.6-luna" },
         "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "ollama": {                         // used only when backend is ollama
@@ -320,15 +319,6 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "globalDiscovery": true                // mirror into ~/.mono-agent/trace-sources too (default true)
   },
 
-  // Optional trace viewer: add a best-effort, terminal-batched Phoenix (OTLP)
-  // exporter. Omit it to keep only bounded local terminal JSONL snapshots; a
-  // pre-terminal crash can lose buffered events.
-  "observability": {
-    "exporters": [
-      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "contentPatternRedaction": false }
-    ]
-  },
-
   // ----- Channels: one section per channel; all independent. Most channels are
   // ----- opt-in; the `tui` operator surface defaults on and can opt out.
   // ----- A waiting/disabled channel never blocks the others.
@@ -376,7 +366,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
     "allowedChatIds": ["123456789"],       // or "allowAllChats": true
     "allowAllChats": false,
-    "groupMode": "mention",               // mention | any; any is backward-compatible default
+    "groupMode": "mention",               // mention | listen | any; any is backward-compatible default
     "stripMentionText": true               // strips the bot's native @mention before the turn
   },
 
@@ -478,7 +468,7 @@ mono-agent restart      # apply config edits (config is JSON-first; restart to r
 mono-agent restart --clear-sessions  # restart and clear provider/history/ACP continuity (durable memory kept)
 ```
 
-Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it through the CLI. The CLI does not watch the file. A programmatic host can explicitly call `app.applyConfigChange(reason)` instead. `start` prints the traceability source, exporter status, and one initial status per channel: `running`, `waiting_for_config`, `disabled`, or `failed`. A running self-recovering transport can later report `degraded`.
+Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it through the CLI. The CLI does not watch the file. A programmatic host can explicitly call `app.applyConfigChange(reason)` instead. `start` prints the traceability source, local artifact location, and one initial status per channel: `running`, `waiting_for_config`, `disabled`, or `failed`. A running self-recovering transport can later report `degraded`.
 
 Agent-aware CLI commands load `.env` before config resolution; exported shell variables remain in precedence. Use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` and `--env-file` paths there. Keep secrets in an untracked, owner-only dotenv file or exported environment—never in committed config.
 
@@ -504,7 +494,6 @@ Every top-level section maps to a deep-dive page:
 | `interaction` | Ask-the-user and tool-progress bridge | [Delivery & send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](/observability/artifacts-and-traces/) |
-| `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](/observability/phoenix-and-backfill/) |
 | `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
 | `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](/channels/webhook/) |
 | `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |

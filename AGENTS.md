@@ -8,7 +8,7 @@ This repository is a config-first agent framework built from npm packages under 
 
 - Treat this repository as a pnpm workspace monorepo.
 - Publishable packages live under `packages/<package-name>/`.
-- Optional plugin-tier extras live under `extras/<package-name>/` when cataloged with `publishable: true` and `tier: "plugin"` (published in the npm lockstep but outside the core `@mono-agent/agent-app` closure, loaded via `channels.plugins[]`, as a request-scoped runtime extension, through an explicitly selected plugin backend, or as an explicitly paired companion MCP server); the current extras are `@mono-agent/a2a-adapter`, `@mono-agent/agent-orchestrator`, `@mono-agent/docs-mcp`, `@mono-agent/memory-supermemory`, `@mono-agent/messenger-adapter`, and `@mono-agent/whatsapp-adapter`.
+- Optional plugin-tier extras live under `extras/<package-name>/` when cataloged with `publishable: true` and `tier: "plugin"` (published in the npm lockstep but outside the core `@mono-agent/agent-app` closure, loaded via `channels.plugins[]`, as a request-scoped runtime extension, through an explicitly selected plugin backend, or as an explicitly paired companion MCP server); the current extras are `@mono-agent/a2a-adapter`, `@mono-agent/agent-orchestrator`, `@mono-agent/docs-mcp`, `@mono-agent/messenger-adapter`, and `@mono-agent/whatsapp-adapter`.
 - Published package names should use the `@mono-agent/<package-name>` scope.
 - Package categories live in `scripts/package-catalog.mjs` and README docs; keep the physical workspace layout flat unless a task explicitly asks for a mechanical migration.
 - Root instructions apply to every package unless a package-local `AGENTS.md` narrows them.
@@ -27,12 +27,14 @@ This repository is a config-first agent framework built from npm packages under 
 
 - The user's request is the execution contract. Do not infer an issue workflow, post issue checkpoints, or expand the requested release/deployment targets unless the user explicitly asks.
 - All changes land through a PR; never commit directly to `main`.
+- File an `Unreleased` entry in `CHANGELOG.md` for every user-visible change; see `skills/changelog/SKILL.md`.
 - The normal `main` checkout is the clean live source for the local mono-agent CLI and Personal Agent. Keep it usable and make tracked changes only in isolated worktrees (see `skills/worktree-feature`).
 - Start with the single skill that best matches the requested outcome. Add another skill only when the requested scope crosses that skill's boundary; a release does not imply deployment, deployment does not imply a full-fleet audit, and docs do not imply a website build unless those surfaces changed.
 - Select verification from the diff's risk, using `verify-green`: docs/skills/process changes use their focused contract checks; ordinary package changes use focused build/test/typecheck plus one broad CI gate; security, storage, lifecycle, provider-routing, delivery, and public-boundary changes add one local full gate and one matching smoke scenario.
 - Use a two-stage verification loop. During iteration on small, localized changes, run only the nearest focused tests plus the minimum build or typecheck needed to refresh the development preview. Do not rerun package-wide, architecture, documentation, website, or accessibility gates after every edit. Run the complete risk-based verification lane once when the PR is ready, or rely on hosted CI for broad gates when appropriate. High-risk changes still require their prescribed local gates and smoke tests.
 - Release and restart only explicitly requested consumers. Prove the exact target's version, process, and bounded health evidence instead of automatically verifying unrelated agents.
 - Give every external review finding an explicit disposition (fixed / follow-up issue / rejected-with-reason) before merge.
+- Never rerun a flaky test to green and move on: fix it in the PR when it is within that PR's scope, otherwise file or update a GitHub issue; see `skills/flaky-tests`.
 - `agents/` holds the subagent templates; each `agents/*.md` has a `.toml` companion kept in sync by `pnpm run check:codex-discoverability`.
 - Canonical website pages under `docs/` use frontmatter `title` and `description` as their page heading; do not add a second Markdown H1. Run `pnpm run check:docs` for headings, code-fence labels, accessible link text, diagram summaries, and local links.
 

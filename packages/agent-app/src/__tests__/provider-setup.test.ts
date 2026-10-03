@@ -15,7 +15,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import {
-  credentialNeutralProviderStatusEnvironment,
   detectProviderCredentialStates,
   executeProviderSetupPlan,
   piAuthPathForSetup,
@@ -1307,3 +1306,25 @@ async function tempDir(): Promise<string> {
   tempDirs.push(dir);
   return dir;
 }
+
+it("requires an explicit OpenAI method for headless setup and preserves OAuth client ID", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-method-"));
+  try {
+    const options = { cwd: dir, modelRefs: ["openai:gpt-5.5"] };
+    expect(planProviderSetup(options).actions).toEqual([]);
+    expect(planProviderSetup({ ...options, piAuthMethods: { openai: "oauth" } }).actions)
+      .toMatchObject([{ id: "pi-login:openai" }]);
+    expect(planProviderSetup({ ...options, piAuthMethods: { openai: "api-key" } }).actions)
+      .toMatchObject([{ id: "pi-api-key:openai", envVar: "OPENAI_API_KEY" }]);
+    const authPath = join(dir, "auth.json");
+    await persistPiProviderCredential({ authPath, provider: "openai", resolveCredential: async () => ({
+      type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: 123,
+      clientId: "fake-issued-id", scopes: ["resource.invoke"],
+    }) });
+    expect(JSON.parse(await readFile(authPath, "utf8")).openai).toMatchObject({ clientId: "fake-issued-id", scopes: ["resource.invoke"] });
+    await expect(persistPiProviderCredential({ authPath, provider: "openai", resolveCredential: async () => ({
+      type: "oauth", access: "different", refresh: "different", expires: 456,
+    }) })).rejects.toThrow(/invalid credential/u);
+    expect(JSON.parse(await readFile(authPath, "utf8")).openai.clientId).toBe("fake-issued-id");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

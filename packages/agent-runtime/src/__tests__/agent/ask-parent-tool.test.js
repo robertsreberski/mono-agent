@@ -1,14 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { createAskParentTool } from "../../agent/tools/ask-parent-tool.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+const ctx = createToolContext();
 
 describe("AskParent", () => {
   it("requires a controller even when all tools are allowed", () => {
     expect(createAskParentTool()).toBeNull();
-    expect(getPiBuiltinTools(["*"], {}).map((tool) => tool.name)).not.toContain("AskParent");
+    expect(getPiBuiltinTools(["*"], { ctx }).map((tool) => tool.name)).not.toContain("AskParent");
     const options = { askParentController: { submit: vi.fn() } };
-    expect(getPiBuiltinTools(["AskParent"], options).map((tool) => tool.name)).toContain("AskParent");
-    expect(getPiBuiltinTools(["*"], { ...options, disallowedTools: ["AskParent"] }).map((tool) => tool.name)).not.toContain("AskParent");
+    expect(getPiBuiltinTools(["AskParent"], { ...options, ctx }).map((tool) => tool.name)).toContain("AskParent");
+    expect(getPiBuiltinTools(["*"], { ...options, ctx, disallowedTools: ["AskParent"] }).map((tool) => tool.name)).not.toContain("AskParent");
   });
   it("awaits durable submission, normalizes options, terminates, and refuses duplicate submissions", async () => {
     let release;

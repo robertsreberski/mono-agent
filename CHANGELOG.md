@@ -2,6 +2,1166 @@
 
 ## Unreleased
 
+- Fix process-job store reopening after an owner crash during an atomic write,
+  preserving committed records and removing verified replacement residue.
+
+- Fix devalue serialization vulnerabilities in documentation and marketing site
+  dependencies.
+
+- Fix Telegram native rich-message input, including forwarded and replied-to
+  structured text, tables, lists, captions, and bounded background context.
+
+- Add opt-in `tools.computerUse` desktop control through separately installed
+  `cua-driver`, with executable discovery, doctor readiness, and safety guidance.
+  Keep startup available with a warning when the optional driver is missing.
+  Keep permission modes operator-owned; external MCP tools bypass built-in policy.
+
+- Add an optional compact-first setting to web scheduled wake-ups, in the editor
+  and console tools; keep wake turns running even when compaction cannot finish.
+
+- Fix the web model picker to fit the available screen space, with denser
+  provider and thinking controls and always-visible context and close actions.
+
+- Update Pi to 0.99.2: Anthropic requests no longer fail on strict tool
+  schemas that use keywords such as `minimum`/`maximum`, and providers back off
+  instead of retrying immediately on an unparseable `Retry-After` date.
+  Anthropic workload identity federation settings are reported as ambient
+  evidence, not a verified credential.
+
+- Let authenticated console restarts validate and apply edited startup inputs
+  on supervised workers, keeping the old worker online on invalid inputs or
+  approval failures; require terminal restart for unavailable runtime packages.
+
+- Add web-console `SuggestReplies` quick-action buttons beneath final replies,
+  including web-bound job wakes; clicks send a normal follow-up user message,
+  and old choices become inert after a later user turn.
+
+- Fix interrupted process-job wakes proven never admitted to retry once after
+  restart, while keeping possibly admitted and legacy wakes replay-suppressed.
+  Keep child questions waiting for the parent visible in the console job shelf.
+  Upgrade the web console first or with agents; older strict consoles reject new
+  agent wakes as visible terminal failures without stripped-payload retries.
+
+- Keep pinned, conversation-owning, and mid-restart agents in the web console
+  as offline without switching the selected agent or conversation during a stop
+  or restart.
+
+- Fix orphaned background subagent reservations blocking new `Agent` calls after
+  restart; retire failed first admissions and require close/recreate when session
+  continuity cannot be proven.
+
+- Let eligible GPT models opt into a 1,000,000-token context window through
+  model declarations and the web console’s **Context window** chips. Keep it off
+  by default, persist conversation and new-conversation choices, and retain
+  configured compaction corrections, learned overflow limits, and pricing tiers.
+  Clear stale client selections when eligibility changes and display each model’s
+  own configured context policy.
+
+- Fix background `Agent` and `AgentManage` admission after live completion
+  steering, and release proven never-admitted reservations without masking the
+  allowlisted start failure.
+
+## 0.25.1 — Busy-aware worker maintenance restarts (2026-09-30)
+
+- Keep unattended macOS worker maintenance from interrupting active turns,
+  admitted process jobs and completion wakes, or pending `AskUser` until idle
+  or a bounded ceiling; report deferrals and forced stops in `doctor` and
+  `status`, and fix shutdown diagnostics to name the received signal.
+
+## 0.25.0 — Telegram topics, web wake-ups and language-neutral memory (2026-09-30)
+
+- Show the web console's provider usage refresh result as a short muted line
+  under the Providers actions ("Updated 9:06 AM", full timestamp on hover), and
+  report a failed refresh once per provider at note size.
+
+- Fix PeerAgent, ACP bridge, and web console operator key selection to prefer
+  each agent's own key over the caller's ambient key; report allowlisted peer
+  bridge startup causes without exposing raw diagnostics.
+
+- Keep web live-input delivery open while a blocking agent operation delays its
+  response, then bound missing receipts after the turn settles. Apply pending or
+  uncertain steers inline when their exact receipt arrives without resending.
+
+- Add ChatGPT sign-in and API-key method choice for the `openai` provider in
+  CLI, guided setup and Agent settings, with a stable installation identity,
+  owner-only credential persistence and remote-browser paste-back. Keep
+  `openai-codex` and default model routes unchanged.
+
+- Let conversation-limited background subagents and commands wait in a bounded
+  queue for a running slot; show queue receipts and capacity, and release
+  never-started subagent reservations without a recovery demand.
+
+- Update `undici` to 8.11.2 in `agent-app`, `operator-adapter` and `web` for
+  the GHSA-rfgv-xxqx-mfg5 and GHSA-w293-vg96-wgc3 advisories.
+
+- Add a single durable web-conversation notice when a dispatched parent turn
+  loses its agent process, without replaying the turn or claiming child outcomes.
+  An attempted wake may remain ambiguous; explicitly cancelled turns are excluded.
+
+- Let supervised restarts briefly drain running background jobs before cancelling
+  unsettled work, inside the existing ten-second shutdown deadline.
+
+- Flag duplicate object keys anywhere in `mono-agent.config.json` as errors in
+  `validate` and `doctor`; runtime loading warns and keeps the last value.
+
+- Keep a supervised agent running when console restart would relaunch it with
+  unapproved launchd inputs or invalid systemd inputs; show durable launchd
+  snapshot refusal in `mono-agent status` if inputs race after acceptance.
+
+- Keep manual web compaction visible after a lost response with a durable
+  outcome-unknown marker, wait up to 15 minutes, and cancel uncommitted agent
+  compaction when its client disconnects.
+
+- Let Pi 0.99.1 provide Claude Sonnet 5.5 natively and list GPT-6.1 Sol
+  through existing chat discovery. Pi also retires catalog rows including
+  `opencode-go:kimi-k2.6`, `glm-5.1`, `qwen3.6-plus` and `qwen3.7-max` on
+  OpenCode-Go: replace removed `model` or fallback references when doctor
+  reports them. `openai-codex` now displays as "OpenAI Codex (legacy)" under
+  the same id; the new ChatGPT sign-in on `openai` is not offered yet.
+
+- Add bounded read-only salvage to interrupted detached child wakes and authorized
+  `AgentManage inspect`: distinguish placed tool results from unknown outcomes,
+  without resuming the old instance or guaranteeing tool-effect completeness.
+
+- Add `FinishSilently({})` for admitted host-raised process-job wakes and
+  notify-enabled cron/webhook turns, recording silent completion without a
+  model-written answer; keep `NOTHING_TO_REPORT` as a fallback.
+
+- Keep every in-progress Background jobs shelf indicator static, using the same
+  half-filled circle in the closed bar and open rows.
+
+- Fix `MemoryRecall` guidance sections to show only query-ranked preferences and
+  verified lessons, with a score floor unless the kind is requested explicitly;
+  guide agents to search one topic per call and treat weak hits as context.
+
+- Count every row of the web Background jobs shelf exactly once, so its numbers
+  add up: a question, work in progress, an issue (a success whose wake failed
+  included), a cancellation, or done. The closed bar and the open header show
+  these as glyph-and-number chips without words; while two or more rows are
+  current, the closed bar names them (agent id or command tool) with "+n" for
+  those that do not fit. History shows a bare count, a short note replaces the
+  bounded-history sentence, and the parent's calls in an agent group's timeline
+  lose their constant background, keeping a tint only when hovered, focused or
+  open.
+
+- Add `memory.capture.webhook: false` to skip automatic BuJo capture on
+  host-identified webhook turns, leaving other turns and explicit writes unchanged.
+- Give cron and webhook turns with automatic capture off short host-owned,
+  capability-matched Remember guidance when the write tool is enabled.
+
+- Add `memory.capture.cron: false` to skip automatic BuJo capture for cron
+  firings without changing other turns or explicit memory writes.
+- Let BuJo `Remember` link an existing person, mark unlinked scan observations
+  replaceable, and explicitly supersede captured notes/events or enhanced writes,
+  preserving history while protecting plain text-only Remember lines.
+
+- Add `anthropic:claude-sonnet-5-5` to model discovery, runtime routing,
+  reasoning-effort selection, and pricing through Pi's native catalog, with
+  a 1M context window and $2/$10 pricing.
+
+- Fix background `PeerAgent` job cards and exact-origin completion wakes in the
+  web console by keeping peer projections free of subagent-only telemetry.
+
+- Keep Telegram's native `typing…` indicator alive throughout an active agent
+  turn, including while its transient tool ledger is posted or edited, and stop
+  it before the final answer or cancellation.
+
+- Post the next Telegram `AskUser` question below a person's custom **Other**
+  reply instead of editing the earlier question above that reply.
+
+- Send Telegram final answers as native Rich Markdown so GFM tables and ordinary
+  formatting render together; custom clients without rich-message support retain
+  a safe MarkdownV2 fallback with aligned code-block tables.
+
+- Group the web Background jobs shelf by detached child: every `Agent` and
+  `AgentManage` turn of one subagent instance, or every `PeerAgent` job to one
+  peer, is one row showing the child's id and newest task. Opening it shows a
+  timeline of the parent's calls as tool rows (brief, messages and replies,
+  foreground messages, steer, stop, close, peer answers), each opening to its
+  whole text, between the child's turns. The shelf counts these rows, and only
+  a group's newest turn can make it an issue. The closed bar drops its visible
+  "Background jobs" title; its chips carry their words when nothing is running.
+
+- Polish the web wake-up schedule editor on phones: a clearly tinted Once/Weekly
+  selection, date and time values centred in their fields, and date and time
+  values shown at the sheet's own text size on touch screens while the native
+  picker keeps the 16px size that stops iOS from zooming. Summary and header
+  text now match the other settings sheets.
+
+- Add opt-in `telegram.projects.enabled` to make each Telegram forum topic the
+  bot sees (and a forum's General conversation) an ordinary web-console
+  project named `Chat › Topic`. The project's shared context reaches every
+  turn in that topic; when the web console is unreachable the turn uses the
+  last known context and logs it. On a message a person sends, the agent can
+  use the console project tools (not tags, read state or wake-ups) to edit
+  context or make the current topic a project, and `TelegramSendMessage` /
+  `TelegramSendFile` accept `projectId` so topic ids stay hidden. Sync is one
+  way: renames update auto-named projects, closed topics are shown, a send
+  that finds the topic deleted marks it gone, and deleting a project detaches
+  the topic without touching Telegram. Existing configs are unchanged.
+
+- Use the same circular glyphs in the web Background jobs shelf's closed-bar
+  chips as in its rows: issues show a red cross and finished jobs a green
+  check, replacing the warning triangle and history arrow.
+
+- Show agent settings as one scrolling page with a persistent agent header,
+  immediately available Pin control, and inline new-conversation save actions.
+
+- Fix web memory recall and capture using host-generated project, tag, or
+  conversation-marker text instead of the bound, model-visible owner message,
+  including attachment context and live follow-ups.
+
+- Keep owner turns of at most 16 Unicode code points on web, TUI and ACP from
+  injecting unsolicited relevant lines while retaining person cards, labelled
+  background, explicit `MemoryRecall`, and capture.
+
+- Give each Telegram forum topic its own conversation, history, queue,
+  `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
+  activity, questions, status lines, files, and background-job cards back to
+  the originating topic. The General topic, private chats, and non-forum groups
+  keep their existing `telegram:<chat>` conversation. Automations can target a
+  topic with `notifyConversationId: "telegram:<chat>:<topic>"`, send tools
+  accept `message_thread_id` and stay in the current topic by default, the
+  agent is told the topic's name, and the JSON-only `telegram.topics` list sets
+  a per-topic `groupMode` without widening the chat allowlist.
+
+- Add Telegram `groupMode: "listen"` (group-wide or per topic): the bot still
+  answers only when mentioned or replied to, but its next answer sees the
+  unaddressed messages since it last spoke as bounded background context.
+
+- Let `memory.capture.focus` guide the review of extracted assistant memory
+  lines as well as extraction, without changing unfocused capture or allowing
+  review to drop owner-stated lines.
+
+- Let the web console open agent settings in the conversation column on desktop
+  and as a pushed list and detail on phones. Keep per-agent new-conversation
+  drafts until Save or Discard, and group pinning, restart and agent details.
+
+- Keep the web composer's input focused and its caret after inserting a skill
+  from the browser, including on touch devices where focus must retain the
+  software keyboard.
+
+- Fix the unknown Context usage dash color and retain compaction outcomes as
+  conversation markers for the transcript and the next turn. Keep automatic
+  compaction dividers between the activities on either side of the event.
+
+- Redesign the web wake-up schedule editor as a focus-contained sheet with a
+  plain-language summary, the saved next wake-up in the schedule's timezone
+  (plus your own when it differs), weekday chips, distinct time pills,
+  iOS-safe date and time fields, a UTF-8 message counter, Load latest after a
+  conflicting change and an inline delete confirmation. Fix next wake-up times
+  that were labelled with the schedule's timezone but shown in the device's.
+
+- Replace the web console's Background jobs dock with a compact shelf above the
+  composer. Closed, it is one line with the single job's purpose or marked counts
+  of active jobs, pending agent questions and issues; opened, it lists current
+  work purpose-first with state, elapsed time, tool and an output or step
+  preview, and keeps finished jobs behind History. Command and agent jobs get
+  distinct glyphs, stopping and pending-question states are shown, cancelled
+  jobs no longer read as failures, and nothing opens by itself.
+
+- Give the web Background jobs shelf one set of circular status glyphs:
+  outlined rings for current work (empty for queued, half-filled for in
+  progress, a square for stopping, `?` for a question) and solid discs for
+  outcomes (a check for done, a cross for failures, a clock for timeouts, a
+  square for cancelled). In progress is yellow and done is green in every
+  console theme. Only the closed bar's indicator spins, continuously while a
+  job runs and never under reduced motion; open rows stay still, and the bar
+  shows an agent or terminal icon beside a single job's purpose.
+
+- Fix the web Context usage phone sheet's dark overlay and show manual and
+  automatic compaction outcomes as visible conversation dividers. Keep a running
+  manual compaction visible after closing the sheet, switching chats or reloading,
+  and hold new messages until it finishes. Show the conversation-wide cache hit
+  share alongside processed tokens in the Context usage dialog.
+
+- Let agents configure reply-file storage up to an explicit unlimited setting,
+  default to 2 GiB, and select a per-file limit up to the 20 MiB delivery cap.
+  Group repeated storage-full reply failures into one card per reply.
+
+- Let the web Context usage sheet show the window, conversation-wide tokens,
+  estimated cost by model and subagent share, compact provider plan meters, and
+  manual Compact. Older detached subagent jobs without token reports leave
+  totals as lower bounds.
+
+- Show measured synchronous subagent tokens in the web Context usage sub-line,
+  distinguish mixed reports from missing reports, and accept detached job
+  token counts across staged upgrades.
+
+- Add per-job token counts to detached subagent progress when reported; show
+  exact Context totals once every detached job has measured tokens.
+
+- Fix manual context compaction for app-hosted conversations with durable Pi
+  sessions, including web model selections; log safe unsupported reasons on the
+  host while keeping operator responses generic.
+
+- Keep host-owned process-job wakes out of automatic memory context while
+  retaining explicit recall and capture attribution; show task lines as recorded
+  history rather than open to-dos, and mark dated events ended when their
+  structured event date or timestamp has passed in local-day/instant order.
+  Explicit `MemoryRecall` reports the same ended status.
+
+- Memory capture no longer writes open task lines. A line the extractor types
+  as a task is stored as a dated history note without a host-derived fact; task
+  lifecycle belongs to the agent's task tools.
+
+- Add `mono-agent memory curate prepare --tasks-to-notes [--before <date>]
+  [--capture-only]`: a reviewed, model-free plan that turns open task lines into
+  dated history notes, keeping their id, text, date and labels. Apply and
+  restore work like other curate plans.
+
+- Let BuJo capture select an optional agent-host model for reconciliation only
+  with `memory.capture.reconcileModel`; leave extraction, review and the unset
+  default unchanged. Model failures retain capture retry behavior.
+
+- Add a local web console Storybook documenting live theme tokens, component
+  states and open context-usage/other overlays, with a CI static build; keep its
+  dev dependencies and stories out of the published web package.
+
+- Let agents read, set and clear wake-up schedules for their current web
+  conversation; tool-set one-offs must be at least five minutes ahead. Fired
+  turns arrive later in the same conversation.
+
+- Fix `PeerAgent` stop to wait for an interrupted peer turn to finish writing
+  thread state before reporting completion.
+
+- Add one-off and weekly timezone-aware wake-up schedules to ordinary web
+  conversations, with edit, pause, resume, delete, live list status and a distinct
+  scheduled transcript item. Keep busy occurrences pending until an idle turn;
+  skip unqueued occurrences more than 60 minutes late.
+
+- Remove the BuJo English automatic-recall grammar and use bounded, score-based
+  possibly-relevant context in standalone stores; Lite and degraded lexical
+  recall remain available explicitly; `load()` returns no automatic block on an
+  embedding outage rather than injecting lexical-only results.
+
+- Memory capture adds one small review call after extraction on turns with
+  assistant lines or the owner's own statements. It labels the owner's stated
+  likes, dislikes and tastes (in any language) as preferences, beside the owner
+  fact, and drops assistant lines that are general world information or
+  transient process reports. It never rewrites a line or drops what the user,
+  a tool or a document said; turns without such lines make no extra call.
+
+- Let explicit `MemoryRecall` search in any language without English query
+  suppression or prose-based conflict guesses. Keep automatic possibly-relevant
+  selection language-neutral, and restrict owner backfill to existing structured
+  owner labels instead of interpreting English prose.
+
+- Fix `memory curate prepare` to refuse an existing private plan before model
+  work and tell operators to choose a new path.
+- Report safe curation failure reasons and whether `memory curate apply`
+  restored the pre-apply store, including interrupted recovery.
+- Let `memory labels --limit N` inspect up to 1000 indexed labels (default 200)
+  and return a JSON usage error for unknown flags.
+- Let `memory --help` and memory subcommand `--help` print relevant usage.
+
+- Memory capture lets the user's own correction supersede an older line. When
+  a user-sourced memory contradicts an existing one, including a recorded
+  assistant inference or recommendation whose premise the user corrects,
+  reconciliation now supersedes the old line instead of storing both. Merely
+  related details stay separate. On a verified owner turn this also replaces
+  the owner's own earlier preference line (never a peer's), which stays as
+  superseded history.
+  The capture near-duplicate guard no longer uses
+  English reporting verbs or word-shape similarity: only identical wording is
+  a duplicate, which stops distinct facts that share a long prefix from
+  failing the whole capture.
+
+- Memory capture drops the assistant's own low-salience lines. A memory the
+  extraction model marks as `assistant`-sourced (or a `user` claim the host
+  bounds to `assistant`) needs a model salience of at least 0.5; below that it
+  is not stored, along with any entity or relation only it named. This keeps
+  the assistant's progress and status reports and generic advice out of memory
+  in any language, with no word lists. User, tool and document lines are
+  unaffected.
+
+- Memory capture no longer uses English grammar or word lists on the write
+  side, so it works the same in any language. The extraction model now marks
+  each memory's `source` (`user`, `assistant`, `tool` or `document`) in its
+  existing call, and the host trusts it only within structural bounds: `user`
+  on a human turn with user text, `tool` with host-observed tool outcomes.
+  Owner facts need a `person:owner` association and a `user` source on a
+  verified owner turn; other person facts need the entity association and the
+  name in the line; a fact is user-stated when the user's text names the
+  person (and contains a structured value). Preferences need a `user` source;
+  verified lessons need the model's label and a successful tool outcome.
+  Removed: owner-property, question, stop-word, preference-verb, lesson
+  connective and month word lists in labels; first-person, doubt and age
+  vocabularies in the capture safety filter (the extraction rubric covers
+  them); age/"currently" and state-topic vocabularies in reconcile, which now
+  offers a candidate's same-entity lines by graph association; question-word
+  lists in recall name anchors, which now come from associated entity names;
+  English title abbreviations in sentence splitting; and the ping/test skip
+  list in the harness. Credential token formats and the credential-context
+  deny list stay. Structured dates validate only in ISO or unambiguous numeric
+  form; a structured owner property on a line that also involves another
+  person stays a coarse owner fact; a dated UPDATE of an undated line becomes a
+  dated supersession instead of an in-place rewrite.
+
+- `mono-agent memory curate prepare --limit 0 --link-people` proposes reviewed
+  person associations, without a model, for live note and event lines that
+  contain a person entity's full proper display name, exactly as written.
+  Matching uses only the graph's entity names, with no word lists or grammar
+  rules; ambiguous names are never linked. Links are pre-accepted, reviewable as
+  `associate:person-name`, bounded to 1024 per pass and idempotent; the next
+  `--limit 0` pass derives coarse labels for them.
+
+- Turn-start automatic memory now shows a small "possibly relevant" block for
+  the main model to judge, instead of English question grammar deciding what
+  counts as an answer. The block holds up to three lines chosen only by
+  retrieval score (a floor and a window below the top line), so it works in any
+  language. Current lines are preferred, lines are listed oldest first, and
+  each line shows its recorded date, whether it is current, superseded or
+  ended, and who said it when known. The automatic context stays under about
+  2.5 KB. Lexical-only results and non-owner turns (group chats, other senders,
+  triggers) get no automatic block. Person cards appear on an exact name or id
+  match and no longer filter facts by English question words. The explicit
+  `MemoryRecall` tool is unchanged. The memory behaviour scorecard now reports
+  how often the answer is present and gates on lines shown for negative
+  questions.
+
+- `mono-agent status --config <path>` run from another directory now finds the
+  running agent when its config keeps a folder-local trace registry. Status
+  also checks the agent's global registry mirror instead of only the registry
+  path resolved against the current directory.
+
+- `mono-agent memory curate` no longer produces a plan that both drops a line
+  and links it to the owner. `prepare --owner-backfill` leaves out lines the
+  plan proposes to drop, and `review` sets the owner link to not accepted when
+  the line's drop is accepted, reporting the count. Such plans used to fail at
+  `apply` with "conflicting owner association".
+
+- Derive coarse `label:v1` person facts from associated durable capture lines
+  without a model label proposal, and let `memory curate prepare --limit 0`
+  propose the same labels for existing lines without model calls. Keep
+  structured direct answers bound to the selected source line, while any relevant
+  labelled value that disagrees with the selected line still asks instead of
+  answering; do not downgrade readers after writing coarse facts. The `--limit 0`
+  pass is bounded (1024 labels and the plan size cap), idempotent, walks oldest
+  or `--select recent` first, and turns a bad line into a discard; `--select`
+  now reaches `curate prepare` from the CLI. Curate labels are always
+  assistant-inferred and validated against every graph display name; rewrites
+  keep supported labels, preferences and lessons unchanged and turn legacy
+  relationship facts into coarse ones. Legacy relationship roles are read as
+  plain tokens. Re-prepare curate plans created by an older version.
+
+- Keep capture and curate labels for supported natural-phrasing person facts and
+  user-stated standing instructions, including negative preferences. Keep
+  assistant-only claims inferred (a coarse fact is user-stated only when a
+  user sentence that is not a question asserts its claim) and reject unsupported retrospective labels.
+  Verified lessons no longer require a failed retry.
+
+- Embed large explicit memory plans (curate, forget) in bounded provider
+  batches. Applying a plan with hundreds of dropped lines no longer sends one
+  oversized request that a local Ollama runner rejects.
+
+- Keep completed-turn capture focused on durable claims, dated changes, and
+  evidenced outcomes through model guidance. Owner preferences are not rejected
+  merely because their wording resembles an instruction.
+
+- Select memory curation candidates from bounded recent, repeated, risky, and
+  oldest shares by default. `--select oldest` retains oldest-first selection;
+  dry-run and prepare report bucket counts without exposing memory text.
+
+- `MemoryRecall` returns fewer weak hits on the local hybrid store. It drops
+  hits more than `0.15` below the best one and, when the best hit clears the
+  `0.65` floor, hits below the floor; the best hit is always kept. Hits carry
+  `currentness` (`current`/`superseded`), and the result says
+  `Insufficient evidence` or `Conflicting values` (structured `evidence`) when
+  the best hit is weak or the top candidates disagree. The new fields are
+  optional; remote and degraded results are unchanged.
+
+- `mono-agent memory curate prepare --owner-backfill` proposes `person:owner`
+  associations for older live lines where the owner is the subject: the text
+  starts with "The user" plus a verb or "The user's" plus an owner property
+  (name, birthday, home, work), or the labels already attribute the line to the
+  owner. No model is called. Proposals are reviewed as `associate:owner`; bare
+  "User ..." lines are `associate:owner-bare` and must be accepted explicitly.
+  Apply uses the usual curate backup and restore.
+
+- Keep captured relationship labels aligned with their schema role words, while
+  binding owner facts only to directly supported owner properties.
+
+- Memory recall scores are clamped to `[0, 1]`; salience and insight
+  tie-breakers can no longer push a score above a perfect match.
+
+- Preference and lesson background is injected only when its memory ranks in
+  the top eight hits and leads the median candidate score by `0.1`, instead of
+  whenever it clears the absolute `0.35` floor.
+
+- Person cards show a young age in months, weeks or days instead of
+  `age 0`.
+
+- Automatic recall can inject ordinary single-clause memory lines, not only
+  canonical `X's Y is Z` facts. The line must cover every content word of the
+  question and lead the next unrelated hit by a clear score margin. First-person
+  questions on owner turns read as the owner.
+
+- Write only the touched memories and entities to the BuJo graph index after each
+  capture, Remember or migrate decision once startup repair has proven the base,
+  instead of replacing the whole projection; the canonical graph is still read in
+  full, and recovery and rebuild keep full parity checks. Per-turn capture on a
+  large store drops from seconds to well under two seconds of host CPU.
+
+- Add `mono-agent memory entities --duplicates` to list entity names held by
+  several ids, with types and association counts. `memory curate prepare|review`
+  now accept operator merges (`--merge <fromId>=<toId>`, `--merge-file`,
+  `--allow-cross-type`). These may join different names, and different types
+  when allowed. They run through the same reviewed apply, backup and restore as
+  other curation. `curate prepare --limit 0` prepares merges without a model call.
+  Merges that would leave an invalid fact label (a relationship to itself, or a
+  person label on a non-person id) are refused before backup; labels that
+  become identical collapse to one. Capture binds `person:owner` only on
+  host-verified owner turns.
+
+- On the operator's own turns, automatic recall reads a first-person question
+  that names nobody else (`When was I born?`) as a question about the canonical
+  owner id `person:owner` and answers from its labelled facts.
+
+- Memory capture tells the model which id to reuse when several known entities
+  share one name: the most-associated id is marked preferred and the others
+  point at it. Equally matching hints now rank the most-used entity first, so an
+  established person is not crowded out by newer one-off tasks that share a
+  word. Owner turns offer the canonical `person:owner` id first.
+
+- Keep completed-turn capture moving when candidates share a reconciliation
+  target, and offer same-entity state lines for supersession even when their
+  wording differs. Retain supported kinship and owner fact labels; omit
+  first-person, speculative, age-only, and credential-bearing capture lines.
+
+- Keep `memory curate prepare` limited to rebuild-indexed lines and report
+  skipped canonical-line counts by reason. Refuse unindexed selections before
+  backup and show safe failure reasons after recovered apply errors.
+
+- Memory recall gives a name match a smaller bonus (`0.08`) than an exact
+  number or date (`0.15`), so records that only share a person's name no longer
+  outscore true answers to other questions.
+
+- Automatic memory recall injects only the labelled person facts a question asks
+  about, instead of the whole person card for every name mention. On the
+  operator's own turns they answer directly when the question names the whole
+  key and no other value or recalled record disagrees; elsewhere they stay
+  background. Fact keys drop the `other:` prefix and values render as text, not
+  JSON, in automatic recall and the `MemoryRecall` fact sheet.
+
+- Automatic memory recall reads lower-case and `what's` questions, and on the
+  operator's own web/TUI/ACP turns it answers first-person questions (`What is
+  my phone number?`) from owner facts and `The user reports that …` records.
+  Multi-clause and hedged records still abstain.
+- Keep extracted BuJo memories across reconciliation retries and retain novel
+  facts if the classifier still fails on the last attempt; give structured
+  memory calls time to finish.
+- Label directly supported owner facts and senderless owner preferences, preserve
+  dated updates as history, and split multi-sentence captures before the
+  160-code-point bound. Keep old preference and lesson lines when a replacement
+  cannot safely carry their labels.
+
+- Add `memory.embeddings.instructions` so each embedding model gets the
+  query/document prefixes it was trained for (`bge-m3` none, Snowflake Arctic
+  Embed 2 `query: `, Qwen3 its instruction; nomic and other models keep
+  `search_query:`/`search_document:`). The default `auto` never forces a
+  rebuild: an existing index keeps its prefixes until the next stopped-agent
+  `mono-agent memory rebuild`, which adopts the model preset.
+
+- Rank memory recall by embedding similarity. Shared generic words no longer
+  push a record to the top; only exact names, numbers and dates add a small,
+  accent-insensitive boost. Explicit `MemoryRecall` keeps the backend order,
+  and lexical-only recall is unchanged.
+
+- Add reviewed `memory curate` plans for one-time BuJo cleanup, including bounded
+  model proposals, category acceptance, stopped-store backup and restore. No
+  proposals are applied automatically; unsupported legacy authority is rejected.
+- Let `memory curate` process up to 8192 lines in a 16 MiB private plan and
+  apply accepted lines despite unrelated live captures. Report safe preparation
+  and review errors; changed selected lines still refuse apply before backup.
+
+- Let `memory curate prepare` use tool-less structured model calls without
+  blocking a running agent's root lease, close provider sessions after calls,
+  retry failed batches once, and report bounded discard reason categories.
+  Curation now favors durable dated facts over transient process chatter.
+
+- Add labelled fact sheets and scoped guidance to explicit `MemoryRecall`, plus
+  read-only `memory labels` and `memory lessons --propose` operator views. Remote
+  recall backends and ordinary dated hits remain unchanged.
+
+- Add bounded, scoped working preferences and lessons plus sourced person cards
+  to automatic BuJo recall. Conflicting facts prompt a question; direct-fact
+  selection and remote memory stores retain their existing behavior.
+
+- Stop a Pi-native turn that is aborted while proactive or mid-run compaction is
+  being prepared. It now returns cancelled before the provider request instead of
+  running the model and tools and rolling the turn back afterwards.
+
+- Let foreground child `Bash` and `Exec` exceed 120 seconds, bounded by
+  `subagents.commandTimeoutMs` and remaining child turn time with a settlement
+  reserve. Interactive parent turns retain the 120-second cap.
+
+- Let `Agent` and read-only calls overlap when exclusive tools are merely offered.
+  Invoked stateful, MCP, and unknown tools remain exclusive FIFO barriers;
+  `piToolExecutionMode: "sequential"` still serializes every call.
+
+- Let BuJo capture narrow automatic memories with bounded operator guidance and
+  an optional host-validated fact/preference/lesson kind filter. Unset keeps the
+  existing capture behavior; explicit `Remember` writes are unaffected.
+
+- Let BuJo capture attach host-checked fact, preference, and verified lesson labels
+  in its existing extraction call. Drop unsupported labels without losing a memory;
+  keep tool outcomes category-only and leave automatic recall unchanged.
+
+- Fix the web console's Compact button for configured agents and explain when a
+  selected model cannot compact the conversation's existing session.
+- Add validated fact, preference, and lesson labels to BuJo daily bullets with
+  rebuildable SQLite lookups. Older readers treat them as ordinary refs; memory
+  automatic recall does not yet use labels. Changed-text updates and supersedes
+  need explicit replacement labels; malformed source labels
+  leave their bullets readable and appear with locations in audit.
+
+- Add optional, host-verified speaker provenance to completed-turn memory
+  admission. Keep legacy retries byte-compatible and treat absent or direct
+  programmatic origins as unknown; this does not yet emit typed graph facts.
+- Let `Bash` and `Exec` use a `workdir` under the configured
+  `tools.filesystem` roots when the sandbox is off, matching the file tools.
+  Workdirs outside every allowed root, or symlinks escaping one, stay denied.
+
+- Keep installed full-screen iPad console header content and error notices below
+  iPadOS 27's hard top-edge blur. iPhone and inset-zero windows retain their layout.
+- Keep scheduled and webhook memory capture honestly labelled, preserve user-origin
+  facts when assistant replies repeat them, and avoid dating new age snapshots as
+  revisions to old daily entries.
+- Rank explicit `MemoryRecall` results by query coverage without changing automatic
+  recall thresholds, and show each result's recorded and validity timestamps.
+
+- Let native `subagents.timeoutMs` and profile timeouts reach four hours; reserve
+  settlement time inside detached job deadlines. Resume the same persistent
+  transcript with an ordinary `AgentManage` message after a certified settled
+  child timeout, without ack. Uncertain ownership or continuity stays fenced;
+  coordinate host and console upgrades for the optional strict recovery marker.
+
+- Let operators restart one supervised, keyed agent from its web-console settings
+  or a `ProposeRestart` reply card. Show interruption confirmation and durable
+  progress, then report success only for a new ready process; refusals and
+  unconfirmed requests stay distinct. Other channels do not receive the tool.
+- Add config-declared local `PeerAgent` calls with named ACP threads, foreground
+  replies, and optional durable background wakes on wake-capable turns. Reject
+  replayed handoffs and peer cycles; recover lost or exhausted sessions only
+  on a new explicit send, without imposing a sandbox on any turn.
+- Relay a peer's AskUser forms to the calling `PeerAgent` agent, which answers
+  or declines them with bounded `answer`/`decline` actions and exact-origin
+  question and continuation wakes, never replayed on restart. Show peer
+  questions as readable fields and choices in Slack, Telegram and web job
+  cards, edit those cards in place when a question is answered, expires or is
+  interrupted, and cancel turns whose question can no longer be delivered.
+
+## 0.24.0 — JSON-only core configuration (2026-09-23)
+
+- **Breaking: remove core environment configuration overrides.** Resolve core
+  settings only from `mono-agent.config.json`, then built-in defaults, and
+  silently ignore stale `MONO_AGENT_*` core variables. Environment values remain
+  available for adapter settings, secret references, and process plumbing.
+
+- **Breaking: `@mono-agent/config` drops its environment-layer exports.**
+  `loadMonoAgentConfigWithSources` and `CONFIG_ENV_KEYS` are removed. Load
+  config with `loadMonoAgentConfig` or `resolveJsonMonoAgentConfig`; the
+  core field-id registry is now `CORE_CONFIG_FIELD_IDS`.
+
+- Include every 0.23.1 change listed below. The 0.23.1 packages were uploaded
+  to npm but never became `latest`, so upgrade from 0.23.0 directly to 0.24.0.
+
+## 0.23.1 — Pi 0.87.1 models and console fixes (2026-09-23)
+
+- Show commands first in background agent job progress and inline subagent
+  activity: the working directory appears once in the job metadata line instead
+  of a `cd` prefix, and expanded job calls wrap rather than hiding their
+  trailing arguments.
+
+- Fix the Compact button not appearing for agents in the web console when
+  manual compaction is available.
+
+- Let `Bash` and `Exec` run in policy-allowed workdirs outside the session
+  workspace, including background jobs; reject denied or missing directories
+  instead of silently switching to the workspace.
+
+- Log an undelivered process-job card update once, with its reason. Agents
+  previously wrote a second warning reading only "unknown lifecycle-surface
+  failure" for every such failure. An update skipped while the web console
+  restarts is now logged at info rather than as a warning, because the console
+  re-reads running job cards when it reconnects.
+
+- Fix installed iOS 27 consoles showing system blur over the top of the screen;
+  the status-bar band now takes the header colour without changing layout.
+
+- Add a Compact action to the web console's context-usage popup for capable
+  agents. It summarizes the selected conversation on demand without sending a
+  new chat turn, reports token estimates or errors, and leaves automatic
+  compaction thresholds unchanged.
+
+- Let Pi 0.87.1 provide Claude Opus 5.5 and GPT-6 Sol/Luna directly in model
+  discovery, runtime routing and pricing (Sol/Luna on both OpenAI and Codex).
+  Sol/Luna now have Pi's 272,000-token context window instead of the temporary
+  1,050,000-token backfill, so compaction uses the smaller limit. Anthropic
+  OAuth now uses Pi's Claude Code identity.
+
+- Use Pi 0.87.1's lower GPT-5.6 Sol catalog rates: input/output $4/$20 per
+  million tokens, down from $5/$30; requests above 272,000 input tokens use
+  $8/$30 instead of $10/$45. Cache read/write rates also decrease.
+
+## 0.23.0 — Framework simplification and AgentManage (2026-09-22)
+
+- **Change a persistent subagent's model or effort on its next turn.**
+  `AgentManage({id, message, model, effort})` runs the continuation on the new
+  route while the child keeps its durable session and full prior context, and
+  persists that route on the instance so later continuations inherit it without
+  repeating it. `model` offers the same configured choices as `Agent` and only
+  appears when the host configured any; `effort` takes the usual levels. Both
+  compose with `background: true`, `close: true` and `ack`, and are rejected —
+  with no turn started and no registry write — for `stop`, `steer`, `inspect`
+  and close-only calls, and for an unknown model name or effort level. The
+  result reports `requested` and `executed` exactly as `Agent` does, and the new
+  route badges the activity row from the moment the turn starts. A turn that
+  fails keeps the new route, because the next continuation should inherit what
+  was asked for; a failed foreground retarget still leaves the instance
+  close-only until its recovery evidence is acknowledged, exactly as any other
+  failed foreground turn does.
+
+- Restyle the usage meters' on-track marker as a dot inside the bar in the
+  meter's own accent palette, instead of a full-contrast hairline drawn across
+  it. Once the fill passes the dot it flips to the surface colour, so it stays
+  readable on both the filled and unfilled track in light and dark themes. Screenshot evidence now covers
+  both themes. No projection, contract or accessible-name change.
+
+- Fix `Reply` on a cron run importing only the first 2 KiB of a longer
+  result. The reply context now carries the full stored result text, bounded
+  only by the 32 KiB context-import limit, and later summary polls no longer
+  downgrade already-stored fuller run text to the clipped prefix.
+
+- **Steer a running detached subagent.** `AgentManage({id, steer: "<text>"})`
+  offers text into a persistent child's in-progress detached turn, the way live
+  input reaches a running conversation, and returns an honest receipt: `applied`
+  when the child consumed it, `pending` when the offer was accepted but had not
+  settled within the bounded three-second wait, `not_applied` with a reason
+  (`not_started`, `inactive`, `cancelled`, `closed`, …) when it was refused, and
+  `unsupported` when the child's runtime route cannot take live input at all.
+  Steering starts no turn, forces no answer and is exclusive with every other
+  parameter, including `description`; a queued or running instance still rejects
+  `message` and `close`. A foreground child can be reached by neither steer nor
+  stop — it blocks the parent's own turn, so only cancelling that turn ends it.
+  The mailbox is in-process and never persisted: it is closed at every
+  detached-turn termination path and is never handed to the max-turns wrap-up
+  continuation, and a started turn with no live mailbox — including after a host
+  restart — answers with a truthful negative receipt rather than a retryable
+  one. The turn envelope now publishes `AgentManage.steer`. Stop behaviour is
+  unchanged.
+
+- **Breaking: rename the `AgentSend` tool to `AgentManage`.** The tool that
+  continues, closes, stops, inspects and acknowledges a persistent subagent
+  instance is now `AgentManage`; its modes, parameters, results and behavior are
+  unchanged. There is no alias and no compatibility shim: calling `AgentSend` is
+  an unknown tool. Rename it in `tools.allowedTools` and `tools.disallowedTools`,
+  in subagent profile tool lists, and in any prompt or identity file that names
+  the tool — a stale allow entry grants nothing, and a stale deny entry no longer
+  denies the renamed tool. A subagent tool list that still names `AgentSend`
+  fails config validation with the migration message, and `doctor` reports the
+  rename for the global tool policy instead of calling it an unknown name. The
+  turn envelope now publishes `AgentManage`, `AgentManage.background`,
+  `AgentManage.inspect` and `AgentManage.ack`. Process-job records and
+  transcripts written before the rename keep the old tool name: they still
+  validate, load and render as history, and nothing emits it again.
+
+- Add subscription burn-pace reporting to the `ProviderUsage` tool and the web
+  console usage meters. Both surfaces share one constant-rate projection
+  anchored at the measurement: per-window pace (1 = on track), a projected
+  run-out timestamp only when ahead of pace together with its lead time before
+  the reset (`3d 2h` shape, also inline in the meter line and the tool
+  warning), a neutral unused-share note for windows clearly under pace, and
+  `ahead`/`unsustainable` (1.5x and above) warnings. Meters also show an
+  on-track tick per bar and a one-decimal pace chip beside the percentage. The
+  v1 snapshot transport is unchanged and on-track meters stay quiet.
+
+- Make the `AskUser` and `AgentManage` tool descriptions decision-bearing. `AskUser`
+  now states when to ask — before work whose scope, destination or irreversible
+  effects depend on a missing decision — instead of only listing mechanics, and
+  it is exposed ahead of the channel send tools. When the host admits `AskUser`
+  but the surface cannot serve it, the turn envelope now says to put the question
+  in the final reply with numbered options. `AgentManage` is described as five
+  explicit modes (continue, close, stop, inspect, ack) matching its handler, and
+  every parameter carries its own schema description. No tool contract, schema
+  shape or handler behavior changed.
+
+- Upgrade the pinned Pi AI and Agent Core dependencies to 0.87.0 with no
+  config change. Pi replaces the low-level `shouldStopAfterTurn` loop hook
+  with `finishTurn`, which stays off the harness options the runtime builds
+  on, so the local max-turn ceiling is unchanged. Unknown OpenAI-compatible
+  endpoints no longer receive strict tool schemas unless they advertise
+  support, while capable built-in models keep strict tools.
+
+- Add a Markdown blog to the marketing site at `/blog/`, with an index,
+  article pages, RSS, sitemap entries, and per-post social cards. The
+  collection ships empty and the index reads intentionally until the first
+  post lands; the authoring contract lives in `marketing/BLOG.md`.
+
+- Fix `subagents.maxTurns` and `subagents.definitions[].maxTurns` rejecting
+  the advertised 400 ceiling. The loader now accepts the full 1–400 range the
+  generated schema describes, so a config already set to the published maximum
+  loads instead of failing with a "between 1 and 200" error. Values above 400
+  are still rejected, and `subagents.instances.maxTurns` (1–500) is unchanged.
+
+- **Breaking: rename the built-in `hound` web provider to `local`.** Select
+  `tools.web.search.backend: "local"` and `tools.web.fetch.provider: "local"`;
+  the old `hound` value fails with a migration error naming the new value. For
+  search this is a pure rename. For fetch it is not equivalent: the removed
+  `hound` fetch path (robots preflight, no retries, forced
+  document-only/render-never) is gone and `local` keeps the classic behavior
+  (standard retries, no robots preflight, configured render mode honored).
+  Update a `hound` fetch selection only if that posture is acceptable.
+
+- Fix `WebSearch` fallback chains dead-ending on a refused local provider. A
+  throttled or robots-denied local search now advances to the next configured
+  backend and still runs alternate queries against it, instead of stopping the
+  whole call. Brave and Mojeek left the local engine pool because their only
+  search paths are robots-disallowed for every user agent, leaving a single
+  DuckDuckGo engine, so healthy searches no longer report `partial`.
+
+- Clamp over-long BuJo capture memory text on the host instead of rejecting the
+  whole extraction. The structured-output capture schema enforced the
+  160-code-point bound as a tool-call constraint, so one long sentence failed
+  validation and discarded every other memory submitted with it; with the
+  memory LLM limited to a single turn the model could not act on the validation
+  feedback, and the run surfaced the misleading `max turns reached`. Memory text
+  beyond the bound is now trimmed, restoring the tolerance the pre-structured
+  capture path applied. Trimming, character-class, and emptiness rules stay
+  strict, and structural fields such as entity ids are still rejected rather
+  than truncated. When clamping makes two otherwise distinct memories
+  indistinct, only the colliding candidate is dropped; memories the model
+  itself authored as indistinct still fail the whole attempt.
+
+- Let `WebSearch` report how domain constraints are handled per provider.
+  `site:` operators in the query text and the `domains`/`exclude_domains`
+  parameters keep travelling as query-text operators, which Parallel honours
+  server-side; coverage now reports the per-provider mechanism in
+  `filterSupport.domains` with the effective lists in `requestedFilters`.
+
+- Raise the configurable ceiling for `subagents.maxTurns` and
+  `subagents.definitions[].maxTurns` from 200 to 400. Long single-run
+  implementation work could exhaust its turn budget while an operator was
+  already configured at the previous maximum, leaving no configuration
+  response available. Wall-clock runaway remains bounded by
+  `subagents.timeoutMs`, and turns per persistent instance remain bounded by
+  `subagents.instances.maxTurns`. No default changes, so existing deployments
+  behave identically.
+
+- **Breaking: remove the first-party terminal renderer.** Remove `mono-agent tui`,
+  the `mono-agent-tui` binary, and `@mono-agent/tui`; use `mono-agent web run --loopback` for
+  live operation, `mono-agent runs list|show` for bounded offline diagnostics,
+  and `mono-agent config` for resolved configuration. Keep the shared `tui.*`
+  operator endpoint and wire identifiers used by web, ACP, and jobs clients.
+
+- Add a deliberate `MemoryRecall` original-query mode to configured per-turn
+  memory, reusing the bounded automatic lookup after a safety abstention without
+  changing ordinary query-local search or capability-free programmatic recall
+  tools. Preserve existing graph expansion and count delivered IDs once per turn,
+  including explicit recall through shared non-graph writable stores.
+
+- Add read-only `mono-agent runs list` and `mono-agent runs show <run-id>` diagnostics for trusted local run artifacts. Output is capped, terminal-safe, scans high-confidence credential shapes, is available as stable JSON, and remains offline without starting providers.
+
+- **Breaking: retire first-party Supermemory integration.** Remove the
+  `@mono-agent/memory-supermemory` package, active backend/config/env surfaces,
+  backend-specific runtime/CLI/doctor/trace/fleet behavior, and automatic official
+  MCP injection without selecting a replacement. Active legacy intent fails closed
+  with secret-safe migration guidance, including direct programmatic composition;
+  an exact empty JSON tombstone and blank retired env assignments remain inert.
+  Generic `MemoryStore` injection, manually configured MCP servers, and local
+  none/Lite/Journal/BuJo behavior remain. The upgrade performs no fallback, export,
+  remote data migration, or remote cleanup; existing remote data is untouched.
+
+- Fix managed subagent cancellation settlement so a newer terminal release
+  publication is durably rearmed after an older publication finishes, without
+  releasing capacity or waking the parent early.
+
+- Give a subagent run that exhausts its per-run `maxTurns` budget one bounded
+  wrap-up continuation (3 turns, inside the existing `timeoutMs` guard) with
+  an explicit commit-and-report instruction, instead of ending with no report,
+  no commit and no statement of position. The parent's tool result carries the
+  wrap-up's final text, which budget was hit with turns used vs. allowed, and
+  whether the wrap-up succeeded, failed, or was unavailable. The `usage_limit`
+  classification, defaults, ceilings, and timeouts are unchanged.
+
+- Keep active console conversation refreshes responsive by reading validated job
+  summaries instead of repeatedly parsing retained transcripts.
+- Keep large console responses responsive with adaptive streaming batches capped
+  at 250 ms, while retaining immediate search visibility after settlement.
+  Keep retries from modifying messages that another writer settled or reassigned.
+
+- Fix the web console to keep events responsive as transcripts grow and preserve
+  SSE connections through ordinary socket backpressure with bounded memory.
+
+- **Breaking: remove first-party Phoenix/OTLP export.** Remove the bundled
+  exporter package, `observability.exporters`,
+  `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status,
+  and the OpenInference mapping subpath. Keep bounded local JSONL recording,
+  run history/audit/report, trace-source discovery, failover normalization, and
+  provider-neutral `RunExporter` composition. Active legacy settings now fail
+  with secret-safe migration guidance; inert empty leftovers remain accepted.
+
+- Let a configured `runtime.compaction.triggerRatio` up to `0.95` take effect on
+  large context windows by deriving the safety headroom as 10% of the window
+  (`16,000`-`48,000` tokens) instead of 25% (`16,000`-`96,000`).
+
+- Let omitted `runtime.compaction.triggerRatio` settings default to `0.90` so
+  large-window models compact later; the 16,000-token headroom floor still sets
+  the trigger to 112,000 tokens at a 128,000-token window and 16,000 tokens at a
+  32,000-token window.
+
+- Replace the marketing site’s inactive PostHog integration with native Astro Vercel Web Analytics, preserving explicit opt-in, browser privacy signals and withdrawal controls; simplify reporting to basic page views.
+
+- Connect marketing and documentation links to mono-agent.dev and docs.mono-agent.dev, with a permanent redirect from the former marketing host.
+
+- Align marketing canonicals, social metadata and crawler endpoints with the live production origin, clarify AI-companion/framework search metadata, and prevent indexing of Vercel preview aliases.
+
+- Extend the marketing site and README with a shared responsive agent overview, companion-led positioning, and opt-in PostHog events with privacy controls.
+
+- Add the standalone static marketing site source for the
+  `mono-agent.dev` domain. The isolated `marketing/` Astro app renders one
+  crawlable page centered on a schema-checked `mono-agent.config.json`
+  blueprint, framework/package composition, deliberate memory tiers, explicit
+  model routes, local run evidence, a source-linked harness comparison, honest
+  setup, FAQ, and GitHub/docs calls to action. Tested SEO metadata, a social
+  card, sitemap/robots, and a dedicated CI lane protect the static output. The
+  harness comparison leads with Hermes and OpenClaw, with additional coding
+  harnesses, no-JavaScript content, native FAQ disclosures, and command copying. A shorter mobile-first layout adds a compact disclosure menu, a
+  refined mark and CTAs, a coherent responsive type scale, SVG link arrows, and
+  building-block cards that lift and toss through a compact native-scroll deck,
+  with static pause, keyboard, reduced-motion, and no-JavaScript layouts.
+  GitHub-marked CTAs, a mobile-optimized transparent matte-stone
+  hero, compact self-hosted OFL fonts, and real desktop console UI imagery with
+  clearly labelled synthetic data and source-build availability.
+  Shorter CTAs, a single-line JSON caption, consistent FAQ spacing, and a tighter
+  mobile deck reduce clutter; cached geometry and compositor transform updates
+  avoid repeated card measurements during scrolling.
+  Position the site around ongoing agent work and TypeScript composition, with
+  shared project context, delegated work, and retained execution evidence as
+  concrete benefits. Keep the JSON blueprint prominent, compare architectural
+  approaches honestly, and correct availability labels against v0.22.0.
+  The marketing site is deployed at `mono-agent.dev`, with documentation at
+  `docs.mono-agent.dev`.
+- Let automatic memory recall answer directly scheduled temporal questions with
+  valid clock times while preserving exact event identity and abstaining on
+  qualified, compatibility-hidden, or conflicting schedule payloads; keep raw
+  candidates available through `MemoryRecall`.
+
+- Let `WebSearch` request an optional ISO country localization preference,
+  defaulting to no requested country. Apply documented DuckDuckGo regions,
+  carry advisory Parallel intent, and skip unsupported providers or Hound
+  engines before dispatch instead of silently returning untargeted results.
+
+- Improve local web extraction with Hound-derived content-link prioritization,
+  title and main-content fallbacks, and Markdown tables that retain links and
+  code. Keep rate-limit and access refusals terminal instead of retrying or
+  forwarding the same fetch to another provider, including binary login pages.
+  Reject image-only extraction without visible text, preserve ordinary search
+  URL parameters, and retain native Hound aggregate cooldown evidence.
+
+- Fix unrelated provider turns blocking history admission and cancellation
+  publication when conversation keys share a lock shard. Concurrent writers
+  sharing history must use v0.20.0 or later; stop older writers first.
+
+- Replace opt-in external Hound RPC with built-in Node DDG/Brave/Mojeek search
+  and HTTP-only fetch. Gate/admit each request, account for robots/engine sends,
+  report partial engine coverage, and enforce fail-closed Hound-only robots.
+  Remove obsolete endpoint settings: JSON/env/direct callers receive an explicit
+  migration error without contacting a service. Default providers are unchanged.
+
+- Keep model-guided BuJo capture faithful to speaker, evidence, and preference
+  scope; distinguish corrected reports from actual state changes and avoid
+  turning observed outcomes into causal proof, without extra model calls or a
+  storage-schema change.
+- Give strict BuJo extraction the durable completed-turn admission instant as
+  host-owned observation context, reused across retries, and guide extraction
+  and reconciliation to retain material dates, relative phrases and anchors,
+  uncertainty, negation, event scope, and distinct repeated events without
+  presenting receipt time as event time or trusting timestamps in quoted text.
+- Make strict agent-host BuJo extraction and reconciliation request the runtime's
+  schema-guided `StructuredOutput` result while retaining authoritative strict
+  validation and whole-turn atomicity. Accept a successful terminal structured
+  submission at a one-turn ceiling, fail closed when the selected structured
+  path returns no result, and keep direct Ollama memory completion on its
+  validated JSON-text path.
+- Keep independent BuJo facts that share an explicit speaker-attribution preamble
+  from being rejected as duplicate variants, while preserving whole-batch
+  rejection for actual near-duplicates, conflicting values, and negations.
+- Let automatic direct-fact recall use finite first-party reported properties,
+  choices, and work/live locations while rendering their attribution unchanged;
+  require exact textual reporter identity, reject compatibility-hidden unsafe
+  syntax, and keep ambiguous corrections and conflicts out of automatic context.
+- Reject memory E2E corpus/split selections with no groups before provider
+  setup, build, or benchmark execution instead of reporting a successful
+  zero-trial run.
+- Add opt-in LoCoMo memory diagnostics with ordered source exchanges, one
+  capture pass per conversation within a run, independent question histories,
+  source timestamp-bound admission clocks that retries cannot shift, and exact
+  completed-result reuse. Retry only positively identified local capture
+  failures, including fulfilled strict calls that omit or cannot project their
+  required structured result, through the native durable schedule without
+  accepting fallback text. Use a plan-bound 30-second embedding deadline that
+  matches the native memory provider default while keeping deadline and
+  cancellation failures terminal. Report lexical scores separately from unmeasured semantic
+  quality and expose capture, retrieval, and budget limits.
+- Keep memory E2E strict capture on the runtime's authoritative structured
+  result, including reconciliation projection, and pin real requests to SSE
+  with no transport retry. Report output reservations as provider hints and
+  refuse known Codex routes that cannot enforce the requested wire output cap.
+
+- Return managed `WebSearch` and `WebFetch` results as a compact JSON envelope
+  with `status`, host-written summary, untrusted content or results, source and
+  coverage metadata, and typed `next_actions`. Add deterministic `WebFetch`
+  `focus` block filtering and bounded `include_links` from static HTML
+  extraction; both reuse the cached extraction without added requests.
+
+- Fix an explicitly remembered fact being silently lost when capture later
+  refined it. A `Remember` write is content-addressed — its id is the SHA-256 of
+  its own text — but reconciliation could merge new wording into that bullet in
+  place, leaving the id asserting a hash of text it no longer held. Remembering
+  the original fact again then matched that id and reported a false duplicate,
+  so the fact was never stored. Reconciliation now keeps a remembered bullet
+  exactly as written and records the refinement as a separate memory, which is
+  linked to the original when it is close enough to be threaded. Refinement is
+  not treated as contradiction, so the remembered fact is never invalidated or
+  superseded, and ordinary (non-remembered) memories still merge in place as
+  before. This protects new reconciliation only: records already rewritten this
+  way are not detected or repaired, and a capture already queued before the
+  upgrade can still apply its original in-place edit when it is replayed.
+- Report memory lifecycle state in `MemoryRecall` results. Recall returns
+  completed, scheduled, and migrated records alongside open ones, but the tool
+  previously showed only a score and the text, so a finished or deferred item
+  could read as a current fact — a distinction automatic recall already made
+  through its status-bearing bullet marker. A result whose status is not `open`
+  is now prefixed with that status, and structured results carry `type` and
+  `status` when the backend supplies them. Open records render exactly as
+  before, a backend that reports neither keeps its previous result shape, and
+  which records are retrieved, ranked, or excluded is unchanged.
+
+- Let a cron job declare a deterministic `preflight` argv evaluated before the
+  model responder. `{"run":false}` ends the firing as `skipped_gate` with no
+  model turn or notification; `{"run":true,"input":"…"}` runs the job with the
+  input appended in one `<preflight-input>` block. Every gate failure — non-zero
+  exit, signal, spawn failure, timeout, malformed verdict, or output over the
+  caps — fails open with the plain prompt and records a bounded code-only audit
+  record per firing. Bound it with `preflightTimeoutMs` (default 5000, cap
+  60000), separate from `maxRunMs`; a manual run always runs and keeps the input.
+
+- Recognize scope-qualified choice questions in automatic memory recall, so
+  `What color did Mira select for the Velin launch?` can be answered by a
+  record that names both the property and the scope. A scope is not a property,
+  scopes are compared conservatively so distinct projects, numbers and
+  identifying prefixes such as `A-team` stay distinct,
+  and contradictory values for the same subject/property/scope abstain instead
+  of injecting either. Unscoped behaviour, score thresholds, caching and the
+  `MemoryRecall` tool are unchanged, and no extra retrieval or model call added.
+
+- Make supported Anthropic prompt-cache retention one hour by default, including
+  child routes. Set `providers.piNative.cacheRetention` to `"short"` to opt out
+  of the higher cache-write price; resolved settings override Pi ambient env.
+- Replace WebSearch `auto` routing with explicit provider names or ordered
+  chains, defaulting to Parallel then local Ollama; keep keyless engines opt-in.
+  Report the previous explicit chain when migrating an `auto` configuration.
+- Add anonymous Parallel MCP search and extraction with bounded, sandbox-gated
+  transport, batched search alternates, run-scoped sessions, and optional
+  credential environment variables. Keep local WebFetch as the default and
+  reject incompatible Parallel-only raw, header, and browser options.
+- Make WebSearch providers source-registerable without chain-body changes,
+  preserving request budgets, relevance gates, and provider cooldowns.
+
+- Fix turns waiting forever behind cancelled or failed continuity publication:
+  return a retryable error after 30 seconds by default without bypassing pending
+  history, with a host-overridable wait budget and bounded progress warnings.
+
+- Remove `Monitor` / `MonitorStop`, their CLI and console surfaces (breaking).
+  Use background process jobs for finite work. Legacy `monitors` config is
+  accepted with a deprecation warning but has no effect; historical storage
+  remains dormant. Old conversations containing monitor activity stay readable,
+  but that activity no longer renders and is discarded if ordinary recovery
+  rewrites its message.
+
+- Fix `WebSearch` budgets to charge answered searches, refund failed providers,
+  and count Ollama endpoint probes once. Bound network dispatches separately
+  and include provider failures in budget-exhaustion messages.
+- Fix `WebSearch` tight-budget snippet truncation to keep the visible truncation
+  marker for highly escapable content instead of emptying the snippet, while
+  staying within the 64 KiB structured results bound.
+
+- Fix conversation render crashes when switching between cached transcripts of
+  different shapes. Add local technical details and copyable diagnostics to the
+  conversation recovery panel, without uploading error reports.
+
+- Add an isolated, opt-in conversational memory benchmark with production
+  completed-turn capture, readiness checks, recall tools, and five baseline
+  arms. Keep offline contract results separate from unmeasured model quality.
+  Bound provider waits and cleanup, retain uncertain stores, and rebuild a
+  source-pinned dependency closure before real-provider admission.
+
+- Record structured benchmark provider-failure categories on meter events,
+  trials and summaries without storing raw errors, and stop further provider
+  admission after a fatal auth/quota failure while still cleaning up owned
+  stores. Remaining trials report as unstarted, never as quality results.
+
+- Let the opt-in memory benchmark select an explicit Pi auth file with
+  `--pi-auth-path` for real runs, wired into both model runtimes through the
+  existing credential resolver. Plans bind only its fingerprint, never the
+  path or credential bytes. Finish the standalone command after its report is
+  durable even when successful provider transports retain process handles.
+
+- Let `AgentSend` accept and ignore an optional `description` when stopping a
+  subagent, and explain invalid stop requests with specific codes and messages.
+
+- Tolerate transient discovery gaps in the web console. Inconclusive
+  presence samples no longer drop a discovered agent at once, so a busy
+  event loop or a briefly missing endpoint does not read as a dead agent.
+
+- Require every pull request to file an `Unreleased` changelog entry, cut
+  release notes with a refusing-when-empty script, and publish the filed
+  section as the GitHub Release body.
+
+- Preserve local lexical memory matches during recognized embedding-provider
+  outages, while clearly marking automatic and explicit recall as degraded,
+  keeping statusless recall strict, and warning instead of serving meaningless
+  fragments when the automatic-context byte budget is too small.
+
+- Let the read-only `ProviderUsage` tool force a current quota read with an
+  optional `refresh: true` argument; absent or `false` keeps the five-minute
+  cached read. Forced reads join the shared in-flight fetch and never bypass
+  error backoff or `Retry-After`; the tool still changes no routing and
+  purchases no quota.
+
+- **Breaking: simplify framework configuration, runtime and memory contracts.**
+  Remove inert permission/recall options, prose-triggered effort escalation,
+  process-global tool configuration (direct public tool execution now requires
+  an explicit `ToolContext`), legacy flat runtime settings, the legacy
+  memory-write protocol and the standalone memory-recall binary. Phoenix moves
+  to the explicitly installed, matching-version `@mono-agent/observability-phoenix`
+  extra. Operator streaming, wire types, previews and channel redaction share
+  canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
+  before upgrading an existing consumer.
+
+- Upgrade the pinned Pi AI and Agent Core dependencies to 0.86.1 with no
+  config change. Pi now carries request prompts and tool declarations in the
+  transcript's system messages; the runtime replays them through Pi's
+  transcript helpers. The Meta (Muse Spark) and Radius providers join the
+  advertised catalog, `opencode-go:deepseek-v4.1-flash` resolves natively with
+  effort levels low/high/max, and agent-level retry delays are capped at 60
+  seconds.
+
+- Fix persistent subagent instances created with `Agent` `verification` on
+  hosts without a working sandbox engine so closing the instance and
+  continuing it with an acknowledgement no longer fail with
+  `subagent_recovery_policy_unavailable`. Verification observation still
+  withholds workdir and report facts without a working sandbox, and recovery
+  inspection no longer claims parent verification is required when the
+  observation policy is unavailable.
+
+
+## 0.22.0 — Persistent subagents and Projects (2026-09-16)
+
+### Persistent subagents
+
 - Persistent Agent/AgentSend support detached process-job execution and exact-origin wakes, retaining busy ownership after unresolved cancellation.
 
 - Let persistent children ask their parent for direction with child-only
@@ -20,20 +1180,23 @@
   profile pins; unpinned children inherit the parent's effective model and effort.
   Report requested and executed routes when a child route is pinned or overridden.
 
-- Label a conversation that belongs to a project wherever it is listed: on its
-  row in the console's conversation list and archive shelf, on its card in
-  Active now, and on a search hit. Conversation summaries carry the project's
-  name as `projectName`, so a card for another agent's project can name it
-  without that agent's project list. The chat header's project badge is set in
-  sentence case at the conversation title's left edge.
+- Recover restart-safe persistent subagent ownership, let the parent stop a
+  busy persistent subagent and resume it later, bound a detached child's
+  foreground commands by its process job, and keep turn-continuity
+  publication resilient when a handoff races the parent.
 
-- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
-  Membership changes wait for the active turn boundary; steering retains frozen
-  project context. Busy deletion and pending-destination archival return conflicts.
-  Add authenticated, source-scoped console project/conversation MCP tools with
-  atomic create-and-attach and operation receipts, plus `SearchConversations`
-  (the search bar's full-text search) and archived/limit options on
-  `ListConversations`. Storage appends migration 27.
+- Show detached subagents as lifecycle rows with a scrollable progress card,
+  fold the background launch call into its job-started row, and show the
+  child-busy notice only for terminal jobs.
+
+- Badge a subagent's model and effort from delegation start, show run
+  attribution only for deviations, and mark a conversation's model changes in
+  its transcript.
+
+- Compact context mid-turn, not only before the turn, so long delegated runs
+  stay within budget without waiting for a turn boundary.
+
+### Projects and tags
 
 - Add Projects to the web console: per-agent named containers of conversations
   with a free-text context (at most 4,000 characters) that is prepended,
@@ -49,12 +1212,92 @@
   `projects.changed` events. Storage migrates to schema 26
   with `projects` and `threads.project_id`.
 
-- Conversation rows now show compact current model and effort labels across the
-  dashboard, running cards, and search results. Subagent activity shows a smaller
-  per-call route label, retaining fallback warnings and effective-effort details.
-  Model versions remain visible, with signal bars reflecting each model's
-  advertised effort levels (text when unknown). Phone layouts give delegation
-  tasks priority over their compact routing and timing metadata.
+- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
+  Membership changes wait for the active turn boundary; steering retains frozen
+  project context. Busy deletion and pending-destination archival return conflicts.
+  Add authenticated, source-scoped console project/conversation MCP tools with
+  atomic create-and-attach and operation receipts, plus `SearchConversations`
+  (the search bar's full-text search) and archived/limit options on
+  `ListConversations`. Storage appends migration 27.
+
+- Label a conversation that belongs to a project wherever it is listed: on its
+  row in the console's conversation list and archive shelf, on its card in
+  Active now, and on a search hit. Conversation summaries carry the project's
+  name as `projectName`, so a card for another agent's project can name it
+  without that agent's project list. The chat header's project badge is set in
+  sentence case at the conversation title's left edge.
+
+- Add agent-scoped conversation tags, polish conversation status and inline
+  tags, and move the model-change notice above the composer input.
+
+- Keep the dashboard Projects section collapsible with persisted state, close
+  an open project page with a right swipe on mobile, and allow console
+  project tools during background wakes.
+
+### Dashboard and installed console
+
+- Replace the agent rail and conversation sidebar with one Dashboard where
+  Running speaks for the whole fleet, with device-local unread marks, settled
+  reply excerpts up front, and a phone layout tightened from use.
+
+- Focus dashboard search on results, omit idle Completed statuses from
+  conversation rows, and open conversations straight from PWA notifications.
+
+- Apply one palette across the console with cron jobs in the conversation
+  list, and refresh the PWA console icon.
+
+- Keep the installed console's status band aligned with its header on phones
+  and tablets, tolerating sub-pixel drift and system-bar panning, and align
+  mobile PWA Back with screen navigation.
+
+- Sort Automations by recent invocation, and explain pending cron-Reply
+  collisions with friendly copy carrying the pending-since time.
+
+### Background jobs in the console
+
+- Stack background jobs by conversation and show active jobs by default, with
+  the job lifecycle visible in response activity and wakes rendered
+  chronologically.
+
+- Hold a process-job wake receipt until its follow-up turn is admitted, so a
+  wake never lands before the work it announces.
+
+- Widen and align the job card's tool-call list, keep job accent to Activity
+  rows, and say when a background job has produced no output yet.
+
+### Usage, cost, and providers
+
+- Meter subscription usage in compact agent settings and a `ProviderUsage`
+  tool, with GitHub Copilot meters over OAuth quota scoped to activated
+  providers.
+
+- Show completed agent-job cost, surface active provider usage in the context
+  popover, and compact the settings touch controls.
+
+- Stabilize tool definitions for prompt caching, add opt-in Anthropic cache
+  retention, and route `deepseek-v4.1-flash` through the opencode-go catalog
+  supplement.
+
+### Input, replies, and platform
+
+- Keep unsent composer text across app restarts, fix Enter behavior alongside
+  cancelled-turn continuity, and keep a waiting follow-up at its turn's foot
+  sized like a user message.
+
+- Preserve reasoning-split replies with paged change markers, and keep a
+  thought from splitting a live reply's sentence.
+
+- Accept audio uploads as agent attachments, including Voice Memos reported
+  as `audio/x-m4a`.
+
+- Supersede stale reply-file publish failures on retry, record transcript
+  markers as rows the agent can see, and move onboarding browser-first with
+  explicit web sharing.
+
+- Publish systemd dotenv snapshots with session environment attestation, and
+  tolerate transient operator probe failures without dropping the agent.
+
+### Tool output and model labels
 
 - Per-tool output truncation now persists the full output in the configured
   app. Bash, Exec, NodeRepl, Read, WebFetch, Grep and Glob trim oversized
@@ -80,14 +1323,14 @@
   a `tool_payload_saved_paths` artifact reference in tool history. Without a
   sink the text says the full result was not saved.
 
-- **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
-  22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
-  bytes to raw control characters instead of the WHATWG code points, so
-  `WebFetch` returned `U+0093`/`U+0094` where a cp1252 page meant curly quotes.
-  ICU 78, shipped from Node 24.14.0 onward, decodes them correctly. Rather than
-  carry two decoding behaviours across the supported range, the floor moves to a
-  Node line that decodes retrieved documents correctly. Upgrade Node before
-  installing or updating mono-agent.
+- Conversation rows now show compact current model and effort labels across the
+  dashboard, running cards, and search results. Subagent activity shows a smaller
+  per-call route label, retaining fallback warnings and effective-effort details.
+  Model versions remain visible, with signal bars reflecting each model's
+  advertised effort levels (text when unknown). Phone layouts give delegation
+  tasks priority over their compact routing and timing metadata.
+
+## 0.21.1 — Image cap and upload fixes (2026-09-10)
 
 - Cap every inline image handed to a model at 2,000 px per edge, down from
   8,000 px, and apply the same normalization to MCP tool results. Anthropic
@@ -101,41 +1344,16 @@
   in bytes, so a wide desktop capture passed every guard. Images already within
   the ceiling are forwarded byte-identical, and source files are never modified.
 
-- Extend the configured app's startup-and-hourly artifact retention sweep to
-  own raw `tool-output/<runId>/` directories under the existing
-  `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
-  based so aged recordless orphans are cleaned; running, uncertain, or recently
-  modified directories are kept conservatively, symlinked or unsafe paths fail closed, and
-  pruned opaque `SessionHistory` references degrade to `available: false`.
-- Resolve inherited reasoning effort per selected model route. Model-only web,
-  Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
-  for the configured primary or a model whose advertised ladder admits it;
-  configured fallbacks use their own pinned effort or provider default. The web
-  console labels provider-default inheritance accurately, and explicit effort
-  overrides remain unchanged.
-- Bound every WebSearch backend to 4,000-character marked snippets and a 64 KiB
-  ranked body, pass Ollama the caller's result limit, and preserve complete
-  trust framing. Oversized text tool results now retain a framed UTF-8-safe
-  head/tail sample, while configured app runs persist raw blocks best-effort in
-  owner-private `tool-output/<runId>` files that can become opaque
-  `SessionHistory` references. Publication creates and verifies directory
-  components individually at mode `0700`, accepts pre-existing owner-controlled
-  components only when they are not group- or world-writable, rechecks the
-  run-directory identity after opening, and removes identity-proven files after
-  final validation failure; Node's lack
-  of fd-relative `openat` leaves a documented residual same-user rename window.
-- **Breaking: framework self-configuration has been removed.** The dedicated
-  SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
-  `/configure`, host-side proposal review/apply/restart transaction, and bundled
-  `mono-agent-configure` skill no longer exist. Edit `mono-agent.config.json` or
-  `IDENTITY.md`, run `mono-agent validate`, restart, and use the ordinary TUI.
-  Existing `mono-agent-configure` selections are ignored at runtime and reported
-  as waiting by validation so running consumers do not break. With index
-  disclosure, active selected skill bodies load in full without `ReadSkill`
-  until the retired selector is removed. Run
-  `mono-agent install-skill --project --check`, then `--update` to retire exact
-  manifest-owned legacy state. Modified or colliding copies are preserved and
-  require operator resolution.
+- Quiet the background-job surfaces: drop the empty-body padding, redraw
+  event rows without the quote-bar stripe, and stop listing host-local
+  artifact paths the console cannot open.
+
+- Stop declaring `Content-Length` on Slack external file uploads.
+
+## 0.21.0 — Turn continuity and console scale (2026-09-10)
+
+### Continuity and recovery
+
 - Preserve natural conversation continuity after any admitted, non-isolated run
   settles as cancelled or failed before its success commit. The next turn
   receives a 48 KiB redacted account of the request, partial assistant output,
@@ -149,11 +1367,19 @@
   tag-safe JSON explicitly framed as untrusted evidence and cannot select host
   provenance. A hard process death that never unwinds through the harness
   remains artifact/web reconciliation only and cannot publish canonical history.
-- Make web-console model routing explicit per run: requested, attempted, and
-  answering models, classified fallback/retry history, Pi's effective thinking
-  level, and nested subagent attribution are now visible without exposing raw
-  provider diagnostics. Standalone process-job and Monitor revival turns now
-  reuse the conversation's remembered web model/effort snapshot.
+
+- Resume warm durable Pi sessions after cancelled or transiently failed turns,
+  keeping model-override conversations on a warm session bound to the
+  requested model, and keep the primary's durable Pi session when fallbacks
+  are configured.
+
+- Preserve and account for compaction summaries across turns, guide
+  interrupted-run recovery in the app, surface the policy reason when
+  `PublishReplyFile` rejects a file, and reconcile deferred tool history
+  writes so late results land safely.
+
+### Search, models, and effort
+
 - Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
   keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
   canonical nested SearXNG config while retaining its legacy endpoint alias,
@@ -162,29 +1388,184 @@
   parser handling, safer HTML-to-Markdown conversion, structured failures, and
   explicit browser-first rendering through an isolated `agent-browser` session
   without treating authentication or access challenges as bypassable.
-- Add per-agent web-console defaults for the model and effort of new
-  conversations, with SQLite persistence, config/override source labels, and a
-  one-click revert to resolved config. Existing threads and non-web channels
-  remain unaffected.
-- Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
-  Undici's implicit five-minute inactivity deadline from long-lived operator
-  streams. Host-wake delivery keeps its explicit ten-minute request bound.
+
+- Bound every WebSearch backend to 4,000-character marked snippets and a 64 KiB
+  ranked body, pass Ollama the caller's result limit, and preserve complete
+  trust framing. Oversized text tool results now retain a framed UTF-8-safe
+  head/tail sample, while configured app runs persist raw blocks best-effort in
+  owner-private `tool-output/<runId>` files that can become opaque
+  `SessionHistory` references. Publication creates and verifies directory
+  components individually at mode `0700`, accepts pre-existing owner-controlled
+  components only when they are not group- or world-writable, rechecks the
+  run-directory identity after opening, and removes identity-proven files after
+  final validation failure; Node's lack
+  of fd-relative `openat` leaves a documented residual same-user rename window.
+
+- Extend the configured app's startup-and-hourly artifact retention sweep to
+  own raw `tool-output/<runId>/` directories under the existing
+  `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
+  based so aged recordless orphans are cleaned; running, uncertain, or recently
+  modified directories are kept conservatively, symlinked or unsafe paths fail closed, and
+  pruned opaque `SessionHistory` references degrade to `available: false`.
+
+- Make web-console model routing explicit per run: requested, attempted, and
+  answering models, classified fallback/retry history, Pi's effective thinking
+  level, and nested subagent attribution are now visible without exposing raw
+  provider diagnostics. Standalone process-job and Monitor revival turns now
+  reuse the conversation's remembered web model/effort snapshot.
+
+- Resolve inherited reasoning effort per selected model route. Model-only web,
+  Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
+  for the configured primary or a model whose advertised ladder admits it;
+  configured fallbacks use their own pinned effort or provider default. The web
+  console labels provider-default inheritance accurately, and explicit effort
+  overrides remain unchanged.
+
 - Upgrade the exact-pinned Pi AI, Agent Core, and TUI dependencies to 0.85.1,
   exposing GPT-6 Astra as `openai:gpt-6-astra` for OpenAI API keys and
   `openai-codex:gpt-6-astra` for Codex subscriptions. Adopt Pi's corrected
   30-minute long prompt-cache request shape for GPT-5.6+ OpenAI Responses
   models, plus its fullscreen Alt-wheel and list-hover TUI fixes.
-- Remove the repository-owned final-agent and SearXNG demos together with their
-  root commands, build provenance, verification, CI, and documentation wiring.
+
+- Expose prompt-cache measurements, stabilize provider prompt caching, keep
+  tool definitions stable across turn admission, and add opt-in Anthropic
+  cache retention with per-request cohort summaries.
+
+- Enable keyless provider auth in the operator adapter.
+
+### Console performance and sync
+
+- Serve the console faster: compress responses, cache immutable assets,
+  refresh only what each event invalidates, and read threads through indexes
+  of turns by thread and messages by turn.
+
+- Resync cheaply: boot from one bucket with thread-event summaries and shaped
+  transcripts, then stay current through a sync core of conversation cache,
+  subscribed stream, conditional resync, and on-device persistence.
+
+### Conversations and input
+
+- Add per-agent web-console defaults for the model and effort of new
+  conversations, with SQLite persistence, config/override source labels, and a
+  one-click revert to resolved config. Existing threads and non-web channels
+  remain unaffected.
+
+- Preserve no-expiry `AskUser` waits in web and remote-TUI turns by removing
+  Undici's implicit five-minute inactivity deadline from long-lived operator
+  streams. Host-wake delivery keeps its explicit ten-minute request bound.
+
+- Stream message deltas to the subscribed thread, time the Activity header by
+  the turn's wall-clock window, and keep the console mounted across switches
+  with scroll reset and explicit loading and recovery states.
+
+- Reconcile the selected conversation after the first stream ready, and show
+  pending state while restoring and creating conversations.
+
+- Add an explicit Steer action to the composer, shown only while a turn runs.
+
+- Restore live input for interactive model overrides, and make live-input
+  consumption settlement reliable from entry id to acknowledgement.
+
+- Migrate both schema-17 message layouts safely.
+
+- Coalesce consecutive monitor activity turns, avoid redundant status wakes,
+  and preserve meaningful web replies before terminal no-ops.
+
+### Process jobs, cron, and memory
+
+- Fold the process-job card into the activity log, show live output tails,
+  drop the trailing progress indicator after running jobs, keep workflows
+  moving after background jobs complete, and show the current conversation
+  and background-job status together.
+
+- Answer cron results from the console with a simpler footer, render imported
+  cron reply context as a card, show a quiet read-only cron schedule, and
+  hide silent cron runs at the storage read boundary.
+
+- Browse the memory journal within bounds with evidence routing, naming
+  memory tools in guidance and showing cursor and coverage in text.
+
+### Console appearance and devices
+
+- Stabilize per-chat model selection, hide removed agents and embedding
+  models without losing selector focus, and keep the persisted catalog model
+  selected.
+
+- Polish console drafts, model labels, attribution, and the composer model
+  selector; keep a finished turn settled when its stale start arrives, keep a
+  selected conversation at the bottom, and stop announcing an agent change on
+  every discovery heartbeat.
+
+- Name the installed console with reversible overrides, complete badge
+  handling on Android, and align PWA chrome with the header.
+
+- Add mobile drawer swipe gestures, streamline mobile conversation controls,
+  keep the composer toolbar on one row, show the scroll control only when
+  needed, and pin short chat composers to the bottom.
+
+- Coordinate local agent research with reusable page slices, add a data mode
+  with byte meter, fetch images once, load MCP apps on demand, and make
+  automatic search resilient.
+
+- Add provider re-authentication, preserve the provider-auth capability in
+  bootstrap, verify authentication with safe login restart, and compact the
+  scrollable provider-auth settings.
+
+### Channels, lifecycle, and platform
+
+- Add a Facebook Messenger channel plugin with signed webhooks, per-sender
+  queues, typing indicators, and chunked Send API delivery.
+
+- Add Linux systemd user lifecycle commands with hardened edge cases.
+
+- **Breaking: framework self-configuration has been removed.** The dedicated
+  SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
+  `/configure`, host-side proposal review/apply/restart transaction, and bundled
+  `mono-agent-configure` skill no longer exist. Edit `mono-agent.config.json` or
+  `IDENTITY.md`, run `mono-agent validate`, restart, and use the ordinary TUI.
+  Existing `mono-agent-configure` selections are ignored at runtime and reported
+  as waiting by validation so running consumers do not break. With index
+  disclosure, active selected skill bodies load in full without `ReadSkill`
+  until the retired selector is removed. Run
+  `mono-agent install-skill --project --check`, then `--update` to retire exact
+  manifest-owned legacy state. Modified or colliding copies are preserved and
+  require operator resolution.
+
+- **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
+  22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
+  bytes to raw control characters instead of the WHATWG code points, so
+  `WebFetch` returned `U+0093`/`U+0094` where a cp1252 page meant curly quotes.
+  ICU 78, shipped from Node 24.14.0 onward, decodes them correctly. Rather than
+  carry two decoding behaviours across the supported range, the floor moves to a
+  Node line that decodes retrieved documents correctly. Upgrade Node before
+  installing or updating mono-agent.
+
+## 0.20.14 — Release retry (2026-09-04)
+
+- Ship the lockstep 0.20.14 release with no product change beyond awaiting
+  durable monitor events in the race-sensitive tests.
+
+## 0.20.13 — Release recovery (2026-09-04)
+
+- Republish the 0.20.12 payload as 0.20.13 after the 0.20.12 run stopped
+  before publication, isolating the post-timeout test from host scheduling
+  latency.
+
+## 0.20.12 — Pi-only runtime with provider catalogs (2026-09-04)
+
+### Single Pi runtime
+
 - **Breaking: mono-agent runs only its Pi implementation.** The `claude-sdk`,
   `claude-code-cli`, `codex-app-cli`, `opencode-app-cli` and `acp-stdio` runtime
   bridges are removed, along with the backend dispatch table. The ACP *server*
   bridge, `install-skill --target claude|codex`, `docs-mcp-pairing` and the Codex
   web-search backend are unaffected.
+
 - **Breaking: model references are `<provider>:<model>`,** split at the first
   colon only. A leading `pi:` is canonicalized away; `codex:`, `claude:`,
   `claude-code:`, `codex-cli:`, `acp:` and `vercel:` are rejected at load with
   the replacement named.
+
 - **Breaking: `runtime.executionMode`, `memory.llm.executionMode`,
   `runtime.routeSafety` and `runtime.fallbackModels` are retired,** together with
   their environment twins `MONO_AGENT_EXECUTION_MODE`,
@@ -197,6 +1578,9 @@
   message, instead of one per run; a config carrying both stops at the key and
   names the variable on the next run. An empty assignment (`KEY=`) is still
   treated as unset.
+
+### Provider-widened selection
+
 - **New `providers` config map** declaring which providers an agent supports,
   widening selection to those providers' advertised catalogs instead of just
   `runtime.model` and its fallbacks. Each provider advertises at most
@@ -204,11 +1588,30 @@
   `models` allowlist. `ollama` and `lmstudio` are zero-config autodiscovered.
   Agents advertise it additively — a slim `providers` array on `/v1/info` plus a
   lazy `GET /v1/models` — with no wire-schema bump.
+
 - **Per-conversation model and effort overrides persist server-side** (web store
   v10 → v12: v11 adds per-thread `run_model`/`run_effort`, v12 adds
   `agents.providers_json`), so a choice made on the desktop shows up on the phone
   instead of living in one browser's localStorage. The console selector groups
   and filters by provider.
+
+- Harden the new selection surface: gate `providers` as a real boundary,
+  canonicalize catalog choices, advertise only runnable routes, resolve channel
+  projections once, measure the `/v1/info` payload instead of estimating it,
+  stop the `/v1/info` budget from discarding valid configured routes, drop the
+  configured-route ceiling, follow catalog cursors, honour thread overrides,
+  stop rejecting catalog efforts, and let the environment override the
+  provider map.
+
+- Bind console catalog and thread writes to a generation and order them, so a
+  failed write can neither destroy what it replaced nor read as a no-op, and
+  keep agent invalidations compact.
+
+- Gate subagent models on the provider map, withdraw dead run options, and
+  stop `doctor` from false-warning on effort.
+
+### Operate and migrate
+
 - **Retired config keys, retired environment variables and non-Pi model
   references are migrated by hand.** Each fails at load naming its own repair —
   including the concrete replacement for a rejected model reference, which the
@@ -220,6 +1623,7 @@
   `docs/reference/deprecations.md` for the retired-surface reference.
   `configVersion: 1` files are outside that checklist: that schema was never
   accepted by the shipped loader and is rejected whole, so re-author them.
+
 - **Operator-authored text is bounded wherever a diagnostic quotes it back.**
   `doctor` and `validate` truncate every model, provider and reason they echo, so
   a mistyped megabyte in `runtime.model` no longer produces a megabyte of report.
@@ -228,11 +1632,104 @@
   nothing authorable as a file is refused — and rejected rather than truncated,
   because silently shortening an identity changes which route a request reaches.
 
+- Assert webhook endpoint identity where endpoints are built.
+
+### Memory and monitors
+
+- Add the `Remember` memory tool and refocus `SetConversationTitle`.
+
+- Add conversation monitors with Monitor wake turns in web conversations,
+  presented as compact activity.
+
+## 0.20.11 — Inline console images (2026-09-03)
+
+- Show images inline in console messages: render them as a grid inside the
+  message with a single image uncropped, open full size with paging, counter,
+  and download, and keep generated reply images so they survive their source
+  deadline.
+
+- Render a displayable raster image as just the image, moving file metadata
+  into the lightbox, and share one sideways-scrolling row for adjacent images
+  so a set reads as a set.
+
+- Remove the repository-owned final-agent and SearXNG demos together with their
+  root commands, build provenance, verification, CI, and documentation wiring.
+
+- Configure native Slack message unfurls.
+
+## 0.20.10 — Activity log redesign (2026-08-30)
+
+- Rebuild the activity log around a single row shape — glyph, name, summary,
+  failure tag, duration, chevron — for single calls, `Read ×4` clusters,
+  thoughts, and delegations alike, repairing what the 0.20.9 clustering hid.
+
+## 0.20.9 — Conversation search and timeline (2026-08-30)
+
+- Search every conversation's message text from the console sidebar, backed by
+  a transactional full-text index that backfills existing stores, and cluster
+  the activity timeline around the same read path.
+
+- Keep Telegram reply history so responses preserve their native reply
+  context.
+
+- Constrain the console's model effort choices to the levels each model
+  actually supports.
+
+## 0.20.8 — Conversation titles and model catalog (2026-08-28)
+
+- Add agent-managed conversation titles to the web console.
+
+- Show safe purpose descriptions on background process jobs.
+
 - Upgrade the exact-pinned Pi AI catalog and TUI to 0.84.3, including GitHub
   Copilot support for Gemini 3.7 Flash and Grok 4.6, provider-required OAuth
   cancellation signals, and the current GPT-5.6 Terra pricing metadata. Keep
   Pi Agent Core at 0.83.0 because 0.84.3's replacement durable harness does not
   yet implement mono-agent's prompt, subscription, compaction, or abort paths.
+
+## 0.20.7 — Slack upload encoding fix (2026-08-27)
+
+- Send Slack external-upload metadata form-encoded so reply-file uploads
+  succeed.
+
+## 0.20.6 — Slack upload diagnostics (2026-08-27)
+
+- Expose safe Slack reply-file upload diagnostics: name the failed
+  external-upload phase with bounded, redacted error fields while keeping
+  textual fallback behavior unchanged.
+
+## 0.20.5 — Background jobs and memory repairs (2026-08-25)
+
+- Let background jobs outlive the foreground timeout: derive their budget from
+  the requested `timeout_ms` without the 120-second clamp, and report the
+  granted budget back to the model.
+
+- Make console MCP App cards reversible: a Hide/Show toggle replaces the
+  terminal Close, degraded and never-loaded cards explain why and offer
+  Reopen, and tall apps are no longer clipped.
+
+- Repair memory capture and retention: state the BuJo length limit as its own
+  rule, repair noncausal retained supersedes, and stop rejecting tool-less
+  memory providers under private-state protection.
+
+- Harden process supervision: reap sandboxed grandchildren as a group with
+  escalation to SIGKILL, and keep background file proofs stable across
+  reboot.
+
+## 0.20.4 — Cron, failover, and AskUser fixes (2026-08-23)
+
+- Quiet tool-history bookkeeping in rendered turns so successful persistence
+  shows nothing and only a failed write names its error code, slim the
+  context chip to the remaining percentage with the rest in its popover, and
+  document background-job expectations alongside the capability.
+
+- Fail over to the next configured model when a provider stream ends without
+  a finish reason, instead of treating the run as terminal.
+
+- Keep cron operator actions enabled after a config-view reload, and focus
+  the cron dialog on open.
+
+- Keep an answered AskUser card answered across re-renders and reloads.
 
 ## 0.20.3 — Subscription-backed web search (2026-08-17)
 
@@ -672,6 +2169,104 @@
   only configured fallback entries may run next.
 - All catalog-publishable packages move together to 0.17.1. Keep every
   `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
+## 0.17.0 — ACP bridge and activity consolidation (2026-08-02)
+
+### ACP bridge
+
+- Add an ACP bridge for managed instances, omitting unsupported tool
+  environments.
+
+### Console activity
+
+- Fold a finished turn into one activity log that a console thread can
+  resume, render a subagent delegation as a folded tree, stop re-slicing a
+  turn's answer across the prose before it, and make shell tool previews say
+  something.
+- Unbreak console prose, fit the tree on a phone, and own subagent cost.
+
+### Memory and Slack
+
+- Offer known entity ids back to capture extraction.
+- Choose Slack's message boundaries instead of letting Slack split them, use
+  query transport for read methods, tell the agent which surface it is
+  talking in, and stop two Slack threads from sharing one run.
+
+## 0.16.0 — Subagent skills and Slack context (2026-07-30)
+
+- Let subagents inherit the parent skill index.
+- Send the surrounding Slack conversation as turn context and resolve real
+  speaker names for inbound turns.
+- Surface provider failover to whoever is watching the run, and settle a
+  subagent header when its launch was rejected.
+
+## 0.15.4 — Same-model retries and the Agent tool (2026-07-29)
+
+### Same-model retries before failover
+
+- A fallback route can now retry itself before the chain advances.
+  `runtime.retry.primaryAttempts` (default `2`) sets the total attempts on
+  `runtime.model` including the first, and each `runtime.fallbacks[]` entry
+  takes an optional `attempts` (omitted = single shot). `runtime.retry.backoffMs`
+  doubles per retry, capped by `runtime.retry.maxBackoffMs`. Set
+  `primaryAttempts: 1` to restore the previous single-shot behavior.
+- Retries fire only for transient provider failures — overloaded, rate-limited,
+  timeout, network, 5xx, and terminated streams. `context_limit` and
+  `provider_auth` still advance immediately, because a second identical request
+  against the same window or the same credentials cannot succeed. Cancellation
+  and mid-turn sandbox/safety failures never retry.
+- Agents with no configured backups now get a retry-only single-entry chain, so
+  the primary-retry default applies to them too.
+- A retry drops the route's provider session (the failed attempt already
+  appended to it), emits the new `provider_status` kind `retry_started` rather
+  than a failover event, and appends its own `failoverHistory` entry carrying
+  `retryIndex` with its own request id and failure subkind.
+- The router retry is a whole-turn retry layered outside each bridge's transport
+  retries. On a `pi` primary the defaults allow up to six provider stream starts
+  (2 router attempts x 3 pi stream tries); lower
+  `providers.piNative.piMaxRetries` when raising `primaryAttempts`.
+- `mono.agent.failover.count` now counts failed provider attempts rather than
+  route transitions, so a primary-then-fallback run reports `2` where it
+  previously reported `1`.
+
+### Subagents: the `Agent` tool
+
+- The main agent can now deploy independent subagents on the pi runtime. `Agent`
+  takes `{prompt, name?, description?}`, resolves `name` against
+  `subagents.definitions[]` or falls back to a read-only general-purpose
+  researcher, and returns the subagent's final answer plus a compact
+  per-tool-call activity log capped at roughly 24KB.
+- Requires BOTH `subagents.enabled: true` and `Agent` in `tools.allowedTools`;
+  `mono-agent validate` warns when only one half is set.
+- Every subagent tool call streams live to the TUI and web console as
+  `<profile>▸<tool>`, bracketed by the subagent's own start/finish rows. Ids
+  are namespaced per subagent so concurrent helpers running the same tool stay
+  distinct. No wire-schema change and no TUI/web changes were needed.
+- `maxConcurrent` (default 5) bounds simultaneous subagents; `maxPerTurn`
+  (default 20) bounds the total per turn and is the real runaway guard. Each
+  subagent gets `maxTurns` (100) and `timeoutMs` (5 min), and its timeout starts
+  only once it begins rather than while queued.
+- Subagents are read-only unless a profile enumerates more, never receive
+  `Agent`/`AskUser`/channel-send tools, get no MCP servers unless named, inherit
+  the sandbox without being able to widen it, and cannot spawn subagents.
+  A profile without a `model` inherits the parent's configured route, so
+  subagents get the fallback chain and same-model retries too.
+
+### Fixes
+
+- `provider_status.from` / `.to` are populated again. The router emitted model
+  references as objects while the responder read them as strings, so both fields
+  were silently dropped and the TUI rendered `failover ? -> ?`.
+
+### Research and attribution
+
+- Add local-first web research tools, render GitHub-Flavored Markdown tables
+  in the console, and bound browser socket identifiers.
+- Render subagent activity grouped under its agent, author specialized
+  subagents at call time with relativized tool paths, make the agent aware of
+  who is speaking, treat a trailing NOTHING_TO_REPORT as silence, show the
+  command in shell activity ledger lines, and surface Telegram taps that
+  match no callback protocol.
 
 ## 0.15.3 — Configured Codex MCP approvals (2026-07-28)
 

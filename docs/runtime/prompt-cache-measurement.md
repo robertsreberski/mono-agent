@@ -27,7 +27,7 @@ The implementation test suite exercises dry-run assembly plus positive and negat
 ## Read real run artifacts
 
 Set `providers.piNative.promptCacheDiagnostics: true` in the agent config (or
-`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS=true`) before starting the agent. The
+`providers.piNative.promptCacheDiagnostics: true`) before starting the agent. The
 default is `false`; unset config leaves runtime options unchanged. Emit
 metadata-only prompt-cache request fingerprints into run artifacts; never prompt
 text, tool arguments, cache keys, endpoints or credentials. Existing artifact
@@ -95,7 +95,7 @@ first-request cost. The existing all-request and compaction outputs remain.
 
 **Gate A — stable definitions and unchanged admission.** Under unchanged
 configuration, model, skill catalog and authority profile, normal user/job-wake/
-monitor-wake/cron transitions must produce zero definition changes, including
+cron transitions must produce zero definition changes, including
 constant-count changes. Persistent children have a separate profile. Offline
 provider-wire tests compare serialized Anthropic and OpenAI Responses tool
 arrays; refusal tests prove that visibility does not grant authority. Real
@@ -104,21 +104,21 @@ possible prefix breaks. Separately authorized short-retention observations under
 five minutes should corroborate first-request reuse; investigate exceptions
 using system/message evidence, not fingerprints alone.
 
-**Gate B — separately evaluated long retention.** Only after A, separately
-approved evidence may compare matched stable-prefix requests at 5–60 minutes
-with observed one-hour TTL metadata on a supported model. Compare uncached input,
+**Gate B — evaluate the short-retention opt-out.** Long retention is now the
+default. Only after A, separately approved experiments may compare that default
+against explicit `"short"` on matched stable-prefix requests at 5–60 minutes,
+with observed TTL metadata on a supported model. Compare uncached input,
 cache-write/read costs and whole-run costs, not just hit percentages. These gates
 provide no rollout or spending authorization and do not enable the disabled live
 benchmark. Offline equality proves payload stability, not provider residency,
 actual billing or a guaranteed hit.
 
-### Optional Anthropic cache retention
+### Anthropic cache retention
 
-`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
-variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
-over JSON, then unset. Either explicit resolved value overrides Pi's separate
-ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
-The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. JSON wins over the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
 The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
@@ -128,3 +128,10 @@ short-cache writes. Model support is required, and no cache hit is guaranteed.
 Metadata-only diagnostics record the requested setting and observed cache TTL;
 an ephemeral Anthropic cache control without an explicit TTL denotes five
 minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

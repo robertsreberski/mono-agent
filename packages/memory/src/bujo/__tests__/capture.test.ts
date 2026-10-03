@@ -1,14 +1,16 @@
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { neutralCaptureReview } from "./capture-review-fake.js";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb } from "../../store/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { captureTurn as captureTurnImpl } from "../capture.js";
+import { captureTurnStrict as captureTurnImpl } from "../capture.js";
 import { replayCaptureOutbox } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { readGraph } from "../graph.js";
+import { encodeMemoryLabel, labelsOf } from "../labels.js";
 import { migrate } from "../migrate.js";
 import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
 import type { ReconcileDeps } from "../reconcile.js";
@@ -81,7 +83,7 @@ async function seed(db: MemoryDb, root: string, id: string, text: string): Promi
   await db.upsert(record);
 }
 
-describe("captureTurn", () => {
+describe("captureTurnStrict", () => {
   it("batches persistence embeddings across the maximum eight novel candidates", async () => {
     const root = newRoot();
     const batchSizes: number[] = [];
@@ -206,7 +208,7 @@ describe("captureTurn", () => {
     expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
   });
 
-  it("writes one durable row and merged association set for same-turn duplicate candidates", async () => {
+  it("rejects duplicate candidates before writing any durable rows or graph evidence", async () => {
     const root = newRoot();
     const db = openDb(root);
     const labels: string[] = [];
@@ -228,27 +230,20 @@ describe("captureTurn", () => {
       },
     };
 
-    const result = await captureTurn("Morgan prefers tea.", {
+    await expect(captureTurn("Morgan prefers tea.", {
       db,
       root,
       llm,
       nextId: makeSeqNextId(),
       now: () => FIXED,
-    });
+    })).rejects.toThrow(/memories must be distinct/iu);
 
     expect(labels).toEqual(["capture:extract"]);
-    expect(result.actions).toHaveLength(1);
-    expect(result.associations).toBe(2);
-    expect(db.count()).toBe(1);
-    const id = result.actions[0]?.kind === "add" ? result.actions[0].id : "";
-    expect(db.associationsForMemory(id).map((association) => association.entityId)).toEqual([
-      "concept:tea",
-      "person:morgan",
-    ]);
-    expect(readGraph(root).associations).toHaveLength(2);
+    expect(db.count()).toBe(0);
+    expect(readGraph(root).associations).toEqual([]);
   });
 
-  it("does not attach either candidate's entities when same-turn mutations collide on one target", async () => {
+  it("keeps competing candidates' graph evidence on separate memories", async () => {
     const root = newRoot();
     const db = openDb(root);
     let extractionCall = 0;
@@ -305,12 +300,9 @@ describe("captureTurn", () => {
     db.findSimilarMany = async (texts) => texts.map(() => [{ record: db.get("CAP0001")!, distance: 0.1 }]);
 
     const result = await captureTurn("Morgan clarified the deployment preference", deps);
-
-    expect(result.actions).toEqual([]);
-    expect(result.associations).toBe(0);
-    expect(db.get("CAP0001")?.text).toBe("Morgan prefers blue-green deployments");
-    expect(db.associationsForMemory("CAP0001")).toEqual([]);
-    expect(readGraph(root).associations).toEqual([]);
+    expect(result.actions.map((action) => action?.kind)).toEqual(["update", "add"]);
+    expect(db.associationsForMemory("CAP0001").map((association) => association.entityId)).toEqual(["concept:review"]);
+    expect(db.associationsForMemory("CAP0002").map((association) => association.entityId)).toEqual(["concept:canary"]);
   });
 
   it("extracts a bounded plan, reconciles, mirrors the graph, and keeps precise associations", async () => {
@@ -382,9 +374,8 @@ describe("captureTurn", () => {
     }
   });
 
-  it("does not throw when a single entity write fails (entity id missing from db result doesn't abort)", async () => {
-    // Verifies the defensive try/catch per-item behavior — overall captureTurn should not throw
-    // even with a minimal setup where entity writes are perfectly valid.
+  it("persists a valid entity and its exact association", async () => {
+    // Strict extraction accepts the complete valid graph, then persists it durably.
     const root = newRoot();
     const db = openDb(root);
 
@@ -658,7 +649,7 @@ describe("captureTurn", () => {
   });
 });
 
-describe("captureTurn entity reuse", () => {
+describe("captureTurnStrict entity reuse", () => {
   /**
    * A second mention of the same thing must extend the node the first mention
    * created. Before reuse hints, extraction never saw the graph, so one set of
@@ -726,5 +717,66 @@ describe("captureTurn entity reuse", () => {
 
     const result = await captureTurn("A durable fact about nothing known.", deps);
     expect(result.actions.length).toBeGreaterThan(0);
+  });
+});
+
+describe("captureTurnStrict owner preference correction", () => {
+  type TargetLabel = { v: 1; kind: "preference"; scope: string; attribution: "user-stated" } | { v: 1; kind: "lesson"; scope: string; verified: true };
+  const OWNER_PREFERENCE: TargetLabel = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
+  const LATER = new Date("2026-06-20T12:00:00.000Z");
+
+  async function correct(line: string, user: string, options: {
+    target?: TargetLabel; source?: "user" | "assistant" | "tool"; ownerTurn?: boolean; senderToken?: string;
+  } = {}): Promise<MemoryDb> {
+    const root = newRoot();
+    const db = openDb(root);
+    const text = "The user loves Starfall Tactics.";
+    const bullet: Bullet = { id: "LIKES", type: "note", status: "open", text, salience: 0.8, isInsight: false,
+      createdAt: FIXED.toISOString(), refs: [encodeMemoryLabel(options.target ?? OWNER_PREFERENCE)] };
+    appendBullet(root, bullet, FIXED);
+    await db.upsert({ id: "LIKES", type: "note", status: "open", text, salience: 0.8, isInsight: false, createdAt: bullet.createdAt,
+      accessCount: 0, tags: [], source: { file: relative(root, dailyFilePath(root, FIXED)) } });
+    db.replaceMemoryLabels("LIKES", labelsOf(bullet));
+    db.findSimilarMany = async () => [[{ record: db.get("LIKES")!, distance: 0.2 }]];
+    const llm: ReconcileDeps["llm"] = { id: "owner-correction", complete: async (prompt, call) =>
+      call?.label === "capture:review" ? neutralCaptureReview(prompt) : call?.label === "capture:extract"
+        ? JSON.stringify({ memories: [{ type: "note", text: line, salience: 0.8, isInsight: false, source: options.source ?? "user",
+          entityIds: [] }], entities: [], relations: [] })
+        : JSON.stringify([{ index: 0, action: "supersede", targetId: "LIKES", text: line }]) };
+    await captureTurn(`User: ${user}\nAssistant: Noted.`, { db, root, llm, nextId: makeSeqNextId(), now: () => LATER,
+      captureSpeakerKind: "human-turn", conversationId: "web:fictional",
+      captureEvidence: { userText: user, ...(options.ownerTurn === false ? {} : { ownerTurn: true as const }),
+        ...(options.senderToken === undefined ? {} : { senderToken: options.senderToken }),
+        toolOutcomes: options.source === "tool" ? [{ category: "read", outcome: "succeeded" }] : [] } });
+    return db;
+  }
+  const superseded = (db: MemoryDb, line: string): void => {
+    expect(db.get("LIKES")).toMatchObject({ status: "invalidated", supersededBy: "CAP0001" });
+    expect(db.get("CAP0001")).toMatchObject({ status: "open", text: line });
+  };
+  const keptBeside = (db: MemoryDb, line: string): void => {
+    expect(db.get("LIKES")?.status).toBe("open");
+    expect(db.get("CAP0001")).toMatchObject({ status: "open", text: line });
+  };
+
+  it.each([
+    ["en", "I don't like Starfall Tactics any more.", "The user no longer likes Starfall Tactics."],
+    ["pl", "Już nie lubię Starfall Tactics.", "Użytkownik już nie lubi Starfall Tactics."],
+    ["es", "Ya no me gusta Starfall Tactics.", "Al usuario ya no le gusta Starfall Tactics."],
+  ])("lets the owner's own correction supersede an owner-scoped preference, keeping it as history (%s)", async (_lang, user, line) => {
+    superseded(await correct(line, user), line);
+    superseded(await correct(line, user, { senderToken: "a1b2c3", target: { ...OWNER_PREFERENCE, scope: "user:a1b2c3" } }), line);
+  });
+
+  it.each([
+    ["a peer-scoped preference", { target: { ...OWNER_PREFERENCE, scope: "user:peer0001" } }],
+    ["a project-scoped preference", { target: { ...OWNER_PREFERENCE, scope: "project:maple" } }],
+    ["a lesson", { target: { v: 1, kind: "lesson", scope: "agent", verified: true } as TargetLabel }],
+    ["an assistant-sourced candidate", { source: "assistant" as const }],
+    ["a tool-sourced candidate", { source: "tool" as const }],
+    ["a turn that is not a verified owner turn", { ownerTurn: false }],
+  ])("keeps the old line and adds the change beside it for %s", async (_case, options) => {
+    const line = "The user no longer likes Starfall Tactics.";
+    keptBeside(await correct(line, "I don't like Starfall Tactics any more.", options), line);
   });
 });

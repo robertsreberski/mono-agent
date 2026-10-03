@@ -23,7 +23,7 @@ describe("subagent instance purge roots", () => {
       expect(purged.subagents).toEqual({ root: childRoot, removed: true, registries: 1, sessions: 1 });
       await expect(stat(childRoot)).rejects.toMatchObject({ code: "ENOENT" });
       const envPlan = await resolveConversationStatePurgePlan({ ...input, env: { MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ instances: { root: "./override" } }) } });
-      expect(envPlan.subagents?.path).toBe(resolve(root, "override"));
+      expect(envPlan.subagents?.path).toBe(childRoot);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

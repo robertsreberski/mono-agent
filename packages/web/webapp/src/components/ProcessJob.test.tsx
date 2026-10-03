@@ -6,11 +6,13 @@ import { api } from "../api";
 import { DATA_MODE_STORAGE_KEY } from "../data-mode";
 import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
 import { Icon } from "./Icon";
+import { describePeerQuestionForm } from "./peer-question-form";
 import { processJob } from "../test/fixtures";
 import { RouteCapabilitiesProvider } from "./route-capabilities";
 import { ToolCallRepairProvider } from "./tool-call-repair";
 import type { ProcessJobState } from "../types";
 import {
+  ProcessJobCard,
   ProcessJobPart,
   ProcessJobActivityEventPart,
   mergeProcessJobProjection,
@@ -254,8 +256,10 @@ describe("ProcessJobActivityEventPart", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["Agent", "AgentSend", "Bash", "Exec"] as const)("uses the correct glyph for both %s lifecycle rows", (tool) => {
-    const expected = render(<Icon name={tool === "Agent" || tool === "AgentSend" ? "agent" : "terminal"} />);
+  // "AgentSend" is retained history: renamed to "AgentManage" with no alias,
+  // and stored lifecycle rows must keep rendering as subagent work.
+  it.each(["Agent", "AgentManage", "AgentSend", "Bash", "Exec"] as const)("uses the correct glyph for both %s lifecycle rows", (tool) => {
+    const expected = render(<Icon name={tool === "Bash" || tool === "Exec" ? "terminal" : "agent"} />);
     const glyph = expected.container.querySelector("svg")!.innerHTML;
     for (const phase of ["started", "terminal"] as const) {
       const view = render(eventPart({
@@ -396,35 +400,46 @@ describe("ProcessJobPart", () => {
     render(part({ type: "process-job", job: processJob(), responseText: "Completed normally." }));
 
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
-    expect(row).toHaveClass("activity-row", "is-job", "is-complete");
-    expect(row.querySelector(".activity-job-icon")).toBeInTheDocument();
-    expect(row.querySelector(".activity-dot")).toBeNull();
-    expect(within(row).getByText("Exec job")).toHaveClass("activity-row-label");
-    expect(within(row).getByText("node worker.js --safe-summary")).toHaveClass("activity-row-summary");
-    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
-    expect(row.querySelector(".failed-tag")).toBeNull();
+    expect(row).toHaveClass("process-job-card", "is-complete");
+    expect(row).toHaveAttribute("data-kind", "command");
+    // Purpose first; state, time and tool on the line beneath. A success says
+    // "Done", never "exit 0".
+    const summary = row.querySelector("summary")!;
+    expect(within(summary).getByText("node worker.js --safe-summary")).toHaveClass("process-job-title");
+    expect(summary).toHaveAccessibleName("node worker.js --safe-summary");
+    // The status line is the non-live description: state, time, tool and a
+    // labelled output preview; separators are decorative.
+    expect(summary).toHaveAccessibleDescription("Done 2s Exec Output done");
+    expect(row.querySelector(".process-job-state")).toHaveTextContent("Done");
+    expect(row.querySelector(".process-job-time")).toHaveTextContent("2s");
+    expect(row.querySelector(".process-job-tool")).toHaveTextContent("Exec");
+    expect(row).not.toHaveTextContent("exit 0");
     // Secondary detail is behind the disclosure.
     expect(row).not.toHaveAttribute("open");
     expect(screen.getByText("Completed normally.")).not.toBeVisible();
 
-    fireEvent.click(within(row).getByText("Exec job").closest("summary")!);
+    fireEvent.click(summary);
     expect(screen.getByText("Completed normally.")).toBeVisible();
-    expect(screen.getByText("done")).toBeVisible();
+    expect(row.querySelector(".process-job-output")).toHaveTextContent("done");
+    expect(row.querySelector(".process-job-output")).toBeVisible();
     // The card shows the job's output, never the host-local files it was spooled to.
     expect(screen.queryByText(/artifacts\/11111111-1111-4111-8111-111111111111\//u)).toBeNull();
     expect(row.querySelector(".process-job-live-meta")).toBeNull();
-    expect(screen.getByText("Output")).toBeVisible();
+    expect(row.querySelector(".process-job-output-head")).toHaveTextContent("Output5 B total");
+    expect(row.querySelector(".process-job-output-head")).toBeVisible();
     expect(screen.queryByText("Output (truncated)")).toBeNull();
+    // The collapsed preview is labelled for what it is and hides once open.
+    expect(row.querySelector(".process-job-preview-label")).toHaveTextContent("Output");
   });
 
-  it.each<[ProcessJobState, string]>([
-    ["failed", "failed"],
-    ["timed_out", "timed out"],
-    ["cancelled", "cancelled"],
-    ["interrupted", "interrupted"],
-    ["spawn_failed", "spawn failed"],
-    ["queue_expired", "queue expired"],
-  ])("tags a %s job in the row instead of spelling the state in the meta", (state, label) => {
+  it.each<[ProcessJobState, string, string, string]>([
+    ["failed", "failed", "Failed", "danger"],
+    ["timed_out", "timed out", "Timed out", "danger"],
+    ["cancelled", "cancelled", "Cancelled", "neutral"],
+    ["interrupted", "interrupted", "Interrupted", "danger"],
+    ["spawn_failed", "spawn failed", "Failed to start", "danger"],
+    ["queue_expired", "queue expired", "Expired in queue", "danger"],
+  ])("names a %s job in words on its status line, once", (state, label, word, tone) => {
     render(part({
       type: "process-job",
       job: processJob({ state, exitCode: null, signal: "SIGKILL", durationMs: 12_000 }),
@@ -432,11 +447,22 @@ describe("ProcessJobPart", () => {
 
     const row = screen.getByRole("group", { name: `Exec background job ${label}` });
     expect(row).toHaveClass("is-failed");
-    // The row's tag is the one retained state label; the payload no longer repeats it.
-    expect(within(row.querySelector("summary")!).getByText(label)).toHaveClass("failed-tag");
-    expect(row.querySelector(".activity-row-time")).toHaveTextContent("12s · SIGKILL");
-    expect(row.querySelector(".activity-row-time")?.textContent).not.toContain(label);
-    expect(row.querySelector(".process-job-live-meta")).toHaveTextContent("SIGKILL");
+    // Cancelled is what was asked for: it keeps the failed class for callers
+    // but does not read as an alarm.
+    expect(row).toHaveAttribute("data-tone", tone);
+    expect(row.querySelector(".process-job-state")).toHaveTextContent(word);
+    expect(row.querySelector(".process-job-time")).toHaveTextContent("12s");
+    expect(row.querySelector(".process-job-detail")).toHaveTextContent("SIGKILL");
+    // The exit facts live on the status line only; the detail line does not repeat them.
+    expect(row.querySelector(".process-job-live-meta")).toBeNull();
+  });
+
+  it("gives a job that never started no runtime", () => {
+    const base = processJob();
+    render(part({ type: "process-job", job: processJob({ state: "queue_expired", exitCode: null, durationMs: null,
+      timestamps: { ...base.timestamps, startedAt: null, completedAt: "2026-07-17T10:05:00.000Z" } }) }));
+    const row = screen.getByRole("group", { name: "Exec background job queue expired" });
+    expect(row.querySelector(".process-job-time")).toBeNull();
   });
 
   it("surfaces a failed wake on the row and its error in the payload", () => {
@@ -449,10 +475,10 @@ describe("ProcessJobPart", () => {
     }));
 
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
-    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0 · wake failed");
-    // The token is its own element inside the time slot: the phone layout lets
-    // the meta wrap and relies on this element never splitting or clipping.
-    const alert = row.querySelector(".activity-row-time .activity-row-alert");
+    expect(row.querySelector("summary")).toHaveAccessibleDescription(/^Done 2s Exec wake failed/u);
+    // The token is its own element on the status line: a narrow row wraps the
+    // line, and the token wraps inside itself rather than clipping.
+    const alert = row.querySelector(".process-job-meta .process-job-alert");
     expect(alert).toHaveTextContent("wake failed");
     fireEvent.click(row.querySelector("summary")!);
     const error = screen.getByText(/Process-job wake delivery failed/u).closest(".activity-error");
@@ -467,28 +493,26 @@ describe("ProcessJobPart", () => {
       lastError: { code: "process_job_wake_unknown", message: "Process-job wake delivery outcome is unknown; replay was suppressed." },
     }) }));
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
-    expect(row.querySelector(".activity-row-alert")).toHaveTextContent("wake outcome unknown · replay suppressed");
+    expect(row.querySelector(".process-job-alert")).toHaveTextContent("wake outcome unknown · replay suppressed");
     expect(row).not.toHaveTextContent("wake failed");
   });
 
-  it("keeps the summary's slot order the phone layout is written against", () => {
-    // styles.css places a job's tag and meta on a second line with sibling
-    // selectors (`.failed-tag ~ .activity-row-time`), so the order of the
-    // summary's children is a contract: glyph, label, purpose, tag, time, chevron.
+  it("keeps the summary's slot order: glyph, purpose, chevron, then the status line", () => {
+    // The row is a two-line grid at every width: the purpose owns the first
+    // line and the status line carries state, time, tool, exit facts and alerts.
     render(part({
       type: "process-job",
       job: processJob({ state: "timed_out", exitCode: null, signal: "SIGKILL", durationMs: 12_000, wake: { ...processJob().wake, state: "failed" } }),
     }));
     const summary = screen.getByRole("group", { name: "Exec background job timed out" }).querySelector("summary")!;
     expect([...summary.children].map((child) => (child.getAttribute("class") ?? "").split(" ")[0])).toEqual([
-      "activity-row-glyph",
-      "activity-row-label",
-      "activity-row-summary",
-      "failed-tag",
-      "activity-row-time",
-      "activity-row-chevron",
+      "process-job-glyph",
+      "process-job-title",
+      "process-job-chevron",
+      "process-job-meta",
     ]);
-    expect(summary.querySelector(".activity-row-time .activity-row-alert")).toHaveTextContent("wake failed");
+    expect(summary.querySelector(".process-job-meta .process-job-alert")).toHaveTextContent("wake failed");
+    expect(summary.querySelector(".process-job-glyph")).toHaveAttribute("aria-hidden", "true");
   });
 
   const handoffFixtures = () => {
@@ -564,13 +588,13 @@ describe("ProcessJobPart", () => {
       .mockResolvedValue(beforeAttestation);
     render(part({ type: "process-job", job: beforeAttestation }));
 
-    const time = () => screen.getByRole("group", { name: "Exec background job starting" }).querySelector(".activity-row-time");
+    const time = () => screen.getByRole("group", { name: "Exec background job starting" }).querySelector(".process-job-time");
     // Before the start is known the row counts from admission (10:00:00).
-    expect(time()).toHaveTextContent("starting · 17s");
+    expect(time()).toHaveTextContent("17s");
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     // The same state with the start recorded corrects the window to the process start (10:00:01).
-    expect(time()).toHaveTextContent("starting · 16s");
+    expect(time()).toHaveTextContent("16s");
 
     // The next poll answers with the pre-attestation record: the known start must not go back to null.
     await act(async () => {
@@ -578,7 +602,7 @@ describe("ProcessJobPart", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(2);
-    expect(time()).toHaveTextContent("starting · 17s");
+    expect(time()).toHaveTextContent("17s");
   });
 
   it("settles the row when the in-flight poll answers with a terminal state after a store handoff", async () => {
@@ -600,7 +624,8 @@ describe("ProcessJobPart", () => {
     });
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
     expect(row).toHaveClass("is-complete");
-    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(row.querySelector(".process-job-state")).toHaveTextContent("Done");
+    expect(row.querySelector(".process-job-time")).toHaveTextContent("2s");
 
     // Settled: nothing more to ask for.
     await act(async () => {
@@ -617,9 +642,11 @@ describe("ProcessJobPart", () => {
         output: { ...processJob().output, truncated: true, preview: "partial", stderrRef: null },
       }),
     }));
-    fireEvent.click(screen.getByRole("group", { name: "Exec background job succeeded" }).querySelector("summary")!);
+    const row = screen.getByRole("group", { name: "Exec background job succeeded" });
+    fireEvent.click(row.querySelector("summary")!);
     expect(screen.getByText("Output (truncated)")).toBeVisible();
-    expect(screen.getByText("partial")).toBeVisible();
+    expect(row.querySelector(".process-job-output")).toHaveTextContent("partial");
+    expect(row.querySelector(".process-job-output")).toBeVisible();
     expect(screen.queryByText("Artifacts")).toBeNull();
     expect(screen.queryByText(/stdout\.log/u)).toBeNull();
   });
@@ -669,22 +696,25 @@ describe("ProcessJobPart", () => {
       .mockResolvedValue(complete);
     render(part({ type: "process-job", job: running }));
 
-    const time = () => screen.getByRole("group", { name: /Exec background job/u }).querySelector(".activity-row-time");
+    const time = () => screen.getByRole("group", { name: /Exec background job/u }).querySelector(".process-job-time");
+    const state = () => screen.getByRole("group", { name: /Exec background job/u }).querySelector(".process-job-state");
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
-    expect(time()).toHaveTextContent("running · 16s");
+    expect(state()).toHaveTextContent("Running");
+    expect(time()).toHaveTextContent("16s");
     act(() => { vi.advanceTimersByTime(999); });
-    expect(time()).toHaveTextContent("running · 16s");
+    expect(time()).toHaveTextContent("16s");
     act(() => { vi.advanceTimersByTime(1); });
     // The poll's first retry (1 s) also fires here and returns the terminal projection.
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
-    expect(time()).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(state()).toHaveTextContent("Done");
+    expect(time()).toHaveTextContent("2s");
     act(() => { vi.advanceTimersByTime(30_000); });
     // Frozen at the reported duration, and no further poll.
-    expect(time()).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(time()).toHaveTextContent("2s");
     expect(threadJob).toHaveBeenCalledTimes(2);
   });
 
@@ -970,7 +1000,7 @@ it.each(["queued", "starting", "running"] as const)("hides unresolved internal c
   render(part({ type: "process-job", job }));
   const row = screen.getByRole("group", { name: `Agent background job ${state}` });
   expect(within(row).queryByText("child still busy · awaiting actual settlement")).toBeNull();
-  expect(row.querySelector(".activity-row-alert")).toBeNull();
+  expect(row.querySelector(".process-job-alert")).toBeNull();
 });
 
 it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
@@ -979,7 +1009,7 @@ it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue
     const job = processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state, childStillBusy: true });
     render(part({ type: "process-job", job }));
     const row = screen.getByRole("group", { name: `Agent background job ${state.replaceAll("_", " ")}` });
-    expect(row.querySelector(".activity-row-time .activity-row-alert"))
+    expect(row.querySelector(".process-job-meta .process-job-alert"))
       .toHaveTextContent("child still busy · awaiting actual settlement");
   },
 );
@@ -997,8 +1027,78 @@ it.each(["external", "internal"] as const)("renders no live metadata container f
   expect(view.container.querySelector("dl.process-job-facts")).toBeNull();
 });
 
+it("renders a pending PeerAgent question as untrusted text with its answer identity", () => {
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "<owner approved?>",
+      requestedSchema: { type: "object", required: ["question_1"], properties: {
+        question_1: { type: "string", title: "Decision", oneOf: [{ const: "y", title: "Yes" }, { const: "n", title: "No" }] },
+        question_1_other: { type: "string", title: "Other response" } } },
+      expiresAt: "2099-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("questionId 11111111-1111-4111-8111-111111111111");
+  expect(region).toHaveTextContent("Untrusted peer text; not owner approval");
+  expect(region).toHaveTextContent("<owner approved?>");
+  expect(region).toHaveTextContent("Waiting for the agent's answer");
+  expect(region).not.toHaveTextContent("awaiting_answer");
+  expect([...region.querySelectorAll(".peer-question-chip")].map((chip) => chip.textContent)).toEqual(["Yes", "No"]);
+  expect(region.querySelector(".peer-question-required")).toHaveTextContent("required");
+  expect(region).toHaveTextContent("free text");
+  expect(region.querySelector("time")).not.toBeNull();
+  expect(region.querySelector(".peer-question-schema")?.hasAttribute("open")).toBe(false);
+});
+
+it("renders a malformed peer enum without crashing and never coerces object values", () => {
+  expect(describePeerQuestionForm({ properties: { q: { enum: [{ toString: "bad" }, null, 3, "ok"] } } }))
+    .toEqual([{ key: "q", label: "q", options: ["3", "ok"], required: false, multiple: false, freeText: false }]);
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+      requestedSchema: { type: "object", properties: { q: { enum: [{ toString: "bad" }] }, r: "not-a-field" } },
+      expiresAt: "2099-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("Waiting for the agent's answer");
+  expect(region.querySelectorAll(".peer-question-chip")).toHaveLength(0);
+  expect(region.querySelector(".peer-question-schema pre")?.textContent).toContain("\"toString\": \"bad\"");
+});
+
+it("says an unanswered question past its deadline is awaiting host confirmation, not the agent", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-07-17T10:30:00.000Z"));
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+      requestedSchema: { type: "object", properties: {} }, expiresAt: "2026-07-17T10:20:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("Past expiry; awaiting host confirmation");
+  expect(region).not.toHaveTextContent("Waiting for the agent's answer");
+  expect(region).not.toHaveTextContent("past its expiry time");
+  expect(region).toHaveClass("is-awaiting-answer", "is-overdue");
+  // The row no longer claims a pending question either.
+  expect(view.container.querySelector(".process-job-state")).toHaveTextContent("Done");
+});
+
+it("falls back to the raw form when a peer schema has no readable fields", () => {
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "expired", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+      requestedSchema: { type: "object", description: "odd" }, expiresAt: "2026-09-23T20:00:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("Expired");
+  expect(region.querySelector(".peer-question-schema")?.hasAttribute("open")).toBe(true);
+  expect(region.querySelector(".peer-question-schema pre")?.textContent).toContain("\n  \"description\": \"odd\"");
+});
+
 describe("background native subagent cards", () => {
-  it.each(["Agent", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
+  it.each(["Agent", "AgentManage", "AgentSend"] as const)("renders %s clustered progress and report, never command output", (tool) => {
     const job = backgroundSubagentJob(true, tool);
     const view = render(part({ job: { ...job, output: { ...job.output, preview: "PRIVATE_RAW_JSON" } } }));
     const card = screen.getByRole("group", { name: `${tool} background job succeeded` });
@@ -1015,8 +1115,13 @@ describe("background native subagent cards", () => {
     // The empty-tail stand-in belongs to command output, which a subagent card
     // never shows: its progress region is the payload.
     expect(view.container.querySelector(".process-job-empty-output")).toBeNull();
-    const icon = render(<Icon name="agent" />);
-    expect(card.querySelector(".activity-job-icon")?.innerHTML).toBe(icon.container.querySelector("svg")?.innerHTML);
+    // The glyph says only the status; the status line's icon and tool name say
+    // it is an agent.
+    expect(card).toHaveAttribute("data-kind", "agent");
+    expect(card.querySelector(".process-job-glyph")).toHaveClass("is-success", "is-check");
+    expect(card.querySelector(".process-job-glyph")).not.toHaveClass("is-agent");
+    expect(card.querySelector(".process-job-tool .process-job-kind-icon")).not.toBeNull();
+    expect(card.querySelector(".process-job-tool")).toHaveTextContent(tool);
     const meta = card.querySelector(".process-job-live-meta");
     expect(meta).toHaveTextContent("implementer");
     expect(meta).toHaveTextContent("45 tools, 1 failed");
@@ -1115,5 +1220,101 @@ describe("background native subagent cards", () => {
     expect(mergeProcessJobProjection(job, stale)).toEqual(job);
     const { subagentProgress: _progress, ...legacy } = job;
     expect(mergeProcessJobProjection(job, legacy)).toEqual(job);
+  });
+});
+
+describe("the redesigned job row", () => {
+  const running = () => {
+    const base = processJob();
+    return processJob({
+      state: "running",
+      timestamps: { ...base.timestamps, completedAt: null },
+      wake: { ...base.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+  };
+
+  it("says the host's (no output) placeholder in words instead of showing it as output", () => {
+    const view = render(part({ type: "process-job", job: processJob({ output: { ...processJob().output, preview: "(no output)", stdoutBytes: 0 } }) }));
+    fireEvent.click(view.container.querySelector("summary")!);
+    expect(screen.getByText("No output.")).toBeVisible();
+    expect(view.container.querySelector(".process-job-output")).toBeNull();
+  });
+
+  it("names a stop request in words and in the group name while the process still runs", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    render(part({ type: "process-job", job: processJob({ ...running(), cancelRequested: true }) }));
+    const row = screen.getByRole("group", { name: "Exec background job running (stopping)" });
+    expect(row.querySelector(".process-job-state")).toHaveTextContent("Stopping");
+    expect(row).toHaveAttribute("data-tone", "stopping");
+  });
+
+  it("strips the host's Purpose prefix from a command's title and keeps it in the tooltip", () => {
+    render(part({ type: "process-job", job: processJob({ summary: "Purpose: Water the north beds" }) }));
+    const title = screen.getByText("Water the north beds");
+    expect(title).toHaveClass("process-job-title");
+    expect(title).toHaveAttribute("title", "Purpose: Water the north beds");
+  });
+
+  it("puts the error explanation before the output", () => {
+    const view = render(part({ type: "process-job", job: processJob({
+      state: "failed", exitCode: 1,
+      lastError: { code: "process_job_failed", message: "The process job failed." },
+    }) }));
+    fireEvent.click(view.container.querySelector("summary")!);
+    const error = view.container.querySelector(".process-job-error")!;
+    const output = view.container.querySelector(".process-job-output")!;
+    expect(error.compareDocumentPosition(output) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does not open by itself unless the legacy adapter asks for it", async () => {
+    const job = processJob({ ...running(), output: { ...processJob().output, stdoutBytes: 4, preview: "STDOUT:\none" } });
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const view = render(<ProcessJobCard part={{ type: "process-job", job }} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(view.container.querySelector(".process-job-card")).not.toHaveAttribute("open");
+  });
+
+  it("gives a PeerAgent card its question and no progress note it can never fill", () => {
+    const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "seed-bank", childStillBusy: false,
+      peerQuestion: { state: "answered", peer: "seed-bank", thread: "spring-orders",
+        questionId: "11111111-1111-4111-8111-111111111111", message: "Order bulbs now?",
+        requestedSchema: { type: "object", properties: { q: { type: "string", title: "Order", oneOf: [{ const: "y", title: "Yes" }, { const: "n", title: "No" }] } } },
+        expiresAt: "2026-09-23T20:00:00.000Z" } });
+    const view = render(part({ type: "process-job", job }));
+    fireEvent.click(view.container.querySelector("summary")!);
+    const region = screen.getByRole("region", { name: "Peer question" });
+    expect(screen.queryByText("Progress is unavailable for this retained job.")).toBeNull();
+    // Choices are reference text, not controls.
+    expect(within(region).queryAllByRole("button")).toHaveLength(0);
+    expect(region).toHaveTextContent("Options, for reference:");
+    expect(region).toHaveTextContent("The agent answers through PeerAgent.");
+  });
+
+  it("shows the question a finished child left its parent as a past fact", () => {
+    const job = { ...backgroundSubagentJob(true), subagentQuestion: { question: "Heat the greenhouse overnight?", options: ["Overnight", "Before sunrise"] } };
+    const view = render(part({ type: "process-job", job }));
+    const row = screen.getByRole("group", { name: "Agent background job succeeded" });
+    expect(row.querySelector(".process-job-note")).toHaveTextContent("asked the parent agent a question");
+    fireEvent.click(view.container.querySelector("summary")!);
+    const region = screen.getByRole("region", { name: "Subagent question" });
+    expect(region).toHaveTextContent("Heat the greenhouse overnight?");
+    expect([...region.querySelectorAll(".peer-question-chip")].map((chip) => chip.textContent)).toEqual(["Overnight", "Before sunrise"]);
+  });
+
+  it("shows a finished child's cost once, on its detail line", () => {
+    const view = render(part({ job: backgroundSubagentJob(true) }));
+    fireEvent.click(view.container.querySelector("summary")!);
+    expect(view.container.querySelector(".process-job-meta")).not.toHaveTextContent("$");
+    expect(view.container.querySelector(".process-job-live-meta")).toHaveTextContent("$0.01");
+  });
+
+  it("marks a running child's recent calls by shape, with the counts in words", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    render(part({ job: backgroundSubagentJob() }));
+    const calls = screen.getByRole("img", { name: /^Last 8 tool calls:/u });
+    expect(calls.querySelectorAll("i.is-complete, i.is-failed, i.is-running")).toHaveLength(8);
+    expect(calls).toHaveAccessibleName("Last 8 tool calls: 7 complete, 1 running");
   });
 });

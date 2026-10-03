@@ -12,6 +12,7 @@ import {
   writeComposerDraft,
 } from "../composer-draft";
 import { useConsoleStore } from "../console-store";
+import { runningManualCompaction } from "../manual-compaction";
 import {
   detectSkillQuery,
   insertSkillReference,
@@ -95,6 +96,8 @@ export function Composer({ runSettings, notice }: {
   const selectionUnavailable = store.selectionLoading || store.selectionError !== null;
   const canUpload = !selectionUnavailable
     && canUploadInConsole(connection, selectedAgent, selectedThread);
+  // Server admission rejects both a new turn and live input during compaction.
+  const compacting = runningManualCompaction(selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
@@ -185,12 +188,11 @@ export function Composer({ runSettings, notice }: {
     savedBrowseSelection.current = next;
   }, []);
 
-  const restoreSelection = useCallback((start: number, end: number, revealInput = false) => {
+  const restoreSelection = useCallback((start: number, end: number) => {
     window.requestAnimationFrame(() => {
       const input = inputRef.current;
       if (input === null) return;
-      if (revealInput) input.focus();
-      else input.focus({ preventScroll: true });
+      if (document.activeElement !== input) input.focus({ preventScroll: true });
       input.setSelectionRange(start, end);
       setSelection({ start, end });
       savedBrowseSelection.current = { start, end };
@@ -224,16 +226,21 @@ export function Composer({ runSettings, notice }: {
       skill.reference,
     );
     composer.setText(inserted.text);
-    // Browse opens a modal above the composer. Once it closes, let the native
-    // focus scroll reveal the input as the software keyboard resizes the visual
-    // viewport. Autocomplete is already adjacent to a focused input and should
-    // keep its current scroll position.
-    restoreSelection(inserted.selectionStart, inserted.selectionEnd, source === "browse");
+    if (source === "browse") {
+      // WebKit only raises/retains the software keyboard when focus() runs in
+      // the selection's user-activation handler, not in requestAnimationFrame.
+      inputRef.current?.focus();
+    }
+    // The controlled textarea receives the new text on React's next commit;
+    // restore its caret then, without deferring the browse focus until that frame.
+    restoreSelection(inserted.selectionStart, inserted.selectionEnd);
   }, [composer, restoreSelection, selection.end, selection.start, store.skillRegistry]);
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <ComposerPrimitive.Root className="composer-root">
+      <ComposerPrimitive.Root className="composer-root" onSubmitCapture={(event) => {
+        if (compacting) event.preventDefault();
+      }}>
         <ComposerTriggerPopover commands={commands} />
         {skillQuery !== null && autocompleteSkills.length > 0 && (
           <SkillAutocomplete
@@ -245,6 +252,7 @@ export function Composer({ runSettings, notice }: {
         )}
         <ComposerQuotePreview />
         {notice}
+        {compacting && <p className="composer-compaction-note">Compacting context — you can send when it finishes.</p>}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
           disabled={!canUpload}
@@ -295,6 +303,7 @@ export function Composer({ runSettings, notice }: {
                 agentLabel={selectedAgent?.label}
                 registry={store.skillRegistry}
                 onBeforeOpen={() => captureSelection()}
+                composerInputRef={inputRef}
                 onSelect={(name) => insertSkill(name, "browse")}
               />
             </div>
@@ -303,7 +312,7 @@ export function Composer({ runSettings, notice }: {
               <ComposerPrimitive.Send
                 className="composer-send"
                 aria-label="Send message"
-                disabled={!canSend}
+                disabled={!canSend || compacting}
               >
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>

@@ -1,10 +1,11 @@
+import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { link, lstat, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type { MemoryBlock, MemoryStore } from "@mono-agent/agent-contracts";
 import type { HistoryMessage } from "../context/index.js";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
@@ -74,12 +75,21 @@ function createSpyMemoryStore() {
     async load(): Promise<MemoryBlock | undefined> {
       return undefined;
     },
-    async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
+    async persistCompletedTurn(turn: MemoryCompletedTurn) {
+      const summary = turn.summary;
       hostSummaries.push(summary);
-      return { conversationId, source: "spy", bytesWritten: summary.length };
-    },
-    scheduleCapture(_conversationId: string, text: string): void {
-      captures.push(text);
+      if (turn.captureText !== undefined) {
+        const text = turn.captureText;
+        captures.push(text);
+      }
+      return {
+        source: "spy",
+        bytesWritten: summary.length,
+        id: turn.runId,
+        runId: turn.runId,
+        conversationId: turn.conversationId,
+        admissionStatus: "admitted" as const,
+      };
     },
   };
   return { hostSummaries, captures, store };

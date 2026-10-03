@@ -1,0 +1,88 @@
+{
+  "search_id": "search_07b7668962def63883377f20af4944df",
+  "results": [
+    {
+      "url": "https://docs.parallel.ai/integrations/mcp/search-mcp.md",
+      "title": "Search MCP",
+      "publish_date": null,
+      "excerpts": [
+        "You may also fetch any page as Markdown by appending `.md` to its URL or sending `Accept: text/markdown`.\nThe Parallel Search MCP Server provides drop-in web search and content extraction capabilities for any MCP-aware model. The tools invoke the Search API and Extract API endpoints but present a simpler interface to ensure effective use by agents.\n**The Search MCP is free to use** \u2014 no API key required, great for exploration and light use. For production use cases or higher rate limits, [create a Parallel account](https://platform.parallel.ai) and pass your API key as a Bearer token in the `Authorization` header.\nThe Search MCP comprises two tools:\n* web_search \u2014 General-purpose web search inside an agent's reasoning loop. Use when the agent needs current information or diverse sources across multiple angles.\n* web_fetch \u2014 Pulls token-efficient markdown from specific URLs. Use after web_search narrows down candidates, or when the agent already has a URL it needs to read in depth.\nThe Search MCP has two configuration layers: model-visible arguments selected for each tool call, and authenticated connection-level overrides that apply to every web_search call.\nPer-call tool parameters\nThese arguments are returned by the server's tools/list response and supplied o"
+      ]
+    },
+    {
+      "url": "https://docs.parallel.ai/search/search-mcp",
+      "title": "Search MCP",
+      "publish_date": null,
+      "excerpts": [
+        "Add real-time web search and content extraction to AI agents with the Parallel Search MCP Server\nFor AI agents: a documentation index is available at [https://docs.parallel.ai/llms.txt](https://docs.parallel.ai/llms.txt). The full text of all docs is at [https://docs.parallel.ai/llms-full.txt](https://docs.parallel.ai/llms-full.txt).\nYou may also fetch any page as Markdown by appending `.md` to its URL or sending `Accept: text/markdown`.\nThe Parallel Search MCP Server provides drop-in web search and content extraction capabilities for any MCP-aware model. The tools invoke the Search API and Extract API endpoints but present a simpler interface to ensure effective use by agents.\nSearch runs in basic mode \u2014 tuned for low-latency responses inside agent loops \u2014 and total excerpts per tool call are capped to roughly 25,000 characters to stay within typical MCP client output limits.\n**The Search MCP is free to use** \u2014 no API key required, great for exploration and light use.\nFor production use cases or higher rate limits, [create a Parallel account](https://platform.parallel.ai) and pass your API key as a Bearer token in the `Authorization` header.\nThe Search MCP comprises two tools:\n* web_search \u2014 General-purpose web search inside an agent's reasoning loop. Use whe"
+      ]
+    },
+    {
+      "url": "http://docs.parallel.ai/features/remote-mcp",
+      "title": "MCP Server - Parallel",
+      "publish_date": null,
+      "excerpts": [
+        "Parallel home page light logo dark logo\nSearch...\n\u2318K\n* Parallel Platform\n  Parallel home page light logo dark logo\n  Search...\n  \u2318K\n* Parallel Platform\n  Search...\n  Navigation\n  MCP\n  MCP Server\n  MCP\nMCP Server\nMCP servers for Parallel APIs\n\u200b\nOverview\nThe Parallel MCP Server exposes the Parallel Search API to AI assistants and large-language-model (LLM) workflows, delivering high-quality, relevant results from the web while optimizing for the price-performance balance your AI applications need at scale.\n\u200b\nRemote MCP Server\nParallel\u2019s Search MCP server is available at https://mcp.parallel.ai/alpha/search_mcp You must have a valid API key to access the remote MCP server. If you do not have an API key, please generate one here .\n\u200b\nUsing the MCP server\nTo use the Parallel Search MCP server, please see your provider\u2019s documentation for details on how to specify MCP servers in your request. The code below provides an example for OpenAI and Anthropic-compatible LLM requests.\nOpenAI Anthropic\nCopy\nfrom  openai  import  OpenAI from  openai.types  import  responses  as  openai_responses api_key  =  \"your-api-key\" tools  =  [     openai_responses.tool_param.Mcp(         server_label = \"parallel_web_search\" ,         server_url = \"https://mcp.parallel.ai/alpha/search_mc"
+      ]
+    },
+    {
+      "url": "https://docs.parallel.ai/integrations/mcp/quickstart.md",
+      "title": "Parallel MCP Server Quickstart",
+      "publish_date": null,
+      "excerpts": [
+        "Documentation Index\nFetch the complete documentation index at: https://docs.parallel.ai/llms.txt Use this file to discover all available pages before exploring further.\nParallel MCP Server Quickstart\nInstall and configure Parallel MCP servers for AI assistants like Cursor, VS Code, and Claude Desktop\nFor AI agents: a documentation index is available at [https://docs.parallel.ai/llms.txt](https://docs.parallel.ai/llms.txt). The full text of all docs is at [https://docs.parallel.ai/llms-full.txt](https://docs.parallel.ai/llms-full.txt).\n* Use Case | What\n* Agentic applications where low-latency search is a tool call | Search MCP\n* Daily use for everyday deep-research tasks in chat-based clients | Task MCP\n* Enriching a dataset (eg. a CSV) with web data via chat-based clients | Task MCP\n* Running benchmarks on Parallel processors across a series of queries | Task MCP\nThis is for navigating our docs only\u2014it does not provide access to Parallel APIs.\n**The Search MCP is free to use** \u2014 no API key required, great for exploration and light use.\nSearch MCP\nThe Search MCP provides drop-in web search capabilities for any MCP-aware model. It invokes the Search API in basic mode \u2014 tuned for low-latency responses inside agent loops.\nServer URLs:\n* https://search.parallel.ai"
+      ]
+    },
+    {
+      "url": "https://docs.parallel.ai/task-api/mcp-tool-call",
+      "title": "MCP Tool Calling - Parallel",
+      "publish_date": null,
+      "excerpts": [
+        "Documentation Index\nFetch the complete documentation index at: https://docs.parallel.ai/llms.txt Use this file to discover all available pages before exploring further.\nMCP Tool Calling\nUsing MCP servers for tool calls in Tasks\nFor AI agents: a documentation index is available at [https://docs.parallel.ai/llms.txt](https://docs.parallel.ai/llms.txt). The full text of all docs is at [https://docs.parallel.ai/llms-full.txt](https://docs.parallel.ai/llms-full.txt).\nOverview\nThe Parallel API allows you to specify remote MCP servers for Task API execution. This enables the model to access tools hosted on remote MCP servers without needing a separate MCP client.\nSpecifying MCP Servers\nMCP servers are specified using the mcp_servers field in the Task API call. Each request can include up to 10 MCP servers.\n* Parameter | Type | Description\n* type | string | Always url.\n* url | string | The URL of the MCP server.\n* name | string | A name for the MCP server.\n* headers | dict[string, string] | Headers for authenticating with the MCP server.\n* allowed_tools | array[string] or null | List of tools to allow, or null for all.\nSample Request\nRestrictions\n* Only MCP servers with Streamable HTTP transport are currently supported.\n* From the MCP specification, only tools are sup"
+      ]
+    },
+    {
+      "url": "https://docs.parallel.ai/integrations/mcp/getting-started",
+      "title": "Quickstart - Parallel",
+      "publish_date": null,
+      "excerpts": [
+        "Copy page\nInstall and configure Parallel MCP servers for AI assistants like Cursor, VS Code, and Claude Desktop\nCopy page\nFor AI agents: a documentation index is available at https://docs.parallel.ai/llms.txt . The full text of all docs is at https://docs.parallel.ai/llms-full.txt .\n* Use Case | What\n* Agentic applications where low-latency search is a tool call | Search MCP\n* Daily use for everyday deep-research tasks in chat-based clients | Task MCP\n* Enriching a dataset (eg. a CSV) with web data via chat-based clients | Task MCP\n* Running benchmarks on Parallel processors across a series of queries | Task MCP\n* Building high-scale production apps that integrate with Parallel APIs | Search MCP and Tasks\nAvailable MCP Servers\nParallel offers two MCP servers that can be installed in any MCP client. They can also be used programmatically by providing your Parallel API key in the Authorization header as a Bearer token.\nLooking for help with Parallel documentation? Try our Docs MCP to get AI-assisted answers about Parallel\u2019s documentation.\nThis is for navigating our docs only\u2014it does not provide access to Parallel APIs.\nThe Search MCP is free to use \u2014 no API key required, great for exploration and light use. For production use cases or higher rate limits, create "
+      ]
+    },
+    {
+      "url": "https://docs.parallel.ai/integrations/mcp/search-mcp",
+      "title": "Search MCP - Parallel Docs",
+      "publish_date": null,
+      "excerpts": [
+        "Search MCP - Parallel Docs\nThe Search MCP can be installed in any MCP client. Two endpoints are available: https://search.parallel.ai/mcp \u2014 default. Free to use anonymously at lower rate"
+      ]
+    },
+    {
+      "url": "https://parallel.ai/blog/search-mcp-server",
+      "title": "Introducing the Parallel Search MCP Server | Parallel",
+      "publish_date": "2025-07-14",
+      "excerpts": [
+        "Introducing the Parallel Search MCP Server\nToday, we\u2019re making that same capability available out of the box for any model that supports tool use, via the Parallel Search MCP Server.\nThe MCP Server exposes our Search API as a plug-and-play tool, giving LLMs instant access to real-time web knowledge with a simple configuration change.\nIntroducing the Parallel Search MCP Server\nThe Parallel Search MCP server in Claude\nIntroducing the Parallel Search MCP Server > ** MCP-Native Search **\nThe Search MCP server allows developers to easily integrate the Parallel Search API with any MCP-aware LLM, eliminating the complexity of custom API wrappers. The MCP Server delivers:\nIntroducing the Parallel Search MCP Server > ** MCP-Native Search **\n- ** Seamless integration ** : Plug-and-play with OpenAI, Anthropic, and other MCP-aware clients - no custom REST wiring.\n- ** Flexible search inputs ** : Works with both natural language objectives and keyword queries, with precise controls for domains, freshness, and length.\nIntroducing the Parallel Search MCP Server > ** MCP-Native Search **\n- ** Superior quality at lower cost ** : Dense, citation-rich passages ranked for LLM reasoning, delivered for a fraction of typical search spend.\n- ** Production scale ** : Built on Parallel"
+      ]
+    },
+    {
+      "url": "https://docs.parallel.ai/integrations/mcp/programmatic-use",
+      "title": "Programmatic Use",
+      "publish_date": null,
+      "excerpts": [
+        "Documentation Index\nFetch the complete documentation index at: https://docs.parallel.ai/llms.txt Use this file to discover all available pages before exploring further.\nProgrammatic Use\nHow to use the MCP servers Programmatically\nFor AI agents: a documentation index is available at [https://docs.parallel.ai/llms.txt](https://docs.parallel.ai/llms.txt). The full text of all docs is at [https://docs.parallel.ai/llms-full.txt](https://docs.parallel.ai/llms-full.txt).\n* Server | Default endpoint | API key required?\n* Search MCP | https://search.parallel.ai/mcp | No. Free to use without an Authorization header. Pass a Parallel API key as a Bearer token only if you want higher rate limits. OAuth is not available here \u2014 clients that do OAuth discovery will not find metadata on this endpoint.\n* Search MCP (OAuth / auth-enforced) | https://search.parallel.ai/mcp-oauth | Yes. Bearer API key or OAuth. Anonymous requests return 401. Use this endpoint if you want OAuth sign-in or enforced auth.\n* Task MCP | https://task-mcp.parallel.ai/mcp | Yes. Either perform the OAuth flow or pass your Parallel API key as a Bearer token.\nWhen passing a Parallel API key, use the provider-specific field:\n* OpenAI Responses API \u2014 headers: { Authorization: \"Bearer <YOUR_PARALLEL_API_KEY>\" }"
+      ]
+    },
+    {
+      "url": "http://docs.parallel.ai/integrations/mcp/quickstart",
+      "title": "Quickstart",
+      "publish_date": null,
+      "excerpts": [
+        "Install and configure Parallel MCP servers for AI assistants like Cursor, VS Code, and Claude Desktop\nFor AI agents: a documentation index is available at [https://docs.parallel.ai/llms.txt](https://docs.parallel.ai/llms.txt). The full text of all docs is at [https://docs.parallel.ai/llms-full.txt](https://docs.parallel.ai/llms-full.txt).\n* Use Case | What\n* Agentic applications where low-latency search is a tool call | Search MCP\n* Daily use for everyday deep-research tasks in chat-based clients | Task MCP\n* Enriching a dataset (eg. a CSV) with web data via chat-based clients | Task MCP\n* Running benchmarks on Parallel processors across a series of queries | Task MCP\nThis is for navigating our docs only\u2014it does not provide access to Parallel APIs.\n**The Search MCP is free to use** \u2014 no API key required, great for exploration and light use.\nSearch MCP\nThe Search MCP provides drop-in web search capabilities for any MCP-aware model. It invokes the Search API in basic mode \u2014 tuned for low-latency responses inside agent loops.\nServer URLs:\n* https://search.parallel.ai/mcp \u2014 default. Free anonymous; optional Bearer API key for higher limits. OAuth is not advertised here \u2014 clients that support OAuth sign-in will not prompt for it on this endpoint.\n* https://search.p"
+      ]
+    }
+  ],
+  "warnings": null,
+  "metadata": null,
+  "session_id": "fixture-session"
+}

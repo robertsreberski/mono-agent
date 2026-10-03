@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { commands, page, userEvent } from "@vitest/browser/context";
+import indexHtml from "../index.html?raw";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -169,6 +170,8 @@ beforeEach(async () => {
 afterEach(async () => {
   await commands.emulateColorScheme(null);
   cleanup();
+  document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
+  document.documentElement.style.removeProperty("--status-bar-inset");
   localStorage.clear();
 });
 
@@ -311,6 +314,37 @@ describe.each([
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
+  it("exposes the fixed top edge above the project page without covering its header controls", async () => {
+    await page.viewport(width, height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
+    const initial = new DOMParser().parseFromString(indexHtml, "text/html");
+    const strip = initial.querySelector<HTMLElement>(".status-bar-surface")!;
+    const root = initial.getElementById("root")!;
+    const shell = document.createElement("div");
+    shell.className = "app-shell";
+    const panel = document.createElement("div");
+    panel.className = "dashboard-panel";
+    shell.append(panel);
+    root.append(shell);
+    document.body.append(strip, root);
+    storeMock.current = dashboardStore({ openProjectId: webProject.id, openProject: webProject });
+    render(<WebRuntimeProvider><Dashboard highlightSelected={false} /></WebRuntimeProvider>, { container: panel });
+    expect(await screen.findByRole("heading", { name: "Web console" })).toBeVisible();
+    const header = document.querySelector<HTMLElement>(".project-header")!;
+    expect(getComputedStyle(header).paddingTop).toBe("47px");
+    expect(strip.getBoundingClientRect().height).toBe(47);
+    for (const control of header.querySelectorAll<HTMLElement>("button")) {
+      expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(strip.getBoundingClientRect().bottom);
+    }
+    expect(strip.getBoundingClientRect().width).toBeGreaterThanOrEqual(innerWidth * 0.9);
+    expect(getComputedStyle(strip).backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
+    strip.inert = false; // Chromium omits inert nodes in normal hit tests.
+    strip.style.pointerEvents = "auto";
+    expect(document.elementFromPoint(innerWidth / 2, 4)).toBe(strip);
+    strip.style.removeProperty("pointer-events");
+    strip.inert = true;
+  });
+
   it("draws the project page with its context card and members", async () => {
     await page.viewport(width, height);
     storeMock.current = dashboardStore({
@@ -327,6 +361,35 @@ describe.each([
     expect(screen.getByText("2 conversations · 1 running · $3.12 this month")).toBeVisible();
     expect(screen.getByRole("button", { name: "Open Console conversation and cron-list polish" })).toBeVisible();
     await capture(`project-page-${label}`);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+
+  it("draws a Telegram-bound project with its topic row inside the viewport", async () => {
+    await page.viewport(width, height);
+    const flights = {
+      ...webProject,
+      conversationCount: 0,
+      runningCount: 0,
+      monthUsd: undefined,
+      name: "Trips › Flights with a long Telegram topic name that must stay on one line",
+      external: { id: "ext-1", channel: "telegram" as const, label: "Trips › Flights with a long Telegram topic name that must stay on one line", state: "gone" as const, projectId: webProject.id, lastSeenAt: "2026-09-28T09:00:00Z" },
+    };
+    storeMock.current = dashboardStore({ openProjectId: flights.id, openProject: flights, projectMembers: [] });
+    render(
+      <WebRuntimeProvider>
+        <Dashboard highlightSelected={false} />
+      </WebRuntimeProvider>,
+    );
+
+    const row = await screen.findByRole("group", { name: /^Telegram topic Trips › Flights/u });
+    expect(row).toBeVisible();
+    expect(screen.getByText("Telegram · history not viewable here")).toBeVisible();
+    expect(screen.getByText("Telegram topic gone")).toBeVisible();
+    // The topic is the project's only conversation, so the page never calls it empty.
+    expect(screen.getByText("1 conversation · 0 running")).toBeVisible();
+    expect(screen.queryByText("No conversations yet")).toBeNull();
+    expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+    await capture(`project-page-telegram-${label}`);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 

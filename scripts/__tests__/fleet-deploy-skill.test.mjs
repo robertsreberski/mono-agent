@@ -6,16 +6,18 @@ const skillPath = "skills/fleet-deploy/SKILL.md";
 const logHygieneSkillPath = "skills/ops-log-hygiene/SKILL.md";
 
 describe("fleet-deploy skill", () => {
-  it("adopts Personal Agent through a version-installing managed restart", async () => {
+  it("adopts the primary instance through a version-installing managed restart", async () => {
     const skill = await readFile(skillPath, "utf8");
 
-    expect(skill).toContain('cd "$HOME/personal-agent"\nmono-agent restart');
+    expect(skill).toContain('cd "<instance-dir>"\nmono-agent restart');
     expect(skill).toContain("/.mono-agent/runtimes/agent-app/");
     expect(skill).toContain(
       "A raw\nkickstart only relaunches the snapshot already recorded in the plist",
     );
     expect(skill).not.toContain("launchctl kickstart -k");
     expect(skill).not.toContain("checkout-backed runtime");
+    // Negative guard without embedding the retired private path literally.
+    expect(skill).not.toContain("$HOME/" + "personal-agent");
   });
 
   it("uses the same managed-runtime provenance rule in log audits", async () => {

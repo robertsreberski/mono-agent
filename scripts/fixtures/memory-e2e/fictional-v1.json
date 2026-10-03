@@ -1,0 +1,557 @@
+{
+  "schemaVersion": 1,
+  "name": "fictional-v1",
+  "groups": [
+    {
+      "id": "dev-fact",
+      "split": "development",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Mira",
+            "user": "I selected cobalt for the Velin launch.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Mira",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Mira",
+            "user": "I bought a plain notebook for taking notes.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Mira",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "What color did Mira select for the Velin launch?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "direct",
+        "answerable": true,
+        "accepted": [
+          "cobalt"
+        ],
+        "forbidden": [],
+        "evidenceTurnIds": [
+          "t1"
+        ],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "I selected cobalt for the Velin launch.",
+            "turnId": "t1"
+          },
+          {
+            "text": "I bought a plain notebook for taking notes.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": [
+          "cobalt"
+        ]
+      }
+    },
+    {
+      "id": "dev-noise",
+      "split": "development",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Oren",
+            "user": "I watched clouds during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Oren",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Oren",
+            "user": "I bought a plain notebook for taking notes.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Oren",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "What is Oren's telephone number?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "unanswerable",
+        "answerable": false,
+        "accepted": [],
+        "forbidden": [],
+        "evidenceTurnIds": [],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "I watched clouds during my walk.",
+            "turnId": "t1"
+          },
+          {
+            "text": "I bought a plain notebook for taking notes.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": []
+      }
+    },
+    {
+      "id": "speaker",
+      "split": "evaluation",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Tavi",
+            "user": "My bicycle is amber. Neri has a violet bicycle.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Tavi",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Tavi",
+            "user": "I bought a plain notebook for taking notes.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Tavi",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "What color is Tavi's bicycle?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "direct",
+        "answerable": true,
+        "accepted": [
+          "amber"
+        ],
+        "forbidden": [
+          "violet"
+        ],
+        "evidenceTurnIds": [
+          "t1"
+        ],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "My bicycle is amber. Neri has a violet bicycle.",
+            "turnId": "t1"
+          },
+          {
+            "text": "I bought a plain notebook for taking notes.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": [
+          "amber"
+        ]
+      }
+    },
+    {
+      "id": "update",
+      "split": "evaluation",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Luma",
+            "user": "The Fenwick club meets on Tuesday.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Luma",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Luma",
+            "user": "Correction: the Fenwick club now meets on Thursday, not Tuesday.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Luma",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "Which day does the Fenwick club now meet?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "update",
+        "answerable": true,
+        "accepted": [
+          "thursday"
+        ],
+        "forbidden": [
+          "tuesday"
+        ],
+        "evidenceTurnIds": [
+          "t1",
+          "t3"
+        ],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "The Fenwick club meets on Tuesday.",
+            "turnId": "t1"
+          },
+          {
+            "text": "Correction: the Fenwick club now meets on Thursday, not Tuesday.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": [
+          "thursday"
+        ]
+      }
+    },
+    {
+      "id": "temporal",
+      "split": "evaluation",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Sela",
+            "user": "Today is January 10, 2025. I visited the Ivara museum yesterday, January 9. I will move to Bellmere on February 1.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Sela",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Sela",
+            "user": "It is January 15, 2025. I still live in Ashford; the Bellmere move is next month.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Sela",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "On which date did Sela visit the Ivara museum?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "temporal",
+        "answerable": true,
+        "accepted": [
+          "2025-01-09",
+          "january 9"
+        ],
+        "forbidden": [
+          "january 10"
+        ],
+        "evidenceTurnIds": [
+          "t1"
+        ],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "Today is January 10, 2025. I visited the Ivara museum yesterday, January 9. I will move to Bellmere on February 1.",
+            "turnId": "t1"
+          },
+          {
+            "text": "It is January 15, 2025. I still live in Ashford; the Bellmere move is next month.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": [
+          "2025-01-09",
+          "january 9"
+        ]
+      }
+    },
+    {
+      "id": "unknown",
+      "split": "evaluation",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Ivo",
+            "user": "I am coordinating the Oriole workshop.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Ivo",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Ivo",
+            "user": "I bought a plain notebook for taking notes.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Ivo",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "What is Ivo's telephone number?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "unanswerable",
+        "answerable": false,
+        "accepted": [],
+        "forbidden": [],
+        "evidenceTurnIds": [],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "I am coordinating the Oriole workshop.",
+            "turnId": "t1"
+          },
+          {
+            "text": "I bought a plain notebook for taking notes.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": []
+      }
+    },
+    {
+      "id": "preference",
+      "split": "evaluation",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Rina",
+            "user": "I eat a vegan diet, and I cannot eat peanuts.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Rina",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Rina",
+            "user": "I bought a plain notebook for taking notes.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Rina",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "Help Rina choose dinner tonight.",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "contextual-preference",
+        "answerable": true,
+        "accepted": [],
+        "forbidden": [
+          "peanut sauce",
+          "beef"
+        ],
+        "evidenceTurnIds": [
+          "t1"
+        ],
+        "rubric": "Suggest a vegan peanut-free meal, without introducing unrelated postcard memories.",
+        "facts": [
+          {
+            "text": "I eat a vegan diet, and I cannot eat peanuts.",
+            "turnId": "t1"
+          },
+          {
+            "text": "I bought a plain notebook for taking notes.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": []
+      }
+    },
+    {
+      "id": "multisession",
+      "split": "evaluation",
+      "source": {
+        "turns": [
+          {
+            "id": "t1",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:00:00.000Z",
+            "speaker": "Nalo",
+            "user": "The coordinator of the Selkie garden is Dena.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t2",
+            "sessionId": "s1",
+            "timestamp": "2025-01-10T12:01:00.000Z",
+            "speaker": "Nalo",
+            "user": "The weather was cloudy during my walk.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t3",
+            "sessionId": "s2",
+            "timestamp": "2025-01-15T12:00:00.000Z",
+            "speaker": "Nalo",
+            "user": "Dena is based in Brindle. Another gardener, Deni, is based in Oswin.",
+            "assistant": "Thanks for telling me."
+          },
+          {
+            "id": "t4",
+            "sessionId": "s3",
+            "timestamp": "2025-01-20T12:00:00.000Z",
+            "speaker": "Nalo",
+            "user": "I have finished tidying my desk for today.",
+            "assistant": "Thanks for telling me."
+          }
+        ],
+        "question": {
+          "text": "Where is the coordinator of the Selkie garden based?",
+          "timestamp": "2025-01-21T12:00:00.000Z"
+        }
+      },
+      "evaluation": {
+        "category": "multisession",
+        "answerable": true,
+        "accepted": [
+          "brindle"
+        ],
+        "forbidden": [
+          "oswin"
+        ],
+        "evidenceTurnIds": [
+          "t1",
+          "t3"
+        ],
+        "rubric": "Use the latest supported fact; do not confuse speakers or invent details.",
+        "facts": [
+          {
+            "text": "The coordinator of the Selkie garden is Dena.",
+            "turnId": "t1"
+          },
+          {
+            "text": "Dena is based in Brindle. Another gardener, Deni, is based in Oswin.",
+            "turnId": "t3"
+          }
+        ],
+        "requiredClaims": [
+          "brindle"
+        ]
+      }
+    }
+  ]
+}

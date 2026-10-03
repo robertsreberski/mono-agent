@@ -56,6 +56,7 @@ import {
   type WebThreadListScope,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
+import { parseWakeDefinition } from "./wake-schedule.js";
 import {
   WEB_MESSAGE_PAGE_DEFAULT,
   WEB_MESSAGE_PAGE_MAX,
@@ -78,6 +79,9 @@ export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
+const MAX_SSE_QUEUED_FRAMES = 256;
+const MAX_SSE_QUEUED_BYTES = 1024 * 1024;
+const SSE_DRAIN_TIMEOUT_MS = 30_000;
 /**
  * How often one connection may be told that one conversation's message moved,
  * when it is not subscribed to that conversation's content.
@@ -294,6 +298,40 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       }
       void trackOperation(service.providerUsage(pathParam(req.params.id), provider), activeOperations)
         .then((snapshot) => res.json(snapshot)).catch(next);
+    } catch (error) { next(error); }
+  });
+
+  app.use("/api/v1/agents/:id/restart", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+
+  app.post("/api/v1/agents/:id/restart", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)
+        || Object.keys(req.body as object).length !== 0) {
+        throw new WebConsoleError("invalid_request", "Restart requires an empty JSON object.", 400);
+      }
+      void trackOperation(service.requestAgentRestart(pathParam(req.params.id)), activeOperations)
+        .then((operation) => res.status(200).json(operation)).catch(next);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/agents/:id/restart", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      res.json({ operation: service.latestAgentRestart(pathParam(req.params.id)) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/agents/:id/restart/:operationId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const sourceId = pathParam(req.params.id);
+      const operation = service.restartStatus(pathParam(req.params.operationId));
+      if (operation.sourceId !== sourceId) throw new WebConsoleError("restart_not_found", "Restart request not found.", 404);
+      res.json(operation);
     } catch (error) { next(error); }
   });
 
@@ -683,6 +721,20 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.post("/api/v1/threads/:threadId/messages/:messageId/parts/:partId/restart", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    try {
+      exactRequestOrigin(req);
+      if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)
+        || Object.keys(req.body as object).length !== 0) {
+        throw new WebConsoleError("invalid_request", "Restart proposal action requires an empty JSON object.", 400);
+      }
+      void trackOperation(service.restartFromProposal(
+        pathParam(req.params.threadId), pathParam(req.params.messageId), pathParam(req.params.partId),
+      ), activeOperations).then((operation) => res.status(200).json(operation)).catch(next);
+    } catch (error) { next(error); }
+  });
+
   // Registered above `/threads/:id` and above the message page for the same
   // reason the tool-call read is: this is how a console whose delta stream
   // skipped a version repairs ONE message instead of re-reading the whole
@@ -699,6 +751,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) {
       next(error);
     }
+  });
+
+  app.get("/api/v1/threads/:id/usage", (req, res, next) => {
+    void service.threadUsage(pathParam(req.params.id))
+      .then((usage) => res.status(200).json({ usage })).catch(next);
   });
 
   app.get("/api/v1/threads/:id", (req, res, next) => {
@@ -850,6 +907,45 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       .catch(next);
   });
 
+  app.get("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try { res.status(200).json({ schedule: service.wakeSchedule(pathParam(req.params.id)) }); }
+    catch (error) { next(error); }
+  });
+  app.post("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      res.status(201).json({ schedule: service.createWakeSchedule(pathParam(req.params.id), parseWakeDefinition(req.body)) });
+    } catch (error) { next(error); }
+  });
+  app.put("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const body = wakeMutationBody(req.body);
+      res.status(200).json({ schedule: service.changeWakeSchedule(pathParam(req.params.id), body.expectedRevision,
+        { definition: parseWakeDefinition(body.fields) }) });
+    } catch (error) { next(error); }
+  });
+  app.patch("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const { expectedRevision, fields } = wakeMutationBody(req.body);
+      if (Object.keys(fields).length !== 1 || (fields.state !== "paused" && fields.state !== "active")) {
+        throw new WebConsoleError("invalid_wake_schedule", "state: Choose active or paused.", 400);
+      }
+      res.status(200).json({ schedule: service.changeWakeSchedule(pathParam(req.params.id), expectedRevision,
+        { state: fields.state }) });
+    } catch (error) { next(error); }
+  });
+  app.delete("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const { expectedRevision, fields } = wakeMutationBody(req.body);
+      if (Object.keys(fields).length !== 0) throw new WebConsoleError("invalid_wake_schedule", "Unknown deletion field.", 400);
+      service.changeWakeSchedule(pathParam(req.params.id), expectedRevision, { delete: true });
+      res.status(204).end();
+    } catch (error) { next(error); }
+  });
+
   app.patch("/api/v1/threads/:id", (req, res, next) => {
     try {
       const input = parsePatchThread(req.body);
@@ -868,6 +964,18 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) {
       next(error);
     }
+  });
+
+  app.post("/api/v1/threads/:id/compact", (req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body)
+      || Object.keys(req.body as object).length !== 0) {
+      next(new WebConsoleError("invalid_compaction_request", "Compaction requires an empty JSON object.", 400));
+      return;
+    }
+    void trackOperation(service.compactThread(pathParam(req.params.id)), activeOperations)
+      .then((result) => res.status(200).json(result))
+      .catch(next);
   });
 
   app.post("/api/v1/threads/:id/turns", (req, res, next) => {
@@ -1080,24 +1188,26 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    let writer: BoundedSseWriter | undefined;
     const closeStream = (): void => {
       if (closed) return;
       closed = true;
       clearInterval(heartbeat);
       unsubscribe();
+      writer?.close();
       activeStreams.delete(closeStream);
       res.end();
     };
+    writer = createBoundedSseWriter({
+      target: res,
+      onTerminal: closeStream,
+      onFailure: (error) => {
+        logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
+      },
+    });
     const send = createWebEventDispatch({
       ...(subscribed === undefined ? {} : { subscribed }),
-      write: (event) => {
-        if (closed || res.writableEnded) return false;
-        if (res.write(formatSse(event))) return true;
-        // Events are state-invalidation hints, not an unbounded replay log. A
-        // client that cannot drain one frame must reconnect and bootstrap.
-        closeStream();
-        return false;
-      },
+      write: (event) => writer!.write(formatSse(event)),
       close: closeStream,
       onFailure: (error) => {
         logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
@@ -1105,7 +1215,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
     const unsubscribe = service.subscribe(send);
     const heartbeat = setInterval(() => {
-      if (!res.write(`: heartbeat ${Date.now()}\n\n`)) closeStream();
+      writer?.writeHeartbeat(`: heartbeat ${Date.now()}\n\n`);
     }, HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
     activeStreams.add(closeStream);
@@ -1575,10 +1685,12 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction): void
 
 function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
   const projectId = optionalProjectId(body.projectId);
   return {
+    ...(context1M === undefined ? {} : { context1M }),
     sourceId: requireString(body.sourceId, "sourceId", 256),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
@@ -1666,17 +1778,18 @@ function parsePutAgentRunSettings(value: unknown): PutWebAgentRunSettingsInput {
   if (!("model" in body) || !("effort" in body)) {
     throw invalidBody("model and effort are required and must be strings or null.");
   }
-  const unknown = Object.keys(body).filter((key) => key !== "model" && key !== "effort");
+  const unknown = Object.keys(body).filter((key) => key !== "model" && key !== "effort" && key !== "context1M");
   if (unknown.length > 0) throw invalidBody(`Unknown run-defaults field: ${unknown[0]}.`);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
   if (model === undefined || effort === undefined) {
     throw invalidBody("model and effort are required and must be strings or null.");
   }
-  if (model === null && effort === null) {
+  if (model === null && effort === null && context1M == null) {
     throw invalidBody("Choose a model or effort override, or use Revert to config.");
   }
-  return { model, effort };
+  return { model, effort, ...(context1M === undefined ? {} : { context1M }) };
 }
 
 function parsePatchAgent(value: unknown): PatchWebAgentInput {
@@ -1690,8 +1803,20 @@ function parseTagIds(value: unknown): string[] {
   return value.map((id: unknown) => requireString(id, "tagId", 128));
 }
 
+function wakeMutationBody(value: unknown): { expectedRevision: number; fields: Record<string, unknown> } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new WebConsoleError("invalid_wake_schedule", "Expected a schedule mutation object.", 400);
+  }
+  const { expectedRevision, ...fields } = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    throw new WebConsoleError("invalid_wake_schedule", "expectedRevision: Enter the current schedule revision.", 400);
+  }
+  return { expectedRevision: expectedRevision as number, fields };
+}
+
 function parsePatchThread(value: unknown): PatchWebThreadInput {
   const body = requireRecord(value);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const title = optionalString(body.title, "title", 120);
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
@@ -1706,11 +1831,12 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   if ((projectId !== undefined || tagIds !== undefined) && ifRunConfigUnset === true) {
     throw invalidBody("projectId and tagIds cannot be combined with ifRunConfigUnset.");
   }
-  if (title === undefined && archived === undefined && model === undefined && effort === undefined
+  if (title === undefined && archived === undefined && model === undefined && effort === undefined && context1M === undefined
     && projectId === undefined && tagIds === undefined) {
     throw invalidBody("Provide title, archived, model, or effort.");
   }
   return {
+    ...(context1M === undefined ? {} : { context1M }),
     ...(title === undefined ? {} : { title }),
     ...(archived === undefined ? {} : { archived }),
     ...(model === undefined ? {} : { model }),
@@ -1723,6 +1849,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
 
 function parseTurn(value: unknown): StartWebTurnInput {
   const body = requireRecord(value);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const text = body.text === undefined
     ? undefined
     : requireString(body.text, "text", WEB_MAX_TURN_TEXT_CHARACTERS, true);
@@ -1744,6 +1871,7 @@ function parseTurn(value: unknown): StartWebTurnInput {
   const model = optionalString(body.model, "model", 512);
   const effort = optionalString(body.effort, "effort", 128);
   return {
+    ...(context1M === undefined ? {} : { context1M }),
     ...(text === undefined ? {} : { text }),
     ...(quote === undefined ? {} : { quote }),
     ...(attachmentIds === undefined ? {} : { attachmentIds }),
@@ -1892,6 +2020,125 @@ function assertProviderAuthBody(value: unknown): void {
       413,
     );
   }
+}
+
+interface SseWritableTarget {
+  readonly writableEnded: boolean;
+  write(frame: string): boolean;
+  once(event: "drain", listener: () => void): unknown;
+  removeListener(event: "drain", listener: () => void): unknown;
+}
+
+export interface BoundedSseWriter {
+  /** False means the stream was closed and its subscriber must be removed. */
+  write(frame: string): boolean;
+  /** Heartbeats carry no state and may be skipped while real frames are queued. */
+  writeHeartbeat(frame: string): boolean;
+  close(): void;
+}
+
+/**
+ * Preserve event order across ordinary Node writable backpressure.
+ *
+ * `write() === false` means the frame WAS accepted but the writable crossed its
+ * high-water mark. Ending there unnecessarily tore down a healthy console after
+ * any single large frame. Queue later
+ * frames behind `drain` instead. The queue is strictly bounded; crossing either
+ * bound or the drain deadline closes the stream, which makes EventSource
+ * reconnect and perform the normal gap repair rather than looking live while a
+ * delta was silently dropped.
+ */
+export function createBoundedSseWriter(options: {
+  readonly target: SseWritableTarget;
+  readonly onTerminal: () => void;
+  readonly onFailure?: (error: unknown) => void;
+  readonly maxQueuedFrames?: number;
+  readonly maxQueuedBytes?: number;
+  readonly drainTimeoutMs?: number;
+}): BoundedSseWriter {
+  const maxQueuedFrames = options.maxQueuedFrames ?? MAX_SSE_QUEUED_FRAMES;
+  const maxQueuedBytes = options.maxQueuedBytes ?? MAX_SSE_QUEUED_BYTES;
+  const drainTimeoutMs = options.drainTimeoutMs ?? SSE_DRAIN_TIMEOUT_MS;
+  const queued: string[] = [];
+  let queuedBytes = 0;
+  let backpressured = false;
+  let drainListening = false;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  const disarmDrain = (): void => {
+    if (drainListening) options.target.removeListener("drain", onDrain);
+    drainListening = false;
+    if (drainTimer !== undefined) clearTimeout(drainTimer);
+    drainTimer = undefined;
+  };
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    disarmDrain();
+    queued.length = 0;
+    queuedBytes = 0;
+  };
+  const terminate = (error: unknown): false => {
+    if (closed) return false;
+    options.onFailure?.(error);
+    close();
+    options.onTerminal();
+    return false;
+  };
+  const armDrain = (): void => {
+    backpressured = true;
+    if (!drainListening) {
+      drainListening = true;
+      options.target.once("drain", onDrain);
+    }
+    if (drainTimer === undefined) {
+      drainTimer = setTimeout(() => {
+        terminate(new Error("Web console event stream backpressure did not drain in time."));
+      }, drainTimeoutMs);
+      drainTimer.unref();
+    }
+  };
+  const writeTarget = (frame: string): boolean => {
+    try {
+      if (!options.target.write(frame)) armDrain();
+      return true;
+    } catch (error) {
+      return terminate(error);
+    }
+  };
+  function onDrain(): void {
+    drainListening = false;
+    if (drainTimer !== undefined) clearTimeout(drainTimer);
+    drainTimer = undefined;
+    if (closed) return;
+    backpressured = false;
+    while (queued.length > 0) {
+      const frame = queued.shift()!;
+      queuedBytes -= Buffer.byteLength(frame, "utf8");
+      if (!writeTarget(frame) || backpressured) return;
+    }
+  }
+  const write = (frame: string): boolean => {
+    if (closed) return false;
+    if (options.target.writableEnded) {
+      return terminate(new Error("Web console event stream ended before its queued frame was written."));
+    }
+    if (!backpressured) return writeTarget(frame);
+    const bytes = Buffer.byteLength(frame, "utf8");
+    if (queued.length >= maxQueuedFrames || queuedBytes + bytes > maxQueuedBytes) {
+      return terminate(new Error("Web console event stream exceeded its bounded backpressure queue."));
+    }
+    queued.push(frame);
+    queuedBytes += bytes;
+    return true;
+  };
+
+  return {
+    write,
+    writeHeartbeat: (frame) => backpressured ? !closed : write(frame),
+    close,
+  };
 }
 
 /**
@@ -2201,4 +2448,9 @@ function normalizePort(value: number): number {
 
 function defaultStaticDir(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../webapp/dist");
+}
+
+function optionalNullableBoolean(value: unknown, name: string): boolean | null | undefined {
+  if (value === undefined || value === null || typeof value === "boolean") return value;
+  throw invalidBody(`${name} must be boolean or null.`);
 }

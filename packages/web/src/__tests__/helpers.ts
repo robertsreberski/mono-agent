@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
-  MonitorProjection,
-  MonitorState,
   ProcessJobProjection,
   ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -35,7 +33,6 @@ export function fakeDiscoveredAgent(overrides: Partial<DiscoveredOperatorAgent> 
       warnings: [],
     },
     baseUrl: "http://127.0.0.1:45123/gui",
-    monitorsBearer: "test-owner-monitor-key",
     ...overrides,
   };
 }
@@ -93,55 +90,6 @@ export function fakeProcessJob(options: {
   };
 }
 
-export function fakeMonitor(options: {
-  readonly state?: MonitorState;
-  readonly conversationId?: string;
-  readonly monitorId?: string;
-  readonly seq?: number;
-} = {}): MonitorProjection {
-  const state = options.state ?? "running";
-  const terminal = state !== "starting" && state !== "running";
-  const seq = options.seq ?? 1;
-  return {
-    schema: "mono-agent.monitor-projection.v2",
-    monitorId: options.monitorId ?? "22222222-2222-4222-8222-222222222222",
-    state,
-    description: "Watching a local process",
-    persistent: false,
-    origin: {
-      conversationId: options.conversationId ?? "web:thread-one",
-      channel: "web",
-      runId: "run-one",
-      bucket: null,
-    },
-    timestamps: {
-      startedAt: "2026-09-04T09:00:00.000Z",
-      runtimeDeadlineAt: "2026-09-04T09:30:00.000Z",
-      lastEventAt: "2026-09-04T09:00:01.000Z",
-      completedAt: terminal ? "2026-09-04T09:00:02.000Z" : null,
-    },
-    limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0,
-      maxRuntimeMs: 1_800_000,
-      coalesceMs: 200,
-      maxBatchLines: 200,
-      maxBatchBytes: 65_536,
-      chainDepth: 0,
-    },
-    counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0,
-      seq,
-      batchesDelivered: Math.max(0, seq - 1),
-      linesObserved: 1,
-      linesDelivered: 0,
-      droppedLines: 0,
-      pendingLines: 0,
-    },
-    exitCode: state === "exited" ? 0 : null,
-    signal: null,
-    cancelRequested: state === "cancelled",
-    lastError: null,
-  };
-}
-
 export function operatorFetch(options: {
   /** A promise defers the RESPONSE itself, which is what admission timing turns on. */
   readonly turns?: (body: Record<string, unknown>) =>
@@ -149,9 +97,12 @@ export function operatorFetch(options: {
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
   readonly supportsContextImport?: boolean;
+  readonly supportsManualCompaction?: boolean;
+  readonly onCompact?: (conversationId: string, body: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
+  readonly supportsProcessJobWakeAdmission?: boolean;
   readonly supportsLiveInputTargeting?: boolean;
   readonly supportsReplyAttachments?: boolean;
   readonly supportsMcpApps?: boolean;
@@ -218,9 +169,11 @@ export function operatorFetch(options: {
           ...(options.supportsContextImport === true
             ? { contextImport: { version: 1, maxTextBytes: 32 * 1024 } }
             : {}),
+          ...(options.supportsManualCompaction === true ? { manualCompaction: { version: 1 } } : {}),
           askUser: options.supportsAskUser ?? false,
           ...(options.supportsAskById === true ? { askById: true } : {}),
           liveInput: options.supportsLiveInput ?? false,
+          ...(options.supportsProcessJobWakeAdmission ? { processJobWakeAdmission: { version: 1 } } : {}),
           ...(options.supportsLiveInputTargeting === true ? { liveInputTargeting: { version: 1 } } : {}),
           ...(options.supportsReplyAttachments === true
             ? { replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 } }
@@ -339,6 +292,11 @@ export function operatorFetch(options: {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       await options.onVerbatim?.(decodeURIComponent(encodedConversationId), body);
       return Response.json({ recorded: true }, { status: 200 });
+    }
+    if (url.includes("/v1/conversations/") && url.endsWith("/compact")) {
+      const id = decodeURIComponent(url.slice(url.lastIndexOf("/v1/conversations/") + "/v1/conversations/".length, -"/compact".length));
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return Response.json(await options.onCompact?.(id, body) ?? { status: "succeeded", trigger: "manual", operationId: "manual-1", tokensBefore: 1000, tokensAfter: 200 });
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/context-imports")) {
       const encodedConversationId = url.slice(

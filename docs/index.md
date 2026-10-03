@@ -22,7 +22,7 @@ mono-agent web run --loopback  # foreground console; keep this terminal open
 Then open `http://127.0.0.1:5050`, choose the agent, and start a conversation. `web run` binds the console's HTTP listener to this computer and configures no proxy route, but it does not remove one that already exists — an earlier managed start, a Serve handler, or your own proxy can still make it reachable elsewhere, so check `tailscale serve status` or your proxy before treating the console as local-only. The managed `mono-agent web start` service runs in the background with the same fresh loopback bind, and on macOS it re-verifies an existing mono-agent-owned Tailscale Serve route or publishes a new one only with `--share-tailnet`; other proxies and routes are not inspected, so no bind alone proves local-only access. Neither mode has an application login. [Getting Started → Quickstart](/getting-started/quickstart/) explains every branch of that path, including what a bare `init` proves before it calls the agent ready, and [Install & prerequisites](/getting-started/install/) covers both console modes, pinned installs, one-shot scaffolding, and source builds.
 
 :::caution[These docs describe `main`, not the latest release]
-The latest published npm release is `create-mono-agent@0.21.1`, so an npm install does not yet include everything documented here. [Release status](/reference/release-status/) lists the source-only capability groups and the source-build alternative.
+The latest published npm release is `create-mono-agent@0.22.0`. It includes the browser-first setup and loopback/explicit-sharing console defaults above, but not the current-source framework, Phoenix/OTLP, Supermemory, and terminal-renderer retirements. [Release status](/reference/release-status/) lists the verified source-only boundary and the source-build alternative.
 :::
 
 ## What you get
@@ -44,7 +44,7 @@ An agent can be small. This is a complete config:
 }
 ```
 
-Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for the enabled Telegram channel, `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`. Source configs omit credentials; see [Environment variables](/config/env-vars/) for the full mapping.
+Core model selection stays in JSON. The enabled Telegram adapter can read `MONO_AGENT_TELEGRAM_BOT_TOKEN` from `.env`; see [Operational environment variables](/config/env-vars/).
 
 ## Site map
 
@@ -55,8 +55,8 @@ Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for
 - **[Channels](/channels/)** — Telegram, Slack, WhatsApp, Webhook, OpenAI-compatible API, A2A, cron, and proactive delivery.
 - **[Memory](/memory/)** — optional tiered capture and recall, embeddings, consolidation, and maintenance.
 - **[Context](/context/)** — identity/soul, skills, and how the system prompt is assembled per turn.
-- **[Tools](/tools/)** — the tool policy (allow/deny), background jobs, MCP integration, and the native sandbox.
-- **[Observability & CLI](/observability/)** — local run artifacts and traces, optional Phoenix export, and the lifecycle CLI.
+- **[Tools](/tools/)** — the tool policy (allow/deny), background jobs, MCP integration, [computer use](/tools/computer-use/), and the native sandbox.
+- **[Observability & CLI](/observability/)** — local run artifacts, trace-source discovery, and the lifecycle CLI.
 - **[Programmatic](/programmatic/)** — the `code`-only escape hatches: composition, approval gates, structured output, multi-agent, A2A consumers, and custom channels.
 - **[Playbooks](/playbooks/)** — end-to-end recipes (Telegram BuJo assistant, Slack MCP bot, local-only Ollama, sandboxed code agent, and more).
 - **[Packages](/reference/packages/)** — every published package, its ownership tier, responsibility, npm page, and authoritative README.
@@ -64,6 +64,6 @@ Equivalent env overrides: `MONO_AGENT_MODEL=openai-codex:gpt-5.6-terra` and, for
 
 ## Config-first philosophy
 
-Everything that defines a running agent lives in `mono-agent.config.json`, resolved with a strict precedence for fields that expose an environment mapping: **process env > `mono-agent.config.json` > built-in defaults**. Documented `MONO_AGENT_*` overrides let one source config run in different environments without embedding credentials; JSON-only fields remain in the config file.
+Everything that defines a running agent lives in `mono-agent.config.json`, with built-in defaults for omitted fields. Former core `MONO_AGENT_*` overrides are silently ignored; environment values remain for secret references, adapter inputs, and process plumbing.
 
-External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback TUI endpoint defaults on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. Approval gates, structured output, custom runtimes/channels, and direct runtime live input are programmatic escape hatches; managed Slack, Telegram, and web-console turns provide live follow-up steering automatically on capable providers. See [Programmatic](/programmatic/).
+External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback operator endpoint (compatibility id `tui`) defaults on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. Approval gates, structured output, custom runtimes/channels, and direct runtime live input are programmatic escape hatches; managed Slack, Telegram, and web-console turns provide live follow-up steering automatically on capable providers. See [Programmatic](/programmatic/).

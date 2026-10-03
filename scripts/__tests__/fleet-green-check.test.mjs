@@ -70,7 +70,7 @@ const EMPTY_MEMORY_COUNTS = Object.freeze({
 function strictMemoryReport({
   backend = "bujo",
   mode = backend === "bujo" ? "lite" : undefined,
-  status = backend === "none" ? "not_configured" : backend === "supermemory" ? "unknown" : "healthy",
+  status = backend === "none" ? "not_configured" : "healthy",
   checkedAt = MEMORY_CHECKED_AT,
   issues = [],
   counts = EMPTY_MEMORY_COUNTS,
@@ -734,7 +734,6 @@ describe("strict memory health", () => {
     [strictMemoryReport({ mode: "journal", status: "in_progress", issues: ["mutation_in_progress"] }), 0, "in_progress"],
     [strictMemoryReport({ mode: "bujo", status: "degraded", issues: ["runtime_stale"] }), 1, "degraded"],
     [strictMemoryReport({ backend: "none" }), 0, "not_configured"],
-    [strictMemoryReport({ backend: "supermemory" }), 1, "unknown"],
   ])("accepts the complete closed backend report %#", (report, exitCode, status) => {
     expect(parseMemoryAudit(JSON.stringify(report), exitCode)).toEqual({ ran: true, status });
   });
@@ -780,8 +779,9 @@ describe("strict memory health", () => {
     ["not-configured bujo", { status: "not_configured" }, 0],
     ["none with a mode", { backend: "none", mode: "lite", status: "not_configured" }, 0],
     ["healthy none", { backend: "none", mode: undefined, status: "healthy" }, 0],
-    ["supermemory with a mode", { backend: "supermemory", mode: "lite", status: "unknown" }, 1],
-    ["not-configured supermemory", { backend: "supermemory", mode: undefined, status: "not_configured" }, 0],
+    ["retired supermemory backend", { backend: "supermemory", mode: undefined, status: "unknown" }, 1],
+    ["retired supermemory with a mode", { backend: "supermemory", mode: "lite", status: "unknown" }, 1],
+    ["not-configured retired supermemory", { backend: "supermemory", mode: undefined, status: "not_configured" }, 0],
   ])("rejects invalid backend/status/mode combination: %s", (_label, values, exitCode) => {
     expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode)).toEqual({ ran: true, malformed: true });
   });
@@ -1025,8 +1025,8 @@ describe("buildFleetReport", () => {
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), down] });
     expect(report.verdict).toBe("RED");
     expect(report.exitCode).toBe(1);
-    expect(report.reason).toBe("personal-agent-00000001: not running (last exit 1)");
-    expect(report.verdictLine).toBe(`VERDICT: RED ${DATE} — personal-agent-00000001: not running (last exit 1)`);
+    expect(report.reason).toBe("example-instance-00000001: not running (last exit 1)");
+    expect(report.verdictLine).toBe(`VERDICT: RED ${DATE} — example-instance-00000001: not running (last exit 1)`);
   });
 
   it("RED-loaded-stale: a running pre-build process drives RED in its own column", () => {
@@ -1125,7 +1125,7 @@ describe("buildFleetReport", () => {
     cancelled.metrics = metrics({ totalRuns: 25, failedRuns: 0, failureKinds: [{ kind: "cancelled_stale", count: 1 }] });
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), cancelled] });
     expect(report.verdict).toBe("GREEN");
-    expect(report.table).toContain("| personal-agent-00000001 | ok | ok | ok | ok | healthy | ok | 25 runs, 0 failed, 1 cancelled |");
+    expect(report.table).toContain("| example-instance-00000001 | ok | ok | ok | ok | healthy | ok | 25 runs, 0 failed, 1 cancelled |");
   });
 
   it("--min-runs escalates a too-quiet instance to RED", () => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   isAgentReplyPartDeliveryOutcomes,
+  appendReplyPartFallback,
+  sanitizeRestartProposalReason,
   MAX_AGENT_REPLY_PARTS,
   sanitizeReplyPartDeliveryOutcomes,
   unsupportedReplyPartDeliveryOutcomes,
@@ -9,6 +11,17 @@ import {
 } from "../index.js";
 
 describe("rich reply part delivery outcomes", () => {
+  it("keeps restart proposals display-only and non-actionable on unsupported channels", () => {
+    const part = { type: "restart_proposal", id: "proposal-1", reason: "private://no-link" } as const;
+    const outcomes = unsupportedReplyPartDeliveryOutcomes([part]);
+    expect(outcomes).toEqual([{ partIndex: 0, partType: "restart_proposal", status: "failed",
+      code: "unsupported_destination", message: "Restart proposals are available only in the web console; no restart was requested." }]);
+    const human = appendReplyPartFallback("Answer", [part], "human");
+    expect(human).toContain("no restart was requested");
+    expect(human).not.toContain(part.reason);
+    expect(appendReplyPartFallback("Answer", [part], "none")).toBe("Answer");
+    expect(sanitizeRestartProposalReason(`reason\n\t${"x".repeat(300)}`)).toHaveLength(280);
+  });
   it("emits one sanitized terminal failure for every supported rich-part kind", () => {
     const sensitive = "/synthetic-private/report.csv?token=secret#sha256:deadbeef";
     const outcomes = unsupportedReplyPartDeliveryOutcomes([
@@ -275,4 +288,13 @@ describe("rich reply part delivery outcomes", () => {
     expect(unsupportedReplyPartDeliveryOutcomes(undefined)).toBeUndefined();
     expect(unsupportedReplyPartDeliveryOutcomes([])).toBeUndefined();
   });
+});
+
+it("sanitizes quick replies without copying choice labels into machine outcomes", () => {
+  const parts = [{ type: "reply_options" as const, id: "opaque", options: ["Review draft", "Continue"] }];
+  const outcomes = unsupportedReplyPartDeliveryOutcomes(parts);
+  expect(outcomes).toEqual([{ partIndex: 0, partType: "reply_options", status: "failed", code: "unsupported_destination",
+    message: "Quick reply buttons are available only in the web console." }]);
+  expect(isAgentReplyPartDeliveryOutcomes(outcomes)).toBe(true);
+  expect(JSON.stringify(outcomes)).not.toContain("Review draft");
 });

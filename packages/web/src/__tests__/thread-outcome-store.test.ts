@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WebStore } from "../store.js";
-import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 import { threadPresentation } from "../../webapp/src/thread-presentation.js";
 
 const roots: string[] = [];
@@ -27,32 +27,23 @@ async function setup() {
     jobInput, addJob: () => store.upsertProcessJobCard({ ...jobInput,
       processJob: { ...job, timestamps: { ...job.timestamps, completedAt: now.toISOString() } } }),
     advance: () => { now = new Date(now.getTime() + 60_000); },
-    wake: (kind: "monitor" | "process", reply = "NOTHING_TO_REPORT", late = false) => {
+    wake: (kind: "process", reply = "NOTHING_TO_REPORT", late = false) => {
       const turn = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
       let key: string;
       let settle: () => unknown;
-      if (kind === "monitor") {
-        const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
-        key = `monitor:${monitor.monitorId}:1`;
-        store.reserveMonitorWake({ sourceId: "agent-one", threadId: thread.id, monitorId: monitor.monitorId,
-          deliveryKey: key, payloadSha256: "a".repeat(64), monitor });
-        settle = () => store.completeMonitorWake({ sourceId: "agent-one", monitorId: monitor.monitorId,
-          deliveryKey: key, disposition: "follow_up", turnId: turn.turnId });
-      } else {
         key = jobInput.deliveryKey;
         store.reserveProcessJobWake(jobInput);
         settle = () => store.completeProcessJobWake({ ...jobInput, disposition: "follow_up", turnId: turn.turnId });
-      }
       if (!late) settle();
       store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: reply }]);
-      store.completeTurn(turn.turnId, reply, undefined, undefined, { monitorWakeDeliveryKey: key });
+      store.completeTurn(turn.turnId, reply, undefined, undefined, { hostWakeDeliveryKey: key });
       if (late) settle();
       return turn;
     } };
 }
 
 describe("meaningful conversation outcomes", () => {
-  it.each(["monitor", "process"] as const)("retains a job failure through a silent %s wake and reopen", async (kind) => {
+  it.each(["process"] as const)("retains a job failure through a silent %s wake and reopen", async (kind) => {
     const s = await setup();
     try {
       s.addJob();
@@ -69,7 +60,7 @@ describe("meaningful conversation outcomes", () => {
     } finally { s.store.close(); }
   });
 
-  it.each(["monitor", "process"] as const)("clears an older foreground failure through late %s settlement and omits idle status", async (kind) => {
+  it.each(["process"] as const)("clears an older foreground failure through late %s settlement and omits idle status", async (kind) => {
     const s = await setup();
     try {
       if (kind === "process") s.addJob();
@@ -87,7 +78,7 @@ describe("meaningful conversation outcomes", () => {
     } finally { s.store.close(); }
   });
 
-  it.each(["monitor", "process"] as const)("lets a meaningful %s wake resolve a job failure and omits idle status", async (kind) => {
+  it.each(["process"] as const)("lets a meaningful %s wake resolve a job failure and omits idle status", async (kind) => {
     const s = await setup();
     try {
       s.addJob(); s.advance(); s.wake(kind, "The failure is resolved.");
@@ -101,7 +92,7 @@ describe("meaningful conversation outcomes", () => {
     try {
       const user = s.store.beginTurn({ threadId: s.thread.id, text: "Start", attachmentIds: [] });
       s.store.completeTurn(user.turnId, "Earlier answer");
-      s.advance(); s.addJob(); s.advance(); s.wake("monitor");
+      s.advance(); s.addJob(); s.advance(); s.wake("process");
       expect(s.summary().runState.lastOutcome?.finishedAt).toBe("2026-09-07T10:00:00.000Z");
       expect(s.summary().runState.finishedAt).toBe("2026-09-07T10:02:00.000Z");
       expect(s.present()).toEqual({ text: "Background job failed", active: false });
@@ -132,22 +123,6 @@ describe("meaningful conversation outcomes", () => {
       s.store.completeTurn(host.turnId, "\u00a0\u2003\ufeff");
       expect(s.summary().runState.lastOutcome).toBeNull();
       expect(s.present()).toEqual({ text: "Background job failed", active: false });
-    } finally { s.store.close(); }
-  });
-
-  it("normalizes historical Monitor sentinel bytes without rewriting their stored message", async () => {
-    const s = await setup();
-    try {
-      s.addJob(); s.advance();
-      const host = s.wake("monitor");
-      const raw = new DatabaseSync(s.store.paths.database);
-      try {
-        const parts = JSON.stringify([{ type: "text", text: "NOTHING_TO_REPORT" }]);
-        raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(parts, host.assistantMessageId);
-        expect(s.present()).toEqual({ text: "Background job failed", active: false });
-        expect(raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(host.assistantMessageId))
-          .toMatchObject({ parts_json: parts });
-      } finally { raw.close(); }
     } finally { s.store.close(); }
   });
 });

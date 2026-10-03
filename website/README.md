@@ -1,6 +1,6 @@
 # mono-agent documentation site
 
-The published docs at **<https://mono-agent-docs.vercel.app/>** are an [Astro Starlight](https://starlight.astro.build/) app deployed on Vercel. The prose itself is **not** authored here — it lives, canonically, as Markdown under [`../docs/`](../docs/). This `website/` directory only renders it.
+The published docs at **<https://docs.mono-agent.dev/>** are an [Astro Starlight](https://starlight.astro.build/) app deployed on Vercel. The prose itself is **not** authored here — it lives, canonically, as Markdown under [`../docs/`](../docs/). This `website/` directory only renders it.
 
 ## Architecture
 
@@ -66,4 +66,4 @@ Link validation remains the repository-owned `scripts/check-links.mjs`, which ch
 
 ## Vercel deployment
 
-`vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`, `outputDirectory: dist`. In the Vercel project, set **Root Directory = `website`** so the isolated workspace is what builds. The site is live at `https://mono-agent-docs.vercel.app/`.
+`vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`, `outputDirectory: dist`. In the Vercel project, set **Root Directory = `website`** so the isolated workspace is what builds. The site is live at `https://docs.mono-agent.dev/`.

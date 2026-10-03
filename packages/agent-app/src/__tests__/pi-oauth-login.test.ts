@@ -84,6 +84,30 @@ describe("Pi OAuth terminal wrapper", () => {
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
   });
 
+  it.skipIf(process.platform === "win32")("passes a durable ID across staged ChatGPT logins and a full manual redirect URL", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-oauth-wrapper-"));
+    dirs.push(dir);
+    const durablePath = join(dir, "durable.json");
+    const stagedPath = join(dir, "staged.json");
+    const redirect = "http://127.0.0.1:1455/auth/callback?code=fake&state=expected&client_id=fake-issued";
+    const ids: string[] = [];
+    const provider = {
+      name: "OpenAI",
+      login: vi.fn(async (interaction: ProviderAuthInteraction, options: { getDeviceId(): string }) => {
+        ids.push(options.getDeviceId());
+        expect(await interaction.prompt({ type: "manual_code", message: "Paste full URL" })).toBe(redirect);
+        return { type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: 4_200_000_000_000, clientId: "fake-issued" };
+      }),
+    } as unknown as OAuthAuth;
+    for (let index = 0; index < 2; index += 1) {
+      await runPiOAuthLogin("openai", { authPath: stagedPath, deviceIdAuthPath: durablePath,
+        provider, io: { ask: async () => redirect, write: vi.fn() } });
+    }
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(JSON.parse(await readFile(stagedPath, "utf8")).openai.clientId).toBe("fake-issued");
+  });
+
   it("keeps Anthropic's shipped code/state validation when its fixed callback port is occupied", async () => {
     const { stdout } = await execFileAsync(process.execPath, [wrongStateFixture], {
       encoding: "utf8",

@@ -189,6 +189,24 @@ describe("BujoMemoryStore.remember — idempotency across partial failure", () =
     }
   });
 
+  it("recovers a Journal write after a crash with a malformed label in another line", async () => {
+    const dir = root("journal-bad-label-recovery");
+    const store = storeFor(dir, "journal", () => FIXED);
+    try {
+      await store.remember("conv-1", "Morgan keeps the short project notes.");
+      const path = dailyFilePath(dir, FIXED);
+      writeFileSync(path, readFileSync(path, "utf8").replace("refs=", "refs=label:v1:bad,"));
+      const failed = vi.spyOn(store["db"] as never, "insertJournalLexical")
+        .mockImplementationOnce(() => { throw new Error("simulated index crash"); });
+      const text = "Morgan keeps the weekly project notes.";
+      await expect(store.remember("conv-1", text)).rejects.toThrow(/simulated index crash/u);
+      failed.mockRestore();
+      expect((await store.remember("conv-1", text)).recovered).toBe(true);
+      expect(bulletsIn(dir, FIXED)).toHaveLength(2);
+      expect(bulletsIn(dir, FIXED)[0]?.refs).toContain("label:v1:bad");
+    } finally { await store.close(); }
+  });
+
   it("treats the same fact remembered on a later day as a duplicate", async () => {
     const dir = root("crossday");
     let now = new Date("2026-09-03T12:00:00.000Z");

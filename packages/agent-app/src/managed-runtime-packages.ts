@@ -6,7 +6,6 @@ import { pathToFileURL } from "node:url";
 import { loadAppCoreConfig } from "./app-config.js";
 import { configuredChannelPluginPackageNames } from "./channel-plugins.js";
 import type { ManagedRuntimeAdditionalPackage } from "./background-runtime.js";
-import { SUPERMEMORY_PLUGIN_PACKAGE } from "./supermemory-plugin.js";
 
 export interface ResolveManagedRuntimePackagesInput {
   readonly cwd: string;
@@ -25,12 +24,6 @@ export async function resolveConfiguredManagedRuntimePackages(
   ]);
   const requirements = new Map<string, boolean>();
   for (const packageName of channelPackages) requirements.set(packageName, false);
-  if (config.memory?.backend === "supermemory") {
-    // Preserve Supermemory's established explicit agent-folder precedence,
-    // then copy that exact selection into the managed app-side closure. The
-    // worker resolves app-first only after this immutable copy is complete.
-    requirements.set(SUPERMEMORY_PLUGIN_PACKAGE, true);
-  }
 
   const appBase = import.meta.url;
   const cwdBase = pathToFileURL(join(cwd, "package.json")).href;

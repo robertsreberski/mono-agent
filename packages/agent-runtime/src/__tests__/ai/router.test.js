@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
 const resolveRuntimeBridgeMock = vi.fn();
@@ -23,7 +23,6 @@ vi.mock("../../ai/runtime/registry.js", async () => {
 const { createRouterRuntime } = await import("../../ai/runtime/router.js");
 const { createRuntime } = await import("../../runtime.js");
 const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
-const { resetToolRuntime } = await import("../../agent/tools/shared/runtime-context.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
 function modelRef(provider, model) {
@@ -35,14 +34,20 @@ beforeEach(() => {
   runtimeCapabilitiesMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
   resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
-  resetToolRuntime();
 });
 
-afterEach(() => {
-  resetToolRuntime();
-});
 
 describe("createRouterRuntime — basic", () => {
+  it("never retries or falls back a manual compaction of the primary session", async () => {
+    executeMock.mockResolvedValueOnce({ error: "summary failed", failureKind: "provider_unavailable" });
+    const primary = modelRef("anthropic", "claude-opus-4-7");
+    const router = createRouterRuntime({ chain: [primary, modelRef("openai-codex", "gpt-5.5")] });
+    const result = await router.run("sys", { model: primary, manualCompaction: true,
+      sessionId: "owned", sessionKeepAlive: true, messages: [] });
+    expect(result.error).toBe("summary failed");
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ sessionId: "owned", manualCompaction: true });
+  });
   it("rejects an empty chain", () => {
     expect(() => createRouterRuntime({ chain: [] })).toThrow(/non-empty chain/);
   });
@@ -889,8 +894,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       ],
       resolveAttempt: ({ model }) => ({
         policyOptions: model.provider === "openai-codex"
-          ? { allowedTools: ["*"], disallowedTools: [], permissionMode: "plan" }
-          : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"], permissionMode: undefined },
+          ? { allowedTools: ["*"], disallowedTools: [] }
+          : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"] },
       }),
     });
 
@@ -904,13 +909,11 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(executeMock.mock.calls[0][1]).toMatchObject({
       allowedTools: ["*"],
       disallowedTools: [],
-      permissionMode: "plan",
     });
     expect(executeMock.mock.calls[1][1]).toMatchObject({
       allowedTools: ["Read", "Agent"],
       disallowedTools: ["Write"],
     });
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("permissionMode");
   });
 
   it("keeps primary run-level custom metadata for compatibility but scrubs every fallback without a resolver", async () => {
@@ -1108,6 +1111,37 @@ describe("createRouterRuntime — same-model retry", () => {
     expect(result.text).toBe("bigger window");
     expect(executeMock).toHaveBeenCalledTimes(2);
     expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("advances past ChatGPT subscription exhaustion without retrying the same route", async () => {
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "subscription_sharing_usage_limit_exceeded", failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "fallback worked", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }, { model: SONNET }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("fallback worked");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.failoverHistory[0].retryableSubkind).toBe("subscription_limit");
+    expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("fails over from an OpenAI ChatGPT subscription limit without retrying that route", async () => {
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "subscription_sharing_usage_limit_exceeded", failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "fallback worked", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [{ model: modelRef("openai", "gpt-5.5"), attempts: 3 }, { model: modelRef("openai-codex", "gpt-5.6-sol") }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("fallback worked");
+    expect(result.failoverHistory[0].retryableSubkind).toBe("subscription_limit");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[0][1].model.provider).toBe("openai");
+    expect(executeMock.mock.calls[1][1].model.provider).toBe("openai-codex");
   });
 
   it("retries a terminated stream on the same model", async () => {

@@ -111,7 +111,8 @@ describe("passthroughSandbox (zero-dependency default)", () => {
 
       const result = await webSearchToolImpl({ query: "mono agent" }, { ctx });
 
-      expect(result).toBe("Error: Network access denied by sandbox policy.");
+      expect(JSON.parse(result)).toMatchObject({ tool: "WebSearch", status: "blocked", code: "network_denied" });
+      expect(JSON.parse(result).summary).toContain("Network access denied by sandbox policy");
       expect(calls).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
@@ -127,7 +128,8 @@ describe("passthroughSandbox (zero-dependency default)", () => {
 
       const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx });
 
-      expect(result).toBe("Error: Network access denied by sandbox policy.");
+      expect(JSON.parse(result)).toMatchObject({ tool: "WebFetch", status: "blocked", code: "network_denied" });
+      expect(JSON.parse(result).summary).toContain("Network access denied by sandbox policy");
       expect(calls).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
@@ -191,7 +193,8 @@ describe("delegation to an injected RuntimeSandbox", () => {
 
     const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx });
 
-    expect(result).toBe("Error: Network access denied by sandbox policy.");
+    expect(JSON.parse(result)).toMatchObject({ tool: "WebFetch", status: "blocked", code: "network_denied" });
+    expect(JSON.parse(result).summary).toContain("Network access denied by sandbox policy");
     expect(sandbox.calls.networkAllowsUrl[0][0]).toEqual(hostPolicy);
     expect(sandbox.calls.networkAllowsUrl[0][1]).toBe("https://example.com/");
   });
@@ -203,7 +206,8 @@ describe("delegation to an injected RuntimeSandbox", () => {
 
     const result = await webSearchToolImpl({ query: "mono agent" }, { ctx });
 
-    expect(result).toBe("Error: Network access denied by sandbox policy.");
+    expect(JSON.parse(result)).toMatchObject({ tool: "WebSearch", status: "blocked", code: "network_denied" });
+    expect(JSON.parse(result).summary).toContain("Network access denied by sandbox policy");
     expect(sandbox.calls.networkAllowsUrl[0][0]).toEqual(hostPolicy);
   });
 });

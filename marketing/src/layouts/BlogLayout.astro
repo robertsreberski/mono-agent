@@ -1,0 +1,85 @@
+---
+// Shared shell for blog pages: compact native-HTML header, the landing-page
+// footer content, and no client JavaScript. Every page links the RSS feed.
+import Seo from "../components/Seo.astro";
+
+interface SeoExtras {
+  type?: 'website' | 'article';
+  image?: string;
+  imageAlt?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  publishedTime?: string;
+  modifiedTime?: string;
+  tags?: string[];
+  author?: string;
+}
+
+interface Props {
+  title: string;
+  description: string;
+  path: string;
+  seo?: SeoExtras;
+  jsonLd?: Record<string, unknown>;
+}
+
+const { title, description, path, seo = {}, jsonLd } = Astro.props;
+const GITHUB_URL = "https://github.com/robertsreberski/mono-agent";
+const DOCS_URL = "https://docs.mono-agent.dev/";
+const RELEASE_URL = `${GITHUB_URL}/releases/tag/v0.22.0`;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <Seo title={title} description={description} path={path} {...seo} />
+    <meta name="theme-color" content="#101211" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href="/fonts/manrope.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="alternate" type="application/rss+xml" title="mono-agent blog" href="/blog/rss.xml" />
+    <slot name="head" />
+    {jsonLd && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="wrap">
+        <a class="brand" href="/" aria-label="mono-agent — home">
+          <img src="/favicon.svg" alt="" width="30" height="30" aria-hidden="true" />
+          <span>mono-agent</span>
+        </a>
+        <nav class="site-nav blog-nav" aria-label="Blog sections">
+          <ul>
+            <li><a href="/#configuration">Blueprint</a></li>
+            <li><a href="/blog/" aria-current={path.startsWith('/blog') ? 'page' : undefined}>Blog</a></li>
+            <li><a href={DOCS_URL}>Docs</a></li>
+            <li><a href={GITHUB_URL}>GitHub</a></li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>mono-agent — open source under GPL-3.0-only.</span>
+        <nav aria-label="Project links">
+          <ul>
+            <li><a href={GITHUB_URL}>GitHub</a></li>
+            <li><a href={DOCS_URL}>Documentation</a></li>
+            <li><a href={RELEASE_URL}>Release notes</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/privacy/">Privacy</a></li>
+          </ul>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

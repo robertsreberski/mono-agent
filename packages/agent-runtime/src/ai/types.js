@@ -16,7 +16,7 @@
 
 /**
  * @typedef {"pi"} RuntimeBridgeId
- * Registry bridge id. See src/ai/runtime/registry.js's builtinBridgeSpecs.
+ * Direct Pi bridge id returned by src/ai/runtime/registry.js.
  */
 
 /**
@@ -144,8 +144,7 @@
 
 /**
  * @typedef {Object} RuntimeToolLimits
- * Typed per-run tool-output limits (the supported replacement for the
- * `agent_tool_*` / `agent_mcp_*` keys of the deprecated `settings` bag). Every
+ * Typed per-run tool-output limits. Every
  * field is optional; an omitted field falls back to the kernel default (see
  * resolveAgentCompactionPolicy, agent/compaction.js).
  * @property {number} [toolTextLimitChars]        Max chars of a builtin tool's text result.
@@ -164,8 +163,7 @@
 
 /**
  * @typedef {Object} RuntimeCompactionPolicy
- * Typed per-run context-compaction policy (the supported replacement for the
- * `agent_compaction_*` keys of the deprecated `settings` bag). Every field is
+ * Typed per-run context-compaction policy. Every field is
  * optional; omitted scalar budgets resolve adaptively against the effective
  * model context window.
  * @property {boolean} [enabled]              Whether auto-compaction runs at all.
@@ -174,7 +172,7 @@
  * @property {number} [summaryMaxTokens]      Combined output-token budget for generated compaction summaries.
  * @property {number} [minSavingsTokens]      Minimum token savings required for proactive compaction; reactive recovery accepts any positive reduction.
  * @property {boolean} [fixedOverheadEnabled] Whether the system-prompt + tool-schema overhead correction is folded into the trigger.
- * @property {number} [contextWindowOverride] Persistent correction for provider context-window metadata; learned overflow evidence may lower it process-locally (applied at resolveLiveCompactionPolicy; has no legacy settings equivalent).
+ * @property {number} [contextWindowOverride] Persistent correction for provider context-window metadata; learned overflow evidence may lower it process-locally (applied at resolveLiveCompactionPolicy).
  */
 
 /**
@@ -194,9 +192,10 @@
 
 /**
  * @typedef {Object} RuntimeRunOptions
- * @property {{monitors?: boolean, persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
+ * @property {{persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
  * @property {Record<string, {available: boolean, reason?: string, limits?: Record<string, number|null>}>} [hostCapabilities] Current non-authorizing host facts.
  * @property {{submit(question: {question: string, options?: string[]}): Promise<void>}} [askParentController]
+ * @property {{eligible(): boolean}} [finishSilentlyController]
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
@@ -204,6 +203,7 @@
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
+ * @property {boolean} [manualCompaction] Internal promptless Pi compaction mode; never sent to fallback routes.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, acknowledge?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, uncertain?: (details: {reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}) => unknown, reject?: (error?: unknown) => unknown}>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation. An optional opaque logicalOwner object proves that a later same-id value is a fresh callback lease for the first logical owner, not an independent duplicate.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
@@ -219,7 +219,6 @@
  * @property {string} [skillsRoot]                       Directory holding `<name>/SKILL.md`. Required alongside `skills` for `ReadSkill` to be built.
  * @property {ReadonlyArray<string>} [allowedTools]
  * @property {ReadonlyArray<string>} [disallowedTools]
- * @property {string} [permissionMode]
  * @property {number} [maxTurns]
  * @property {number} [providerCheckMaxTokens] Internal provider-check output cap; ordinary callers must omit it.
  * @property {{env(name: string): Promise<string|undefined>, fileExists(path: string): Promise<boolean>}} [providerCheckAuthContext] Internal provider-check effective auth context; ordinary callers must omit it.
@@ -231,23 +230,21 @@
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
- * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
+ * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits.
  * @property {readonly string[]} [mcpCallNoTotalTimeoutTools] Exact `server:tool`
  *   names whose host-owned lifecycle has no total deadline. Inactivity and abort still apply.
- * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
+ * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy.
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
  * @property {any} [webRequestCoordinator] Host-owned shared web admission and quota state.
- * @property {{backend?: "auto"|"searxng"|"ollama"|"codex"|"keyless", maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
+ * @property {{backend?: string|readonly string[], maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}, parallel?: {apiKeyEnv?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {any} [webSearchState] Private request budget and provider deferral state for one logical run.
- * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
+ * @property {{provider?: "local"|"parallel"|readonly ("local"|"parallel")[], parallel?: {apiKeyEnv?: string}, render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
- * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {import('../agent/tools/shared/owned-foreground-process.js').OwnedForegroundProcesses} [ownedForegroundProcesses] Host-bound awaited command ownership; no child background capability.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {{chainDepth: number, maxChainDepth: number, remainingStarts: number, unavailableReason?: string}} [processJobsAvailability] Host-owned request lineage diagnostics, including when the controller is unavailable.
- * @property {import('../agent/tools/shared/monitors.js').MonitorsController} [monitors] Pi-native-only structural monitor controller. When absent, the Monitor and MonitorStop tools are not registered at all.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.
@@ -324,6 +321,10 @@
  * @property {RuntimeSubagentDefinition} definition
  * @property {string} sessionId
  * @property {string} sessionsRoot
+ * @property {string} [settledTurnToken]
+ * @property {string} [lastStatus]
+ * @property {object} [recovery]
+ * @property {boolean} [recoveryBlocked]
  * @property {string} status
  * @property {{question: string, options?: string[]}} [pendingQuestion]
  * @property {{token: string}} [reservation]
@@ -336,6 +337,11 @@
  * @typedef {{ack: string, message: string, background?: boolean, close?: boolean, description?: string}} RuntimeSubagentRecoveryRequest
  */
 /**
+ * A new route for the turn being admitted. The host persists it on the stored
+ * definition, so later continuations inherit it.
+ * @typedef {{model?: RuntimeModelRef, effort?: string}} RuntimeSubagentRoute
+ */
+/**
  * Host-owned, conversation-scoped persistent instance facade. No filesystem implementation belongs in the kernel.
  * @typedef {Object} RuntimeSubagentInstances
  * @property {() => Promise<RuntimeSubagentInstance[]>} list
@@ -345,9 +351,9 @@
  * @property {(id: string, question: {question: string, options?: string[]}) => Promise<RuntimeSubagentInstance>} markAwaiting
  * @property {(id: string, access?: unknown) => Promise<unknown>} [inspect]
  * @property {(id: string, acknowledgement: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<void>} [checkAcknowledgement]
- * @property {(id: string, token: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} [reserve]
+ * @property {(id: string, token: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown, route?: RuntimeSubagentRoute, createdForAdmission?: boolean) => Promise<RuntimeSubagentInstance>} [reserve]
  * @property {(id: string, token: string) => Promise<void>} [releaseReservation]
- * @property {(id: string, token?: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown) => Promise<RuntimeSubagentInstance>} begin
+ * @property {(id: string, token?: string, acknowledgement?: RuntimeSubagentRecoveryRequest, access?: unknown, route?: RuntimeSubagentRoute) => Promise<RuntimeSubagentInstance>} begin
  * @property {(id: string, outcome: {status: string, failureKind?: "session_continuity_lost", question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
  * @property {(id: string, access?: unknown) => Promise<RuntimeSubagentInstance>} close
  */
@@ -356,7 +362,7 @@
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
- * @property {{managed?: boolean, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentSend", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null}>}} [backgroundSubagentController]
+ * @property {{managed?: boolean, stop?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}): Promise<{jobId: string, stopRequested: boolean, childStillBusy: boolean, resumable: boolean, disposition: string|null}>, steer?(identity: {instanceId: string, instanceIncarnation: string, turnToken: string}, text: string): Promise<{jobId: string, delivery: "consumed"|"offered"|"rejected"|"unsupported", reason?: string}>, startInternal(request: {managed?: {instanceIncarnation: string, turnToken: string}, kind: "internal", tool: "Agent"|"AgentManage", jobId: string, instanceId: string, description?: string, timeoutMs: number, cleanup(): Promise<void>, run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: *) => void, execution?: {deadlineAt: number, managed?: any}): Promise<{answer?: string, output: string, status: string, childStillBusy?: boolean, question?: {question: string, options?: string[]}}>}): Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null, queuePosition?: number, queueDeadlineAt?: string}>}} [backgroundSubagentController]
  * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
@@ -369,8 +375,10 @@
 
 /**
  * @typedef {Object} RuntimeResult
+ * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
+ * @property {"silent"|"visible"} [turnDisposition] Host-certified silent completion, when applicable.
  * @property {*} [structuredResult]
  * @property {string|null} [structuredResultSource]
  * @property {Array<RuntimeEvent>} [events]
@@ -478,7 +486,7 @@
 /**
  * @typedef {Object} AgentRuntimeHostOptions
  * The `host` object passed to `createRuntime(host)` / `createRouterRuntime({host, chain})`.
- * Combines the tool-runtime keys (forwarded to configureToolRuntime) and the
+ * Combines the tool-context keys (bound per runtime instance) and the
  * host-integration callbacks (bound once, applied to every run via hostDefaults).
  * @property {string} [workspace]
  * @property {string} [repoRoot]
@@ -526,6 +534,7 @@
  * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
+ * @property {(providerSessionId: string, sessionsRoot: string) => ReturnType<typeof import('./providers/pi-native/session-salvage.js').salvageDurableNativeSession>} [salvageDurableSession] Read-only best-effort snapshot of a durable Pi transcript.
  * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
  * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession

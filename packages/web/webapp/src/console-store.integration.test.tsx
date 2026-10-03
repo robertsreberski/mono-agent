@@ -1,8 +1,8 @@
 // The console keeps recent conversations on the device now, so every test in
 // this file runs the persistence path as well: hydration before the first read,
-// and the debounced write-through behind it. The store is emptied before each
-// test, so what any one of them restores is exactly what it seeded.
-import "fake-indexeddb/auto";
+// and the debounced write-through behind it. Each case owns a fresh IndexedDB
+// factory, so even a previous case's late write cannot reach what it hydrates.
+import { IDBFactory } from "fake-indexeddb";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { act, cleanup as cleanupDom, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
@@ -17,6 +17,8 @@ import {
   THREAD_PAGE_LIMIT,
 } from "./api";
 import { writeDataModeSetting } from "./data-mode";
+import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry } from "./mobile-history";
+import { closeSettingsHistory } from "./settings-navigation";
 import {
   readComposerDraft,
   resetComposerDraft,
@@ -235,10 +237,10 @@ const detail = (threadSummary = cronThread, text = "first"): ThreadDetail => ({
  * Another owner of the same device store -- which is what a second tab is, and
  * what these tests use to seed a visit and to read back what one wrote.
  */
-const deviceStore = createThreadPersistence();
+let deviceStore: ReturnType<typeof createThreadPersistence>;
 
 /** The real (fake-indexeddb) factory, kept for the tests that stub a broken one. */
-const realIndexedDb = globalThis.indexedDB;
+let realIndexedDb: IDBFactory;
 
 /** An `indexedDB.open` that answers nothing at all -- WebKit, after a suspension. */
 const deafIndexedDb = (): IDBFactory => ({
@@ -284,7 +286,12 @@ const slowIndexedDb = (delay: number | Promise<void>): IDBFactory => ({
 
 describe("ConsoleStoreProvider integration", () => {
   beforeEach(async () => {
-    await deviceStore.clearAll();
+    // Clearing a shared database does not fence a save still awaiting open:
+    // its transaction can start after the clear commits, even after unmount.
+    // Keep late operations on the previous case's factory, not this one's.
+    realIndexedDb = new IDBFactory();
+    vi.stubGlobal("indexedDB", realIndexedDb);
+    deviceStore = createThreadPersistence();
     resetComposerDraft();
     vi.clearAllMocks();
     // `clearAllMocks` forgets CALLS, not implementations. A `mockImplementation`
@@ -334,9 +341,56 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   afterEach(() => {
+    // The setup-file cleanup runs later (Vitest stacks afterEach hooks). Unmount
+    // while the stream and device globals are still available to passive effects.
+    cleanupDom();
+    deviceStore.close();
     vi.useRealTimers();
     resetServerClock();
     vi.unstubAllGlobals();
+  });
+
+  describe.sequential("device-store isolation across cases", () => {
+    let pending: { release: () => void; write: Promise<void> } | undefined;
+
+    it("leaves a teardown write waiting for its database open", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const factory = slowIndexedDb(gate);
+      const writer = createThreadPersistence({ factory: () => factory });
+      const summary = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
+      const write = writer.save({ entries: [{
+        thread: summary,
+        messages: [{ ...detail(summary, "Previous case answer").messages[0]!,
+          id: "alpha-first-assistant-1" }],
+        stale: false,
+        syncedAt: 0,
+        repairedToolCallIds: new Set<string>(),
+        pagedInIds: new Set<string>(),
+      }] });
+      // Like a debounce that fired just before unmount: close does not wait for
+      // the save already awaiting open. Release it only AFTER the next setup.
+      writer.close();
+      pending = { release, write };
+    });
+
+    it("cannot hydrate a previous case's late transcript", async () => {
+      if (pending !== undefined) {
+        pending.release();
+        await pending.write;
+        pending = undefined;
+      }
+      const summary = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [summary], summary.id));
+      vi.mocked(api.thread).mockResolvedValue({
+        ...detail(summary, "Current case answer"),
+        messages: [{ ...detail(summary, "Current case answer").messages[0]!,
+          id: "alpha-first-assistant-1" }],
+      });
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.detail?.messages[0]?.parts)
+        .toEqual([{ type: "text", text: "Current case answer" }]));
+    });
   });
 
   it("keeps the server's clock from the stamp on every event", async () => {
@@ -520,6 +574,10 @@ describe("ConsoleStoreProvider integration", () => {
     }
   });
 
+  // The full shell (dashboard + chat) renders under CI's parallel package load;
+  // the default 1 s find and 5 s test timeouts are too tight for it.
+  const REAL_SHELL_RENDER_TIMEOUT_MS = 5_000;
+  const REAL_SHELL_TEST_TIMEOUT_MS = 30_000;
   it("keeps unsent composer text when the operator switches conversations in the real shell", async () => {
     const alphaAgent = agent("alpha", { label: "Alpha" });
     const first = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
@@ -557,10 +615,17 @@ describe("ConsoleStoreProvider integration", () => {
     });
     const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
+    // A failed findByText prints only the truncated dashboard DOM in CI. Observe
+    // which stage the initial read reached without changing the assertion or its
+    // deadline; these spies retain the real IndexedDB and console.debug behavior.
+    let observedStore: Store | undefined;
+    const deviceOpens = vi.spyOn(indexedDB, "open");
+    const deviceLogs = vi.spyOn(console, "debug");
 
     try {
       render(
         <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { observedStore = store; }} />
           <NotificationsProvider>
             <WebRuntimeProvider>
               <div className="app-shell">
@@ -572,13 +637,47 @@ describe("ConsoleStoreProvider integration", () => {
         </ConsoleStoreProvider>,
       );
 
-      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      try {
+        expect(await screen.findByText("Alpha first answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
+      } catch (error) {
+        // No transcript or prompt text: bounded facts that distinguish a stuck
+        // hydration, selection, detail request, and runtime projection on the
+        // next failure. Keep the original Testing Library failure and DOM dump.
+        console.error("Real-shell initial detail diagnostic:", JSON.stringify({
+          store: observedStore === undefined ? null : {
+            loading: observedStore.loading,
+            error: observedStore.error,
+            selectedAgentId: observedStore.selectedAgentId,
+            selectedThreadId: observedStore.selectedThreadId,
+            detailThreadId: observedStore.detail?.thread.id ?? null,
+            detailMessages: observedStore.detail?.messages.length ?? null,
+            detailLoading: observedStore.detailLoading,
+            selectionLoading: observedStore.selectionLoading,
+          },
+          calls: {
+            bootstrap: vi.mocked(api.bootstrap).mock.calls.length,
+            threads: vi.mocked(api.threads).mock.calls.slice(0, 8).map(([sourceId]) => sourceId),
+            thread: vi.mocked(api.thread).mock.calls.slice(0, 8).map(([threadId]) => threadId),
+            threadIfChanged: vi.mocked(api.threadIfChanged).mock.calls.slice(0, 8).map(([threadId]) => threadId),
+          },
+          deviceOpens: deviceOpens.mock.results.slice(0, 8).map((result) =>
+            result.type === "return" ? result.value.readyState : result.type),
+          deviceLogs: deviceLogs.mock.calls.flat().map(String)
+            .filter((message) => message.includes("device") || message.includes("conversation store"))
+            .slice(-3).map((message) => message.slice(0, 160)),
+          chat: {
+            status: document.querySelector(".chat-status")?.textContent?.trim() ?? null,
+            messageColumn: document.querySelector(".message-column")?.textContent?.trim().slice(0, 120) ?? null,
+          },
+        }));
+        throw error;
+      }
       const input = () => screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
       fireEvent.change(input(), { target: { value: "unfinished thought" } });
       await waitFor(() => expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought"));
 
       fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
-      expect(await screen.findByText("Alpha second answer")).toBeInTheDocument();
+      expect(await screen.findByText("Alpha second answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
       await waitFor(() => expect(input().value).toBe(""));
       // The other conversation's composer must not have inherited the text, and
       // the draft must survive being switched away from.
@@ -586,15 +685,17 @@ describe("ConsoleStoreProvider integration", () => {
       expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
 
       fireEvent.click(screen.getByRole("button", { name: "Open Alpha first" }));
-      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      expect(await screen.findByText("Alpha first answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
       await waitFor(() => expect(input().value).toBe("unfinished thought"));
       expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
     } finally {
       cleanupDom();
+      deviceOpens.mockRestore();
+      deviceLogs.mockRestore();
       if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
       else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
     }
-  });
+  }, REAL_SHELL_TEST_TIMEOUT_MS);
 
   it("publishes an owned pending create immediately and reconciles the server identity", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
@@ -790,6 +891,133 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.submit).not.toHaveBeenCalled();
     expect(store.current.actionError).toBe("guarded create failed");
     expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("self-heals a stale ineligible context draft before creating a conversation", async () => {
+    const ref = "synthetic:standard";
+    const selected = agent("alpha", { defaultModel: ref, models: [ref], modelOptions: { [ref]: {} } });
+    const key = preferenceKeyForThread("alpha", null);
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [key]: { model: ref, effort: "", context1M: true } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("healed", "alpha", { runModel: ref }));
+    const store = await renderStore();
+    expect(store.current.context1M).toBeUndefined();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY) ?? "{}")[key]?.context1M).toBeUndefined());
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: ref, effort: null }, expect.any(AbortSignal), undefined);
+  });
+
+  it.each([true, false])("uses a selected draft model's own configured policy (%s), not another model's defaults", async (enabled) => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: !enabled }, [other]: { supportsContext1M: true, context1M: enabled },
+    }, runSettings: { config: { model: primary, context1M: !enabled }, override: null,
+      effective: { model: primary, modelSource: "config", effortSource: "config", context1M: !enabled } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [preferenceKeyForThread("alpha", null)]: { model: other, effort: "" } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    const store = await renderStore();
+    expect(store.current.context1M).toBe(enabled);
+  });
+
+  it("creates a pinned model with its own policy rather than copying an unrelated explicit web flag", async () => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: true },
+    }, runSettings: { config: { model: primary, context1M: false }, override: { context1M: false },
+      effective: { model: primary, modelSource: "config", effortSource: "config", context1M: false } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [preferenceKeyForThread("alpha", null)]: { model: other, effort: "" } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("context-created", "alpha", { runModel: other, runContext1M: null }));
+    const store = await renderStore(); expect(store.current.context1M).toBe(true);
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: other, effort: null, context1M: null }, expect.any(AbortSignal), undefined);
+    expect(store.current.context1M).toBe(true);
+  });
+
+  it("inherits a bound model's own policy when its durable context column is null", async () => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: true },
+    }, runSettings: { config: { model: primary, context1M: false }, override: null,
+      effective: { model: primary, modelSource: "config", effortSource: "config", context1M: false } } });
+    const bound = thread("context-bound", "alpha", { runModel: other, runContext1M: null });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: bound.id }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], [bound]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: bound, messages: [] });
+    const store = await renderStore(); expect(store.current.context1M).toBe(true);
+  });
+
+  it("uses configured model policy for model-only defaults, but honors an explicit inherited web flag", async () => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: true },
+    }, runSettings: { config: { model: primary, context1M: false }, override: { model: other },
+      effective: { model: other, modelSource: "override", effortSource: "config", context1M: false } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    let store = await renderStore(); expect(store.current.context1M).toBe(true);
+    cleanupDom();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([{ ...selected, runSettings: { ...selected.runSettings,
+      override: { model: other, context1M: false }, effective: { ...selected.runSettings.effective, context1M: false } } }], []));
+    store = await renderStore(); expect(store.current.context1M).toBe(false);
+  });
+
+  it.each([true, false])("sanitizes adoption and drops its context preference key (eligible %s)", async (eligible) => {
+    const ref = "synthetic:selected";
+    const selected = agent("alpha", { defaultModel: ref, models: [ref], modelOptions: { [ref]: eligible ? { supportsContext1M: true, context1M: false } : {} } });
+    const original = thread("context-adoption", "alpha", { runModel: null, runEffort: null, runContext1M: null });
+    const adopted = { ...original, runModel: ref, ...(eligible ? { runContext1M: true } : {}) };
+    const key = preferenceKeyForThread("alpha", original.id);
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: original.id }));
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [key]: { model: ref, effort: "", context1M: true } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], [original]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: original, messages: [] });
+    vi.mocked(api.patchThread).mockResolvedValue(adopted);
+    let store = await renderStore();
+    await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(original.id, { model: ref, effort: null, ...(eligible ? { context1M: true } : {}), ifRunConfigUnset: true }, expect.any(AbortSignal)));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY) ?? "{}")[key]).toBeUndefined());
+    expect(store.current.actionError).toBeNull();
+    cleanupDom();
+    vi.mocked(api.patchThread).mockClear();
+    // A reset in another tab must not resurrect the adopted browser-local flag.
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], [original]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: original, messages: [] });
+    store = await renderStore();
+    expect(store.current.context1M).toBe(eligible ? false : undefined);
+    expect(api.patchThread).not.toHaveBeenCalled();
+  });
+
+  it("persists an explicit false 1M draft, reloads it and clears it only on an ineligible model switch", async () => {
+    const ref = "openai-codex:gpt-6.1-sol";
+    const alternate = "openai:gpt-6-sol";
+    const ineligible = "openai-codex:gpt-5.3-codex-spark";
+    const selected = agent("alpha", { defaultModel: ref, models: [ref, alternate, ineligible], modelOptions: {
+      [ref]: { supportsContext1M: true, context1M: true }, [alternate]: { supportsContext1M: true, context1M: false }, [ineligible]: {},
+    }, runSettings: { config: { model: ref, context1M: true }, override: null,
+      effective: { model: ref, modelSource: "config", effortSource: "config", context1M: true, context1MSource: "config" } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    let store = await renderStore();
+    act(() => { store.current.setContext1M(false); });
+    expect(store.current.context1M).toBe(false);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)!)[preferenceKeyForThread("alpha", null)].context1M).toBe(false));
+    cleanupDom(); store = await renderStore();
+    expect(store.current.context1M).toBe(false);
+    act(() => { store.current.setModel(alternate); });
+    expect(store.current.context1M).toBe(false);
+    act(() => { store.current.setModel(ineligible); });
+    expect(store.current.context1M).toBeUndefined();
+    act(() => { store.current.setModel(ref); });
+    expect(store.current.context1M).toBe(true);
+    act(() => { store.current.setContext1M(false); });
+    vi.mocked(api.createThread).mockResolvedValue(thread("created-1m", "alpha", { runModel: ref, runContext1M: false }));
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: ref, context1M: false, effort: null }, expect.any(AbortSignal), undefined);
   });
 
   it("sends authored draft run choices atomically with thread creation", async () => {
@@ -1186,6 +1414,43 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.skillRegistry.items[0]?.name).toBe("beta-skill");
   });
 
+  it("keeps the selected agent and conversation across stopped and restarted bootstrap snapshots", async () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    const betaThread = thread("beta-thread", "beta");
+    const onlineAlpha = agent("alpha", { generation: "generation-one" });
+    const onlineBeta = agent("beta");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([onlineAlpha, onlineBeta], [alphaThread]));
+    vi.mocked(api.thread).mockImplementation(async (id) => detail(id === alphaThread.id ? alphaThread : betaThread));
+    vi.mocked(api.threads).mockImplementation(async (sourceId) => ({ threads: [sourceId === "alpha" ? alphaThread : betaThread] }));
+    const store = await renderStore();
+    act(() => store.current.selectThread(alphaThread.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+    for (const nextAlpha of [
+      agent("alpha", { generation: "generation-one", status: "offline", health: "stopped", restart: { supported: false, reason: "Agent is offline." } }),
+      agent("alpha", { generation: "generation-two" }),
+    ]) {
+      // A different default bucket must not override a still-present selection.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([onlineBeta, nextAlpha], [betaThread]));
+      const reads = vi.mocked(api.bootstrap).mock.calls.length;
+      act(() => FakeEventSource.latest?.emit("agents.changed", {
+        id: `event-${nextAlpha.status}`,
+        version: 1,
+        type: "agents.changed",
+        at: "2026-08-13T08:00:00.000Z",
+      }));
+      await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBeGreaterThan(reads));
+      await waitFor(() => expect(store.current.selectedAgent).toMatchObject({
+        sourceId: "alpha", status: nextAlpha.status, generation: nextAlpha.generation,
+      }));
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.visibleAgents.map((item) => item.sourceId)).toContain("alpha");
+      expect(localStorage.getItem(SELECTED_AGENT_STORAGE_KEY)).toBe("alpha");
+    }
+  });
+
   it("refreshes on agents.changed and marks the last good snapshot stale on disconnect", async () => {
     vi.mocked(api.agentSkills)
       .mockResolvedValueOnce({
@@ -1325,6 +1590,42 @@ describe("ConsoleStoreProvider integration", () => {
 
     act(() => store.current.setNavigationDestination("chats"));
     expect(window.location.pathname).toBe("/");
+  });
+
+  it("uses the real agent-switch route writer instead of copying a settings marker (N18/N19)", async () => {
+    const store = await renderStore();
+    window.history.replaceState(null, "", "/agents/alpha/cron/fictional");
+    pushMobileHistoryEntry({ version: 1, surface: "settings", section: "providers", depth: 2 });
+    expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings");
+    act(() => store.current.selectAgent("beta"));
+    expect(window.location.pathname).toBe("/");
+    expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation");
+    closeSettingsHistory(); // Current entry is NOT owned: close is state-only.
+    expect(window.location.pathname).toBe("/");
+    window.history.back();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings"));
+    expect(ownedSettingsEntry()?.section).toBe("providers");
+    window.history.forward();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation"));
+  });
+
+  it("uses the real cron selection writer to leave a conversation marker (N20)", async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [cronThread], cronThread.id));
+    vi.mocked(api.thread).mockResolvedValue(detail(cronThread, "cron-thread"));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    window.history.replaceState(null, "", "/");
+    pushMobileHistoryEntry({ version: 1, surface: "settings", section: "agent", depth: 2 });
+    act(() => store.current.selectCronJob("alpha", "daily:report", cronThread.id));
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation");
+    closeSettingsHistory();
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    window.history.back();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings"));
+    expect(ownedSettingsEntry()?.section).toBe("agent");
   });
 
   it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {
@@ -1687,9 +1988,13 @@ describe("ConsoleStoreProvider integration", () => {
       </ConsoleStoreProvider>,
     );
 
+    // The shelf is closed by default; its History control is inside it.
+    fireEvent.click(await screen.findByRole("button", { name: /^Background jobs/u }));
     expect(await screen.findByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
-    expect(await screen.findByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(await screen.findByText("Background jobs: 1 done.")).toBeInTheDocument();
+    // Bounded: History carries the short note saying where older jobs are.
+    expect(await screen.findByText("Older jobs are in earlier messages.")).toBeInTheDocument();
     expect(api.cronRuns).toHaveBeenCalled();
   });
 
@@ -4790,6 +5095,25 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
     });
 
+    it("applies scheduled wake create, pause and deletion summaries to a paged row without reloading", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      const scheduled = { state: "active" as const, kind: "weekly" as const,
+        nextFireAt: "2027-01-04T09:00:00Z", revision: 1 };
+      emit("threads.changed", { threadId: olderAlpha.id,
+        payload: { thread: { ...olderAlpha, revision: 2, wakeSchedule: scheduled } } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === olderAlpha.id)?.wakeSchedule?.state).toBe("active"));
+      emit("thread.changed", { threadId: olderAlpha.id,
+        payload: { thread: { ...olderAlpha, revision: 3,
+          wakeSchedule: { ...scheduled, state: "paused", nextFireAt: null, revision: 2 } } } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === olderAlpha.id)?.wakeSchedule?.state).toBe("paused"));
+      emit("threads.changed", { threadId: olderAlpha.id,
+        payload: { thread: { ...olderAlpha, revision: 4 } } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === olderAlpha.id)?.wakeSchedule).toBeUndefined());
+      expect(api.threads).not.toHaveBeenCalled();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
     it("applies the summary an event carries and reads nothing for it", async () => {
       // The summary IS the sidebar row, and applying it is the whole of what
       // this event means. It used to re-read the entire conversation for the
@@ -5159,6 +5483,22 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.thread.runState.status).toBe("running");
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+    });
+
+    it("does not reapply a cleared manual compaction flag from equal-revision SSE after failure", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      const running = { ...selected, compaction: {
+        status: "running" as const, trigger: "manual" as const, startedAt: "2026-09-28T10:00:00Z",
+      } };
+      emit("thread.changed", { threadId: selected.id, payload: { thread: running } });
+      await waitFor(() => expect(store.current.selectedThread?.compaction?.status).toBe("running"));
+      emit("thread.changed", { threadId: selected.id, payload: { thread: selected } });
+      await waitFor(() => expect(store.current.selectedThread?.compaction).toBeUndefined());
+      emit("thread.changed", { threadId: selected.id, payload: { thread: running } });
+      await quiet();
+      expect(store.current.selectedThread?.compaction).toBeUndefined();
+      expect(store.current.detail?.thread.compaction).toBeUndefined();
     });
 
     it("updates background job status in a closed conversation and rejects stale summaries", async () => {
@@ -5548,10 +5888,11 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.thread.runState.status).toBe("complete");
       expect(store.current.detail?.messages.find((message) => message.id === jobMessage.id))
         .toMatchObject({ status: "running", parts: [{ type: "process-job", job: { state: "running" } }] });
-      expect(screen.getByRole("group", { name: "Exec background job running" }))
+      // The running row lives in the closed jobs shelf: mounted, not shown.
+      expect(screen.getByRole("group", { name: "Exec background job running", hidden: true }))
         .toHaveClass("is-running");
       expect(view.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-      expect(view.container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".process-job-card .process-job-glyph")).toHaveLength(1);
       expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(0);
       expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Message" }))
@@ -7397,7 +7738,7 @@ describe("ConsoleStoreProvider integration", () => {
       // The events that would have said what changed are exactly the ones a gap
       // loses, and no listing summary can stand in for them: `writeMessageParts`
       // moves a transcript without touching the conversation row at all -- a
-      // Monitor wake, every mid-turn flush -- so a page reporting an unchanged
+      // Every mid-turn flush -- so a page reporting an unchanged
       // summary is silent about writes this console actually missed. Everything
       // held is suspect, and each conversation pays a CONDITIONAL read when it
       // is opened.
@@ -9672,7 +10013,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(imported.id);
       expect(store.current.navigationDestination).toBe("chats");
       expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
-      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [], modelTransitions: [] });
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");
       expect(store.current.composerFocusThreadId).toBe(imported.id);
@@ -9874,43 +10215,18 @@ describe("ConsoleStoreProvider integration", () => {
     return renderStore();
   }
 
-  it("repairs transition sidecars on effective membership change but not pending intent", async () => {
+  it("repairs new marker rows from message hints independently of held user messages", async () => {
     const initial = detail(member);
     vi.mocked(api.thread).mockResolvedValue(initial);
     const store = await renderProjectStore();
     await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
-    const reads = vi.mocked(api.thread).mock.calls.length;
-    const pending = { ...member, revision: member.revision + 1, pendingProject: { projectId: null, turnId: "active" } };
-    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:00Z", payload: { thread: pending } }));
-    await waitFor(() => expect(store.current.detail?.thread.pendingProject).toEqual(pending.pendingProject));
-    expect(api.thread).toHaveBeenCalledTimes(reads);
-    const moved = { ...member, revision: member.revision + 2, projectId: null };
-    const transition = { id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: null,
-      before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, createdAt: "2026-09-12T00:00:01Z" };
-    vi.mocked(api.thread).mockResolvedValue({ ...initial, thread: moved, projectTransitions: [transition] });
-    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:01Z", payload: { thread: moved } }));
-    await waitFor(() => expect(store.current.detail?.projectTransitions).toEqual([transition]));
-  });
-
-  it("delivers a route-change sidecar with the read that follows the send", async () => {
-    // The picker's own write says nothing about the transcript: the marker is
-    // written when the next turn is admitted, and the read `sendTurn` already
-    // issues is what carries it. No new event, no extra request.
-    const initial = detail(member);
-    vi.mocked(api.thread).mockResolvedValue(initial);
-    const store = await renderProjectStore();
-    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
-    expect(store.current.detail?.modelTransitions).toEqual([]);
-    const transition = {
-      id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: "turn-next",
-      before: { model: "provider/sol", effort: "low" },
-      after: { model: "provider/astra", effort: "high" },
-      createdAt: "2026-09-12T00:00:02Z",
-    };
-    vi.mocked(api.startTurn).mockResolvedValue({ thread: member, turn: { id: "turn-next", status: "running" } });
-    vi.mocked(api.thread).mockResolvedValue({ ...initial, modelTransitions: [transition] });
-    await act(async () => { await store.current.sendTurn({ text: "go" }); });
-    await waitFor(() => expect(store.current.detail?.modelTransitions).toEqual([transition]));
+    const marker = { ...initial.messages[0]!, id: "project-marker", role: "system" as const,
+      parts: [{ type: "conversation-marker" as const, kind: "project" as const,
+        before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, at: "2026-09-12T00:00:01Z" }] };
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, messages: [...initial.messages, marker] });
+    act(() => FakeEventSource.latest?.emit("message.changed", { version: 1, type: "message.changed", threadId: member.id,
+      at: "2026-09-12T00:00:01Z", payload: { messageId: marker.id, updatedAt: marker.updatedAt } }));
+    await waitFor(() => expect(store.current.detail?.messages.some((m) => m.id === marker.id)).toBe(true));
   });
 
   it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {

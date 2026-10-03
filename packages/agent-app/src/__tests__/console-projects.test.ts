@@ -104,6 +104,48 @@ it("registers the five strict tag schemas and validates the independent palette 
 });
 
 
+it("registers strict conversation-only wake tools and gives safe, actionable wake errors", async () => {
+  const schemas = CONSOLE_PROJECT_SCHEMAS;
+  expect(schemas.GetWakeSchedule.safeParse({}).success).toBe(true);
+  for (const name of ["GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule"] as const) {
+    expect(schemas[name].safeParse({ conversationId: "other" }).success).toBe(false);
+    expect(isConsoleProjectToolAllowed(name, { allowedTools: [name] })).toBe(true);
+  }
+  const once = { kind: "once", timezone: "UTC", localAt: "2030-01-01T09:00" };
+  const weekly = { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"] };
+  expect(schemas.SetWakeSchedule.safeParse(once).success).toBe(true);
+  expect(schemas.SetWakeSchedule.safeParse({ ...once, expectedRevision: 1, compactFirst: true }).success).toBe(true);
+  expect(schemas.SetWakeSchedule.safeParse(weekly).success).toBe(true);
+  // Kind-specific combinations are rejected by the shared web parser, not by
+  // this SDK-compatible, top-level-object transport schema.
+  for (const bad of [{ ...once, compactFirst: "true" }, { ...weekly, times: Array(9).fill("09:00") },
+    { ...once, message: "é".repeat(501) }, { ...once, expectedRevision: 0 }, { ...once, sourceId: "another" }]) {
+    expect(schemas.SetWakeSchedule.safeParse(bad).success).toBe(false);
+  }
+  expect(schemas.ClearWakeSchedule.safeParse({ expectedRevision: 2 }).success).toBe(true);
+  expect(schemas.ClearWakeSchedule.safeParse({}).success).toBe(false);
+  const call = vi.fn().mockRejectedValue({ code: "wake_lead_time", message: "http://secret/token" });
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", policy: { allowedTools: ["*"], disallowedTools: [] }, createClient: vi.fn().mockResolvedValue(call) })(request());
+  const client = new Client({ name: "wake-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    const listed = (await client.listTools()).tools;
+    expect(listed.map((tool) => tool.name)).toEqual(expect.arrayContaining(["GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule"]));
+    const schema = listed.find((tool) => tool.name === "SetWakeSchedule")!.inputSchema;
+    expect(schema).toMatchObject({ type: "object", additionalProperties: false,
+      properties: { kind: { enum: ["once", "weekly"] }, timezone: expect.any(Object), localAt: expect.any(Object),
+        days: expect.any(Object), times: expect.any(Object), message: expect.any(Object), expectedRevision: expect.any(Object) },
+    });
+    expect(schema.required).toEqual(expect.arrayContaining(["kind", "timezone"]));
+    expect(schema.required).toHaveLength(2);
+    const refused = await client.callTool({ name: "SetWakeSchedule", arguments: once });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused)).toContain("five minutes");
+    expect(JSON.stringify(refused)).not.toContain("secret");
+  } finally { await client.close(); await bound.cleanup?.(); }
+});
+
 it("declares MarkConversationRead with strict optional conversation identity and tool policy", () => {
   const schemas = CONSOLE_PROJECT_SCHEMAS;
   expect(schemas.MarkConversationRead.safeParse({}).success).toBe(true);

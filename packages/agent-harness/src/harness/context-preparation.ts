@@ -14,6 +14,8 @@ import type { SkillsCache } from "../skills/index.js";
 import { AgentHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
+import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
+import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
 import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
@@ -24,6 +26,7 @@ export async function prepareHarnessContext(
   contextOptions: {
     readonly historyMode: "messages" | "omitted";
     readonly turnId: string;
+    readonly originalUserMessage?: string;
     /** Canonical history captured under the store's conversation lease. */
     readonly historyOverride?: readonly HistoryMessage[];
   },
@@ -44,21 +47,23 @@ export async function prepareHarnessContext(
     // Recall rides on the current user message on every turn. It remains outside
     // stable system instructions and never enters canonical history replay.
     const memory = request.continuation === undefined
-      ? await loadHarnessMemory(options, request.conversationId, request.userMessage, contextOptions.turnId, emit)
+      ? await loadHarnessMemory(options, request, contextOptions.turnId, contextOptions.originalUserMessage, emit)
       : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
+    const peerCaller = await options.verifiedPeerCallerFor?.({ request });
     const baseContext = await loadContextFromFiles({
       identityPath: options.identityPath,
       userMessage: request.userMessage,
       session: sessionContextBlock(request, {
+        ...(peerCaller === undefined ? {} : { peerCaller }),
         ...(options.subagentInstancesFor === undefined ? {} : { subagentInstances: await options.subagentInstancesFor({ request, runId: contextOptions.turnId }) }),
         backgroundSubagents: options.backgroundSubagentsAvailable?.({ request, runId: contextOptions.turnId }) === true,
         hostManagedMemory: options.memory !== undefined,
+        manualMemoryCapture: options.memoryWriteMode === "capture" && options.memoryRememberEnabled === true
+          && ((options.memoryCaptureCron === false && isCronRequest(request))
+            || (options.memoryCaptureWebhook === false && request.metadata?.webhook !== undefined)),
+        rememberDetails: options.memoryRememberDetails === true,
         backgroundProcessJobs: options.backgroundProcessJobsAvailable?.({
-          request,
-          runId: contextOptions.turnId,
-        }) === true,
-        monitors: options.monitorsAvailable?.({
           request,
           runId: contextOptions.turnId,
         }) === true,
@@ -79,26 +84,9 @@ export async function prepareHarnessContext(
     // Durable tool records are a separate store, not HistoryMessage entries.
     // A cold reseed gets a bounded neutral text projection; a confirmed warm
     // provider session gets none because it already owns the live transcript.
-    let toolProjection: ReturnType<typeof buildToolHistoryProjection> = undefined;
-    if (contextOptions.historyMode !== "omitted" && options.toolHistory !== undefined) {
-      try {
-        toolProjection = buildToolHistoryProjection(
-          options.toolHistory.reader,
-          options.toolHistory.logicalConversationId(request.conversationId),
-          request.conversationId,
-          contextOptions.turnId,
-          representedContinuityToolRecordIds(history),
-        );
-      } catch (error) {
-        const errorCode = toolHistoryProjectionErrorCode(error);
-        emit?.({
-          type: "runtime_warning",
-          warning_kind: "tool_history_projection_degraded",
-          error_code: errorCode,
-          message: `Tool history projection failed (${errorCode}); continuing without automatic tool history.`,
-        });
-      }
-    }
+    const toolProjection = contextOptions.historyMode === "omitted"
+      ? undefined
+      : loadToolHistoryProjection(options, request.conversationId, contextOptions.turnId, history, emit);
     const context = toolProjection === undefined
       ? baseContext
       : projectToolHistoryBeforeCurrentTurn(baseContext, toolProjection.text, toolProjection.recordCount);
@@ -118,6 +106,39 @@ export async function prepareHarnessContext(
       historyAsMessages: contextOptions.historyMode === "messages",
       toolHistoryProjection: contextOptions.historyMode === "messages" ? toolProjection?.text : undefined,
     };
+}
+
+/**
+ * Bounded neutral projection of durable tool records for a cold provider
+ * reseed. Shared by turns and promptless manual compaction so both seed a
+ * created-on-miss provider session with identical canonical context.
+ */
+export function loadToolHistoryProjection(
+  options: AgentHarnessOptions,
+  conversationId: string,
+  turnId: string,
+  history: readonly HistoryMessage[],
+  emit?: (event: RuntimeEventLike) => void,
+): ReturnType<typeof buildToolHistoryProjection> {
+    if (options.toolHistory === undefined) return undefined;
+    try {
+      return buildToolHistoryProjection(
+        options.toolHistory.reader,
+        options.toolHistory.logicalConversationId(conversationId),
+        conversationId,
+        turnId,
+        representedContinuityToolRecordIds(history),
+      );
+    } catch (error) {
+      const errorCode = toolHistoryProjectionErrorCode(error);
+      emit?.({
+        type: "runtime_warning",
+        warning_kind: "tool_history_projection_degraded",
+        error_code: errorCode,
+        message: `Tool history projection failed (${errorCode}); continuing without automatic tool history.`,
+      });
+      return undefined;
+    }
 }
 
 function toolHistoryProjectionErrorCode(error: unknown): string {
@@ -226,14 +247,35 @@ export async function loadHarnessHistory(
 
 async function loadHarnessMemory(
   options: AgentHarnessOptions,
-  conversationId: string,
-  query: string,
+  request: AgentHarnessRequest,
   turnId: string,
+  originalUserMessage?: string,
   emit?: (event: RuntimeEventLike) => void,
 ): Promise<ContextBlockInput | undefined> {
     let block;
     try {
-      block = await options.memory?.load(conversationId, query, { turnId });
+      const senderToken = request.captureSpeakerKind === "human-turn"
+        ? memorySenderToken(runSourceFromRequest(request).source, request.sender)
+        : undefined;
+      // Same owner rule as completed-turn capture: a human turn on the
+      // operator's own surface. Recall uses it only to read first-person
+      // questions and owner-report envelopes as about the owner.
+      const ownerTurn = request.captureSpeakerKind === "human-turn" && (request.metadata?.source === "web"
+        || request.metadata?.source === "tui" || request.metadata?.source === "acp");
+      const observedAt = options.now?.() ?? new Date();
+      const localDate = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
+      const base = originalUserMessage ?? request.userMessage;
+      const query = request.userMessage.startsWith(base)
+        ? memoryUserText({ ...request, userMessage: base }) + request.userMessage.slice(base.length)
+        : request.userMessage;
+      block = await options.memory?.load(request.conversationId, query, {
+        turnId,
+        hostDate: observedAt.toISOString().slice(0, 10),
+        hostLocalDate: localDate,
+        hostInstant: observedAt.toISOString(),
+        ...(senderToken === undefined ? {} : { senderToken }),
+        ...(ownerTurn ? { ownerTurn: true as const } : {}),
+      });
     } catch (error) {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
       // breaker open) must never block or fail the turn — degrade to empty

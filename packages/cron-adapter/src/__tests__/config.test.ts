@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  CRON_CONFIG_FIELDS,
   MAX_CRON_JOBS,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
@@ -355,5 +356,128 @@ describe("toCronJobs", () => {
       },
     ]);
     expect(jobs.some((job) => job.id === "off")).toBe(false);
+  });
+});
+
+describe("cron preflight config", () => {
+  it("accepts a preflight argv and timeout in cron.jobs[] and projects them", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        cron: {
+          jobs: [{
+            id: "gated",
+            expression: "0 9 * * *",
+            prompt: "run",
+            preflight: ["node", "gate.mjs", "--strict"],
+            preflightTimeoutMs: 12_000,
+          }],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadCronAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.jobs[0]).toMatchObject({
+      preflight: ["node", "gate.mjs", "--strict"],
+      preflightTimeoutMs: 12_000,
+    });
+    expect(toCronJobs(config)[0]).toMatchObject({
+      preflight: ["node", "gate.mjs", "--strict"],
+      preflightTimeoutMs: 12_000,
+    });
+  });
+
+  it("reads the single-job JSON array and env overrides, with env winning", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        cron: {
+          enabled: true,
+          expression: "0 * * * *",
+          prompt: "json prompt",
+          preflight: ["json-gate"],
+          preflightTimeoutMs: 1_000,
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const fromJson = await loadCronAdapterConfig({ env: {}, jsonPath: path });
+    expect(fromJson.jobs[0]).toMatchObject({ preflight: ["json-gate"], preflightTimeoutMs: 1_000 });
+
+    const fromEnv = await loadCronAdapterConfig({
+      env: {
+        MONO_AGENT_CRON_PREFLIGHT_JSON: '["env-gate","--flag"]',
+        MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS: "60000",
+      },
+      jsonPath: path,
+    });
+    expect(fromEnv.jobs[0]).toMatchObject({
+      preflight: ["env-gate", "--flag"],
+      preflightTimeoutMs: 60_000,
+    });
+  });
+
+  it("reads preflight from MONO_AGENT_CRON_JOBS_JSON", async () => {
+    const config = await loadCronAdapterConfig({
+      env: {
+        MONO_AGENT_CRON_JOBS_JSON: JSON.stringify([{
+          id: "jobs-json",
+          expression: "* * * * *",
+          prompt: "run",
+          preflight: ["./gate"],
+        }]),
+      },
+    });
+    expect(config.jobs[0]).toMatchObject({ preflight: ["./gate"] });
+  });
+
+  it("rejects malformed or unbounded preflight declarations as config errors", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({ cron: { enabled: true, expression: "0 * * * *", prompt: "p" } })}\n`,
+      "utf8",
+    );
+
+    const cases: ReadonlyArray<{ readonly env: Record<string, string>; readonly reason: RegExp }> = [
+      { env: { MONO_AGENT_CRON_PREFLIGHT_JSON: "node gate.mjs" }, reason: /single-line JSON array/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_JSON: "[]" }, reason: /non-empty array/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_JSON: '["ok",""]' }, reason: /non-empty argument strings/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_JSON: '["ok\\u0000bad"]' }, reason: /without NUL/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_JSON: '{"command":"node"}' }, reason: /non-empty array/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS: "0" }, reason: /positive integer/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS: "60001" }, reason: /no greater than 60000/u },
+      { env: { MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS: "5s" }, reason: /positive integer/u },
+    ];
+    for (const { env, reason } of cases) {
+      await expect(loadCronAdapterConfig({ env, jsonPath: path })).rejects.toThrowError(reason);
+    }
+  });
+
+  it("rejects a malformed single-job JSON preflight instead of ignoring the gate", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        cron: { enabled: true, expression: "0 * * * *", prompt: "p", preflight: "node gate.mjs" },
+      })}\n`,
+      "utf8",
+    );
+    await expect(loadCronAdapterConfig({ env: {}, jsonPath: path }))
+      .rejects.toThrowError(/non-empty array of argument strings/u);
+  });
+
+  it("exposes the single-job preflight fields through the config field registry", () => {
+    const preflight = CRON_CONFIG_FIELDS.find((field) => field.id === "cron.preflight");
+    const timeout = CRON_CONFIG_FIELDS.find((field) => field.id === "cron.preflightTimeoutMs");
+    expect(preflight?.env).toBe("MONO_AGENT_CRON_PREFLIGHT_JSON");
+    expect(timeout).toMatchObject({ env: "MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS", kind: "integer" });
+    expect(preflight?.fromJson({ preflight: ["a", "b"] })).toBe('["a","b"]');
+    expect(preflight?.fromJson({})).toBeUndefined();
+    expect(timeout?.fromJson({ preflightTimeoutMs: 2_500 })).toBe(2_500);
   });
 });

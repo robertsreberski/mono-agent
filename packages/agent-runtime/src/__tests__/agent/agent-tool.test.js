@@ -36,9 +36,9 @@ describe("Agent tool registration", () => {
     expect(createAgentTool(subagentOptions({ depth: 0 }))).not.toBeNull();
   });
 
-  it("leaves executionMode undefined so it never serializes a mixed tool batch", () => {
-    // pi-agent-core makes the WHOLE batch sequential when any tool in it
-    // declares executionMode "sequential" (dist/agent-loop.js:289).
+  it("leaves Agent shareable for the harness's per-invocation gate", () => {
+    // Other offered tools do not make Agent exclusive. Invoked exclusive calls
+    // remain FIFO barriers in the Pi harness adapter.
     expect(createAgentTool(subagentOptions()).executionMode).toBeUndefined();
   });
 
@@ -241,6 +241,70 @@ describe("Agent tool outcomes", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("detached child deadline admission", () => {
+  const instances = () => ({
+    create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "session", sessionsRoot: "/tmp/sessions", ...spec }),
+    reserve: async (id) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
+    begin: async (id) => ({ id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" }),
+    get: async (id) => ({ id, turns: 1, status: "idle" }), finish: async (id) => ({ id, turns: 1, status: "idle" }), releaseReservation: async () => {},
+  });
+  it("fires the child's timer ahead of an equal job deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const deadlineAt = Date.now() + 60_000;
+      let abortedAt;
+      const run = vi.fn((request) => new Promise((resolve) => {
+        request.abortSignal.addEventListener("abort", () => { abortedAt = Date.now(); resolve({ cancelled: true, subagentContinuity: { turnToken: "turn", state: "retained" } }); }, { once: true });
+      }));
+      const background = { startInternal: async (options) => {
+        expect(options.timeoutMs).toBe(75_000); // Host may clamp this to its configured 60s job limit.
+        await options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt });
+        return { jobId: "job", state: "timed_out", startedAt: new Date().toISOString() };
+      } };
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: instances(), backgroundSubagentController: background }));
+      const pending = tool.execute("call", { persist: true, background: true, prompt: "work" });
+      await vi.advanceTimersByTimeAsync(53_999);
+      expect(abortedAt).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(abortedAt).toBeLessThan(deadlineAt);
+      expect(run).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("recomputes after slow begin and releases the begun turn if its deadline has passed", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(); const finished = vi.fn(async (id) => ({ id, status: "idle", turns: 0 }));
+      const slow = { ...instances(), begin: async (id) => {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        return { id, activeTurn: { token: "turn" }, sessionId: "session", sessionsRoot: "/tmp/sessions" };
+      }, finish: finished };
+      const background = { startInternal: async (options) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt: Date.now() + 1_000 }) };
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: slow, backgroundSubagentController: background }));
+      const pending = tool.execute("slow", { persist: true, background: true, prompt: "work" });
+      const denied = expect(pending).rejects.toThrow("insufficient job runtime remains");
+      await vi.advanceTimersByTimeAsync(2_100);
+      await denied;
+      expect(finished).toHaveBeenCalledWith("inst-1", { status: "busy" }, expect.anything());
+      expect(run).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([NaN, Infinity])("rejects a non-finite job deadline (%s) without starting the child", async (deadlineAt) => {
+    const run = vi.fn(); const finished = vi.fn(async (id) => ({ id, status: "idle", turns: 0 }));
+    const background = { startInternal: async (options) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt }) };
+    const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: { ...instances(), finish: finished }, backgroundSubagentController: background }));
+    await expect(tool.execute("invalid", { persist: true, background: true, prompt: "work" })).rejects.toThrow("insufficient job runtime remains");
+    expect(finished).toHaveBeenCalledOnce(); expect(run).not.toHaveBeenCalled();
+  });
+  it("refuses provider admission when the remaining job budget cannot reserve settlement time", async () => {
+    const run = vi.fn();
+    const background = { startInternal: async (options) => options.run(new AbortController().signal, () => {}, () => {}, { deadlineAt: Date.now() + 1 }) };
+    const tool = createAgentTool(subagentOptions({ run, timeoutMs: 60_000, instances: instances(), backgroundSubagentController: background }));
+    await expect(tool.execute("call", { persist: true, background: true, prompt: "work" })).rejects.toThrow("insufficient job runtime remains");
+    expect(run).not.toHaveBeenCalled();
   });
 });
 
@@ -632,7 +696,7 @@ describe("Agent tool confinement", () => {
 
   it("offers web configuration and host coordination to every child request", async () => {
     const run = okRun();
-    const webSearchConfig = { backend: "auto", maxRequestsPerRun: 4 };
+    const webSearchConfig = { backend: ["parallel", "ollama"], maxRequestsPerRun: 4 };
     const webFetchConfig = { render: "never", browserCommand: "agent-browser" };
     const webRequestCoordinator = { scope: "host:test" };
     const tool = createAgentTool(subagentOptions({ run }), {
@@ -768,7 +832,25 @@ describe("subagentUsageForRun", () => {
 
     expect(events.some((event) => event.type === "cost_accumulated")).toBe(false);
     const completed = events.find((event) => event.phase === "agent_completed");
-    expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02 });
+    expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02,
+      usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 3 } });
+  });
+
+  it("emits tokens even if the child was not priced, and omits an all-zero sample", async () => {
+    const events = [];
+    const run = async (request) => {
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0, tokens: { input: 12, output: 2 } });
+      return { text: "done", events: [] };
+    };
+    const tool = createAgentTool(subagentOptions({ run }), { onEvent: (event) => events.push(event) });
+    await tool.execute("c1", { prompt: "x" });
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent).toMatchObject({
+      usage: { input: 12, output: 2, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("costUsd");
+    const unmeasured = [];
+    await createAgentTool(subagentOptions({ run: okRun() }), { onEvent: (event) => unmeasured.push(event) }).execute("c2", { prompt: "x" });
+    expect(unmeasured.find((event) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("usage");
   });
 
   it("leaves the price off a delegation the runtime never priced", async () => {
@@ -1178,4 +1260,311 @@ it("definitions stay byte-identical across admission changes and optional operat
     await expect(unavailable.execute("no", params)).rejects.toThrow(/unavailable/);
   }
   expect(run).not.toHaveBeenCalled(); expect(instances.create).not.toHaveBeenCalled();
+});
+
+describe("Agent tool max-turns wrap-up", () => {
+  const MAX_TURNS_ERROR = "Pi agent stopped before final output: max turns reached";
+
+  /** A child result shaped like a pi-native max-turns exhaustion. */
+  function maxTurnsResult(overrides = {}) {
+    return {
+      text: null,
+      error: MAX_TURNS_ERROR,
+      failureKind: "usage_limit",
+      numTurns: 100,
+      diagnostics: { max_turns_hit: true, max_turns: 100, turn_count: 100 },
+      events: [],
+      ...overrides,
+    };
+  }
+
+  /** A run stub answering the main turn with `first` and the wrap-up with `second`. */
+  function scripted(first, second) {
+    const calls = [];
+    const run = vi.fn(async (request) => {
+      calls.push(request);
+      return (calls.length === 1 ? first : second)(request);
+    });
+    return run;
+  }
+
+  it("gives an exhausted run one bounded wrap-up and reports its text", async () => {
+    const run = scripted(
+      async (request) => {
+        request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/w/a.ts" } }] } });
+        request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false }] } });
+        return maxTurnsResult();
+      },
+      async () => ({ text: "wrap-up: committed abc123; report at RESULT.md; remaining: docs", numTurns: 2, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "do the thing" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    const wrapRequest = run.mock.calls[1][0];
+    expect(wrapRequest.maxTurns).toBe(3);
+    expect(wrapRequest.prompt).toContain("do the thing");
+    expect(wrapRequest.prompt).toContain("Do not start or continue new work");
+    expect(wrapRequest.prompt).toContain("fresh session");
+    expect(wrapRequest.prompt).toContain("Read");
+    expect(wrapRequest).toMatchObject({ callId: "c1", callIndex: 1, depth: 1 });
+    const text = result.content[0].text;
+    expect(text).toContain("· failed ·");
+    expect(text).toContain(`usage_limit: ${MAX_TURNS_ERROR}`);
+    expect(text).toContain("wrap-up: committed abc123");
+    expect(text).toMatch(/wrap-up: max-turns budget exhausted \(100 of 100 turns\); wrap-up ok/u);
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp).toMatchObject({
+      budget: "maxTurns",
+      turnsUsed: 100,
+      turnsAllowed: 100,
+      status: "ok",
+      wrapUpTurnsUsed: 2,
+      wrapUpTurnsAllowed: 3,
+    });
+  });
+
+  it("wraps up on the usage_limit kind even without diagnostics", async () => {
+    const run = scripted(
+      async () => ({ text: null, error: "usage_limit: max turns reached", failureKind: "usage_limit", events: [] }),
+      async () => ({ text: "salvaged position statement", events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "ok", turnsUsed: null, turnsAllowed: 100 });
+    expect(result.content[0].text).toContain("salvaged position statement");
+  });
+
+  it.each([
+    ["a normal answer", async () => ({ text: "done", events: [] })],
+    ["a non-budget failure", async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] })],
+    ["a cancellation", async () => ({ text: "partial", cancelled: true, events: [] })],
+  ])("issues no wrap-up after %s", async (_case, impl) => {
+    const run = vi.fn(impl);
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.details.subagent.wrapUp).toBeUndefined();
+    expect(result.content[0].text).not.toContain("wrap-up:");
+  });
+
+  it("keeps usage_limit and falls back to partial text when the wrap-up fails", async () => {
+    const run = scripted(
+      async () => maxTurnsResult({ text: "partial progress notes" }),
+      async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    const text = result.content[0].text;
+    expect(text).toContain("· failed ·");
+    expect(text).toContain(`usage_limit: ${MAX_TURNS_ERROR}`);
+    expect(text).toContain("partial progress notes");
+    expect(text).toMatch(/wrap-up failed/u);
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "failed", turnsUsed: 100, turnsAllowed: 100 });
+  });
+
+  it("never recurses when the wrap-up exhausts its own budget", async () => {
+    const run = scripted(
+      async () => maxTurnsResult(),
+      async () => maxTurnsResult({ numTurns: 3, diagnostics: { max_turns_hit: true, max_turns: 3, turn_count: 3 } }),
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "failed" });
+    expect(result.details.subagent.wrapUp.reason).toMatch(/own 3-turn budget/u);
+    expect(result.content[0].text).toContain(`usage_limit: ${MAX_TURNS_ERROR}`);
+  });
+
+  it("reports unavailable when the wrap-up cannot start, keeping the original result", async () => {
+    const run = scripted(
+      async () => maxTurnsResult({ text: "partial progress notes" }),
+      async () => { throw new Error("route gone"); },
+    );
+    const tool = createAgentTool(subagentOptions({ run }));
+    const result = await tool.execute("c1", { prompt: "x" });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "unavailable" });
+    expect(result.details.subagent.wrapUp.reason).toContain("route gone");
+    expect(result.content[0].text).toContain("partial progress notes");
+  });
+
+  it("issues no wrap-up when the wall-clock budget fires", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn((request) => new Promise((resolve) => {
+        request.abortSignal.addEventListener("abort", () => resolve(maxTurnsResult()), { once: true });
+      }));
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 500 }));
+      const pending = tool.execute("c1", { prompt: "x" });
+      await vi.advanceTimersByTimeAsync(600);
+      const result = await pending;
+
+      expect(result.content[0].text).toContain("· timeout ·");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(result.details.subagent.wrapUp).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** Persistent-instance mock capturing finish outcomes. */
+  function persistentInstances(finished) {
+    return {
+      create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      begin: async (id) => ({ id, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      finish: async (id, outcome) => {
+        finished.push(outcome);
+        return { id, turns: 2, status: "idle" };
+      },
+    };
+  }
+
+  it("propagates a wrap-up continuity loss to the instance outcome", async () => {
+    // The host reports session continuity per run: a wrap-up that answered
+    // outside the instance session must not leave the instance recorded
+    // retained on the first run's fields, or the next AgentManage resumes a
+    // lost session.
+    const finished = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), subagentContinuity: { turnToken: "tok", state: "retained" } }),
+      async () => ({
+        text: null,
+        error: "The child answered outside its persistent session.",
+        failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: "tok", state: "lost" },
+        events: [],
+      }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    const result = await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({
+      status: "failed",
+      failureKind: "session_continuity_lost",
+      continuity: { turnToken: "tok", state: "lost" },
+    });
+    expect(result.details.subagent.status).toBe("failed");
+    expect(result.details.subagent.wrapUp.status).toBe("failed");
+  });
+
+  it("reports a wrap-up continuity loss at detached settlement", async () => {
+    const settledCalls = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), subagentContinuity: { turnToken: "tok", state: "retained" } }),
+      async () => ({
+        text: null,
+        error: "The child answered outside its persistent session.",
+        failureKind: "session_continuity_lost",
+        subagentContinuity: { turnToken: "tok", state: "lost" },
+        events: [],
+      }),
+    );
+    const instances = {
+      create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      reserve: async (id) => ({ id, incarnation: "", activeTurn: { token: "tok" }, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      begin: async (id) => ({ id, incarnation: "", activeTurn: { token: "tok" }, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      get: async (id) => ({ id, turns: 2, status: "idle" }),
+      releaseReservation: async () => {},
+    };
+    const execution = {
+      deadlineAt: Date.now() + 60_000,
+      managed: {
+        started: async () => {},
+        settled: async (report) => settledCalls.push(report),
+        report: async () => {},
+        ownedForegroundProcesses: undefined,
+      },
+    };
+    const background = {
+      startInternal: async (options) => {
+        await options.run(new AbortController().signal, () => {}, () => {}, execution);
+        return { jobId: "job-1", instanceId: "inst-1", state: "succeeded", startedAt: new Date().toISOString() };
+      },
+    };
+    const tool = createAgentTool(subagentOptions({ run, instances, backgroundSubagentController: background }));
+    await tool.execute("c1", { prompt: "x", persist: true, background: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(settledCalls).toHaveLength(1);
+    expect(settledCalls[0]).toMatchObject({
+      failureKind: "session_continuity_lost",
+      continuity: { turnToken: "tok", state: "lost" },
+    });
+  });
+
+  it.each([
+    ["failed", async () => ({ text: null, error: "boom", failureKind: "provider_unavailable", events: [] })],
+    ["unavailable", async () => { throw new Error("route gone"); }],
+  ])("keeps an ordinary %s wrap-up free of continuity loss", async (status, second) => {
+    const finished = [];
+    const run = scripted(async () => maxTurnsResult({ text: "partial" }), second);
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    const result = await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.details.subagent.wrapUp.status).toBe(status);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].status).toBe("failed");
+    expect(finished[0].failureKind).toBeUndefined();
+    expect(finished[0].continuity).toBeUndefined();
+  });
+
+  it("sums both runs' usage in the instance outcome", async () => {
+    const finished = [];
+    const run = scripted(
+      async () => ({ ...maxTurnsResult(), usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 5, cache_creation_tokens: 3, cost_usd: 0.25 } }),
+      async () => ({ text: "wrapped", usage: { input_tokens: 50, output_tokens: 10, cache_read_tokens: 1, cache_creation_tokens: 2, cost_usd: 0.5 }, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances: persistentInstances(finished) }));
+    await tool.execute("c1", { prompt: "x", persist: true });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].usage).toEqual({ input: 150, output: 30, cacheRead: 6, cacheWrite: 5, costUsd: 0.75 });
+  });
+
+  it("reuses the persistent instance for the wrap-up and names the report file", async () => {
+    const finished = [];
+    const instances = {
+      create: async (spec) => ({ id: "inst-1", turns: 0, status: "idle", sessionId: "sess-1", sessionsRoot: "/tmp/sess", ...spec }),
+      begin: async (id) => ({ id, sessionId: "sess-1", sessionsRoot: "/tmp/sess" }),
+      finish: async (id, outcome) => {
+        finished.push(outcome);
+        return { id, turns: 2, status: "idle" };
+      },
+    };
+    const run = scripted(
+      async () => maxTurnsResult(),
+      async () => ({ text: "wrap-up: committed; report at RESULT.md", numTurns: 1, events: [] }),
+    );
+    const tool = createAgentTool(subagentOptions({ run, instances }));
+    const result = await tool.execute("c1", {
+      prompt: "migrate the thing",
+      persist: true,
+      verification: { workdir: "/repo", reportPath: "RESULT.md" },
+    });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[0][0].instance).toMatchObject({ id: "inst-1", sessionId: "sess-1" });
+    expect(run.mock.calls[1][0].instance).toMatchObject({ id: "inst-1", sessionId: "sess-1" });
+    expect(run.mock.calls[1][0].prompt).toContain("same persistent instance");
+    expect(run.mock.calls[1][0].prompt).toContain("RESULT.md");
+    // One instance turn spans both provider runs: the turn is finished once.
+    expect(finished).toHaveLength(1);
+    expect(finished[0].status).toBe("failed");
+    expect(result.details.subagent.instance).toMatchObject({ id: "inst-1" });
+    expect(result.details.subagent.wrapUp).toMatchObject({ status: "ok" });
+    expect(result.content[0].text).toContain("wrap-up: committed; report at RESULT.md");
+  });
 });

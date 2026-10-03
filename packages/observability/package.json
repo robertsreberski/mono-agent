@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/observability",
-  "version": "0.21.1",
+  "version": "0.25.1",
   "description": "Run event recording and artifact summaries for agent hosts.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -23,14 +23,6 @@
     "./event-timeline": {
       "types": "./dist/event-timeline.d.ts",
       "import": "./dist/event-timeline.js"
-    },
-    "./run-export": {
-      "types": "./dist/run-export-mapping.d.ts",
-      "import": "./dist/run-export-mapping.js"
-    },
-    "./otel": {
-      "types": "./dist/otel/index.d.ts",
-      "import": "./dist/otel/index.js"
     }
   },
   "files": [
@@ -43,9 +35,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.21.1",
-    "@opentelemetry/otlp-transformer": "0.219.0",
-    "@opentelemetry/sdk-trace-base": "2.8.0"
+    "@mono-agent/agent-contracts": "workspace:0.25.1"
   },
   "publishConfig": {
     "access": "public"

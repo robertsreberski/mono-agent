@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { parseTelegramConversationId } from "@mono-agent/telegram-adapter";
+
 import { slackTargetFromConversation, telegramChatIdFromConversation } from "../channels.js";
+import { telegramConversationIdFor, telegramTargetFromConversation } from "../telegram-destination.js";
 
 describe("telegramChatIdFromConversation", () => {
   it("extracts numeric and group chat ids, stripping a rollover bucket", () => {
@@ -19,6 +22,44 @@ describe("telegramChatIdFromConversation", () => {
     expect(telegramChatIdFromConversation("slack:C1:1")).toBeUndefined();
     expect(telegramChatIdFromConversation("telegram:")).toBeUndefined();
     expect(telegramChatIdFromConversation("telegram:   ")).toBeUndefined();
+  });
+
+  it("returns the chat of a forum-topic conversation and rejects a malformed topic", () => {
+    expect(telegramChatIdFromConversation("telegram:-1001234567890:12")).toBe(-1001234567890);
+    expect(telegramChatIdFromConversation("telegram:-1001234567890:12#2026-09-28")).toBe(-1001234567890);
+    expect(telegramChatIdFromConversation("telegram:-1001234567890:abc")).toBeUndefined();
+  });
+});
+
+describe("telegramTargetFromConversation", () => {
+  const cases = [
+    "telegram:42",
+    "telegram:-1001234567890",
+    "telegram:-1001234567890:12",
+    "telegram:-1001234567890:12#2026-09-28",
+    "telegram: 42 #2026-06-19",
+    "telegram:@trips",
+    "telegram:@trips:3",
+    "telegram:",
+    "telegram:-1001:",
+    "telegram:-1001:0",
+    "telegram:-1001:-5",
+    "telegram:-1001:1.5",
+    "telegram:1:2:3",
+    "slack:C1:1",
+  ];
+
+  it("parses chats and forum topics exactly like the Telegram adapter", () => {
+    for (const conversationId of cases) {
+      expect(telegramTargetFromConversation(conversationId), conversationId)
+        .toEqual(parseTelegramConversationId(conversationId));
+    }
+    expect(telegramTargetFromConversation("telegram:-1001:12")).toEqual({ chatId: -1001, messageThreadId: 12 });
+  });
+
+  it("round-trips a target into its conversation id", () => {
+    expect(telegramConversationIdFor({ chatId: -1001 })).toBe("telegram:-1001");
+    expect(telegramConversationIdFor({ chatId: -1001, messageThreadId: 12 })).toBe("telegram:-1001:12");
   });
 });
 

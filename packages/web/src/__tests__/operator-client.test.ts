@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import {
@@ -45,6 +45,65 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("fails closed on missing/malformed restart capability and preserves verified keyed support", async () => {
+    for (const capability of [undefined, null, {}, { supported: "true" }, { supported: true, reason: "unexpected" }, { supported: true, url: "http://elsewhere" }]) {
+      const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
+        fetchImpl: async () => Response.json({ schema: 1, pid: 123, capabilities: { restart: capability } }) });
+      expect((await client.info()).restart.supported).toBe(false);
+    }
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
+      fetchImpl: async () => Response.json({ schema: 1, pid: 123, capabilities: { restart: { supported: true } } }) });
+    expect((await client.info()).restart).toEqual({ supported: true });
+  });
+
+  it("bounds restart responses and treats unknown outcomes as ambiguous, not refused", async () => {
+    const calls: string[] = [];
+    let response = Response.json({ operation: { id: "op-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 });
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",
+      fetchImpl: (async (input, init) => { calls.push(String(input)); expect(init?.body).toBe("{}"); return response; }) as typeof fetch });
+    await expect(client.restart()).resolves.toEqual({ kind: "accepted", operationId: "op-1", pid: 123 });
+    response = Response.json({ operation: { id: "op-1" }, error: { code: "restart_in_progress" } }, { status: 409 });
+    await expect(client.restart()).resolves.toEqual({ kind: "in_progress", operationId: "op-1" });
+    response = Response.json({ error: { code: "restart_unsupported", message: "Restart=no" } }, { status: 409 });
+    await expect(client.restart()).resolves.toEqual({ kind: "refused", reason: "Restart=no" });
+    response = Response.json({ error: { code: "restart_in_progress" } }, { status: 409 });
+    await expect(client.restart()).rejects.toMatchObject({ code: "restart_unconfirmed" });
+    response = Response.json({ unexpected: true }, { status: 202 });
+    await expect(client.restart()).rejects.toMatchObject({ code: "restart_unconfirmed" });
+    expect(calls).toEqual(Array(5).fill("http://127.0.0.1:1234/gui/v1/restart"));
+  });
+  it("feature-detects v1 manual compaction and posts only the exact conversation", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "fixture", fetchImpl: (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: { manualCompaction: { version: 1 } } });
+      calls.push({ url, body: init?.body });
+      expect((init?.headers as Record<string, string>).authorization).toBe("Bearer fixture");
+      return Response.json({ status: "succeeded", trigger: "manual", operationId: "one", tokensBefore: 1000, tokensAfter: 200 });
+    }) as typeof fetch });
+    await expect(client.info()).resolves.toMatchObject({ supportsManualCompaction: true });
+    await expect(client.compactConversation("web:a/b")).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
+    await client.compactConversation("web:a", { model: "anthropic:claude-opus-4-8" });
+    expect(calls).toEqual([
+      { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa%2Fb/compact", body: "{}" },
+      { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa/compact", body: '{"model":"anthropic:claude-opus-4-8"}' },
+    ]);
+  });
+  it("allows a 15-minute manual compaction budget and preserves lost-response classification", async () => {
+    const { MANUAL_COMPACTION_TIMEOUT_MS } = await import("../operator-client.js");
+    expect(MANUAL_COMPACTION_TIMEOUT_MS).toBe(15 * 60_000);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: (async (_url, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.signal?.aborted).toBe(false);
+      throw new DOMException("timed out", "TimeoutError");
+    }) as typeof fetch });
+    try {
+      await expect(client.compactConversation("web:fictional")).rejects.toMatchObject({ code: "compaction_outcome_unknown" });
+      expect(timeout).toHaveBeenCalledWith(MANUAL_COMPACTION_TIMEOUT_MS);
+    } finally { timeout.mockRestore(); }
+  });
+
   it("parses account verification and a model-less credential rejection through the shared contract", async () => {
     const snapshot = {
       schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-14T12:00:00.000Z",
@@ -362,6 +421,7 @@ describe("OperatorClient", () => {
     });
     await expect(client.info()).resolves.toEqual({
       schema: 1,
+      restart: { supported: false, reason: "Agent restart requires a configured operator API key." },
       label: "Agent",
       model: "p/m",
       effort: "high",
@@ -729,6 +789,40 @@ describe("OperatorClient", () => {
     });
   });
 
+  it("waits for a live-input settlement beyond the parser headers timeout", async () => {
+    const server = createServer((request, response) => {
+      request.resume();
+      const settle = setTimeout(() => response.end(JSON.stringify({ status: "applied", runId: "run-1" })), 1_500);
+      response.once("close", () => clearTimeout(settle));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const previousDispatcher = getGlobalDispatcher();
+    const testAgent = new Agent();
+    setGlobalDispatcher(testAgent.compose(
+      (dispatch) => (options, handler) => dispatch({
+        ...options,
+        // Fast parser timer: if liveInput uses ordinary fetch this fails before settlement.
+        headersTimeout: options.headersTimeout === 0 ? 0 : 100,
+      }, handler),
+    ));
+    try {
+      const client = new OperatorClient({ baseUrl: `http://127.0.0.1:${String(port)}` });
+      await expect(client.liveInput({
+        conversationId: "web:thread",
+        id: "input-1",
+        text: "Guide",
+        receivedAt: "2026-09-01T10:00:00.000Z",
+        signal: AbortSignal.timeout(4_000),
+      })).resolves.toEqual({ status: "applied", runId: "run-1" });
+    } finally {
+      setGlobalDispatcher(previousDispatcher);
+      await testAgent.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
+  });
+
   it("keeps a silent turn stream alive beyond the transport body timeout", async () => {
     const server = createServer((request, response) => {
       request.resume();
@@ -1042,24 +1136,6 @@ describe("OperatorClient", () => {
     expect(cancelSignal?.aborted).toBe(true);
     expect(Date.now() - startedAt).toBeLessThan(3_500);
   }, 5_000);
-});
-
-it("sends Monitor owner authorization only on exact wake turn and steering requests", async () => {
-  const headers: Headers[] = [];
-  const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "ordinary-key", monitorsBearer: "owner-monitor-key",
-    fetchImpl: (async (url, init) => {
-      headers.push(new Headers(init?.headers));
-      return String(url).endsWith("/live-input") ? Response.json({ status: "applied", runId: "run" })
-        : new Response(JSON.stringify({ kind: "finish", finalText: "ok" }) + "\n", { headers: { "content-type": "application/x-ndjson" } });
-    }) as typeof fetch });
-  const turn = { conversationId: "web:thread", text: "Literal", metadata: {}, attachments: [], signal: new AbortController().signal, onFrame: () => undefined };
-  await client.turn(turn);
-  await client.turn({ ...turn, processJobWakeDeliveryKey: "monitor:one:1" });
-  await client.liveInput({ conversationId: turn.conversationId, id: "monitor:one:1", deliveryKey: "monitor:one:1", text: "Event", receivedAt: new Date().toISOString() });
-  expect(headers.map((header) => header.get("authorization"))).toEqual(["Bearer ordinary-key", "Bearer ordinary-key", "Bearer ordinary-key"]);
-  expect(headers.map((header) => header.get("x-mono-agent-monitor-wake-authorization"))).toEqual([null, "Bearer owner-monitor-key", "Bearer owner-monitor-key"]);
-  await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).turn({ ...turn, processJobWakeDeliveryKey: "monitor:one:1" }))
-    .rejects.toMatchObject({ code: "monitors_unavailable" });
 });
 
 

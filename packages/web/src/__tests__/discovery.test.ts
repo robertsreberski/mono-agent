@@ -21,6 +21,31 @@ afterEach(async () => {
 });
 
 describe("operator discovery", () => {
+  it("includes stopped identities only when the web console opts in", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const registry = join(base, "registry");
+    await mkdir(registry);
+    await writeFile(join(registry, "agent-one.json"), JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-one",
+      label: "Agent One",
+      artifactDir: join(base, "artifacts"),
+      status: "stopped",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      // Even if terminal metadata still carries an endpoint, it is not live.
+      metadata: { channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } } },
+    }));
+
+    const options = { registryDirs: [registry], env: {} };
+    expect(await discoverOperatorAgents(options)).toEqual([]);
+    expect((await discoverAcpBridgeAgents(options)).sources).toEqual([]);
+    expect(await discoverOperatorAgents({ ...options, includeStopped: true })).toEqual([
+      { source: expect.objectContaining({ sourceId: "agent-one", status: "stopped", health: "stopped" }) },
+    ]);
+  });
+
   it("publishes a canonical, secret-free ACP bridge discovery contract", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -163,9 +188,15 @@ describe("operator discovery", () => {
     };
     await writeFile(join(registry, "agent-one.json"), JSON.stringify(manifest));
 
-    const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+    const found = await discoverOperatorAgents({ registryDirs: [registry], env: { MONO_AGENT_TUI_API_KEY: "ambient-key" } });
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ baseUrl: "http://127.0.0.1:5555/gui", apiKey: "secret", source: { sourceId: "agent-one" } });
+
+    await writeFile(configPath, "{}");
+    const shared = await discoverOperatorAgents({ registryDirs: [registry], env: { MONO_AGENT_TUI_API_KEY: " ambient-key " } });
+    expect(shared[0]?.apiKey).toBe("ambient-key");
+    const keyless = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+    expect(keyless[0]?.apiKey).toBeUndefined();
   });
 
   it("derives the process-job bearer only from an owner-private advertised state directory", async () => {
@@ -192,7 +223,6 @@ describe("operator discovery", () => {
             kind: "running",
             baseUrl: "http://127.0.0.1:5555/gui",
             processJobs: { stateDir },
-            monitors: { stateDir },
           },
         },
       },
@@ -204,14 +234,9 @@ describe("operator discovery", () => {
     await expect(discoverOperatorAgents({ registryDirs: [registry], env: {} }))
       .resolves.toEqual([expect.objectContaining({ processJobsBearer: expected })]);
 
-    const monitorBearer = createHmac("sha256", secret).update("mono-agent-monitor-operator-v1").digest("base64url");
-    await expect(discoverOperatorAgents({ registryDirs: [registry], env: {} }))
-      .resolves.toEqual([expect.objectContaining({ monitorsBearer: monitorBearer })]);
-
     await chmod(secretPath, 0o644);
     const permissive = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
     expect(permissive[0]).not.toHaveProperty("processJobsBearer");
-    expect(permissive[0]).not.toHaveProperty("monitorsBearer");
   });
 
   it.each([".env", "agent.production.env"])(
@@ -246,7 +271,7 @@ describe("operator discovery", () => {
         },
       }));
 
-      const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+      const found = await discoverOperatorAgents({ registryDirs: [registry], env: { MONO_AGENT_TUI_API_KEY: "ambient-key" } });
       expect(found[0]).toMatchObject({ apiKey: "durable-key" });
       expect(found[0]?.source.metadata).not.toHaveProperty("apiKey");
       expect(JSON.stringify(found)).not.toContain("must-stay-unread");

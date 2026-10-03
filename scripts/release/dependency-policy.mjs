@@ -4,9 +4,8 @@ import path from "node:path";
 import { DEPENDENCY_SECTIONS } from "./package-graph.mjs";
 
 export const PINNED_RUNTIME_DEPENDENCIES = Object.freeze({
-  "@earendil-works/pi-agent-core": "0.85.1",
-  "@earendil-works/pi-ai": "0.85.1",
-  "@earendil-works/pi-tui": "0.85.1",
+  "@earendil-works/pi-agent-core": "0.99.2",
+  "@earendil-works/pi-ai": "0.99.2",
 });
 
 export function releaseDependencyPinIssues(packages) {

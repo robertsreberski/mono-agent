@@ -11,8 +11,6 @@ import {
   ChannelDeliveryError,
   DEFAULT_MAX_MESSAGE_CHARS,
   ResilientMessageStream,
-  normalizeTrailing,
-  splitTextByCodePoints,
 } from "@mono-agent/agent-contracts";
 import { redactTelegramErrorMessage } from "./log-redaction.js";
 import { TelegramApiError } from "./telegram-error.js";
@@ -20,8 +18,10 @@ import { renderTelegramMarkdown } from "./telegram-markdown.js";
 import type {
   TelegramChatId,
   TelegramEditMessageTextParams,
+  TelegramEditRichMessageParams,
   TelegramMessageSender,
   TelegramSendMessageParams,
+  TelegramSendRichMessageParams,
 } from "./types.js";
 
 export interface AgentMessageStream extends AgentMessageStreamBase {
@@ -39,6 +39,8 @@ export interface TelegramMessageFinishOptions extends AgentMessageFinishOptions 
 export interface TelegramMessageStreamOptions {
   api: TelegramMessageSender;
   chatId: TelegramChatId;
+  /** Forum topic every post and typing action targets; omit outside topics. */
+  messageThreadId?: number;
   initialStatusText?: string;
   editDebounceMs?: number;
   maxMessageChars?: number;
@@ -54,7 +56,7 @@ export interface TelegramMessageStreamOptions {
    * the agent works, before any answer text has arrived. Default true.
    */
   showHints?: boolean;
-  /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
+  /** Render the final answer as native Rich Markdown (MarkdownV2 compatibility fallback). Default true. */
   formatMarkdown?: boolean;
   /**
    * Deliver only the final answer: suppress streaming interim edits and show a
@@ -104,6 +106,10 @@ export type TelegramSendOutcome =
   | { kind: "fatal" };
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
+// Telegram chat actions expire after about five seconds (and a bot message can
+// clear them sooner). Refresh just under that window for one continuous native
+// "typing…" affordance while the turn is still active.
+const ACTIVITY_HEARTBEAT_MS = 4_000;
 
 /** Sentinel raised by the transport when a rendered MarkdownV2 chunk overflows. */
 const MARKDOWN_OVERFLOW = Symbol("telegram-markdown-overflow");
@@ -120,12 +126,22 @@ function isMarkdownOverflowError(error: unknown): error is TelegramMarkdownOverf
   );
 }
 
+/** A rejected 4xx rich request is known not to have landed and can use the compatibility path. */
+function shouldFallbackFromRich(error: unknown): boolean {
+  if (!(error instanceof TelegramApiError) || error.kind !== "telegram") {
+    return false;
+  }
+  const code = error.errorCode;
+  return code !== undefined && code >= 400 && code < 500 && code !== 429;
+}
+
 /**
  * Telegram-specific {@link ChannelTransport}. Wraps the {@link TelegramMessageSender}
- * (sendMessage / editMessageText), renders MarkdownV2, and maps Telegram failures
- * onto {@link ChannelSendOutcome}. Markdown rendering and `parse_mode` are gated by
- * a mutable `markdownEnabled` flag so the wrapper can deliver fixed system copy
- * (e.g. "Cancelled.") as plain text without re-rendering it.
+ * (sendMessage / sendRichMessage / editMessageText), prefers native Rich Markdown
+ * for final answers, and maps Telegram failures onto {@link ChannelSendOutcome}.
+ * Custom clients without rich-message support retain the MarkdownV2 compatibility
+ * renderer. Formatting is gated by a mutable `markdownEnabled` flag so the wrapper
+ * can deliver fixed system copy (e.g. "Cancelled.") as plain text.
  */
 class TelegramChannelTransport implements ChannelTransport {
   readonly maxMessageChars: number;
@@ -134,6 +150,7 @@ class TelegramChannelTransport implements ChannelTransport {
 
   private readonly api: TelegramMessageSender;
   private readonly chatId: TelegramChatId;
+  private readonly messageThreadId: number | undefined;
   private readonly replyToMessageId: number | undefined;
   private readonly silent: boolean;
   private readonly logger: TelegramMessageStreamLogger | undefined;
@@ -144,6 +161,7 @@ class TelegramChannelTransport implements ChannelTransport {
   constructor(options: {
     api: TelegramMessageSender;
     chatId: TelegramChatId;
+    messageThreadId: number | undefined;
     maxMessageChars: number;
     replyToMessageId: number | undefined;
     markdownEnabled: boolean;
@@ -153,6 +171,7 @@ class TelegramChannelTransport implements ChannelTransport {
   }) {
     this.api = options.api;
     this.chatId = options.chatId;
+    this.messageThreadId = options.messageThreadId;
     this.maxMessageChars = options.maxMessageChars;
     this.replyToMessageId = options.replyToMessageId;
     this.markdownEnabled = options.markdownEnabled;
@@ -171,7 +190,7 @@ class TelegramChannelTransport implements ChannelTransport {
   }
 
   renderMarkdown(text: string): string {
-    if (!this.markdownEnabled) {
+    if (!this.markdownEnabled || this.supportsRichMessages()) {
       return text;
     }
     return renderTelegramMarkdown(text);
@@ -183,7 +202,25 @@ class TelegramChannelTransport implements ChannelTransport {
   ): Promise<MessageRef> {
     const useMarkdown = options.markdown && this.markdownEnabled;
     this.assertWithinLimit(text, useMarkdown);
-    const sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown, options.contentKind));
+    let sent: Awaited<ReturnType<TelegramMessageSender["sendMessage"]>>;
+    if (useMarkdown && this.api.sendRichMessage !== undefined && this.api.editRichMessage !== undefined) {
+      try {
+        sent = await this.api.sendRichMessage(this.buildSendRichParams(text, options.contentKind));
+      } catch (error) {
+        if (!shouldFallbackFromRich(error)) {
+          throw error;
+        }
+        const compatibilityText = renderTelegramMarkdown(text);
+        this.assertWithinLimit(compatibilityText, true);
+        sent = await this.api.sendMessage(this.buildSendParams(
+          compatibilityText,
+          true,
+          options.contentKind,
+        ));
+      }
+    } else {
+      sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown, options.contentKind));
+    }
     const ref = { id: String(sent.message_id), message_id: sent.message_id };
     if (options.contentKind === "status") {
       this.transientStatusMessage = ref;
@@ -208,6 +245,20 @@ class TelegramChannelTransport implements ChannelTransport {
     }
     const useMarkdown = options.markdown && this.markdownEnabled;
     this.assertWithinLimit(text, useMarkdown);
+    if (useMarkdown && this.api.sendRichMessage !== undefined && this.api.editRichMessage !== undefined) {
+      try {
+        await this.api.editRichMessage(this.buildEditRichParams(ref, text));
+        return;
+      } catch (error) {
+        if (!shouldFallbackFromRich(error)) {
+          throw error;
+        }
+        const compatibilityText = renderTelegramMarkdown(text);
+        this.assertWithinLimit(compatibilityText, true);
+        await this.api.editMessageText(this.buildEditParams(ref, compatibilityText, true));
+        return;
+      }
+    }
     await this.api.editMessageText(this.buildEditParams(ref, text, useMarkdown));
   }
 
@@ -231,20 +282,21 @@ class TelegramChannelTransport implements ChannelTransport {
     return classifyTelegramError(error);
   }
 
-  async indicateActivity(): Promise<void> {
+  async indicateActivity(signal?: AbortSignal): Promise<void> {
     // Telegram "typing…" chat action; expires after ~5s so the substrate
     // refreshes it while the agent works. No-op if the sender lacks the method.
-    await this.api.sendChatAction?.({ chat_id: this.chatId, action: "typing" });
+    await this.api.sendChatAction?.({
+      chat_id: this.chatId,
+      ...(this.messageThreadId === undefined ? {} : { message_thread_id: this.messageThreadId }),
+      action: "typing",
+    }, signal === undefined ? undefined : { signal });
   }
 
   /**
-   * MarkdownV2 escaping can expand a chunk past Telegram's size limit even though
-   * the plain source is within it (chunks are split on the source length). Rather
-   * than send and fail with "message is too long", we signal a reformat-to-plain
-   * recovery; the substrate then re-delivers the plain source within the limit.
-   * (We never test renderedText === source to decide this: telegramify renders
-   * inline code / links back to identical bytes that still need parse_mode, so
-   * equality is not a plain-text signal.)
+   * The MarkdownV2 compatibility renderer can expand a chunk past Telegram's
+   * size limit even though the plain source is within it. Rather than send and
+   * fail with "message is too long", signal a reformat-to-plain recovery. Native
+   * Rich Markdown stays source-sized, so the same guard is harmless there.
    */
   private assertWithinLimit(text: string, useMarkdown: boolean): void {
     if (useMarkdown && countCodePoints(text) > this.maxMessageChars) {
@@ -269,12 +321,49 @@ class TelegramChannelTransport implements ChannelTransport {
     return params;
   }
 
+  private buildEditRichParams(
+    ref: MessageRef,
+    markdown: string,
+  ): TelegramEditRichMessageParams {
+    return {
+      chat_id: this.chatId,
+      message_id: messageIdOf(ref),
+      rich_message: { markdown },
+    };
+  }
+
+  private buildSendRichParams(
+    markdown: string,
+    contentKind?: ChannelMessageContentKind,
+  ): TelegramSendRichMessageParams {
+    const params: TelegramSendRichMessageParams = {
+      chat_id: this.chatId,
+      rich_message: { markdown },
+    };
+    if (this.messageThreadId !== undefined) {
+      params.message_thread_id = this.messageThreadId;
+    }
+    if (this.replyToMessageId !== undefined) {
+      params.reply_to_message_id = this.replyToMessageId;
+      if (contentKind === "answer" && this.postFinalAnswerSeparately) {
+        params.allow_sending_without_reply = true;
+      }
+    }
+    if (this.silent) {
+      params.disable_notification = true;
+    }
+    return params;
+  }
+
   private buildSendParams(
     text: string,
     useMarkdown: boolean,
     contentKind?: ChannelMessageContentKind,
   ): TelegramSendMessageParams {
     const params: TelegramSendMessageParams = { chat_id: this.chatId, text };
+    if (this.messageThreadId !== undefined) {
+      params.message_thread_id = this.messageThreadId;
+    }
     if (useMarkdown) {
       params.parse_mode = "MarkdownV2";
     }
@@ -288,6 +377,10 @@ class TelegramChannelTransport implements ChannelTransport {
       params.disable_notification = true;
     }
     return params;
+  }
+
+  private supportsRichMessages(): boolean {
+    return this.api.sendRichMessage !== undefined && this.api.editRichMessage !== undefined;
   }
 
   private async dismissTransientStatus(): Promise<void> {
@@ -322,13 +415,22 @@ function messageIdOf(ref: MessageRef): number {
  * substrate, preserving this adapter's public API and no-labels + activity-hints
  * behavior. Telegram additionally keeps final-only tool ledgers transient by
  * posting the completed answer separately and deleting the ledger. The per-call
- * `finish(text, { format })` toggle lets fixed system copy bypass MarkdownV2.
+ * `finish(text, { format })` toggle lets fixed system copy bypass rich/MarkdownV2 formatting.
  */
 export class TelegramMessageStream implements AgentMessageStream {
   private readonly transport: TelegramChannelTransport;
   private readonly inner: ResilientMessageStream;
   private readonly formatMarkdown: boolean;
   private readonly finalOnly: boolean;
+  private readonly logger: TelegramMessageStreamLogger | undefined;
+  private readonly abortSignal: AbortSignal | undefined;
+  private readonly stopActivityOnAbort = (): void => {
+    void this.stopActivity();
+  };
+  private activityHeartbeat: ReturnType<typeof setInterval> | undefined;
+  private activityPulse: Promise<void> | undefined;
+  private activityPulseController: AbortController | undefined;
+  private activityActive = false;
 
   constructor(options: TelegramMessageStreamOptions) {
     const maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
@@ -337,10 +439,16 @@ export class TelegramMessageStream implements AgentMessageStream {
     }
     this.formatMarkdown = options.formatMarkdown ?? true;
     this.finalOnly = options.finalOnly ?? false;
+    this.logger = options.logger;
+    this.abortSignal = options.abortSignal;
+    if (this.abortSignal?.aborted === false) {
+      this.abortSignal.addEventListener("abort", this.stopActivityOnAbort, { once: true });
+    }
 
     this.transport = new TelegramChannelTransport({
       api: options.api,
       chatId: options.chatId,
+      messageThreadId: options.messageThreadId,
       maxMessageChars,
       replyToMessageId: options.replyToMessageId,
       // Streaming begins with the configured formatting; finish() may override it.
@@ -392,25 +500,56 @@ export class TelegramMessageStream implements AgentMessageStream {
 
   async status(text: string): Promise<void> {
     await this.inner.status(text);
+    this.startActivityHeartbeat();
   }
 
   async append(delta: string): Promise<void> {
     await this.inner.append(delta);
+    this.startActivityHeartbeat();
   }
 
   async replace(text: string): Promise<void> {
     await this.inner.replace(text);
+    this.startActivityHeartbeat();
   }
 
   async event(event: AgentStreamEvent): Promise<void> {
     await this.inner.event(event);
+    this.startActivityHeartbeat();
+    // Posting or editing the visible tool ledger can clear Telegram's current
+    // chat action. Reassert it immediately instead of leaving a four-second gap.
+    if (
+      event.type === "tool_call_started"
+      || event.type === "tool_call_completed"
+      || event.type === "provider_status"
+    ) {
+      // Best-effort feedback must never hold the tool event or the model run open.
+      void this.pulseActivity();
+    }
   }
 
   async dismissTransient(): Promise<void> {
+    await this.stopActivity();
     await this.inner.dismissTransient();
   }
 
+  /** Stop and drain the native typing heartbeat before terminal delivery. */
+  async stopActivity(): Promise<void> {
+    this.activityActive = false;
+    this.abortSignal?.removeEventListener("abort", this.stopActivityOnAbort);
+    if (this.activityHeartbeat !== undefined) {
+      clearInterval(this.activityHeartbeat);
+      this.activityHeartbeat = undefined;
+    }
+    this.activityPulseController?.abort();
+    await this.activityPulse;
+  }
+
   async finish(finalText?: string, options?: TelegramMessageFinishOptions): Promise<void> {
+    // Wait for any in-flight heartbeat before posting the final answer. Otherwise
+    // a slow sendChatAction could complete after delivery and falsely leave the
+    // bot looking busy for another five seconds.
+    await this.stopActivity();
     // Fixed system copy (e.g. "Cancelled.") is delivered as plain text — the
     // transport's markdown gate is toggled for this finish so the answer is not
     // re-rendered as MarkdownV2.
@@ -432,6 +571,52 @@ export class TelegramMessageStream implements AgentMessageStream {
       }
       throw error;
     }
+  }
+
+  private startActivityHeartbeat(): void {
+    if (this.activityActive || this.abortSignal?.aborted === true) {
+      return;
+    }
+    this.activityActive = true;
+    this.activityHeartbeat = setInterval(() => {
+      void this.pulseActivity();
+    }, ACTIVITY_HEARTBEAT_MS);
+    this.activityHeartbeat.unref?.();
+  }
+
+  private pulseActivity(): Promise<void> {
+    if (!this.activityActive) {
+      return Promise.resolve();
+    }
+    if (this.activityPulse !== undefined) {
+      return this.activityPulse;
+    }
+
+    const controller = new AbortController();
+    this.activityPulseController = controller;
+    const request = this.transport.indicateActivity(controller.signal)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          this.logger?.debug?.("Telegram activity heartbeat failed (ignored).", {
+            error: redactTelegramErrorMessage(error),
+          });
+        }
+      });
+    const interrupted = new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    // A custom sender may ignore AbortSignal. Racing the local abort still lets
+    // final delivery proceed; `request` retains its rejection handler so a late
+    // transport failure cannot become unhandled.
+    const pulse = Promise.race([request, interrupted])
+      .finally(() => {
+        if (this.activityPulse === pulse) {
+          this.activityPulse = undefined;
+          this.activityPulseController = undefined;
+        }
+      });
+    this.activityPulse = pulse;
+    return pulse;
   }
 }
 
@@ -487,10 +672,6 @@ export function classifyTelegramError(error: unknown): TelegramSendOutcome {
   // Non-TelegramApiError (e.g. a transient transport error or a test stub):
   // retry conservatively rather than surfacing it as a hard failure.
   return { kind: "retry" };
-}
-
-export function splitTelegramText(text: string, maxChars: number): string[] {
-  return splitTextByCodePoints(normalizeTrailing(text, ""), maxChars);
 }
 
 function normalizeTelegramText(text: string): string {

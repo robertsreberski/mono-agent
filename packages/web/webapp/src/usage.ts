@@ -2,15 +2,15 @@ import type { ThreadDetail, WebMessage } from "./types";
 import {
   childRecord,
   dataLayers,
-  isAggregateUsageTelemetry,
   isCompactionTelemetry,
   isContextTelemetry,
-  latestMessageCostUsd,
   normalizeUsage,
   numericValue,
   stringValue,
 } from "../../src/message-cost.js";
-import type { NormalizedUsage } from "../../src/message-cost.js";
+import { messageUsageRollup } from "../../src/message-cost.js";
+import { sumThreadUsage } from "../../src/thread-usage.js";
+import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 
 export interface ConsoleTokenUsage {
   readonly input?: number;
@@ -39,12 +39,15 @@ export interface ConsoleContextProjection {
   readonly usage?: ConsoleContextUsage;
   readonly measuredModel?: string;
   readonly reason?: string;
+  /** Structured rendering facts; wording never has to be parsed from reason. */
+  readonly nextModel?: string;
+  readonly lastTurnFailed?: boolean;
+  readonly noContextRuntime?: "claude";
+  readonly compaction?: { readonly tokensBefore?: number; readonly tokensAfter?: number; readonly tokenCountsExact?: boolean; readonly running: boolean };
 }
 
 export interface ConsoleUsage {
   readonly context: ConsoleContextProjection;
-  readonly processed?: ConsoleTokenUsage;
-  readonly cost?: number;
 }
 
 export interface ConsoleUsageOptions {
@@ -60,6 +63,47 @@ export interface ConsoleUsageOptions {
 export const formatUsd = (cost: number): string =>
   `$${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
 
+export const formatTokenCount = (tokens: number): string => {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
+  return String(tokens);
+};
+
+/** Token-weighted share of prompt tokens served from cache, including reported child work. */
+export const conversationCacheHitPercent = (total: WebUsageSlice | undefined): string | undefined => {
+  const tokens = total?.tokens;
+  if (tokens === undefined) return undefined;
+  // Input includes writes, so the denominator is the two dialog columns together.
+  const prompt = tokens.input + tokens.cacheWrite + tokens.cacheRead;
+  if (!Number.isFinite(prompt) || prompt <= 0 || !Number.isFinite(tokens.cacheRead)) return undefined;
+  const percent = tokens.cacheRead / prompt * 100;
+  return percent > 0 && percent < 0.5 ? "<1%" : `${Math.round(percent)}%`;
+};
+
+export const contextLevel = (percent: number | undefined): "normal" | "warning" | "danger" =>
+  percent !== undefined && percent >= 95 ? "danger" : percent !== undefined && percent >= 80 ? "warning" : "normal";
+
+export function windowUsage(detail: ThreadDetail): WebThreadUsage {
+  const rollups = detail.messages.filter((message) => message.role === "assistant").map(messageUsageRollup);
+  const settled = detail.messages.filter((message) => message.role === "assistant"
+    && message.turnId !== undefined && message.status !== "running").length;
+  const usage = sumThreadUsage(rollups, new Date().toISOString(), settled);
+  if (detail.messagesNextCursor === undefined) return usage;
+  // Unseen pages may contain settled turns even when this window has none.
+  const { settledAssistantTurns: _windowOnly, ...partial } = usage;
+  let partialSubagents: WebThreadUsage["subagents"];
+  if (usage.subagents !== undefined) {
+    const { runsWithTokens: _windowRuns, ...windowSubagents } = usage.subagents;
+    partialSubagents = { ...windowSubagents, tokensPartial: true, costPartial: true };
+  }
+  return {
+    ...partial,
+    total: { ...usage.total, tokensPartial: true, costPartial: true },
+    byModel: usage.byModel.map((model) => ({ ...model, costPartial: true as const, tokensPartial: true as const })),
+    ...(partialSubagents === undefined ? {} : { subagents: partialSubagents }),
+  };
+}
+
 interface OrderedObservation {
   readonly order: number;
   readonly timestamp?: number;
@@ -72,6 +116,9 @@ interface ContextObservation extends OrderedObservation {
 
 interface CompactionObservation extends OrderedObservation {
   readonly status: "running" | "succeeded";
+  readonly tokensBefore?: number;
+  readonly tokensAfter?: number;
+  readonly tokenCountsExact?: boolean;
 }
 
 const contextUsage = (data: unknown): ConsoleContextUsage | undefined => {
@@ -99,40 +146,6 @@ const contextUsage = (data: unknown): ConsoleContextUsage | undefined => {
     ...(contextWindow === undefined ? {} : { contextWindow }),
   };
 };
-
-const hasProcessedTokens = (usage: NormalizedUsage): boolean =>
-  usage.input !== undefined ||
-  usage.cachedInput !== undefined ||
-  usage.cacheCreation !== undefined ||
-  usage.output !== undefined ||
-  usage.reasoning !== undefined;
-
-const latestMessageProcessed = (
-  parts: ThreadDetail["messages"][number]["parts"],
-): ConsoleTokenUsage | null => {
-  for (let partIndex = parts.length - 1; partIndex >= 0; partIndex -= 1) {
-    const part = parts[partIndex];
-    if (part?.type !== "telemetry") continue;
-    const layers = dataLayers(part.data);
-    if (!isAggregateUsageTelemetry(part.event, layers)) continue;
-    const usage = normalizeUsage(part.data);
-    if (usage === null || !hasProcessedTokens(usage)) continue;
-    return {
-      ...(usage.input === undefined ? {} : { input: usage.input }),
-      ...(usage.cachedInput === undefined ? {} : { cachedInput: usage.cachedInput }),
-      ...(usage.cacheCreation === undefined ? {} : { cacheCreation: usage.cacheCreation }),
-      ...(usage.output === undefined ? {} : { output: usage.output }),
-      ...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
-      ...(usage.model === undefined ? {} : { model: usage.model }),
-      ...(usage.cacheHitRatio === undefined ? {} : { cacheHitRatio: usage.cacheHitRatio }),
-    };
-  }
-  return null;
-};
-
-const latestMessageCost = (
-  parts: ThreadDetail["messages"][number]["parts"],
-): number | undefined => latestMessageCostUsd(parts);
 
 const occursAfter = (candidate: OrderedObservation, reference: OrderedObservation): boolean => {
   if (
@@ -184,6 +197,10 @@ const contextProjection = (
           compactions.push({
             status,
             order,
+            ...(numericValue(innerToOuter, ["tokensBefore"]) === undefined ? {} : { tokensBefore: numericValue(innerToOuter, ["tokensBefore"]) }),
+            ...(numericValue(innerToOuter, ["tokensAfter"]) === undefined ? {} : { tokensAfter: numericValue(innerToOuter, ["tokensAfter"]) }),
+            ...(innerToOuter.find((layer) => typeof layer.tokenCountsExact === "boolean")?.tokenCountsExact === undefined
+              ? {} : { tokenCountsExact: innerToOuter.find((layer) => typeof layer.tokenCountsExact === "boolean")?.tokenCountsExact as boolean }),
             ...(timestamp === undefined ? {} : { timestamp }),
           });
         }
@@ -201,10 +218,23 @@ const contextProjection = (
   const invalidated = latestInvalidation !== undefined &&
     (latestExact === undefined || occursAfter(latestInvalidation, latestExact));
 
-  if (invalidated) {
+  if (invalidated && latestInvalidation !== undefined) {
+    const after = latestInvalidation.tokensAfter;
     return {
       status: "awaiting_measurement",
-      reason: "Context changed during compaction; waiting for the next exact provider measurement.",
+      ...(latestInvalidation.status === "running" && latestExact !== undefined ? { usage: latestExact.usage }
+        : after === undefined || after < 0 ? {} : { usage: {
+          total: after,
+          ...(latestExact?.usage.contextWindow === undefined ? {} : { contextWindow: latestExact.usage.contextWindow }),
+        } }),
+      compaction: {
+        running: latestInvalidation.status === "running",
+        ...(latestInvalidation.tokensBefore === undefined ? {} : { tokensBefore: latestInvalidation.tokensBefore }),
+        ...(after === undefined ? {} : { tokensAfter: after }),
+        ...(latestInvalidation.tokenCountsExact === undefined ? {} : { tokenCountsExact: latestInvalidation.tokenCountsExact }),
+      },
+      reason: after === undefined ? "Compaction changed the context. It's measured again on the next turn."
+        : "Estimated after compaction. Measured exactly on the next turn.",
     };
   }
 
@@ -235,6 +265,7 @@ const contextProjection = (
         status: "last_measured",
         usage: latestExact.usage,
         ...(measuredModel === undefined ? {} : { measuredModel }),
+        ...(modelMismatch ? { nextModel } : { lastTurnFailed: true }),
         reason: modelMismatch
           ? measuredModel === undefined
             ? `The exact measurement did not identify its model; the next turn is set to ${nextModel}.`
@@ -252,6 +283,7 @@ const contextProjection = (
   const nextModel = selectedModel?.trim();
   return {
     status: "unavailable",
+    ...(nextModel?.startsWith("claude:") ? { noContextRuntime: "claude" as const } : {}),
     reason: nextModel?.startsWith("claude:")
       ? "This Claude runtime does not expose exact context measurements."
       : "Exact context usage has not been reported for this conversation.",
@@ -264,17 +296,5 @@ export const conversationConsoleUsage = (
 ): ConsoleUsage | null => {
   if (detail === null) return null;
 
-  let processed: ConsoleTokenUsage | undefined;
-  let cost: number | undefined;
-  for (const message of detail.messages) {
-    const messageProcessed = latestMessageProcessed(message.parts);
-    if (messageProcessed !== null) processed = messageProcessed;
-    const messageCost = latestMessageCost(message.parts);
-    if (messageCost !== undefined) cost = (cost ?? 0) + messageCost;
-  }
-  return {
-    context: contextProjection(detail, options.selectedModel),
-    ...(processed === undefined ? {} : { processed }),
-    ...(cost === undefined ? {} : { cost }),
-  };
+  return { context: contextProjection(detail, options.selectedModel) };
 };

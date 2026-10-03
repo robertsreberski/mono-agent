@@ -1,4 +1,7 @@
+import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME, computerUseSection } from "./computer-use.js";
+import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
+import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -7,15 +10,16 @@ import { isIP } from "node:net";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
-// `BuiltinProvider`, not the root `KnownProvider`: since pi-ai 0.83.0 the
-// latter also covers purely dynamic providers (e.g. "radius") that have no
-// generated catalog entry, so it no longer keys `getBuiltinModels`. This guard
-// is built from `getBuiltinProviders()`, which is exactly the catalog set.
+// `BuiltinProvider`, not the root `KnownProvider`: the latter also covers
+// providers without a generated catalog entry, so it does not key
+// `getBuiltinModels`. This guard is built from `getBuiltinProviders()`, which
+// is exactly the catalog set.
 import {
   type BuiltinProvider as PiBuiltinProvider,
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
 import { validateCronExpression } from "@mono-agent/cron-adapter";
+import { effectiveEmbeddingIdentity } from "@mono-agent/memory/search";
 import {
   classifyContinuationMcpServerTransport,
   isStdioMcpServerSpec,
@@ -37,7 +41,6 @@ import {
   findRemovedConfigWarnings,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
-  resolveSupermemoryContainer,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -60,7 +63,7 @@ import { isRememberToolAllowed, isRememberToolPolicyName } from "./memory-rememb
 import { isMemoryJournalToolAllowed, isMemoryJournalToolPolicyName } from "./memory-journal.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
-import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
+import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, renamedToolMessage, renamedToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -92,7 +95,7 @@ import {
   type DurableContinuationRecord,
 } from "./continuation-store-types.js";
 import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "./continuations.js";
-import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
+import { isProcessJobState, normalizeOptionalString, PROCESS_JOB_STATES, readSettingsJson } from "@mono-agent/agent-contracts";
 import {
   hasSubagentObligation,
   hasUnresolvedSubagentOwnership,
@@ -121,7 +124,7 @@ import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   probeMemoryEmbeddingSelection,
 } from "./memory-embedding-service.js";
-import { piAuthRecoveryCommand } from "./provider-setup.js";
+import { hasUsablePiOAuthClientId, piAuthRecoveryCommand } from "./provider-setup.js";
 import { collectUsedProviderReferences } from "./provider-auth-status.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import {
@@ -132,7 +135,6 @@ import {
 } from "./project-skills.js";
 import { runtimeProvenanceDetail } from "./runtime-provenance.js";
 import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
-import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 import {
   DEFAULT_LAUNCHD_LOG_POLICY,
   inspectLaunchdLogs,
@@ -142,7 +144,7 @@ import {
 import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "./launchd-logs.js";
 import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
-import { exporterSection, runsSection } from "./doctor-observability.js";
+import { runsSection } from "./doctor-runs.js";
 import { sessionToolHistorySection } from "./doctor-session-history.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
@@ -197,13 +199,15 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
    */
   readonly allowFilesystemWrites?: boolean;
   /**
-   * When false, skip live probes (Ollama and Supermemory reachability, the
-   * Phoenix export probe, and local tool version checks) and validate
+   * When false, skip live probes (Ollama reachability, the
+   * local run health and local tool version checks) and validate
    * only structure/shape. Those probes can only ever downgrade a section to
    * `waiting`, never `error`, so skipping them leaves the pass/fail verdict
    * (`ok`) unchanged — the start preflight relies on this. Defaults to true.
    */
   readonly liveness?: boolean;
+  /** Start preflight remains permissive for duplicates; validate/doctor defaults to error. */
+  readonly ignoreDuplicateKeys?: boolean;
   /** Model refs whose credentials were proven by a successful live turn. */
   readonly verifiedCredentialModelRefs?: readonly string[];
   /** Injectable subprocess seam for deterministic local tool version checks. */
@@ -235,13 +239,35 @@ export async function validateMonoAgentFolder(
 
   let coreConfig: MonoAgentConfig | undefined;
   try {
-    coreConfig = await loadAppCoreConfig(options);
+    // Validation returns structured diagnostics; do not emit loader prose.
+    coreConfig = await loadAppCoreConfig(options, { warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false });
     sections.push({ id: "core", label: "Core config", status: "ok", details: [`Loaded ${options.configPath}.`] });
   } catch (error) {
     if (!isAppCoreConfigError(error)) {
       throw error;
     }
     sections.push({ id: "core", label: "Core config", status: "error", details: [error.message] });
+  }
+  // Duplicates are an error-level finding even though runtime keeps last-wins
+  // semantics. Keep other section diagnostics available for the same config.
+  if (options.ignoreDuplicateKeys !== true) {
+    try {
+      const { duplicateKeyPaths } = await readSettingsJson(options.configPath);
+      if (duplicateKeyPaths.length > 0) {
+        const core = sections[0]!;
+        sections[0] = {
+          ...core,
+          status: "error",
+          details: [
+            ...core.details,
+            ...duplicateKeyPaths.slice(0, 20).map((path) => `Duplicate JSON key: ${path.slice(0, 200)} (last value wins at runtime).`),
+            ...(duplicateKeyPaths.length > 20 ? [`${duplicateKeyPaths.length - 20} more duplicate JSON key paths.`] : []),
+          ],
+        };
+      }
+    } catch {
+      // Core already reports malformed or unavailable JSON above.
+    }
   }
 
   sections.push(await runtimeProvenanceSection(options.verifiedRuntimeProvenanceDetail));
@@ -256,11 +282,10 @@ export async function validateMonoAgentFolder(
         ...buildMonoAgentConfigView({
           redacted: redactMonoAgentConfig(coreConfig),
           json: jsonResult.json,
-          env: options.env,
         }),
         ...(await collectChannelConfigViews(drivers, options)),
       ]),
-      ...findRemovedConfigWarnings({ json: jsonResult.json, env: options.env }),
+      ...findRemovedConfigWarnings({ json: jsonResult.json }),
     ];
     if (configWarnings.length > 0) {
       sections.push({ id: "secret-placement", label: "Config warnings", status: "waiting", details: configWarnings });
@@ -282,6 +307,7 @@ export async function validateMonoAgentFolder(
       options.preferAppPluginInstall === true,
     ));
     sections.push(await toolsSection(coreConfig, options));
+    sections.push(await computerUseSection(coreConfig.tools.computerUse));
     sections.push(await sessionToolHistorySection({
       historyRoot: join(coreConfig.artifacts.dir, "..", "history"),
       requestScopedToolSupported: true,
@@ -292,7 +318,6 @@ export async function validateMonoAgentFolder(
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
 
-  sections.push(await exporterSection(options, liveness));
   sections.push(await runsSection(options, coreConfig));
   sections.push(await launchdLogsSection(options.configPath));
 
@@ -324,6 +349,7 @@ export async function validateMonoAgentFolder(
 
 /** Read-only launchd log inventory used by both `validate` and its `doctor` alias. */
 export async function launchdLogsSection(configPath: string): Promise<ValidationSection> {
+  let maintenanceDetail: string | undefined;
   let inspection: LaunchdLogInspection;
   let monitorStatus: ManagedLaunchdLogMonitorStatus | "unavailable" | undefined;
   try {
@@ -335,9 +361,14 @@ export async function launchdLogsSection(configPath: string): Promise<Validation
       : "";
     try {
       monitorStatus = await readLaunchdLogMonitorStatus(mainLabel, paths);
+
     } catch {
       monitorStatus = "unavailable";
     }
+    try {
+      const maintenanceStatus = await readLaunchdMaintenanceActivityStatus(mainLabel, paths);
+      if (maintenanceStatus !== undefined) maintenanceDetail = describeMaintenanceActivity(maintenanceStatus);
+    } catch { maintenanceDetail = "Maintenance: owner-private status is unavailable or unsafe."; }
   } catch {
     return {
       id: "launchd-logs",
@@ -347,7 +378,8 @@ export async function launchdLogsSection(configPath: string): Promise<Validation
     };
   }
 
-  return launchdLogsSectionFromInspection(inspection, monitorStatus);
+  const section = launchdLogsSectionFromInspection(inspection, monitorStatus);
+  return { ...section, details: [...section.details, ...(maintenanceDetail === undefined ? [] : [maintenanceDetail])] };
 }
 
 /** Pure renderer kept separate so exact byte accounting is deterministic in tests. */
@@ -593,6 +625,9 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
   const routes = configuredRuntimeRouteChecks(config);
   for (const route of routes) {
     try {
+      if (config.runtime.context1MModels?.[`${route.model.provider}:${route.model.model}`] === true) {
+        details.push(`${route.label} ${displayReferenceOf(route.model)}: 1M context enabled (catalog-inferred eligibility, not a subscription guarantee).`);
+      }
       const support = describeMonoRuntimeSupport(route.model);
       const resolutionIssue = piModelResolutionIssue(config, route.model);
       const effortWarning = runtimeRouteEffortWarning(config, route);
@@ -702,10 +737,10 @@ function piModelResolutionIssue(
     return undefined;
   }
 
-  // pi-supplement: validate against the runtime's supplement-aware facade, not
-  // pi-ai directly, so a supplemented model (see agent-runtime's
-  // ai/pi-supplement.js) validates exactly like a pi builtin. Unknown refs
-  // still fail with the same diagnostic.
+  // Validate against the runtime's upstream catalog facade, not pi-ai directly,
+  // so a pi builtin validates through the same snapshot-cloned view the
+  // runtime resolves and prices with. Unknown refs still fail with the same
+  // diagnostic.
   if (
     isPiBuiltinProvider(model.provider)
     && getPiBuiltinModel(model.provider, model.model) !== undefined
@@ -736,10 +771,12 @@ interface PiAuthEntry {
   readonly access?: string;
   readonly expires?: number;
   readonly refresh?: string;
+  readonly clientId?: string;
 }
 
 const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
+  openai: "OPENAI_API_KEY",
 };
 
 /** Inspects Pi credentials without following aliases or reading unbounded input. */
@@ -763,7 +800,7 @@ async function readPiAuthProviders(path: string): Promise<
  *   `apiKey` / `apiKeyEnv` contract instead of Pi OAuth; an OAuth provider absent from
  *   the store, or whose access token has expired, is flagged `waiting` with a re-auth hint.
  *
- * `waiting` (never `error`) keeps the verdict non-fatal, mirroring the Ollama/Phoenix
+ * `waiting` (never `error`) keeps the verdict non-fatal, mirroring the Ollama
  * probes — the goal is visibility, not blocking start.
  */
 async function credentialsSection(
@@ -785,6 +822,13 @@ async function credentialsSection(
       refs.push({ label: "Memory LLM", ref: parseMonoRuntimeModelReference(config.memory.llm.model) });
     } catch {
       // A malformed memory model reference is surfaced by the memory/runtime shape checks.
+    }
+  }
+  if (config.memory?.capture?.reconcileModel !== undefined) {
+    try {
+      refs.push({ label: "Capture reconcile model", ref: parseMonoRuntimeModelReference(config.memory.capture.reconcileModel) });
+    } catch {
+      // The capture model's shape is checked in the memory section.
     }
   }
 
@@ -831,7 +875,12 @@ async function appendPiCredentialDetails(
   env: Readonly<Record<string, string | undefined>>,
 ): Promise<ValidationStatus> {
   const authPath = config.providers?.piAuthPath;
-  const authInspection = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
+  const needsStoredCredential = piRefs.some(({ ref }) => {
+    const provider = ref.provider as string;
+    const key = PI_API_KEY_ENV_BY_PROVIDER[provider];
+    return provider === "openai" || key === undefined || !hasNonEmptyCredentialValue(env[key]);
+  });
+  const authInspection = authPath === undefined || !needsStoredCredential ? undefined : await readPiAuthProviders(authPath);
   const authProviders = authInspection?.status === "ok" ? authInspection.providers : undefined;
   // A matching `providers.local` entry owns the runtime route, even when its ID
   // collides with a Pi built-in provider. Report the local entry's declared auth
@@ -884,7 +933,8 @@ async function appendPiCredentialDetails(
       continue;
     }
     const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
-    if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])) {
+    if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])
+      && (provider !== "openai" || authProviders?.[provider] === undefined)) {
       details.push(
         `${label} ${refStr}: Pi API-key credential for \`${providerLabel}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
       );
@@ -922,6 +972,11 @@ async function appendPiCredentialDetails(
       details.push(
         `[WARN] ${label} ${refStr}: stored OAuth credential for \`${providerLabel}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
       );
+      continue;
+    }
+    if (isOAuth && !hasUsablePiOAuthClientId(provider, entry)) {
+      status = "waiting";
+      details.push(`[WARN] ${label} ${refStr}: ChatGPT sign-in for \`${providerLabel}\` is missing its issued client ID. Reconnect with \`${piAuthRecoveryCommand(providerLabel, authPath)} --auth-method oauth\`; no credential value was displayed.`);
       continue;
     }
     if (!isOAuth && !isApiKey) {
@@ -1071,73 +1126,6 @@ async function memorySection(
       ],
     };
   }
-  // External backend (e.g. supermemory): mode/embeddings/llm are bujo-only and
-  // ignored, so validate the plugin-owned shape before any soft liveness probe.
-  if ((config.memory.backend ?? "bujo") === "supermemory") {
-    const sm = config.memory.supermemory;
-    if (sm === undefined) {
-      return {
-        id: "memory",
-        label: "Memory",
-        status: "error",
-        details: ["[ERROR] backend 'supermemory' requires a memory.supermemory block."],
-      };
-    }
-    try {
-      const plugin = await loadSupermemoryPlugin({ cwd, preferAppInstall: preferAppPluginInstall });
-      const validation = plugin.validateSupermemoryConfig({
-        baseUrl: sm.baseUrl,
-        container: resolveSupermemoryContainer(config),
-        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-        ...(config.memory.maxBytes === undefined ? {} : { maxBytes: config.memory.maxBytes }),
-      });
-      if (!validation.valid) {
-        return {
-          id: "memory",
-          label: "Memory",
-          status: "error",
-          details: validation.errors.map((detail) => `[ERROR] ${detail}`),
-        };
-      }
-    } catch (error) {
-      return {
-        id: "memory",
-        label: "Memory",
-        status: "error",
-        details: [`[ERROR] ${error instanceof Error ? error.message : String(error)}`],
-      };
-    }
-    const details = [
-      `Backend: supermemory, writeMode: ${config.memory.writeMode}.`,
-      `Endpoint: ${sm.baseUrl} (container "${resolveSupermemoryContainer(config)}").`,
-      sm.apiKey === undefined
-        ? "Auth: no API key configured (keyless — works only if the instance allows it)."
-        : "Auth: API key configured.",
-      config.memory.recallTool?.enabled === false
-        ? "Explicit memory read tools are disabled by memory.recallTool.enabled. Chronological journal browsing is also unsupported by Supermemory."
-        : "Chronological journal: unsupported by Supermemory; MemoryJournal is not offered.",
-    ];
-    if (!liveness) {
-      details.push("Supermemory liveness probe skipped; ingestion is async.");
-      return { id: "memory", label: "Memory", status: "ok", details };
-    }
-
-    const probe = await probeSupermemoryEndpoint(sm.baseUrl);
-    if (!probe.reachable) {
-      details.push(
-        `[WARN] Supermemory is not reachable at ${sm.baseUrl} (${probe.reason}). ` +
-        "Start Supermemory or fix memory.supermemory.baseUrl, then re-run `mono-agent validate`; " +
-        "capture and recall will degrade until it is reachable.",
-      );
-      return { id: "memory", label: "Memory", status: "waiting", details };
-    }
-
-    details.push(
-      `Supermemory transport reachable at ${sm.baseUrl} (HTTP ${probe.status}); ingestion is async.`,
-    );
-    return { id: "memory", label: "Memory", status: "ok", details };
-  }
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
     config.memory.recallTool?.enabled === false
@@ -1161,6 +1149,21 @@ async function memorySection(
           `Agent-host memory LLM ${displayText(config.memory.llm.model)}: ${displayReason(error)}.`,
         );
       }
+    }
+  }
+
+  if (config.memory.capture?.reconcileModel !== undefined) {
+    try {
+      const model = parseMonoRuntimeModelReference(config.memory.capture.reconcileModel);
+      details.push(`Capture reconciliation model: ${displayReferenceOf(model)} (extraction and review use the chat LLM).`);
+      const resolutionIssue = piModelResolutionIssue(config, model);
+      if (resolutionIssue !== undefined) {
+        status = "error";
+        details.push(`Capture reconciliation model ${displayReferenceOf(model)}: ${resolutionIssue}.`);
+      }
+    } catch (error) {
+      status = "error";
+      details.push(`Capture reconciliation model ${displayText(config.memory.capture.reconcileModel)}: ${displayReason(error)}.`);
     }
   }
 
@@ -1270,11 +1273,11 @@ async function managedMemoryIdentityStatus(
     };
   }
 
+  const active = manifest.active;
   const configuredModel = memory.embeddings === undefined
     ? undefined
-    : `${memory.embeddings.provider}:${memory.embeddings.model}`;
+    : effectiveEmbeddingIdentity(memory.embeddings, active.embeddingModel);
   const configuredDimension = memory.embeddings === undefined ? undefined : memory.embeddings.dim ?? 768;
-  const active = manifest.active;
   if (active.tier === memory.mode
     && active.embeddingModel === configuredModel
     && active.dimension === configuredDimension) {
@@ -1348,37 +1351,6 @@ async function liteRootWritableWarning(memoryPath: string, allowFilesystemWrites
 }
 
 const LIVENESS_PROBE_TIMEOUT_MS = 3_000;
-
-type SupermemoryProbeResult =
-  | { readonly reachable: true; readonly status: number }
-  | { readonly reachable: false; readonly reason: string };
-
-/**
- * Read-only transport probe for a configured Supermemory service root. Neither
- * the hosted nor self-hosted base URL has a documented health response, so any
- * HTTP status proves reachability; only transport failure or timeout degrades
- * validation. Manual redirects and omitted auth keep the probe on the exact
- * configured endpoint without sending memory data or credentials.
- */
-async function probeSupermemoryEndpoint(endpoint: string): Promise<SupermemoryProbeResult> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetch(endpoint, {
-      method: "HEAD",
-      redirect: "manual",
-      signal: ctrl.signal,
-    });
-    return { reachable: true, status: response.status };
-  } catch (error) {
-    return {
-      reachable: false,
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /** Probes Ollama /api/tags and returns a sorted list of model names, or throws. */
 async function fetchOllamaModels(endpoint: string): Promise<string[]> {
@@ -1596,6 +1568,13 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
+      const renamedTo = renamedToolName(name);
+      if (renamedTo !== undefined) {
+        // A renamed built-in has no alias, so the old entry grants nothing.
+        status = "waiting";
+        details.push(`${renamedToolMessage(name, "allowedTools")} The old name is not registered, so it grants nothing.`);
+        continue;
+      }
       if (isMemoryJournalToolPolicyName(name)) {
         // This app-owned MCP surface must be checked before the generic MCP
         // branch, using the same deny-wins spellings as runtime composition.
@@ -1613,11 +1592,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
           status = "waiting";
           details.push(
             `${name} is in allowedTools but memory.recallTool.enabled is off - explicit memory read tools will not work.`,
-          );
-        } else if ((config.memory.backend ?? "bujo") === "supermemory") {
-          status = "waiting";
-          details.push(
-            `${name} is in allowedTools but the Supermemory backend exposes no chronological journal surface - the tool will not be offered.`,
           );
         }
         continue;
@@ -1645,11 +1619,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
           status = "waiting";
           details.push(
             `${name} is in allowedTools but memory.rememberTool.enabled is off - durable writes will not work. Enable memory.rememberTool (or remove this entry).`,
-          );
-        } else if (config.memory.backend === "supermemory") {
-          status = "waiting";
-          details.push(
-            `${name} is in allowedTools but the supermemory backend exposes no durable write surface - the tool will not be offered.`,
           );
         }
         continue;
@@ -1694,6 +1663,14 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     // Under allow-all the disallow list is already folded into the "except" clause above.
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }
+  for (const name of config.tools.disallowedTools) {
+    // A stale deny entry is the dangerous direction of a rename: it stops
+    // matching and silently broadens access to the renamed tool.
+    if (renamedToolName(name) !== undefined) {
+      status = "waiting";
+      details.push(`${renamedToolMessage(name, "disallowedTools")} The old name denies nothing.`);
+    }
+  }
   let configuredMcpServerNames: string[] = [];
   let configuredMcpServers: Record<string, unknown> = {};
   if (config.tools.mcpConfigPath !== undefined) {
@@ -1710,6 +1687,17 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     } else {
       status = "error";
       details.push(`MCP config file is missing: ${config.tools.mcpConfigPath}`);
+    }
+  }
+  if (config.tools.computerUse !== undefined) {
+    try {
+      assertComputerUseServerNameAvailable(configuredMcpServers);
+      configuredMcpServers[COMPUTER_USE_SERVER_NAME] = { command: config.tools.computerUse.command ?? "cua-driver", args: ["mcp"] };
+      configuredMcpServerNames = Object.keys(configuredMcpServers);
+      details.push("Computer-use MCP server is configured; external MCP tools bypass built-in allow/deny policy.");
+    } catch (error) {
+      status = "error";
+      details.push(error instanceof Error ? error.message : "Computer-use MCP server name collision.");
     }
   }
   for (const serverName of config.tools.mcpRequestContextServers ?? []) {
@@ -1784,7 +1772,7 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   const agentAllowed = (allowAll || allowedTools.includes("Agent")) && !config.tools.disallowedTools.includes("Agent");
   if (subagents?.enabled === true) {
     if (subagents.instances?.enabled !== false && !persistentSubagentsEnabled(config)) {
-      details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentSend; Agent remains stateless when allowed.");
+      details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentManage; Agent remains stateless when allowed.");
     }
     if (persistentSubagentsEnabled(config)) {
       details.push(config.tools.disallowedTools.includes("AskParent")
@@ -1901,11 +1889,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
 
 const MIN_AGENT_BROWSER_VERSION = [0, 33, 1] as const;
 
-function formatSearchBackendChain(backends: string[]): string {
-  if (backends.length <= 1) return backends[0] ?? "none";
-  return `${backends.slice(0, -1).join(", ")}, then ${backends.at(-1)}`;
-}
-
 async function webToolsSection(
   config: MonoAgentConfig,
   input: ValidateMonoAgentFolderOptions,
@@ -1913,7 +1896,7 @@ async function webToolsSection(
 ): Promise<ValidationSection> {
   const web = config.tools.web;
   const search: NonNullable<MonoAgentConfig["tools"]["web"]>["search"] = web?.search ?? {
-    backend: "auto" as const,
+    backend: ["parallel", "ollama"] as const,
     maxRequestsPerRun: 4,
     codex: { model: "gpt-5.6-luna" },
   };
@@ -1935,23 +1918,12 @@ async function webToolsSection(
   }
 
   const searxngEndpoint = search.searxng?.endpoint ?? search.endpoint;
-  const autoEligibleBackends = [
-    ...(search.ollama === undefined ? [] : ["configured Ollama"]),
-    ...(searxngEndpoint === undefined ? [] : ["configured SearXNG"]),
-    "Codex",
-    "keyless",
-  ];
-  const autoAfterOllama = formatSearchBackendChain(autoEligibleBackends.slice(1));
+  const chain = typeof search.backend === "string" ? [search.backend] : search.backend;
+  const chained = typeof search.backend !== "string";
+  const fallback = chained ? `Ordered chain: ${chain.join(" → ")}. Unavailable providers advance to the next entry.` : "Strict provider selection has no fallback.";
+  details.push(fallback);
   if (searxngEndpoint === undefined) {
-    details.push(search.backend === "keyless"
-      ? "SearXNG is not configured; keyless search is enabled."
-      : search.backend === "codex"
-        ? "SearXNG is not configured; strict Codex subscription search is enabled."
-        : search.backend === "searxng"
-          ? "SearXNG is not configured."
-          : search.ollama === undefined
-            ? "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search."
-            : "SearXNG is not configured; auto mode uses configured Ollama, then Codex subscription search, then keyless search.");
+    details.push("SearXNG is not configured.");
   } else {
     details.push(`SearXNG endpoint: ${searxngEndpoint}.`);
     if (!liveness) {
@@ -1964,44 +1936,37 @@ async function webToolsSection(
         status = "waiting";
         details.push(
           `[WARN] SearXNG JSON search probe failed (${probe.reason}). ` +
-          (search.backend === "auto"
-            ? "Start the local companion or fix tools.web.search.searxng.endpoint; auto mode can still fall back to Codex subscription search, then keyless search."
+          (chained
+            ? `Start the local companion or fix tools.web.search.searxng.endpoint. ${fallback}`
             : "Start the local companion or fix tools.web.search.searxng.endpoint; strict SearXNG mode has no fallback."),
         );
       }
     }
   }
 
-  if (search.backend === "ollama" || (search.backend === "auto" && search.ollama !== undefined)) {
+  if (chain.includes("ollama")) {
     const ollama = search.ollama;
     if (ollama === undefined) {
       status = "waiting";
       details.push("[WARN] Ollama Web Search is selected but its resolved configuration is missing.");
-    } else if (!liveness) {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
-      details.push("Ollama Web Search liveness was not probed.");
+    } else if (!liveness || chained) {
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
+      details.push(chained ? "Ollama Web Search readiness is checked lazily when the chain reaches it." : "Ollama Web Search liveness was not probed.");
     } else {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
-      const probe = await probeOllamaWebSearch(ollama);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
+      const probe = await probeOllamaWebSearch(ollama, input.env);
       if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
       else {
         status = "waiting";
-        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode can still advance to ${autoAfterOllama}.`}`);
+        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : fallback}`);
       }
     }
   } else if (search.ollama !== undefined) {
     details.push(`Ollama Web Search is configured but inactive because backend ${search.backend} is strict.`);
   }
 
-  if (search.backend === "auto") {
-    const codexModel = search.codex?.model ?? "gpt-5.6-luna";
-    const beforeCodex = autoEligibleBackends.slice(0, autoEligibleBackends.indexOf("Codex"));
-    const codexPosition = beforeCodex.length === 0
-      ? "as the first eligible backend"
-      : `after ${formatSearchBackendChain(beforeCodex)}`;
-    details.push(
-      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches it ${codexPosition}.`,
-    );
+  if (chained && chain.includes("codex")) {
+    details.push(`Codex subscription fallback model: ${search.codex?.model ?? "gpt-5.6-luna"}; readiness is checked lazily when the chain reaches it.`);
   } else if (search.backend === "codex") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";
     details.push(`Codex subscription search model: ${codexModel}.`);
@@ -2019,6 +1984,34 @@ async function webToolsSection(
         );
       }
     }
+  }
+
+  const fetchProviders = typeof fetchConfig.provider === "string" ? [fetchConfig.provider] : fetchConfig.provider ?? ["local"];
+  if (chain.includes("parallel") || fetchProviders.includes("parallel")) {
+    const parallelConfigs = [
+      ...(chain.includes("parallel") ? [{ label: "search", settings: search.parallel, strict: !chained }] : []),
+      ...(fetchProviders.includes("parallel") ? [{ label: "fetch", settings: fetchConfig.parallel, strict: fetchProviders.length === 1 }] : []),
+    ];
+    for (const entry of parallelConfigs) {
+      details.push(`Parallel ${entry.label}: ${entry.settings?.apiKeyEnv ? "apiKeyEnv configured" : "anonymous access"}.`);
+      if (!liveness || !entry.strict) {
+        details.push(`Parallel ${entry.label} tools/list was not probed; readiness is checked on use.`);
+      } else {
+        const probe = await inspectParallelWeb({ config: entry.settings,
+          sandbox: { networkAllowsUrl: networkPolicyAllowsUrl }, policy: config.sandbox });
+        if (!probe.ok) status = "waiting";
+        details.push(probe.ok ? "Parallel tools/list advertises web_search and web_fetch (extraction not exercised)."
+          : `[WARN] Parallel tools/list unavailable (${probe.reason}).`);
+      }
+    }
+  }
+
+  details.push(`WebFetch provider: ${JSON.stringify(fetchConfig.provider ?? "local")}.`);
+  if (chain.includes("local") || fetchProviders.includes("local")) {
+    const probe = await inspectLocalWeb();
+    if (!probe.ok) status = "waiting";
+    details.push("Local is a built-in Node provider; no endpoint or Python service is required.");
+    details.push(probe.ok ? "Local web capability is available (public engines and extraction not probed)." : "[WARN] Local web capability is unavailable.");
   }
 
   details.push(`WebFetch browser rendering: ${fetchConfig.render}.`);
@@ -2044,10 +2037,15 @@ async function webToolsSection(
 
 async function probeOllamaWebSearch(
   config: NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]>,
+  env: Readonly<Record<string, string | undefined>>,
 ): Promise<{ readonly ok: boolean; readonly reason: string }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
   const official = config.baseUrl === "https://ollama.com";
+  // Resolve-at-use like every other consumer: the loader carries only the name.
+  const apiKey = config.apiKeyEnv === undefined
+    ? config.apiKey
+    : normalizeOptionalString(env[config.apiKeyEnv]) ?? config.apiKey;
   const paths = official ? ["/api/web_search"] : ["/api/experimental/web_search", "/api/web_search"];
   try {
     for (let index = 0; index < paths.length; index += 1) {
@@ -2056,7 +2054,7 @@ async function probeOllamaWebSearch(
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
-          ...(official ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+          ...(official ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({ query: "mono-agent doctor", max_results: 1 }),
         redirect: "error",
@@ -2320,7 +2318,7 @@ async function processJobsSection(
     ...(posture === undefined ? [] : [`Private-state protection: ${posture.kind}${posture.retainedRoots ? " (roots retained)" : ""}.`]),
     persistentSubagentsEnabled(config) && settings.enabled && process.platform !== "win32"
       ? "Background subagents: configured for Pi-native, exact-conversation ProcessJobs routes; live availability also requires a healthy controller and remaining lineage."
-      : "Background subagents unavailable: persistent Agent/AgentSend and supported, enabled ProcessJobs are required.",
+      : "Background subagents unavailable: persistent Agent/AgentManage and supported, enabled ProcessJobs are required.",
   ];
   if (!settings.enabled) {
     return {
@@ -2348,9 +2346,9 @@ async function processJobsSection(
     ...(unsafeWarning === undefined ? [] : [unsafeWarning]),
     ...protectionDetail,
     `Owner-only local state: ${settings.stateDir}.`,
-    `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
+    `Running slots: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation (nested descendants exempt); ${String(settings.maxQueued)} global waiting slots, including conversation-limited work.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
-    `Runtime availability: Pi-native Exec/Bash and enabled persistent Agent/AgentSend; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
+    `Runtime availability: Pi-native Exec/Bash and enabled persistent Agent/AgentManage; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
   ];
   const inspection = await inspectProcessJobState(input.cwd, settings.stateDir);
   return {

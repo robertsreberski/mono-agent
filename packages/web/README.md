@@ -39,6 +39,13 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   currently connected capability-advertising agent without storing credentials,
   prompt input, or session projections. The client omits authorization for an
   agent with no operator API key and sends the discovered bearer when one exists.
+- Restart one selected, keyed, supervised agent from settings or a persisted
+  `ProposeRestart` reply card. The browser confirms interruptions before POST,
+  polls one durable SQLite operation through reload, and reports success only
+  after a new process generation on the same source id answers a ready probe.
+  Definitive refusal is failure; ambiguous or two-minute-expired requests are
+  not confirmed. A model-provided part never chooses the target or grants
+  authority; origin checks and the existing operator bearer remain the boundary.
 - Let an MCP-capable agent replace the interim first-message title with a short
   semantic title and evolve it after a material topic shift, while treating any
   user rename as a permanent lock.
@@ -86,7 +93,7 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   conversation-level stack after the transcript. Queued, starting, and running
   cards stay visible by default; terminal cards remain mounted behind
   expandable history so status counts and live transitions stay current.
-  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentSend` call has its exact persisted machine
+  When a loaded launching `Exec`/`Bash`/`Agent`/`AgentManage` call has its exact persisted machine
   receipt, that response's Activity shows one start row for the launch: the
   launch call folds into the `<Tool> job started` row, which carries the launch
   arguments behind its disclosure alongside the job facts. The
@@ -95,20 +102,64 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   marker exists, the terminal row falls back beside the launch. These rows
   never poll or duplicate card output; legacy or paginated-out launch receipts
   remain stack-only.
-- Accept exact-source/thread Monitor wakes through that private ingress, steer
-  them into the active run or serialize one assistant-only follow-up, retain
-  delivery identity plus a payload hash for fail-closed duplicate handling, and
-  group their secret-free projections into compact Monitor activity. The
-  browser presents adjacent activity-only follow-ups for the same watch as one
-  continuous Activity block; a visible reply or unrelated message ends that
-  block. Raw event text and delivery keys never reach the rendered row; Monitor
-  wakes have no browser-side stop control. For a verified Monitor wake, a
-  terminal no-op assistant message is suppressed while an earlier meaningful
-  answer and rich content remain visible. Push delivery waits for an outstanding
-  steering receipt and uses the normalized reply. Monitor callbacks use the
-  independent owner credential derived from the advertised private state directory.
-
 ## Install / Usage
+
+### Scheduled wake-ups
+
+An ordinary existing conversation can have one schedule, configured through
+**Conversation actions → Schedule wake-up**. Choose a one-off local date and time
+or weekly weekdays and up to eight distinct times, an editable IANA timezone
+(defaulting to the browser's zone), and an optional message of up to 1,000 UTF-8
+bytes. **Compact conversation first** (off by default) requests the same manual
+compaction as the Compact action before each wake-up; the option is unavailable
+when the connected agent does not support it. The editor summarizes the schedule in words and shows the saved next
+wake-up in the schedule's timezone, plus this device's time when it differs.
+The conversation row indicates active schedules; the menu shows the kind with
+the state or next fire time in local display time. Paused schedules stay
+attached; saving a paused or completed schedule turns it back on, and editing a
+completed one-off replaces its definition with a future time. Deleting asks
+for confirmation in the editor.
+
+During a writable turn, `GetWakeSchedule({})`, `SetWakeSchedule` and
+`ClearWakeSchedule({ expectedRevision })` let the agent manage only this
+conversation's schedule. Set a one-off with `kind: "once"`, `timezone` and
+`localAt` at least five minutes ahead, or a weekly schedule with `kind: "weekly"`,
+`timezone`, 1–7 `days` and at most eight `times`; optional `message` is limited
+to 1,000 UTF-8 bytes. Optional `compactFirst: true` compacts before the turn.
+Times are local to the IANA timezone. Creating omits
+`expectedRevision`; replacing requires the current revision. A fired turn
+arrives later in this conversation. The five-minute restriction does not apply
+to browser edits. See [console tools](../../docs/tools/mcp.md#console-project-tools).
+
+`GET /api/v1/threads/:id/wake-schedule` returns `{schedule:null|schedule}`;
+`POST` creates with `{kind,timezone,localAt?,days?,times?,message?,compactFirst?}`; `PUT`
+replaces the definition, `PATCH` accepts `{state:"paused"|"active"}`, and
+`DELETE` clears it. PUT/PATCH/DELETE also require `expectedRevision` from the
+latest GET; conflicting revisions return 409. Mutations require the console's
+exact origin and reject unknown fields, invalid zones/times and notification
+threads. Archiving pauses the schedule and discards unclaimed pending work;
+unarchiving does not resume it. Deleting the conversation deletes its schedule.
+
+Due wakes run on the first connected idle boundary after existing queued user
+input and host follow-ups drain, never concurrently with a turn or steering into
+one. With `compactFirst`, the console reserves that idle boundary through
+compaction and launches the wake before any follow-up queued during compaction.
+Compaction success, skips, failures and unknown outcomes retain the normal
+transcript marker; unsupported compaction is recorded as failed. None prevents
+the wake turn. Restart or disconnection before claim leaves the occurrence pending
+(and may repeat compaction); once claimed, the usual no-replay rule applies.
+Busy occurrences persist as pending, including through restart or temporary
+disconnection. An occurrence not queued while busy is admitted once within a
+60-minute grace after downtime/offline, otherwise skipped. Multiple missed weekly
+occurrences coalesce to one; weekly schedules continue at their next future local
+slot. Weekly spring gaps shift by the gap and fall overlaps fire once at the
+earlier instant; one-off spring-gap local times are rejected. A claimed occurrence
+is never replayed after an ambiguous failure; its last outcome can remain
+uncertain. The host-framed prompt treats the optional message as untrusted user
+text. The resulting assistant-only turn uses the conversation's saved model and
+effort, has normal console tools and background-job access but cannot rename the
+conversation or insert an inactivity-resumption marker. The transcript retains a
+standalone **Scheduled wake-up** item even if the agent sends no answer.
 
 The composer’s ↵ control chooses a device-local, persisted Enter preference:
 Enter sends with Shift+Enter for a newline, or Enter inserts a newline with
@@ -119,13 +170,21 @@ suggestions without stopping a run; use Stop response (or `/stop`) deliberately.
 Mid-turn plain-text sends use the active turn’s live-input admission path.
 
 On iPhone and iPad the installed console paints the band behind the status bar
-itself (`apple-mobile-web-app-status-bar-style: black-translucent`), so that
-band follows the active theme instead of a system strip whose colour iOS samples
-once and caches until the app is relaunched. iOS reads that choice when the app
-is added to the Home Screen: a console installed before this change keeps its
-old status band until it is removed and added again. Status-bar glyph contrast
-follows the system appearance, which is what the console’s light and dark themes
-follow as well.
+itself (`apple-mobile-web-app-status-bar-style: black-translucent`). A fixed,
+full-width, header-coloured band covers the safe-area inset: WebKit's
+`LocalFrameView::fixedContainerEdges` probes the top midpoint at y=4 for a
+fixed/sticky box spanning at least 90% of the viewport. Recognising this edge
+hides the installed console's soft scroll-edge blur (or colours the hard pocket
+on iPad), without covering header content or using layout space. On a full-screen
+installed iPad with a nonzero top inset, the Dashboard, Project and conversation
+headers add up to 40px of top clearance so their content sits below the iPadOS 27
+hard pocket's measured ~64pt blur; the error toast clears it too. iPhone, browser
+tabs and inset-zero Stage Manager windows keep their original layout. The band
+follows the active theme instead of a system strip whose colour iOS samples
+once and caches until relaunch. iOS reads the status-bar style when the app is
+added to the Home Screen: an older install must be removed and added again.
+Status-bar glyph contrast follows the system appearance, which the console’s
+light and dark themes follow as well.
 
 Cancellation requests accept an optional `origin` (`user-stop`,
 `client-disconnect`, `client-reconnect`, `service-shutdown`, or `api`) on
@@ -201,8 +260,10 @@ Private IP literals, localhost, the machine hostname, and its exact `.local`
 name are accepted as browser hosts. Set `MONO_AGENT_WEB_ALLOWED_HOSTS` to a
 comma-separated list of any additional exact DNS names (for example the node's
 Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
-managed agent protects its loopback operator endpoint, discovery reads only
-`MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
+managed agent protects its loopback operator endpoint, discovery prefers
+`MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file,
+then its config `tui.apiKey`. Only agents publishing neither key use the
+console process's ambient `MONO_AGENT_TUI_API_KEY` as a shared-key fallback.
 
 One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
 column on desktop, and the entrance screen on narrow touch screens. Its header
@@ -278,7 +339,12 @@ is simply out of reach. Only a cron channel has an address of its own, so only a
 URL naming one opens on the conversation.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
-visible even while offline. An agent omitted by a successful discovery refresh
+visible even while offline. Cleanly stopped agents you have pinned or talked to,
+or that are mid-restart, remain discovered as offline. Stopped sources without
+pins, conversations (including archived ones), or a pending restart are omitted.
+Retaining an agent keeps its conversation or settings open through a stop or
+restart; it returns online in place when the same source id starts again. A source
+whose manifest is removed is omitted by a successful discovery refresh and
 is removed from the strip and from that count regardless of its prior pin or
 selection. Its rows, conversations, and pin stay retained in SQLite and return
 if the same source id is discovered again. The same filter applies to the
@@ -318,11 +384,25 @@ tokens and conversation cost. Running turns are labeled `Updating`; failed
 turns and model changes are `Last measured`. A running or successful compaction
 suppresses the older number until the next exact snapshot, while legacy and
 unsupported-runtime threads show `Context —` instead of deriving a percentage
-from aggregate work.
-Structured reasoning, routine tools, process-job lifecycle evidence, and one
-update-in-place row per compaction share the stream-aware Activity disclosure,
-which collapses at every terminal message state without reordering answer
-parts. Receipt-bearing job launches fold their launch call into one start row,
+from aggregate work. On capable connected agents, **Compact** in the context
+usage popup summarizes the selected idle conversation without a chat turn;
+it is disabled while running and reports approximate before/after tokens,
+no useful reduction, or an error. It also works after a cold restart by
+resuming or seeding the agent's provider session. The next exact context
+percentage awaits a fresh provider measurement; this action does not change
+automatic compaction thresholds. An in-memory `WebThread.compaction` hint
+appears in list/detail projections and thread-change events while manual
+compaction runs; it survives closing the dialog or switching conversations,
+but not a web service restart. The composer blocks sends until it clears; externally queued live inputs
+still drain afterward. The
+transcript shows a transient running divider and then the persisted result.
+The console allows up to 15 minutes for the agent's response; when it cannot
+confirm an outcome it persists a failed-status marker explicitly labeled
+**outcome unknown** (a late commit may have succeeded), while an explicit agent
+failure is labeled failed. Neither marker is an in-progress state.
+Structured reasoning, routine tools, and process-job lifecycle evidence share
+the stream-aware Activity disclosure, which collapses at every terminal
+message state without reordering answer parts. Receipt-bearing job launches fold their launch call into one start row,
 which carries the launch arguments behind its disclosure alongside the job
 facts. Their terminal row follows the consumed wake chronologically, with
 launch-adjacent placement only as a fallback when no wake marker was retained;
@@ -355,9 +435,18 @@ resolved route, not from picker writes: flipping the selector and coming back
 before sending leaves nothing behind, a run of flips leaves one marker, a route
 nothing resolved is never claimed as a change, and the first routed turn is a
 baseline rather than a change. A provider fallback is not a route change and
-stays in the message's own attribution, above. `modelTransitions` sidecars
-accompany detail and message pages exactly as `projectTransitions` do, and
-schema 28 adds their records.
+stays in the message's own attribution, above. Markers are durable system rows
+in the transcript, paged and announced live just like messages. An operator
+message after more than one hour without a visible non-marker message also
+adds a short `Resumed` rule with the browser-local date and time, to the minute
+(the year only when it differs from the current one, and the idle duration only
+in the agent's own context).
+Active-turn steering and background wakes do not create resume markers.
+
+Each dispatched turn receives a compact `<conversation_markers>` prefix with
+changes since the previous dispatch attempt, after project/tag context. Resume
+context includes the idle duration and server-local timestamp with zone and
+numeric offset. Stored operator text stays untouched.
 
 The dashboard header's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
@@ -365,7 +454,7 @@ console conversations for that agent. Either field may inherit resolved config,
 and **Revert to config** clears both overrides in one action. These settings live
 in the web service's SQLite database, survive restart, and do not edit
 `mono-agent.config.json`; existing conversations and Telegram, Slack, cron,
-webhook, API, and TUI requests remain unchanged.
+webhook, API, and operator-endpoint requests remain unchanged.
 
 The same dialog shows **Provider authentication** when the current agent
 advertises provider-auth v1. It renders only the host-returned providers used by
@@ -377,8 +466,12 @@ advertising the additive checks capability also show one section-level **Run
 check** button; it checks only the displayed providers, reports partial fixed
 outcomes inline, and never runs on settings reads or polling. GitHub Copilot and
 OpenAI Codex expose Pi device-code flows;
-Anthropic accepts the final redirect URL/code; API-key providers use masked
-provider-owned prompts. Re-authentication remains available during an active
+Anthropic accepts the final redirect URL/code; `openai` offers explicit ChatGPT
+sign-in (full redirect URL paste-back for a remote browser or busy localhost:1455)
+or a masked API-key prompt. Switching from one stored OpenAI credential method
+to the other requires a browser-side confirmation and replaces it only after
+successful authentication. The web service stores neither the installation ID
+nor provider credentials; API-key providers use masked provider-owned prompts. Re-authentication remains available during an active
 login: a valid choice replaces it, while the compact flow stays visible until
 the fresh session arrives. Stale start, poll, input, and cancel responses cannot
 restore the old session. Polling continues through identical active snapshots;
@@ -399,7 +492,7 @@ OAuth. Check sessions and observations are process-local, expire from memory,
 and are not persisted by the web service. They must be cancelled explicitly
 before starting authentication.
 
-Standalone process-job and Monitor revival turns in an existing web conversation
+Standalone process-job revival turns in an existing web conversation
 read that conversation's model/effort snapshot immediately before admission. A
 wake steered into an active run stays on that run's already selected route.
 
@@ -592,17 +685,36 @@ Color edits are immediate presentation changes. Deleting a project with active
 members or pending references is refused; archiving a pending destination is
 also refused until its turns finish.
 
-Immutable join/leave/move markers retain historical name/color and the actual
-message boundary. `projectTransitions` sidecars accompany detail and message
-pages; they are independent of model messages, prompts, search, cost, counts,
-and copy text. `pendingProject` on the conversation describes deferred intent.
-Schema 27 adds these records and atomic console-tool operation receipts; the
-existing web-state reset and conversation deletion cascade remove owned records.
+Immutable join/leave/move transcript rows retain historical name/color and the
+actual event time, including the initial membership. Markers are excluded from
+search prose and conversation excerpts. `pendingProject` on the conversation
+describes deferred intent. Schema 32 drops the legacy model/project transition
+tables without copying their content; existing messages and console-tool
+receipts remain. Back up web state before upgrading if legacy markers must be
+recoverable.
 
 Web turns can use the app-owned console tools described in
 [Console project tools](../../docs/tools/mcp.md#console-project-tools). Turns
-woken by a background process job or monitor advertise the same capability;
+woken by a background process job advertise the same capability;
 cron and webhook channels do not.
+
+Schema 38 adds channel conversations for
+[Telegram forum topics as projects](../../docs/channels/telegram.md#forum-topics-as-projects):
+the owning agent process reports what it observed over the owner-private
+ingress (`syncWebExternalConversations`), and this store creates one
+`Chat › Topic` project per new topic, renames only auto-named projects, tracks
+closed/reopened and gone (`markWebExternalConversationGone`), and keeps a
+tombstone when a project is deleted so observation never re-projects it. A
+project binds at most one channel conversation beside any number of web chats;
+`WebProject.external` carries its opaque id, `Chat › Topic` label and state,
+never the host-owned routing key. `beginWebExternalTurn` returns a channel
+turn's project context and, when asked, a console-tool capability bound to the
+discovered agent pid, limited to the project tools, expiring after six hours
+and revoked by the owner at settlement; its receipts live in their own table
+rather than fabricated web threads or turns. `resolveWebExternalProjectDestination`
+answers the owner with a project's routing key for a send, refusing unbound,
+closed and gone topics. `withProjectContext` is exported for hosts that inject
+the same envelope into their own prompt copies.
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
@@ -692,6 +804,37 @@ delta paint to one second, halves page sizes and poll rates, and retains fewer
 image blobs; polling pauses while the document is hidden. The preference keys
 `mono-agent.web.data-mode` and `mono-agent.web.data-mode-suggested` are browser
 storage, not configuration.
+### Agent restart
+
+Settings uses exact-origin `POST /api/v1/agents/:id/restart` and `GET
+/api/v1/agents/:id/restart` (latest operation, or `null`); a proposal card uses
+`POST /api/v1/threads/:threadId/messages/:messageId/parts/:partId/restart`.
+Both require the same explicit human confirmation in the browser before POST
+and call the same service operation. The click route checks the stored message,
+part, thread, source and pre-restart process generation; repeated clicks return
+the linked web operation instead of sending another adapter POST. Browser
+polling reads `GET /api/v1/agents/:id/restart/:operationId`, with source-id
+binding and exact-origin checks. These small status DTOs show
+`requesting → restarting → back_online` and one terminal `success`, `failure`
+or `not_confirmed`, with a bounded reason. No adapter bearer, adapter operation
+id or raw generation is in the browser DTO. A used proposal carries only the
+**web** operation id so progress survives a reload. Active conversation counts
+are approximate warnings and never admission gates. The console does not add
+human login: its existing trusted-network/OS boundary and browser exact-origin
+checks still apply; web sends the discovered operator bearer to the agent.
+
+### Non-blocking quick replies
+
+Assistant `reply_options` parts persist in existing message JSON without a new
+table or migration. The webapp renders a compact wrapping chip row directly
+below the final answer. Clicking a label uses the normal user-message send
+path in that conversation; transcript state disables old choices after any
+later user message or while a turn runs, with a local double-click guard.
+Web-bound background/job wakes retain the part. Choices survive reload and
+other devices; no separate durable click state or cross-device lock is added.
+The app-owned `SuggestReplies` tool validates 2–8 distinct trimmed single-line
+labels (1–75 characters), obeys tool policy, and never blocks the current run.
+
 ### Reply files and MCP Apps
 
 Agents that advertise reply attachments expose message-bound downloads in the
@@ -740,7 +883,17 @@ resource origins never become script origins. Tool/link/context actions use an
 inert, focus-trapped confirmation dialog; tool arguments are bounded and
 secret-key-redacted. Exact declared resource reads remain read-only, while
 cross-resource requests fail. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
+
+The shared model selector offers accessible **Context window** chips below Thinking only
+when the agent advertises eligibility, including automatic and lazy catalog rows.
+Conversation and **New conversations** selections persist nullable booleans:
+true/false are explicit; reset inherits agent config. Changing to an unsupported
+model clears the flag atomically; eligible switches retain it. New defaults affect
+only future conversations. Active conversation turns disable the selector.
+SQLite migration 42 preserves old rows as inherited selections, including retained
+context imports and queued turns. Old producers without the capability expose no
+control. Measured context usage remains authoritative after a toggle.
 
 ## Architecture
 
@@ -778,7 +931,7 @@ ledger; postconditions check the required effects.
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, project, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
+   thread, project, message, part, process-job card, turn, live-input, upload, preference,
    Web Push subscription/event/delivery, notification, and cron projection
    records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
@@ -793,8 +946,8 @@ ledger; postconditions check the required effects.
    content-addressed upload bytes. Reloads and concurrent tabs still do not own
    or interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs—including canonical
-   lifecycle metadata—into its external store, thread list, messages, compact
-   Monitor activity, tool cards, composer, attachments, and push-subscription
+   lifecycle metadata—into its external store, thread list, messages,
+   tool cards, composer, attachments, and push-subscription
    UI, keeping a per-conversation cache that is also written to the device
    (IndexedDB `mono-agent-web`, version 2, swept per writer on hydration) so a
    cold start draws before the first response. The same store holds this
@@ -814,16 +967,8 @@ ledger; postconditions check the required effects.
    idempotent assistant-only thread. A process-job delivery instead updates one
    source/thread-bound durable card; its normal wake turn owns the single agent
    history entry. Its receipt returns once that exact follow-up is durably
-   admitted rather than waiting for model completion. A Monitor delivery is
-   steered into an active run or becomes an assistant-only follow-up in the exact
-   existing web thread; exact host-owned receipts update one compact, secret-free
-   activity row rather than creating repeated steering cards. The browser may be
-   closed, but the web service must remain running.
-
-Monitor activity shows suppressed lines/batches and follow-up, steered, or
-unknown wake dispositions. These are host delivery counts, not model-turn or
-cost estimates. Historical v1 Monitor projections in SQLite and browser caches
-remain readable alongside v2 projections.
+   admitted rather than waiting for model completion. The browser may be closed,
+   but the web service must remain running.
 
 **Process-job card reconciliation.** A retained job card is written
 `queued`, `starting` or `running` from the agent's notification and leaves that
@@ -853,12 +998,61 @@ id discovery no longer reports, are left alone.
 | --- | --- |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, hostname/display-name/theme bootstrap identity, per-console PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
-| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
+| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename, and a bounded per-message LRU for on-demand full-thread usage accounting. |
+| [`message-cost.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/message-cost.ts) and [`thread-usage.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/thread-usage.ts) | Browser-safe per-message token/cost rollup and conversation-wide sum, with synchronous delegation as a subset and detached spend added once. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, conditionally bearer-authenticated provider-auth, and owner-authenticated process-job requests over the operator protocol. |
-| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
-| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
+| [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery and source/thread-bound process-job cards. |
+| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
+
+Recovery-aware process-job notifications optionally carry private v1
+`wakeRecovery` metadata through the existing bearer-authenticated ingress. A
+bounded exact-token non-admission proof replaces only the matching `accepted`
+reservation; completed reservations stay idempotent and legacy reservations
+stay uncertain. Superseded wake workers cannot dispatch or overwrite the new
+claim, and the ordinary blocked parent turn is not cancelled. Connection
+identity and requested shutdown are rechecked before dispatch; transport loss,
+missing runs and `admitted=false` are not retry authority. Pending child questions
+remain current in the loaded job shelf, labelled "Child question waiting for
+parent", without interrupting `AskUser` or claiming the parent has read them.
+
+Schema 43 adds nullable `process_job_wake_deliveries.attempt_token`; existing rows
+remain null and fail closed. Migration changes no historical delivery outcome.
+Older consoles refuse this schema; rollback requires a compatible pre-upgrade
+backup, not a schema-version edit. Upgrade the web console first, or together with the agents. A new agent behind
+an older strict console cannot deliver web wakes: the unsupported recovery
+metadata is rejected before acceptance and the agent records a terminal wake
+failure, with no stripped-payload retry. Paired upgrades enable recovery.
+
+New agents accept token-less old-console process-job delivery as legacy, marking
+each boundary durably and retaining the same live safe-steer-refusal/follow-up
+path. Such attempts never recover or replay after restart; fenced attempts still
+refuse execution. Recovery metadata is not a browser DTO and requires no consumer
+configuration change.
+
+
+`GET /api/v1/threads/:id/usage` returns `{usage: WebThreadUsage}` for the
+whole conversation, independently of the paginated transcript. It folds
+synchronous delegation cost into the parent run, adds detached job spend once,
+and marks token or cost lower bounds when telemetry is incomplete. Synchronous
+subagents report their measured token share; older or unmeasured runs keep the
+sub-line partial, while detached progress carries measured per-job token counts
+from upgraded agents. Older jobs without counts keep the totals as lower bounds.
+Assistant parts are scanned on demand and memoized by message row identity and
+sequence; no additional storage table is required.
+
+Compaction outcomes are now stored as conversation markers as well as usage telemetry.
+Roll back to a console version that understands compaction markers, or remove these
+marker rows before using an older strict reader; older consoles reject unknown
+marker kinds. New readers hide future unknown marker kinds on persisted reads.
+
+**Rollout and rollback.** Deploy the #1107 console readers before agents send
+usage-bearing detached job cards. An older console rejects the entire web job
+notification with HTTP 400, losing the card update and parent wake. Once those
+cards exist, do not roll consoles or agents back before #1107: older consoles
+cannot open the affected conversations and older agents cannot open their
+process-job store.
 
 ### Start here
 
@@ -867,10 +1061,10 @@ id discovery no longer reports, are left alone.
 | `startWebServer` | Start the persistent browser service and receive the actual bound URL plus idempotent stop methods. |
 | `prepareWebState` / `prepareWebStatePaths` | Create and validate the owner-private state layout before starting a custom service. |
 | `resetWebState` | Perform the explicit whole-store reset used by host lifecycle commands. |
-| `deliverWebNotification` | Deliver one idempotent cron/webhook result, source/thread-bound process-job card update, or Monitor wake through the private loopback ingress. |
+| `deliverWebNotification` | Deliver one idempotent cron/webhook result or source/thread-bound process-job card update through the private loopback ingress. |
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
-| `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
+| `WebBootstrap`, `WebThreadDetail`, `WebThreadUsage`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
 | `WEB_THEMES`, `DEFAULT_WEB_THEME`, `WEB_CONSOLE_NAME_MAX_CHARACTERS`, `WebTheme`, and `WebConsoleIdentity` | Select a curated theme/name and consume the hostname/display-name/theme identity returned to browsers. |
 
 <!-- public-api-inventory:start -->
@@ -888,6 +1082,7 @@ ACP_PROTOCOL_VERSION
 AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
+BeginWebExternalTurnInput
 ConsoleToolName
 ConsoleToolOperation
 ConsoleToolScope
@@ -899,7 +1094,6 @@ CreateWebUploadInput
 DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
 DEFAULT_WEB_THEME
-DeliverWebMonitorNotificationInput
 DeliverWebNotificationInput
 DeliverWebNotificationOptions
 DeliverWebNotificationResult
@@ -908,6 +1102,7 @@ DeliverWebThreadNotificationInput
 DiscoverAcpBridgeAgentsOptions
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
+ExternalConsoleToolScope
 OperatorClient
 OperatorClientOptions
 OperatorConnection
@@ -918,6 +1113,7 @@ PatchWebAgentInput
 PatchWebProjectInput
 PatchWebTagInput
 PatchWebThreadInput
+ProjectContextSource
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
 StartWebLiveInputInput
@@ -942,6 +1138,10 @@ WEB_STAGED_UPLOAD_TTL_MS
 WEB_THEMES
 WEB_THREAD_SEARCH_MAX
 WEB_THREAD_SEARCH_MIN_QUERY
+WebAgentRestartOperation
+WebAgentRestartOutcome
+WebAgentRestartStage
+WebAgentRestartSupport
 WebAgentRunSettings
 WebAgentStatus
 WebAgentSummary
@@ -951,11 +1151,18 @@ WebBootstrap
 WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
+WebConsoleToolScope
+WebConversationMarkerPart
 WebCronReplyContextPart
 WebCronReplyReceipt
 WebCronReplySnapshotKind
 WebEvent
 WebEventType
+WebExternalConversation
+WebExternalConversationChannel
+WebExternalConversationState
+WebExternalObservationInput
+WebExternalTurn
 WebJobActivity
 WebLiveInputReceipt
 WebMessage
@@ -968,11 +1175,12 @@ WebNotificationTriggerKind
 WebProject
 WebProjectChangedPayload
 WebProjectColor
-WebProjectTransition
+WebProjectIdentity
 WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
 WebQuote
+WebRestartProposalAvailability
 WebRunAttribution
 WebRunExecution
 WebRunRetry
@@ -1001,6 +1209,12 @@ WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage
 WebThreadTrigger
+WebThreadUsage
+WebUsageSlice
+WebUsageTokens
+WebWakeSchedule
+WebWakeScheduleDefinition
+beginWebExternalTurn
 createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir
@@ -1008,12 +1222,16 @@ deliverWebNotification
 discoverAcpBridgeAgents
 discoverOperatorAgents
 isTrustedOperatorBaseUrl
+markWebExternalConversationGone
 operatorBaseUrlFromMetadata
 prepareWebState
 prepareWebStatePaths
 resetWebState
+resolveWebExternalProjectDestination
 resolveWebStatePaths
 startWebServer
+syncWebExternalConversations
+withProjectContext
 ```
 
 <!-- public-api-inventory:end -->
@@ -1091,6 +1309,12 @@ failed or deleted rows cannot expose or resurrect a conversation. Stop the Web
 service and make a compatible database backup before migration. A schema-24
 binary refuses a schema-25 database; rollback requires
 restoring that compatible pre-upgrade backup and loses writes made afterward.
+Schema 33 backfills validated process-job state from retained cards in bounded
+batches, without scanning conversation transcripts; invalid cards fail and roll
+back the migration. Schema 34 adds a transaction-local search-write marker so
+settlement indexes already-parsed text once, atomically with the message. Neither
+upgrade prunes history or requires vacuuming. Older binaries refuse these schemas;
+use a compatible pre-upgrade backup to roll back, not a schema-version edit.
 Upgrade the operator-adapter before the Web producer so `liveInputTargeting`
 is available; an older operator is not guessed through and the receipt visibly
 queues `unsupported_targeting`. Deployment remains a separate operation.
@@ -1107,33 +1331,34 @@ race.
 
 The server depends only on the `core` `@mono-agent/agent-contracts` and
 `@mono-agent/config` packages, the `observability` trace-source registry, and
-Express. Its Node-side operator clients use Undici to keep deliberately
-long-lived turn and host-wake streams under their explicit lifecycle owners.
+Express. Its Node-side clients use `@mono-agent/operator-adapter/client` for
+bounded NDJSON decoding and long-lived turn and host-wake fetch mechanics;
+authentication, loopback policy, and lifecycle ownership remain in web.
 Its compiled browser bundle additionally contains the production graph
 from the isolated `webapp` lockfile: assistant-ui, Base UI, cmdk, React, and
 Workbox plus their transitive dependencies. The repository advisory and license
 gates audit that nested production graph separately because it ships inside this
 package even though it is not part of the root pnpm workspace. Running agents
 are reached over their loopback HTTP operator endpoints; this package does not
-import a communication adapter or another operator surface.
+import another operator surface or start the operator adapter server.
 
 ## What This Package Does Not Own
 
 - Agent runtime/provider execution or conversation history inside an agent.
 - The operator-adapter HTTP server published by each agent.
 - CLI background-process, launchd, or conflict-safe Tailscale Serve lifecycle.
-- Recorded-run replay, which belongs to `@mono-agent/tui`.
+- Offline run inspection, which belongs to `mono-agent runs list|show`.
 - Authentication. Network reachability is the intentional security boundary.
 - Host filesystem browsing: attachments come only from the browser device's
   native file picker.
 
 ## Related Documentation
 
-- [Always-on web console guide](https://mono-agent-docs.vercel.app/observability/web-console/)
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Always-on web console guide](https://docs.mono-agent.dev/observability/web-console/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
 
@@ -1156,6 +1381,24 @@ then runs focused unit checks, typecheck, production build and the full browser
 suite. It copies the canonical contract source and the existing pure web helpers,
 not a contracts package install or dist tree. Normal local browser tests still use
 `pnpm --dir packages/web/webapp run test:browser`.
+
+### Console Storybook
+
+From a source checkout, run `pnpm --dir packages/web/webapp install --frozen-lockfile`,
+then `pnpm --dir packages/web/webapp storybook` for the local design-system
+catalog (localhost port 6006). To allow explicitly authorized remote access,
+pass `-- --host 0.0.0.0` to the `storybook` command; the static build is the
+preferred hosted artifact. Use `pnpm --dir packages/web/webapp build-storybook` for a
+static build in the ignored `storybook-static/` directory. Add fictional,
+network-free fixtures and one `*.stories.tsx` file per visual component under the mirrored
+`webapp/src/stories/<kebab-case-section>/` directory. Set the CSF `component` to the real
+component, use named fictional states as args, and enable autodocs. Organize
+stories by Foundations, Primitives, Chat & Messages, Activity & Jobs,
+Dashboard, Projects & Tags, Dialogs & Settings, and Screens. The toolbar switches the
+four console themes and light/dark appearance without changing product CSS.
+The story-only store and API guard keep preview state separate from a live agent.
+Stories are excluded from the shipped app typecheck/build and from the npm
+package; Storybook's own typecheck and build are checked in CI.
 
 ```sh
 pnpm --filter @mono-agent/web run typecheck

@@ -1,0 +1,122 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitForShutdownSignal } from "../cli-background-command.js";
+import { AGENT_RESTART_EXIT_CODE, AGENT_RESTART_EXIT_FALLBACK_MS, armAcceptedRestartExitFallback, createSupervisedRestartLatch } from "../supervised-restart-latch.js";
+
+const verified = { supported: true } as const;
+afterEach(() => {
+  process.removeAllListeners("SIGINT");
+  process.removeAllListeners("SIGTERM");
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe("supervised host lifecycle latch", () => {
+  it("forces only a leaked accepted-restart worker after its bounded graceful-drain window", () => {
+    vi.useFakeTimers();
+    const exit = vi.fn();
+    const unref = vi.fn();
+    const schedule = vi.fn((handler: () => void, ms: number) => {
+      const timer = setTimeout(handler, ms);
+      timer.unref = unref;
+      return timer;
+    });
+    armAcceptedRestartExitFallback({ exit, schedule });
+    expect(schedule).toHaveBeenCalledWith(expect.any(Function), AGENT_RESTART_EXIT_FALLBACK_MS);
+    expect(unref).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(AGENT_RESTART_EXIT_FALLBACK_MS - 1);
+    expect(exit).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(AGENT_RESTART_EXIT_CODE);
+  });
+
+  it("accepts before the shutdown waiter subscribes, keeps one immutable id and one stop", async () => {
+    const latch = createSupervisedRestartLatch();
+    const first = latch.accept(verified);
+    expect(first.kind).toBe("accepted");
+    if (first.kind !== "accepted") throw new Error("accept failed");
+    expect(latch.accept(verified)).toEqual({ kind: "conflict", operationId: first.operationId });
+    latch.beginStop(first.operationId);
+    const app = { stop: vi.fn(async () => {}) };
+    await expect(waitForShutdownSignal(app, undefined, latch)).resolves.toBe(AGENT_RESTART_EXIT_CODE);
+    latch.beginStop(first.operationId);
+    expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a signal before acceptance refuses restart and resolves zero", async () => {
+    const latch = createSupervisedRestartLatch();
+    const app = { stop: vi.fn(async () => {}) };
+    const pending = waitForShutdownSignal(app, undefined, latch);
+    process.emit("SIGTERM");
+    expect(latch.accept(verified)).toEqual({ kind: "refused", reason: "The agent is already stopping." });
+    await expect(pending).resolves.toBe(0);
+    expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a signal after acceptance cannot undo the nonzero disposition", async () => {
+    const latch = createSupervisedRestartLatch();
+    const app = { stop: vi.fn(async () => {}) };
+    const pending = waitForShutdownSignal(app, undefined, latch);
+    const result = latch.accept(verified);
+    expect(result.kind).toBe("accepted");
+    process.emit("SIGTERM");
+    await expect(pending).resolves.toBe(AGENT_RESTART_EXIT_CODE);
+    expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop failure still resolves nonzero and does not schedule a second stop", async () => {
+    const latch = createSupervisedRestartLatch();
+    const app = { stop: vi.fn(async () => { throw new Error("failed"); }) };
+    const pending = waitForShutdownSignal(app, undefined, latch);
+    const result = latch.accept(verified);
+    if (result.kind !== "accepted") throw new Error("accept failed");
+    latch.beginStop(result.operationId);
+    await expect(pending).resolves.toBe(AGENT_RESTART_EXIT_CODE);
+    latch.beginStop(result.operationId);
+    expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shutdown-wide restart deadline", () => {
+  it("arms before awaiting app.stop and forces exit at the one original bound", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const latch = createSupervisedRestartLatch();
+    let release!: () => void;
+    const app = { stop: vi.fn((_deadline?: number) => new Promise<void>((resolve) => { release = resolve; })) };
+    const pending = waitForShutdownSignal(app, undefined, latch);
+    const accepted = latch.accept(verified);
+    if (accepted.kind !== "accepted") throw new Error("accept failed");
+    latch.beginStop(accepted.operationId);
+    await vi.waitFor(() => expect(app.stop).toHaveBeenCalledOnce());
+    const deadline = app.stop.mock.calls[0]?.[0];
+    expect(deadline).toBeTypeOf("number");
+    expect(latch.beginShutdownDeadline()).toBe(deadline);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(AGENT_RESTART_EXIT_FALLBACK_MS);
+    expect(exit).toHaveBeenCalledWith(AGENT_RESTART_EXIT_CODE);
+    release();
+    await expect(pending).resolves.toBe(AGENT_RESTART_EXIT_CODE);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+it.each(["SIGINT", "SIGTERM"] as const)("logs literal %s before synchronous latch dispatch and stops once", async (signal) => {
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const latch = createSupervisedRestartLatch(); const app = { stop: vi.fn(async () => {}) };
+  const pending = waitForShutdownSignal(app, undefined, latch);
+  process.emit(signal); process.emit(signal);
+  await expect(pending).resolves.toBe(0);
+  expect(app.stop).toHaveBeenCalledOnce();
+  expect(stdout.mock.calls.map(([text]) => String(text)).join("")).toContain(`Received ${signal}`);
+  expect(stdout.mock.calls.map(([text]) => String(text)).join("")).not.toContain("undefined");
+});
+it("supervised restart has a distinct diagnostic without an undefined signal", async () => {
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const latch = createSupervisedRestartLatch(); const app = { stop: vi.fn(async () => {}) };
+  const pending = waitForShutdownSignal(app, undefined, latch); const accepted = latch.accept(verified);
+  if (accepted.kind !== "accepted") throw new Error("accept failed");
+  latch.beginStop(accepted.operationId); await pending;
+  const text = stdout.mock.calls.map(([text]) => String(text)).join("");
+  expect(text).toContain("Supervised restart accepted"); expect(text).not.toContain("undefined");
+  expect(app.stop).toHaveBeenCalledOnce();
+});

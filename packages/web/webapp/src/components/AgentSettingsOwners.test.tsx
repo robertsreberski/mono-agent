@@ -1,0 +1,1512 @@
+import "@testing-library/jest-dom/vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agent } from "../test/fixtures";
+import { ApiError } from "../api";
+import type { ProviderUsageSnapshot, RestartOperation } from "../types";
+import "../styles.css";
+
+const storeMock = vi.hoisted(() => ({
+  selectedAgent: null as ReturnType<typeof agent> | null,
+  catalogByProvider: {},
+  ensureProviderCatalog: vi.fn(),
+  setAgentPinned: vi.fn().mockResolvedValue(undefined),
+  setAgentRunDefaults: vi.fn(),
+  clearAgentRunDefaults: vi.fn(),
+}));
+const apiMock = vi.hoisted(() => ({
+  providerAuthStatus: vi.fn(),
+  providerUsage: vi.fn(),
+  refreshProviderUsage: vi.fn(),
+  beginProviderAuth: vi.fn(),
+  providerAuthSession: vi.fn(),
+  submitProviderAuth: vi.fn(),
+  cancelProviderAuth: vi.fn(),
+  beginProviderAuthCheck: vi.fn(),
+  providerAuthCheck: vi.fn(),
+  cancelProviderAuthCheck: vi.fn(),
+  latestAgentRestart: vi.fn(),
+  requestAgentRestart: vi.fn(),
+  restartStatus: vi.fn(),
+}));
+
+vi.mock("../console-store", () => ({ useConsoleStore: () => storeMock }));
+vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), api: apiMock }));
+vi.mock("./assistant-ui/ModelSelector", () => ({
+  ModelSelector: ({ onValueChange, onEffortChange }: {
+    readonly onValueChange: (value: string) => void;
+    readonly onEffortChange: (value: string) => void;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onValueChange("provider/other")}>Choose other model</button>
+      <button type="button" onClick={() => onEffortChange("high")}>Choose high effort</button>
+    </div>
+  ),
+}));
+
+import { AgentSettingsScreen } from "./agent-settings/AgentSettingsScreen";
+import type { SettingsSection } from "../mobile-history";
+
+/** Mount the real screen owners and remove them on close, including in race tests. */
+function SettingsHarness({ open, onClose, section = "providers", layout = "split", onNotice = () => undefined }: {
+  readonly open: boolean; readonly onClose: () => void;
+  readonly section?: SettingsSection; readonly layout?: "split" | "stacked"; readonly onNotice?: (message: string) => void;
+}) {
+  return open ? <AgentSettingsScreen layout={layout} section={section} onClose={onClose} onNotice={onNotice} /> : null;
+}
+
+const expectSettingsTypography = (element: Element, size: "9px" | "10px" | "11px" | "12px" | "12.5px") => {
+  const style = window.getComputedStyle(element);
+  // jsdom exposes the authored inheritance keyword; a browser resolves it to
+  // the root's existing sans-serif stack.
+  expect(window.getComputedStyle(document.documentElement).fontFamily).toContain("sans-serif");
+  expect(style.fontSize).toBe(size);
+};
+
+beforeEach(() => {
+  // Base UI's switch dispatches a PointerEvent; jsdom does not implement it.
+  if (!window.PointerEvent) window.PointerEvent = MouseEvent as typeof PointerEvent;
+  vi.resetAllMocks();
+  Object.assign(storeMock, { activeThreads: null });
+  storeMock.selectedAgent = agent("alpha", {
+    label: "Alpha",
+    models: ["provider/model", "provider/other"],
+    modelOptions: {
+      "provider/model": { effortLevels: ["low", "high"] },
+      "provider/other": { effortLevels: ["low", "high"] },
+    },
+  });
+  storeMock.setAgentRunDefaults.mockResolvedValue(undefined);
+  storeMock.clearAgentRunDefaults.mockResolvedValue(undefined);
+  apiMock.cancelProviderAuth.mockResolvedValue(undefined);
+  apiMock.cancelProviderAuthCheck.mockResolvedValue(undefined);
+  apiMock.latestAgentRestart.mockResolvedValue(null);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/**
+ * The start control, once it is actually a control.
+ *
+ * "Check access" renders WITH the section and stays disabled until the provider
+ * status read lands, so a query that waits only for its presence can hand back
+ * a button whose click does nothing at all -- and what then fails is the
+ * assertion about whatever that click was supposed to cause, several lines
+ * later and for a reason that reads like the component's.
+ */
+const findStartButton = async (name: string) => {
+  const button = await screen.findByRole("button", { name: new RegExp(`^${name}`) });
+  await waitFor(() => { expect(button).toBeEnabled(); });
+  return button;
+};
+
+const advanceProviderPolls = async (count = 1) => {
+  await act(async () => await Promise.resolve());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(count * 1_000);
+  });
+};
+
+/**
+ * A poll is armed by the admission's CONTINUATION, not by the click, and the
+ * effect that arms it commits a render later still. So "advance the clock N
+ * times and then read the spy" is a bet on how many microtask turns that
+ * continuation happens to take on this machine -- the bet a loaded CI runner
+ * loses, reporting `0 calls` as though the component had stopped polling.
+ *
+ * Advance the same deterministic clock until the expectation the test actually
+ * reads holds, and re-throw that expectation's own failure when it never does.
+ * Nothing here waits on wall-clock time, and an exact call count asserted after
+ * this helper still proves the component did not poll more often than it should.
+ */
+const advanceProviderPollsUntil = async (expectation: () => void, maxPolls = 12) => {
+  for (let advanced = 0; ; advanced += 1) {
+    try {
+      expectation();
+      return;
+    } catch (error) {
+      if (advanced >= maxPolls) throw error;
+    }
+    await advanceProviderPolls();
+  }
+};
+
+describe("SettingsHarness", () => {
+  const restartOperation = (stage: RestartOperation["stage"], outcome?: RestartOperation["outcome"]): RestartOperation => ({
+    id: "web-restart-id", sourceId: "alpha", stage,
+    requestedAt: "2026-09-23T10:00:00Z", deadline: "2026-09-23T10:02:00Z",
+    ...(outcome === undefined ? {} : { outcome }),
+  });
+
+  it("shows the shared restart section and advisory warning before the settings POST", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    Object.assign(storeMock, { activeThreads: { runningCounts: { alpha: 2 } } });
+    apiMock.requestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockResolvedValue(restartOperation("restarting"));
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
+    expect(screen.getByText(/Restarting may interrupt active conversations/u)).toHaveTextContent("About 2 running conversations will be interrupted (approximate).");
+    expect(apiMock.requestAgentRestart).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.requestAgentRestart).toHaveBeenCalledExactlyOnceWith("alpha");
+    expect(screen.getByRole("list", { name: "Restart progress" })).toBeVisible();
+  });
+
+  it("shows a definitive restart refusal without an operation id (R5)", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.requestAgentRestart.mockRejectedValue(new ApiError("Fictional refusal", 403, "restart_denied"));
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    await screen.findByRole("button", { name: "Restart Alpha" });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    expect(await screen.findByText("Restart failed: Fictional refusal")).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Restart progress" })).toBeNull();
+  });
+
+  it("keeps an in-flight restart visible when its status poll fails (R5)", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockRejectedValue(new Error("Temporary network failure"));
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    expect(await screen.findByText("Restart status is temporarily unavailable.")).toBeVisible();
+    expect(screen.getByRole("list", { name: "Restart progress" })).toBeVisible();
+  });
+
+  it("disables unsupported settings restart with the server's short reason", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: false, reason: "Restart=no" } });
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("button", { name: "Restart Alpha" })).toBeDisabled();
+    expect(screen.getByText("Restart=no")).toBeVisible();
+    expect(apiMock.requestAgentRestart).not.toHaveBeenCalled();
+  });
+
+  it("rehydrates an in-flight operation after dialog reload and polls to the server's outcome", async () => {
+    vi.useFakeTimers();
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockResolvedValueOnce(restartOperation("restarting"))
+      .mockResolvedValue(restartOperation("back_online", "success"));
+    const props = { onClose: vi.fn() };
+    const view = render(<SettingsHarness section="agent" open {...props} />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.latestAgentRestart).toHaveBeenCalledWith("alpha", expect.any(AbortSignal));
+    expect(apiMock.restartStatus).toHaveBeenCalledWith("alpha", "web-restart-id", expect.any(AbortSignal));
+    view.rerender(<SettingsHarness section="agent" open={false} {...props} />);
+    await act(async () => { vi.advanceTimersByTime(4_000); await Promise.resolve(); });
+    expect(apiMock.restartStatus).toHaveBeenCalledTimes(1);
+    view.rerender(<SettingsHarness section="agent" open {...props} />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.latestAgentRestart).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Back online ·/u)).toBeVisible();
+  });
+
+  it("shows the retained outcome and offers a fresh confirmed settings restart", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("back_online", "success"));
+    apiMock.requestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockResolvedValue(restartOperation("restarting"));
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(/Back online ·/u)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
+    expect(screen.getByText(/may interrupt active conversations/u)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.requestAgentRestart).toHaveBeenCalledExactlyOnceWith("alpha");
+  });
+  const usageSnapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [
+    { providerId: "github-copilot", label: "GitHub Copilot", plan: "Individual", fetchedAt: "2026-09-15T12:00:00Z", stale: false,
+      windows: [{ kind: "credits", label: "Credits", usedPercent: 42, periodMs: 2592000000 }] },
+  ] };
+
+  it("keeps one usage owner across section and layout changes and restarts it on generation change (A7)", async () => {
+    storeMock.selectedAgent = agent("alpha", { generation: "first", supportsProviderUsage: true });
+    apiMock.providerUsage.mockResolvedValue(usageSnapshot);
+    const props = { open: true, onClose: vi.fn() };
+    const view = render(<SettingsHarness {...props} section="providers" layout="split" />);
+    await waitFor(() => expect(apiMock.providerUsage).toHaveBeenCalledTimes(1));
+    view.rerender(<SettingsHarness {...props} section="agent" layout="stacked" />);
+    view.rerender(<SettingsHarness {...props} section="providers" layout="stacked" />);
+    expect(apiMock.providerUsage).toHaveBeenCalledTimes(1);
+    storeMock.selectedAgent = agent("alpha", { generation: "second", supportsProviderUsage: true });
+    view.rerender(<SettingsHarness {...props} section="providers" layout="stacked" />);
+    await waitFor(() => expect(apiMock.providerUsage).toHaveBeenCalledTimes(2));
+    expect(apiMock.providerUsage).toHaveBeenNthCalledWith(2, "alpha", expect.any(AbortSignal));
+  });
+
+  it("retains restart tracking when only the agent generation changes (A7)", async () => {
+    storeMock.selectedAgent = agent("alpha", { generation: "first", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    const pending = deferred<RestartOperation>();
+    apiMock.restartStatus.mockReturnValue(pending.promise);
+    const props = { open: true, onClose: vi.fn(), section: "agent" as const };
+    const view = render(<SettingsHarness {...props} />);
+    await waitFor(() => expect(apiMock.restartStatus).toHaveBeenCalledTimes(1));
+    storeMock.selectedAgent = agent("alpha", { generation: "second", restart: { supported: true } });
+    view.rerender(<SettingsHarness {...props} />);
+    expect(apiMock.latestAgentRestart).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve(restartOperation("back_online", "success")));
+    await waitFor(() => expect(screen.getByText(/Back online ·/u)).toBeVisible());
+  });
+
+  it("renders meter-only cards when usage is supported without auth support", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
+    apiMock.providerUsage.mockResolvedValue(usageSnapshot);
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42");
+    expect(screen.getByRole("heading", { name: "Providers" })).toBeInTheDocument();
+    expect(screen.getByText("Individual")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeEnabled();
+    expect(screen.getByText("GitHub Copilot").closest("article")!.querySelector("button, .provider-auth-state, .provider-auth-check-result")).toBeNull();
+    expect(screen.queryByText("Usage only")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check access" })).toBeNull();
+    expect(apiMock.providerAuthStatus).not.toHaveBeenCalled();
+  });
+
+  it("never falls back to unmatched usage while auth status is loading or after it loads", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderUsage: true });
+    apiMock.providerUsage.mockResolvedValue(usageSnapshot);
+    const status = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
+    apiMock.providerAuthStatus.mockReturnValue(status.promise);
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(apiMock.providerUsage).toHaveBeenCalled();
+    expect(screen.getAllByText("Loading provider status…")).toHaveLength(1);
+    expect(screen.queryByText("GitHub Copilot")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    await act(async () => status.resolve(providerAuthStatusSnapshot("not_verified")));
+    expect(screen.queryByText("Loading provider status…")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Re-authenticate/u })).toBeInTheDocument();
+    expect(screen.queryByText("GitHub Copilot")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("offers refresh only with the additive capability and disables it while offline", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderUsage: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    apiMock.providerUsage.mockResolvedValue({ schema: "mono-agent.provider-usage.v1", providers: [] });
+    const props = { open: true, onClose: vi.fn() };
+    const view = render(<SettingsHarness {...props} />);
+    expect(screen.queryByRole("button", { name: "Refresh usage" })).toBeNull();
+    storeMock.selectedAgent = { ...storeMock.selectedAgent, supportsProviderUsageRefresh: true };
+    view.rerender(<SettingsHarness {...props} />);
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toHaveAttribute("title", "Refresh usage");
+    storeMock.selectedAgent = { ...storeMock.selectedAgent, status: "offline" };
+    view.rerender(<SettingsHarness {...props} />);
+    expect(screen.queryByRole("button", { name: "Refresh usage" })).toBeNull();
+    expect(screen.getByText("Provider status needs a live connection")).toBeVisible();
+  });
+  it("refreshes passive credential status after usage, without inference and while fencing conflicting controls", async () => {
+    storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderAuthChecks: true, supportsProviderUsage: true, supportsProviderUsageRefresh: true });
+    const initial = { schema: "mono-agent.provider-usage.v1", providers: [] };
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    apiMock.providerUsage.mockResolvedValue(initial);
+    const pending = deferred<typeof initial>();
+    apiMock.refreshProviderUsage.mockReturnValueOnce(pending.promise);
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    await findStartButton("Re-authenticate");
+    const refresh = screen.getByRole("button", { name: "Refresh usage" });
+    expect(refresh).toHaveTextContent("Refresh usage");
+    expectSettingsTypography(refresh, "10px");
+    const disclosure = document.querySelectorAll("#settings-provider-disclosure");
+    expect(disclosure).toHaveLength(1);
+    expect(disclosure[0]).toHaveTextContent("Refresh usage reads subscription limits without inference. Check access sends one small model request per configured authentication provider and may use quota or refresh OAuth.");
+    expect(refresh).toHaveAccessibleDescription(disclosure[0]!.textContent!);
+    expect(screen.getByRole("button", { name: "Check access" })).toHaveAccessibleDescription(disclosure[0]!.textContent!);
+    expect(document.querySelector("#provider-usage-refresh-disclosure, #provider-auth-check-disclosure")).toBeNull();
+    fireEvent.click(refresh);
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Check access" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Re-authenticate/u })).toBeDisabled();
+    expect(screen.getByText("Refreshing usage…")).toBeInTheDocument();
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("verified_by_account_request"));
+    await act(async () => pending.resolve({ ...initial }));
+    await screen.findByText("Credential OK");
+    expect(apiMock.beginProviderAuthCheck).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Refresh usage" })).toBeEnabled();
+  });
+
+  it.each(["auth", "check"] as const)("keeps a running %s owner across section and layout switches, then cancels on close", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const snapshot = kind === "auth"
+      ? { ...sessionSnapshot("ongoing", "Waiting for credentials"), providerId: "opencode-go" }
+      : { ...completedProviderAuthCheck(), id: "ongoing", state: "running" };
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    start.mockResolvedValue(snapshot);
+    const props = { onClose: vi.fn(), open: true };
+    const view = render(<SettingsHarness {...props} section="providers" layout="split" />);
+    fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access"));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(kind === "auth" ? screen.getByText("Waiting for credentials") : screen.getByText(/Checking providers:/)).toBeVisible());
+    view.rerender(<SettingsHarness {...props} section="agent" layout="split" />);
+    view.rerender(<SettingsHarness {...props} section="agent" layout="stacked" />);
+    view.rerender(<SettingsHarness {...props} section="providers" layout="stacked" />);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledTimes(1);
+    view.rerender(<SettingsHarness {...props} open={false} />);
+    await waitFor(() => expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "ongoing", expect.any(AbortSignal)));
+  });
+
+  it.each(["auth", "check"] as const)("cancels a late %s admission after its screen closes without losing the response ID", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const admission = deferred<Record<string, unknown>>();
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    start.mockReturnValueOnce(admission.promise);
+    const props = { onClose: vi.fn() };
+    const view = render(<SettingsHarness open {...props} />);
+    fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access"));
+    // The admission is genuinely on the wire before the screen closes. Without
+    // this the test could close over a click that started nothing -- the check
+    // button is disabled until the status read lands -- and then read the
+    // missing cancellation as a teardown that failed to cancel.
+    await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(1); });
+    view.rerender(<SettingsHarness open={false} {...props} />);
+    expect(cancel).not.toHaveBeenCalled();
+    const snapshot = kind === "auth" ? sessionSnapshot("late-admission", "LATE FLOW") : { ...completedProviderAuthCheck(), id: "late-admission", state: "running" };
+    await act(async () => admission.resolve(snapshot));
+    // Awaited on the cancellation ITSELF rather than on however many turns the
+    // admission's continuation happens to take: the assertion below is about
+    // what is cancelled, not about when a microtask queue drained.
+    await vi.waitFor(() => { expect(cancel).toHaveBeenCalled(); });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "late-admission", expect.any(AbortSignal));
+    expect(screen.queryByText("LATE FLOW")).not.toBeInTheDocument();
+  });
+
+  it.each(["auth", "check"] as const)("keeps a new scope's %s while cancelling only the old late admission", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", generation: "generation-1", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const old = deferred<Record<string, unknown>>();
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    const snapshot = (id: string) => kind === "auth" ? sessionSnapshot(id, id) : { ...completedProviderAuthCheck(), id, state: "running" };
+    start.mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot("NEW OWNED FLOW"));
+    // The new scope polls once a second while this test runs. Answer that poll
+    // with the scope's own snapshot so a poll firing under load cannot be read
+    // as the component losing the flow it owns.
+    const get = kind === "auth" ? apiMock.providerAuthSession : apiMock.providerAuthCheck;
+    get.mockResolvedValue(snapshot("NEW OWNED FLOW"));
+    // Model a cancellation transport that ignores abort and never settles.
+    cancel.mockReturnValueOnce(new Promise(() => undefined));
+    const props = { onClose: vi.fn() };
+    const view = render(<SettingsHarness open {...props} />);
+    const action = kind === "auth" ? "Re-authenticate" : "Check access";
+    fireEvent.click(await findStartButton(action));
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", generation: "generation-2", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    view.rerender(<SettingsHarness open {...props} />);
+    // `findStartButton`, not `findByRole`: the new scope's control renders
+    // disabled until its own status read lands, so clicking the button merely
+    // because it EXISTS can start nothing at all -- and the missing
+    // cancellation below would then read as a failure to disown the old flow.
+    fireEvent.click(await findStartButton(action));
+    await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(2); });
+    await act(async () => {
+      old.resolve(snapshot("OLD UNOWNED FLOW"));
+      await old.promise;
+    });
+    // Await the cancellation itself rather than a fixed number of microtask
+    // turns; the assertion below is about WHICH flow was cancelled.
+    await vi.waitFor(() => { expect(cancel).toHaveBeenCalled(); });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "OLD UNOWNED FLOW", expect.any(AbortSignal));
+    expect(screen.queryByText("OLD UNOWNED FLOW")).not.toBeInTheDocument();
+    if (kind === "auth") expect(await screen.findByText("NEW OWNED FLOW")).toBeVisible();
+    else expect(await findStartButton("Cancel live provider checks")).toBeEnabled();
+    view.unmount();
+    expect(cancel).toHaveBeenLastCalledWith("alpha", "NEW OWNED FLOW", expect.any(AbortSignal));
+  });
+
+  it.each(["auth", "check"] as const)("does not cancel an already-terminal late %s admission", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const late = deferred<Record<string, unknown>>();
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    start.mockReturnValueOnce(late.promise);
+    const view = render(<SettingsHarness open onClose={vi.fn()} />);
+    fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access"));
+    await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(1); });
+    view.unmount();
+    await act(async () => {
+      late.resolve(kind === "auth" ? successfulProviderAuthSession() : completedProviderAuthCheck());
+      // Drain the admission's continuation before the negative assertion, so
+      // "no cancellation" means the path decided not to cancel a terminal
+      // admission -- not that it had not run yet. The positive sibling above
+      // proves the same path DOES cancel a still-running one.
+      await late.promise;
+      await Promise.resolve();
+    });
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it.each(["auth", "check"] as const)("does not revive a cancelled %s from a same-ID poll before effect cleanup", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const active = kind === "auth" ? sessionSnapshot("active", "ACTIVE FLOW") : { ...completedProviderAuthCheck(), id: "active", state: "running" };
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const get = kind === "auth" ? apiMock.providerAuthSession : apiMock.providerAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    const poll = deferred<Record<string, unknown>>();
+    const deletion = deferred<void>();
+    start.mockResolvedValueOnce(active);
+    get.mockReturnValueOnce(poll.promise);
+    cancel.mockReturnValueOnce(deletion.promise);
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    const startButton = await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access");
+    vi.useFakeTimers();
+    fireEvent.click(startButton);
+    await advanceProviderPollsUntil(() => expect(get).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: kind === "auth" ? "Cancel authentication" : "Cancel live provider checks" }));
+    await act(async () => {
+      deletion.resolve();
+      // Run the DELETE continuation, but keep React effects batched until
+      // after the same-ID GET response has also been delivered.
+      await Promise.resolve();
+      poll.resolve(active);
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("button", { name: kind === "auth" ? "Cancel authentication" : "Cancel live provider checks" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check access" })).toBeEnabled();
+  });
+
+  it("labels config and override sources, saves future defaults without closing, and announces it", async () => {
+    const close = vi.fn();
+    const notice = vi.fn();
+    render(<SettingsHarness section="new-conversations" open onClose={close} onNotice={notice} />);
+    expect(screen.getByRole("heading", { name: "New conversations" })).toBeVisible();
+    expect(screen.getByText(/Existing conversations keep theirs/u)).toBeVisible();
+    expect(screen.getByText(/A fallback or model mismatch is shown on the run/u)).toBeVisible();
+    expect(screen.getAllByText("Agent config").length).toBeGreaterThan(0);
+    expect(screen.getByText("Console override")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Choose other model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose high effort" }));
+    const save = screen.getByRole("button", { name: "Save for new conversations" });
+    expectSettingsTypography(save, "11px");
+    fireEvent.click(save);
+    await vi.waitFor(() => {
+      expect(storeMock.setAgentRunDefaults).toHaveBeenCalledWith("provider/other", "high");
+      expect(notice).toHaveBeenCalledOnce();
+    });
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "New conversations" })).toBeVisible();
+  });
+
+  it("labels a partial model override's effective effort from agent config (R10)", () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", runSettings: {
+        config: { model: "provider/model", effort: "high" },
+        override: { model: "provider/other" },
+        effective: { model: "provider/other", modelSource: "override", effort: "high", effortSource: "config" },
+      },
+    });
+    render(<SettingsHarness section="new-conversations" open onClose={vi.fn()} />);
+    const override = screen.getByText("Console override").closest(".settings-kv")!;
+    expect(override).toHaveTextContent("High");
+    expect(override).toHaveTextContent("agent config: high");
+    expect(override).not.toHaveTextContent("provider default");
+  });
+
+  it("pins the selected agent from a switch row", async () => {
+    storeMock.setAgentPinned.mockResolvedValue(undefined);
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    const pin = screen.getByRole("switch", { name: "Pin Alpha first" });
+    expect(pin).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(pin);
+    await vi.waitFor(() => expect(storeMock.setAgentPinned).toHaveBeenCalledExactlyOnceWith("alpha", true));
+  });
+
+  it("pins without assuming the store action returns a promise", async () => {
+    storeMock.setAgentPinned.mockReturnValue(undefined as never);
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    expect(() => { fireEvent.click(screen.getByRole("switch", { name: "Pin Alpha first" })); }).not.toThrow();
+    await vi.waitFor(() => expect(storeMock.setAgentPinned).toHaveBeenCalledExactlyOnceWith("alpha", true));
+  });
+
+  it("keeps the settings content as the scroll boundary", () => {
+    const { container } = render(<SettingsHarness section="new-conversations" open onClose={vi.fn()} />);
+    const content = container.querySelector(".settings-content");
+    expect(content?.closest(".settings-screen")).not.toBeNull();
+    expect(content?.querySelector(".settings-pane")).not.toBeNull();
+    expect(window.getComputedStyle(content!).overflowY).toBe("auto");
+  });
+
+  it("clears an active override only after Use agent config and Save", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", runSettings: {
+        config: { model: "provider/model", effort: "low" },
+        override: { model: "provider/other", effort: "high" },
+        effective: { model: "provider/other", modelSource: "override", effort: "high", effortSource: "override" },
+      },
+    });
+    render(<SettingsHarness section="new-conversations" open onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Use agent config" }));
+    expect(storeMock.clearAgentRunDefaults).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save for new conversations" }));
+    await vi.waitFor(() => expect(storeMock.clearAgentRunDefaults).toHaveBeenCalledOnce());
+  });
+
+  it("renders compact provider status rows and clears a masked key before submitting it", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const missingStatus = {
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "missing", verification: "not_verified",
+        methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true }],
+      }],
+    };
+    apiMock.providerAuthStatus.mockResolvedValueOnce(missingStatus).mockResolvedValue({
+      ...missingStatus,
+      generatedAt: "2026-09-06T12:00:01.000Z",
+      providers: [{ ...missingStatus.providers[0], state: "present", credentialType: "api_key", source: "stored" }],
+    });
+    const awaiting = {
+      schema: "mono-agent.provider-auth-session.v1", id: "session-1", providerId: "opencode-go",
+      authType: "api_key", strategy: "api_key_prompt", state: "awaiting_input",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+      prompt: { id: "prompt-1", type: "secret", message: "Enter the OpenCode API key" },
+    };
+    apiMock.beginProviderAuth.mockResolvedValue(awaiting);
+    apiMock.submitProviderAuth.mockImplementation(async () => {
+      expect(screen.getByLabelText("Enter the OpenCode API key")).toHaveValue("");
+      return { ...awaiting, state: "succeeded", prompt: undefined, updatedAt: "2026-09-06T12:00:01.000Z" };
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    const providerName = screen.getByText("OpenCode Go");
+    const providerState = screen.getByText("Needs action");
+    expect(providerName).toBeVisible();
+    expectSettingsTypography(providerName, "12.5px");
+    expectSettingsTypography(providerState, "10px");
+    expect(screen.queryByText("opencode-go")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Used by/u)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No credential detected/u)).not.toBeInTheDocument();
+    const authenticate = await screen.findByRole("button", { name: /^Authenticate/u });
+    expectSettingsTypography(authenticate, "10px");
+    fireEvent.click(authenticate);
+    const key = await screen.findByLabelText("Enter the OpenCode API key");
+    expect(key).toHaveAttribute("type", "password");
+    expect(key).toHaveAttribute("autocomplete", "off");
+    fireEvent.change(key, { target: { value: "PROVIDER_AUTH_SECRET_SENTINEL" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit once" }));
+
+    await vi.waitFor(() => expect(apiMock.submitProviderAuth).toHaveBeenCalledWith(
+      "alpha", "session-1", { promptId: "prompt-1", value: "PROVIDER_AUTH_SECRET_SENTINEL" },
+    ));
+    expect(document.body.textContent).not.toContain("PROVIDER_AUTH_SECRET_SENTINEL");
+    expect(await screen.findByRole("button", { name: "Close authentication" })).toBeVisible();
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
+    const notVerified = await screen.findByText("Not verified");
+    expect(notVerified).toBeVisible();
+    expectSettingsTypography(notVerified, "10px");
+  });
+
+  it("polls an unchanged replacement to success and ignores the old poll when it completes late", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const method = { authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [method],
+      }],
+    });
+    const active = {
+      schema: "mono-agent.provider-auth-session.v1", id: "session-old", providerId: "opencode-go",
+      authType: "api_key", strategy: "api_key_prompt", state: "awaiting_input",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+      prompt: { id: "prompt-old", type: "secret", message: "Old API key prompt" },
+    } as const;
+    const replacement = {
+      ...active,
+      id: "session-new",
+      state: "pending",
+      updatedAt: "2026-09-06T12:00:02.000Z",
+      prompt: undefined,
+      progress: "Fresh authentication started",
+    } as const;
+    const replacementRequest = deferred<typeof replacement>();
+    const oldPoll = deferred<Omit<typeof active, "state"> & {
+      readonly state: "awaiting_input" | "succeeded";
+      readonly progress?: string;
+    }>();
+    apiMock.beginProviderAuth.mockResolvedValueOnce(active).mockImplementationOnce(async () => await replacementRequest.promise);
+    let replacementPolls = 0;
+    apiMock.providerAuthSession.mockImplementation(async (_sourceId: string, sessionId: string) => {
+      if (sessionId === active.id) return await oldPoll.promise;
+      replacementPolls += 1;
+      return replacementPolls < 3
+        ? { ...replacement }
+        : { ...replacement, state: "succeeded", updatedAt: "2026-09-06T12:00:05.000Z", progress: "FRESH SESSION SUCCEEDED" };
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    const authenticate = await screen.findByRole("button", { name: /^Re-authenticate/u });
+    vi.useFakeTimers();
+    fireEvent.click(authenticate);
+    await act(async () => await Promise.resolve());
+    expect(screen.getByLabelText("Old API key prompt")).toBeVisible();
+    await advanceProviderPollsUntil(() =>
+      expect(apiMock.providerAuthSession).toHaveBeenCalledWith("alpha", "session-old", expect.any(AbortSignal)));
+    const restart = screen.getByRole("button", { name: /^Re-authenticate/u });
+    expect(restart).toBeEnabled();
+    fireEvent.click(restart);
+    expect(screen.getByLabelText("Old API key prompt")).toBeVisible();
+    expect(screen.getByText("Restarting authentication…")).not.toHaveAttribute("aria-live");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+
+    await act(async () => replacementRequest.resolve(replacement));
+    expect(screen.getByText("Fresh authentication started")).toBeVisible();
+    await advanceProviderPollsUntil(() => expect(screen.getByText("FRESH SESSION SUCCEEDED")).toBeVisible());
+    // Exact, and asserted after the wait: the replacement is polled three times
+    // and not once more, which is the contract the third response settles.
+    expect(apiMock.providerAuthSession.mock.calls.filter(([, sessionId]) => sessionId === replacement.id)).toHaveLength(3);
+    await act(async () => oldPoll.resolve({ ...active, state: "succeeded", progress: "STALE OLD SESSION" }));
+    expect(screen.queryByText("STALE OLD SESSION")).not.toBeInTheDocument();
+    expect(screen.getByText("FRESH SESSION SUCCEEDED")).toBeVisible();
+  }, 6_000);
+
+  it("keeps the newest successful start when start responses settle out of order", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const method = { authType: "api_key", strategy: "api_key_prompt", label: "API key", recommended: true } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: ["older", "newer"].map((providerId) => ({
+        providerId, label: providerId === "older" ? "Older provider" : "Newer provider",
+        usages: [{ kind: "primary", model: `${providerId}:model`, label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [method],
+      })),
+    });
+    const older = deferred<Record<string, unknown>>();
+    const newer = deferred<Record<string, unknown>>();
+    apiMock.beginProviderAuth.mockImplementation(async (_source: string, providerId: string) =>
+      await (providerId === "older" ? older.promise : newer.promise));
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    const buttons = await screen.findAllByRole("button", { name: /^Re-authenticate/u });
+
+    await act(async () => {
+      buttons[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttons[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(apiMock.beginProviderAuth).toHaveBeenCalledTimes(2);
+    newer.resolve(sessionSnapshot("session-newer", "NEWER SESSION"));
+    expect(await screen.findByText("NEWER SESSION")).toBeVisible();
+    older.resolve(sessionSnapshot("session-older", "STALE OLDER SESSION"));
+    await act(async () => await Promise.resolve());
+
+    expect(screen.queryByText("STALE OLDER SESSION")).not.toBeInTheDocument();
+    expect(screen.getByText("NEWER SESSION")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.getAllByRole("button", { name: /^Re-authenticate/u })[0]).toBeEnabled());
+
+    const staleFailure = deferred<Record<string, unknown>>();
+    const finalSuccess = deferred<Record<string, unknown>>();
+    apiMock.beginProviderAuth.mockImplementation(async (_source: string, providerId: string) =>
+      await (providerId === "older" ? staleFailure.promise : finalSuccess.promise));
+    const retryButtons = screen.getAllByRole("button", { name: /^Re-authenticate/u });
+    await act(async () => {
+      retryButtons[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      retryButtons[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    finalSuccess.resolve(sessionSnapshot("session-final", "FINAL SUCCESS"));
+    expect(await screen.findByText("FINAL SUCCESS")).toBeVisible();
+    staleFailure.reject(new Error("STALE START ERROR"));
+    await act(async () => await Promise.resolve());
+    expect(screen.queryByText("STALE START ERROR")).not.toBeInTheDocument();
+    expect(screen.getByText("FINAL SUCCESS")).toBeVisible();
+    await vi.waitFor(() => expect(screen.getAllByRole("button", { name: /^Re-authenticate/u })[0]).toBeEnabled());
+
+    const validOlder = deferred<Record<string, unknown>>();
+    const invalidNewer = deferred<Record<string, unknown>>();
+    apiMock.beginProviderAuth.mockImplementation(async (_source: string, providerId: string) =>
+      await (providerId === "older" ? validOlder.promise : invalidNewer.promise));
+    const finalButtons = screen.getAllByRole("button", { name: /^Re-authenticate/u });
+    await act(async () => {
+      finalButtons[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      finalButtons[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    invalidNewer.reject(new Error("NEWER INVALID START"));
+    expect(await screen.findByText("NEWER INVALID START")).toBeVisible();
+    validOlder.resolve(sessionSnapshot("session-older-valid", "OLDER VALID SESSION"));
+
+    expect(await screen.findByText("OLDER VALID SESSION")).toBeVisible();
+    expect(screen.queryByText("NEWER INVALID START")).not.toBeInTheDocument();
+  });
+
+  it("does not let stale input or cancel completion overwrite a replacement session", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const method = { authType: "api_key", strategy: "api_key_prompt", label: "API key", recommended: true } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:model", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [method],
+      }],
+    });
+    const active = {
+      ...sessionSnapshot("session-active", "ACTIVE SESSION"),
+      providerId: "opencode-go",
+      state: "awaiting_input",
+      prompt: { id: "prompt-active", type: "secret", message: "Current API key" },
+    } as const;
+    const submitted = deferred<Record<string, unknown>>();
+    const firstReplacement = deferred<ReturnType<typeof sessionSnapshot>>();
+    const cancelled = deferred<void>();
+    const secondReplacement = deferred<ReturnType<typeof sessionSnapshot>>();
+    apiMock.beginProviderAuth
+      .mockResolvedValueOnce(active)
+      .mockImplementationOnce(async () => await firstReplacement.promise)
+      .mockImplementationOnce(async () => await secondReplacement.promise);
+    apiMock.submitProviderAuth.mockImplementationOnce(async () => await submitted.promise);
+    apiMock.cancelProviderAuth.mockImplementationOnce(async () => await cancelled.promise);
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Re-authenticate/u }));
+    const input = await screen.findByLabelText("Current API key");
+    fireEvent.change(input, { target: { value: "fake-input" } });
+    const submit = screen.getByRole("button", { name: "Submit once" });
+    const restart = screen.getByRole("button", { name: /^Re-authenticate/u });
+    await act(async () => {
+      submit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      restart.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    firstReplacement.resolve({ ...sessionSnapshot("session-replacement", "REPLACEMENT ONE"), providerId: "opencode-go" });
+    expect(await screen.findByText("REPLACEMENT ONE")).toBeVisible();
+    submitted.resolve({ ...active, state: "succeeded", prompt: undefined, progress: "STALE SUBMIT" });
+    await act(async () => await Promise.resolve());
+    expect(screen.queryByText("STALE SUBMIT")).not.toBeInTheDocument();
+
+    const cancel = screen.getByRole("button", { name: "Cancel authentication" });
+    const restartAgain = screen.getByRole("button", { name: /^Re-authenticate/u });
+    await act(async () => {
+      cancel.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      restartAgain.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    secondReplacement.resolve({ ...sessionSnapshot("session-final", "FINAL SESSION"), providerId: "opencode-go" });
+    expect(await screen.findByText("FINAL SESSION")).toBeVisible();
+    cancelled.resolve();
+    await act(async () => await Promise.resolve());
+    expect(screen.queryByRole("button", { name: "Close authentication" })).not.toBeInTheDocument();
+    expect(screen.getByText("FINAL SESSION")).toBeVisible();
+  });
+
+  it("uses status-only rows and limits actions to actionable providers", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [
+        {
+          providerId: "openai", label: "OpenAI", usages: [{ kind: "primary", model: "openai:gpt-5", label: "Primary model" }],
+          state: "present", source: "environment", verification: "verified_by_live_request",
+          methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenAI API key", recommended: true }],
+        },
+        {
+          providerId: "copilot", label: "GitHub Copilot", usages: [{ kind: "fallback", model: "github-copilot:gpt-5", label: "Fallback model" }],
+          state: "missing", verification: "not_verified",
+          methods: [{ authType: "oauth", strategy: "device_code", label: "GitHub device code", recommended: true }],
+        },
+        {
+          providerId: "local", label: "Local model", usages: [{ kind: "primary", model: "ollama:llama", label: "Primary model" }],
+          state: "not_applicable", verification: "not_applicable", methods: [],
+        },
+      ],
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    expect(await screen.findByText("OK")).toBeVisible();
+    expect(screen.getByText("Needs action")).toBeVisible();
+    expect(screen.getByText("Not applicable")).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Authenticate/u })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Re-authenticate/u })).toBeVisible();
+    expect(screen.queryByText("openai")).not.toBeInTheDocument();
+    expect(screen.queryByText("environment")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Primary model/u)).not.toBeInTheDocument();
+  });
+
+  it("refreshes local auth status after usage and distinguishes credential acceptance from live OK", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderUsage: true });
+    const usage = deferred<{ schema: "mono-agent.provider-usage.v1"; providers: [] }>();
+    apiMock.providerUsage.mockReturnValue(usage.promise);
+    apiMock.providerAuthStatus.mockResolvedValueOnce(providerAuthStatusSnapshot("not_verified"))
+      .mockResolvedValue(providerAuthStatusSnapshot("verified_by_account_request"));
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByText("Not verified")).toBeVisible();
+    usage.resolve({ schema: "mono-agent.provider-usage.v1", providers: [] });
+    const badge = await screen.findByText("Credential OK");
+    expect(badge.closest(".provider-auth-state")).toHaveClass("is-ok-account");
+    expect(screen.queryByText("OK", { exact: true })).not.toBeInTheDocument();
+    expect(apiMock.providerUsage).toHaveBeenCalledTimes(1);
+    expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2);
+    expect(apiMock.beginProviderAuthCheck).not.toHaveBeenCalled();
+  });
+
+  it.each(["verified_by_account_request", "verified_by_live_request"] as const)("keeps credential rejection ahead of %s without requiring a model", async (verification) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const snapshot = providerAuthStatusSnapshot(verification);
+    apiMock.providerAuthStatus.mockResolvedValue({ ...snapshot, providers: [{ ...snapshot.providers[0], lastFailure: {
+      kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: snapshot.generatedAt,
+    } }] });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.queryByText("Credential OK")).not.toBeInTheDocument();
+    expect(screen.queryByText("OK", { exact: true })).not.toBeInTheDocument();
+  });
+
+  it("does not treat account acceptance as proof of inference availability", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const snapshot = providerAuthStatusSnapshot("verified_by_account_request");
+    apiMock.providerAuthStatus.mockResolvedValue({ ...snapshot, providers: [{ ...snapshot.providers[0], lastFailure: {
+      kind: "provider_unavailable", message: "Provider was unavailable.", model: "opencode-go:model", observedAt: snapshot.generatedAt,
+    } }] });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByText("Not verified")).toBeVisible();
+    expect(screen.queryByText("Credential OK")).not.toBeInTheDocument();
+  });
+
+  it("shows a recorded auth failure ahead of a not-applicable static state", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "keyless-fixture", label: "Keyless fixture",
+        usages: [{ kind: "primary", model: "keyless-fixture:model", label: "Primary model" }],
+        state: "not_applicable", verification: "not_applicable", methods: [],
+        lastFailure: {
+          kind: "provider_auth", message: "Provider rejected the configured credential.",
+          model: "keyless-fixture:model", observedAt: "2026-09-06T11:59:00.000Z",
+        },
+      }],
+    });
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.queryByText("Not applicable")).not.toBeInTheDocument();
+  });
+
+  it("does not promote static presence to OK and runs one compact explicit batch", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [
+        {
+          providerId: "opencode-go", label: "OpenCode Go",
+          usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+          state: "present", source: "environment", verification: "not_verified",
+          methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true }],
+        },
+        {
+          providerId: "openai-codex", label: "OpenAI Codex",
+          usages: [{ kind: "fallback", model: "openai-codex:gpt-5.6-sol", label: "Fallback model" }],
+          state: "present", source: "stored", verification: "not_verified",
+          methods: [{ authType: "oauth", strategy: "device_code", label: "OpenAI Codex", recommended: true }],
+        },
+      ],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check-one",
+      state: "completed",
+      createdAt: "2026-09-06T12:00:00.000Z",
+      updatedAt: "2026-09-06T12:00:01.000Z",
+      expiresAt: "2026-09-06T12:10:01.000Z",
+      results: [
+        {
+          providerId: "opencode-go", label: "OpenCode Go", state: "passed",
+          model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+          checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded.",
+        },
+        {
+          providerId: "openai-codex", label: "OpenAI Codex", state: "auth_failed",
+          model: "openai-codex:gpt-5.6-sol", selectionBasis: "subscription_zero_price",
+          checkedAt: "2026-09-06T12:00:01.000Z", code: "credential_rejected", message: "Provider rejected the configured credential.",
+        },
+      ],
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    expect((await screen.findAllByText("Not verified"))).toHaveLength(2);
+    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Re-authenticate/u })).toHaveLength(2);
+    const run = screen.getByRole("button", { name: "Check access" });
+    expect(run).toHaveTextContent("Check access");
+    expectSettingsTypography(run, "10px");
+    expect(window.getComputedStyle(run).minHeight).toBe("28px");
+    expect(run).toHaveClass("settings-button", "is-compact");
+    expect(screen.getByText(/may use quota or refresh OAuth/u)).toBeVisible();
+    fireEvent.click(run);
+
+    await vi.waitFor(() => expect(apiMock.beginProviderAuthCheck).toHaveBeenCalledWith("alpha", expect.any(String)));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    expect(screen.getByText("Auth failed")).toBeVisible();
+    expect(screen.getByText("Checks complete: 1 of 2 passed.")).not.toHaveAttribute("aria-live");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Provider access checks finished."));
+  });
+
+  it("keeps the post-auth status when an older completed-check refresh resolves late", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    const verified = providerAuthStatusSnapshot("verified_by_live_request");
+    const notVerified = providerAuthStatusSnapshot("not_verified");
+    const staleCheckRefresh = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
+    apiMock.providerAuthStatus
+      .mockResolvedValueOnce(verified)
+      .mockImplementationOnce(async () => await staleCheckRefresh.promise)
+      .mockResolvedValueOnce(notVerified);
+    apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
+    apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByText("OK")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Check access" }));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-authenticate/u }));
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Not verified")).toBeVisible();
+
+    await act(async () => staleCheckRefresh.resolve(verified));
+    expect(screen.getByText("Not verified")).toBeVisible();
+    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+  });
+
+  it("ignores an older completed-check refresh rejection after authentication", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    const staleCheckRefresh = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
+    apiMock.providerAuthStatus
+      .mockResolvedValueOnce(providerAuthStatusSnapshot("verified_by_live_request"))
+      .mockImplementationOnce(async () => await staleCheckRefresh.promise)
+      .mockResolvedValueOnce(providerAuthStatusSnapshot("not_verified"));
+    apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
+    apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByText("OK")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Check access" }));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-authenticate/u }));
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Not verified")).toBeVisible();
+
+    await act(async () => staleCheckRefresh.reject(new Error("STALE CHECK REFRESH ERROR")));
+    expect(screen.queryByText("STALE CHECK REFRESH ERROR")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("clears a passed live-check result when valid re-authentication is adopted", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
+    apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    expect(await screen.findByText("Not verified")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Check access" }));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-authenticate/u }));
+    expect(await screen.findByRole("button", { name: "Close authentication" })).toBeVisible();
+    expect(screen.queryByText("Check passed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks complete: 1 of 1 passed.")).not.toBeInTheDocument();
+  });
+
+  it("offers a compact neutral cancel control while checks are active", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "environment", verification: "not_verified", methods: [],
+      }],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check-running",
+      state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z",
+      updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "opencode-go", label: "OpenCode Go", state: "running",
+        model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+      }],
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    fireEvent.click(await findStartButton("Check access"));
+    const cancel = await screen.findByRole("button", { name: "Cancel live provider checks" });
+    expect(cancel).toHaveTextContent("Cancel checks");
+    expect(cancel).toHaveClass("settings-button", "is-compact");
+    expectSettingsTypography(cancel, "10px");
+    expect(window.getComputedStyle(cancel).minHeight).toBe("28px");
+    fireEvent.click(cancel);
+    await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-running"));
+    expect(await screen.findByText("Checks complete: 0 of 1 passed.")).toBeVisible();
+  });
+
+  it("keeps polling through unchanged running snapshots until the check completes", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "environment", verification: "not_verified", methods: [],
+      }],
+    });
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "check-recurring", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "opencode-go", label: "OpenCode Go", state: "running",
+        model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+      }],
+    } as const;
+    const completed = {
+      ...running,
+      state: "completed",
+      updatedAt: "2026-09-06T12:00:03.000Z",
+      results: [{
+        ...running.results[0], state: "passed", checkedAt: "2026-09-06T12:00:03.000Z",
+        code: "passed", message: "Provider request succeeded.",
+      }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce({ ...running })
+      .mockResolvedValueOnce(completed);
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    const run = await findStartButton("Check access");
+    vi.useFakeTimers();
+    fireEvent.click(run);
+    await act(async () => await Promise.resolve());
+
+    expect(screen.getByText("Checking…")).toBeVisible();
+    await advanceProviderPollsUntil(() => expect(screen.getByText("Check passed")).toBeVisible());
+    // Two unchanged running snapshots, then the completed one: exactly three
+    // reads, so an unchanged snapshot neither stops the polling nor doubles it.
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
+  }, 6_000);
+
+  it("ends a locally running check when its retained session has expired", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [],
+      }],
+    });
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "expired-check", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "running", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing" }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck.mockRejectedValue(Object.assign(new Error("expired"), {
+      status: 404, code: "provider_auth_not_found",
+    }));
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    const run = await findStartButton("Check access");
+    vi.useFakeTimers();
+    fireEvent.click(run);
+    await act(async () => await Promise.resolve());
+    expect(screen.getByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    await advanceProviderPollsUntil(() =>
+      expect(screen.getByRole("button", { name: "Check access" })).toBeVisible());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
+    // Unchanged: the guard is that a further second of the clock adds NO read,
+    // so it must stay a plain advance rather than a wait for something.
+    await advanceProviderPolls();
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
+  }, 4_000);
+
+  it("recovers from cancelling a check that is already absent", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [],
+      }],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1", id: "already-absent", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "running", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing" }],
+    });
+    apiMock.cancelProviderAuthCheck.mockRejectedValueOnce(Object.assign(new Error("already absent"), {
+      status: 404, code: "provider_auth_not_found",
+    }));
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    fireEvent.click(await findStartButton("Check access"));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel live provider checks" }));
+    expect(await screen.findByRole("button", { name: "Check access" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps polling a check after a transient read failure", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [],
+      }],
+    });
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "transient-check", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "running", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing" }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck
+      .mockRejectedValueOnce(new Error("temporary link failure"))
+      .mockResolvedValueOnce({
+        ...running, state: "completed", updatedAt: "2026-09-06T12:00:02.000Z",
+        results: [{ ...running.results[0], state: "passed", checkedAt: "2026-09-06T12:00:02.000Z", code: "passed", message: "Provider request succeeded." }],
+      });
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    const run = await findStartButton("Check access");
+    vi.useFakeTimers();
+    fireEvent.click(run);
+    await act(async () => await Promise.resolve());
+    await advanceProviderPollsUntil(() => expect(screen.getByText("Check passed")).toBeVisible());
+    // The transient failure cost one read and the retry succeeded: two, exactly.
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(2);
+  }, 4_000);
+
+  it("closes a method chooser when a live check starts", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "anthropic", label: "Anthropic",
+        usages: [{ kind: "primary", model: "anthropic:claude", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified",
+        methods: [
+          { authType: "oauth", strategy: "paste_back", label: "Anthropic OAuth", recommended: true },
+          { authType: "api_key", strategy: "api_key_prompt", label: "Anthropic API key", recommended: false },
+        ],
+      }],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1", id: "check-methods", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "anthropic", label: "Anthropic", state: "running",
+        model: "anthropic:claude", selectionBasis: "subscription_zero_price",
+      }],
+    });
+
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Re-authenticate/u }));
+    expect(screen.getByRole("button", { name: "Anthropic OAuth" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Anthropic API key" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Check access" }));
+
+    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Anthropic OAuth" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Anthropic API key" })).not.toBeInTheDocument();
+  });
+
+  it("starts OpenAI device code directly and offers paste-back only after it is unavailable", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    const methods = [
+      { authType: "oauth", strategy: "device_code", label: "OpenAI Codex (device code)", recommended: true },
+      { authType: "oauth", strategy: "paste_back", label: "OpenAI Codex (paste redirect)", recommended: false },
+    ] as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "openai-codex", label: "OpenAI Codex",
+        usages: [{ kind: "primary", model: "openai-codex:gpt-5.6-terra", label: "Primary model" }],
+        state: "missing", verification: "not_verified", methods,
+      }],
+    });
+    const failed = {
+      schema: "mono-agent.provider-auth-session.v1", id: "session-openai", providerId: "openai-codex",
+      authType: "oauth", strategy: "device_code", state: "failed",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+      error: { code: "device_code_unavailable", message: "Device-code authentication is unavailable; retry with browser paste-back." },
+    };
+    apiMock.beginProviderAuth.mockResolvedValueOnce(failed).mockResolvedValueOnce({
+      ...failed, id: "session-paste", strategy: "paste_back", state: "pending", error: undefined,
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1", id: "check-retry", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "openai-codex", label: "OpenAI Codex", state: "running",
+        model: "openai-codex:gpt-5.6-terra", selectionBasis: "subscription_zero_price",
+      }],
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Authenticate/u }));
+    await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenNthCalledWith(
+      1, "alpha", "openai-codex", methods[0],
+    ));
+    const retry = await screen.findByRole("button", { name: "Retry with browser paste-back" });
+    expect(screen.queryByText("Choose how to authenticate OpenAI Codex")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Check access" }));
+    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    expect(retry).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel live provider checks" }));
+    await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-retry"));
+    await vi.waitFor(() => expect(retry).toBeEnabled());
+    fireEvent.click(retry);
+    await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenNthCalledWith(
+      2, "alpha", "openai-codex", methods[1],
+    ));
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Cancel authentication" })).toBeEnabled());
+  });
+
+  it("renders paste-back instructions as a safe external link and cancels an active session on close", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const method = { authType: "oauth", strategy: "paste_back", label: "Anthropic OAuth", recommended: true } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "anthropic", label: "Anthropic",
+        usages: [{ kind: "primary", model: "anthropic:claude-sonnet-4-5", label: "Primary model" }],
+        state: "expired", credentialType: "oauth", source: "stored", expiresAt: "2026-09-06T11:00:00.000Z",
+        verification: "not_verified", methods: [method],
+        lastFailure: { kind: "provider_auth", message: "Provider rejected the configured credential.", model: "anthropic:claude-sonnet-4-5", observedAt: "2026-09-06T11:30:00.000Z" },
+      }],
+    });
+    apiMock.beginProviderAuth.mockResolvedValue({
+      schema: "mono-agent.provider-auth-session.v1", id: "session-anthropic", providerId: "anthropic",
+      authType: "oauth", strategy: "paste_back", state: "awaiting_input",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+      authUrl: {
+        url: "https://console.anthropic.com/oauth/authorize",
+        instructions: "If localhost cannot load, copy the complete final URL and paste it here.",
+      },
+      prompt: { id: "prompt-anthropic", type: "manual_code", message: "Paste the redirect URL" },
+    });
+    const rendered = render(<SettingsHarness open onClose={vi.fn()} />);
+
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.queryByText("expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Provider rejected the configured credential/u)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Re-authenticate/u }));
+    const link = await screen.findByRole("link", { name: "Open authentication page" });
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByText(/copy the complete final URL/u)).toBeVisible();
+    expect(link.closest(".settings-provider-flow")).not.toHaveAttribute("aria-live");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rendered.unmount();
+    await vi.waitFor(() => expect(apiMock.cancelProviderAuth).toHaveBeenCalledWith(
+      "alpha", "session-anthropic", expect.any(AbortSignal),
+    ));
+  });
+
+  it("offers both OpenAI methods and confirms a cross-method replacement before starting", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const oauth = { authType: "oauth", strategy: "paste_back", label: "Sign in with ChatGPT", recommended: false } as const;
+    const key = { authType: "api_key", strategy: "api_key_prompt", label: "OpenAI API key", recommended: false } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{ providerId: "openai", label: "OpenAI", usages: [{ kind: "primary", model: "openai:gpt-5.5", label: "Primary model" }],
+        state: "present", credentialType: "api_key", source: "stored", verification: "not_verified", methods: [oauth, key] }],
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    apiMock.beginProviderAuth.mockResolvedValue({
+      schema: "mono-agent.provider-auth-session.v1", id: "session-openai", providerId: "openai",
+      authType: "oauth", strategy: "paste_back", state: "awaiting_input",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+      prompt: { id: "prompt-openai", type: "manual_code", message: "Paste complete redirect URL" },
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Re-authenticate OpenAI" }));
+    expect(screen.getByRole("button", { name: "Sign in with ChatGPT" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with ChatGPT" }));
+    expect(apiMock.beginProviderAuth).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with ChatGPT" }));
+    await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenCalledWith("alpha", "openai", oauth));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(await screen.findByLabelText("Paste complete redirect URL")).toBeVisible();
+  });
+
+  it("confirms replacing an expired stored OpenAI OAuth credential with an API key", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const oauth = { authType: "oauth", strategy: "paste_back", label: "Sign in with ChatGPT", recommended: false } as const;
+    const key = { authType: "api_key", strategy: "api_key_prompt", label: "OpenAI API key", recommended: false } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{ providerId: "openai", label: "OpenAI", usages: [{ kind: "primary", model: "openai:gpt-5.5", label: "Primary model" }],
+        state: "expired", credentialType: "oauth", source: "stored", verification: "not_verified", methods: [oauth, key] }],
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    apiMock.beginProviderAuth.mockResolvedValue({
+      schema: "mono-agent.provider-auth-session.v1", id: "session-openai-expired", providerId: "openai",
+      authType: "api_key", strategy: "api_key_prompt", state: "pending",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Re-authenticate OpenAI" }));
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI API key" }));
+    expect(apiMock.beginProviderAuth).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI API key" }));
+    await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenCalledWith("alpha", "openai", key));
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an unsupported provider-auth capability terse", () => {
+    render(<SettingsHarness open onClose={vi.fn()} />);
+
+    expect(screen.getByText("Not available on this agent.")).toBeVisible();
+    expect(screen.queryByText(/does not expose the protected provider-authentication capability/u)).not.toBeInTheDocument();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function sessionSnapshot(id: string, progress: string) {
+  return {
+    schema: "mono-agent.provider-auth-session.v1",
+    id,
+    providerId: id.includes("newer") ? "newer" : "older",
+    authType: "api_key",
+    strategy: "api_key_prompt",
+    state: "pending",
+    createdAt: "2026-09-06T12:00:00.000Z",
+    updatedAt: "2026-09-06T12:00:01.000Z",
+    expiresAt: "2026-09-06T12:20:00.000Z",
+    progress,
+  };
+}
+
+function providerAuthStatusSnapshot(verification: "not_verified" | "verified_by_account_request" | "verified_by_live_request") {
+  return {
+    schema: "mono-agent.provider-auth.v1",
+    generatedAt: verification === "not_verified"
+      ? "2026-09-06T12:00:03.000Z"
+      : "2026-09-06T12:00:01.000Z",
+    providers: [{
+      providerId: "opencode-go", label: "OpenCode Go",
+      usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+      state: "present", source: "stored", verification,
+      methods: [{
+        authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true,
+      }],
+    }],
+  } as const;
+}
+
+function completedProviderAuthCheck() {
+  return {
+    schema: "mono-agent.provider-auth-check.v1",
+    id: "check-completed-before-auth",
+    state: "completed",
+    createdAt: "2026-09-06T12:00:00.000Z",
+    updatedAt: "2026-09-06T12:00:01.000Z",
+    expiresAt: "2026-09-06T12:10:01.000Z",
+    results: [{
+      providerId: "opencode-go", label: "OpenCode Go", state: "passed",
+      model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+      checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded.",
+    }],
+  } as const;
+}
+
+function successfulProviderAuthSession() {
+  return {
+    schema: "mono-agent.provider-auth-session.v1",
+    id: "session-new-credential",
+    providerId: "opencode-go",
+    authType: "api_key",
+    strategy: "api_key_prompt",
+    state: "succeeded",
+    createdAt: "2026-09-06T12:00:02.000Z",
+    updatedAt: "2026-09-06T12:00:03.000Z",
+    expiresAt: "2026-09-06T12:20:00.000Z",
+    progress: "NEW CREDENTIAL INSTALLED",
+  } as const;
+}

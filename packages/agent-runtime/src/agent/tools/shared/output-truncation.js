@@ -3,7 +3,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./constants.js";
 import { boundedInt } from "./dedup.js";
-import { readToolRuntime } from "./runtime-context.js";
 
 function sanitizeName(value) {
   return String(value || "tool").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tool";
@@ -18,7 +17,8 @@ function sanitizeName(value) {
  *    toolUseId}) -> path | null` callback the tool-payload guard and the Agent
  *    tool use, so the file lands in the run's validated tool-output directory.
  *    This is the sink a configured app actually provides.
- * 2. A configured `toolArtifactDir` (deep-path hosts via configureToolRuntime),
+ * 2. A configured `toolArtifactDir` (deep-path hosts via `configureTools` on
+ *    their runtime instance, or a hand-built ToolContext),
  *    written directly under `<dir>/tool-output/<runId>/`.
  *
  * Null when neither is available or the write fails; callers then omit the
@@ -30,7 +30,7 @@ function sanitizeName(value) {
  * @returns {{path: string, bytes: number}|null}
  */
 export function writeToolArtifact(label, text, ctx) {
-  const { toolArtifactDir, runId, persistArtifact } = ctx ?? readToolRuntime();
+  const { toolArtifactDir, runId, persistArtifact } = ctx ?? {};
   const body = String(text || "");
   const filename = `${Date.now()}-${sanitizeName(label)}-${randomUUID()}.txt`;
   if (typeof persistArtifact === "function") {

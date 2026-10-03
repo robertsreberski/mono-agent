@@ -18,17 +18,6 @@ export type TraceabilityStatus =
   | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "failed"; readonly reason: string };
 
-export type ExporterStatus =
-  | {
-      readonly kind: "configured";
-      readonly endpoint: string;
-      readonly includeSensitiveData: boolean;
-      readonly lastWarning?: string;
-      readonly lastError?: string;
-    }
-  | { readonly kind: "disabled"; readonly reason: string }
-  | { readonly kind: "failed"; readonly reason: string };
-
 export interface SandboxStatus extends SandboxEffectiveState {
   readonly detail: string;
   readonly warning?: string;

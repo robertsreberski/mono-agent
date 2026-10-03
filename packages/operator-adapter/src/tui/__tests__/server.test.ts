@@ -71,6 +71,136 @@ async function postTurn(
 }
 
 describe("startTuiAdapter", () => {
+  it.each([false, true])("stamps a %s key loopback turn as human regardless of body metadata", async (withKey) => {
+    let observed: AgentRequestBase | undefined;
+    running = await startTuiAdapter({
+      ...(withKey ? { apiKey: "test-owner" } : {}),
+      responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }),
+    });
+    const response = await postTurn(running.baseUrl, {
+      conversationId: "web:one", text: "hello", client: "web", captureSpeakerKind: "trigger",
+      metadata: { source: "web", captureSpeakerKind: "trigger" },
+    }, withKey ? { authorization: "Bearer test-owner" } : {});
+    expect(response.status).toBe(200);
+    await readFrames(response);
+    expect(observed?.captureSpeakerKind).toBe("human-turn");
+  });
+
+  it("advertises and protects manual compaction without returning the summary", async () => {
+    const compactConversation = vi.fn(async () => ({ status: "succeeded" as const, trigger: "manual" as const,
+      operationId: "c-1", tokensBefore: 1500, tokensAfter: 600, summary: "PRIVATE SUMMARY" }));
+    running = await startTuiAdapter({
+      apiKey: "test-owner", responder: { respond: async () => ({ text: "unused" }), compactConversation },
+    });
+    const headers = { authorization: "Bearer test-owner", "content-type": "application/json" };
+    const path = `${running.baseUrl}/v1/conversations/web%3Aone/compact`;
+    expect(((await (await fetch(running.infoUrl, { headers })).json()) as { capabilities: { manualCompaction?: unknown } }).capabilities.manualCompaction).toEqual({ version: 1 });
+    expect((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+    expect((await fetch(path, { method: "POST", headers, body: '{"unexpected":true}' })).status).toBe(400);
+    const response = await fetch(path, { method: "POST", headers, body: "{}" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toMatchObject({ status: "succeeded", tokensBefore: 1500, tokensAfter: 600 });
+    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one", undefined, expect.any(AbortSignal));
+    const withModel = await fetch(path, { method: "POST", headers, body: '{"model":"anthropic:claude-opus-4-8"}' });
+    expect(withModel.status).toBe(200);
+    expect(compactConversation).toHaveBeenLastCalledWith("web:one", { model: "anthropic:claude-opus-4-8" }, expect.any(AbortSignal));
+    expect((await fetch(path, { method: "POST", headers, body: '{"model":42}' })).status).toBe(400);
+    expect((await fetch(path, { method: "POST", headers, body: '{"model":"a:b","extra":1}' })).status).toBe(400);
+    expect(JSON.stringify(await (await fetch(path, { method: "POST", headers, body: "{}" })).json())).not.toContain("PRIVATE SUMMARY");
+    for (const context1M of [true, false]) {
+      const selected = await fetch(path, { method: "POST", headers, body: JSON.stringify({ context1M }) });
+      expect(selected.status).toBe(200);
+      expect(compactConversation).toHaveBeenLastCalledWith("web:one", { context1M }, expect.any(AbortSignal));
+    }
+
+  });
+
+  it("aborts the responder when the compaction HTTP client disconnects", async () => {
+    let observed!: AbortSignal;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    running = await startTuiAdapter({ apiKey: "test-owner", responder: {
+      respond: async () => ({ text: "unused" }),
+      compactConversation: async (_id, _options, signal) => {
+        observed = signal!;
+        started();
+        await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
+        throw new Error("cancelled");
+      },
+    } });
+    const controller = new AbortController();
+    const pending = fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+      method: "POST", headers: { authorization: "Bearer test-owner", "content-type": "application/json" },
+      body: "{}", signal: controller.signal,
+    });
+    await admitted;
+    expect(observed.aborted).toBe(false);
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(observed.aborted).toBe(true));
+  });
+
+  it("rejects absent compaction and bounds a busy result", async () => {
+    running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }) } });
+    const path = `${running.baseUrl}/v1/conversations/web%3Aone/compact`;
+    expect(((await (await fetch(running.infoUrl)).json()) as { capabilities: { manualCompaction?: unknown } }).capabilities.manualCompaction).toBeUndefined();
+    const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(response.status).toBe(501);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await running.stop();
+    running = await startTuiAdapter({ responder: { respond: async () => ({ text: "unused" }),
+      compactConversation: async () => { throw Object.assign(new Error("PRIVATE PROVIDER ERROR"), { failureKind: "compaction_busy" }); } } });
+    const busy = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    expect(busy.status).toBe(409);
+    expect(JSON.stringify(await busy.json())).not.toContain("PRIVATE PROVIDER ERROR");
+    for (const [failureKind, status, code] of [
+      ["compaction_unsupported", 501, "compaction_unsupported"],
+      ["compaction_failed", 500, "compaction_failed"],
+      [undefined, 500, "compaction_failed"],
+    ] as const) {
+      await running.stop();
+      const logged: unknown[] = [];
+      const warnings: unknown[] = [];
+      running = await startTuiAdapter({ logger: {
+        error: (...args: unknown[]) => { logged.push(args); },
+        warn: (...args: unknown[]) => { warnings.push(args); },
+      },
+        responder: { respond: async () => ({ text: "unused" }),
+        compactConversation: async () => { throw Object.assign(new Error("PRIVATE PROVIDER ERROR"), { failureKind }); } } });
+      const failed = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(failed.status).toBe(status);
+      expect(failed.headers.get("cache-control")).toContain("no-store");
+      const body = JSON.stringify(await failed.json());
+      expect(body).toContain(code);
+      expect(body).not.toContain("PRIVATE");
+      // Unexpected failures are diagnosable host-side only.
+      expect(logged).toHaveLength(status === 500 ? 1 : 0);
+      expect(warnings).toHaveLength(status === 501 ? 1 : 0);
+      if (status === 501) expect(warnings).toEqual([
+        ["TUI manual compaction unsupported.", { reason: "unknown" }],
+      ]);
+    }
+  });
+
+  it("logs a trusted unsupported reason without exposing it in the response", async () => {
+    const reason = "The history store cannot report the session model binding.";
+    const warn = vi.fn();
+    running = await startTuiAdapter({ logger: { warn }, responder: {
+      respond: async () => ({ text: "unused" }),
+      compactConversation: async () => { throw Object.assign(new Error(reason), { failureKind: "compaction_unsupported" }); },
+    } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    expect(response.status).toBe(501);
+    expect(JSON.stringify(await response.json())).not.toContain(reason);
+    expect(warn).toHaveBeenCalledWith("TUI manual compaction unsupported.", { reason });
+  });
   it("accepts an allowlisted ACP tool environment as host-only request state", async () => {
     let seen: AgentRequestBase | undefined;
     running = await startTuiAdapter({
@@ -137,7 +267,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       label: "test-agent",
       model: "claude-fable-5",
     });
@@ -212,7 +342,7 @@ describe("startTuiAdapter", () => {
     });
 
     await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
-      capabilities: { attachments: true, askUser: true, askById: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, askUser: true, askById: true },
     });
     const route = `${running.baseUrl}/v1/conversations/${encodeURIComponent("web:thread/one")}/ask`;
     await expect((await fetch(route)).json()).resolves.toEqual({ ask: snapshot });
@@ -660,7 +790,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       label: "test-agent",
       model: "claude-fable-5",
       effort: "high",
@@ -678,7 +808,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "claude-fable-5",
       models: ["claude-fable-5", "codex:gpt-5.5"],
     });
@@ -731,7 +861,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "pi:ollama:qwen3.6",
       models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
@@ -899,7 +1029,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true },
+      capabilities: { attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "claude-fable-5",
       modelOptions: { "claude-fable-5": { reasoning: true } },
     });
@@ -952,7 +1082,7 @@ describe("startTuiAdapter", () => {
     const frames = await readFrames(await postTurn(running.baseUrl, {
       client: "web",
       conversationId: "web:thread-1",
-      metadata: { web: { model: "claude:claude-opus-4-8", effort: "high" } },
+      metadata: { web: { model: "claude:claude-opus-4-8", effort: "high", ownerText: "" } },
       processJobWakeDeliveryKey: "process-job:web-wake",
       attachments: [{
         kind: "document",
@@ -970,7 +1100,7 @@ describe("startTuiAdapter", () => {
       text: "",
       metadata: {
         source: "web",
-        web: { model: "claude:claude-opus-4-8", effort: "high" },
+        web: { model: "claude:claude-opus-4-8", effort: "high", ownerText: "" },
         tui: { model: "claude:claude-opus-4-8", effort: "high" },
         webRequestId: expect.any(String),
       },
@@ -988,6 +1118,10 @@ describe("startTuiAdapter", () => {
       Symbol.for("mono-agent.process-job-wake.delivery-key.v1"),
     )).toMatchObject({ value: "process-job:web-wake", enumerable: false });
     expect(JSON.stringify(requests[0]?.metadata)).not.toContain("process-job:web-wake");
+    await readFrames(await postTurn(running.baseUrl, { client: "web", conversationId: "web:thread-1",
+      text: "Hi", metadata: { web: { ownerText: "Longer forged owner text", model: "sample" } } }));
+    expect(requests[1]?.metadata).toMatchObject({ web: { model: "sample" } });
+    expect((requests[1]?.metadata?.web as { ownerText?: string }).ownerText).toBeUndefined();
   });
 
   it("emits a terminal error frame with cancelled=true for a cancelled turn", async () => {
@@ -1112,7 +1246,7 @@ describe("startTuiAdapter", () => {
     const info = await (await fetch(running.infoUrl, {
       headers: { authorization: "Bearer fixture-secret" },
     })).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, historyAppend: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent is not a supervised worker." }, historyAppend: true });
 
     const url = `${running.baseUrl}/v1/conversations/web%3Anotification-1/verbatim`;
     const unauthorized = await fetch(url, {
@@ -1310,6 +1444,7 @@ describe("startTuiAdapter", () => {
 
   it("advertises live input and holds the request until the active run settles it", async () => {
     let markOffered!: (request: AgentLiveInputRequest) => void;
+    const offers: AgentLiveInputRequest[] = [];
     const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });
     let settle!: (value: AgentLiveInputSettlement) => void;
     const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
@@ -1317,6 +1452,7 @@ describe("startTuiAdapter", () => {
       responder: {
         ...scriptedResponder(async () => ({ text: "ok" })),
         offerLiveInput(request) {
+          offers.push(request);
           markOffered(request);
           return { status: "accepted", settled };
         },
@@ -1324,13 +1460,14 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, liveInput: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, liveInput: true });
     const responsePromise = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         id: "input-1",
         text: "Use the latest requirements",
+        ownerText: "Use the latest requirements",
         receivedAt: "2026-07-21T09:00:00.000Z",
         deliveryKey: "process-job:job-1",
       }),
@@ -1339,6 +1476,7 @@ describe("startTuiAdapter", () => {
       conversationId: "web:thread-1",
       id: "input-1",
       text: "Use the latest requirements",
+      ownerText: "Use the latest requirements",
       receivedAt: "2026-07-21T09:00:00.000Z",
       deliveryKey: "process-job:job-1",
     });
@@ -1346,6 +1484,13 @@ describe("startTuiAdapter", () => {
     const response = await responsePromise;
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "applied", runId: "run-1" });
+    const oversized = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "input-2", text: "Hi", ownerText: "Longer forged owner text",
+        receivedAt: "2026-07-21T09:00:00.000Z" }),
+    });
+    expect(oversized.status).toBe(200);
+    expect(offers[1]?.ownerText).toBeUndefined();
   });
 
   it("does not advertise targeting for an ownership-only responder", async () => {
@@ -1359,7 +1504,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
-    expect(info.capabilities).toEqual({ attachments: true });
+    expect(info.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
   });
 
   it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
@@ -1629,6 +1774,26 @@ describe("startTuiAdapter", () => {
     let finishTurn!: () => void;
     const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
     const offered: AgentLiveInputRequest[] = [];
+    // The waiter is armed while the POST below is still in flight on loopback,
+    // and the server detaches it only once it observes the client disconnect,
+    // so both fixed sleeps below were bets on socket timing: on a loaded
+    // runner the post-abort sleep expires first and the still-attached waiter
+    // is offered when ownership turns ready. Capture the waiter's own 10 min
+    // expiry timer instead -- the same seam the preceding test uses, and the
+    // only such timer server.ts arms -- so the test waits for the arming
+    // itself and, afterwards, for the detach, delegating every other timer to
+    // the previously installed implementation.
+    let waiterTimer: ReturnType<typeof setTimeout> | undefined;
+    const previousSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((...parameters: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...args] = parameters;
+      if (delay === 10 * 60 * 1_000) {
+        waiterTimer = previousSetTimeout(callback, delay, ...args);
+        return waiterTimer;
+      }
+      return previousSetTimeout(...parameters);
+    }) as typeof setTimeout);
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     running = await startTuiAdapter({
       responder: {
         liveInputOwnership: { version: 1 },
@@ -1661,10 +1826,14 @@ describe("startTuiAdapter", () => {
       }),
       signal: controller.signal,
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await vi.waitFor(() => { expect(waiterTimer).toBeDefined(); });
     controller.abort();
     await expect(liveResponse).rejects.toMatchObject({ name: "AbortError" });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Detach clears the waiter's expiry timer, so observing that clear proves
+    // the server saw the disconnect and removed the waiter -- no fixed sleep.
+    await vi.waitFor(() => { expect(clearTimeoutSpy).toHaveBeenCalledWith(waiterTimer); });
+    setTimeoutSpy.mockRestore();
+    clearTimeoutSpy.mockRestore();
     activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "late-run" });
     expect(offered).toEqual([]);
 
@@ -2136,13 +2305,19 @@ describe("startTuiAdapter", () => {
     });
 
     const boundPort = rejectedBoundPort(rejected);
+    let observed: AgentRequestBase | undefined;
     running = await startTuiAdapter({
       host: "0.0.0.0",
       port: boundPort,
       allowNonLoopback: true,
-      responder: scriptedResponder(async () => ({ text: "ok" })),
+      responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }),
     });
     expect(running.port).toBe(boundPort);
+    await readFrames(await postTurn(running.baseUrl.replace("0.0.0.0", "127.0.0.1"), {
+      conversationId: "web:nonloopback", text: "hello", client: "web", captureSpeakerKind: "human-turn",
+      metadata: { source: "web", captureSpeakerKind: "human-turn" },
+    }));
+    expect(observed?.captureSpeakerKind).toBe("unknown");
   });
 
   it("truncates oversized event frames instead of streaming them verbatim", async () => {
@@ -2599,7 +2774,7 @@ describe("startTuiAdapter /v1/info payload fence", () => {
     expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
     // Schema 1 survives shedding: the console compares it with `!==`.
     expect(info.body.schema).toBe(1);
-    expect(info.body.capabilities).toEqual({ attachments: true });
+    expect(info.body.capabilities).toEqual({ attachments: true, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
     // Only the offending field is gone. Shedding in a fixed least-important
     // order would have taken modelOptions, models and providers with it, so a
     // 1.6 MiB skill registry would have cost the console its model picker too.
@@ -2822,3 +2997,110 @@ function rejectedBoundPort(error: unknown): number {
   }
   return boundPort;
 }
+
+describe("private wake admission boundary", () => {
+  const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const body = { client: "web", conversationId: "web:fictional", text: "Inspect child result",
+    processJobWakeDeliveryKey: "process-job:fictional", processJobWakeAttempt: token };
+  it.each(["refused", "write_failed", "missing"] as const)("never flushes admission or calls the responder on %s proof", async (mode) => {
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    running = await startTuiAdapter({ port: 0, responder: { respond },
+      ...(mode === "missing" ? {} : { processJobWakeAdmission: {
+        claim: async () => { if (mode === "write_failed") throw new Error("fictional storage failure"); return false; },
+        release: async () => true,
+      } }) });
+    const response = await postTurn(running.baseUrl, body);
+    expect(response.ok).toBe(false); expect(respond).not.toHaveBeenCalled();
+  });
+  it("awaits durable marking before stream headers and admits a concurrent token only once", async () => {
+    let mark!: () => void; let marked = false;
+    const persisted = new Promise<void>((resolve) => { mark = () => { marked = true; resolve(); }; });
+    const respond = vi.fn(async () => { expect(marked).toBe(true); return { text: "ok" }; });
+    let claimed = false;
+    running = await startTuiAdapter({ port: 0, responder: { respond }, processJobWakeAdmission: {
+      claim: async () => { if (claimed) return false; claimed = true; await persisted; return true; }, release: async () => true,
+    } });
+    let headers = false; const first = postTurn(running.baseUrl, body).then((response) => { headers = true; return response; });
+    await vi.waitFor(() => expect(claimed).toBe(true));
+    expect(headers).toBe(false); expect(respond).not.toHaveBeenCalled();
+    const duplicate = await postTurn(running.baseUrl, body); expect(duplicate.ok).toBe(false);
+    mark(); await readFrames(await first); expect(respond).toHaveBeenCalledOnce();
+  });
+  it.each(["unavailable", "requeue", "applied", "uncertain", "lost"] as const)("releases only explicit safe steer %s before receipting", async (status) => {
+    const release = vi.fn(async () => true); const claim = vi.fn(async () => true);
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: {
+      respond: async () => ({ text: "ok" }), offerLiveInput: () => {
+        if (status === "unavailable") return { status: "unavailable", reason: "inactive" };
+        return { status: "accepted", settled: status === "lost" ? Promise.reject(new Error("lost")) : Promise.resolve(
+          status === "applied" ? { status, runId: "run" } : status === "requeue" ? { status, reason: "closed" } : { status, reason: "delivery_uncertain" }) };
+      },
+    } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "wake", text: "Inspect child result",
+        receivedAt: new Date().toISOString(), deliveryKey: body.processJobWakeDeliveryKey, processJobWakeAttempt: token }),
+    });
+    expect(response.status).toBe(200); expect(claim).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledTimes(status === "unavailable" || status === "requeue" ? 1 : 0);
+  });
+});
+
+
+describe("wake admission compatibility and synchronous refusal", () => {
+  const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const deliveryKey = "process-job:fictional";
+  const liveBody = { id: "input", text: "Inspect child", receivedAt: "2026-08-14T10:00:03.000Z", deliveryKey, processJobWakeAttempt: token };
+  const turnBody = { client: "web", conversationId: "web:fictional", text: "Inspect child", processJobWakeDeliveryKey: deliveryKey,
+    processJobWakeAttempt: token, metadata: { web: { turnId: "fictional-turn" } } };
+
+  it("passes parent-interruption steering keys through without invoking process-job admission", async () => {
+    const claim = vi.fn(async () => false); const release = vi.fn(async () => false);
+    const offer = vi.fn(() => ({ status: "accepted" as const, settled: Promise.resolve({ status: "applied" as const, runId: "parent-run" }) }));
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release },
+      responder: { respond: async () => ({ text: "ok" }), offerLiveInput: offer } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...liveBody, processJobWakeAttempt: undefined,
+        deliveryKey: "parent-interruption:fictional" }) });
+    expect(await response.json()).toMatchObject({ status: "applied" }); expect(offer).toHaveBeenCalledOnce();
+    expect(claim).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
+  });
+
+  it("releases an exact token-less legacy safe refusal before accepting its live follow-up", async () => {
+    const calls: string[] = []; const boundaries: string[] = [];
+    const claim = vi.fn(async (_key: string, attempt: string, boundary: string) => { expect(attempt).toBe(""); boundaries.push(boundary); calls.push("claim"); return true; });
+    const release = vi.fn(async (_key: string, attempt: string, boundary: string) => { expect(attempt).toBe(""); expect(boundary).toBe(boundaries[0]); calls.push("release"); return true; });
+    const respond = vi.fn(async () => { calls.push("respond"); return { text: "ok" }; });
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: { respond,
+      offerLiveInput: () => ({ status: "unavailable", reason: "inactive" }) } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...liveBody, processJobWakeAttempt: undefined }) });
+    expect(await response.json()).toMatchObject({ status: "unavailable" });
+    await readFrames(await postTurn(running.baseUrl, { ...turnBody, processJobWakeAttempt: undefined }));
+    expect(calls).toEqual(["claim", "release", "claim", "respond"]); expect(respond).toHaveBeenCalledOnce();
+  });
+
+  it("refuses an already-active target before marking a new wake boundary", async () => {
+    let finish!: () => void; const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const claim = vi.fn(async () => true); const release = vi.fn(async () => true);
+    const respond = vi.fn(async () => { await pending; return { text: "done" }; });
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release },
+      responder: { respond, liveInputOwnership: { version: 1 } } });
+    const original = await postTurn(running.baseUrl, { ...turnBody, processJobWakeAttempt: undefined, processJobWakeDeliveryKey: undefined });
+    try {
+      const refused = await postTurn(running.baseUrl, turnBody); expect(refused.ok).toBe(false);
+      expect(claim).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled(); expect(respond).toHaveBeenCalledOnce();
+    } finally { finish(); await readFrames(original); }
+  });
+
+  it.each(["turn", "steer"] as const)("releases its exact boundary if stopping begins while the %s claim persists", async (kind) => {
+    let persisted!: () => void; const marking = new Promise<void>((resolve) => { persisted = resolve; });
+    const claim = vi.fn(async (_key: string, _attempt: string, _boundary: string) => { await marking; return true; }); const release = vi.fn(async () => true);
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    const offer = vi.fn(() => ({ status: "unavailable" as const, reason: "inactive" as const }));
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: { respond, offerLiveInput: offer } });
+    const request = kind === "turn" ? postTurn(running.baseUrl, turnBody) : fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(liveBody) });
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledOnce()); const stopping = running.stop(); persisted();
+    expect((await request).ok).toBe(false); await stopping;
+    expect(release).toHaveBeenCalledWith(...claim.mock.calls[0]!); expect(respond).not.toHaveBeenCalled(); expect(offer).not.toHaveBeenCalled();
+  });
+});

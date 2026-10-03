@@ -1,37 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS,
   MAX_RECONCILIATION_TEXT_CODE_POINTS,
-  normalizeCandidate,
-  normalizeCandidateText,
+  normalizeReconciliationText,
 } from "../distill.js";
 
-describe("candidate normalization", () => {
-  it("uses the 160-code-point capture cap without splitting an astral character", () => {
-    expect(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS).toBe(160);
+describe("legacy reconciliation normalization", () => {
+  it("shares the 160-code-point capture cap and preserves word boundaries", () => {
+    expect(MAX_RECONCILIATION_TEXT_CODE_POINTS).toBe(160);
     const exactBoundary = `${"a".repeat(159)}🧠`;
-    const overBoundary = `${exactBoundary}tail`;
-
-    expect(normalizeCandidateText(exactBoundary)).toBe(exactBoundary);
-
-    const first = normalizeCandidateText(overBoundary);
-    const second = normalizeCandidateText(overBoundary);
-    expect(first).toBe(exactBoundary);
-    expect(second).toBe(first);
-    expect(normalizeCandidate({ text: overBoundary })[0]?.text).toBe(exactBoundary);
-    expect(Array.from(first ?? "")).toHaveLength(160);
-    expect(first).not.toContain("�");
-    expect(first).not.toMatch(/\p{Cs}/u);
+    expect(normalizeReconciliationText(exactBoundary)).toBe(exactBoundary);
+    expect(normalizeReconciliationText(`${"word ".repeat(32)}tail`)).toBe(`${"word ".repeat(31)}word`);
+    expect(Array.from(normalizeReconciliationText(`${"a".repeat(160)} tail`) ?? "")).toHaveLength(160);
   });
 
-  it("uses the separate 280-code-point reconciliation cap", () => {
-    expect(MAX_RECONCILIATION_TEXT_CODE_POINTS).toBe(280);
-    const exactBoundary = `${"a".repeat(279)}🧠`;
-    const overBoundary = `${exactBoundary}tail`;
-
-    expect(normalizeCandidateText(exactBoundary, "reconcile")).toBe(exactBoundary);
-    expect(normalizeCandidateText(overBoundary, "reconcile")).toBe(exactBoundary);
-    expect(Array.from(normalizeCandidateText(overBoundary, "reconcile") ?? "")).toHaveLength(280);
+  it("uses real sentence endings rather than abbreviations when clamping", () => {
+    const first = "Dr. Morgan works at St. Anne's clinic, e.g. on weekdays, i.e. most mornings.";
+    expect(normalizeReconciliationText(`${first} ${"another lengthy unpunctuated continuation ".repeat(10)}`)).toBe(first);
+    expect(normalizeReconciliationText(`The measurement is 7.5 units. ${"another lengthy unpunctuated continuation ".repeat(10)}`))
+      .toBe("The measurement is 7.5 units.");
   });
 
   it("removes escaped lone surrogates while preserving valid astral pairs", () => {
@@ -40,11 +26,11 @@ describe("candidate normalization", () => {
     const embedded = JSON.parse('"A\\ud83dB\\udc00C"') as string;
     const validPair = JSON.parse('"\\ud83e\\udde0"') as string;
 
-    expect(normalizeCandidateText(loneHigh)).toBeUndefined();
-    expect(normalizeCandidateText(loneLow)).toBeUndefined();
-    expect(normalizeCandidateText(embedded)).toBe("ABC");
-    expect(normalizeCandidateText(validPair)).toBe("🧠");
-    expect(normalizeCandidateText(embedded)).not.toContain("�");
-    expect(normalizeCandidateText(embedded)).not.toMatch(/\p{Cs}/u);
+    expect(normalizeReconciliationText(loneHigh)).toBeUndefined();
+    expect(normalizeReconciliationText(loneLow)).toBeUndefined();
+    expect(normalizeReconciliationText(embedded)).toBe("ABC");
+    expect(normalizeReconciliationText(validPair)).toBe("🧠");
+    expect(normalizeReconciliationText(embedded)).not.toContain("�");
+    expect(normalizeReconciliationText(embedded)).not.toMatch(/\p{Cs}/u);
   });
 });

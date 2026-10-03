@@ -1,8 +1,5 @@
-import { mergeModelTransitions } from "./model-transitions";
-import { mergeProjectTransitions } from "./project-transitions";
+import { isConversationMarker } from "./conversation-markers";
 import type {
-  ModelTransition,
-  ProjectTransition,
   MessageDelta,
   MessageDeltaOp,
   MessagePart,
@@ -52,8 +49,6 @@ const MESSAGE_STATUSES: ReadonlySet<string> = new Set<WebMessage["status"]>([
 ]);
 
 export interface ThreadCacheEntry {
-  readonly projectTransitions?: readonly ProjectTransition[];
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   /** The keyset cursor for the next OLDER page, absent at the transcript's start. */
@@ -507,6 +502,25 @@ const isSteerPart = (part: Record<string, unknown>): boolean => {
     && typeof record.messageId === "string" && record.messageId.length > 0;
 };
 
+const isRestartProposalPart = (part: Record<string, unknown>): boolean => {
+  const bounded = (value: unknown, maxBytes: number): value is string =>
+    typeof value === "string" && value.length > 0 && new TextEncoder().encode(value).length <= maxBytes
+    && !/[\x00-\x1f\x7f-\x9f]/u.test(value);
+  if (!Object.keys(part).every((key) => ["type", "id", "reason", "restartable"].includes(key))
+    || !bounded(part.id, 256)) return false;
+  if (part.reason !== undefined && (!bounded(part.reason, 1_120) || (part.reason as string).length > 280
+    || (part.reason as string).trim() !== part.reason)) return false;
+  const restartable = part.restartable;
+  if (restartable === null || typeof restartable !== "object" || Array.isArray(restartable)) return false;
+  const state = restartable as Record<string, unknown>;
+  if (!Object.keys(state).every((key) => ["state", "reason", "operationId"].includes(key))
+    || !["available", "stale", "offline", "unsupported", "in_progress", "used"].includes(String(state.state))) return false;
+  if (state.reason !== undefined && !bounded(state.reason, 280)) return false;
+  return state.state === "used"
+    ? bounded(state.operationId, 128)
+    : state.operationId === undefined;
+};
+
 const isMessagePart = (value: unknown): value is MessagePart => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
@@ -514,6 +528,8 @@ const isMessagePart = (value: unknown): value is MessagePart => {
   const status = (): boolean =>
     part.status === "running" || part.status === "complete" || part.status === "failed";
   switch (part.type) {
+    case "conversation-marker":
+      return isConversationMarker(part);
     case "text":
     case "reasoning":
       return text("text");
@@ -524,13 +540,14 @@ const isMessagePart = (value: unknown): value is MessagePart => {
         && (part.attribution === undefined || isRunAttribution(part.attribution));
     case "process-job":
       return typeof part.job === "object" && part.job !== null;
+    case "scheduled-wake":
+      return text("occurrenceId") && text("scheduledAt") && text("firedAt") && text("timezone")
+        && (part.message === undefined || (text("message") && new TextEncoder().encode(part.message as string).length <= 1000));
     case "process-job-wake":
       return text("jobId") && text("deliveryKey")
         && (part.disposition === "steered" || part.disposition === "follow_up");
     case "steer":
       return isSteerPart(part);
-    case "monitor-activity":
-      return Array.isArray(part.monitors);
     case "cron-reply-context":
       return part.schema === "mono-agent.web.cron-reply-context.v1"
         && part.untrusted === true
@@ -551,6 +568,14 @@ const isMessagePart = (value: unknown): value is MessagePart => {
       return text("id") && text("invocationId") && text("connectionId") && text("serverName")
         && text("toolName") && text("resourceUri") && text("mediaType")
         && text("protocolVersion");
+    case "reply_options":
+      return Object.keys(part).every((key) => ["type", "id", "options"].includes(key))
+        && text("id") && Array.isArray(part.options) && part.options.length >= 2 && part.options.length <= 8
+        && Array.from(part.options).every((label) => typeof label === "string" && label === label.trim()
+          && label.length > 0 && label.length <= 75 && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(label))
+        && new Set(part.options).size === part.options.length;
+    case "restart_proposal":
+      return isRestartProposalPart(part);
     case "failure":
       return text("id") && text("code") && text("message");
     default:
@@ -805,8 +830,6 @@ export interface ThreadCache {
   readonly prependOlder: (
     threadId: string,
     page: {
-      readonly projectTransitions?: readonly ProjectTransition[];
-      readonly modelTransitions?: readonly ModelTransition[];
       readonly messages: readonly WebMessage[];
       readonly nextCursor?: string;
     },
@@ -912,8 +935,6 @@ export interface ThreadCache {
    * not call `onCommit`.
    */
   readonly restore: (entry: {
-    readonly projectTransitions?: readonly ProjectTransition[];
-    readonly modelTransitions?: readonly ModelTransition[];
     readonly thread: ThreadSummary;
     readonly messages: readonly WebMessage[];
     readonly messagesNextCursor?: string;
@@ -1105,8 +1126,6 @@ export const createThreadCache = (
           {
             thread: detail.thread,
             messages: detail.messages,
-            projectTransitions: detail.projectTransitions ?? [],
-            modelTransitions: detail.modelTransitions ?? [],
             stale,
             syncedAt: now(),
             repairedToolCallIds: new Set<string>(),
@@ -1153,10 +1172,6 @@ export const createThreadCache = (
             ? held.thread
             : newerProjection(held.thread, detail.thread),
           messages,
-          // Reset replaces the latest message window, not immutable sidecars
-          // belonging to older pages that remain loaded.
-          projectTransitions: mergeProjectTransitions(held.projectTransitions, detail.projectTransitions),
-          modelTransitions: mergeModelTransitions(held.modelTransitions, detail.modelTransitions),
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
@@ -1203,16 +1218,13 @@ export const createThreadCache = (
       const next = withCursor({
         ...withoutCursor,
         messages,
-        projectTransitions: mergeProjectTransitions(entry.projectTransitions, page.projectTransitions),
-        modelTransitions: mergeModelTransitions(entry.modelTransitions, page.modelTransitions),
         // Remembered by ID: this is the only thing a later windowed answer can
         // be measured against to tell paged-back history from a deletion.
         pagedInIds: older.length === 0
           ? entry.pagedInIds
           : new Set([...entry.pagedInIds, ...older.map((message) => message.id)]),
       }, page.nextCursor);
-      return messages === entry.messages && next.projectTransitions === entry.projectTransitions
-        && next.modelTransitions === entry.modelTransitions && next.messagesNextCursor === entry.messagesNextCursor
+      return messages === entry.messages && next.messagesNextCursor === entry.messagesNextCursor
         ? entry
         : next;
     })),
@@ -1339,8 +1351,6 @@ export const createThreadCache = (
         {
           thread: stored.thread,
           messages: stored.messages,
-          projectTransitions: stored.projectTransitions ?? [],
-          modelTransitions: stored.modelTransitions ?? [],
           // NOT NEGOTIABLE. Everything that happened while this tab was closed
           // is exactly what is missing here.
           stale: true,

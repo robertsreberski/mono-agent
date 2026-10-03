@@ -1,17 +1,37 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import { currentDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
 import { useToolCallRepair } from "./tool-call-repair";
 import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
-import type { ProcessJobActivityEvent } from "../process-job-presentation";
+import {
+  isSubagentProcessJobTool,
+  PROCESS_JOB_TOOL_NAMES,
+  type ProcessJobActivityEvent,
+  type ProcessJobToolName,
+} from "../process-job-presentation";
+import { formatDataBytes } from "../data-usage";
 import { formatUsd } from "../usage";
 import { ActivityPayload, ActivityRow, truncationProps, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
+import { Icon } from "./Icon";
+import { ProcessJobCallOutcomes, ProcessJobGlyph } from "./ProcessJobGlyph";
 import { ProcessJobMetaLine, ProcessJobSubagentProgress } from "./ProcessJobSubagentProgress";
+import { useProcessJobNow } from "./process-job-clock";
+import {
+  peerQuestionExpiryLabel,
+  processJobCallOutcomes,
+  processJobDisplayState,
+  processJobDisplayTitle,
+  processJobGroupName,
+  processJobKind,
+  processJobOutputIsEmpty,
+  processJobPreview,
+} from "./process-job-display";
 import { formatToolDuration } from "./duration";
+import { describePeerQuestionForm, peerQuestionStateLabel } from "./peer-question-form";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
   "succeeded",
@@ -219,7 +239,7 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
       || typeof record.id !== "string"
       || typeof record.toolCallId !== "string"
       || typeof record.jobId !== "string"
-      || !["Exec", "Bash", "Agent", "AgentSend"].includes(String(record.tool))
+      || !PROCESS_JOB_TOOL_NAMES.includes(String(record.tool) as ProcessJobToolName)
       || typeof record.summary !== "string"
       || (record.phase !== "started" && record.phase !== "terminal")
       || typeof record.state !== "string"
@@ -254,6 +274,92 @@ const eventTime = (value: string | undefined, key?: string): ReactNode => value 
   ? undefined
   : <time key={key} dateTime={value}>{new Date(value).toLocaleString()}</time>;
 
+type PeerQuestion = NonNullable<Extract<ProcessJobProjection, { kind: "internal" }>["peerQuestion"]>;
+
+/**
+ * A PeerAgent's pending (or retired) question: readable prose and one row per
+ * form field. Everything here is untrusted peer text; the caller agent answers
+ * through PeerAgent, never through this card, so choices are reference text
+ * rather than anything that looks pressable.
+ */
+export function ProcessJobPeerQuestion({ question }: { readonly question: PeerQuestion }) {
+  const now = useProcessJobNow();
+  const fields = describePeerQuestionForm(question.requestedSchema);
+  const schema = JSON.stringify(question.requestedSchema, null, 2);
+  const deadline = Date.parse(question.expiresAt);
+  // Past its deadline the shelf no longer counts it as pending, but the host has
+  // not said so yet: say both, without claiming the agent is still waiting.
+  const overdue = question.state === "awaiting_answer" && Number.isFinite(deadline) && deadline <= now;
+  return (
+    <section
+      role="region"
+      aria-label="Peer question"
+      className={`peer-question is-${question.state.replaceAll("_", "-")}${overdue ? " is-overdue" : ""}`}
+    >
+      <p className="peer-question-state">
+        <strong>{overdue ? "Past expiry; awaiting host confirmation" : peerQuestionStateLabel(question.state)}</strong>
+        <span>{question.peer} / {question.thread}</span>
+        {question.state === "awaiting_answer" ? (
+          <time dateTime={question.expiresAt} title={Number.isFinite(deadline) ? new Date(deadline).toLocaleString() : undefined}>
+            {overdue
+              ? `expired ${new Date(deadline).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}`
+              : peerQuestionExpiryLabel(question.expiresAt, now)}
+          </time>
+        ) : null}
+      </p>
+      <p className="peer-question-message">{question.message}</p>
+      {fields.length > 0 ? (
+        <ul className="peer-question-fields">
+          {fields.map((field) => (
+            <li key={field.key} className="peer-question-field">
+              <span className="peer-question-label">
+                {field.label}
+                {field.required ? <span className="peer-question-required"> · required</span> : null}
+                {field.multiple ? <span className="peer-question-hint"> · choose any</span> : null}
+              </span>
+              {field.description ? <span className="peer-question-description">{field.description}</span> : null}
+              {field.options.length > 0 ? (
+                <span className="peer-question-options">
+                  <span className="peer-question-options-label">Options, for reference: </span>
+                  {field.options.map((option, index) => <span key={`${option}-${String(index)}`} className="peer-question-chip">{option}</span>)}
+                </span>
+              ) : <span className="peer-question-hint">{field.freeText ? "free text" : "value"}</span>}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="peer-question-trust">Untrusted peer text; not owner approval. The agent answers through PeerAgent.</p>
+      <details className="peer-question-schema" open={fields.length === 0}>
+        <summary>Raw form</summary>
+        <p className="peer-question-id">questionId {question.questionId}</p>
+        <pre>{schema}</pre>
+      </details>
+    </section>
+  );
+}
+
+type SubagentQuestion = NonNullable<Extract<ProcessJobProjection, { kind: "internal" }>["subagentQuestion"]>;
+
+/**
+ * The question a detached child ended its turn with. The host keeps it with no
+ * answered/expired state, so it is shown as a past fact, never as pending.
+ */
+export function ProcessJobSubagentQuestion({ question }: { readonly question: SubagentQuestion }) {
+  return (
+    <section role="region" aria-label="Subagent question" className="peer-question is-subagent-question">
+      <p className="peer-question-state"><strong>Asked the parent agent</strong><span>when it finished</span></p>
+      <p className="peer-question-message">{question.question}</p>
+      {question.options !== undefined && question.options.length > 0 ? (
+        <p className="peer-question-options">
+          <span className="peer-question-options-label">Options, for reference: </span>
+          {question.options.map((option, index) => <span key={`${option}-${String(index)}`} className="peer-question-chip">{option}</span>)}
+        </p>
+      ) : null}
+      <p className="peer-question-trust">Untrusted child text; the parent agent answers it.</p>
+    </section>
+  );
+}
+
 /**
  * A persisted-card-derived lifecycle fact. It never polls and owns no clock;
  * the one context it reads is the repair control for a folded launch preview,
@@ -281,7 +387,7 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   return (
     <ActivityRow
       variant="job"
-      jobIcon={event.tool === "Agent" || event.tool === "AgentSend" ? "agent" : "terminal"}
+      jobIcon={isSubagentProcessJobTool(event.tool) ? "agent" : "terminal"}
       status={terminal && TERMINAL_PROCESS_JOB_STATES.has(event.state)
         && event.state !== "succeeded" ? "failed" : "complete"}
       label={`${event.tool} job ${terminal ? stateLabel : "started"}`}
@@ -348,46 +454,18 @@ export const processJobExitLabel = (job: ProcessJobProjection): string | undefin
 const joinMeta = (items: readonly ReactNode[]): ReactNode =>
   items.flatMap((item, index) => (index === 0 ? [item] : [" · ", item]));
 
-/**
- * What the time slot says: the state word (unless the tag already says it), the
- * elapsed or final duration, how the process ended, unresolved terminal child
- * ownership, and wake outcomes an operator has to act on.
- */
-const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode => {
-  const timing = processJobTiming(job);
-  const exit = processJobExitLabel(job);
-  const items: ReactNode[] = [];
-  if (processJobStatus(job.state) !== "failed") items.push(processJobStateLabel(job.state));
-  // A settled job with no finish stamp has nothing honest to show; leave the slot out.
-  if (timing !== undefined && (!terminal || timing.finishedAt !== undefined)) {
-    items.push(<ActivityElapsed key="elapsed" timing={timing} live={!terminal} />);
-  }
-  if (exit !== undefined) items.push(exit);
-  if (terminal && job.kind === "internal" && job.childStillBusy) {
-    items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
-  }
-  // Its own element: a phone-width row lets the meta wrap, and this is the one
-  // token that must neither split across lines nor be the part that clips.
-  if (terminal && job.wake.state === "failed") {
-    items.push(<span key="wake" className="activity-row-alert">wake failed</span>);
-  }
-  if (terminal && job.wake.state === "unknown") {
-    items.push(<span key="wake" className="activity-row-alert">wake outcome unknown · replay suppressed</span>);
-  }
-  return items.length === 0 ? undefined : joinMeta(items);
-};
-
 const wakeLabel = (wake: ProcessJobProjection["wake"]): string =>
   wake.attempts === 0
     ? wake.state
     : `${wake.state} (${String(wake.attempts)} ${wake.attempts === 1 ? "attempt" : "attempts"})`;
 
 /**
- * One background `Exec`/`Bash` job as an Activity row. The row is the card the
- * host keeps updating in place: it reads the retained projection it was given,
- * takes any newer projection the store hands it after a `message.changed`
- * refresh, and polls its exact thread-bound job endpoint with backoff until the
- * job settles. Everything but tool, purpose, state and time waits behind the
+ * One background job as a shelf row. The row is the card the host keeps
+ * updating in place: it reads the retained projection it was given, takes any
+ * newer projection the store hands it after a `message.changed` refresh, and
+ * polls its exact thread-bound job endpoint with backoff until the job settles.
+ * Collapsed, it shows the purpose over one status line (state, time, tool, exit
+ * facts, alerts and a labelled preview); everything else waits behind the
  * disclosure.
  */
 type ProcessJobPartValue = Extract<MessagePart, { type: "process-job" }>;
@@ -395,13 +473,31 @@ type ProcessJobPartValue = Extract<MessagePart, { type: "process-job" }>;
 export function ProcessJobCard({
   part,
   onProjectionChange,
+  autoOpen = false,
+  onOpen,
+  shown = true,
 }: {
   readonly part: ProcessJobPartValue;
   readonly onProjectionChange?: (projection: ProcessJobProjection) => void;
+  /**
+   * Open once on the first live output or progress. Only the legacy
+   * transcript adapter asks for this; the shelf never grows by itself.
+   */
+  readonly autoOpen?: boolean;
+  /** The operator opened this card; the shelf may bring it into its own view. */
+  readonly onOpen?: (card: HTMLElement) => void;
+  /**
+   * Whether the card is on screen at all. A closed shelf (or History) hides an
+   * open card; a tail that was following must catch up when it is revealed.
+   */
+  readonly shown?: boolean;
 }) {
   const initial = part.job;
   const [live, setLive] = useState(initial);
   const visible = useDocumentVisible();
+  const now = useProcessJobNow();
+  const ids = useId();
+  const cardRef = useRef<HTMLDetailsElement>(null);
   const [open, setOpen] = useState(false);
   const autoOpened = useRef(false);
   const manuallyCollapsed = useRef(false);
@@ -449,16 +545,21 @@ export function ProcessJobCard({
   }, [live, onProjectionChange]);
 
   useEffect(() => {
+    if (!autoOpen) return;
     if (live?.state !== "running" || (live.output.preview.length === 0 && !progress?.toolCalls) || autoOpened.current) return;
     autoOpened.current = true;
     if (!manuallyCollapsed.current) setOpen(true);
-  }, [live?.output.preview, live?.state, progress?.toolCalls]);
+  }, [autoOpen, live?.output.preview, live?.state, progress?.toolCalls]);
 
+  // Follow the tail only while it can be measured: output that arrives behind a
+  // closed shelf is caught up on reveal, and a reader who scrolled up keeps
+  // their place (the browser retains the offset while the box is hidden).
+  const visibleOpen = open && shown;
   useLayoutEffect(() => {
     const output = outputRef.current;
-    if (!open || output === null || !followOutput.current) return;
+    if (!visibleOpen || output === null || !followOutput.current) return;
     output.scrollTop = output.scrollHeight;
-  }, [live?.output.preview, open]);
+  }, [live?.output.preview, visibleOpen]);
 
   useEffect(() => {
     // A hidden tab has nobody to show a state change to. The card keeps what it
@@ -531,7 +632,15 @@ export function ProcessJobCard({
     ? part.responseText
     : undefined;
   const status = processJobStatus(live.state);
-  const stateLabel = processJobStateLabel(live.state);
+  const kind = processJobKind(live);
+  const display = processJobDisplayState(live, now);
+  const timing = processJobTiming(live);
+  // A settled job that never started (expired in queue, failed to spawn) ran
+  // for no time at all; its admission-to-settlement window is not a runtime.
+  const showTime = timing !== undefined
+    && (!terminal || (live.timestamps.startedAt !== null && timing.finishedAt !== undefined));
+  const preview = processJobPreview(live, now);
+  const outcomes = kind === "agent" && !terminal ? processJobCallOutcomes(live) : [];
   const supplements: ReactNode[] = [];
   if (terminal && progress !== undefined && typeof progress.costUsd === "number"
     && Number.isFinite(progress.costUsd) && progress.costUsd > 0) {
@@ -540,67 +649,112 @@ export function ProcessJobCard({
   if (terminal && (live.wake.attempts > 1 || ["failed", "unknown", "suppressed"].includes(live.wake.state))) {
     supplements.push(<span key="wake">wake {wakeLabel(live.wake)}</span>);
   }
-  const exit = processJobExitLabel(live);
-  if (terminal && exit !== undefined && (live.exitCode !== 0 || live.signal !== null)) {
-    supplements.push(<span key="exit">{exit}</span>);
-  }
+  const titleId = `${ids}-title`;
+  const metaId = `${ids}-meta`;
+  const outputBytes = live.output.stdoutBytes + live.output.stderrBytes;
+  const token = (key: string, content: ReactNode, className?: string) => (
+    <span key={key} className="process-job-token">
+      <span className="process-job-dot" aria-hidden="true">·</span>
+      {className === undefined ? content : <span className={className}>{content}</span>}
+    </span>
+  );
   // The card shows the job's output, not where the host spooled it: the artifact
   // paths are host-local files an operator in the console cannot open, and they
   // pushed the one section worth reading off a phone screen.
   return (
-    <ActivityRow
-      variant="job"
-      jobIcon={live.kind === "internal" ? "agent" : "terminal"}
-      status={status}
-      label={`${live.tool} job`}
-      summary={live.summary}
-      failed={status === "failed" ? stateLabel : undefined}
-      duration={processJobMeta(live, terminal)}
+    <details
+      ref={cardRef}
+      className={`process-job-card is-${status}`}
+      data-kind={kind}
+      data-tone={display.tone}
+      data-state={live.state}
       open={open}
-      onToggle={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) manuallyCollapsed.current = true;
-      }}
-      ariaLabel={`${live.tool} background job ${stateLabel}`}
+      aria-label={processJobGroupName(live)}
     >
-      <div className="activity-payload is-indented">
+      <summary
+        aria-labelledby={titleId}
+        aria-describedby={metaId}
+        onClick={(event) => {
+          event.preventDefault();
+          const nextOpen = !open;
+          setOpen(nextOpen);
+          if (!nextOpen) manuallyCollapsed.current = true;
+          else if (cardRef.current !== null) onOpen?.(cardRef.current);
+        }}
+      >
+        <ProcessJobGlyph tone={display.tone} mark={display.mark} />
+        <span id={titleId} className="process-job-title" title={live.summary}>{processJobDisplayTitle(live)}</span>
+        <Icon className="process-job-chevron" name="chevron-down" size={14} />
+        <span id={metaId} className="process-job-meta">
+          <span className="process-job-state">{display.word}</span>
+          {display.pending === undefined ? null : token("pending", display.pending, "process-job-pending")}
+          {showTime ? token("time", <ActivityElapsed timing={timing!} live={!terminal} />, "process-job-time") : null}
+          {token("tool", <><Icon className="process-job-kind-icon" name={kind === "agent" ? "agent" : "terminal"} size={12} />{live.tool}</>, "process-job-tool")}
+          {display.details.map((detail) => token(`detail-${detail}`, detail, "process-job-detail"))}
+          {display.alerts.map((alert) => token(`alert-${alert}`, alert, "process-job-alert"))}
+          {display.notes.map((note) => token(`note-${note}`, note, "process-job-note"))}
+          {outcomes.length > 0 ? token("calls", <ProcessJobCallOutcomes outcomes={outcomes} />) : null}
+          {preview === undefined ? null : (
+            <span className="process-job-preview">
+              <span className="process-job-dot" aria-hidden="true">·</span>
+              {preview.label.length > 0 ? <span className="process-job-preview-label">{preview.label}</span> : null}
+              <span className={`process-job-preview-text${preview.mono ? " is-mono" : ""}`}>{preview.text}</span>
+            </span>
+          )}
+        </span>
+      </summary>
+      <div className="process-job-content">
         <ProcessJobMetaLine
           progress={live.kind === "internal" ? progress : undefined}
           status={status}
           supplements={supplements}
         />
-        {live.kind === "internal" ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} /> : live.output.preview.length > 0 ? (
-          <>
-            <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
-            <pre
-              ref={outputRef}
-              className="process-job-output"
-              onScroll={(event) => {
-                const target = event.currentTarget;
-                followOutput.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
-              }}
-            >{live.output.preview}</pre>
-          </>
-        ) : (
+        {live.lastError !== null && (
+          <p className="activity-error process-job-error">
+            <span>{live.lastError.message}</span>
+            <code>{live.lastError.code}</code>
+          </p>
+        )}
+        {live.kind === "internal" && live.subagentQuestion ? <ProcessJobSubagentQuestion question={live.subagentQuestion} /> : null}
+        {live.kind === "internal" && live.peerQuestion ? <ProcessJobPeerQuestion question={live.peerQuestion} /> : null}
+        {kind === "command" ? (processJobOutputIsEmpty(live.output.preview) ? (
           // An expanded card that shows nothing at all reads as a broken tail.
           // A command whose output is buffered, redirected or piped through
           // something like `tail` genuinely emits nothing until it ends, so the
           // card says which of the two it is instead of leaving an empty box.
+          // The host's own "(no output)" placeholder reads the same way.
           <p className="process-job-empty-output">
             {terminal ? "No output." : "No output yet."}
           </p>
-        )}
-        {live.lastError !== null && (
-          <p className="activity-error"><strong>{live.lastError.code}</strong> {live.lastError.message}</p>
-        )}
+        ) : (
+          <>
+            <div className="process-job-output-head">
+              <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
+              {outputBytes > 0 ? <small>{formatDataBytes(outputBytes)} total</small> : null}
+            </div>
+            <pre
+              ref={outputRef}
+              className="process-job-output"
+              tabIndex={0}
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                // A hidden box reports zero sizes; that is not the reader leaving.
+                if (target.clientHeight === 0) return;
+                followOutput.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
+              }}
+            >{live.output.preview}</pre>
+          </>
+        )) : isSubagentProcessJobTool(live.tool)
+          ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={visibleOpen} />
+          : null}
         {responseText !== undefined && (
           <>
-            <span>Response</span>
-            <pre>{responseText}</pre>
+            <span className="process-job-response-label">Response</span>
+            <pre className="process-job-response">{responseText}</pre>
           </>
         )}
       </div>
-    </ActivityRow>
+    </details>
   );
 }
 
@@ -608,8 +762,11 @@ export function ProcessJobCard({
 export function ProcessJobPart({ data }: DataMessagePartProps) {
   const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
   if (payload.job === undefined) return null;
+  // Outside the shelf, the legacy adapter keeps its historical behaviour:
+  // a running card opens once on its first live output.
   return (
     <ProcessJobCard
+      autoOpen
       part={{
         type: "process-job",
         job: payload.job,

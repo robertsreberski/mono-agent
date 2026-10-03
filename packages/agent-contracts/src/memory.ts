@@ -5,12 +5,6 @@ export interface MemoryBlock {
   readonly truncated: boolean;
 }
 
-export interface MemoryWriteResult {
-  readonly conversationId: string;
-  readonly source: string;
-  readonly bytesWritten: number;
-}
-
 /**
  * One successfully completed provider turn, ready for idempotent memory admission.
  *
@@ -19,11 +13,34 @@ export interface MemoryWriteResult {
  * `summary` is the host's deterministic compact projection; `captureText`, when
  * present, is the complete host-approved turn text for richer extraction.
  */
+export type MemoryCaptureSpeakerKind = "human-turn" | "trigger" | "unknown";
+
+export interface MemoryCaptureEvidence {
+  /** Host-owned outer message (not parsed from model-visible captureText). */
+  readonly userText: string;
+  /** Stable host-derived opaque sender token; absent when no sender id was verified. */
+  readonly senderToken?: string;
+  /** Host-confirmed owner/operator turn; omitted for channels and legacy intake. */
+  readonly ownerTurn?: true;
+  readonly toolOutcomes: readonly { readonly category: "read" | "write" | "edit" | "execute" | "search";
+    readonly outcome: "failed" | "succeeded" }[];
+}
+
 export interface MemoryCompletedTurn {
   readonly runId: string;
   readonly conversationId: string;
   readonly summary: string;
   readonly captureText?: string;
+  /**
+   * Host-verified outer-turn origin, not derived from captureText or display metadata.
+   * Omission means unknown (including legacy/direct callers). A channel may set
+   * human-turn only after verifying its own sender; operator turns count when
+   * authorized by an owner key or bound loopback-only. Automation using that
+   * owner interface is consequently attributed as the owner. This is not a
+   * proof of assertions in the turn or of any third-party quoted content.
+   */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
+  readonly captureEvidence?: MemoryCaptureEvidence;
 }
 
 export type MemoryCompletedTurnAdmissionStatus = "admitted" | "duplicate";
@@ -44,6 +61,19 @@ export interface MemoryCompletedTurnResult {
 export interface MemoryLoadOptions {
   /** Stable id for one provider turn, used only to deduplicate reads within that turn. */
   readonly turnId?: string;
+  /** Host-stamped token matching capture's identified human speaker; never model text. */
+  readonly senderToken?: string;
+  /** Host observation date (UTC, matching capture's ISO timestamp). */
+  readonly hostDate?: string;
+  /** Host calendar date for date-only recall validity, not a UTC-day substitute. */
+  readonly hostLocalDate?: string;
+  /** Host observation instant for timestamped recall validity. */
+  readonly hostInstant?: string;
+  /**
+   * Host-stamped: a human turn from the operator's own surface (web, TUI, ACP),
+   * the same rule capture uses for `ownerTurn`. Never model text.
+   */
+  readonly ownerTurn?: true;
 }
 
 export interface MemoryStore {
@@ -53,17 +83,14 @@ export interface MemoryStore {
    * seed for backward compatibility.
    */
   load(conversationId: string, query?: string, options?: MemoryLoadOptions): Promise<MemoryBlock | undefined>;
-  appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult>;
   /**
    * Strong completed-turn write. Resolves only after the store has accepted the
    * stable run id at its durable or remote idempotent admission boundary, and
-   * rejects when admission fails. Hosts use this in preference to the legacy
-   * append/schedule pair when it is available.
+   * rejects when admission fails. Optional for read-only stores; hosts enabling
+   * memory writes require this method.
    */
   persistCompletedTurn?(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
-  /** Enqueue a best-effort intelligent capture of a turn. Returns immediately; never throws. No-op when unsupported. */
-  scheduleCapture?(conversationId: string, text: string): void;
-  /** Await all queued captures (graceful shutdown / one-shot exit). */
+  /** Await admitted background writes and indexing (graceful shutdown / one-shot exit). */
   flush?(): Promise<void>;
   /** Optional host lifecycle hook for dropping per-turn read caches. */
   releaseTurn?(turnId: string): void | Promise<void>;

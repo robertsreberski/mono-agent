@@ -1,3 +1,4 @@
+import { WorkerActivityTracker } from "./worker-activity.js";
 import { createAgentProviderUsage } from "./provider-usage-scope.js";
 import { createProviderUsageService } from "./provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
@@ -6,11 +7,11 @@ import { resolve } from "node:path";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   AgentResponder,
-  MonitorProjection,
   NotifyDeliveryContext,
   ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
+import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
 import type {
   MonoRuntimeLike,
   RuntimeModelReference,
@@ -18,7 +19,7 @@ import type {
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
-import type { AppTraceDefaults, ResolvedExporter } from "./app-config.js";
+import type { AppTraceDefaults, PrivateBackgroundRuntimePaths } from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
@@ -45,6 +46,7 @@ import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
+import { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { reasonOf, sandboxStatusFromState } from "./app-controller-utils.js";
@@ -56,11 +58,8 @@ import * as maintenanceOperations from "./app-controller-maintenance.js";
 import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
-import * as monitorsOperations from "./app-controller-monitors.js";
 import * as processJobsOperations from "./app-controller-process-jobs.js";
 import { assertUniqueProcessJobChannelSchemes } from "./process-job-channel-routing.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
-import type { MonitorsSettings } from "./monitors-config.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import {
   acquireAgentRootOwnership,
@@ -79,7 +78,6 @@ import type {
 import { unsafeProcessJobsProtectionStatus } from "./process-jobs-protection.js";
 import type {
   ConfigApplyResult,
-  ExporterStatus,
   SandboxStatus,
   SessionTraceMetadata,
   TraceabilityStatus,
@@ -88,7 +86,6 @@ import { createProviderAuthObservationTracker } from "./provider-auth-observatio
 
 export type {
   ConfigApplyResult,
-  ExporterStatus,
   SandboxStatus,
   TraceabilityStatus,
 } from "./app-controller-types.js";
@@ -108,6 +105,8 @@ export interface MonoAgentAppOptions {
    * config loader reads this path instead.
    */
   readonly configReadPath?: string;
+  /** Internal managed-worker override for exact attested private context/tool files. */
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
   readonly logger?: MonoAgentAppLogger;
   /** Channel drivers to run. Defaults to every built-in channel. */
   readonly drivers?: readonly ChannelDriver[];
@@ -118,18 +117,17 @@ export interface MonoAgentAppOptions {
   readonly traceDefaults?: AppTraceDefaults;
   /** Secret-free proof of the durable files/environment observed by this worker. */
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  /** Test seam for exercising the isolated memory-health worker transport. */
+  readonly memoryHealthWorkerUrl?: URL;
+  /** Test seam for exercising the isolated memory-health request deadline. */
+  readonly memoryHealthWorkerTimeoutMs?: number;
+  readonly activityTracker?: WorkerActivityTracker;
+  readonly restartAuthority?: TuiRestartAuthority;
 }
 
-/**
- * Best-effort observability exporter status. `configured` does not assert
- * reachability (Phoenix may start later — only `validate` probes); export
- * failures during runs surface as `lastWarning`/`lastError` without changing the
- * run outcome.
- */
 export interface MonoAgentApp {
   readonly configPath: string;
   readonly traceabilityStatus: TraceabilityStatus;
-  readonly exporterStatus: ExporterStatus;
   readonly sandboxStatus: SandboxStatus;
   readonly processJobsProtection?: ProcessJobsProtectionStatus | undefined;
   readonly memoryHealth?: TraceSourceMemoryHealth;
@@ -144,16 +142,13 @@ export interface MonoAgentApp {
   listProcessJobs?(): Promise<readonly ProcessJobProjection[]>;
   getProcessJob?(id: string): Promise<ProcessJobProjection | undefined>;
   cancelProcessJob?(id: string): Promise<ProcessJobProjection>;
-  listMonitors?(): Promise<readonly MonitorProjection[]>;
-  getMonitor?(id: string): Promise<MonitorProjection | undefined>;
-  cancelMonitor?(id: string): Promise<MonitorProjection>;
   resolveContinuationDelivery?(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
   ): Promise<ContinuationStatusSnapshot>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
   applyConfigChange(reason: string): Promise<ConfigApplyResult>;
-  stop(): Promise<void>;
+  stop(shutdownDeadline?: number): Promise<void>;
 }
 
 /**
@@ -207,6 +202,7 @@ async function startMonoAgentAppInternal(
       agentRootOwnership,
       configPath,
       configReadPath,
+      ...(options.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: options.privateRuntimePaths }),
       env,
       drivers,
       ...(options.logger === undefined ? {} : { logger: options.logger }),
@@ -214,21 +210,22 @@ async function startMonoAgentAppInternal(
       ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
       ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
       ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
+      ...(options.memoryHealthWorkerUrl === undefined ? {} : { memoryHealthWorkerUrl: options.memoryHealthWorkerUrl }),
+      ...(options.memoryHealthWorkerTimeoutMs === undefined ? {} : { memoryHealthWorkerTimeoutMs: options.memoryHealthWorkerTimeoutMs }),
+      ...(options.activityTracker === undefined ? {} : { activityTracker: options.activityTracker }),
+      ...(options.restartAuthority === undefined ? {} : { restartAuthority: options.restartAuthority }),
       trustedRuntimeReadRoots,
     });
     const startedController = controller;
 
     const processJobsPreparationStartedAt = performance.now();
     await startedController.prepareProcessJobsProtection("startup:prepare");
-    await startedController.prepareMonitors();
     const processJobsPreparationDuration = performance.now() - processJobsPreparationStartedAt;
     await measure("sandbox", () => startedController.refreshSandboxStatus("startup"));
     await measure("traceability", () => startedController.startTraceability("startup"));
     await measure("services", async () => {
-      await startedController.startExporters("startup");
       await startedController.startContinuationServiceIfConfigured("startup");
       await startedController.startProcessJobsIfConfigured("startup");
-      await startedController.startMonitorsIfConfigured();
     });
     startupPhases.services = roundedMilliseconds(
       (startupPhases.services ?? 0) + processJobsPreparationDuration,
@@ -238,7 +235,6 @@ async function startMonoAgentAppInternal(
       () => Promise.all(drivers.map((driver) => startedController.startChannelIfConfigured(driver.id, "startup"))),
     );
     await startedController.activateProcessJobWakes();
-    await startedController.activateMonitorWakes();
     await measure("memoryRituals", () => startedController.startMemoryRitualsIfConfigured("startup"));
     const memoryHealthStartedAt = performance.now();
     await startedController.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
@@ -278,6 +274,7 @@ interface MonoAgentAppControllerInput {
   readonly agentRootOwnership: AgentRootOwnership;
   readonly configPath: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths;
   readonly env: Record<string, string | undefined>;
   readonly drivers: readonly ChannelDriver[];
   readonly logger?: MonoAgentAppLogger;
@@ -285,6 +282,10 @@ interface MonoAgentAppControllerInput {
   readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  readonly memoryHealthWorkerUrl?: URL;
+  readonly memoryHealthWorkerTimeoutMs?: number;
+  readonly activityTracker?: WorkerActivityTracker;
+  readonly restartAuthority?: TuiRestartAuthority;
   readonly trustedRuntimeReadRoots: readonly string[];
 }
 
@@ -306,6 +307,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly configPath: string;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly drivers: readonly ChannelDriver[];
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
@@ -314,6 +316,10 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly sandboxEngine: SandboxEngine | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly activityTracker: WorkerActivityTracker;
+  readonly restartAuthority: TuiRestartAuthority | undefined;
+  /** Live keyed app-owned TUI state, never inferred from a config file alone. */
+  restartToolKeyed = false;
   readonly trustedRuntimeReadRoots: readonly string[];
   readonly agentRootOwnership: AgentRootOwnership;
   private agentRootOwnershipReleased = false;
@@ -330,10 +336,6 @@ export class MonoAgentAppController implements MonoAgentApp {
     kind: "disabled",
     reason: "Traceability has not started yet.",
   };
-  exporterStatusValue: ExporterStatus = {
-    kind: "disabled",
-    reason: "No observability exporter configured.",
-  };
   sandboxStatusValue: SandboxStatus = DEFAULT_SANDBOX_STATUS;
   memoryHealthValue: TraceSourceMemoryHealth = {
     backend: "none",
@@ -349,6 +351,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   /** One bounded forced refresh reserved by a due timer tick. */
   memoryHealthRefreshDue = false;
   memoryHealthGeneration = 0;
+  readonly memoryHealthWorker: MemoryHealthWorkerClient;
   /** Durable trace fact published only after the full current lifecycle completes. */
   startupCompleted = false;
   startupTimingValue: {
@@ -357,8 +360,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   } | undefined;
   selectedSkillsValue: readonly string[] | undefined;
   sessionMetadataValue: SessionTraceMetadata | undefined;
-  /** The exporter the responder threads into agent-host (first configured exporter). */
-  resolvedExporter: ResolvedExporter | undefined;
   traceSource: TraceSourceHandle | undefined;
   /**
    * Whole-publication single flight. A slow health probe must not let periodic
@@ -393,15 +394,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   processJobsService: ProcessJobsServiceHandle | undefined;
   processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
   processJobsServiceStartFlight: symbol | undefined;
-  monitorsService: MonitorsServiceHandle | undefined;
-  monitorsServiceStart: Promise<MonitorsServiceHandle | undefined> | undefined;
-  monitorsServiceStartFlight: symbol | undefined;
-  monitorsSettings: MonitorsSettings | undefined;
-  monitorsDegradation: { readonly reason: string } | undefined;
-
-  get monitorsStateDir(): string | undefined {
-    return this.monitorsService?.stateDir;
-  }
   /** Configured private root; retained even when the durable store cannot open. */
   processJobsStateDir: string | undefined;
   processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
@@ -435,10 +427,12 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly providerAuthObservations = createProviderAuthObservationTracker();
 
   constructor(input: MonoAgentAppControllerInput) {
+    this.activityTracker = input.activityTracker ?? new WorkerActivityTracker();
     this.cwd = input.cwd;
     this.agentRootOwnership = input.agentRootOwnership;
     this.configPath = input.configPath;
     this.configReadPath = input.configReadPath;
+    this.privateRuntimePaths = input.privateRuntimePaths;
     this.env = input.env;
     this.drivers = input.drivers;
     this.driversById = new Map(input.drivers.map((driver) => [driver.id, driver]));
@@ -447,6 +441,11 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
     this.backgroundSnapshot = input.backgroundSnapshot;
+    this.restartAuthority = input.restartAuthority;
+    this.memoryHealthWorker = new MemoryHealthWorkerClient({
+      ...(input.memoryHealthWorkerUrl === undefined ? {} : { workerUrl: input.memoryHealthWorkerUrl }),
+      ...(input.memoryHealthWorkerTimeoutMs === undefined ? {} : { timeoutMs: input.memoryHealthWorkerTimeoutMs }),
+    });
     this.trustedRuntimeReadRoots = [...input.trustedRuntimeReadRoots];
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
@@ -458,10 +457,6 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   get traceabilityStatus(): TraceabilityStatus {
     return this.traceabilityStatusValue;
-  }
-
-  get exporterStatus(): ExporterStatus {
-    return this.exporterStatusValue;
   }
 
   get sandboxStatus(): SandboxStatus {
@@ -538,19 +533,6 @@ export class MonoAgentAppController implements MonoAgentApp {
     return await this.processJobsService.cancel(id);
   }
 
-  async listMonitors(): Promise<readonly MonitorProjection[]> {
-    return await this.monitorsService?.list() ?? [];
-  }
-
-  async getMonitor(id: string): Promise<MonitorProjection | undefined> {
-    return await this.monitorsService?.get(id);
-  }
-
-  async cancelMonitor(id: string): Promise<MonitorProjection> {
-    if (this.monitorsService === undefined) throw new Error("Monitor controller is not running.");
-    return await this.monitorsService.cancel(id);
-  }
-
   async resolveContinuationDelivery(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
@@ -573,17 +555,6 @@ export class MonoAgentAppController implements MonoAgentApp {
    * reload (which re-runs startTraceability) does not repeat the scan. Best-effort: never fatal.
    */
   async reconcileStaleRunsOnce(artifactDir: string): Promise<void> { return traceabilityOperations.reconcileStaleRunsOnce(this, artifactDir); }
-
-  /**
-   * Resolve the configured observability exporter(s) and publish the export
-   * status. No reachability probe runs here — Phoenix may start after the agent,
-   * so an unreachable endpoint must not block startup (that probe runs in
-   * `validate`). A present-but-invalid exporter config surfaces as `failed`.
-   */
-  async startExporters(reason: string): Promise<ExporterStatus> { return traceabilityOperations.startExporters(this, reason); }
-
-  /** Record a best-effort export warning so `status` can surface it without failing the run. */
-  recordExporterWarning(warning: { phase: string; message: string }): void { return traceabilityOperations.recordExporterWarning(this, warning); }
 
   refreshTraceSource(reason: string): Promise<void> { return traceabilityOperations.refreshTraceSource(this, reason); }
 
@@ -652,24 +623,8 @@ export class MonoAgentAppController implements MonoAgentApp {
     return processJobsOperations.activateProcessJobWakes(this);
   }
 
-  async stopProcessJobsService(): Promise<void> {
-    return processJobsOperations.stopProcessJobsService(this);
-  }
-
-  async prepareMonitors(): Promise<void> {
-    return monitorsOperations.prepareMonitors(this);
-  }
-
-  async startMonitorsIfConfigured(): Promise<void> {
-    return monitorsOperations.startMonitorsIfConfigured(this);
-  }
-
-  async activateMonitorWakes(): Promise<void> {
-    return monitorsOperations.activateMonitorWakes(this);
-  }
-
-  async stopMonitorsService(): Promise<void> {
-    return monitorsOperations.stopMonitorsService(this);
+  async stopProcessJobsService(shutdownDeadline?: number): Promise<void> {
+    return processJobsOperations.stopProcessJobsService(this, shutdownDeadline);
   }
 
   requireContinuationService(): ContinuationServiceHandle { return continuationOperations.requireContinuationService(this); }
@@ -692,11 +647,11 @@ export class MonoAgentAppController implements MonoAgentApp {
     deliveryKey: string,
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
-  async stop(): Promise<void> {
+  async stop(shutdownDeadline?: number): Promise<void> {
     for (const service of this.providerUsageServices.values()) service.stop();
     this.providerUsageServices.clear();
     try {
-      await lifecycleOperations.stop(this);
+      await lifecycleOperations.stop(this, shutdownDeadline);
     } finally {
       // A teardown failure must not strand this logical host reference. Active
       // request-generation leases still defer the physical owner-lock release.
@@ -758,10 +713,9 @@ export class MonoAgentAppController implements MonoAgentApp {
    */
   requestModelOverrideRuntimeOptions(
     coreConfig: MonoAgentConfig,
-  ): {
-    readonly extension: RuntimeOptionsExtension;
-    readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
-  } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig); }
+  ): ReturnType<typeof responderOperations.requestModelOverrideRuntimeOptions> {
+    return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig);
+  }
 
   /**
    * Memoized factory for runtimes bound to a per-request override model. Reuses
@@ -776,7 +730,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): (model: RuntimeModelReference) => MonoRuntimeLike { return responderOperations.buildRuntimeForModel(this, coreConfig); }
 
   /**
-   * Run-identifying context threaded onto exported spans (Phoenix shows the same
+   * Run-identifying context retained across local recording callers (the same
    * source/run identifiers as the local trace-source registry, so local artifact
    * lookup stays possible). Resolved with the same source-id/label resolvers the
    * trace source uses.
@@ -791,15 +745,6 @@ export class MonoAgentAppController implements MonoAgentApp {
     coreConfig: MonoAgentConfig,
     service: MemoryRetrievalService | undefined,
   ): boolean { return traceabilityOperations.reportMemoryRecallStatus(this, coreConfig, service); }
-
-  /**
-   * Optional CLOUD-ONLY escape hatch: when `memory.supermemory.exposeMcpServer` is on, ALSO inject
-   * Supermemory's hosted MCP server alongside the in-app `MemoryRecall` tool. The hosted MCP cannot
-   * point at a self-hosted instance, so self-hosters rely on the in-app recall tool; this just adds
-   * the cloud server's richer tools for cloud deployments. Requires an apiKey (skipped + warned if
-   * absent).
-   */
-  supermemoryMcpRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined { return responderOperations.supermemoryMcpRuntimeOptions(this, coreConfig); }
 
   async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
     readonly createExtension?: (

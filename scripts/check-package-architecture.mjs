@@ -131,7 +131,11 @@ for (const catalogEntry of packageCatalog) {
         `${packagePath} (${catalogEntry.category}) may not depend on ${depName} (${depEntry.category}).`,
       );
     }
-    if (depEntry.category === "communication" && catalogEntry.category !== "app") {
+    // Operator surfaces share the operator adapter's public client transport.
+    // Other communication adapters still belong exclusively to app composition.
+    const isOperatorClient = catalogEntry.category === "operator-surface"
+      && depName === "@mono-agent/operator-adapter";
+    if (depEntry.category === "communication" && catalogEntry.category !== "app" && !isOperatorClient) {
       errors.push(`${packagePath} may not depend on communication adapter ${depName}; compose adapters only in app hosts.`);
     }
   }
@@ -233,11 +237,6 @@ const extractedResponsibilityDeclarations = [
     file: join("packages", "agent-app", "src", "background.ts"),
     declaration: "function maintainLaunchdLogsOperation",
     owner: "background-log-maintenance.ts",
-  },
-  {
-    file: join("packages", "agent-app", "src", "doctor.ts"),
-    declaration: "function probeExporterEndpoint",
-    owner: "doctor-observability.ts",
   },
   {
     file: join("packages", "slack-adapter", "src", "adapter.ts"),

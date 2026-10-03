@@ -17,6 +17,12 @@ import {
 import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/agent-contracts";
 
 import { loadCronJobsFromDirectory } from "./jobs-dir.js";
+import {
+  normalizeCronPreflightArgv,
+  normalizeCronPreflightTimeoutMs,
+  parseCronPreflightArgvJson,
+  parseCronPreflightTimeoutMs,
+} from "./preflight.js";
 import { CronAdapterError, type CronJob } from "./scheduler.js";
 
 export interface CronJobConfig {
@@ -35,6 +41,13 @@ export interface CronJobConfig {
   readonly model?: string;
   /** Per-job reasoning effort override (e.g. `high`). Validated by the app. */
   readonly effort?: string;
+  /**
+   * Deterministic argv gate evaluated before the responder. A non-empty array
+   * of argument strings (never a shell command line); absent means no gate.
+   */
+  readonly preflight?: readonly string[];
+  /** How long the preflight executor may take before the job fails open. Default 5000, cap 60000. */
+  readonly preflightTimeoutMs?: number;
 }
 
 export interface CronAdapterConfig {
@@ -127,6 +140,14 @@ function loadConfigJobs(
   );
   const model = normalizeOptionalString(layered.MONO_AGENT_CRON_MODEL);
   const effort = normalizeOptionalString(layered.MONO_AGENT_CRON_EFFORT);
+  const preflightJson = normalizeOptionalString(layered.MONO_AGENT_CRON_PREFLIGHT_JSON);
+  const preflight = preflightJson === undefined
+    ? undefined
+    : parseCronPreflightArgvJson(preflightJson, "MONO_AGENT_CRON_PREFLIGHT_JSON");
+  const preflightTimeoutMs = parseCronPreflightTimeoutMs(
+    layered.MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS,
+    "MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS",
+  );
   return [{
     id: DEFAULT_JOB_ID,
     enabled,
@@ -139,6 +160,8 @@ function loadConfigJobs(
     ...(notifyFailureCooldownHours === undefined ? {} : { notifyFailureCooldownHours }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(preflight === undefined ? {} : { preflight }),
+    ...(preflightTimeoutMs === undefined ? {} : { preflightTimeoutMs }),
   }];
 }
 
@@ -207,6 +230,8 @@ export function toCronJobs(config: CronAdapterConfig): CronJob[] {
       ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
       ...(job.model === undefined ? {} : { model: job.model }),
       ...(job.effort === undefined ? {} : { effort: job.effort }),
+      ...(job.preflight === undefined ? {} : { preflight: job.preflight }),
+      ...(job.preflightTimeoutMs === undefined ? {} : { preflightTimeoutMs: job.preflightTimeoutMs }),
     }));
 }
 
@@ -256,6 +281,12 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   );
   const model = asOptionalString(entry.model);
   const effort = asOptionalString(entry.effort);
+  const preflight = normalizeCronPreflightArgv(entry.preflight, "cron.jobs[].preflight", { index });
+  const preflightTimeoutMs = normalizeCronPreflightTimeoutMs(
+    entry.preflightTimeoutMs,
+    "cron.jobs[].preflightTimeoutMs",
+    { index },
+  );
   return {
     id,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
@@ -269,6 +300,8 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     ...(notifyFailureCooldownHours === undefined ? {} : { notifyFailureCooldownHours }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(preflight === undefined ? {} : { preflight }),
+    ...(preflightTimeoutMs === undefined ? {} : { preflightTimeoutMs }),
   };
 }
 
@@ -323,7 +356,27 @@ export const CRON_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "cron.notifyFailureCooldownHours", env: "MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS", kind: "integer", fromJson: (s) => s.notifyFailureCooldownHours },
   { id: "cron.model", env: "MONO_AGENT_CRON_MODEL", fromJson: (s) => s.model },
   { id: "cron.effort", env: "MONO_AGENT_CRON_EFFORT", fromJson: (s) => s.effort },
+  {
+    id: "cron.preflight",
+    env: "MONO_AGENT_CRON_PREFLIGHT_JSON",
+    // The single-job JSON form declares the same argv array as `cron.jobs[]`;
+    // it is encoded back into the env string the loader parses. A malformed
+    // value throws here, so a declared gate is never silently ignored.
+    fromJson: (s) => encodeCronPreflightEnv(s.preflight),
+  },
+  {
+    id: "cron.preflightTimeoutMs",
+    env: "MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS",
+    kind: "integer",
+    fromJson: (s) => s.preflightTimeoutMs,
+  },
 ];
+
+/** Encode a single-job JSON `preflight` array as the env string the loader reads. */
+function encodeCronPreflightEnv(value: unknown): string | undefined {
+  const argv = normalizeCronPreflightArgv(value, "cron.preflight");
+  return argv === undefined ? undefined : JSON.stringify(argv);
+}
 
 function layerCronJsonOntoEnv(
   json: SettingsJson,

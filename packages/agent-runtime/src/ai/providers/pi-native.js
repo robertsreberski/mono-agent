@@ -1,3 +1,4 @@
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
 // This is the SOLE pi runtime path: the hand-rolled pi bridge (formerly
@@ -27,17 +28,14 @@ import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
 import {
-  deprecatedSettingsWarning,
   resolveAgentCompactionPolicy,
-  resolveRuntimePolicyInputs,
 } from "../../agent/compaction.js";
 import { subagentInvocationCount, subagentUsageForRun } from "../../agent/tools/agent-tool.js";
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
-import { readToolRuntime } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
+import { withContext1M, withContext1MModels } from "../context-1m.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
-import { registerPiSupplementModels } from "../pi-supplement.js";
 import {
   textFromContent,
   thinkingFromContent,
@@ -74,9 +72,12 @@ import {
 } from "./pi-native/session-lifecycle.js";
 import {
   resolveLiveCompactionPolicy,
+  estimateSessionMessageTokens,
+  tryCompact,
   runProactiveCompaction,
   runReactiveCompaction,
 } from "./pi-native/compaction-driver.js";
+import { armMidRunCompaction } from "./pi-native/mid-run-compaction.js";
 import {
   activateTurnHarness,
   buildTurnHarness,
@@ -91,9 +92,8 @@ import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js"
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
- * stateful/mutating tools sequential; the Pi 0.85 harness adapter promotes any
- * such marker to its global toolExecution setting because mixed scheduling is
- * no longer available upstream.
+ * stateful/mutating tools sequential; the harness adapter gates each invoked
+ * call in safe-parallel mode, while the explicit sequential mode covers all calls.
  */
 export function resolvePiToolExecutionMode(options = {}) {
   const warnings = [];
@@ -220,17 +220,10 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
-      // pi-supplement: the pi-agent-core drive path re-resolves the run's model
-      // by id inside THIS collection (`lane.models.getModel(provider, modelId)`),
-      // so a supplemented row must be registered here, not just returned by
-      // `resolvePiRuntimeModel`. Upstream ids already in the collection are left
-      // untouched (upstream wins). The `piResolvedModels` seam above stays
-      // verbatim and never receives supplements.
-      registerPiSupplementModels(models);
     }
   }
   return withProviderCheckOutputCap(
-    withOpenCodeSessionHeaders(models, providerAttributionSessionId),
+    withOpenCodeSessionHeaders(withContext1MModels(models, options.customProvider ? undefined : options.context1MModels), providerAttributionSessionId),
     options.providerCheckMaxTokens,
   );
 }
@@ -329,6 +322,21 @@ function splitUserContent(content) {
 }
 
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
+  if (Object.hasOwn(options, "settings")) {
+    throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
+  }
+  // Direct provider callers own a fresh context; createRuntime already binds
+  // its instance context. Every internal execution path receives this object.
+  if (!options.toolContext) {
+    options = { ...options, toolContext: createToolContext({
+      workspace: options.cwd,
+      toolEnvironment: options.toolEnvironment,
+      runtimeBrand: options.runtimeBrand,
+      sandbox: options.sandbox,
+      sandboxPolicy: options.sandboxPolicy,
+      sandboxEngine: options.sandboxEngine,
+    }) };
+  }
   // Idempotent; arms the undici diagnostics-channel probe so a transport
   // failure during this run can be resolved back to a real reason even after
   // an intermediate layer flattens the Error to its message.
@@ -348,6 +356,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let mcpClients = [];
   let closeRunTools = async () => {};
   let harness = null;
+  /** @type {null | {disarm: () => Promise<void>}} */
+  let midRunCompaction = null;
   // The ONE explicit runState the extracted modules (stream subscriber, session
   // lifecycle, compaction driver, turn runner, result builder) read/write.
   // Reassignable scalars/refs live here so a module can rebind them (an
@@ -365,6 +375,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     toolResultsSeen: 0,
     lastToolName: null,
     maxTurnsHit: false,
+    toolExecutionsThisTurn: 0,
+    toolFailureThisTurn: false,
+    structuredOutputCompletedThisTurn: false,
+    silentCompletedThisTurn: false,
+    silentTurn: { soleCall: false, visibleContent: false, pendingQuestion: false, failed: false, accepted: false, completed: false },
     // Populated by the StructuredOutput tool callback (built in the turn runner);
     // read by the finalization retry predicate and the result assembly.
     structuredResult: null,
@@ -378,13 +393,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Auto-compaction sub-state. The policy is (re)computed at the decision
     // point against the model actually serving the request; these flags track
     // whether a compaction fired so the run reports context_compaction_applied
-    // honestly and never double-compacts.
+    // honestly and suppresses redundant fresh compactions.
     compaction: {
       applied: false,
       reactiveAttempted: false,
       compactedThisRun: false,
+      lastMidRunCompaction: null,
       policy: null,
       diagnostics: {},
+      // Usage of this run's own transcript that a mid-run compaction summarized
+      // away. Those tokens were billed to this run, so they are added back to
+      // the sliced transcript usage (see mid-run-compaction.js).
+      carriedUsage: null,
+      carriedUsageMeasured: false,
     },
     session: null,
     // Fresh stateless calls own a private repo, even when attribution matches a
@@ -448,14 +469,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     }
     emitCaptured(events, options.onEvent, event);
   };
-  // Exec and Monitor both run a command a host configured Bash's risk tier for.
-  // Leaving either unmapped would let the same shell command take a lower
+  // Exec runs a command a host configured Bash's risk tier for.
+  // Leaving it unmapped would let the same shell command take a lower
   // approval tier simply by being started through a different tool.
   const bashRiskTier = options.toolRiskTiers?.Bash;
   const approvalRiskTiers = {
     ...(options.toolRiskTiers || {}),
     ...(bashRiskTier !== undefined
-      ? Object.fromEntries(["Exec", "Monitor"]
+      ? Object.fromEntries(["Exec"]
         .filter((name) => options.toolRiskTiers?.[name] === undefined)
         .map((name) => [name, bashRiskTier]))
       : {}),
@@ -507,7 +528,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // callers leave it undefined and resolve through pi-ai's registry.
     let runtime = options.piResolvedModel
       ? {
-        model: options.piResolvedModel,
+        model: withContext1M(options.piResolvedModel, options.customProvider ? undefined : options.context1MModels),
         capabilities: options.piResolvedCapabilities || {
           tool_use: true,
           reasoning: !!options.piResolvedModel.reasoning,
@@ -533,35 +554,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const effectiveThinkingLevel = thinkingLevelForEffort(options.effort || "medium", capabilities);
     const reference = resolved.reference || `${resolved.provider}:${resolved.model}`;
 
-    // Resolve the typed `toolLimits` / `compaction` policy objects against the
-    // deprecated `settings` fallback (per-group precedence: a present typed
-    // object wins and its group's legacy keys are ignored; an absent object
-    // falls back to `settings`). Consuming any legacy key emits exactly one
-    // deprecation warning per run. mono-agent never passes `settings`, so this
-    // is a no-op there; the shim exists for worklab's day-one port.
-    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
-      toolLimits: options.toolLimits,
-      compaction: options.compaction,
-      settings: options.settings,
-    });
-    if (consumedSettingsKeys.length > 0) {
-      const warning = deprecatedSettingsWarning(consumedSettingsKeys);
-      runtimeWarnings.push(warning);
-      onEvent({ type: "runtime_warning", ...warning });
-    }
-
-    // Tool-output limits (clamps for tool/MCP payloads). The legacy pi-sdk bridge
-    // wired these via the compaction manager's `.policy`; resolveAgentCompactionPolicy
-    // is pure (no manager/Agent), so we compute the same policy directly from the
-    // resolved settings-like inputs and pass it into the tool builders + display
-    // normalization. Restores configurable clamping (toolTextLimitChars,
-    // searchResultLimit, ...) on top of the 256KB hard ceiling.
+    // One canonical clamp path consumes the typed policy inputs directly. The
+    // deprecated flat `settings` bag is gone; hosts pass typed toolLimits and
+    // compaction, and the per-run execution budget main added is overlaid here so
+    // direct and Pi execution share one foreground ceiling.
     const toolLimits = {
-      ...resolveAgentCompactionPolicy(settingsLike, runtime.model),
+      ...resolveAgentCompactionPolicy(options, runtime.model),
       // This per-run execution budget has no legacy settings equivalent.
       ...(options.toolLimits?.bashTimeoutMs === undefined ? {} : { bashTimeoutMs: options.toolLimits.bashTimeoutMs }),
     };
     const toolExecution = resolvePiToolExecutionMode(options);
+    // The after_response gate refuses mixed batches before any tool executes.
+    // Preserve normal parallel scheduling for all other admitted calls.
+    const effectiveToolExecutionMode = toolExecution.mode;
     for (const warning of toolExecution.warnings) {
       runtimeWarnings.push(warning);
       onEvent({ type: "runtime_warning", ...warning });
@@ -575,7 +580,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       structuredTool,
       mcpClients: builtMcpClients,
       closeRunTools: builtCloseRunTools,
-    } = await buildTurnTools(runState, {
+    } = options.manualCompaction === true
+      ? { tools: [], structuredTool: null, mcpClients: [], closeRunTools: async () => {} }
+      : await buildTurnTools(runState, {
       options,
       capabilities,
       toolLimits,
@@ -584,7 +591,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       resolved,
       onEvent,
       runtimeWarnings,
-      toolExecutionMode: toolExecution.mode,
+      toolExecutionMode: effectiveToolExecutionMode,
     });
     mcpClients = builtMcpClients;
     closeRunTools = builtCloseRunTools;
@@ -598,8 +605,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? Number(options.maxRetryDelayMs)
       : 60_000;
     // Steering controls user follow-up delivery, not tool scheduling. Keep it
-    // independent from piToolExecutionMode; the adapter derives Pi 0.85's
-    // global scheduling mode from the tools' executionMode markers.
+    // independent from piToolExecutionMode; the adapter gates invoked calls.
     const toolSteeringMode = "one-at-a-time";
 
     const piModels = buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId);
@@ -616,6 +622,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       systemPrompt,
       outputSchema: options.outputSchema,
       tools,
+      toolExecutionMode: effectiveToolExecutionMode,
       transport: piTransport,
       maxRetries,
       maxRetryDelayMs,
@@ -628,7 +635,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
     // (requestedSessionId set but the durable session was just created empty)
     // both seed, since their on-disk transcript is empty.
-    const { priorMessages, promptText, promptImages } = splitPromptMessages(options.messages, runtime.model);
+    const { priorMessages, promptText, promptImages } = options.manualCompaction === true
+      ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
+      : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
     if (!requestedSessionId || runState.createdOnMiss) {
       for (const message of priorMessages) {
@@ -644,6 +653,65 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // drops it entirely via the fresh-run path (no leaf to roll back to).
     if (requestedSessionId && !runState.createdOnMiss) {
       try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
+    }
+
+    if (options.manualCompaction === true) {
+      // The same resolve/reopen/seed path as a turn, but without a user prompt,
+      // tool execution, turn telemetry, or response generation. The guarded
+      // driver alone may request a summary from the current provider.
+      const policy = resolveLiveCompactionPolicy({
+        harness, runtime, resolved, toolLimits: options.toolLimits,
+        compaction: options.compaction,
+        contextWindowOverride: options.compaction?.contextWindowOverride,
+      });
+      const transcriptTokens = await estimateSessionMessageTokens(runState.session);
+      // A prefix smaller than the retained recent tail cannot yield a useful
+      // cut. Avoid spending a summary call merely to discover this afterward.
+      const tooSmall = transcriptTokens !== null && transcriptTokens < policy.keepRecentTokens;
+      // Host cancellation (e.g. shutdown) aborts the in-flight summary operation.
+      if (options.abortSignal) {
+        const abortManual = () => { void harness.abort().catch(() => {}); };
+        options.abortSignal.addEventListener("abort", abortManual, { once: true });
+        runState.removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortManual);
+        if (options.abortSignal.aborted) throw new Error("Manual compaction was cancelled.");
+      }
+      if (!tooSmall) await tryCompact(harness, {
+        trigger: "manual",
+        onEvent,
+        runtimeWarnings,
+        onCompactionRecorded: options.onCompactionRecorded,
+        runId: options.runId,
+        model: reference,
+        session: runState.session,
+        policy,
+      });
+      const terminal = tooSmall
+        ? { status: "skipped", operationId: randomUUID(), reason: "nothing_to_compact" }
+        : [...events].reverse().find((event) => event?.type === "context_compaction" && event?.trigger === "manual" && event?.status !== "running");
+      if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
+        throw new Error("Manual compaction failed or was cancelled.");
+      }
+      await commitSession(runState, {
+        options,
+        requestedSessionId,
+        providerSessionId,
+        durableRepo,
+        sessionTtlMs,
+        externalAbort: false,
+        errorMessage: null,
+        onEvent,
+      });
+      return {
+        manualCompaction: {
+          status: terminal.status,
+          operationId: terminal.operationId,
+          ...(terminal.reason ? { reason: terminal.reason } : {}),
+          ...(terminal.tokensBefore === undefined ? {} : { tokensBefore: terminal.tokensBefore }),
+          ...(terminal.tokensAfter === undefined ? {} : { tokensAfter: terminal.tokensAfter }),
+          tokenCountsExact: terminal.tokenCountsExact === true,
+        },
+        providerSessionId,
+      };
     }
 
     activateTurnHarness(runState, {
@@ -681,7 +749,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       harness,
       runtime,
       resolved,
-      settings: settingsLike,
+      toolLimits: options.toolLimits,
+      compaction: options.compaction,
       contextWindowOverride: options.compaction?.contextWindowOverride,
     });
     await runProactiveCompaction(runState, {
@@ -696,9 +765,37 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
     });
 
+    // Mid-run compaction: the proactive check above fires at most once, before
+    // the request. Inside one long prompt the transcript keeps growing, so arm
+    // Pi's own checkpoint compaction for the lifetime of this prompt with the
+    // bridge's guarded session_before_compact decision installed. Pi captures
+    // the lane's compaction settings into the operation at accept time, so this
+    // must happen BEFORE harness.prompt(); the same-operation compaction never
+    // starts a second run and so cannot disturb the live-input epoch below.
+    midRunCompaction = await armMidRunCompaction(runState, {
+      harness,
+      options,
+      reference,
+      onEvent,
+      runtimeWarnings,
+    });
+
     // Arm the main-prompt epoch after proactive compaction so compaction and
     // transcript seeding cannot be mistaken for live-input consumption.
     runState.recoveryBaselineTipId = await runState.session.getLeafId();
+
+    // Last abort check before Pi admits the prompt. Proactive compaction,
+    // mid-run arming and getLeafId all await after the pre-request check above;
+    // an abort landing there finds no open Pi operation, so the handler's
+    // harness.abort() is a no-op and the provider request would still run.
+    // Everything from here to lane.accept is synchronous, and an abort during
+    // accept is ordered after it, so Pi cancels the admitted operation itself.
+    // The finally below disarms mid-run compaction.
+    if (options.abortSignal?.aborted) {
+      await discardUncommittedSession(runState, { durableRepo });
+      return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
+    }
+
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch });
 
@@ -737,12 +834,20 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
       // Stop joins unresolved native enqueue and reconciles every returned
-      // entry before the exact-operation subscription is removed.
-      try { await liveInput.stop(); } finally {
-        runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
-        liveInputEpoch.close();
+      // entry before the exact-operation subscription is removed. Mid-run
+      // compaction is disarmed last so a compaction settled during teardown is
+      // still accounted for, and so the harness returns to its
+      // compaction-disabled default before any later prompt on this run.
+      try {
+        try { await liveInput.stop(); } finally {
+          runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
+          liveInputEpoch.close();
+        }
+      } finally {
+        await midRunCompaction.disarm();
       }
     }
+
 
     runState.externalAbort ||= !!options.abortSignal?.aborted;
 
@@ -806,7 +911,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;
 
-    const ownUsage = usageFromMessages(runTranscript);
+    // Run-owned usage survives a mid-run compaction: the compaction collapses
+    // part of this run's own transcript into a summary, so the usage of the
+    // messages it removed is carried forward (and the baseline re-anchored) by
+    // the mid-run controller instead of being silently lost here.
+    const ownUsage = usageFromMessages(runTranscript, runState.compaction.carriedUsage);
     // Priced from this agent's own tokens: it is the fallback for a run the
     // provider did not price, and only these tokens are this model's.
     const estimatedCost = estimateCost({
@@ -821,12 +930,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // way `subagentInvoked` below reads its count.
     const usage = withSubagentUsage(
       ownUsage,
-      subagentUsageForRun(options.subagents, (options.toolContext ?? readToolRuntime())?.runId),
+      subagentUsageForRun(options.subagents, options.toolContext?.runId),
       estimatedCost,
     );
     emitUsageCostEvents({
       onEvent,
-      resolved,
       reference,
       usage,
       estimatedCost,
@@ -900,7 +1008,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // yields the same key.
       subagentInvoked: subagentInvocationCount(
         options.subagents,
-        (options.toolContext ?? readToolRuntime())?.runId,
+        options.toolContext?.runId,
       ) > 0,
       mcpServersUsed: mcpClients.map((entry) => entry?.name).filter(Boolean),
       // Empty by contract, not by omission: "native" means provider-native
@@ -959,6 +1067,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? await captureSessionRecovery(runState, { options, providerSessionId, modelKey: `${resolved.provider}:${resolved.model}`, model: runtime.model, pending: !!errorMessage || runState.externalAbort })
       : undefined;
     if (runState.retainRecoveryTail) runState.externalAbort ||= !!options.abortSignal?.aborted;
+    const silentCertified = runState.silentTurn.completed
+      && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
+      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
+      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
     return { ...buildSuccessResult({
       finalText,
       finalThinking,
@@ -978,10 +1090,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       capabilitiesUsed,
-      usageMeasured: hasMeasuredUsage(runTranscript),
+      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
       effectiveEffort: providerEffectiveEffort,
-    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}) };
+    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
+    ...(silentCertified ? { turnDisposition: "silent" } : {}) };
   } catch (err) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
     // Drop a just-created fresh durable session, release a create-on-miss
@@ -1018,6 +1131,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
   } finally {
+    // Safety net for a throw between arming and the prompt: disarm is
+    // idempotent, and it must run before the harness closes so the session's
+    // compaction settings are restored while they still can be.
+    try { await midRunCompaction?.disarm(); } catch { /* best-effort */ }
     try { await harness?.close?.(); } catch { /* best-effort */ }
     if (runState.sessionEntry) runState.sessionEntry.busy = false;
     if (runState.registeredSessionEntry) runState.registeredSessionEntry.busy = false;

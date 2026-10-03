@@ -1,3 +1,4 @@
+import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
@@ -65,6 +66,7 @@ import type {
   ProviderSetupPlan,
   ProviderSetupResult,
 } from "./provider-setup.js";
+import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
 import { readinessProbeTimeoutMs, runAllRouteReadinessProbe } from "./readiness-probe.js";
 import type {
   ReadinessProbeResult,
@@ -124,6 +126,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
     let providerEnvironmentSecrets: Record<string, string> = { ...initial.providerEnvironmentSecrets };
     let providerSetupSecrets = { ...initial.providerSetupSecrets };
     let piApiKeyPersistenceByProvider = { ...initial.piApiKeyPersistenceByProvider };
+    let piAuthMethods = { ...initial.piAuthMethods };
     let credentialStates = { ...initial.credentialStates };
     let pendingProviderSetup = initial.runProviderSetup;
     let readinessProgress: ReadinessProgress | undefined;
@@ -243,6 +246,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
           piAuthPath: resolvedPiAuthPath,
           credentialStates,
           piApiKeyPersistenceByProvider,
+          piAuthMethods,
         });
         const environmentApiKeys = environmentProviderApiKeys(plannedSetup, effectiveEnv);
         const missingEnvironmentKeys = plannedSetup.actions
@@ -274,6 +278,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               credentialStates,
               persistedEnv: dotenvSnapshot.env,
               piApiKeyPersistenceByProvider,
+              piAuthMethods,
               abortSignal,
             })), { keypress: false });
         if (setup === "fatal") return 130;
@@ -379,6 +384,8 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               dir: cwd,
               answers,
               env: effectiveEnv,
+              ...(nonEmptyEnv(dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH)
+                ? { authPathForConfig: resolvedPiAuthPath } : {}),
               secretValues: selectedSecrets,
               secureExistingDotenv,
               requireConfigCreation: true,
@@ -641,6 +648,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               providerSetupSecrets,
               providerEnvironmentSecrets,
               piApiKeyPersistenceByProvider,
+              piAuthMethods,
               credentialStates,
               runProviderSetup: pendingProviderSetup,
             });
@@ -650,6 +658,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             providerSetupSecrets = { ...repaired.providerSetupSecrets };
             providerEnvironmentSecrets = { ...repaired.providerEnvironmentSecrets };
             piApiKeyPersistenceByProvider = { ...repaired.piApiKeyPersistenceByProvider };
+            piAuthMethods = { ...repaired.piAuthMethods };
             credentialStates = { ...repaired.credentialStates };
             pendingProviderSetup = repaired.runProviderSetup;
             if (pendingProviderSetup) readinessProgress = undefined;
@@ -672,6 +681,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               providerSetupSecrets,
               providerEnvironmentSecrets,
               piApiKeyPersistenceByProvider,
+              piAuthMethods,
               credentialStates,
               runProviderSetup: pendingProviderSetup,
             });
@@ -681,6 +691,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             providerSetupSecrets = { ...edited.providerSetupSecrets };
             providerEnvironmentSecrets = { ...edited.providerEnvironmentSecrets };
             piApiKeyPersistenceByProvider = { ...edited.piApiKeyPersistenceByProvider };
+            piAuthMethods = { ...edited.piAuthMethods };
             credentialStates = { ...edited.credentialStates };
             pendingProviderSetup = edited.runProviderSetup;
             if (pendingProviderSetup) readinessProgress = undefined;
@@ -705,6 +716,8 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               dir: cwd,
               answers,
               env: effectiveEnv,
+              ...(nonEmptyEnv(dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH)
+                ? { authPathForConfig: resolvedPiAuthPath } : {}),
               secretValues: selectedSecrets,
               secureExistingDotenv,
               requireConfigCreation: true,
@@ -743,6 +756,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             providerSetupSecrets,
             providerEnvironmentSecrets,
             piApiKeyPersistenceByProvider,
+            piAuthMethods,
             credentialStates,
             runProviderSetup: pendingProviderSetup,
           });
@@ -752,6 +766,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
           providerSetupSecrets = { ...repaired.providerSetupSecrets };
           providerEnvironmentSecrets = { ...repaired.providerEnvironmentSecrets };
           piApiKeyPersistenceByProvider = { ...repaired.piApiKeyPersistenceByProvider };
+          piAuthMethods = { ...repaired.piAuthMethods };
           credentialStates = { ...repaired.credentialStates };
           pendingProviderSetup = repaired.runProviderSetup;
           if (pendingProviderSetup) readinessProgress = undefined;
@@ -768,6 +783,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             providerSetupSecrets,
             providerEnvironmentSecrets,
             piApiKeyPersistenceByProvider,
+            piAuthMethods,
             credentialStates,
             runProviderSetup: pendingProviderSetup,
           });
@@ -777,12 +793,38 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
           providerSetupSecrets = { ...repaired.providerSetupSecrets };
           providerEnvironmentSecrets = { ...repaired.providerEnvironmentSecrets };
           piApiKeyPersistenceByProvider = { ...repaired.piApiKeyPersistenceByProvider };
+          piAuthMethods = { ...repaired.piAuthMethods };
           credentialStates = { ...repaired.credentialStates };
           pendingProviderSetup = repaired.runProviderSetup;
           if (pendingProviderSetup) readinessProgress = undefined;
           continue firstRun;
         }
         if (recovery === "auth") {
+          if (referencedSetupModelRefs(plan).some((ref) => ref.startsWith("openai:"))) {
+            const method = await p.select<"oauth" | "api-key">({
+              message: "Retry OpenAI authentication with which method? A successful login replaces the stored OpenAI credential.",
+              initialValue: piAuthMethods.openai ?? "oauth",
+              options: [
+                { value: "oauth", label: "Sign in with ChatGPT" },
+                { value: "api-key", label: "OpenAI API key" },
+              ],
+            });
+            if (p.isCancel(method)) return 1;
+            piAuthMethods = { ...piAuthMethods, openai: method };
+            if (method === "api-key") {
+              // Authentication recovery must review the destination again. An old
+              // environment choice cannot replace a stored credential and would
+              // otherwise repeat the same guard failure on every retry.
+              const { openai: _oldPersistence, ...otherPersistence } = piApiKeyPersistenceByProvider;
+              piApiKeyPersistenceByProvider = otherPersistence;
+            }
+            if (method === "oauth") {
+              const { ["pi-api-key:openai"]: _priorOpenAIKey, ...remainingSetupSecrets } = providerSetupSecrets;
+              providerSetupSecrets = remainingSetupSecrets;
+              const { OPENAI_API_KEY: _priorOpenAIEnv, ...remainingEnvironmentSecrets } = providerEnvironmentSecrets;
+              providerEnvironmentSecrets = remainingEnvironmentSecrets;
+            }
+          }
           // Authentication can replace credential bytes without changing the
           // route/config fingerprint. Every route must be proven again.
           readinessProgress = undefined;
@@ -791,6 +833,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             cwd,
             piAuthPath: resolvedPiAuthPath,
             forceAuthentication: true,
+            piAuthMethods,
           });
           const prompted = await promptProviderSetupSecrets(
             setupPlan,
@@ -809,6 +852,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             piAuthPath: resolvedPiAuthPath,
             forceAuthentication: true,
             piApiKeyPersistenceByProvider,
+            piAuthMethods,
           });
           const environmentApiKeys = environmentProviderApiKeys(
             selectedSetupPlan,
@@ -837,6 +881,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
                 apiKeys: { ...providerSetupSecrets, ...environmentApiKeys },
                 forceAuthentication: true,
                 piApiKeyPersistenceByProvider,
+                piAuthMethods,
                 abortSignal,
               })), { keypress: false });
           if (setup === "fatal") return 130;
@@ -930,9 +975,11 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
     dir: cwd,
     answers,
     dryRun: args.dryRun,
-    // Scaffold-only init has no immediate launchd-minimal worker proof. Reject
-    // both shell and persisted memory-identity overrides instead of creating a
-    // generation at a different path/tier than a follow-up validate would use.
+    ...((nonEmptyEnv(environment.shellEnv.MONO_AGENT_PI_AUTH_PATH)
+      || nonEmptyEnv(environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH))
+      ? { authPathForConfig: nonInteractivePiAuthPath } : {}),
+    // Memory identity is authored in JSON; the environment is only available
+    // to resolve credentials that the generated JSON names.
     env: { ...environment.shellEnv, ...environment.dotenvEnv },
   });
 
@@ -1439,8 +1486,9 @@ function readinessRoutesForDisplay(plan: WizardPlan): readonly { model: string; 
   const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;
   const primaryEffort = typeof runtime.effort === "string" ? runtime.effort : undefined;
   const routes: Array<{ model: string; effort?: string }> = [];
-  if (typeof runtime.model === "string") {
-    routes.push({ model: runtime.model, ...(primaryEffort === undefined ? {} : { effort: primaryEffort }) });
+  const primary = modelReferenceFromConfigJson(plan.configJson.runtime?.model);
+  if (primary !== undefined) {
+    routes.push({ model: primary, ...(primaryEffort === undefined ? {} : { effort: primaryEffort }) });
   }
   if (Array.isArray(runtime.fallbacks) && runtime.fallbacks.length > 0) {
     for (const raw of runtime.fallbacks) {
@@ -1525,7 +1573,6 @@ function focusedConfigurationRepairStep(sectionIds: readonly string[]): number |
     else if (id === "context" || id.startsWith("channel:")) mapped.add(5);
     else if (id === "tools") mapped.add(6);
     else if (id === "sandbox") mapped.add(7);
-    else if (id === "observability") mapped.add(8);
   }
   return mapped.size === 1 ? [...mapped][0] : undefined;
 }
@@ -1538,7 +1585,6 @@ function configurationRecoveryEditLabel(step: number | undefined): string {
     case 5: return "Edit capability details";
     case 6: return "Edit tools";
     case 7: return "Edit route safety and sandbox";
-    case 8: return "Edit observability";
     default: return "Edit setup choices";
   }
 }
@@ -1749,6 +1795,7 @@ export interface RunProviderSetupBeforeInitOptions {
   /** Values parsed from the destination `.env`; ambient shell credentials are intentionally excluded. */
   readonly persistedEnv?: Readonly<Record<string, string | undefined>>;
   readonly piApiKeyPersistenceByProvider?: Readonly<Record<string, "secure-store" | "environment" | undefined>>;
+  readonly piAuthMethods?: Readonly<Record<string, "oauth" | "api-key" | undefined>>;
   readonly abortSignal?: AbortSignal;
   readonly execute?: (plan: ProviderSetupPlan) => Promise<readonly ProviderSetupResult[]>;
 }
@@ -1772,6 +1819,11 @@ export async function runProviderSetupBeforeInit(
     ...(credentialStates === undefined ? {} : { credentialStates }),
     ...(options.forceAuthentication === undefined ? {} : { forceAuthentication: options.forceAuthentication }),
   });
+  if (options.auth && !options.dryRun && options.piAuthMethods?.openai === undefined
+    && options.modelRefs.some((ref) => ref.startsWith("openai:"))
+    && credentialStates?.openai !== "credential_detected") {
+    process.stderr.write(ui.hint("OpenAI authentication needs an explicit method: run mono-agent auth login openai --auth-method oauth|api-key before using this route."));
+  }
   if (plan.actions.length === 0) {
     return "skipped";
   }
@@ -1783,6 +1835,15 @@ export async function runProviderSetupBeforeInit(
   }
   if (!options.auth) {
     return "skipped";
+  }
+  const environmentOpenAIAction = plan.actions.find((action) => isProviderSetupPiApiKeyAction(action)
+    && action.provider === "openai" && action.persistence === "environment");
+  if (environmentOpenAIAction !== undefined && isProviderSetupPiApiKeyAction(environmentOpenAIAction)) {
+    const inspection = await inspectPiAuthStore(environmentOpenAIAction.piAuthPath);
+    if (inspection.status === "ok" && inspection.auth.openai !== undefined) {
+      process.stderr.write(ui.errorLine("A stored OpenAI credential overrides OPENAI_API_KEY. Choose secure-store API-key replacement or explicitly remove the old credential before selecting environment persistence."));
+      return "failed";
+    }
   }
 
   process.stdout.write("\n" + ui.heading("Provider setup"));
@@ -1826,7 +1887,7 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
   const [subcommand, provider, ...extra] = args.positionals;
   if (subcommand !== "login" || provider === undefined || extra.length > 0) {
     process.stderr.write(ui.errorLine(
-      "Usage: mono-agent auth login <provider> [--pi-auth-path <path>] [--api-key-stdin] [--config <path>].",
+      "Usage: mono-agent auth login <provider> [--pi-auth-path <path>] [--auth-method oauth|api-key] [--api-key-stdin] [--config <path>].",
     ));
     return 2;
   }
@@ -1838,9 +1899,6 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
     configuredPiAuthPath = await resolvePiAuthPathForLogin({
       configPath,
       cwd,
-      ...(process.env.MONO_AGENT_PI_AUTH_PATH === undefined
-        ? {}
-        : { envPath: process.env.MONO_AGENT_PI_AUTH_PATH }),
       ...(args.piAuthPath === undefined ? {} : { piAuthPath: args.piAuthPath }),
     });
   } catch (error) {
@@ -1849,11 +1907,49 @@ export async function runAuth(args: ParsedCliArgs): Promise<number> {
     ));
     return 1;
   }
+  if (args.authMethod !== undefined && provider !== "openai") {
+    process.stderr.write(ui.errorLine("--auth-method is currently supported for openai only."));
+    return 2;
+  }
+  let selectedMethod = args.authMethod;
+  if (provider === "openai") {
+    if (args.apiKeyStdin === true && selectedMethod === "oauth") {
+      process.stderr.write(ui.errorLine("--api-key-stdin cannot be combined with --auth-method oauth."));
+      return 2;
+    }
+    if (args.apiKeyStdin === true) selectedMethod = "api-key";
+    if (selectedMethod === undefined) {
+      if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+        process.stderr.write(ui.errorLine("Choose --auth-method oauth or --auth-method api-key in a non-interactive terminal."));
+        return 2;
+      }
+      const answer = await p.select<"oauth" | "api-key">({
+        message: "OpenAI authentication method (one stored credential per provider)",
+        options: [
+          { value: "oauth", label: "Sign in with ChatGPT" },
+          { value: "api-key", label: "OpenAI API key" },
+        ],
+      });
+      if (p.isCancel(answer)) return 130;
+      selectedMethod = answer;
+    }
+    const inspection = await inspectPiAuthStore(configuredPiAuthPath);
+    const existing = inspection.status === "ok" ? inspection.auth.openai : undefined;
+    const oldType = typeof existing === "object" && existing !== null && !Array.isArray(existing)
+      ? (existing as { type?: unknown }).type : undefined;
+    if ((oldType === "oauth" || oldType === "api_key")
+      && oldType !== (selectedMethod === "oauth" ? "oauth" : "api_key")
+      && process.stdin.isTTY === true && process.stdout.isTTY === true) {
+      const confirmed = await p.confirm({ message: `Replace stored OpenAI ${oldType === "oauth" ? "ChatGPT sign-in" : "API key"} after successful ${selectedMethod === "oauth" ? "ChatGPT sign-in" : "API-key entry"}?` });
+      if (p.isCancel(confirmed) || !confirmed) return 130;
+    }
+  }
   const plan = planProviderSetup({
     modelRefs: [`${provider}:credential-setup`],
     cwd,
     piAuthPath: configuredPiAuthPath,
     forceAuthentication: true,
+    ...(selectedMethod === undefined ? {} : { piAuthMethods: { [provider]: selectedMethod } }),
   });
   if (plan.actions.length === 0) {
     process.stderr.write(ui.errorLine(
@@ -1976,7 +2072,6 @@ export async function readApiKeyFromStdin(input: NodeJS.ReadableStream): Promise
 
 export async function resolvePiAuthPathForLogin(options: {
   readonly piAuthPath?: string;
-  readonly envPath?: string;
   readonly configPath: string;
   readonly cwd?: string;
 }): Promise<string> {
@@ -1987,7 +2082,6 @@ export async function resolvePiAuthPathForLogin(options: {
   return resolveEffectivePiAuthPath({
     cwd: options.cwd ?? dirname(resolve(options.configPath)),
     ...(nonEmptyEnv(options.piAuthPath) ? { explicitPath: options.piAuthPath } : {}),
-    ...(nonEmptyEnv(options.envPath) ? { envPath: options.envPath } : {}),
     ...(nonEmptyEnv(configured) ? { configPath: configured } : {}),
   });
 }
@@ -2194,7 +2288,7 @@ function printNextSteps(configPath: string): void {
     `  ${ui.style.bold("2.")} ${startCommand} ${ui.style.dim("(add --foreground where no user service manager exists)")}\n`,
     `  ${ui.style.bold("3.")} ${BROWSER_CONSOLE_COMMAND} ${ui.style.dim("(keep this terminal open)")}\n`,
     `  ${ui.style.bold("4.")} Open ${ui.style.cyan(BROWSER_CONSOLE_URL)} and send a message ${ui.style.dim(`(add --port <n> if ${String(BROWSER_CONSOLE_PORT)} is taken)`)}\n`,
-    ui.style.dim(`Edit ${configPath} to change model, channels, skills, memory, sandbox, or observability.\n`),
+    ui.style.dim(`Edit ${configPath} to change model, channels, skills, memory, or sandbox.\n`),
     browserConsoleBoundaryLine(),
     ...remoteSessionHintLines(),
   ];

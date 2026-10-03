@@ -42,7 +42,6 @@ const WINDOWS_PNPM_ARGUMENTS = new Set([
 ]);
 const REQUIRED_EXECUTABLES = Object.freeze([
   "packages/agent-app/dist/cli.js",
-  "packages/tui/dist/bin/mono-agent-tui.js",
 ]);
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 

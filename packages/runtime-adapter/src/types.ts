@@ -5,7 +5,6 @@ import type {
   AgentToolEnvironment,
 } from "@mono-agent/agent-contracts";
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
-import type { MonitorsController } from "./monitors.js";
 import type { ProcessJobsController } from "./process-jobs.js";
 
 export interface MonoRuntimeSandboxEngine {
@@ -295,6 +294,8 @@ function optionalLiteral(
 }
 
 export interface RuntimeResult {
+  /** Certified only by a successful, terminal FinishSilently attempt. */
+  readonly turnDisposition?: "silent" | "visible";
   readonly subagentQuestion?: { question: string; options?: string[] };
   readonly text?: string | null;
   readonly structuredResult?: unknown;
@@ -321,8 +322,7 @@ export interface RuntimeResult {
 
 /**
  * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
- * ai/types.js). The supported replacement for the deprecated `settings` tool
- * keys; build one with {@link resolveRuntimePolicies}.
+ * ai/types.js). Omitted fields use the kernel defaults.
  */
 export interface RuntimeToolLimits {
   readonly toolTextLimitChars?: number;
@@ -343,8 +343,7 @@ export interface RuntimeToolLimits {
 
 /**
  * Typed per-run context-compaction policy (mirrors agent-runtime's
- * RuntimeCompactionPolicy). The supported replacement for the deprecated
- * `settings` compaction keys. Omitted scalar budgets resolve adaptively against
+ * RuntimeCompactionPolicy). Omitted scalar budgets resolve adaptively against
  * the effective model context window.
  */
 export interface RuntimeCompactionPolicy {
@@ -355,12 +354,6 @@ export interface RuntimeCompactionPolicy {
   readonly minSavingsTokens?: number;
   readonly fixedOverheadEnabled?: boolean;
   readonly contextWindowOverride?: number;
-}
-
-/** The pair {@link resolveRuntimePolicies} returns from a legacy settings bag. */
-export interface RuntimePolicies {
-  readonly toolLimits: RuntimeToolLimits;
-  readonly compaction: RuntimeCompactionPolicy;
 }
 
 /**
@@ -456,11 +449,13 @@ export interface RuntimeMcpAppHost {
 
 export interface RuntimeRunOptions {
   /** Stable configured profile, never executable authority or retained controllers. */
-  readonly toolExposure?: { readonly monitors?: boolean; readonly persistentSubagents?: boolean; readonly askParent?: boolean };
+  readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
   /** Current host facts only; tools must independently enforce admission. */
   readonly hostCapabilities?: Readonly<Record<string, { readonly available: boolean; readonly reason?: string; readonly limits?: Readonly<Record<string, number | null>> }>>;
 
   readonly askParentController?: { submit(question: { question: string; options?: string[] }): Promise<void> };
+  /** Request-bound host authority, never a model-provided request flag. */
+  readonly finishSilentlyController?: { eligible(): boolean };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   readonly model: RuntimeModelReference;
@@ -486,14 +481,18 @@ export interface RuntimeRunOptions {
   /** Host-scoped awaited command ownership; does not enable background tools. */
   readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   /** Request lineage diagnostics, including when no start controller is available. */
+  readonly backgroundCapacity?: {
+    readonly observedAt: string;
+    readonly perConversation: { readonly running: number; readonly maxActivePerConversation: number; readonly queued: number; readonly availableRunningSlots: number };
+    readonly global: { readonly running: number; readonly maxConcurrent: number; readonly queued: number; readonly maxQueued: number };
+    readonly maxQueueAgeMs: number;
+  };
   readonly processJobsAvailability?: {
     readonly chainDepth: number;
     readonly maxChainDepth: number;
     readonly remainingStarts: number;
     readonly unavailableReason?: "chain_depth_exhausted" | "origin_unavailable" | "wake_context_unavailable" | "tool_unavailable";
   };
-  /** Host-only Pi-native monitor controller; never model/provider visible. */
-  readonly monitors?: MonitorsController;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   /** Emit metadata-only prompt-cache request fingerprints; disabled by default. */
   readonly promptCacheDiagnostics?: boolean;
@@ -533,11 +532,13 @@ export interface RuntimeRunOptions {
    */
   readonly fastMode?: never;
   readonly nativeSubagents?: never;
-  /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
+  /** Typed tool-output limits. */
   readonly toolLimits?: RuntimeToolLimits;
   /** Exact `server:tool` names whose host-owned lifecycle has no total deadline. */
   readonly mcpCallNoTotalTimeoutTools?: readonly string[];
-  /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
+  /** Typed compaction policy. */
+  /** Per-reference opt-in to the runtime-owned eligible GPT 1M window. */
+  readonly context1MModels?: Readonly<Record<string, boolean>>;
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;
@@ -551,7 +552,7 @@ export interface RuntimeRunOptions {
   /** Host-owned shared web admission; never model-configurable. */
   readonly webRequestCoordinator?: {
     readonly scope: string;
-    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
+    acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch" | "parallel" | "local" | (string & {}); key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
       complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void | { retryAfterMs: number; retryAtMs: number }>;
     }>;
@@ -560,7 +561,7 @@ export interface RuntimeRunOptions {
   };
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
-    readonly backend?: "auto" | "searxng" | "ollama" | "codex" | "keyless";
+    readonly backend?: WebSearchProviderName | readonly WebSearchProviderName[];
     readonly maxRequestsPerRun?: number;
     /** @deprecated Use searxng.endpoint. */
     readonly endpoint?: string;
@@ -571,10 +572,17 @@ export interface RuntimeRunOptions {
       readonly apiKeyEnv?: string;
       readonly trustPublicUrl?: boolean;
     };
+    readonly parallel?: { readonly apiKeyEnv?: string };
+    /** @deprecated Endpoint settings are rejected: local search is built in. */
+    readonly hound?: { readonly endpoint?: string };
     readonly codex?: { readonly model?: string };
   };
   /** Static WebFetch extraction and optional isolated browser-render policy. */
   readonly webFetchConfig?: {
+    readonly provider?: "local" | "parallel" | readonly ("local" | "parallel")[];
+    readonly parallel?: { readonly apiKeyEnv?: string };
+    /** @deprecated Endpoint settings are rejected: local fetch is built in. */
+    readonly hound?: { readonly endpoint?: string };
     readonly render?: "never" | "auto";
     readonly browserCommand?: string;
   };
@@ -583,6 +591,15 @@ export interface RuntimeRunOptions {
   /** @deprecated Use piToolExecutionMode. */
   readonly piToolParallelismMode?: "one-at-a-time" | "all";
   readonly [key: string]: unknown;
+}
+
+export interface DurableSessionSalvage {
+  readonly completed: readonly { readonly name: string; readonly result: string }[];
+  readonly outcomeUnknown: readonly { readonly name: string }[];
+  readonly omittedCompleted: number;
+  readonly omittedUnknown: number;
+  readonly draftText?: string;
+  readonly additionalOutcomesUnknown: boolean;
 }
 
 export interface MonoRuntimeLike {
@@ -601,6 +618,7 @@ export interface MonoRuntimeLike {
    * Permanently remove every provider transcript with this exact id from the
    * supplied durable sessions root. Absence is success; uncertainty rejects.
    */
+  salvageDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<DurableSessionSalvage>;
   retireDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<void>;
   disposeSession?(providerSessionId: string): Promise<boolean>;
   /** Permanently discard live and durable provider transcript state. */
@@ -688,3 +706,6 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly approvalAlwaysAllowTools?: readonly string[];
   readonly [key: string]: unknown;
 }
+
+/** Source-level built-in web search provider names; arrays are ordered fallback chains. */
+type WebSearchProviderName = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "local";

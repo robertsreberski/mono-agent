@@ -1,7 +1,9 @@
 import { relative } from "node:path";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
+import { isRememberedMemoryId } from "./canonical-lookup.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -10,7 +12,7 @@ import {
 import { dailyFilePath, readBullet } from "./daily.js";
 import {
   MAX_RECONCILIATION_TEXT_CODE_POINTS,
-  normalizeCandidateText,
+  normalizeReconciliationText,
   type CandidateMemory,
 } from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
@@ -19,6 +21,8 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
+import { canonicalMemoryLabel, isStructuredFact, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { factSupported, valueSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -49,16 +53,27 @@ export interface ReconcileDeps {
   readonly deferBatchCommit?: boolean;
   /** Strong completed-turn mode: every model decision is exact and all-or-nothing. */
   readonly strictModelOutput?: boolean;
+  /** Capture intake only: preserve extracted candidates if classifier cannot settle. */
+  readonly fallbackOnClassifierFailure?: boolean;
+  /** Only the intake's last automatic attempt may degrade to deduplicated ADD. */
+  readonly isFinalCaptureAttempt?: boolean;
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
+  readonly captureEvidence?: MemoryCaptureEvidence;
+  readonly conversationId?: string;
+  readonly captureSettings?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[] };
+  /** Capture-only final gate after model reconciliation has possibly changed the memory text. */
+  readonly keepCaptureAction?: (action: CaptureIntentAction) => boolean;
+  /** Internal, host-validated label decision; undefined uses L1 retention defaults. */
+  readonly labelsForAction?: (action: "add" | "update" | "supersede", candidate: CandidateMemory,
+    previous?: Bullet, finalText?: string) => readonly MemoryLabel[] | undefined;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
 
-function normalizeReconciliationText(value: unknown): string | undefined {
-  return normalizeCandidateText(value, "reconcile");
-}
+type ReconcileNeighbour = SimilarHit & { readonly sameEntity?: string };
 
 interface Classification {
   readonly action: string;
@@ -93,7 +108,7 @@ async function reconcileUnlocked(
     try {
       // findSimilar embeds the query, so a down embedding model throws here for EVERY candidate —
       // a systemic outage, not a per-item data problem. Tag it so the catch below surfaces it.
-      let similar: readonly SimilarHit[];
+      let similar: readonly ReconcileNeighbour[];
       try {
         similar = await deps.db.findSimilar(candidate.text, 5, {
           ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
@@ -103,9 +118,10 @@ async function reconcileUnlocked(
         throw new MemoryModelError("embedding", "findSimilar", cause);
       }
       deps.abortSignal?.throwIfAborted();
+      similar = withEntityStateNeighbours(candidate, similar, deps.db);
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
-      if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
+      if (!similar.some((hit) => hit.sameEntity !== undefined || hit.distance <= dupThreshold)) {
         plan = planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       } else {
         const decision = await classify(candidate, similar, deps);
@@ -150,7 +166,7 @@ async function reconcileBatchUnlocked(
 ): Promise<Array<ReconcileAction | undefined>> {
   const threadThreshold = deps.threadThreshold ?? 0.35;
   const dupThreshold = deps.dupThreshold ?? 0.5;
-  let neighbours: readonly SimilarHit[][];
+  let neighbours: readonly ReconcileNeighbour[][];
   try {
     neighbours = await deps.db.findSimilarMany(candidates.map((candidate) => candidate.text), 5, {
       ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
@@ -160,16 +176,32 @@ async function reconcileBatchUnlocked(
     throw new MemoryModelError("embedding", "findSimilarBatch", cause);
   }
   deps.abortSignal?.throwIfAborted();
+  neighbours = neighbours.map((similar, index) => withEntityStateNeighbours(candidates[index]!, similar, deps.db));
 
   const reconcileIndexes = candidates.flatMap((_candidate, index) => {
     const similar = neighbours[index] ?? [];
-    return similar.length > 0 && (similar[0]?.distance ?? Infinity) <= dupThreshold ? [index] : [];
+    return similar.some((hit) => hit.sameEntity !== undefined || hit.distance <= dupThreshold) ? [index] : [];
   });
   const reconcileIndexSet = new Set(reconcileIndexes);
-  const decisions = reconcileIndexes.length === 0
-    ? new Map<number, Classification>()
-    : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
-  rejectConflictingTargets(decisions, deps.strictModelOutput === true);
+  let decisions: Map<number, Classification>;
+  try {
+    decisions = reconcileIndexes.length === 0
+      ? new Map<number, Classification>()
+      : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  } catch (error) {
+    deps.abortSignal?.throwIfAborted();
+    if (deps.fallbackOnClassifierFailure !== true || deps.isFinalCaptureAttempt !== true
+      || !(error instanceof MemoryModelOutputError
+      || (error instanceof MemoryModelError && error.kind === "llm"))) throw error;
+    // Extraction already succeeded. A failed classifier must not erase it;
+    // avoid exact duplicate lines while preserving every novel candidate.
+    decisions = new Map(reconcileIndexes.map((index) => {
+      const duplicate = (neighbours[index] ?? []).find((hit) => hit.record.text === candidates[index]?.text);
+      return [index, duplicate === undefined ? { action: "add" as const }
+        : { action: "noop" as const, targetId: duplicate.record.id }];
+    }));
+  }
+  resolveConflictingTargets(decisions, neighbours);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
   for (const [index, candidate] of candidates.entries()) {
@@ -193,6 +225,11 @@ async function reconcileBatchUnlocked(
     }
   }
 
+  if (deps.keepCaptureAction !== undefined) {
+    for (const [index, plan] of plans.entries()) {
+      if (plan !== undefined && !deps.keepCaptureAction(plan.intent)) plans[index] = undefined;
+    }
+  }
   const writes = plans.flatMap((plan) => plan?.record === undefined ? [] : [plan]);
   let vectors: readonly (readonly number[] | undefined)[];
   try {
@@ -225,14 +262,13 @@ async function reconcileBatchUnlocked(
   return plans.map((plan) => plan?.action);
 }
 
-/**
- * A batch is planned against one pre-write snapshot. Every target-bearing
- * decision contributes candidate-specific graph evidence, including NOOP.
- * Allowing any two candidates to share a target would either race mutations or
- * merge unrelated entity evidence onto one row. Fail the entire target group
- * closed before vector preflight or canonical writes.
- */
-function rejectConflictingTargets(decisions: Map<number, Classification>, strict: boolean): void {
+/** A target can be mutated only once per snapshot. Keep the nearest supported
+ * decision, and give every other distinct candidate its own row instead of
+ * failing the entire turn or attaching its graph evidence to another fact. */
+function resolveConflictingTargets(
+  decisions: Map<number, Classification>,
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
+): void {
   const byTarget = new Map<string, number[]>();
   for (const [index, decision] of decisions) {
     if (decision.targetId === undefined) continue;
@@ -240,12 +276,63 @@ function rejectConflictingTargets(decisions: Map<number, Classification>, strict
     indexes.push(index);
     byTarget.set(decision.targetId, indexes);
   }
-  for (const indexes of byTarget.values()) {
+  for (const [target, indexes] of byTarget) {
     if (indexes.length < 2) continue;
-    if (strict) throw new MemoryModelOutputError("classify-batch", "multiple candidates selected one target");
-    for (const index of indexes) decisions.delete(index);
+    const support = (index: number): number => {
+      const hit = (neighbours[index] ?? []).find((item) => item.record.id === target);
+      return hit === undefined ? Number.POSITIVE_INFINITY : hit.distance;
+    };
+    const priority = (index: number): number => {
+      switch (decisions.get(index)?.action) {
+        case "supersede": return 0;
+        case "update": return 1;
+        default: return 2;
+      }
+    };
+    indexes.sort((a, b) => priority(a) - priority(b) || support(a) - support(b) || a - b);
+    const winner = indexes[0]!;
+    for (const index of indexes.slice(1)) {
+      // A losing NOOP asserts no new content. Re-adding it would resurrect a
+      // stale state after the winning supersession, or duplicate an unchanged
+      // target. Only distinct mutating losers retain a separate new row.
+      if (decisions.get(index)?.action === "noop") decisions.delete(index);
+      else decisions.set(index, { action: "add" });
+    }
   }
 }
+
+// A state change about a known entity may be worded far from its old line.
+// Offer a few of that entity's own lines (those sharing a structured fact key
+// first, then the newest) without a vector score; the classifier compares the
+// actual claims. Selection uses graph associations and labels, not wording.
+function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly ReconcileNeighbour[], db: MemoryDb): ReconcileNeighbour[] {
+  if ((candidate.entityIds?.length ?? 0) === 0) return [...similar];
+  const seen = new Set(similar.map((hit) => hit.record.id));
+  const anchored: ReconcileNeighbour[] = [];
+  for (const entityId of (candidate.entityIds ?? []).slice(0, 3)) {
+    const keys = new Set(candidate.labels?.flatMap((label) =>
+      label.kind === "fact" && label.entityId === entityId && label.key !== undefined ? [label.key] : []) ?? []);
+    const keyed = new Set<string>();
+    if (keys.size > 0 && entityId.startsWith("person:")) {
+      for (const hit of db.listLabels({ kind: "fact", entityId }, 200).hits) {
+        if (hit.active && hit.label.kind === "fact" && hit.label.key !== undefined && keys.has(hit.label.key)) keyed.add(hit.memoryId);
+      }
+    }
+    const records = db.memoriesForEntity(entityId, ENTITY_NEIGHBOURS * 2);
+    for (const record of [...records.filter((item) => keyed.has(item.id)), ...records.filter((item) => !keyed.has(item.id))]) {
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+      // Infinity means no measured vector distance: it is never exposed as a
+      // score, threaded, or used by the duplicate threshold. The explicit
+      // marker is the sole reason this bounded neighbour is offered.
+      anchored.push({ record, distance: Number.POSITIVE_INFINITY, sameEntity: entityId });
+      if (anchored.length >= ENTITY_NEIGHBOURS) break;
+    }
+    if (anchored.length >= ENTITY_NEIGHBOURS) break;
+  }
+  return [...similar, ...anchored];
+}
+const ENTITY_NEIGHBOURS = 3;
 
 interface BatchActionPlan {
   readonly index: number;
@@ -258,11 +345,12 @@ interface BatchActionPlan {
 function planLegacyAction(
   candidate: CandidateMemory,
   decision: Classification | undefined,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Omit<BatchActionPlan, "index"> {
-  const resolved = decision ?? closestNoop(similar);
+  const resolved = decision ?? closestNoop(similar.filter((hit) => Number.isFinite(hit.distance)
+    && hit.distance <= (deps.dupThreshold ?? 0.5)));
   return resolved === undefined
     ? planAddWithoutIndex(candidate, similar, deps, threadThreshold)
     : planBatchAction(candidate, resolved, similar, deps, threadThreshold);
@@ -333,7 +421,7 @@ function intentCreatedAt(action: CaptureIntentAction): string {
 function planBatchAction(
   candidate: CandidateMemory,
   decision: Classification,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Omit<BatchActionPlan, "index"> {
@@ -343,23 +431,76 @@ function planBatchAction(
     case "noop":
       return planNoop(decision, deps);
     case "update":
+      // An explicitly remembered bullet is content-addressed: its id is
+      // `RM-<sha256(text)>` and `isRememberedMemoryId` treats that pairing as a
+      // self-verifying provenance claim. Merging new wording into it in place
+      // would leave the id asserting a hash of text it no longer holds, and a
+      // later `remember()` of the ORIGINAL fact would then match that id and
+      // report a false duplicate — silently discarding the user's fact.
+      //
+      // An update is a refinement, not a contradiction, so this must not invent
+      // a supersession either: that would mark the remembered fact invalidated
+      // and hide it from recall. Keep the remembered evidence exactly as it is
+      // and record the refinement as its own memory (threaded to its
+      // neighbour by the shared ADD path).
+      // Memory is not a task list: capture never rewrites a task line in
+      // place. The task stays exactly as written and the new information is
+      // its own dated note, always threaded to that task (even beyond the
+      // similarity thread cutoff).
+      if (deps.db.get(decision.targetId ?? "")?.type === "task") {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold, decision.targetId);
+      }
+      if (isRememberedUpdateTarget(decision, deps)
+        || (decision.text !== undefined && [...decision.text].length > MAX_RECONCILIATION_TEXT_CODE_POINTS)) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
+      if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, similar, deps, threadThreshold);
+      }
       return planUpdate(candidate, decision, deps);
-    case "supersede":
+    case "supersede": {
+      const old = deps.db.get(decision.targetId ?? "");
+      // Standing guidance is not replaced on a model decision alone. The owner
+      // may correct their own preference (owner scope) on a verified owner
+      // turn; the old line stays as superseded history. A peer's or project
+      // preference and a lesson are never superseded here.
+      if (old?.source.file !== undefined && labelsOf(requireCanonicalTarget(deps.root, old.source.file, old.id))
+        .some((label) => label.kind === "lesson"
+          || (label.kind === "preference" && !(ownerCorrection(candidate, deps) && ownerScope(label.scope, deps))))) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
+      // A task target is superseded like any line: the old task is marked
+      // invalidated and the replacement is a note. This is intended; memory is
+      // not a task tracker, and a superseded task becomes history.
       return planSupersede(candidate, decision, deps);
+    }
     default:
       throw new Error("memory-reconcile: unsupported batch action.");
   }
 }
 
+/** A memory the model sourced to the user on a host-verified owner turn with user text. */
+function ownerCorrection(candidate: CandidateMemory, deps: ReconcileDeps): boolean {
+  return candidate.source === "user" && deps.captureSpeakerKind === "human-turn"
+    && deps.captureEvidence?.ownerTurn === true && deps.captureEvidence.userText.trim().length > 0;
+}
+
+/** The owner's own preference scopes: `agent`, or this owner turn's own sender scope. */
+function ownerScope(scope: string, deps: ReconcileDeps): boolean {
+  const sender = deps.captureEvidence?.senderToken;
+  return scope === "agent" || (sender !== undefined && scope === `user:${sender}`);
+}
+
 function planAddWithoutIndex(
   candidate: CandidateMemory,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
+  threadTo?: string,
 ): Omit<BatchActionPlan, "index"> {
   const now = deps.now();
   const id = deps.nextId();
-  const bullet: Bullet = {
+  const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
     status: "open",
@@ -368,7 +509,7 @@ function planAddWithoutIndex(
     isInsight: candidate.isInsight,
     createdAt: now.toISOString(),
     refs: [],
-  };
+  }, deps.labelsForAction?.("add", candidate, undefined, candidate.text) ?? []);
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
   const threads = similar.flatMap((hit) => {
@@ -377,7 +518,12 @@ function planAddWithoutIndex(
     return Number.isFinite(weight) && weight > 0 && weight <= 1
       ? [{ src: id, dst: hit.record.id, weight }]
       : [];
-  }).slice(0, 5);
+  });
+  // An explicit target (a task an update could not rewrite) is always linked.
+  const target = threadTo === undefined || threadTo === id || threads.some((thread) => thread.dst === threadTo)
+    ? [] : [{ src: id, dst: threadTo, weight: Math.min(1, Math.max(0.01,
+      1 - (similar.find((hit) => hit.record.id === threadTo)?.distance ?? 1))) }];
+  const linked = [...target, ...threads].slice(0, 5);
   return {
     action: { kind: "add", id },
     intent: {
@@ -386,7 +532,7 @@ function planAddWithoutIndex(
       id,
       after: { file, bullet },
       record,
-      threads,
+      threads: linked,
     },
     record,
   };
@@ -413,6 +559,33 @@ function planNoop(
   };
 }
 
+/**
+ * True when an UPDATE decision points at a bullet whose id is the content hash
+ * of its own current text — the self-verifying identity minted by `remember()`.
+ */
+function isRememberedUpdateTarget(decision: Classification, deps: ReconcileDeps): boolean {
+  const target = deps.db.get(decision.targetId ?? "");
+  return target !== undefined && isRememberedMemoryId(target.id, target.text);
+}
+
+function slugOf(text: string): string {
+  return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join("-") ?? "";
+}
+
+// A dated candidate is a new snapshot, not a refinement of the old line, when
+// its ISO date is later than the old line's or the old line carries none:
+// rewriting an undated line in place would re-date its history. Structural
+// only; other time sensitivity is the classifier's observation-date rule.
+function isNewTimeSensitiveSnapshot(candidate: CandidateMemory, decision: Classification, deps: ReconcileDeps): boolean {
+  const old = deps.db.get(decision.targetId ?? "");
+  if (old === undefined || old.text === candidate.text) return false;
+  const dates = (text: string): string[] => [...text.matchAll(/\b\d{4}-\d{2}-\d{2}\b/gu)].map(([date]) => date);
+  const oldDates = dates(old.text);
+  const newDates = dates(candidate.text);
+  if (newDates.length === 0) return false;
+  return oldDates.length === 0 || newDates[0]! > oldDates[0]!;
+}
+
 function planUpdate(
   candidate: CandidateMemory,
   decision: Classification,
@@ -423,9 +596,21 @@ function planUpdate(
   if (target === undefined || target.source.file === undefined) {
     throw new Error(`memory-reconcile: update target "${targetId}" is unavailable.`);
   }
+  // Defence in depth: the dispatcher already routes remembered targets to ADD.
+  // Any future caller that reaches an in-place rewrite of a content-addressed
+  // bullet must fail loudly here rather than silently break its identity.
+  if (isRememberedMemoryId(target.id, target.text)) {
+    throw new Error(
+      `memory-reconcile: refusing to rewrite remembered memory "${targetId}" in place; `
+      + "its id is the content hash of its own text.",
+    );
+  }
   const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
-  const after: Bullet = { ...before, text: mergedText };
+  // A changed sentence cannot silently keep claims it may no longer support.
+  const after: Bullet = withMemoryLabels({ ...before, text: mergedText },
+    deps.labelsForAction?.("update", candidate, before, mergedText)
+      ?? (mergedText === before.text ? labelsOf(before) : []));
   return {
     action: { kind: "update", id: targetId },
     intent: {
@@ -458,16 +643,33 @@ function planSupersede(
   // never precede the memory it invalidates.
   const effectiveAt = new Date(Math.max(admittedAt.getTime(), Date.parse(beforeOld.createdAt)));
   const id = deps.nextId();
-  const bullet: Bullet = {
+  const replacement = decision.text ?? candidate.text;
+  const proposedLabels = deps.labelsForAction?.("supersede", candidate, beforeOld, replacement) ?? [];
+  // A dated replacement may still contain facts carried forward from the old
+  // line. Keep only labels still supported by that replacement; do not transfer
+  // a stale value merely because the old line had a label.
+  // A text value that merely repeats the subject's own id is no evidence that
+  // the replacement still states it.
+  const carried = labelsOf(beforeOld).filter((label) => label.kind === "fact"
+    && !(isStructuredFact(label) && label.value.type === "text"
+      && slugOf(label.value.text) === label.entityId.slice(label.entityId.indexOf(":") + 1))
+    && (label.entityId === "person:owner" ? valueSupported(label, replacement) : factSupported(label, replacement)));
+  const labels = [...proposedLabels];
+  const seen = new Set(labels.map(canonicalMemoryLabel));
+  for (const label of carried) {
+    const key = canonicalMemoryLabel(label);
+    if (!seen.has(key) && labels.length < 8) { labels.push(label); seen.add(key); }
+  }
+  const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
     status: "open",
-    text: decision.text ?? candidate.text,
+    text: replacement,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
     refs: [],
-  };
+  }, labels);
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {
@@ -508,9 +710,63 @@ function withPreparedVector(
   };
 }
 
+function strictReconciliationOutputSchema(
+  indexes: readonly number[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
+): Readonly<Record<string, unknown>> {
+  const variants = indexes.flatMap((index) => {
+    const indexSchema = { type: "integer", const: index } as const;
+    const targetIds = [...new Set((neighbours[index] ?? []).map((hit) => hit.record.id))];
+    const targetSchema = { type: "string", enum: targetIds } as const;
+    const replacementSchema = {
+      type: "string",
+      minLength: 1,
+      maxLength: 1024,
+    } as const;
+    return [
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action"],
+        properties: { index: indexSchema, action: { const: "add" } },
+      },
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action", "targetId"],
+        properties: { index: indexSchema, action: { const: "noop" }, targetId: targetSchema },
+      },
+      ...(["update", "supersede"] as const).map((action) => ({
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "action", "targetId", "text"],
+        properties: {
+          index: indexSchema,
+          action: { const: action },
+          targetId: targetSchema,
+          text: { ...replacementSchema, maxLength: action === "update" ? 1024 : MAX_RECONCILIATION_TEXT_CODE_POINTS },
+        },
+      })),
+    ];
+  });
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["decisions"],
+    properties: {
+      decisions: {
+        type: "array",
+        minItems: indexes.length,
+        maxItems: indexes.length,
+        items: { oneOf: variants },
+      },
+    },
+  };
+}
+
 async function classifyBatch(
   candidates: readonly CandidateMemory[],
-  neighbours: readonly (readonly SimilarHit[])[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
   indexes: readonly number[],
   deps: ReconcileDeps,
 ): Promise<Map<number, Classification>> {
@@ -519,23 +775,35 @@ async function classifyBatch(
     candidate: candidates[index],
     existing: (neighbours[index] ?? []).map((hit) => ({
       id: hit.record.id,
-      distance: Number(hit.distance.toFixed(6)),
+      ...(hit.sameEntity === undefined ? { distance: Number(hit.distance.toFixed(6)) }
+        : { sameEntity: hit.sameEntity }),
       text: hit.record.text,
     })),
   }));
+  const strictOutput = deps.strictModelOutput === true;
   let raw: string;
   try {
     raw = await deps.llm.complete(
-      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one object per offered index.
+      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one decision per offered index.
+${strictOutput
+  ? 'When a schema-guided StructuredOutput tool is available, submit that same array in the exact object {"decisions":[...]} required by the tool; do not print a second copy.'
+  : ""}
 
-Use exactly one of these object shapes:
+Use exactly one of these decision object shapes:
 - add: {"index":N,"action":"add"}
 - noop: {"index":N,"action":"noop","targetId":"existing-id"}
 - update: {"index":N,"action":"update","targetId":"existing-id","text":"complete merged memory"}
 - supersede: {"index":N,"action":"supersede","targetId":"existing-id","text":"complete replacement memory"}
 
 Rules:
-- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
+- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction or a real replacement of a stable state. An existing item with sameEntity shares that graph entity but has no measured vector distance; it is offered only so a changed state of that entity can be recognised. Compare its actual content, not a fabricated similarity score; an unrelated claim about the same entity is add.
+- The User's own word wins. When a candidate with source "user" contradicts an existing memory, supersede that memory with the User's statement, not update or add. This includes an existing record of what the Assistant inferred, estimated, assumed, or recommended when the User contradicts its claim or the premise it rests on: an accurate record of what the Assistant said does not stay current once the User has corrected it. Supersede only on a real contradiction or replacement; other details about the same subject are add.
+- Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, temporal qualification, and correction-versus-state-change qualification are durable information.
+- Material dates, times, timezones, year/month boundaries, resolved calendar intervals, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Resolve directly stated relative time against a supplied host-owned observation anchor when unambiguous; preserve the observation date for an age snapshot as 'was N months old as of YYYY-MM-DD'. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input and trusted anchor support. Do not rebase a stored old observation on the current capture clock.
+- Distinct repeated events remain distinct when their temporal qualifiers or anchors differ. Do not choose noop or merge them merely because their non-temporal wording is similar.
+- Replacement text must not turn an attributed or unchecked claim into an unqualified fact, turn an observed outcome into causal proof, or turn correction of an erroneous report into a former real-world state. Preserve an explicit rename or other real state change as history when material.
+- If the User stated a fact which the Assistant merely repeated, preserve the User's attribution rather than marking it an Assistant report. An explicit user report or preference may remain useful without outside proof; preserve its speaker and scope. Do not invent verification doubt, earlier-conversation claims, or durable facts from generic Assistant advice.
+- Update only the SAME observation; new age/current-status snapshots are ADD, while corrections of a stable value are SUPERSEDE.
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.
 - For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
 - A targetId may be selected by at most one decision in the whole batch.
@@ -547,6 +815,9 @@ INPUT:
 ${JSON.stringify(input)}`,
       {
         label: "capture:reconcile-batch",
+        ...(strictOutput
+          ? { outputSchema: strictReconciliationOutputSchema(indexes, neighbours), structuredResultKey: "decisions" }
+          : {}),
         ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
       },
     );
@@ -577,7 +848,7 @@ ${JSON.stringify(input)}`,
     if (record.action !== "add" && (
       targetId === undefined || !(neighbours[index] ?? []).some((hit) => hit.record.id === targetId)
     )) continue;
-    const text = normalizeReconciliationText(record.text);
+    const text = normalizeLegacyDecisionText(record.action, record.text);
     decisions.set(index, {
       action: record.action,
       ...(targetId === undefined ? {} : { targetId }),
@@ -590,7 +861,7 @@ ${JSON.stringify(input)}`,
 function parseStrictBatchClassifications(
   raw: string,
   indexes: readonly number[],
-  neighbours: readonly (readonly SimilarHit[])[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
 ): Map<number, Classification> {
   let parsed: unknown;
   try {
@@ -638,7 +909,7 @@ function parseStrictBatchClassifications(
       decisions.set(Number(index), { action, targetId });
       continue;
     }
-    const exactText = strictClassificationText(text);
+    const exactText = strictClassificationText(text, action === "update" ? 1024 : MAX_RECONCILIATION_TEXT_CODE_POINTS);
     if (keys.length !== 4) {
       throw new MemoryModelOutputError("classify-batch", "update and supersede require exact text");
     }
@@ -650,10 +921,20 @@ function parseStrictBatchClassifications(
   return decisions;
 }
 
-function strictClassificationText(value: unknown): string {
+function normalizeLegacyDecisionText(action: string, value: unknown): string | undefined {
+  if (action === "update" && typeof value === "string" && [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
+    && [...value].length <= 1024) {
+    // Preserve the length signal rather than silently truncating a proposed merge.
+    // The dispatcher adds the bounded candidate and leaves the old line intact.
+    return value;
+  }
+  return normalizeReconciliationText(value);
+}
+
+function strictClassificationText(value: unknown, maxLength = MAX_RECONCILIATION_TEXT_CODE_POINTS): string {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()
-    || [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
-    || Buffer.byteLength(value, "utf8") > MAX_RECONCILIATION_TEXT_CODE_POINTS * 4
+    || [...value].length > maxLength
+    || Buffer.byteLength(value, "utf8") > maxLength * 4
     || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value) || value.includes("<!--mem")) {
     throw new MemoryModelOutputError("classify-batch", "replacement text is invalid or exceeds its bound");
   }
@@ -667,7 +948,7 @@ function strictClassificationText(value: unknown): string {
  */
 async function classify(
   candidate: CandidateMemory,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
 ): Promise<Classification | undefined> {
   let raw: string;
@@ -691,7 +972,7 @@ async function classify(
   if (action !== "add") {
     if (targetId === undefined || !similar.some((h) => h.record.id === targetId)) return undefined;
   }
-  const text = normalizeReconciliationText(parsed.text);
+  const text = normalizeLegacyDecisionText(action, parsed.text);
   return {
     action,
     ...(targetId !== undefined && { targetId }),
@@ -699,9 +980,10 @@ async function classify(
   };
 }
 
-const classifyPrompt = (candidate: CandidateMemory, similar: readonly SimilarHit[]): string => {
+const classifyPrompt = (candidate: CandidateMemory, similar: readonly ReconcileNeighbour[]): string => {
   const neighbours = similar
-    .map((h) => `- id=${h.record.id} distance=${h.distance.toFixed(3)} text="${h.record.text}"`)
+    .map((h) => `- id=${h.record.id} ${h.sameEntity === undefined
+      ? `distance=${h.distance.toFixed(3)}` : `sameEntity=${h.sameEntity} (no vector score)`} text="${h.record.text}"`)
     .join("\n");
   return `CLASSIFY a new candidate memory against existing memories. Decide whether it is novel,
 a duplicate, a refinement, or a contradiction. Return ONLY JSON:
@@ -709,7 +991,11 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 - add: genuinely new information.
 - noop: an exact duplicate of an existing memory (no change needed).
 - update: refines/merges an existing memory; set targetId and text to the merged sentence.
-- supersede: contradicts/replaces an existing memory; set targetId and text to the new sentence.
+- supersede: contradicts/replaces an existing memory or stable state; set targetId and text to the new sentence. sameEntity denotes a shared graph entity, not a measured vector distance; compare the actual claims, and an unrelated claim about the same entity is add.
+- Compare speaker attribution, stated scope, evidence limits, and correction-versus-state-change meaning, not just topic similarity.
+- Merged or replacement text must not promote an attributed or unchecked claim to fact, infer a cause from an observed outcome, or describe an erroneous report as a former real-world state. Preserve an explicit rename or other real state change as history when material.
+- If the User stated a fact which the Assistant merely repeated, preserve the User's attribution rather than marking it an Assistant report. Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope. Do not invent verification doubt, earlier-conversation claims, or durable facts from generic Assistant advice.
+- Update only the SAME observation; new age/current-status snapshots are ADD, while corrections of a stable value are SUPERSEDE.
 
 CANDIDATE: type=${candidate.type} text="${candidate.text}"
 
@@ -717,7 +1003,7 @@ EXISTING:
 ${neighbours}`;
 };
 
-function closestNoop(similar: readonly SimilarHit[]): Classification | undefined {
+function closestNoop(similar: readonly ReconcileNeighbour[]): Classification | undefined {
   const id = similar[0]?.record.id;
   return id === undefined ? undefined : { action: "noop", targetId: id };
 }

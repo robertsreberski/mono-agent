@@ -60,6 +60,50 @@ describe("provider auth status", () => {
     ]);
   });
 
+  it("offers both OpenAI methods in provider settings while retaining Codex OAuth", async () => {
+    const config = { ...configWith("/missing"), runtime: {
+      model: parseMonoRuntimeModelReference("openai:gpt-5.5"),
+      fallbacks: [{ model: parseMonoRuntimeModelReference("openai-codex:gpt-5.5") }],
+    } } as unknown as MonoAgentConfig;
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai")?.methods.map((method) => method.authType))
+      .toEqual(["oauth", "api_key"]);
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.methods.map((method) => method.authType))
+      .toContain("oauth");
+  });
+
+  it("marks a stored OpenAI OAuth credential without clientId unusable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-status-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify({ openai: { type: "oauth", access: "fake", refresh: "fake", expires: 4_200_000_000_000 } }), { mode: 0o600 });
+    const snapshot = await providerAuthStatusSnapshot({
+      config: { ...configWith(authPath), runtime: { model: parseMonoRuntimeModelReference("openai:gpt-5.5") } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers[0]).toMatchObject({ state: "missing", credentialType: "oauth", unavailableReason: expect.stringContaining("client ID") });
+  });
+
+  it("tracks classifier credentials as a separate memory usage", async () => {
+    const base = configWith("/missing");
+    const config = { ...base, memory: { ...base.memory,
+      capture: { reconcileModel: "openai-codex:gpt-5.5" } } } as MonoAgentConfig;
+    const refs = await collectUsedProviderReferences(config, [], { cwd: "/tmp", configPath: "/tmp/config.json", env: {} });
+    expect(refs.map(({ usage }) => [usage.kind, usage.label, usage.model])).toContainEqual([
+      "memory_llm", "Capture reconcile model", "openai-codex:gpt-5.5",
+    ]);
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.usages)
+      .toContainEqual({ kind: "memory_llm", label: "Capture reconcile model", model: "openai-codex:gpt-5.5" });
+  });
+
   it("reports stored, expired, and keyless local states separately from live verification", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-status-"));
     tempDirs.push(dir);

@@ -84,7 +84,7 @@ import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
  * Returned options are never copied into router telemetry.
  * @property {AgentRuntimeInstance} [runtime]
  * @property {Object<string, *>} [options]
- * @property {{allowedTools?: ReadonlyArray<string>, disallowedTools?: ReadonlyArray<string>, permissionMode?: string}} [policyOptions]
+ * @property {{allowedTools?: ReadonlyArray<string>, disallowedTools?: ReadonlyArray<string>}} [policyOptions]
  * Provider-specific projection of the logical tool policy. This deliberately
  * cannot replace any other protected request field.
  * @property {() => (void|Promise<void>)} [cleanup]
@@ -99,7 +99,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
   "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
-  "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
+  "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
   "webSearchState",
   "outputSchema", "liveInput", "toolEnvironment", "persistArtifact",
@@ -147,6 +147,38 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      if (options.manualCompaction === true) {
+        // A provider session belongs to exactly one route. Never retry/fail over
+        // a mutating manual operation against a different model or session.
+        const primary = entries[0];
+        if (!primary || !entrySupportsSessionResume(primary)
+          || (options.model && modelKey(options.model) !== modelKey(primary.model))) {
+          throw new Error("Manual compaction is unavailable for this session model.");
+        }
+        /** @type {*} */
+        let attemptOptions = { ...options, model: primary.model };
+        let attemptRuntime = inner;
+        let cleanup;
+        try {
+          const resolution = normalizeAttemptResolution(await resolveAttempt?.({
+            model: primary.model, attemptIndex: 0, retryIndex: 0,
+          }));
+          cleanup = resolution?.cleanup;
+          if (resolution) {
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
+            if (resolution.runtime) {
+              assertRuntimeLike(resolution.runtime);
+              attemptRuntime = resolution.runtime;
+              projectPiRuntimeToolContext(attemptRuntime, effectiveRouterToolOptions(host, configuredTools));
+            }
+          }
+          applyEntryEffort(attemptOptions, primary.effort);
+          return await attemptRuntime.run(systemPrompt, attemptOptions);
+        } finally {
+          await cleanup?.();
+        }
+      }
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
@@ -396,6 +428,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // another attempt here is a guaranteed second failure. Advance instead.
           const sameModelRetryable = retryability.retryable
             && retryability.subkind !== "context_limit"
+            && retryability.subkind !== "subscription_limit"
             && retryIndex + 1 < entry.attempts;
           if (!sameModelRetryable) break;
 
@@ -457,6 +490,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         throw new Error("A routed runtime cannot guarantee a cold provider-session reopen");
       }
       await inner.refreshSession(providerSessionId);
+    },
+    async salvageDurableSession(providerSessionId, sessionsRoot) {
+      if (typeof inner.salvageDurableSession !== "function") throw new Error("Durable session salvage unavailable");
+      return inner.salvageDurableSession(providerSessionId, sessionsRoot);
     },
     async retireDurableSession(providerSessionId, sessionsRoot) {
       if (typeof inner.retireDurableSession !== "function") {
@@ -648,7 +685,7 @@ function normalizeAttemptResolution(value) {
   };
 }
 
-const ATTEMPT_POLICY_OPTION_KEYS = new Set(["allowedTools", "disallowedTools", "permissionMode"]);
+const ATTEMPT_POLICY_OPTION_KEYS = new Set(["allowedTools", "disallowedTools"]);
 
 function normalizeAttemptPolicyOptions(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -663,9 +700,6 @@ function normalizeAttemptPolicyOptions(value) {
     if (value[key] !== undefined && !Array.isArray(value[key])) {
       throw new Error(`route attempt resolver policyOptions.${key} must be an array or undefined`);
     }
-  }
-  if (value.permissionMode !== undefined && typeof value.permissionMode !== "string") {
-    throw new Error("route attempt resolver policyOptions.permissionMode must be a string or undefined");
   }
   return value;
 }

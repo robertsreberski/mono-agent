@@ -27,9 +27,6 @@ describe("runCli runs report", () => {
       join(cwd, "mono-agent.config.json"),
       JSON.stringify({
         artifacts: { dir: "./artifacts" },
-        observability: {
-          exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:9/v1/traces" }],
-        },
       }, null, 2),
       "utf8",
     );

@@ -120,7 +120,10 @@ describe("a background job card with an empty output tail", () => {
       durationMs: null,
     })));
     screen.getByRole("group", { name: "Exec background job running" }).setAttribute("open", "");
-    await expect.element(page.getByText("fetched 43/573", { exact: false })).toBeVisible();
+    // The tail itself, not the collapsed row's one-line output preview.
+    const tail = view.container.querySelector<HTMLElement>(".process-job-output")!;
+    await expect.element(page.elementLocator(tail)).toBeVisible();
+    expect(tail).toHaveTextContent("fetched 43/573");
     expect(view.container.querySelector(".process-job-empty-output")).toBeNull();
     await capture("job-live-tail-desktop", view.container.querySelector(".process-job-stack")!);
   });

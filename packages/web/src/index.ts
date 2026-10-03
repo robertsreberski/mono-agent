@@ -18,12 +18,23 @@ export {
 } from "./state-paths.js";
 export type { WebStatePathOptions, WebStatePaths } from "./state-paths.js";
 
-export { deliverWebNotification, createWebConsoleToolClient } from "./notification-client.js";
+export {
+  beginWebExternalTurn,
+  createWebConsoleToolClient,
+  deliverWebNotification,
+  markWebExternalConversationGone,
+  resolveWebExternalProjectDestination,
+  syncWebExternalConversations,
+} from "./notification-client.js";
+export { withProjectContext } from "./project-context.js";
+export type { ProjectContextSource } from "./project-context.js";
 export type {
+  BeginWebExternalTurnInput,
+  WebExternalObservationInput,
+  WebExternalTurn,
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
   DeliverWebNotificationResult,
-  DeliverWebMonitorNotificationInput,
   DeliverWebProcessJobNotificationInput,
   DeliverWebThreadNotificationInput,
 } from "./notification-client.js";
@@ -90,6 +101,11 @@ export type {
   WebAgentStatus,
   WebAgentRunSettings,
   WebAgentSummary,
+  WebAgentRestartSupport,
+  WebAgentRestartStage,
+  WebAgentRestartOutcome,
+  WebAgentRestartOperation,
+  WebRestartProposalAvailability,
   WebAttachment,
   WebBootstrap,
   WebBootstrapScope,
@@ -113,9 +129,13 @@ export type {
   CreateWebTagInput,
   PatchWebTagInput,
   WebTagChangedPayload,
+  WebExternalConversation,
+  WebExternalConversationChannel,
+  WebExternalConversationState,
   WebProject,
   WebProjectColor,
-  WebProjectTransition,
+  WebConversationMarkerPart,
+  WebProjectIdentity,
   WebProjectChangedPayload,
   WebNotificationTriggerKind,
   WebThreadNotificationTriggerKind,
@@ -136,9 +156,14 @@ export type {
   WebSkillRegistry,
   WebSkillUnavailableReason,
   WebThread,
+  WebWakeSchedule,
+  WebWakeScheduleDefinition,
   WebJobActivity,
   WebThreadChangedPayload,
   WebThreadDetail,
+  WebThreadUsage,
+  WebUsageSlice,
+  WebUsageTokens,
   WebThreadSearchHit,
   WebThreadSearchPage,
   SearchWebThreadsInput,
@@ -155,4 +180,4 @@ export {
 
 export { WebConsoleError } from "./errors.js";
 
-export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName } from "./console-tools.js";
+export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName, ExternalConsoleToolScope, WebConsoleToolScope } from "./console-tools.js";

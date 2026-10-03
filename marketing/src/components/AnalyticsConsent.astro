@@ -1,0 +1,8 @@
+---
+import Analytics from '@vercel/analytics/astro';
+---
+<!-- The native custom element stays inert until our consent controller mounts it. -->
+<template id="analytics-template" data-analytics-hosts="mono-agent.dev,www.mono-agent.dev">
+  <Analytics mode="production" debug={false} />
+</template>
+<script is:inline type="module" src="/analytics.js"></script>

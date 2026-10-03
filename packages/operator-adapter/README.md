@@ -1,7 +1,7 @@
 # @mono-agent/operator-adapter
 
 Serve the local bidirectional NDJSON operator protocol used by mono-agent's
-terminal and browser consoles.
+web console, ACP bridge, and jobs client.
 
 ## Category
 
@@ -10,15 +10,15 @@ terminal and browser consoles.
 
 Category: `communication`
 Tier: `core`
-Catalog responsibility: Exposes the structured local TUI NDJSON endpoint used by the terminal and browser operator consoles.
+Catalog responsibility: Exposes the structured local operator NDJSON endpoint used by the browser console, ACP bridge, and jobs client.
 
 <!-- package-metadata:end -->
 
 ## Responsibility
 
 This communication package exposes a host-provided responder over the `tui`
-HTTP lane. It accepts turns from `mono-agent tui` and `mono-agent web` while
-preserving structured `AgentStreamEvent` frames. The endpoint defaults to
+HTTP lane. It accepts turns from `mono-agent web` and other maintained clients
+while preserving structured `AgentStreamEvent` frames. The endpoint defaults to
 loopback and refuses a non-loopback bind unless the host explicitly opts in.
 
 ## Install / Usage
@@ -74,6 +74,39 @@ Keep bearer values out of source config when possible. Set
   expose a bounded `skills` snapshot with ready/error state and per-item
   inlined/on-demand/unavailable status. `info` may be a function so local-model
   choices and skills can refresh without restarting the endpoint.
+  `capabilities.restart` is always `{ supported, reason? }` on new agents:
+  only a keyed, supervised, verified worker advertises `supported: true`.
+  Older or malformed capability records are unsupported to clients.
+- `POST {basePath}/v1/restart` accepts exactly `{}` and a **configured,
+  matching** operator bearer. Generic keyless operator authorization does not
+  apply: keyless returns `403` and a missing/wrong bearer `401`. The CLI host
+  rechecks supervisor ownership, this PID, loaded worker identity and on-failure
+  relaunch policy; unverifiable workers refuse with `409` and a short reason.
+  `202 { operation: { id }, process: { pid, startedAt } }` follows synchronous
+  host commitment of the id and nonzero exit disposition; it is acceptance,
+  not proof that a replacement is online. A concurrent request returns `409`
+  `restart_in_progress` with the same operation id, never a second shutdown.
+  Before acceptance, the host validates current durable startup inputs. On
+  managed macOS workers it publishes a bound approval before committing exit
+  disposition, so launchd can reuse its cached arguments with edited inputs.
+  Invalid inputs, approval failures, lifecycle contention, and edits requiring
+  unavailable runtime packages return a cause-specific `409` and leave the old
+  worker running. Adding unavailable packages requires terminal `mono-agent restart`.
+  The host stops gracefully after response finish or a short bounded fallback
+  even if a client disconnects. There is no hard busy inventory/confirm
+  handshake: the web console warns about possible interruptions beforehand.
+- `POST {basePath}/v1/conversations/:id/compact` accepts `{}` or
+  `{ "model": "<provider:model>" }` (the model selection a turn on that
+  conversation would declare) and requests guarded, promptless compaction of
+  the exact idle conversation. It is present
+  only with `capabilities.manualCompaction: { version: 1 }`, uses the normal
+  operator bearer, and returns bounded manual status/counts without summary
+  text. Busy conversations return 409 `compaction_busy`, unsupported hosts 501
+  `compaction_unsupported`, and failures a bounded 500 `compaction_failed`. Clients
+  must feature-detect this additive capability; the wire schema remains 1.
+  If the HTTP client disconnects before the response completes, the adapter
+  aborts the responder's compaction signal; the harness retires an uncommitted
+  provider session fail-closed. An already committed result cannot be undone.
 - `POST {basePath}/v1/conversations/:id/context-imports` is present only when
   `capabilities.contextImport = { version: 1, maxTextBytes: 32768 }` is
   advertised. Its exact `{ text, idempotencyKey }` body imports canonical
@@ -107,10 +140,7 @@ Keep bearer values out of source config when possible. Set
   shared TUI override lane before the responder runs. The response is chunked
   `application/x-ndjson` with frames
   (`status | append | replace | event | finish | error`). Closing the socket
-  aborts the in-flight turn. Host Monitor wake keys in turn submissions or live
-  input additionally require the independent Monitor owner bearer in
-  `x-mono-agent-monitor-wake-authorization`; an ordinary operator API key cannot
-  authorize a Monitor flight.
+  aborts the in-flight turn.
 - `GET {basePath}/v1/conversations/:id/ask` - the current pending `AskUser`
   snapshot, or `{ ask: null }`.
 - `GET {basePath}/v1/interactions/:interactionId` - an exact pending or bounded
@@ -179,7 +209,12 @@ when the responder does not implement the corresponding ownership or authorized
 resource surface.
 The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
+
+Model advertisements optionally carry `supportsContext1M: true` and configured
+`context1M`; old readers/producers may omit them. The existing manual-compaction
+body also accepts an optional boolean `context1M`, forwarded without a user turn.
+Turn selection continues to travel through the existing metadata block.
 
 ## Architecture
 
@@ -189,17 +224,20 @@ An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the
    returned conversational base URL through its trace-source metadata.
-2. A TUI or web client reads `/v1/info` (including additive live skill, exact
+2. A web or ACP client reads `/v1/info` (including additive live skill, exact
    ask, and cron capabilities when provided), submits a turn, consumes
    structured NDJSON frames until `finish` or `error`, and may offer live input
    while that turn is active; disconnecting the turn stream aborts the request.
 
 Web host wakes carry `deliveryKey` on live-input requests and the legacy-named
-`processJobWakeDeliveryKey` on reserved fallback turns. That additive field now
-carries either a ProcessJobs key or a namespaced `monitor:<id>:<seq>` key. The
-server validates both, forwards the exact-run target to the responder, and moves
+`processJobWakeDeliveryKey` on reserved fallback turns. That field carries a ProcessJobs key. The
+server validates it, forwards the exact-run target to the responder, and moves
 the fallback identity onto a non-enumerable host-only metadata symbol so it
 cannot become prompt, history, or JSON wire content.
+
+The `@mono-agent/operator-adapter/client` subpath owns shared Node transport
+mechanics. Callers retain authentication, URL trust policy, error presentation,
+and their compatibility frame ceilings (1 MiB in legacy clients, 8 MiB in web).
 
 ### Package structure
 
@@ -211,11 +249,27 @@ cannot become prompt, history, or JSON wire content.
 
 ## Public API
 
+The optional app-owned `TuiAdapterOptions.processJobWakeAdmission` authority
+advertises `capabilities.processJobWakeAdmission: { version: 1 }`. Private web
+wake requests carry `processJobWakeAttempt` with their existing delivery key on
+`/v1/turns` and `/v1/live-input`. The adapter awaits durable exact-token marking
+before sending turn headers or offering input. Only explicit `unavailable` or
+`requeue` settlements await an exact durable release before returning a receipt.
+Missing capability, stale tokens, storage failure and stopping ownership refuse
+execution; lost receipts never imply non-admission. Token-less `process-job:`
+requests from older consoles use a private legacy fence: safe refusal permits
+only the same live fallback, never restart replay. Non-process-job delivery keys
+(such as parent-interruption notices) do not enter this authority. This does not
+expand the adapter-neutral responder contract or add a proof-lookup endpoint.
+
+
 ### Start here
 
 | API | Use it for |
 | --- | --- |
 | `startTuiAdapter` | Expose a structural responder over the conversational operator protocol. |
+| `readOperatorStreamFrames` / `operatorResponseFromFinishFrame` (`./client`) | Decode byte-bounded NDJSON and preserve multipart terminal responses. |
+| `fetchLongLivedTurn` / `fetchLongLivedHostWake` (`./client`) | Reuse the global dispatcher while disabling only the required inactivity timers. |
 | `TuiAdapterInfo` | Advertise identity, model choices, model-specific effort support, context windows, and an optional bounded skill registry. |
 | `loadTuiAdapterConfig` / `TUI_CONFIG_FIELDS` | Reuse the config-first host's `tui.*` validation and provenance metadata. |
 
@@ -270,6 +324,9 @@ TuiModelCatalogProvider
 TuiModelCatalogRequest
 TuiModelOption
 TuiProviderInfo
+TuiRestartAcceptance
+TuiRestartAuthority
+TuiRestartSupport
 TuiSkillAvailability
 TuiSkillInfo
 TuiSkillRegistry
@@ -279,12 +336,22 @@ redactTuiAdapterConfig
 startTuiAdapter
 ```
 
+**`@mono-agent/operator-adapter/client`**
+
+```text
+OperatorStreamFrameTooLargeError
+fetchLongLivedHostWake
+fetchLongLivedTurn
+operatorResponseFromFinishFrame
+readOperatorStreamFrames
+```
+
 <!-- public-api-inventory:end -->
 
 ## Dependency Boundary
 
 This adapter depends on Express plus shared `@mono-agent/agent-contracts`
-primitives. It must not depend on the agent harness, runtime adapter, operator
+primitives. Its Node client subpath uses Undici for long-lived requests. It must not depend on the agent harness, runtime adapter, operator
 surfaces, memory, observability, other communication adapters, or host composition
 code. Hosts compose it with structural responders.
 
@@ -297,11 +364,10 @@ loopback is a host decision guarded by `allowNonLoopback`.
 
 ## Related Documentation
 
-- [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
-- [Terminal UI](https://mono-agent-docs.vercel.app/observability/tui/)
-- [Always-on web console](https://mono-agent-docs.vercel.app/observability/web-console/)
-- [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Operator stream endpoint](https://docs.mono-agent.dev/channels/tui/)
+- [Always-on web console](https://docs.mono-agent.dev/observability/web-console/)
+- [Artifacts and traces](https://docs.mono-agent.dev/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 
 ## Verification
 

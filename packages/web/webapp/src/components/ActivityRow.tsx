@@ -155,9 +155,12 @@ export const truncatedLabel = (characters: number): string =>
 export function TruncationNotice({
   characters,
   onLoadFull,
+  loadLabel = "Load full output",
 }: {
   readonly characters?: number;
   readonly onLoadFull?: () => Promise<boolean>;
+  /** What the control fetches, in words: output for a tool body, a message for a parent's call. */
+  readonly loadLabel?: string;
 }) {
   const [state, setState] = useState<"idle" | "loading" | "failed">("idle");
   const size = characters === undefined ? "" : `, ${truncatedLabel(characters)}`;
@@ -178,7 +181,7 @@ export function TruncationNotice({
             );
           }}
         >
-          Load full output
+          {loadLabel}
         </button>
       )}
       {state === "loading" && <span>Loading…</span>}
@@ -290,17 +293,20 @@ export function ActivityStep({
   failed,
   duration,
   defaultOpen = false,
+  running = false,
   children,
 }: {
   readonly toolName: string;
-  readonly summary?: string;
+  readonly summary?: ReactNode;
   readonly failed?: string;
   readonly duration?: string;
   readonly defaultOpen?: boolean;
+  /** A member still in flight; styling only (a job's rail emphasises its current step). */
+  readonly running?: boolean;
   readonly children: ReactNode;
 }) {
   return (
-    <details className="activity-step" open={defaultOpen || undefined}>
+    <details className={`activity-step${running ? " is-running" : ""}`} open={defaultOpen || undefined}>
       <summary>
         <span className="activity-step-tool">{toolName}</span>
         <span className="activity-step-summary">{summary}</span>

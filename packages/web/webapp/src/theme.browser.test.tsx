@@ -101,9 +101,9 @@ function readHeaderPresentation(panel: HTMLElement, header: HTMLElement): Header
   expect(samplerRect.top).toBe(0);
   expect(samplerRect.left).toBe(0);
   expect(samplerRect.width).toBe(window.innerWidth);
-  expect(samplerRect.height).toBe(1);
+  expect(samplerRect.height).toBe(0); // Chromium browser tab has no top safe-area inset.
   expect(samplerStyle.pointerEvents).toBe("none");
-  expect(samplerStyle.zIndex).toBe("-1");
+  expect(samplerStyle.zIndex).toBe("50");
   expect(sampler.inert).toBe(true);
   expect(sampler.tabIndex).toBe(-1);
   expect(samplerStyle.backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
@@ -185,12 +185,50 @@ afterEach(async () => {
   await commands.emulateColorScheme(null);
   await page.viewport(414, 896);
   delete document.documentElement.dataset.consoleTheme;
+  document.documentElement.style.removeProperty("--status-bar-inset");
+  document.documentElement.style.removeProperty("--top-edge-clearance");
   document.title = "";
   document.head.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.remove());
   document.body.replaceChildren();
 });
 
 describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
+  it.each(THEMES)("exposes a fixed top edge with %s's header colour in both appearances", async (theme) => {
+    await page.viewport(viewport.width, viewport.height);
+    const { header } = renderHeaderFixture();
+    applyConsolePresentation({ hostName: "builder-01", displayName: "Builder", theme });
+    const strip = document.querySelector<HTMLElement>(".status-bar-surface")!;
+    const shell = document.querySelector<HTMLElement>(".app-shell")!;
+    const before = [shell, header].map((element) => element.getBoundingClientRect().toJSON());
+    expect(strip.getBoundingClientRect().height).toBe(0);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
+    for (const scheme of ["light", "dark"] as const) {
+      await emulateColorScheme(scheme);
+      const style = getComputedStyle(strip);
+      const rect = strip.getBoundingClientRect();
+      expect(style.position).toBe("fixed");
+      expect(style.zIndex).toBe("50");
+      expect(style.opacity).toBe("1");
+      expect(style.backdropFilter).toBe("none");
+      expect(style.backgroundColor).toBe(getComputedStyle(shell).backgroundColor);
+      expect(parseComputedColor(style.backgroundColor).alpha).toBe(1);
+      expect(rect.width).toBeGreaterThanOrEqual(window.innerWidth * 0.9);
+      expect(rect.height).toBe(47); // >10px: WebKit uses the box's CSS background directly.
+      expect(rect.top).toBe(0);
+      expect(getComputedStyle(header).paddingTop).toBe("47px");
+      expect(style.pointerEvents).toBe("none");
+      // Chromium's elementFromPoint honours pointer-events; WebKit's first
+      // fixedContainerEdges hit test ignores them. Temporarily enable hits.
+      strip.inert = false; // Chromium also suppresses hits on inert nodes.
+      strip.style.pointerEvents = "auto";
+      expect(document.elementFromPoint(window.innerWidth / 2, 4)).toBe(strip);
+      strip.style.removeProperty("pointer-events");
+      strip.inert = true;
+    }
+    document.documentElement.style.removeProperty("--status-bar-inset");
+    expect(strip.getBoundingClientRect().height).toBe(0);
+    expect([shell, header].map((element) => element.getBoundingClientRect().toJSON())).toEqual(before);
+  });
   it("transitions the initial shell between real light and dark media", async () => {
     await page.viewport(viewport.width, viewport.height);
     seedInitialThemeMetas();
@@ -236,5 +274,58 @@ describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
     expect(document.title).toBe("before");
     expect(initialLightMeta.content).toBe(initialLight);
     expect(initialDarkMeta.content).toBe(initialDark);
+  });
+});
+
+// Chromium's browser-tab context cannot emulate a Home Screen display-mode.
+// Override the *one* media-gated property with the production expression for
+// installed iPad cases; leave it untouched for excluded phone/tab cases.
+describe.each([
+  { name: "installed iPad", width: 1366, height: 1024, inset: 32, installed: true, padding: 72, floor: 72 },
+  { name: "inset-zero iPad window", width: 1366, height: 1024, inset: 0, installed: true, padding: 10, floor: 10 },
+  { name: "iPhone portrait", width: 390, height: 844, inset: 47, installed: false, padding: 47, floor: 47 },
+  { name: "iPhone landscape", width: 844, height: 390, inset: 0, installed: false, padding: 7, floor: 7 },
+  { name: "desktop browser tab", width: 1440, height: 900, inset: 0, installed: false, padding: 10, floor: 10 },
+  { name: "browser tab with inset", width: 1440, height: 900, inset: 32, installed: false, padding: 32, floor: 32 },
+] as const)("top-edge clearance on $name", (scenario) => {
+  it("clears header content and the toast without shifting excluded layouts", async () => {
+    await page.viewport(scenario.width, scenario.height);
+    const html = document.documentElement;
+    html.style.setProperty("--status-bar-inset", `${scenario.inset}px`);
+    if (scenario.installed) {
+      html.style.setProperty("--top-edge-clearance", "min(40px, calc(var(--status-bar-inset) * 100))");
+    }
+    const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
+    const strip = initialDocument.querySelector(".status-bar-surface")!;
+    const root = document.createElement("div");
+    root.id = "root";
+    root.innerHTML = `<div class="app-shell">
+      <div class="dashboard-panel"><div class="dashboard"><header class="dashboard-header">
+        <div class="dashboard-title-block"><span class="eyebrow">Console</span><strong>Agent</strong></div>
+        <button>New conversation</button></header></div></div>
+      <div class="chat-region"><div class="chat-panel"><header class="chat-header">
+        <div class="chat-title-block"><span class="eyebrow">Conversation</span><button>Title</button></div>
+        <button>Options</button></header></div></div></div>
+      <div class="project-page" style="position:absolute;top:0;width:340px;height:100%"><header class="project-header"><button class="project-back">Back</button>
+        <button>Project actions</button></header></div><div class="console-error"><button>Retry</button></div>`;
+    document.body.append(strip, root);
+    const sampler = strip.getBoundingClientRect();
+    expect(sampler.top).toBe(0);
+    expect(sampler.height).toBe(scenario.inset);
+    // Same fixed y=4 edge geometry as the iPhone soft-pocket fix.
+    if (scenario.inset >= 5) expect(sampler.bottom).toBeGreaterThan(4);
+    for (const selector of [".dashboard-header", ".chat-header", ".project-header"]) {
+      const header = document.querySelector<HTMLElement>(selector)!;
+      const computed = getComputedStyle(header);
+      const top = scenario.width <= 900 ? (scenario.installed ? scenario.padding : Math.max(7, scenario.inset)) : scenario.padding;
+      expect(computed.paddingTop).toBe(`${top}px`);
+      expect(header.getBoundingClientRect().top).toBe(0);
+      for (const content of header.querySelectorAll<HTMLElement>("button, .eyebrow")) {
+        expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(scenario.floor);
+      }
+    }
+    const toast = document.querySelector<HTMLElement>(".console-error")!;
+    expect(toast.getBoundingClientRect().top).toBe(Math.max(12, scenario.inset + (scenario.installed && scenario.inset > 0 ? 40 : 0)));
+    if (!scenario.installed) expect(getComputedStyle(html).getPropertyValue("--top-edge-clearance").trim()).toBe("0px");
   });
 });

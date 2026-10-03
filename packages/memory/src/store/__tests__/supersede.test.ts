@@ -12,8 +12,8 @@ function note(id: string, text: string): MemoryRecord {
 describe("supersede", () => {
   it("invalidates the old record (keeps the row) and links the new one", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => new Date("2026-06-16T00:00:00.000Z") });
-    await db.upsert(note("old", "Morgan lives in Berlin"));
-    await db.supersede("old", note("new", "Morgan lives in Lisbon"));
+    await db.upsert(note("old", "Morgan lives in Ostwick"));
+    await db.supersede("old", note("new", "Morgan lives in Thistlemoor"));
 
     const old = db.get("old");
     expect(old).toBeDefined();                       // not deleted
@@ -28,8 +28,8 @@ describe("supersede", () => {
 
   it("excludes the superseded record from default recall but keeps it for includeInvalid", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
-    await db.upsert(note("old", "Berlin city note"));
-    await db.supersede("old", note("new", "Lisbon city note"));
+    await db.upsert(note("old", "Ostwick city note"));
+    await db.supersede("old", note("new", "Thistlemoor city note"));
     const live = await db.recall("city", { topK: 5 });
     expect(live.map((h) => h.record.id)).not.toContain("old");
     const all = await db.recall("city", { topK: 5, includeInvalid: true });
@@ -39,8 +39,8 @@ describe("supersede", () => {
 
   it("rejects an unknown oldId or a self-supersede", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
-    await db.upsert(note("old", "Berlin"));
-    await expect(db.supersede("missing", note("new", "Lisbon"))).rejects.toThrow(/unknown memory/);
+    await db.upsert(note("old", "Ostwick"));
+    await expect(db.supersede("missing", note("new", "Thistlemoor"))).rejects.toThrow(/unknown memory/);
     await expect(db.supersede("old", note("old", "self"))).rejects.toThrow(/distinct id/);
     db.close();
   });
@@ -58,8 +58,8 @@ describe("supersede", () => {
       },
     };
     const db = openMemoryDb({ path: ":memory:", embeddings, dim: 64, clock: () => new Date("2026-06-16T00:00:00.000Z") });
-    await db.upsert(note("old", "Berlin city note"));
-    await db.upsert(note("new", "Lisbon city note"));
+    await db.upsert(note("old", "Ostwick city note"));
+    await db.upsert(note("new", "Thistlemoor city note"));
     expect(calls).toBe(2);
 
     fail = true;

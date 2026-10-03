@@ -6,6 +6,13 @@ import {
 } from "@mono-agent/runtime-adapter";
 import type { AgentHarnessOptions } from "./types.js";
 
+export class ProviderSessionModelChangedError extends Error {
+  constructor() {
+    super("Conversation model changed before compaction.");
+    this.name = "ProviderSessionModelChangedError";
+  }
+}
+
 export interface ProviderSessionHandle {
   readonly providerSessionId: string;
   readonly modelKey?: string;

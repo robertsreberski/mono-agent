@@ -64,9 +64,11 @@ function buildNotifiableBot(
       bot.api.config.use(async (_prev, method, payload) => {
         const typedPayload = payload as Record<string, unknown>;
         calls.push({ method, payload: typedPayload });
-        if (method === "sendMessage") {
+        if (method === "sendMessage" || method === "sendRichMessage") {
           await behavior.beforeSend?.();
-          const sends = calls.filter((call) => call.method === "sendMessage").length;
+          const sends = calls.filter(
+            (call) => call.method === "sendMessage" || call.method === "sendRichMessage",
+          ).length;
           if (behavior.failSendAfter !== undefined && sends > behavior.failSendAfter) {
             throw new Error("send failed");
           }
@@ -74,7 +76,9 @@ function buildNotifiableBot(
             message_id: nextMessageId++,
             date: 0,
             chat: { id: typedPayload.chat_id, type: "private" },
-            text: typedPayload.text,
+            ...(method === "sendRichMessage"
+              ? { rich_message: typedPayload.rich_message }
+              : { text: typedPayload.text }),
           });
         }
         if (method === "editMessageText") {
@@ -92,6 +96,15 @@ function buildNotifiableBot(
     },
   });
   return { controller, calls };
+}
+
+function messageSends(calls: readonly RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => call.method === "sendMessage" || call.method === "sendRichMessage");
+}
+
+function callText(call: RecordedCall): unknown {
+  const richMessage = call.payload.rich_message as { markdown?: unknown } | undefined;
+  return richMessage?.markdown ?? call.payload.text;
 }
 
 describe("createTelegramBot notify (proactive)", () => {
@@ -116,12 +129,15 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(Reflect.get(captured?.metadata ?? {}, Symbol.for("mono-agent.process-job-wake.delivery-key.v1")))
       .toBe("process-job:telegram-wake");
     expect(JSON.stringify(captured?.metadata)).not.toContain("process-job:telegram-wake");
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent).toHaveLength(1);
     expect(calls.filter((call) => call.method === "editMessageText")).toEqual([]);
-    expect(sent.at(-1)?.payload).toMatchObject({
-      chat_id: 42,
-      text: "Morning brief ready",
+    expect(sent.at(-1)).toMatchObject({
+      method: "sendRichMessage",
+      payload: {
+        chat_id: 42,
+        rich_message: { markdown: "Morning brief ready" },
+      },
     });
   });
 
@@ -141,10 +157,36 @@ describe("createTelegramBot notify (proactive)", () => {
 
     await controller.notify(42, "Research this in the background.");
 
-    expect(calls.filter((call) => call.method === "sendMessage").map((call) => call.payload.text))
-      .toEqual(["Research complete"]);
-    expect(calls.some((call) => String(call.payload.text).includes("Searching the web")))
+    expect(messageSends(calls).map(callText)).toEqual(["Research complete"]);
+    expect(calls.some((call) => String(callText(call)).includes("Searching the web")))
       .toBe(false);
+  });
+
+  it("stops proactive typing activity when the responder fails before finish", async () => {
+    vi.useFakeTimers();
+    try {
+      const responder: AgentResponder = {
+        async respond(_request, stream) {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "t1",
+            name: "WebSearch",
+            arguments: { query: "scheduled research" },
+          });
+          throw new Error("responder failed");
+        },
+      };
+      const { controller, calls } = buildNotifiableBot(responder);
+
+      await expect(controller.notify(42, "Research this in the background."))
+        .resolves.toEqual({ delivered: false, reason: "responder failed" });
+      const activityCount = calls.filter((call) => call.method === "sendChatAction").length;
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(calls.filter((call) => call.method === "sendChatAction")).toHaveLength(activityCount);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("verbatim mode posts the text as-is without running a turn and records it to history", async () => {
@@ -164,14 +206,40 @@ describe("createTelegramBot notify (proactive)", () => {
     const result = await controller.notify(42, "Your morning brief: all clear.", { verbatim: true });
 
     expect(result).toEqual({ delivered: true });
-    // No model turn ran — the body is posted through the normal stream (markdown
-    // rendering still applies, so punctuation may be MarkdownV2-escaped).
+    // No model turn ran — the body is posted through the normal rich stream.
     expect(responded).toBe(false);
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent).toHaveLength(1);
-    expect(String(sent.at(-1)?.payload.text)).toContain("Your morning brief");
+    expect(String(callText(sent.at(-1)!))).toContain("Your morning brief");
     // The UNrendered body is recorded to history so a later reply resumes with it in context.
     expect(verbatimCalls).toEqual([["telegram:42", "Your morning brief: all clear."]]);
+  });
+
+  it("reports a deleted forum topic with a stable code instead of a generic failure", async () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "should not run" };
+      },
+      async deliverVerbatim() {},
+    };
+    const controller = createTelegramBot({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder,
+      stream: { maxSendRetries: 0 },
+      botFactory: () => {
+        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        bot.api.config.use(async (_prev, method) => (
+          method === "sendMessage" || method === "sendRichMessage"
+            ? { ok: false, error_code: 400, description: "Bad Request: message thread not found" }
+            : ok(true)
+        ) as never);
+        return bot;
+      },
+    });
+
+    await expect(controller.notify({ chatId: -1001, messageThreadId: 77 }, "Digest.", { verbatim: true }))
+      .resolves.toMatchObject({ delivered: false, code: "telegram_topic_gone" });
   });
 
   it("forwards silent through the verbatim path as disable_notification", async () => {
@@ -185,7 +253,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
     await controller.notify(42, "Overnight digest.", { verbatim: true, silent: true });
 
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent).toHaveLength(1);
     expect(sent.at(-1)?.payload).toMatchObject({ disable_notification: true });
   });
@@ -200,7 +268,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
     await controller.notify(42, "Anything urgent?");
 
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent.at(-1)?.payload.disable_notification).toBeUndefined();
   });
 
@@ -254,7 +322,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
   it.each(["timed_out", "succeeded"] as const)("retains bounded internal busy and question state as plain Telegram text (%s)", async (state) => {
     const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
-    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentSend",
+    const internal: ProcessJobProjection = { ...processJobProjection("running"), kind: "internal", tool: "AgentManage",
       instanceId: "helper", childStillBusy: false };
     await controller.updateProcessJob(42, internal);
     await controller.updateProcessJob(42, { ...internal, state, childStillBusy: state === "timed_out",
@@ -267,6 +335,48 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(update.text).toContain('Options: "*one*", "two"');
     expect([...String(update.text)].length).toBeLessThanOrEqual(3500);
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+  });
+
+  it("renders a bounded untrusted peer question as plain Telegram text", async () => {
+    const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
+    const internal: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "awaiting_answer",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "<b>choose</b>", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } } };
+    await controller.updateProcessJob(42, internal);
+    const sent = calls.filter((call) => call.method === "sendMessage").at(-1)!.payload;
+    expect(sent.text).toContain("questionId 11111111-1111-4111-8111-111111111111");
+    expect(sent.text).toContain("[untrusted; not owner approval]");
+    expect(sent.text).toContain("<b>choose</b>");
+    expect(sent.text).toContain("• question_1: free text");
+    expect(sent.parse_mode).toBeUndefined();
+    const answered = { ...internal, peerQuestion: { ...internal.peerQuestion!, state: "answered" as const } };
+    await expect(controller.updateProcessJob(42, answered)).resolves.toMatchObject({ code: "surface_updated" });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
+    const edited = calls.filter((call) => call.method === "editMessageText").at(-1)!.payload;
+    expect(edited.text).toContain("Peer question from finance/portfolio: Answered");
+    // A stale awaiting_answer projection, or another question, never reverts a retired card.
+    await expect(controller.updateProcessJob(42, internal)).resolves.toMatchObject({ code: "surface_unchanged" });
+    const other = { ...internal, peerQuestion: { ...internal.peerQuestion!, questionId: "22222222-2222-4222-8222-222222222222", state: "expired" as const } };
+    await expect(controller.updateProcessJob(42, other)).resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(calls.filter((call) => call.method === "editMessageText")).toHaveLength(1);
+  });
+
+  it("suppresses only explicit retirement-only updates without a known message, never a first terminal post", async () => {
+    const { controller, calls } = buildNotifiableBot({ async respond() { return { text: "unused" }; } });
+    const retired: ProcessJobProjection = { ...processJobProjection("succeeded"), kind: "internal", tool: "PeerAgent",
+      instanceId: "finance", childStillBusy: false, peerQuestion: { state: "expired",
+        questionId: "11111111-1111-4111-8111-111111111111", peer: "finance", thread: "portfolio",
+        message: "Proceed?", expiresAt: "2026-09-23T20:00:00.000Z",
+        requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } } };
+    await expect(controller.updateProcessJob(42, retired, { retirementOnly: true }))
+      .resolves.toMatchObject({ code: "surface_unchanged" });
+    expect(calls.filter((call) => call.method === "sendMessage" || call.method === "editMessageText")).toHaveLength(0);
+    await expect(controller.updateProcessJob(42, retired)).resolves.toMatchObject({ delivered: true });
+    const sent = calls.filter((call) => call.method === "sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload.text).toContain("Expired");
   });
 
   it("keeps the child-busy warning off a running job whose child is still working", async () => {

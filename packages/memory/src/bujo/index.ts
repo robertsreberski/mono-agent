@@ -1,14 +1,27 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
+export { applyExplicitMemoryCurate, restoreExplicitMemoryCurate, resolveExplicitMemoryCurateRoot, ExplicitMemoryCurateError } from "./explicit-curate.js";
+export type { ApplyExplicitMemoryCurateOptions, RestoreExplicitMemoryCurateOptions } from "./explicit-curate.js";
+export { inspectCurateSource, curateEstimate, proposeCurate, proposeCoarseCurate, proposePersonAssociations, proposeTasksToNotes, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS,
+  MAX_CURATE_OPERATOR_MERGES, OWNER_ENTITY_ID, parseCurateOperatorMerges, validateCurateOperatorMerge } from "./curate.js";
+export { MAX_CURATE_OWNER_ASSOCIATIONS, ownerAssociationReason, proposeOwnerAssociations, validateCurateOwnerAssociation } from "./curate-owner.js";
+export type { CurateOwnerAssociation, CurateOwnerAssociationReason, CurateOwnerBackfillScan } from "./curate-owner.js";
+export { MAX_CURATE_PERSON_ASSOCIATIONS, MAX_CURATE_PERSON_ASSOCIATIONS_PER_PASS, validateCuratePersonAssociation } from "./curate-people.js";
+export type { CuratePersonAssociation, CuratePersonAssociationReason, CuratePersonLinkScan } from "./curate-people.js";
+export type { CurateOperatorMerge, CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult, TasksToNotesOptions, TasksToNotesScan } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
-  AUTO_RECALL_MAX_HITS,
   AUTO_RECALL_MIN_SCORE,
-  AUTO_RECALL_RELATIVE_SCORE,
-  composeRecallBlock,
-  selectAutomaticRecallHits,
+  formatPossiblyRelevantBlock,
+  POSSIBLY_RELEVANT_HEADING,
+  POSSIBLY_RELEVANT_MAX_BYTES,
+  POSSIBLY_RELEVANT_MAX_LINES,
+  POSSIBLY_RELEVANT_MIN_SCORE,
+  POSSIBLY_RELEVANT_WINDOW,
+  recallLineStatus,
+  selectPossiblyRelevantRecallHits,
 } from "./recall.js";
-export { isConversationRelativeQuery } from "./recall-evidence.js";
+export type { FormattedRecallRecord, PossiblyRelevantRecord } from "./recall.js";
 export {
   rebuildFromMarkdown,
   rollbackMemoryIndex,
@@ -139,24 +152,23 @@ export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 export { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";
 
-// Opt-in direct-capture surface for embedders and offline calibration tooling. The bundled harness
-// does not call the loose `captureTurn` path; `captureTurnStrict` also remains the internal engine
-// behind `persistCompletedTurn`.
-export { captureTurn, captureTurnStrict } from "./capture.js";
+export { captureTurnStrict } from "./capture.js";
 export type { CaptureTurnResult } from "./capture.js";
 export {
-  extractCapturePlan,
   extractCapturePlanStrict,
   MAX_CAPTURE_ENTITIES,
   MAX_CAPTURE_MEMORIES,
   MAX_CAPTURE_RELATIONS,
 } from "./capture-batch.js";
-export type { CapturePlan } from "./capture-batch.js";
+export type { CaptureObservationContext, CapturePlan } from "./capture-batch.js";
 export {
   MAX_KNOWN_ENTITY_HINTS,
+  findDuplicateEntityNames,
+  foldEntityName,
   renderKnownEntityHints,
   selectKnownEntityHints,
 } from "./entity-reuse.js";
+export type { DuplicateEntityName, KnownEntity, KnownEntityHint } from "./entity-reuse.js";
 export {
   auditCompletedTurnIntake,
   inspectCompletedTurnIntake,
@@ -174,7 +186,7 @@ export type { CandidateMemory } from "./distill.js";
 export { reconcile } from "./reconcile.js";
 export { reconcileBatch } from "./reconcile.js";
 export type { ReconcileAction, ReconcileDeps } from "./reconcile.js";
-export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
+export type { ExtractedEntity, ExtractedRelation } from "./entities.js";
 export { appendAssociation, appendGraphBatch, readGraph } from "./graph.js";
 export type { GraphBatchInput, GraphBatchResult } from "./graph.js";
 export { auditCanonicalGraphParity } from "./graph-parity.js";

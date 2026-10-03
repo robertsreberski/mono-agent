@@ -18,9 +18,7 @@ import type {
   SlackRequestOptions,
   SlackWebApi,
 } from "@mono-agent/slack-adapter";
-import { TelegramApiError } from "@mono-agent/telegram-adapter";
 import type {
-  TelegramEditMessageTextParams,
   TelegramRequestOptions,
   TelegramSendMessageParams,
   TelegramSentMessage,
@@ -120,6 +118,25 @@ describe("resolveAdapterSendToolsSettings", () => {
     const settings = await resolveAdapterSendToolsSettings({ env: {}, cwd: dir, configPath });
 
     expect(settings).toBeUndefined();
+  });
+
+  it("carries telegram.projects into the send tool settings only when enabled", async () => {
+    const telegram = { enabled: true, botToken: "telegram-token", allowedChatIds: ["42"] };
+    const policy = { allowedTools: ["TelegramSendMessage"], disallowedTools: [] };
+    const off = await resolveAdapterSendToolsSettings({ env: {}, cwd: dir, configPath: await writeConfig({ ...baseConfig(), telegram }) }, policy);
+    expect(off?.telegram).not.toHaveProperty("projects");
+    const on = await resolveAdapterSendToolsSettings({ env: {}, cwd: dir,
+      configPath: await writeConfig({ ...baseConfig(), telegram: { ...telegram, projects: { enabled: true } } }) }, policy);
+    expect(on?.telegram?.projects).toBe(true);
+  });
+
+  it("issues the bridge capability to a file-only Telegram run only when projects need it", async () => {
+    const issue = vi.fn(() => ({ url: "http://127.0.0.1:1", token: "t", release: vi.fn() }));
+    const input = { request: { conversationId: "telegram:-1001:77" }, runId: "run-file-only" };
+    await createAdapterSendToolsRuntimeExtension("/cfg", "/agent", ["TelegramSendFile"], undefined, undefined, undefined, { issueDeliveryHistoryCapability: issue })(input);
+    expect(issue).not.toHaveBeenCalled();
+    await createAdapterSendToolsRuntimeExtension("/cfg", "/agent", ["TelegramSendFile"], undefined, undefined, undefined, { issueDeliveryHistoryCapability: issue }, true)(input);
+    expect(issue).toHaveBeenCalledWith(expect.objectContaining({ allowedChannels: ["telegram"] }));
   });
 
   it("returns enabled Slack and Telegram send tool settings when the tool policy allows them", async () => {
@@ -1123,6 +1140,71 @@ describe("adapter send MCP tools", () => {
     }
   });
 
+  it("posts TelegramSendMessage into a forum topic and records it to that topic's history", async () => {
+    const records: Array<{ conversationId: string; text: string; idempotencyKey: string }> = [];
+    const historyBridge = await startInteractionBridge({
+      host: "127.0.0.1",
+      port: 0,
+      recordDeliveryHistory: async (input) => {
+        records.push(input);
+        return { recorded: true };
+      },
+    });
+    const capability = historyBridge.issueDeliveryHistoryCapability({
+      runId: "run-topic-history",
+      producerConversationId: "cron:topic-history",
+      allowedChannels: ["telegram"],
+    });
+    const sent: TelegramSendMessageParams[] = [];
+    try {
+      const server = await createAdapterSendToolsServer(
+        bothAdaptersSettings(),
+        {
+          telegram: {
+            async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+              sent.push(params);
+              return {
+                message_id: 89,
+                chat: { id: params.chat_id },
+                ...(params.message_thread_id === undefined
+                  ? {}
+                  : { message_thread_id: params.message_thread_id, is_topic_message: true }),
+                text: params.text,
+              };
+            },
+          },
+        },
+        undefined,
+        { deliveryHistory: { bridgeUrl: capability.url, bridgeToken: capability.token } },
+      );
+
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({
+          name: "TelegramSendMessage",
+          arguments: { chat_id: 42, message_thread_id: 7, text: "topic digest" },
+        });
+        expect(result.structuredContent).toMatchObject({
+          ok: true,
+          chat_id: 42,
+          message_thread_id: 7,
+          history: { accepted: true, code: "queued" },
+        });
+      });
+
+      expect(sent).toEqual([{ chat_id: 42, message_thread_id: 7, text: "topic digest" }]);
+      await vi.waitFor(() => {
+        expect(records).toEqual([{
+          conversationId: "telegram:42:7",
+          text: "topic digest",
+          idempotencyKey: "adapter-send:telegram:42:89",
+        }]);
+      });
+    } finally {
+      capability.release();
+      await historyBridge.stop();
+    }
+  });
+
   it("keeps a successful platform delivery authoritative when history queueing fails", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
     const server = await createAdapterSendToolsServer(
@@ -1192,7 +1274,7 @@ describe("adapter send MCP tools", () => {
           signals.telegram = options?.signal;
           return await waitForAbort<TelegramSentMessage>(options?.signal);
         },
-        async sendDocument(params, options?: TelegramRequestOptions) {
+        async sendDocument(_params, options?: TelegramRequestOptions) {
           signals.file = options?.signal;
           return await waitForAbort<TelegramSentMessage>(options?.signal);
         },
@@ -1987,6 +2069,21 @@ describe("AskUser tool", () => {
     expect(adapterSendToolNames(settings as AdapterSendToolsSettings)).toEqual(["AskUser"]);
   });
 
+  it("names AskUser before every channel send tool", () => {
+    const names = adapterSendToolNames({
+      slack: { botToken: "xoxb", allowedChannelIds: ["C1"], allowAllChannels: false },
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: true, file: true },
+      },
+      askUser: { bridgeUrl: "http://127.0.0.1:9999", bridgeToken: "bridge-token", timeoutMs: 5_000 },
+    });
+
+    expect(names).toEqual(["AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile"]);
+  });
+
   it("omits askUser when the interaction bridge env is missing", async () => {
     const configPath = await writeConfig(baseConfig());
 
@@ -2032,7 +2129,11 @@ describe("AskUser tool", () => {
     );
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendMessage", "AskUser"]);
+      // AskUser leads the exposed list, ahead of the channel send tools.
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["AskUser", "TelegramSendMessage"]);
+      // The description carries the trigger condition, not only the mechanics.
+      expect(tools.tools.find((tool) => tool.name === "AskUser")?.description)
+        .toContain("before doing the work, not after");
       expect((await client.callTool({ name: "AskUser", arguments: { questions: [{ header: "Test", question: "Proceed?", options: [{ label: "Yes", description: "Proceed" }, { label: "No", description: "Stop" }] }] } })).isError).toBe(true);
     });
   });
@@ -2233,6 +2334,99 @@ describe("TelegramSendFile path upload", () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
     expect(telegram.sendDocument).toHaveBeenCalledTimes(2);
     expect(telegram.sendDocument.mock.calls.map(([params]) => params.chat_id)).toEqual(["42", "42"]);
+  });
+
+  it("keeps unscoped sends to the current chat in the current forum topic by default", async () => {
+    const telegram = {
+      sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({ message_id: 1, chat: { id: params.chat_id } })),
+      sendDocument: vi.fn(async (params: { chat_id: string | number }) => ({ message_id: 2, chat: { id: params.chat_id } })),
+    };
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["-1001", "42"],
+        allowAllChats: false,
+        tools: { send: true, file: true },
+        producingConversationId: "telegram:-1001:7#2026-09-28",
+      },
+    }, { telegram });
+
+    await withMcpClient(server, async (client) => {
+      for (const args of [
+        { chat_id: -1001, text: "same chat" },
+        { chat_id: "-1001", message_thread_id: 9, text: "explicit topic" },
+        { chat_id: -1001, reply_to_message_id: 55, text: "reply" },
+        { chat_id: 42, text: "other chat" },
+      ]) {
+        const result = await client.callTool({ name: "TelegramSendMessage", arguments: args });
+        expect(result.isError).not.toBe(true);
+      }
+      const file = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: -1001, data: Buffer.from("x").toString("base64"), filename: "x.txt" },
+      });
+      expect(file.isError).not.toBe(true);
+    });
+
+    expect(telegram.sendMessage.mock.calls.map(([params]) => [params.text, params.message_thread_id])).toEqual([
+      ["same chat", 7],
+      ["explicit topic", 9],
+      ["reply", undefined],
+      ["other chat", undefined],
+    ]);
+    expect(telegram.sendDocument.mock.calls.map(([params]) => params))
+      .toEqual([expect.objectContaining({ chat_id: -1001, message_thread_id: 7 })]);
+  });
+
+  it("binds producing-conversation sends to the originating forum topic", async () => {
+    const telegram = {
+      sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({
+        message_id: 1,
+        chat: { id: params.chat_id },
+        ...(params.message_thread_id === undefined
+          ? {}
+          : { message_thread_id: params.message_thread_id, is_topic_message: true }),
+      })),
+      sendDocument: vi.fn(async (params: { chat_id: string | number }) => ({ message_id: 2, chat: { id: params.chat_id } })),
+    };
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["-1001"],
+        allowAllChats: false,
+        tools: { send: true, file: true },
+        sendTools: { scope: "producing-conversation" },
+        producingConversationId: "telegram:-1001:7#2026-09-28",
+      },
+    }, { telegram });
+
+    await withMcpClient(server, async (client) => {
+      const inTopic = await client.callTool({
+        name: "TelegramSendMessage",
+        arguments: { chat_id: -1001, text: "same topic" },
+      });
+      expect(inTopic.isError).not.toBe(true);
+
+      const otherTopic = await client.callTool({
+        name: "TelegramSendMessage",
+        arguments: { chat_id: -1001, message_thread_id: 8, text: "other topic" },
+      });
+      expect(otherTopic.isError).toBe(true);
+      expect(JSON.stringify(otherTopic.content)).toContain(
+        "TelegramSendMessage: message_thread_id must match the producing Telegram conversation",
+      );
+
+      const file = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: { kind: "document", data: Buffer.from("plan").toString("base64"), filename: "plan.txt" },
+      });
+      expect(file.isError).not.toBe(true);
+    });
+
+    expect(telegram.sendMessage.mock.calls.map(([params]) => [params.chat_id, params.message_thread_id]))
+      .toEqual([[-1001, 7]]);
+    expect(telegram.sendDocument.mock.calls.map(([params]) => params))
+      .toEqual([expect.objectContaining({ chat_id: "-1001", message_thread_id: 7 })]);
   });
 
   it.each([
@@ -2497,5 +2691,147 @@ describe("self-hosted server send tools", () => {
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result.content)).toContain("upload cap");
     });
+  });
+});
+
+describe("Telegram sends by projectId", () => {
+  const projectSettings = (projects = true): AdapterSendToolsSettings => ({
+    telegram: {
+      botToken: "telegram-token",
+      allowedChatIds: ["-1001"],
+      allowAllChats: false,
+      tools: { send: true, file: true },
+      ...(projects ? { projects: true } : {}),
+    },
+  });
+
+  async function bridgeWith(port: Parameters<Awaited<ReturnType<typeof startInteractionBridge>>["registerTelegramProjects"]>[0]) {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, recordDeliveryHistory: async () => ({ recorded: true }) });
+    bridge.registerTelegramProjects(port);
+    const capability = bridge.issueDeliveryHistoryCapability({ runId: "run-project-send", producerConversationId: "telegram:-1001", allowedChannels: ["telegram"] });
+    return { bridge, deliveryHistory: { bridgeUrl: capability.url, bridgeToken: capability.token } };
+  }
+
+  it("keeps the existing schemas byte for byte when the feature is off", async () => {
+    const server = await createAdapterSendToolsServer(projectSettings(false), {
+      telegram: { sendMessage: vi.fn(), sendDocument: vi.fn() },
+    });
+    await withMcpClient(server, async (client) => {
+      for (const tool of (await client.listTools()).tools) {
+        expect(tool.inputSchema.properties).not.toHaveProperty("projectId");
+        expect(tool.inputSchema.required).toContain(tool.name === "TelegramSendMessage" ? "chat_id" : "kind");
+      }
+      const message = (await client.listTools()).tools.find((tool) => tool.name === "TelegramSendMessage")!;
+      expect(message.inputSchema.required).toEqual(["chat_id", "text"]);
+    });
+  });
+
+  it("posts into the project's topic without exposing chat or topic ids, and refuses conflicting targets", async () => {
+    const resolveDestination = vi.fn(async () => ({ ok: true as const, conversationId: "telegram:-1001:77", label: "Trips › Flights" }));
+    const { bridge, deliveryHistory } = await bridgeWith({ resolveDestination, reportGone: vi.fn(async () => {}) });
+    const sent: TelegramSendMessageParams[] = [];
+    try {
+      const server = await createAdapterSendToolsServer(projectSettings(), {
+        telegram: {
+          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+            sent.push(params);
+            return { message_id: 91, chat: { id: params.chat_id }, message_thread_id: 77, is_topic_message: true, text: params.text };
+          },
+        },
+      }, undefined, { deliveryHistory });
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({ name: "TelegramSendMessage", arguments: { projectId: "p1", text: "Fares dropped." } });
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toEqual(expect.objectContaining({ ok: true, projectId: "p1", destination: "Trips › Flights", message_id: 91 }));
+        expect(JSON.stringify(result)).not.toMatch(/-1001|"message_thread_id"|chat_id/u);
+        const conflict = await client.callTool({ name: "TelegramSendMessage", arguments: { projectId: "p1", chat_id: -1001, text: "x" } });
+        expect(conflict.isError).toBe(true);
+        expect(JSON.stringify(conflict)).toContain("projectId cannot be combined");
+        const neither = await client.callTool({ name: "TelegramSendMessage", arguments: { text: "x" } });
+        expect(JSON.stringify(neither)).toContain("chat_id or projectId is required");
+      });
+      expect(sent).toEqual([{ chat_id: -1001, message_thread_id: 77, text: "Fares dropped." }]);
+      expect(resolveDestination).toHaveBeenCalledTimes(1);
+    } finally { await bridge.stop(); }
+  });
+
+  it("refuses closed, gone, unlinked and non-allowlisted destinations without sending or falling back", async () => {
+    const resolveDestination = vi.fn()
+      .mockResolvedValueOnce({ ok: false, code: "external_conversation_closed", message: "That project's Telegram topic is closed. Ask the user to reopen it in Telegram first." })
+      .mockResolvedValueOnce({ ok: true, conversationId: "telegram:-2002:5", label: "Elsewhere › Topic" });
+    const { bridge, deliveryHistory } = await bridgeWith({ resolveDestination, reportGone: vi.fn(async () => {}) });
+    const sendMessage = vi.fn();
+    try {
+      const server = await createAdapterSendToolsServer(projectSettings(), { telegram: { sendMessage } }, undefined, { deliveryHistory });
+      await withMcpClient(server, async (client) => {
+        const closed = await client.callTool({ name: "TelegramSendMessage", arguments: { projectId: "p1", text: "x" } });
+        expect(closed.isError).toBe(true);
+        expect(JSON.stringify(closed)).toContain("is closed");
+        const foreign = await client.callTool({ name: "TelegramSendMessage", arguments: { projectId: "p2", text: "x" } });
+        expect(JSON.stringify(foreign)).toContain("not allowed by Telegram adapter config");
+      });
+      expect(sendMessage).not.toHaveBeenCalled();
+    } finally { await bridge.stop(); }
+    // Without the bridge port the project cannot be resolved at all.
+    const orphan = await startInteractionBridge({ host: "127.0.0.1", port: 0 });
+    const capability = orphan.issueDeliveryHistoryCapability({ runId: "run-orphan", producerConversationId: "telegram:-1001", allowedChannels: ["telegram"] });
+    try {
+      const server = await createAdapterSendToolsServer(projectSettings(), { telegram: { sendMessage } }, undefined,
+        { deliveryHistory: { bridgeUrl: capability.url, bridgeToken: capability.token } });
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({ name: "TelegramSendMessage", arguments: { projectId: "p1", text: "x" } });
+        expect(JSON.stringify(result)).toContain("Telegram project destinations are unavailable");
+      });
+      expect(sendMessage).not.toHaveBeenCalled();
+    } finally { await orphan.stop(); }
+  });
+
+  it("leaves a thread-not-found failure untouched and unreported when the feature is off", async () => {
+    const reportGone = vi.fn(async () => {});
+    const { bridge, deliveryHistory } = await bridgeWith({ resolveDestination: vi.fn(), reportGone });
+    const { TelegramApiError } = await import("@mono-agent/telegram-adapter");
+    const gone = new TelegramApiError("Bad Request: message thread not found", { kind: "telegram", method: "sendMessage", telegramDescription: "Bad Request: message thread not found" });
+    try {
+      const server = await createAdapterSendToolsServer(projectSettings(false), {
+        telegram: {
+          sendMessage: vi.fn(async () => { throw gone; }),
+          sendDocument: vi.fn(async () => { throw gone; }),
+        },
+      }, undefined, { deliveryHistory });
+      await withMcpClient(server, async (client) => {
+        const message = await client.callTool({ name: "TelegramSendMessage", arguments: { chat_id: -1001, message_thread_id: 77, text: "x" } });
+        const file = await client.callTool({ name: "TelegramSendFile", arguments: { kind: "document", chat_id: -1001, message_thread_id: 77, data: Buffer.from("hi").toString("base64"), filename: "a.txt" } });
+        for (const result of [message, file]) {
+          expect(result.isError).toBe(true);
+          expect(JSON.stringify(result)).toContain("Bad Request: message thread not found");
+          expect(JSON.stringify(result)).not.toContain("no longer exists");
+        }
+      });
+      expect(reportGone).not.toHaveBeenCalled();
+    } finally { await bridge.stop(); }
+  });
+
+  it("reports a topic Telegram says is gone and fails honestly", async () => {
+    const reportGone = vi.fn(async () => {});
+    const { bridge, deliveryHistory } = await bridgeWith({
+      resolveDestination: async () => ({ ok: true, conversationId: "telegram:-1001:77", label: "Trips › Flights" }),
+      reportGone,
+    });
+    const { TelegramApiError } = await import("@mono-agent/telegram-adapter");
+    try {
+      const server = await createAdapterSendToolsServer(projectSettings(), {
+        telegram: {
+          sendDocument: vi.fn(async () => {
+            throw new TelegramApiError("Bad Request", { kind: "telegram", method: "sendDocument", telegramDescription: "Bad Request: message thread not found" });
+          }),
+        },
+      }, undefined, { deliveryHistory });
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({ name: "TelegramSendFile", arguments: { kind: "document", projectId: "p1", data: Buffer.from("hi").toString("base64"), filename: "a.txt" } });
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toContain("that Telegram forum topic no longer exists");
+      });
+      expect(reportGone).toHaveBeenCalledWith("telegram:-1001:77");
+    } finally { await bridge.stop(); }
   });
 });

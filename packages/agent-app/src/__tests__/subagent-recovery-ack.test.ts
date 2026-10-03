@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 // @ts-expect-error Private kernel tool boundary.
-import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 // @ts-expect-error Real native engine; only provider transport is fake.
 import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
@@ -29,7 +29,7 @@ async function fixture(continuity: "retained" | "lost" | "unknown" = "retained")
   await handle.publishOwned("confirm", { identity, sequence: 7, disposition: { status: "timeout", reason: "timeout", continuity }, released: true });
   return { root, handle, registry, identity, deny: () => { allowed = false; }, failRetirement: (error: Error) => { retireFailure = error; }, file: resolve(subagentConversationRoot(root, "conversation"), "instances.json") };
 }
-it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: real Pi AgentSend private-state failure cannot disclose paths or consume acknowledgement (%s)", async (mode) => {
+it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: real Pi AgentManage private-state failure cannot disclose paths or consume acknowledgement (%s)", async (mode) => {
   const detached = mode !== "foreground";
   const f = await fixture(); const owner = createMonoRuntime();
   if (!detached) { await f.handle.close(spec.id); await f.handle.create(spec); }
@@ -52,11 +52,11 @@ it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: 
     const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" };
     const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined });
     const models = createModels(); models.setProvider(faux.provider); let input: any;
-    faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentSend", request)]),
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentManage", request)]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("No continuation was started.")]); }]);
-    const result = await generatePiNativeResponse("Use AgentSend once, do not retry refusal.", { model, cwd: f.root,
+    const result = await generatePiNativeResponse("Use AgentManage once, do not retry refusal.", { model, cwd: f.root,
       sessionId: "privacy-parent", sessionKeepAlive: true, piSessionsRoot: resolve(f.root, "parent-sessions"),
-      messages: [{ role: "user", content: "Attempt the explicit acknowledgement once." }], allowedTools: ["Agent", "AgentSend"], subagents,
+      messages: [{ role: "user", content: "Attempt the explicit acknowledgement once." }], allowedTools: ["Agent", "AgentManage"], subagents,
       piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(input).toBeDefined();
     const toolMessage = input.messages.find((message: any) => message.role === "toolResult");
@@ -78,7 +78,7 @@ it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: 
   else { await f.handle.begin(spec.id); await f.handle.finish(spec.id, { status: "ok" }); }
 }, 10_000);
 
-it("G11: abandoned foreground lock I/O failure is path-free at the real Pi AgentSend boundary", async () => {
+it("G11: abandoned foreground lock I/O failure is path-free at the real Pi AgentManage boundary", async () => {
   const f = await fixture(); const disk = JSON.parse(await readFile(f.file, "utf8")); const key = "dead".repeat(16);
   disk[0].status = "running"; disk[0].activeTurn = { token: randomUUID(), kind: "foreground", settlementPending: true };
   disk[0].recoveryBinding.key = key; delete disk[0].recovery; delete disk[0].ownerReceipt; delete disk[0].ownerLink; delete disk[0].reservation;
@@ -91,10 +91,10 @@ it("G11: abandoned foreground lock I/O failure is path-free at the real Pi Agent
     const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
     const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" };
     const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined }); const models = createModels(); models.setProvider(faux.provider);
-    faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentSend", { id: spec.id, inspect: true })]),
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentManage", { id: spec.id, inspect: true })]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
     const result = await generatePiNativeResponse("Inspect once.", { model, cwd: f.root, sessionId: "abandoned-privacy", sessionKeepAlive: true,
-      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Inspect." }], allowedTools: ["Agent", "AgentSend"],
+      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Inspect." }], allowedTools: ["Agent", "AgentManage"],
       subagents: { instances: f.handle, run, backgroundSubagentController: { startInternal } }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key);
     expect(JSON.stringify(input)).toContain("subagent_owner_unavailable"); expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ it("G11: required session retirement failure is path-free at the real Pi Agent b
     faux.setResponses([fauxAssistantMessage([fauxToolCall("Agent", { name: "helper", persist: true, id: spec.id, prompt: "Continue once." })]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
     const result = await generatePiNativeResponse("Create once.", { model, cwd: f.root, sessionId: "retirement-privacy", sessionKeepAlive: true,
-      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Create." }], allowedTools: ["Agent", "AgentSend"],
+      piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Create." }], allowedTools: ["Agent", "AgentManage"],
       subagents: { instances: f.handle, definitions: [spec.definition], run }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).toContain("subagent_owner_unavailable");
     expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key); expect(run).not.toHaveBeenCalled();
@@ -120,11 +120,11 @@ it("G11: required session retirement failure is path-free at the real Pi Agent b
 }, 10_000);
 function requestWithoutId({ id: _id, ...request }: { id: string; ack: string; message: string; background: boolean }) { return request; }
 
-it("G09: actual AgentSend rejects foreign-conversation and replaced-incarnation tokens without consuming or admitting", async () => {
+it("G09: actual AgentManage rejects foreign-conversation and replaced-incarnation tokens without consuming or admitting", async () => {
   const f = await fixture(); const original = await f.handle.inspect(spec.id);
   const request = { id: spec.id, ack: original.ack!, message: "verified new instructions", background: true };
   const run = vi.fn(); const startInternal = vi.fn();
-  const tool = (instances: typeof f.handle) => createAgentSendTool({ instances, run, backgroundSubagentController: { startInternal } });
+  const tool = (instances: typeof f.handle) => createAgentManageTool({ instances, run, backgroundSubagentController: { startInternal } });
   const foreign = await f.registry.open("foreign-conversation");
   const settle = async (handle: typeof f.handle, conversationId: string) => {
     const record = (await handle.get(spec.id))!; const token = randomUUID(); await handle.reserve(spec.id, token); await handle.begin(spec.id, token);
@@ -148,18 +148,18 @@ it("G09: actual AgentSend rejects foreign-conversation and replaced-incarnation 
   expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
 });
 
-it("G09: current/previous consumption markers compact; the third-oldest token stays stale through actual AgentSend", async () => {
+it("G09: current/previous consumption markers compact; the third-oldest token stays stale through actual AgentManage", async () => {
   const f = await fixture(); const requests: { ack: string; message: string; background: boolean }[] = [];
   for (let index = 0; index < 3; index++) {
     const inspected = await f.handle.inspect(spec.id); const request = { ack: inspected.ack!, message: `verified continuation ${index}`, background: true }; requests.push(request);
-    const token = randomUUID(); await f.handle.reserve(spec.id, token, request); await f.handle.begin(spec.id, token);
+    const token = randomUUID(); await f.handle.reserve(spec.id, token, request); await f.handle.begin(spec.id, token, request);
     await f.handle.publishOwned("confirm", { identity: { ...f.identity, jobId: token, turnToken: token }, sequence: 7,
       disposition: { status: "timeout", reason: "timeout", continuity: "retained" }, released: true });
   }
   const current = await f.handle.inspect(spec.id); const before = JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding;
   expect(before.consumed.token).toBe(requests[2]!.ack); expect(before.previous.token).toBe(requests[1]!.ack);
   expect(JSON.stringify(before)).not.toContain(requests[0]!.ack);
-  const run = vi.fn(); const startInternal = vi.fn(); const send = createAgentSendTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } });
+  const run = vi.fn(); const startInternal = vi.fn(); const send = createAgentManageTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } });
   for (const [index, request] of requests.entries()) {
     expect((await send.execute(`old-${index}`, { id: spec.id, ...request })).details).toMatchObject({ executed: false,
       recovery: { code: index === 0 ? "subagent_recovery_ack_stale" : "subagent_recovery_already_consumed" } });
@@ -169,22 +169,25 @@ it("G09: current/previous consumption markers compact; the third-oldest token st
   expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
 });
 
-it("issues a retained-only token, atomically consumes with reservation, and checks duplicates before busy", async () => {
+it("issues a retained-only token and defers consumption until begin while reservation remains held", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   expect(inspection).toMatchObject({ status: "ready", recovery: { continuity: "retained" } }); expect(inspection.ack).toBeTypeOf("string");
   const request = { ack: inspection.ack!, message: "Verified independently; continue.", background: true };
   const next = randomUUID(); const reserved = await f.handle.reserve(spec.id, next, request);
-  expect(reserved).toMatchObject({ status: "queued", activeTurn: { token: next } }); expect(reserved.recovery).toBeUndefined();
+  expect(reserved).toMatchObject({ status: "queued", activeTurn: { token: next }, recovery: { continuity: "retained" } });
   const disk = JSON.parse(await readFile(f.file, "utf8"))[0];
   expect(Buffer.from(disk.recoveryBinding.key, "hex")).toHaveLength(32);
-  expect(disk.recoveryBinding.consumed.turnToken).toBe(next);
+  expect(disk.recoveryBinding.consumed).toBeUndefined();
   expect(JSON.stringify(disk).includes(request.message)).toBe(false);
   expect(JSON.stringify(await f.handle.list()).includes(disk.recoveryBinding.key)).toBe(false);
   expect(reserved).not.toHaveProperty("recoveryBinding");
-  await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, close: false })).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, message: request.message + " " })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
-  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, close: true })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
-  await expect(f.handle.verifyOwner({ ...f.identity, jobId: next, turnToken: next })).resolves.toEqual({ retained: true });
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
+  await expect(f.handle.checkAcknowledgement(spec.id, request)).resolves.toBeUndefined();
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, close: true })).resolves.toBeUndefined();
+  await expect(f.handle.verifyOwner({ ...f.identity, jobId: next, turnToken: next })).resolves.toEqual({ retained: false });
+  await f.handle.begin(spec.id, next, request);
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed.turnToken).toBe(next);
+  await expect(f.handle.checkAcknowledgement(spec.id, request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
 });
 it.each(["lost", "unknown"] as const)("never issues a continuation token for %s continuity", async (continuity) => {
   const f = await fixture(continuity);
@@ -224,21 +227,24 @@ it("rejects a retained profile change after inspection before consuming the toke
   await expect(f.handle.reserve(spec.id, randomUUID(), { ack: inspection.ack!, message: "next", background: true })).rejects.toMatchObject({ code: "subagent_recovery_ack_stale" });
   expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
 });
-it.each([{ background: false }, { description: "changed purpose" }])("rejects conflicting consumed request semantics %j without another reservation", async (change) => {
+it.each([{ background: false }, { description: "changed purpose" }])("defers request-consumption conflicts until begin %j", async (change) => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   const request = { ack: inspection.ack!, message: "next", background: true };
   const turnToken = randomUUID(); await f.handle.reserve(spec.id, turnToken, request);
-  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).resolves.toBeUndefined();
   expect(JSON.parse(await readFile(f.file, "utf8"))[0].activeTurn.token).toBe(turnToken);
+  await f.handle.begin(spec.id, turnToken, request);
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
 });
-it("reopens persisted consumption without granting a second admission", async () => {
+it("reopens an unconsumed reservation without granting a second admission", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   const request = { ack: inspection.ack!, message: "next", background: true };
   await f.handle.reserve(spec.id, randomUUID(), request);
   const reopened = await f.registry.open("conversation");
-  await expect(reopened.checkAcknowledgement(spec.id, request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
+  await expect(reopened.checkAcknowledgement(spec.id, request)).resolves.toBeUndefined();
+  await expect(reopened.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
 });
-it("physically kills the owner after consumption but before admission; duplicates never retry missing work", async () => {
+it("physically kills the owner after reservation but before admission; duplicates never retry missing work", async () => {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.ack-crash-")); roots.push(root);
   const module = new URL("../../dist/subagent-instances.js", import.meta.url).href;
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
@@ -263,10 +269,31 @@ it("physically kills the owner after consumption but before admission; duplicate
     child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
     const handle = await createSubagentInstanceRegistry({ root, retireSession: async () => {}, authorizeRecovery: async () => true,
       resolveOwner: async () => ({ state: "unavailable" }) }).open("conversation");
-    await expect(handle.checkAcknowledgement("helper", request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-    await expect(handle.reserve("helper", randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-    await expect(handle.checkAcknowledgement("helper", { ...request, message: "different" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+    await expect(handle.checkAcknowledgement("helper", request)).resolves.toBeUndefined();
+    await expect(handle.reserve("helper", randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
+    await expect(handle.checkAcknowledgement("helper", { ...request, message: "different" })).resolves.toBeUndefined();
     await expect(handle.begin("helper")).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
     await expect(handle.create({ ...spec, id: "bypass" })).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
   } finally { clearTimeout(deadline); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 }, 15_000);
+
+it("admits an acknowledged continuation that also retargets the instance, and still refuses the replay", async () => {
+  const f = await fixture();
+  const inspection = await f.handle.inspect(spec.id);
+  const model = { provider: "anthropic", model: "claude-fable-5-1", reference: "anthropic:claude-fable-5-1" };
+  const request = { ack: inspection.ack!, message: "verified; continue", background: true };
+  const token = randomUUID();
+  // The acknowledgement digest covers [systemPrompt, definition], so the route
+  // is applied only after consumption; it is deliberately outside the digest.
+  await expect(f.handle.reserve(spec.id, token, request, undefined, { model, effort: "low" }))
+    .resolves.toMatchObject({ status: "queued", definition: spec.definition });
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
+  // Begin consumes the acknowledgement and applies the route only once.
+  await expect(f.handle.begin(spec.id, token, request, undefined, { model, effort: "low" }))
+    .resolves.toMatchObject({ status: "running", definition: { model, effort: "low" } });
+  const stored = JSON.parse(await readFile(f.file, "utf8"))[0];
+  expect(stored.definition).toMatchObject({ model, effort: "low" });
+  expect(stored.recovery).toBeUndefined();
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
+  await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, message: "something else" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+});

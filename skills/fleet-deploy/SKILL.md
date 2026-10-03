@@ -12,33 +12,33 @@ console untouched.
 ## Runtime topology
 
 - The normal mono-agent `main` checkout is the adoption source for the global
-  local CLI and Personal Agent. Personal Agent's serving process uses the same
+  local CLI and the primary managed instance. That serving process uses the same
   immutable managed-runtime installation as other `com.mono-agent.*` instances.
 - Every `com.mono-agent.*` serving process and instance wrapper must agree with
   its managed snapshot.
-- `~/ops-agents` has its own package graph, lifecycle manager, and runbook. It
+- A separate product with its own package graph, lifecycle manager, and runbook
   is never part of an inferred mono-agent fleet deployment.
 
-## Instances that own their own runtime version
+## Instances with their own runtime or credential layout
 
-Two instances are excluded from any fleet-wide restart, including one the user
+Some instances are excluded from any fleet-wide restart, including one the user
 asked for as "all". Restarting them with the global CLI silently overrides a
 deliberate contract.
 
-- **Example Instance** (`~/agents/example-instance`, label
-  `com.mono-agent.example-instance-00000002`) pins its runtime in
-  `host-versions.json` and installs that exact version from npm into
+- **Pinned-runtime instances** (`<instance-dir>`, label
+  `com.mono-agent.<instance>-<hash>`) pin their runtime in
+  `host-versions.json` and install that exact version from npm into
   `.host/runtime` via `./bin/bootstrap`. `./bin/mono-agent` refuses any
-  background lifecycle command whose installed version disagrees with the pin,
-  exiting 78. The global `mono-agent restart` never consults that guard, so a
-  fleet restart pushes it off its pin and its next bootstrap pulls it back —
-  observed oscillating for eighteen startups. To move its version: edit
-  `host-versions.json`, run `./bin/bootstrap --profile writer
-  --skip-provider-login --skip-start`, then `./bin/mono-agent restart`. Never
-  the global CLI.
-- **Helper Agent** (`~/agents/helper-bot/vault`) keeps its Telegram token one level
-  above the sandbox and needs `--env-file ../.env` on every lifecycle command.
-  A bare restart mutes it silently while cron keeps recording success.
+  background lifecycle command whose installed version disagrees with the pin.
+  The global `mono-agent restart` never consults that guard, so a fleet restart
+  pushes such an instance off its pin and its next bootstrap pulls it back.
+  To move its version: edit `host-versions.json`, run `./bin/bootstrap --profile writer
+  --skip-provider-login --skip-start`, then `./bin/mono-agent restart` from
+  `<instance-dir>`. Never the global CLI.
+- **External-credential instances** (`<instance-dir>`) keep their chat token one
+  level above the sandbox and need `--env-file <credential-path>` on every
+  lifecycle command. A bare restart mutes such an instance silently while its
+  scheduler keeps recording success.
 
 Development still happens in worktrees. The live `main` checkout stays clean,
 and is advanced only to an already-reviewed commit when deployment is requested.
@@ -50,9 +50,9 @@ Use the narrowest operation:
 | Request | Operation |
 |---|---|
 | Restart an unchanged target | Restart only that target; do not rebuild |
-| Adopt a reviewed mono-agent commit in Personal Agent | Fast-forward clean `main`, install/build, restart Personal Agent |
+| Adopt a reviewed mono-agent commit in the primary instance | Fast-forward clean `main`, install/build, restart that instance |
 | Adopt a reviewed commit in another named mono-agent | Prepare clean `main`, then restart only the named instance so it installs its managed runtime |
-| Adopt a published version in OPS | Use the OPS dependency-upgrade runbook |
+| Adopt a published version in a separate product | Use that product's own dependency-upgrade runbook |
 
 A release does not imply any row in this table.
 
@@ -73,16 +73,17 @@ Run this block once per adopted commit, not once per consumer. Never edit, stash
 reset, or test a feature branch in the live checkout. If it is dirty or cannot
 fast-forward, stop and preserve the state.
 
-## 3. Personal Agent
+## 3. Primary managed instance
 
-Personal Agent adopts the clean local `main` checkout through the normal
-managed-runtime restart path:
+The primary managed instance adopts the clean local `main` checkout through the
+normal managed-runtime restart path. Resolve its exact config directory and
+service label first, then operate from that directory:
 
 ```bash
-PERSONAL_LABEL=com.mono-agent.example-instance-00000001
-cd "$HOME/personal-agent"
+INSTANCE_LABEL=com.mono-agent.<instance>-<hash>
+cd "<instance-dir>"
 mono-agent restart
-launchctl print "gui/$(id -u)/$PERSONAL_LABEL" | grep -E 'state =|pid =|last exit code'
+launchctl print "gui/$(id -u)/$INSTANCE_LABEL" | grep -E 'state =|pid =|last exit code'
 mono-agent --version
 mono-agent validate
 mono-agent status
@@ -96,18 +97,18 @@ Then prove the running command resolves into the newly installed managed
 runtime, not merely that the checkout CLI reports the desired version:
 
 ```bash
-PERSONAL_PID=$(launchctl print "gui/$(id -u)/$PERSONAL_LABEL" | awk '/pid =/{print $3; exit}')
-test -n "$PERSONAL_PID"
-PERSONAL_COMMAND=$(ps -p "$PERSONAL_PID" -o command=)
-printf '%s\n' "$PERSONAL_COMMAND"
-printf '%s\n' "$PERSONAL_COMMAND" | grep -F '/.mono-agent/runtimes/agent-app/'
+INSTANCE_PID=$(launchctl print "gui/$(id -u)/$INSTANCE_LABEL" | awk '/pid =/{print $3; exit}')
+test -n "$INSTANCE_PID"
+INSTANCE_COMMAND=$(ps -p "$INSTANCE_PID" -o command=)
+printf '%s\n' "$INSTANCE_COMMAND"
+printf '%s\n' "$INSTANCE_COMMAND" | grep -F '/.mono-agent/runtimes/agent-app/'
 git -C "$MONO_DEPLOY_REPO" rev-parse HEAD
 ```
 
 Use a bounded error tail only; do not launch a full log or fleet audit:
 
 ```bash
-tail -n 25 "$HOME/.mono-agent/logs/$PERSONAL_LABEL.err.log"
+tail -n 25 "$HOME/.mono-agent/logs/$INSTANCE_LABEL.err.log"
 ```
 
 ## 4. Other named mono-agent instances
@@ -124,15 +125,16 @@ tail -n 25 "$HOME/.mono-agent/logs/<exact-label>.err.log"
 ```
 
 Verify the PID and command path from the exact plist/launchd label. Do not
-restart Personal Agent last, enumerate every matching plist, or add historical
+restart the primary instance last, enumerate every matching plist, or add historical
 instances unless the user requested a full fleet rollout.
 
-## 5. OPS adoption is separate
+## 5. Separate-product adoption is separate
 
-When OPS was explicitly named, follow `~/ops-agents/docs/runbook.md`:
+When a separate product was explicitly named, follow that product's own runbook
+from its own checkout:
 
 ```bash
-cd "$HOME/ops-agents"
+cd "<other-product-checkout>"
 pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck
@@ -142,9 +144,9 @@ pnpm test
 ./bin/agents versions
 ```
 
-`restart` already runs the OPS core preflight. Do not duplicate it with
+`restart` already runs that product's core preflight. Do not duplicate it with
 `validate`, `core-preflight`, `preflight`, or `doctor` during routine
-dependency adoption. Leave proactive intake stopped. Run `verify-live` only
+dependency adoption. Leave proactive intake stopped. Run live verification only
 when the user explicitly requests its real provider-backed capture proof.
 
 ## Legacy tracker boundary
@@ -152,7 +154,7 @@ when the user explicitly requests its real provider-backed capture proof.
 Do not invoke or post from `scripts/fleet-green-check.mjs` as part of current
 development, release, or deployment work. The implementation remains for
 historical compatibility, but it is not an active workflow authority and does
-not describe Personal Agent's managed serving runtime.
+not describe the primary instance's managed serving runtime.
 
 ## Completion evidence
 

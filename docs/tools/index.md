@@ -58,19 +58,7 @@ See [Built-in tools & auto-guards](/runtime/tools-and-guards/) for process
 lifecycle and limits. An opt-in Pi-native host can also add `background: true`
 to Exec and Bash; see [Background process jobs](/tools/background-process-jobs/).
 
-Equivalent environment overrides exist for headless deploys:
-
-| Config key | Env var |
-| --- | --- |
-| `tools.allowedTools` | `MONO_AGENT_ALLOWED_TOOLS` |
-| `tools.disallowedTools` | `MONO_AGENT_DISALLOWED_TOOLS` |
-| `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` |
-| `tools.continuationServers` | `MONO_AGENT_CONTINUATION_SERVERS` |
-| `tools.web.search.backend` / `.maxRequestsPerRun` / `.searxng.endpoint` / `.ollama.*` / `.codex.model` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN` / `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_OLLAMA_*` / `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` |
-| `tools.web.fetch.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
-| `sandbox.mode` | `MONO_AGENT_SANDBOX_MODE` |
-| `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
-| `sandbox.fallback` | `MONO_AGENT_SANDBOX_FALLBACK` |
+Core tool and sandbox settings resolve from JSON, then built-in defaults.
 
 ## Allow-all by default
 
@@ -97,11 +85,11 @@ approximated.
 
 - **[Tool Policy](/tools/policy/)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only, and covers built-in tools only — MCP-backed tools are authorized by declaring their server, not per call. See [programmatic/](/programmatic/approval-and-structured-output/)).
 - **[Local-first web research](/tools/web-research/)** — explicit Ollama or SearXNG, ChatGPT-subscription Codex, and keyless discovery with deterministic static extraction, retry, browser isolation, and validation.
+- **[Computer use](/tools/computer-use/)** — opt-in cua-driver screenshots, accessibility trees, and desktop input, with operator-owned permissions.
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, and how the Pi runtime inlines servers into run options.
 - **[Reply files and MCP Apps](/tools/rich-replies/)** — opaque file publication, native Slack/Telegram delivery, browser sandboxing, limits, retention, and fallback policy.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.
 - **[Background process jobs](/tools/background-process-jobs/)** — opt-in durable ownership, bounded output, exact-thread wake, cancellation, and restart recovery for Pi-native Exec/Bash.
-- **[Monitors](/tools/monitors/)** — opt-in streaming watches that wake the originating conversation per batch of events, with coalescing, backpressure, rate-limit stop, and restart recovery.
 - **[Durable continuations](/tools/durable-continuations/)** — trusted claim capabilities, immutable later results, tool-free synthesis, native delivery, and recovery.
 - **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 

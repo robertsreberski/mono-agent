@@ -1,0 +1,11 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { ActivityRow, ActivityPayload } from "../../components/ActivityRow";
+const content = <ActivityPayload args={{ file: "garden/outline.md" }} result="An outline for Morgan's garden." />;
+export default { title: "Activity & Jobs/ActivityRow", component: ActivityRow, tags: ["autodocs"], argTypes: { variant: { control: "select", options: ["tool", "thinking", "subagent", "job"] }, status: { control: "select", options: ["complete", "running", "failed"] } } } satisfies Meta<typeof ActivityRow>;
+type Story = StoryObj<typeof ActivityRow>;
+export const Complete: Story = { args: { variant: "tool", status: "complete", label: "Read", summary: "garden/outline.md", duration: "1.2s", children: content } };
+export const Running: Story = { args: { ...Complete.args!, status: "running", summary: "Planning the next section" } };
+export const Failed: Story = { args: { ...Complete.args!, status: "failed", failed: "failed", children: <ActivityPayload error="The example file is unavailable." /> } };
+export const Subagent: Story = { args: { ...Complete.args!, variant: "subagent", label: "Atlas", summary: "Sketch a planting calendar" } };
+export const LongText: Story = { args: { ...Complete.args!, summary: "Garden planner: an extended outline for the community planting calendar and seed catalog" } };
+export const Mobile: Story = { args: { ...Running.args! }, globals: { viewport: { value: "phone" } } };

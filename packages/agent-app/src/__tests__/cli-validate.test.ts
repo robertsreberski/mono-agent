@@ -184,45 +184,22 @@ describe("runCli validate --consumer", () => {
     expect(result.stdout).not.toContain("Config is ready to start.");
   });
 
-  it("reports Supermemory as waiting when its base URL points at a closed port", async () => {
-    const baseUrl = await closedLoopbackBaseUrl();
+  it.each(["validate", "config"])("keeps %s --json stderr clean with deprecated monitors configuration", async (command) => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {
       runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: ".mono-agent/memory",
-        writeMode: "capture",
-        supermemory: { baseUrl, container: "closed-port-agent" },
-      },
+      monitors: { enabled: true, unknownNestedKey: { ignored: true } },
     });
     process.chdir(dir);
 
-    const result = await captureRunCli(["validate", "--json"]);
+    const result = await captureRunCli([command, "--json"]);
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
-    const report = JSON.parse(result.stdout) as {
-      readonly ok: boolean;
-      readonly structurallyValid: boolean;
-      readonly operationallyReady: boolean;
-      readonly sections: readonly {
-        readonly id: string;
-        readonly status: string;
-        readonly details: readonly string[];
-      }[];
-    };
-    const memory = report.sections.find((section) => section.id === "memory");
-    expect(report.ok).toBe(true);
-    expect(report.structurallyValid).toBe(true);
-    expect(report.operationallyReady).toBe(false);
-    expect(memory?.status).toBe("waiting");
-    expect(memory?.details.join("\n")).toContain(`Supermemory is not reachable at ${baseUrl}`);
-    expect(memory?.details.join("\n")).toContain("memory.supermemory.baseUrl");
-    expect(memory?.details.join("\n")).toContain("mono-agent validate");
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true });
   });
+
 
   it("loads the consumer .env and config without changing the current directory", async () => {
     const invocationDir = join(dir, "invocation");
@@ -233,6 +210,7 @@ describe("runCli validate --consumer", () => {
     await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-5.5\n", "utf8");
     await writeFile(join(consumerDir, "IDENTITY.md"), "# Consumer\n", "utf8");
     await writeConsumerConfig(consumerDir, "mono-agent.config.json", {
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
     });
 
@@ -255,6 +233,7 @@ describe("runCli validate --consumer", () => {
     await writeFile(join(consumerDir, ".env"), "MONO_AGENT_MODEL=openai-codex:gpt-5.5\n", "utf8");
     await writeFile(join(consumerDir, "IDENTITY.alt.md"), "# Consumer\n", "utf8");
     const configPath = await writeConsumerConfig(consumerDir, "alternate.config.json", {
+      runtime: { model: "openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.alt.md" },
     });
 

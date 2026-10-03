@@ -1,8 +1,9 @@
+import { currentProcessJobWakeRecovery } from "../process-jobs-context.js";
 import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { AgentMessageStream, MonitorOperator, ProcessJobOperator, ProviderAuthOperator } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, ProcessJobOperator, ProviderAuthOperator } from "@mono-agent/agent-contracts";
 import { MAX_INFO_BODY_BYTES, MAX_INFO_PROVIDER_ITEMS } from "@mono-agent/agent-contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 
@@ -10,6 +11,7 @@ import type {
   TuiAdapterConfig,
   TuiAdapterInfo,
   TuiAdapterOptions,
+  TuiRestartAuthority,
   TuiAdapterStartResult,
   TuiModelCatalogProvider,
   TuiModelOption,
@@ -200,11 +202,10 @@ function infoModelEntryBytes(key: string, option: TuiModelOption | undefined): n
  * above — the fence adjudicates an oversized body, this function does not.
  *
  * `continue`, not `break`, where a ceiling does apply: one pathological entry
- * must cost only itself. The TUI never calls `/v1/models` — there is no call
- * site under `packages/tui/`, and `applyAgentInfo` builds the model picker from
- * `/v1/info.models` alone — so a ref withheld here is UNSELECTABLE, not merely
- * un-paginated. Breaking would delete every runnable ref sitting behind one
- * oversized row.
+ * must cost only itself. Clients deriving their model picker from
+ * `/v1/info.models` cannot select a ref withheld here, regardless of the
+ * separate `/v1/models` projection. Breaking would delete every runnable ref
+ * sitting behind one oversized row.
  */
 function admitInfoModels(
   refs: readonly RuntimeModelReference[],
@@ -284,10 +285,10 @@ const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
 interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
   [APP_OWNED_TUI_START](
     input: ChannelStartInput<TuiAdapterConfig>,
-    processJobs: ProcessJobOperator | undefined,
-    monitors: MonitorOperator | undefined,
+    processJobs: (ProcessJobOperator & { readonly wakeAdmission?: TuiAdapterOptions["processJobWakeAdmission"] }) | undefined,
     providerAuth: ProviderAuthOperator | undefined,
     providerUsage?: ProviderUsageOperator,
+    restart?: TuiRestartAuthority,
   ): Promise<RunningChannel>;
 }
 
@@ -301,18 +302,18 @@ const appOwnedTuiDrivers = new WeakSet<ChannelDriver>();
 export function startAppOwnedTuiChannel(
   driver: ChannelDriver,
   input: ChannelStartInput<unknown>,
-  processJobs: ProcessJobOperator | undefined,
-  monitors: MonitorOperator | undefined,
+  processJobs: (ProcessJobOperator & { readonly wakeAdmission?: TuiAdapterOptions["processJobWakeAdmission"] }) | undefined,
   providerAuth: ProviderAuthOperator | undefined,
   providerUsage?: ProviderUsageOperator,
+  restart?: TuiRestartAuthority,
 ): Promise<RunningChannel> | undefined {
   if (!appOwnedTuiDrivers.has(driver)) return undefined;
   return (driver as AppOwnedTuiChannelDriver)[APP_OWNED_TUI_START](
     input as ChannelStartInput<TuiAdapterConfig>,
     processJobs,
-    monitors,
     providerAuth,
     providerUsage,
+    restart,
   );
 }
 
@@ -346,7 +347,7 @@ export function createTuiChannelDriver(
     async start(input) {
       return await this[APP_OWNED_TUI_START](input, undefined, undefined, undefined);
     },
-    async [APP_OWNED_TUI_START](input, processJobs, monitors, providerAuth, providerUsage) {
+    async [APP_OWNED_TUI_START](input, processJobs, providerAuth, providerUsage, restart) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const deliverNotification = overrides.deliverNotification ?? deliverWebNotification;
@@ -419,6 +420,7 @@ export function createTuiChannelDriver(
           ? {}
           : { localProviders: [...(localProviders ?? []), ...discoveredLocalProviders] }),
         configuredRoutes: configuredRefs,
+        ...(input.coreConfig.runtime.context1MModels === undefined ? {} : { context1MModels: input.coreConfig.runtime.context1MModels }),
         discoveredModels,
       });
 
@@ -549,14 +551,13 @@ export function createTuiChannelDriver(
           ? {}
           : { requestToolEnvironment: input.config.requestToolEnvironment }),
         responder: input.responder,
-        ...(monitors === undefined
-          ? {}
-          : { monitors, monitorsBearer: monitors.operatorToken }),
         ...(processJobs === undefined
           ? {}
-          : { processJobs, processJobsBearer: processJobs.operatorToken }),
+          : { processJobs, processJobsBearer: processJobs.operatorToken,
+              ...(processJobs.wakeAdmission === undefined ? {} : { processJobWakeAdmission: processJobs.wakeAdmission }) }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
         ...(providerUsage === undefined ? {} : { providerUsage }),
+        ...(restart === undefined || input.config.apiKey === undefined ? {} : { restart }),
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
@@ -595,13 +596,29 @@ export function createTuiChannelDriver(
                 retryable: false,
               };
             }
-            await deliverNotification({
-              sourceId: input.sourceId,
-              triggerKind: "job",
-              deliveryKey,
-              threadId,
-              processJob,
-            });
+            try {
+              await deliverNotification({
+                sourceId: input.sourceId,
+                triggerKind: "job",
+                deliveryKey,
+                threadId,
+                processJob,
+              });
+            } catch (error) {
+              // No console is listening (it is restarting or stopped). Nothing
+              // is lost: a console re-reads every running card from this agent
+              // when it reconnects.
+              if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {
+                return {
+                  delivered: false,
+                  code: "destination_channel_unavailable",
+                  reason: "The web console notification ingress is unavailable.",
+                  retryable: true,
+                  channelId: "tui",
+                };
+              }
+              throw error;
+            }
             return { delivered: true, code: "delivered", channelId: "tui" };
           },
           wake: async ({ conversationId, text, deliveryKey, processJob }) => {
@@ -637,6 +654,7 @@ export function createTuiChannelDriver(
                 threadId,
                 processJob,
                 wakePrompt: text,
+                ...(currentProcessJobWakeRecovery() === undefined ? {} : { wakeRecovery: currentProcessJobWakeRecovery()! }),
               });
             } catch (error) {
               if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {
@@ -645,6 +663,19 @@ export function createTuiChannelDriver(
                   code: "destination_channel_unavailable",
                   reason: "The web console notification ingress is unavailable.",
                   retryable: true,
+                  channelId: "tui",
+                };
+              }
+              if (webConsoleErrorCode(error) === "notification_rejected") {
+                input.logger?.warn?.("Web console rejected a process-job wake before acceptance.", {
+                  jobId: processJob.jobId,
+                  code: "notification_rejected",
+                });
+                return {
+                  delivered: false,
+                  code: "process_job_wake_failed",
+                  reason: "The web console rejected the process-job notification before accepting its wake.",
+                  retryable: false,
                   channelId: "tui",
                 };
               }
@@ -673,78 +704,6 @@ export function createTuiChannelDriver(
               ...(receipt.delivered ? { code: "delivered" } : {}),
               channelId: "tui",
               ...(receipt.delivered ? { historyRecorded: true } : {}),
-            };
-          },
-        },
-        monitors: {
-          wake: async ({ conversationId, text, deliveryKey, monitor }) => {
-            const threadId = webThreadId(conversationId);
-            const expectedConversationId = baseConversationId(monitor.origin.conversationId);
-            const expectedDeliveryKey = `monitor:${monitor.monitorId}:${String(monitor.counters.seq)}`;
-            if (monitor.origin.channel !== "web"
-              || conversationId !== expectedConversationId
-              || threadId === undefined
-              || deliveryKey !== expectedDeliveryKey) {
-              return {
-                delivered: false,
-                code: "monitor_origin_mismatch",
-                reason: "The monitor origin does not match the web destination.",
-                retryable: false,
-              };
-            }
-            if (input.sourceId === undefined) {
-              return {
-                delivered: false,
-                code: "destination_channel_unavailable",
-                reason: "The web monitor destination is unavailable.",
-                retryable: true,
-                channelId: "tui",
-              };
-            }
-            let delivered;
-            try {
-              delivered = await deliverNotification({
-                sourceId: input.sourceId,
-                triggerKind: "monitor",
-                deliveryKey,
-                threadId,
-                monitor,
-                wakePrompt: text,
-              });
-            } catch (error) {
-              if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {
-                return {
-                  delivered: false,
-                  code: "destination_channel_unavailable",
-                  reason: "The web console notification ingress is unavailable.",
-                  retryable: true,
-                  channelId: "tui",
-                };
-              }
-              return {
-                delivered: false,
-                code: "monitor_wake_failed",
-                reason: error instanceof Error ? error.message : String(error),
-                retryable: false,
-                ambiguous: true,
-                channelId: "tui",
-              };
-            }
-            const receipt = delivered.delivery;
-            if (receipt === undefined) {
-              return {
-                delivered: false,
-                code: "monitor_wake_failed",
-                reason: "The web console returned no Monitor wake receipt.",
-                retryable: false,
-                ambiguous: true,
-                channelId: "tui",
-              };
-            }
-            return {
-              ...receipt,
-              ...(receipt.delivered ? { code: "delivered", historyRecorded: true } : {}),
-              channelId: "tui",
             };
           },
         },
@@ -781,6 +740,9 @@ export function createTuiChannelDriver(
             const hasText = response.text !== undefined && response.text.trim().length > 0;
             const hasParts = response.parts !== undefined && response.parts.length > 0;
             if (!hasText && !hasParts) {
+              if (response.metadata?.turnDisposition === "silent") {
+                return { delivered: true, code: "delivered", channelId: "tui", historyRecorded: true };
+              }
               return { delivered: false, code: "empty_response", reason: "The process-job wake produced no answer.", retryable: false };
             }
             const threadId = webThreadId(conversationId);

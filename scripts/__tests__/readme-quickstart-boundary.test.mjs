@@ -181,9 +181,8 @@ describe("root README Quickstart boundary", () => {
       expect(page, label).not.toMatch(/managed startup also publishes/i);
       expect(page, label).not.toMatch(/claims its own Tailscale Serve/i);
     }
-    // The recommended install is still the release, so the source-only default
-    // must be named next to it.
-    expect(readme).toContain("0.21.1");
+    expect(readme).toContain("published 0.22.0 release and current source bind a fresh console");
+    expect(home).toContain("latest published npm release is `create-mono-agent@0.22.0`");
   });
 
   it("distinguishes exact owned-route removal from unowned proxies", () => {
@@ -196,16 +195,15 @@ describe("root README Quickstart boundary", () => {
     }
   });
 
-  it("records the released console network defaults as different from source", () => {
+  it("records that the browser-first console defaults shipped in 0.22.0", () => {
     const releaseStatus = readRepoFile("docs/reference/release-status.md");
-    expect(releaseStatus).toContain("Browser-first guided setup");
-    expect(releaseStatus).toContain("Loopback console default");
-    expect(releaseStatus).toContain("Explicit `--share-tailnet`");
-    expect(releaseStatus).toContain("Report-ready `web status --json`");
-    expect(releaseStatus).toContain("still binds a **managed** console to `0.0.0.0:5050`");
-    expect(releaseStatus).toContain("claims a Tailscale Serve HTTPS route automatically");
-    expect(releaseStatus).toContain("the compatible local-first path is the foreground `mono-agent web run --loopback`");
-    expect(releaseStatus).toContain("A source build is required for the new flags.");
+    expect(releaseStatus).toContain("browser-first onboarding and safer console-network defaults also **shipped in 0.22.0**");
+    expect(releaseStatus).toContain("fresh foreground and managed consoles default to `127.0.0.1:5050`");
+    expect(releaseStatus).toContain("creates a mono-agent-owned route only with `--share-tailnet`");
+    expect(releaseStatus).toContain("`mono-agent web status --json` reports the listener and owned route separately");
+    expect(releaseStatus).toContain("Neither the 0.22.0 console nor the current source console has application login");
+    expect(releaseStatus).not.toContain("claims a Tailscale Serve HTTPS route automatically");
+    expect(releaseStatus).not.toContain("A source build is required for the new flags.");
   });
 
   it("separates managed apply commands from the foreground apply path", () => {

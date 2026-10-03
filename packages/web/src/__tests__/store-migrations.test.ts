@@ -15,7 +15,7 @@ import {
 import { WebStore } from "../store.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import * as migrationsModule from "../store-migrations.js";
-import { fakeMonitor, temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 import { seedLegacyStorage, seedLegacySilentCron } from "./fixtures/storage-layouts.js";
 
 const roots: string[] = [];
@@ -45,7 +45,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["tags", "thread_tags", "pending_project_memberships", "project_transitions", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["external_conversations", "external_tool_operations", "tags", "thread_tags", "pending_project_memberships", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -59,6 +59,68 @@ const historical = [...Array.from({ length: 21 }, (_, version) => ({ version, se
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
+  it.each(["valid", "invalid-state", "missing-message", "thread-mismatch", "non-array-parts", "no-job-part",
+    "duplicate-job-parts", "job-id-mismatch"] as const)("backfills legacy cards transactionally (shape=%s)", async (shape) => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const db = new DatabaseSync(join(stateDir, "state.sqlite"));
+    const thread = db.prepare("SELECT id, source_id FROM threads LIMIT 1").get() as { id: string; source_id: string };
+    // Deliberately seed a corrupt retained reference on this private fixture;
+    // production initialization re-enables foreign keys before migration.
+    if (shape === "missing-message") db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`DROP INDEX process_job_cards_by_state; DROP INDEX process_job_cards_by_thread;
+      ALTER TABLE process_job_cards DROP COLUMN state;
+      ALTER TABLE process_job_cards DROP COLUMN completed_at; PRAGMA user_version = 32;`);
+    db.prepare(`INSERT INTO threads (id, source_id, conversation_id, title, created_at, updated_at)
+      VALUES ('other-thread', ?, 'web:other-thread', 'Other thread', 'now', 'now')`).run(thread.source_id);
+    // Cross the batch boundary, with a malformed final card to prove earlier
+    // batches and ALTERs roll back, not just the offending row.
+    for (let index = 0; index < 130; index++) {
+      const job = fakeProcessJob({ jobId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        conversationId: `web:${thread.id}`, state: index % 2 ? "succeeded" : "running" });
+      const malformed = index === 129 && shape !== "valid";
+      const part = { type: "process-job", job: malformed && shape === "invalid-state" ? { ...job, state: "bogus" }
+        : malformed && shape === "job-id-mismatch" ? { ...job, jobId: "99999999-9999-4999-8999-999999999999" } : job };
+      const parts = JSON.stringify(malformed && shape === "non-array-parts" ? part
+        : malformed && shape === "no-job-part" ? [{ type: "text", text: "not a job" }]
+          : malformed && shape === "duplicate-job-parts" ? [part, part] : [part]);
+      if (!(malformed && shape === "missing-message")) {
+        db.prepare(`INSERT INTO messages (id, thread_id, role, parts_json, created_at, updated_at, status)
+          VALUES (?, ?, 'assistant', ?, 'now', 'now', ?)`).run(`legacy-card-${index}`,
+            malformed && shape === "thread-mismatch" ? "other-thread" : thread.id, parts,
+            malformed && shape === "non-array-parts" ? "running" : "complete");
+      }
+      db.prepare(`INSERT INTO process_job_cards (source_id, job_id, delivery_key, thread_id, message_id,
+        projection_sha256, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'unused', 'now', 'now')`)
+        .run(thread.source_id, job.jobId, job.wake.deliveryKey, thread.id, `legacy-card-${index}`);
+    }
+    const before = db.prepare("SELECT id, thread_id, status, parts_json FROM messages ORDER BY id").all();
+    const beforeCards = db.prepare("SELECT * FROM process_job_cards ORDER BY rowid").all();
+    db.close();
+    if (shape !== "valid") {
+      await expect(WebStore.open({ stateDir })).rejects.toThrow("migration 33 (process-job-state-projection) failed");
+      const failed = new DatabaseSync(join(stateDir, "state.sqlite"));
+      expect(failed.prepare("PRAGMA user_version").get()).toEqual({ user_version: 32 });
+      const columns = failed.prepare("PRAGMA table_info(process_job_cards)").all().map((row) => row.name);
+      expect(columns).not.toContain("state");
+      expect(columns).not.toContain("completed_at");
+      expect(failed.prepare("SELECT * FROM process_job_cards ORDER BY rowid").all()).toEqual(beforeCards);
+      expect(failed.prepare("SELECT id, thread_id, status, parts_json FROM messages ORDER BY id").all()).toEqual(before);
+      failed.close();
+    } else {
+      for (let reopen = 0; reopen < 2; reopen++) {
+        (await WebStore.open({ stateDir })).close();
+        const migrated = new DatabaseSync(join(stateDir, "state.sqlite"));
+        expect(migrated.prepare("SELECT state, count(*) AS n FROM process_job_cards GROUP BY state ORDER BY state").all())
+          .toEqual([{ state: "running", n: 65 }, { state: "succeeded", n: 65 }]);
+        expect(migrated.prepare("SELECT count(*) AS n FROM process_job_cards WHERE completed_at IS NOT NULL").get()).toEqual({ n: 65 });
+        expect(migrated.prepare("SELECT id, thread_id, status, parts_json FROM messages ORDER BY id").all()).toEqual(before);
+        expect(() => migrated.prepare("UPDATE process_job_cards SET state = 'bogus'").run()).toThrow();
+        migrated.close();
+      }
+    }
+  });
+
   it("upgrades schema 30 without inventing an origin for old turns and retains new origins on reopen", async () => {
     const stateDir = await seeded(18);
     (await WebStore.open({ stateDir })).close();
@@ -205,7 +267,7 @@ describe("web storage migration history", () => {
 
   it("retains an existing Monitor projection during legacy FK repair and a repeated eligible open", async () => {
     const stateDir = await seeded(13);
-    const projection = JSON.stringify(fakeMonitor({ monitorId: "fixture-monitor", conversationId: "web:fixture-thread" }));
+    const projection = JSON.stringify({ legacy: "opaque retained projection" });
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec("ALTER TABLE monitor_wake_deliveries ADD COLUMN projection_json TEXT");
     database.prepare("UPDATE monitor_wake_deliveries SET projection_json = ?").run(projection);
@@ -232,14 +294,14 @@ describe("web storage migration history", () => {
   });
 
   it.each([
-    "CREATE INDEX messages_by_thread ON messages(created_at)",
-    "DROP TABLE agent_run_overrides; CREATE TABLE agent_run_overrides (source_id TEXT PRIMARY KEY, model TEXT, effort TEXT, updated_at TEXT NOT NULL)",
-  ])("rejects current-version index/FK drift: %s", async (sql) => {
+    { sql: "CREATE INDEX messages_by_thread ON messages(created_at)", message: "Web storage migration postconditions failed." },
+    { sql: "DROP TABLE agent_run_overrides; CREATE TABLE agent_run_overrides (source_id TEXT PRIMARY KEY, model TEXT, effort TEXT, updated_at TEXT NOT NULL)", message: "Web storage migration 42 (context-1m-selection) failed." },
+  ])("rejects current-version index/FK drift: $sql", async ({ sql, message }) => {
     const stateDir = await seeded(18);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(sql);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message: "Web storage migration postconditions failed." });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message });
   });
 
   it("rolls back earlier steps and bootstrap when a later step fails without leaking its error", async () => {
@@ -491,10 +553,53 @@ describe("web storage migration history", () => {
   });
 });
 
+describe("external conversation projects migration", () => {
+  it("opens a schema-37 store with its projects and chats unchanged and no channel conversations", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    const thread = store.listThreadsPage({ sourceId: "fixture-agent", archived: false }).threads[0]
+      ?? store.createThread("fixture-agent");
+    const project = store.createProject({ sourceId: "fixture-agent", name: "Existing", context: "Keep me." });
+    store.patchThread(thread.id, { projectId: project.id });
+    const before = { project: store.getProject(project.id), thread: store.getThread(thread.id) };
+    store.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      // The exact schema-37 layout: v38 only adds these tables and indexes.
+      legacy.exec(`DROP INDEX external_conversations_one_per_project; DROP INDEX external_conversations_by_source;
+        DROP INDEX external_tool_operations_by_age; DROP TABLE external_conversations; DROP TABLE external_tool_operations;
+        PRAGMA user_version = 37;`);
+    } finally { legacy.close(); }
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      expect(reopened.getProject(project.id)).toEqual(before.project);
+      expect(reopened.getProject(project.id)).not.toHaveProperty("external");
+      expect(reopened.getThread(thread.id)).toEqual(before.thread);
+      expect(reopened.listExternalConversations("fixture-agent", { limit: 50 })).toEqual([]);
+    } finally { reopened.close(); }
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM external_conversations").get()).toEqual({ count: 0 });
+    } finally { database.close(); }
+  });
+
+  it("refuses a binding index that no longer fences one conversation per project", async () => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      database.exec(`DROP INDEX external_conversations_one_per_project;
+        CREATE INDEX external_conversations_one_per_project ON external_conversations(project_id)`);
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+  });
+});
+
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 31 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(31);
+  it("is immutable and derives schema 43 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(43);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -518,7 +623,7 @@ describe("named migration registry", () => {
     const cron = vi.fn();
     const monitor = vi.fn();
     const search = vi.fn();
-    const context = { database, originalVersion: 1, migrateCronChannels: cron, migrateMonitorWakeDeliveries: monitor, backfillMessageSearch: search, suppressSilentCronHistory: vi.fn() };
+    const context = { database, originalVersion: 1, migrateCronChannels: cron, migrateMonitorWakeDeliveries: monitor, refreshMessageSearch: () => {}, backfillMessageSearch: search, suppressSilentCronHistory: vi.fn() };
     try {
       database.exec("BEGIN IMMEDIATE");
       runWebStorageMigrations(context);
@@ -606,6 +711,10 @@ describe("conversation tags migration", () => {
       expect(thread.tagIds).toEqual(attempt === 0 ? [] : [store.listTags("v27-agent")[0]!.id]);
       expect(store.getThreadDetail(thread.id)?.messages.map((message) => message.parts)).toContainEqual([{ type: "text", text: "Retained question" }]);
       expect(store.listProjects("v27-agent")[0]?.name).toBe("Retained project");
+      expect(store.getThreadDetail(thread.id)?.messages.flatMap((m) => m.parts).some((p) => p.type === "conversation-marker")).toBe(false);
+      const migrated = new DatabaseSync(join(stateDir, "state.sqlite"));
+      expect(migrated.prepare("SELECT name FROM sqlite_master WHERE name IN ('project_transitions', 'model_transitions')").all()).toEqual([]);
+      migrated.close();
       if (attempt === 0) store.patchThread(thread.id, { tagIds: [store.createTag({ sourceId: "v27-agent", name: "planning", color: "green" }).id] });
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
@@ -642,4 +751,38 @@ it.each([
   expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
   database.close();
   await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+});
+
+describe("web recovery observation migration", () => {
+  it("adds a nullable observation to an existing schema-39 database without erasing the dispatch generation", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    const thread = store.createThread("fixture-agent");
+    store.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    const turnId = "retained-turn";
+    try {
+      legacy.prepare(`INSERT INTO turns (id, thread_id, status, text, assistant_message_id,
+        started_at, finished_at, error_code, error_message, dispatch_started_at, dispatch_generation)
+        VALUES (?, ?, 'failed', 'request', 'retained-answer', '2026-01-01', '2026-01-02',
+          'agent_connection_lost', 'Connection ended.', '2026-01-01', 'generation-old')`)
+        .run(turnId, thread.id);
+      legacy.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES ('retained-answer', ?, ?, 'assistant', '[]', '2026-01-01', '2026-01-02', 'failed')`)
+        .run(thread.id, turnId);
+      legacy.exec("ALTER TABLE turns DROP COLUMN web_recovery_generation_confirmed_at; PRAGMA user_version = 39;");
+    } finally { legacy.close(); }
+    const migrated = await WebStore.open({ stateDir });
+    try {
+      const db = new DatabaseSync(join(stateDir, "state.sqlite"));
+      try {
+        expect(db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+        expect(db.prepare(`SELECT dispatch_generation, web_recovery_generation_confirmed_at
+          FROM turns WHERE id = ?`).get(turnId)).toMatchObject({
+          dispatch_generation: "generation-old", web_recovery_generation_confirmed_at: null,
+        });
+      } finally { db.close(); }
+      expect(migrated.reconcileParentInterruptions("fixture-agent", "generation-new")).toHaveLength(1);
+    } finally { migrated.close(); }
+  });
 });

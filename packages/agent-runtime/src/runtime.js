@@ -37,6 +37,7 @@ import {
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 import { recoverDurableNativeSession, retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
+import { salvageDurableNativeSession } from "./ai/providers/pi-native/session-salvage.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
 import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
@@ -205,11 +206,12 @@ export function createRuntime(host = {}) {
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      if (Object.hasOwn(options, "settings")) {
+        throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
+      }
       if (!options.model) throw new Error("createRuntime.run requires options.model");
       const webSearchState = createWebSearchRunState(options.webSearchConfig, options.webSearchState);
-      const bridge = await resolveRuntimeBridge(options.model, {
-        liveInput: !!options.liveInput,
-      });
+      const bridge = await resolveRuntimeBridge(options.model);
       const callObservers = Array.isArray(options.observers) ? options.observers : [];
       const hub = createObserverHub({
         observers: [...hostObservers, ...callObservers],
@@ -283,6 +285,9 @@ export function createRuntime(host = {}) {
     },
     async refreshSession(providerSessionId) {
       return refreshProviderSession(providerSessionId);
+    },
+    async salvageDurableSession(providerSessionId, sessionsRoot) {
+      return salvageDurableNativeSession(providerSessionId, sessionsRoot);
     },
     async retireDurableSession(providerSessionId, sessionsRoot) {
       return retireDurableNativeSession(providerSessionId, sessionsRoot);

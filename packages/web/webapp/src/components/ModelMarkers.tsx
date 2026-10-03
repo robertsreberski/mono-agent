@@ -1,5 +1,4 @@
-import { useAuiState } from "@assistant-ui/react";
-import type { ModelTransition, RouteSelection } from "../types";
+import type { ConversationMarkerPart, RouteSelection } from "../types";
 import { Icon } from "./Icon";
 import { effortFullName, effortToken, shortModelName } from "./route-label";
 
@@ -31,8 +30,8 @@ const fullRoute = (selection: RouteSelection): string => {
   return selection.effort === null ? model : `${model}, effort ${effortFullName(selection.effort)}`;
 };
 
-export function ModelMarkers({ transitions = [] }: { readonly transitions?: readonly ModelTransition[] }) {
-  return <>{transitions.map((transition) => {
+export function ModelMarkers({ transitions = [] }: { readonly transitions?: readonly Extract<ConversationMarkerPart, { kind: "model" }>[] }) {
+  return <>{transitions.map((transition, index) => {
     // Same model, different grade: naming the model twice would make the one
     // word that changed the hardest to find.
     const effortOnly = transition.before.model === transition.after.model;
@@ -40,11 +39,11 @@ export function ModelMarkers({ transitions = [] }: { readonly transitions?: read
     const label = `${effortOnly ? "Effort" : "Model"} changed from ${fullRoute(transition.before)} to ${fullRoute(transition.after)}`;
     return (
       <div
-        key={transition.id}
+        key={index}
         className="model-transition"
         role="note"
         aria-label={label}
-        title={`${label} · ${new Date(transition.createdAt).toLocaleString()}`}
+        title={`${label} · ${new Date(transition.at).toLocaleString()}`}
       >
         <span className="model-transition-label">
           <Icon name="spark" size={11} />
@@ -60,9 +59,4 @@ export function ModelMarkers({ transitions = [] }: { readonly transitions?: read
       </div>
     );
   })}</>;
-}
-
-export function MessageModelMarkers() {
-  const transitions = useAuiState((state) => state.message.metadata.custom?.modelTransitions) as readonly ModelTransition[] | undefined;
-  return <ModelMarkers transitions={transitions} />;
 }

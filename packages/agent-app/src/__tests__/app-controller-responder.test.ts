@@ -30,6 +30,8 @@ import {
   REPLY_ARTIFACT_MCP_SERVER_NAME,
 } from "../reply-artifacts.js";
 import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
+import { startTuiAdapter } from "@mono-agent/operator-adapter";
+import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   agentRootLeasePath,
   acquireAgentRootOwnership,
@@ -76,6 +78,10 @@ describe("reply artifact responder composition", () => {
     expect(replyArtifactStorageMaxBytesForMcpApps(true)).toBe(
       DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
     );
+    expect(replyArtifactStorageMaxBytesForMcpApps(false, 4096)).toBe(4096);
+    expect(replyArtifactStorageMaxBytesForMcpApps(true, 2_097_152)).toBe(1_048_576);
+    expect(replyArtifactStorageMaxBytesForMcpApps(true, "unlimited")).toBe("unlimited");
+    expect(() => replyArtifactStorageMaxBytesForMcpApps(true, 1_048_576)).toThrow(/audit reserve/);
   });
 
   it("refuses every configured host-private root, including relocated durable history", async () => {
@@ -218,8 +224,8 @@ describe("reply artifact responder composition", () => {
     };
     const memory = {
       async load() { return undefined; },
-      async appendHostSummary(conversationId: string) {
-        return { conversationId, source: "composition-test", bytesWritten: 0 };
+      async persistCompletedTurn(turn: { runId: string; conversationId: string }) {
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "composition-test", bytesWritten: 0, admissionStatus: "admitted" as const };
       },
     };
     const controller: ResponderControllerPort = {
@@ -236,7 +242,6 @@ describe("reply artifact responder composition", () => {
         settings: { stateDir: processJobsStateDir, maxChainDepth: 4 },
         controller: vi.fn(),
       } as never,
-      monitorsService: undefined,
       processJobsStateDir,
       agentRootOwnership: security.ownership,
       processJobsRegistry: security.registry,
@@ -245,10 +250,10 @@ describe("reply artifact responder composition", () => {
       memoryStore: async () => memory as never,
       ensureSharedMemoryRetrieval: () => undefined,
       reportMemoryRecallStatus: () => false,
-      supermemoryMcpRuntimeOptions: () => undefined,
       adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
       requestModelOverrideRuntimeOptions: () => ({
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
+        compactionEndpoint: async () => ({}),
         targetsDirectOpenCode: () => false,
         targetsUnsupportedHistoryTool: () => false,
         targetsPiNative: () => true,
@@ -256,7 +261,6 @@ describe("reply artifact responder composition", () => {
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
-      recordExporterWarning() {},
       recordSessionEvent() {},
     };
 
@@ -327,6 +331,22 @@ describe("reply artifact responder composition", () => {
 const PI_ROUTE = "openai-codex:gpt-5.6-sol";
 const PI_FALLBACK_ROUTE = "ollama:qwen3:8b";
 describe("process-job mixed fallback route guard", () => {
+  it("selects the same model-owned endpoint block for promptless compaction as for a web turn", async () => {
+    const baseModel = parseMonoRuntimeModelReference("openai:gpt-4.1");
+    const model = "anthropic:claude-sonnet-4-6";
+    const selection = createRequestModelOverrideRuntimeOptions({} as ResponderControllerPort, {
+      runtime: { model: baseModel },
+    } as Parameters<typeof createRequestModelOverrideRuntimeOptions>[1]);
+    const turn = await selection.extension({ request: { metadata: { web: { model } } } } as never);
+    const compact = await selection.compactionEndpoint(model);
+    expect(compact).toMatchObject({
+      customProvider: turn.runtimeOptions?.customProvider,
+      customModel: turn.runtimeOptions?.customModel,
+      modelCapabilities: turn.runtimeOptions?.modelCapabilities,
+      isPrivateProvider: turn.runtimeOptions?.isPrivateProvider,
+    });
+    expect(compact.customProvider).toBeNull();
+  });
   it("keeps degraded all-Pi fallback turns protected without exposing a controller", async () => {
     const fixture = await createRouteGuardFixture(PI_ROUTE, PI_FALLBACK_ROUTE, "degraded");
     try {
@@ -534,8 +554,8 @@ async function createRouteGuardFixture(
   });
   const memory = {
     async load() { return undefined; },
-    async appendHostSummary(conversationId: string) {
-      return { conversationId, source: "route-guard-test", bytesWritten: 0 };
+    async persistCompletedTurn(turn: { runId: string; conversationId: string }) {
+      return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "route-guard-test", bytesWritten: 0, admissionStatus: "admitted" as const };
     },
   };
   const sandboxEngine = {
@@ -568,7 +588,6 @@ async function createRouteGuardFixture(
           controller: vi.fn(),
         } as never
       : undefined,
-    monitorsService: undefined,
     processJobsStateDir: processJobsMode === "none" ? undefined : processJobsStateDir,
     agentRootOwnership: security.ownership,
     processJobsRegistry: security.registry,
@@ -578,14 +597,12 @@ async function createRouteGuardFixture(
     memoryStore: async () => memory as never,
     ensureSharedMemoryRetrieval: () => undefined,
     reportMemoryRecallStatus: () => false,
-    supermemoryMcpRuntimeOptions: () => undefined,
     adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
     requestModelOverrideRuntimeOptions(coreConfigInput) {
       return createRequestModelOverrideRuntimeOptions(controller, coreConfigInput);
     },
     buildRuntimeForModel: () => () => runtime,
     observabilityContext: async () => ({}),
-    recordExporterWarning() {},
     recordSessionEvent() {},
   };
   const responder = await buildResponder(controller, coreConfig, "slack");
@@ -604,6 +621,111 @@ async function createRouteGuardFixture(
     },
   };
 }
+
+it("compacts durable web conversations through the production responder composition and operator HTTP", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "compact-host-composition-"));
+  tempDirs.push(dir);
+  const identityPath = join(dir, "IDENTITY.md");
+  await writeFile(identityPath, "You are a fictional test agent.");
+  const primary = parseMonoRuntimeModelReference("openai-codex:gpt-5.5");
+  const other = parseMonoRuntimeModelReference("openai-codex:gpt-5.4");
+  const config: MonoAgentConfig = {
+    runtime: { model: primary, fallbacks: [{ model: other }], workspace: dir,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, rollover: "daily",
+        rolloverTimezone: "America/New_York", isolateProactive: true },
+      compaction: { triggerRatio: 0.9 } },
+    providers: { piNative: { piSessionsRoot: join(dir, "pi") } },
+    context: { identityPath, selectedSkills: [] },
+    tools: { allowedTools: [], disallowedTools: [] },
+    artifacts: { dir: join(dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 100, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 100, dryRun: false } },
+    traceability: { registryDir: join(dir, "sources") },
+  };
+  const providerCalls: RuntimeRunOptions[] = [];
+  const compactedSessions: string[] = [];
+  const provider: MonoRuntimeLike = {
+    configureTools() {},
+    async run(_prompt, options): Promise<RuntimeResult> {
+      providerCalls.push(options);
+      const sessionId = (options.sessionId ?? options.providerAttributionSessionId) as string;
+      if (options.manualCompaction === true) {
+        compactedSessions.push(sessionId);
+        return { providerSessionId: sessionId, manualCompaction: { status: "succeeded", trigger: "manual",
+          operationId: `compact-${compactedSessions.length}`, tokensBefore: 1000, tokensAfter: 300,
+          tokenCountsExact: false } } as RuntimeResult;
+      }
+      return { text: "fictional answer", providerSessionId: sessionId };
+    },
+    async syncSession() { return true; },
+    async refreshSession() {},
+    async retireDurableSession() {},
+    async invalidateSession() { return true; },
+    async disposeSession() { return true; },
+  };
+  const router = (model: RuntimeModelReference, withFallback: boolean): MonoRuntimeLike => ({
+    ...createMonoRuntime({ fallbackChain: [{ model }, ...(withFallback ? [{ model: other }] : [])],
+      resolveAttempt: () => ({ runtime: provider }) }),
+    // The scripted provider is the durable Pi session owner; the router's
+    // default inner runtime has no knowledge of this test's provider handle.
+    syncSession: provider.syncSession!.bind(provider),
+    refreshSession: provider.refreshSession!.bind(provider),
+    retireDurableSession: provider.retireDurableSession!.bind(provider),
+    invalidateSession: provider.invalidateSession!.bind(provider),
+  });
+  const runtime = router(primary, true);
+  const security = await controllerSecurity(dir, dir);
+  const controller: ResponderControllerPort = {
+    cwd: dir, configPath: join(dir, "mono-agent.config.json"), configReadPath: join(dir, "mono-agent.config.json"),
+    env: {}, logger: undefined, runtime, activeRuntimes: [], interactionBridge: undefined,
+    continuationService: undefined, processJobsService: undefined, processJobsStateDir: undefined,
+    agentRootOwnership: security.ownership, processJobsRegistry: security.registry,
+    seenNotifyDestinations: createSeenNotifyDestinationCache(), sandboxEngineFor: () => undefined,
+    memoryStore: async () => ({ load: async () => undefined,
+      persistCompletedTurn: async (turn: { runId: string; conversationId: string }) => ({
+        id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+        source: "test", bytesWritten: 0, admissionStatus: "admitted" as const,
+      }) }) as never,
+    ensureSharedMemoryRetrieval: () => undefined, reportMemoryRecallStatus: () => false,
+    adapterSendToolsRuntimeOptions: async () => ({ blockingToolNames: [] }),
+    requestModelOverrideRuntimeOptions: () => ({
+      extension: async ({ request }) => {
+        const selected = (request.metadata?.web as { model?: string } | undefined)?.model;
+        return { runtimeOptions: selected === undefined ? {} : { model: parseMonoRuntimeModelReference(selected) },
+          cleanup: async () => {} };
+      },
+      compactionEndpoint: async () => ({}), targetsProcessJobsPiNative: () => true,
+    }),
+    buildRuntimeForModel: () => (model) => router(model, false),
+    observabilityContext: async () => ({}), recordSessionEvent() {},
+  };
+  let responder: Awaited<ReturnType<typeof buildResponder>> | undefined;
+  let operator: Awaited<ReturnType<typeof startTuiAdapter>> | undefined;
+  try {
+    responder = await buildResponder(controller, config, "tui");
+    operator = await startTuiAdapter({ host: "127.0.0.1", port: 0, responder });
+    for (const [index, model] of [undefined, primary.reference, other.reference].entries()) {
+      const id = `web:fictional-${index}`;
+      const response = await responder.respond({ conversationId: id, text: "A fictional turn",
+        abortSignal: new AbortController().signal,
+        ...(model === undefined ? {} : { metadata: { web: { model } } }),
+      }, { append: async () => {} });
+      expect(response.text).toBe("fictional answer");
+      const turn = providerCalls.at(-1);
+      expect(turn?.model?.reference).toBe(model ?? primary.reference);
+      const url = `${operator.baseUrl}/v1/conversations/${encodeURIComponent(id)}/compact`;
+      const compacted = await fetch(url, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(model === undefined ? {} : { model }) });
+      expect(compacted.status).toBe(200);
+      expect(await compacted.json()).toMatchObject({ status: "succeeded", trigger: "manual",
+        tokensBefore: 1000, tokensAfter: 300 });
+      expect(compactedSessions.at(-1)).toBe(turn?.providerAttributionSessionId);
+      expect(providerCalls.at(-1)?.manualCompaction).toBe(true);
+    }
+  } finally {
+    await operator?.stop();
+    await (responder as { dispose?: () => Promise<void> } | undefined)?.dispose?.();
+  }
+});
 
 async function controllerSecurity(
   agentRoot: string,

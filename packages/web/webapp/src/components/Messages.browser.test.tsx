@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AssistantRuntimeProvider,
   ThreadPrimitive,
@@ -6,7 +7,7 @@ import {
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { commands, page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
-import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
+import { convertWebMessage } from "../runtime";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { backgroundSubagentJob, backgroundSubagentMessages } from "../test/background-subagent-fixtures";
 import { api } from "../api";
@@ -290,6 +291,48 @@ function CronReplyHarness({ width }: { readonly width: number }) {
   );
 }
 
+function RestartProposalHarness({ width }: { readonly width: number }) {
+  const response: WebMessage = {
+    id: "restart-reply", threadId: "thread", role: "assistant", status: "complete",
+    createdAt: "2026-09-23T10:00:00.000Z", updatedAt: "2026-09-23T10:00:01.000Z",
+    attachments: [], parts: [
+      { type: "tool-call", toolCallId: "inspect", toolName: "Read", status: "complete" },
+      { type: "text", text: "The answer is ready." },
+      { type: "restart_proposal", id: "proposal-one", reason: "Refresh the agent context",
+        restartable: { state: "stale", reason: "The agent has restarted since this suggestion." } },
+    ],
+  };
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages: [response], convertMessage: (value) => convertWebMessage(value), onNew: async () => undefined,
+  });
+  return <div style={{ width, minHeight: 320 }}>
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadPrimitive.Root>
+        <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+      </ThreadPrimitive.Root>
+    </AssistantRuntimeProvider>
+  </div>;
+}
+
+describe("restart proposal placement in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "puts a non-actionable stale card below the answer, outside Activity at %ipx (%s)", async (width, height, _label) => {
+      await page.viewport(width, height);
+      const { container } = render(<RestartProposalHarness width={Math.min(width, 760)} />);
+      const answer = screen.getByText("The answer is ready.");
+      const card = container.querySelector<HTMLElement>(".restart-agent-card")!;
+      const root = container.querySelector<HTMLElement>(".message-assistant")!;
+      expect(card).not.toBeNull();
+      expect(card.closest(".activity-root")).toBeNull();
+      expect((answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
+      expect(card.getBoundingClientRect().top).toBeGreaterThanOrEqual(answer.getBoundingClientRect().bottom - 1);
+      expect(screen.getByRole("button", { name: "Restart agent" })).toBeDisabled();
+      expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    },
+  );
+});
+
 describe("live-input settlement labels in Chromium", () => {
   it.each([
     [1440, "desktop"],
@@ -491,7 +534,7 @@ const steeredTwiceResponse: WebMessage = {
 
 function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
   const presentation = projectProcessJobPresentation(
-    coalesceMonitorWakeMessages(messages),
+    messages,
     { threadId: "thread" },
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
@@ -669,6 +712,11 @@ describe("synthetic detached subagent evidence", () => {
       <SyntheticJobStack job={job} />
     </main>;
     const stack = render(frame(backgroundSubagentJob()));
+    // Nothing opens by itself: the operator opens the shelf, then the row.
+    fireEvent.click(await screen.findByRole("button", { name: /^Background jobs/u }));
+    // The detached child is one agent group: open it, then its turn.
+    fireEvent.click(screen.getByRole("group", { name: /^synthetic-helper agent, 1 turn:/u }).querySelector(":scope > summary")!);
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job running" }).querySelector("summary")!);
     const region = await screen.findByRole("region", { name: "Subagent progress" });
     await waitFor(() => expect(region).toBeVisible());
     const runningMeta = document.querySelector(".process-job-live-meta")!;
@@ -678,7 +726,7 @@ describe("synthetic detached subagent evidence", () => {
     expect(runningMeta.querySelector("dt")).toBeNull();
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
-    const card = region.closest<HTMLElement>(".activity-row.is-job")!;
+    const card = region.closest<HTMLElement>(".process-job-card")!;
     const steps = region.querySelector<HTMLElement>(".activity-steps")!;
     const stepSummary = steps.querySelector<HTMLElement>(".activity-step > summary")!;
     const cardRect = card.getBoundingClientRect();
@@ -736,6 +784,10 @@ describe("synthetic detached subagent evidence", () => {
     fireEvent.scroll(region);
     const report = screen.getByRole("region", { name: "Subagent report" });
     expect(report.getBoundingClientRect().bottom).toBeLessThanOrEqual(region.getBoundingClientRect().bottom + 1);
+    // The shelf body is the one scroller around the rail: scrolled to its end,
+    // the whole rail sits inside the shelf rather than escaping it.
+    const shelfBody = document.querySelector<HTMLElement>(".process-job-stack-body")!;
+    shelfBody.scrollTop = shelfBody.scrollHeight;
     expect(region.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector(".process-job-stack")!.getBoundingClientRect().bottom);
     await shot("finished");
     stack.unmount();
@@ -770,7 +822,7 @@ describe("reasoning-split reply in Chromium", () => {
   it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
     "renders a running sentence a thought interrupts as one block at %ipx (%s)", async (width, height, label) => {
       await page.viewport(width, height);
-      const sentence = "The targeted search only surfaced daycare/postpartum threads — let me look at Robin's full recent inbox and her calendar for this week to catch anything worded differently.";
+      const sentence = "The targeted search only surfaced invoice/receipt threads — let me look at Robin's full recent inbox and their calendar for this week to catch anything worded differently.";
       const runningSplit: WebMessage = {
         ...runningResponse,
         id: "running-split-response",
@@ -813,6 +865,52 @@ describe("reasoning-split reply in Chromium", () => {
       expect(screen.getByRole("button", { name: "Activity in progress" })).toBeVisible();
       const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
       if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-running-${label}.png` });
+    },
+  );
+});
+
+function QuickRepliesHarness({ width, onSend }: { readonly width: number; readonly onSend: (text: string) => void }) {
+  const [messages, setMessages] = useState<readonly WebMessage[]>([{
+    id: "quick-answer", threadId: "thread", role: "assistant", status: "complete",
+    createdAt: "2026-09-23T10:00:00.000Z", updatedAt: "2026-09-23T10:00:01.000Z", attachments: [],
+    parts: [{ type: "text", text: "The project draft is ready. What would you like to do next?" },
+      { type: "reply_options", id: "quick-choices", options: ["Review draft", "Keep going", "Try another approach", "Summarize changes"] }],
+  }]);
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages, convertMessage: (message) => convertWebMessage(message), onNew: async (message) => {
+      const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+      onSend(text);
+      setMessages((held) => [...held, { id: "chosen", threadId: "thread", role: "user", status: "complete",
+        createdAt: "2026-09-23T10:00:02.000Z", updatedAt: "2026-09-23T10:00:02.000Z", attachments: [],
+        parts: [{ type: "text", text }] }]);
+    },
+  });
+  return <div style={{ width, minHeight: 320, padding: 16, boxSizing: "border-box" }}>
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadPrimitive.Root><ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} /></ThreadPrimitive.Root>
+    </AssistantRuntimeProvider>
+  </div>;
+}
+describe("quick reply choices in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "wraps accessible choices beneath the answer at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const onSend = vi.fn();
+      const { container } = render(<QuickRepliesHarness width={Math.min(width, 760)} onSend={onSend} />);
+      const answer = screen.getByText("The project draft is ready. What would you like to do next?");
+      const row = screen.getByRole("group", { name: "Suggested replies" });
+      expect(row.getBoundingClientRect().top).toBeGreaterThanOrEqual(answer.getBoundingClientRect().bottom - 1);
+      expect(row.closest(".activity-root")).toBeNull();
+      expect(container.scrollWidth).toBeLessThanOrEqual(width);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+      const button = screen.getByRole("button", { name: "Review draft" });
+      button.focus(); expect(document.activeElement).toBe(button);
+      const directory = import.meta.env.VITE_QUICK_REPLIES_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/quick-replies-${label}.png` });
+      await page.getByRole("button", { name: "Review draft" }).click();
+      await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("Review draft"));
+      await waitFor(() => expect(container.querySelector(".message-user")?.textContent).toContain("Review draft"));
+      expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
     },
   );
 });

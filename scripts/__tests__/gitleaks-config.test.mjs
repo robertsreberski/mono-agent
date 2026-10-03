@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +151,55 @@ describe("Telegram token gitleaks rule", () => {
       expect(report.map((finding) => finding.StartLine)).toEqual(
         fixture.detected.map((_, index) => index + 1),
       );
+    },
+  );
+
+  it.skipIf(!hasGitleaks)(
+    "allows only the fingerprint finding when real credentials share its minified line",
+    async () => {
+      const { fixture } = await readInputs();
+      const temporaryDirectory = await mkdtemp(
+        join(tmpdir(), "mono-agent-gitleaks-worklab-"),
+      );
+      temporaryDirectories.push(temporaryDirectory);
+      const worklab = join(temporaryDirectory, ".worklab-tmp");
+      await mkdir(worklab);
+      const fingerprint = createHash("sha256").update("fixture auth path").digest("hex");
+      const genericApiKey = createHash("sha256").update("synthetic generic api key").digest("hex");
+      const mixedLine = `${JSON.stringify({
+        piAuthFingerprint: fingerprint,
+        apiKey: genericApiKey,
+        candidate: materialize(fixture.detected[0]),
+      })}\n`;
+      await writeFile(join(worklab, "private-plan.json"), mixedLine, "utf8");
+      await writeFile(join(temporaryDirectory, "public-plan.json"), mixedLine, "utf8");
+      const reportPath = join(temporaryDirectory, "gitleaks-report.json");
+      const result = spawnSync(
+        "gitleaks",
+        [
+          "dir", "--redact", "--no-banner", "--config", configPath,
+          "--report-format", "json", "--report-path", reportPath,
+          "--exit-code", "17", temporaryDirectory,
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(17);
+      const report = JSON.parse(await readFile(reportPath, "utf8"));
+      expect(report).toHaveLength(4);
+      expect(report.map((finding) => basename(finding.File)).sort()).toEqual([
+        "private-plan.json",
+        "private-plan.json",
+        "public-plan.json",
+        "public-plan.json",
+      ]);
+      expect(report.map((finding) => finding.RuleID).sort()).toEqual([
+        "generic-api-key",
+        "generic-api-key",
+        "telegram-bot-token",
+        "telegram-bot-token",
+      ]);
     },
   );
 });

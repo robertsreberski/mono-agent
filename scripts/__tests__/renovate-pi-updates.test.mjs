@@ -7,7 +7,6 @@ const renovateConfigPath = ".github/renovate.json";
 const expectedPiPackages = [
   "@earendil-works/pi-agent-core",
   "@earendil-works/pi-ai",
-  "@earendil-works/pi-tui",
 ];
 
 describe("Pi dependency update automation", () => {
@@ -39,7 +38,7 @@ describe("Pi dependency update automation", () => {
       matchDatasources: ["npm"],
       groupName: "Pi dependencies",
       groupSlug: "pi-dependencies",
-      minimumGroupSize: 3,
+      minimumGroupSize: 2,
       rangeStrategy: "pin",
       respectLatest: true,
       ignoreUnstable: true,
@@ -62,10 +61,10 @@ describe("Pi dependency update automation", () => {
     expect(notes).toContain("copy the following into a new PR comment");
     expect(notes).toContain("@copilot Treat this as a Pi compatibility migration");
     expect(notes).toContain("skills/pi-upstream-recon/SKILL.md");
-    expect(notes).toContain("all three Pi packages must resolve to the identical stable version");
+    expect(notes).toContain("both Pi packages must resolve to the identical stable version");
     expect(notes).toContain("pnpm run verify:all");
     expect(notes).toContain("real authenticated Pi model smoke test");
-    expect(notes).toContain("interactive TUI smoke test");
+    expect(notes).not.toContain("interactive TUI smoke test");
     expect(notes).toContain("Human review and merge are always required");
   });
 
@@ -92,9 +91,9 @@ describe("Pi dependency update automation", () => {
       expectedPiPackages,
     );
     expect([...piRule.matchPackageNames].sort()).toEqual(expectedPiPackages);
-    // agent-app (pi-ai), agent-runtime (pi-agent-core, pi-ai), tui (pi-tui), plus
-    // agent-harness's devDependency on pi-ai for its real-Pi session fixtures (#829).
-    expect(directPiDependencies).toHaveLength(5);
+    // agent-app (pi-ai), agent-runtime (pi-agent-core, pi-ai), plus agent-harness's
+    // devDependency on pi-ai for its real-Pi session fixtures (#829).
+    expect(directPiDependencies).toHaveLength(4);
     for (const dependency of directPiDependencies) {
       expect(dependency.version, `${dependency.path} ${dependency.name}`).toMatch(
         /^\d+\.\d+\.\d+$/,

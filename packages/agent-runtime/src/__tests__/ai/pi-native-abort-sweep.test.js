@@ -40,9 +40,11 @@
 // sweep deliberately avoids — it uses only the abort signal + faux provider +
 // onEvent, the same test-side seams the acceptance suite uses). AP10 runs
 // AFTER that guard checkpoint has already passed, with the abort handler
-// already live, so an abort landing there is handled the same way as AP11
-// (real handler-driven abort) and collapses into the commitSession
-// rollback/drop funnel, not the AP9 guard.
+// already live. The handler's harness.abort() cannot cancel a prompt Pi has
+// not admitted yet, so a last pre-admission check (after AP10 and mid-run
+// arming, just before AP11) returns the aborted result through the same
+// discard funnel as AP9; an abort during AP11 itself is handler-driven and
+// collapses into the commitSession rollback/drop funnel.
 
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -294,6 +296,38 @@ describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () =>
       await assertCreateOnMissUnwedged(model, root, "onmiss-guard-id");
     });
   });
+
+  // An abort that lands after the pre-request guard (read 2) but before the
+  // prompt is admitted — during proactive/mid-run compaction setup — finds no
+  // open Pi operation, so the handler's harness.abort() is a no-op. The last
+  // pre-admission check must still stop the provider request (#1059). The
+  // read-tripped flag deliberately does not dispatch the abort handler.
+  for (const [label, sessionKind] of [["resume", "resume"], ["create-on-miss", "onmiss"]]) {
+    it(`${label}: an abort after the pre-request guard but before admission issues no provider request`, async () => {
+      const model = setup();
+      await withRoot(`pi-abort-admission-${sessionKind}-`, async (root) => {
+        const sessionId = sessionKind === "resume"
+          ? await establishResumeSession(model, root)
+          : "onmiss-admission-id";
+        const sig = makeSignal();
+        sig.tripAt(3);
+        let invoked = false;
+        faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+        const aborted = await generatePiNativeResponse("system", runOptions(model, {
+          messages: [{ role: "user", content: sessionKind === "resume" ? "turn-2" : "turn-1" }],
+          sessionKeepAlive: true,
+          sessionId,
+          piSessionsRoot: root,
+          abortSignal: sig.signal,
+        }));
+        expect(sig.reads).toBeGreaterThanOrEqual(3);
+        expect(aborted.cancelled).toBe(true);
+        expect(invoked).toBe(false);
+        if (sessionKind === "resume") await assertResumeUnwedgedAndClean(model, root, sessionId);
+        else await assertCreateOnMissUnwedged(model, root, sessionId);
+      });
+    });
+  }
 });
 
 describe("pi-native abort sweep — during the provider request (AP11, handler-driven)", () => {

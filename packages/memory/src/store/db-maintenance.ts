@@ -347,6 +347,7 @@ export class MemoryDbMaintenance extends MemoryDbCore {
         "entities",
         "entity_relations",
         "memory_entities",
+        "memory_labels",
         "content_hashes",
         "index_metadata",
       ]) {
@@ -474,10 +475,18 @@ export class MemoryDbMaintenance extends MemoryDbCore {
     await this.db.backup(path);
   }
 
-  private tableExists(name: string): boolean {
+  protected tableExists(name: string): boolean {
     return this.db.prepare(
       `SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?`,
     ).get(name) !== undefined;
+  }
+
+  /** Distinct embedding identities (null when missing) of the stored vectors. */
+  storedVectorEmbeddingModels(): Array<string | null> {
+    return (this.db.prepare(
+      `SELECT DISTINCT m.embedding_model AS model FROM memories m
+       JOIN memories_vec v ON v.rowid = m.seq`,
+    ).all() as Array<{ model: string | null }>).map((row) => row.model);
   }
 
   assertEmbeddingIdentity(): void {

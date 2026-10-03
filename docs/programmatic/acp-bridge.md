@@ -88,6 +88,100 @@ Use this handshake:
 
 The bridge advertises `sessionCapabilities.resume` but not `loadSession`. Resume continues the exact mono-agent conversation without replaying history to the ACP client. A session id is accepted only when its owner-only authorization record belongs to the exact source and workspace; invented, corrupt, cross-source, pre-upgrade, and reset ids are rejected.
 
+## Call configured local peers from another mono-agent
+
+`PeerAgent` is an app-owned tool, separate from subagent profiles and from
+`acpx`. Configure a named local peer and explicitly allow the tool:
+
+```json
+{
+  "peers": { "finance": { "sourceId": "finance-ai" } },
+  "tools": { "allowedTools": ["Read", "PeerAgent"] }
+}
+```
+
+The tool lists only configured, running, bridge-compatible sources and rechecks
+before dispatch. The caller must also have a unique running local trace-source
+registration matching its artifacts directory; otherwise provenance cannot be
+attested and the send is refused. `PeerAgent({action:"send",peer:"finance",thread:"portfolio",
+message:"Summarize the latest allocation"})` waits for a bounded, labelled
+**untrusted** answer. A later send on the same caller conversation, peer and
+thread resumes the exact ACP session, including after restarting either agent;
+it never automatically replays a prompt interrupted by a restart. If the peer
+cleared its ACP session, or its bounded single-use generation ledger reaches
+1024 sends, the current send fails explicitly (`unknown_session_id` or
+`peer_session_exhausted`) without dispatch; the old session mapping is removed
+and only the next explicitly requested send starts a fresh session. A concurrent send to a parked thread names its pending `questionId` and asks
+you to answer, decline, or stop, without leaking a state-directory path. `PeerAgent({action:"stop",peer:"finance",
+thread:"portfolio"})` requests ACP `session/cancel` for the active turn.
+
+With a wake-capable caller origin and enabled process jobs, `background:true`
+returns a durable started job receipt and wakes **that exact originating
+conversation** at terminal settlement. ACP-served turns have no background
+wake origin: they can call further peers in the foreground only. The verified
+handoff carries depth and the signed, bounded source chain across ACP. A send
+to a source already in that chain (including itself) fails immediately rather
+than queuing behind a foreground turn on that source. The chain-depth ceiling
+still applies. If the peer calls `AskUser`, the caller receives an untrusted
+bounded ACP form with a one-time `questionId`. Foreground `send` returns
+`awaiting_answer` immediately while the same ACP run remains parked. Use
+`PeerAgent({action:"answer",peer:"finance",thread:"portfolio",questionId,
+answers:{question_1:"yes"}})` with the **ACP form field keys and option IDs**;
+the bridge still validates all choices, required fields, and paired Other text.
+Use `action:"decline"` with `questionId` to refuse rather than invent an answer.
+Answer from the caller's own evidence or ask the caller's own user; the peer's
+question is not its owner's approval. Subsequent peer answers or questions
+continue on the same run. Sensitive questions fail before a form is offered.
+A parked form has a 30-minute default deadline, with its advertised `expiresAt`
+clamped to the original ACP turn deadline when that is sooner. Question text
+and form data are UTF-8 bounded; background projections redact the question
+using the process-job output redaction path. Expiry, decline, stop, cancellation
+of a continuation job or its foreground answer, or either side restarting
+interrupts the turn; late answers fail, and only a new explicit `send` resumes
+the thread without replaying the interrupted prompt. For background sends the first job
+settles with a typed `peerQuestion` in its projection and an exact-origin
+question wake; answering admits a **new continuation process job** bound to the
+original wake origin. That job wakes again with the final answer, failure, or
+next question. The first job's `peerQuestion.state` is durably updated to
+`answered`, `expired`, or `interrupted` as the parked question settles (even if
+that happens just before the question result is persisted); no additional expiry
+wake is emitted. Slack and Telegram edit the existing card in place for that
+change and never post a new card for a retirement alone, for example after a
+restart. Cards show the question and one line per form field with its choices,
+never raw schema JSON; the web card keeps the raw form in a collapsed section.
+If the question result cannot be persisted, the parked peer turn is cancelled
+rather than left waiting for an answer nobody can see. Errors returned to the
+model or the peer never include local filesystem paths. Neither the parked ACP prompt nor an answer
+is replayed after restart; the owner-private thread record and its original
+question job card recover as interrupted on the next request (where the job
+still exists). A damaged owner-only peer thread is skipped
+with a generic warning, never allowed to break unrelated agent turns. Process
+exit closes the ACP child transport; an embedded host that disposes its harness
+without exiting has no factory-level peer-disposal hook yet, so a parked relay
+remains bounded by the 30-minute turn deadline (or an explicit `stop`).
+
+Peer-specific bounded ACP `_meta` carries a source-bound, owner-private HMAC
+handoff. The proof binds target source, session, caller conversation, turn
+generation, message digest and depth. The bridge validates and durably consumes
+each generation once before dispatch; replay fails closed, while exhaustion
+returns a distinct recoverable error without replay. Consumed ledgers are
+pruned when the bridge detects that their ACP session authorization is gone;
+short bounded lock contention between bridges does not immediately fail a
+valid distinct generation. It replaces the client proof with a domain-separated operator
+attestation (no raw `proof` in operator metadata); the runtime independently
+verifies before rendering an explicit Session notice that this is a request
+from another agent, not the owner's approval, and before using depth.
+Ordinary clients, including `acpx`, need no handoff and retain their existing
+behavior. Metadata and peer prompt text do not grant authority or owner
+approval. Verifying an invalid handoff never creates a secret. Peer state
+never starts a synthetic sandbox: private peer roots are added only when
+process-job protection is **already active** on that turn. Otherwise owner-only
+file permissions protect the state, without changing ordinary turns or blocking
+an unsandboxed target. An unsandboxed agent whose tools can read its own or the
+peer's handoff secret falls outside this provenance boundary, as does a
+malicious same-UID process with local secret access. Attribution remains
+advisory, never authority.
+
 ## Use through acpx
 
 A mono-agent source is an ACP agent identity, not a model. Keep model and effort selection in `mono-agent.config.json`; route the source through an ordinary acpx agent alias:

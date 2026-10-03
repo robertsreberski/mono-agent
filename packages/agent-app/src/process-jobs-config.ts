@@ -106,11 +106,11 @@ export function resolveProcessJobsRegistryWorkspace(
       { path: "runtime.workspace" },
     );
   }
-  // An explicitly supplied environment value wins even when blank; the core
-  // loader normalizes that case back to cwd instead of falling through to JSON.
-  const selected = snapshot.env.MONO_AGENT_WORKSPACE !== undefined
-    ? snapshot.env.MONO_AGENT_WORKSPACE
-    : configured;
+  // The registry workspace is JSON-only like every other core path: a stale
+  // MONO_AGENT_WORKSPACE left in the environment is silently ignored. (No
+  // in-repo producer ever sets it; the documented surface is
+  // `runtime.workspace`.)
+  const selected = configured;
   const normalized = selected?.trim();
   return normalized === undefined || normalized.length === 0
     ? resolve(cwd)

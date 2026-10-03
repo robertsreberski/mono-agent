@@ -29,7 +29,7 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
 | `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
-Environment overrides: `MONO_AGENT_MCP_CONFIG_PATH` sets `tools.mcpConfigPath`, `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` selects request-context stdio servers, and `MONO_AGENT_CONTINUATION_SERVERS` selects continuation-capable stdio/loopback-HTTP servers.
+Configure MCP paths and server selections in the JSON `tools` block. Reserved runtime `MONO_AGENT_MCP_*` values used by child processes are protocol plumbing, not config.
 
 `mcpConfigPath` resolves against the **workspace** (`runtime.workspace`, default `"."`), so a relative path like `./mcp.json` is read from the same folder the agent operates in. Keep the file beside your `mono-agent.config.json` and reference it relatively for portability.
 
@@ -182,7 +182,7 @@ The first call has one strict shape:
 {
   "fromDate": "2026-09-01",
   "throughDate": "2026-09-07",
-  "timeZone": "Europe/Amsterdam",
+  "timeZone": "UTC",
   "limit": 10
 }
 ```
@@ -214,8 +214,8 @@ A complete empty range is `status: "ok"` with `noData: true`. Invalid input/curs
 and range bounds return closed error codes. Store failures return the generic
 `journal_unavailable` error without raw paths or backend text. Unsupported capability is
 different again: the endpoint is not composed. Lite, Journal, and BuJo support it over
-their local canonical index without embedding/chat calls; Supermemory does not, and no
-search fallback or fake empty result is provided.
+their local canonical index without embedding/chat calls. Unsupported custom stores get no
+search fallback or fake empty result.
 
 Availability requires `memory.recallTool.enabled`, an affirmative local browse
 capability, and app-tool policy. Under a restrictive allowlist name `MemoryJournal`,
@@ -265,10 +265,10 @@ rejected.
 Availability is narrower than recall. The tool appears only when a memory block
 is configured, `memory.rememberTool.enabled` is not `false`, tool policy allows
 `Remember`, and the store affirms it can accept writes. That last condition
-excludes read-only stores and the Supermemory backend, which implements the
-shared `MemoryStore` contract but no durable write surface: a configured memory
-block does not by itself grant a write tool. Unlike `MemoryRecall`, `Remember`
-**is** gated by `tools.allowedTools`, so an operator can withhold durable writes
+excludes read-only stores and custom stores without a durable write surface: a
+configured memory block does not by itself grant a write tool. Unlike
+`MemoryRecall`, `Remember` **is** gated by `tools.allowedTools`, so an operator can
+withhold durable writes
 while keeping recall; `disallowedTools` removes it and deny wins.
 
 Writes are idempotent across partial failure. The bullet id is derived from the
@@ -449,6 +449,11 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 ## Related
 
+For first-class local desktop control via a separately installed driver, see
+[Computer use](/tools/computer-use/). `tools.computerUse` registers the reserved
+`computer-use` server through the same runtime MCP path and bypasses built-in
+allow/deny policy like other external servers.
+
 - [Tool policy](/tools/policy/) — the allow/deny model and app-owned MCP exceptions.
 - [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
 - [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall` and local `MemoryJournal`, app-injected MCP tools.
@@ -463,11 +468,12 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 Writable web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`,
-`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead`. They
+`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`,
+`MarkConversationRead`, `GetWakeSchedule`, `SetWakeSchedule`, and `ClearWakeSchedule`. They
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
-Typed turns and background host wakes (process-job and monitor completions) on an
+Typed turns and background host wakes (process-job completions) on an
 ordinary conversation both carry the capability, so an agent may file or move the
 conversation while reacting to finished background work.
 They are scoped to the originating agent and unavailable to cron, archived
@@ -480,6 +486,23 @@ conversation and accepts a null project to leave. Active turns retain their
 context until settlement. Deleting active or pending projects, or archiving a
 pending destination, returns a conflict; wait for current turns to finish.
 `CreateConversation` creates an idle conversation without running it.
+
+With [`telegram.projects.enabled`](/channels/telegram/#forum-topics-as-projects),
+a message a person sends in an allowlisted Telegram chat can use `ListProjects`,
+`GetProject`, `CreateProject`, `UpdateProject`, `DeleteProject`,
+`ListConversations`, `SearchConversations`, `CreateConversation`, and
+`SetConversationProject` too; tag, read-state and wake-up tools stay web-only.
+The capability is issued through the same owner-private discovery, bound to the
+agent process that owns the turn, and revoked when the turn settles.
+`CreateProject` with `attachCurrentConversation` and `SetConversationProject`
+without `conversationId` then act on the current forum topic; a project holds
+at most one topic beside any number of web chats, and a private chat cannot be
+attached. `ListProjects` accepts `channel: "telegram"`, `limit` and `cursor`,
+and marks a topic-bound project with `external: {id, channel, label, state}`
+(`open`, `closed`, or `gone`). The first unfiltered `ListConversations` page adds
+`externalConversations` with `historyAvailable: false`; their opaque `id` works
+as `conversationId` for `SetConversationProject`. Telegram topic and chat IDs
+never appear in any result.
 
 Owner-private loopback discovery issues a capability bound to source,
 conversation, and turn. Credentials and endpoint choices are never model
@@ -529,12 +552,28 @@ turn gets fresh tags. Stored user messages stay unprefixed. There is no pending
 tag membership or separate enablement key: the MCP server remains
 `mono-agent-console-projects` so existing policy aliases keep working.
 
+`GetWakeSchedule({})` reads this conversation's schedule or null (definition,
+state, next UTC fire instant, last outcome, revision). `SetWakeSchedule` creates
+without `expectedRevision` or replaces with the current revision. Provide
+`kind: "once"`, an IANA `timezone` and `localAt: "YYYY-MM-DDTHH:mm"` at least
+five minutes in the future, or `kind: "weekly"`, `timezone`, 1–7 distinct `days`
+(0=Sunday) and at most eight distinct `times` (`HH:mm`). Times are local to that
+timezone; `message` is optional, at most 1,000 UTF-8 bytes. Optional boolean
+`compactFirst` (default false) requests manual compaction before the scheduled
+turn. The turn still runs if compaction fails, is skipped, is unsupported or has
+an unknown outcome, with the normal transcript marker retained. A fired turn arrives
+later in this conversation. `ClearWakeSchedule({ expectedRevision })` removes
+it. These tools cannot target another conversation. Reads leave no operation
+receipt; mutations have replayable receipts, update browser summaries and
+conflicting revisions require a fresh read. The five-minute minimum applies
+only to tool-set one-offs, not browser edits.
 
 ## `ProviderUsage`: subscription quota
 
-`ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It requires no
-arguments; optional `provider` accepts only `anthropic`, `openai-codex`,
-`opencode-go`, or `github-copilot`. It works on permitted agent turns on any channel, independently
+`ProviderUsage` is a read-only app-owned, request-scoped MCP tool. It takes no
+required arguments; optional `provider` accepts only `anthropic`, `openai-codex`,
+`opencode-go`, or `github-copilot`, and optional `refresh` accepts a boolean
+(absent or `false` keeps the cached read; `true` forces a current read). It works on permitted agent turns on any channel, independently
 of the web console's writable-turn tools. It returns the same
 `mono-agent.provider-usage.v1` JSON snapshot as
 [Agent settings usage meters](/observability/web-console/#subscription-usage):
@@ -555,8 +594,10 @@ allow local editor and GitHub CLI github.com discovery; unusable/enterprise Pi
 entries are omitted without local fallback, in the documented [usage credential order](/observability/web-console/#subscription-usage).
 It does not accept credentials, paths, URLs or
 account identifiers. Console and tool share one five-minute per-provider cache
-and coalesced refresh/backoff. There is no forced-refresh argument, vendor write,
-quota purchase, routing decision or local cost calculation. Retained usage fetches also
+and coalesced refresh/backoff. There is no vendor write,
+quota purchase, routing decision or local cost calculation. A forced tool read
+joins the shared in-flight fetch and never bypasses error backoff or
+`Retry-After`. Retained usage fetches also
 feed passive credential-health evidence only when using agent-owned Pi credentials:
 vendor acceptance is **Credential OK**,
 not proof of inference/model entitlement, while final auth rejection is **Needs action**.
@@ -564,6 +605,23 @@ Copilot paid-plan Credits and free-plan Chat/Completions are percentages only;
 unlimited/zero-entitlement buckets, Extra Usage and organization billing are omitted.
 A token-based-billing seat may return a plan without windows. Local Copilot tokens
 never verify the agent’s inference credential or refresh on rejection.
+
+Alongside the unchanged v1 snapshot the tool adds a `projection` sibling with
+one constant-rate burn projection per window that has a reset: `pace` (1 means
+on track to consume the window by its reset), `elapsedFraction`, `severity`
+(`ok`/`ahead`/`unsustainable`), `confidence`, and `exhaustsAt` with `leadMs`
+(the gap to the reset in milliseconds) only when the window is projected to
+run out before its reset. Windows burning below 1x at normal confidence add
+`projectedUnusedPercent`, the share of the window's quota expected to go
+unused; it never contributes to `warning`. A `warning` sentence names each
+affected provider window with its projected run-out, lead time and reset, e.g. `Codex Weekly is
+projected to run out 2026-09-22T13:20:11.000Z, 3d 19h before its
+2026-09-26T08:10:22.000Z reset.` Pace and fractions are rounded to two
+decimals; windows without a projection are omitted. The derivation is anchored
+at each provider's `fetchedAt`, not wall-clock: `ahead` means burning above 1x,
+`unsustainable` at 1.5x and above, and very early windows report pace at low
+confidence with severity held at `ok` and no run-out. It is an extrapolation
+from the last measurement, not a forecast.
 
 Allow-all exposes it automatically. A restrictive `tools.allowedTools` must
 include `ProviderUsage`, `mcp__mono-agent-provider-usage__ProviderUsage`, or

@@ -85,7 +85,17 @@ For real-turn cache measurements and tool-definition changes, enable
 
 For Anthropic retention experiments, first satisfy the [prompt-cache measurement
 gates](/runtime/prompt-cache-measurement/). `providers.piNative.cacheRetention` is
-optional and unset by default; long retention requires model support and separate
-spend approval (1h writes 2× input, reads 0.1×; short writes 1.25×), with no
-guaranteed hit. `MONO_AGENT_PI_CACHE_RETENTION` overrides JSON; explicit short
+long by default (short opts out); model support is required. Separately approve
+spending experiments (1h writes 2× input, reads 0.1×; short writes 1.25×), with no
+guaranteed hit. JSON `providers.piNative.cacheRetention` controls the value; explicit short
 also overrides ambient Pi long retention.
+
+## Optional local desktop control
+
+For a trusted desktop automation agent, add
+`tools.computerUse: { "backend": "cua-driver" }` after installing the driver
+and granting OS permissions. See [Computer use](/tools/computer-use/) for
+setup and safety boundaries. It registers `computer-use` alongside existing
+MCP servers, without installing anything at runtime. Do not enable desktop
+control for untrusted team requests: built-in allow/deny policy does not gate
+external MCP tools and mono-agent does not verify daemon permission mode.

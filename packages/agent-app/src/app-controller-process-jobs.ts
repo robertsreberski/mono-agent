@@ -1,3 +1,4 @@
+import type { WorkerActivityTracker } from "./worker-activity.js";
 import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
 import type {
   ChannelDriver,
@@ -40,8 +41,10 @@ import {
 } from "./process-jobs-protection.js";
 
 export interface ProcessJobsControllerPort {
+  readonly activityTracker?: WorkerActivityTracker;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
@@ -109,12 +112,18 @@ export function ensureProcessJobsService(
       );
       if (!isCurrentFlight()) return undefined;
       const service = await openProcessJobsService({
+        ...(controller.activityTracker === undefined ? {} : {
+          onActivityChange: controller.activityTracker.jobExecutionObserver(),
+        }),
         cwd: controller.cwd,
         workspace,
         settings,
         registration,
         wake: async (input) => await runWithProcessJobWakeContext(
-          { jobId: input.projection.jobId, chainDepth: input.chainDepth },
+          { jobId: input.projection.jobId, chainDepth: input.chainDepth,
+            ...(input.wakeRecovery === undefined ? {} : { wakeRecovery: input.wakeRecovery }),
+            pendingQuestion: input.projection.kind === "internal"
+              && input.projection.peerQuestion?.state === "awaiting_answer" },
           async () => await routeProcessJobWake({
             conversationId: input.conversationId,
             text: input.prompt,
@@ -126,19 +135,19 @@ export function ensureProcessJobsService(
           }),
           input.deliveryKey,
         ),
-        surfaceUpdate: async (projection) => {
-          const outcome = await routeProcessJobSurfaceUpdate({
+        // Routing logs every undelivered update once, with its reason. Throwing
+        // here only added a second, reason-free warning from the service.
+        surfaceUpdate: async (projection, updateOptions) => {
+          await routeProcessJobSurfaceUpdate({
             conversationId: projection.origin.conversationId.split("#", 1)[0]
               ?? projection.origin.conversationId,
             deliveryKey: projection.wake.deliveryKey,
             projection,
+            ...(updateOptions?.retirementOnly === true ? { retirementOnly: true } : {}),
             drivers: controller.drivers,
             running: controller.running,
             ...(controller.logger === undefined ? {} : { logger: controller.logger }),
           });
-          if (!outcome.delivered) {
-            throw new Error(outcome.reason ?? "The native process-job lifecycle update was not delivered.");
-          }
         },
         onHealthChange: async (health) =>
           await publishProcessJobsHealth(controller, settings.stateDir, health),
@@ -199,6 +208,7 @@ export async function prepareProcessJobsProtection(
       env: controller.env,
       cwd: controller.cwd,
       configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }),
     });
   } catch (error) {
     if (isAppCoreConfigError(error)) {
@@ -322,7 +332,7 @@ export async function activateProcessJobWakes(controller: ProcessJobsControllerP
   await controller.processJobsService?.activateWakes();
 }
 
-export async function stopProcessJobsService(controller: ProcessJobsControllerPort): Promise<void> {
+export async function stopProcessJobsService(controller: ProcessJobsControllerPort, shutdownDeadline?: number): Promise<void> {
   const service = controller.processJobsService;
   const start = controller.processJobsServiceStart;
   controller.processJobsService = undefined;
@@ -331,7 +341,7 @@ export async function stopProcessJobsService(controller: ProcessJobsControllerPo
   controller.processJobsStateDir = undefined;
   controller.processJobsDegradation = undefined;
   try {
-    await service?.stop();
+    await service?.stop(shutdownDeadline);
   } catch (error) {
     // The service itself attempts every cancellation, owned-process cleanup,
     // and lock release before rejecting. Keep app reload/shutdown moving so a

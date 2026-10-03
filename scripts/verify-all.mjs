@@ -154,6 +154,7 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
       args: ["run", "check:getting-started-version-pins"],
     },
     { label: "check:docs", command: "pnpm", args: ["run", "check:docs"] },
+    { label: "check:changelog", command: "pnpm", args: ["run", "check:changelog"] },
     { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
     { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
     { label: "build", command: "pnpm", args: ["run", "build"] },

@@ -1,3 +1,4 @@
+import { routeWriteState } from "./mobile-history";
 import type { TagSummary, TagColor } from "./types";
 import type { ProjectColor } from "./types";
 import {
@@ -32,6 +33,8 @@ import {
   type CronReplyRecoveryReference,
 } from "./cron-reply-recovery";
 import { currentDataMode } from "./data-mode";
+import { createManualCompactionOrder, manualCompactionResultTimestamp } from "./manual-compaction-order";
+import { runningManualCompaction } from "./manual-compaction";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
 import {
@@ -56,6 +59,7 @@ import {
   type ThreadPersistence,
 } from "./thread-persistence";
 import { threadPresentation } from "./thread-presentation";
+import { notifyThreadUsageChanged } from "./thread-usage-events";
 import { createUnreadMarker, unreadCountsBySource } from "./unread";
 import { API_VERSION, DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
@@ -75,6 +79,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
   WebEvent,
+  WebMessage,
 } from "./types";
 import {
   effectiveModelForAgent,
@@ -200,6 +205,7 @@ interface ConsoleStoreValue {
   readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
+  readonly context1M?: boolean | null;
   /** What this thread, or the next draft thread, will actually run on. */
   readonly effectiveModel: string;
   readonly effectiveEffort: string;
@@ -315,7 +321,12 @@ interface ConsoleStoreValue {
   readonly setConversationVisible: (visible: boolean) => void;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
-  readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
+  /** Shared web-owned restart flow for the transcript and (later) settings. */
+  readonly requestAgentRestart: typeof api.requestAgentRestart;
+  readonly restartFromProposal: typeof api.restartFromProposal;
+  readonly restartStatus: typeof api.restartStatus;
+  readonly latestAgentRestart: typeof api.latestAgentRestart;
+  readonly setAgentRunDefaults: (model: string | null, effort: string | null, context1M?: boolean | null) => Promise<void>;
   readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
   readonly selectCronJob: (sourceId: string, jobId: string, threadId: string) => void;
@@ -344,6 +355,7 @@ interface ConsoleStoreValue {
   readonly setShowOfflineAgents: (show: boolean) => void;
   readonly setModel: (model: string) => void;
   readonly setEffort: (effort: string) => void;
+  readonly setContext1M: (enabled: boolean) => void;
   readonly retry: () => void;
   readonly clearActionError: () => void;
   readonly loadMoreThreads: () => Promise<void>;
@@ -549,15 +561,10 @@ const mergeThreads = (
  * to the same `messages` array it did last time, which is what assistant-ui
  * short-circuits its whole store update on.
  */
-const NO_SIDECARS = Object.freeze([]) as readonly never[];
 
 const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
   thread: entry.thread,
   messages: entry.messages,
-  // One shared empty array, so a conversation with no sidecars projects to the
-  // same identity every time and `publishDetail` below can compare them.
-  projectTransitions: entry.projectTransitions ?? NO_SIDECARS,
-  modelTransitions: entry.modelTransitions ?? NO_SIDECARS,
   ...(entry.messagesNextCursor === undefined
     ? {}
     : { messagesNextCursor: entry.messagesNextCursor }),
@@ -574,13 +581,13 @@ const threadRoute = (thread: ThreadSummary | undefined): string =>
 const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): void => {
   const path = threadRoute(thread);
   if (window.location.pathname === path) return;
-  window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
+  window.history[replace ? "replaceState" : "pushState"](routeWriteState(window.history.state, path, replace ? "replace" : "push"), "", path);
 };
 
 const updateCronRoute = (sourceId: string, jobId: string): void => {
   const path = cronChannelPath(sourceId, jobId);
   if (window.location.pathname === path) return;
-  window.history.pushState(window.history.state, "", path);
+  window.history.pushState(routeWriteState(window.history.state, path, "push"), "", path);
 };
 
 const cronReplyKey = (sourceId: string, jobId: string, runId: string): string =>
@@ -643,6 +650,7 @@ export const preferenceKeyForThread = (sourceId: string, threadId: string | null
 export interface StoredRunPreference {
   readonly model: string;
   readonly effort: string;
+  readonly context1M?: boolean | null;
 }
 
 /**
@@ -707,9 +715,9 @@ export const readStoredRunPreferences = (): Record<string, StoredRunPreference> 
     return Object.fromEntries(
       Object.entries(stored).flatMap(([key, value]) => {
         if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-        const candidate = value as { model?: unknown; effort?: unknown };
+        const candidate = value as { model?: unknown; effort?: unknown; context1M?: unknown };
         if (typeof candidate.model !== "string" || typeof candidate.effort !== "string") return [];
-        return [[key, { model: candidate.model, effort: candidate.effort }]];
+        return [[key, { model: candidate.model, effort: candidate.effort, ...(typeof candidate.context1M === "boolean" || candidate.context1M === null ? { context1M: candidate.context1M } : {}) }]];
       }),
     );
   } catch {
@@ -1686,6 +1694,7 @@ export const validateRunPreference = (
   // `modelOptions` entry, so without this the effort it advertises is judged
   // against nothing and the selection the picker just offered is erased.
   catalogByProvider: Readonly<Record<string, readonly CatalogModel[]>> = {},
+  inheritedModel?: string,
 ): StoredRunPreference => {
   // With no agent context there is nothing to judge the preference against.
   if (!agent) return preference;
@@ -1705,7 +1714,8 @@ export const validateRunPreference = (
   )
     ? preference.model
     : "";
-  const effectiveModel = effectiveModelForAgent(agent, model) ?? "";
+  const effectiveModel = (model ? effectiveModelForAgent(agent, model) : inheritedModel ?? effectiveModelForAgent(agent, model)) ?? "";
+  const contextAdvertisement = agent.modelOptions?.[effectiveModel] ?? findCatalogModel(catalogByProvider, effectiveModel);
   const efforts = effortLevelsForAgentModel(
     agent,
     effectiveModel,
@@ -1713,6 +1723,7 @@ export const validateRunPreference = (
   );
   return {
     model,
+    ...(preference.context1M === undefined ? {} : { context1M: preference.model === model && contextAdvertisement?.supportsContext1M === true ? preference.context1M : null }),
     effort: preference.effort && efforts.includes(preference.effort)
       ? preference.effort
       : "",
@@ -1840,6 +1851,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     Object.fromEntries(
       Object.entries(readStoredRunPreferences()).map(([key, value]) => [key, value.effort]),
     ),
+  );
+  const [context1MByContext, setContext1MByContext] = useState<Record<string, boolean | null>>(() =>
+    Object.fromEntries(Object.entries(readStoredRunPreferences()).flatMap(([key, value]) =>
+      value.context1M === undefined ? [] : [[key, value.context1M]])),
   );
   const [catalogByProvider, setCatalogByProvider] = useState<Record<string, ProviderCatalogState>>({});
   const catalogOwnerScopeRef = useRef("");
@@ -2011,6 +2026,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       return next;
     });
   }, []);
+  const compactionOrderRef = useRef(createManualCompactionOrder());
   const threadCacheRef = useRef<ThreadCache>(createThreadCache(
     THREAD_CACHE_ENTRIES,
     undefined,
@@ -2210,18 +2226,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
 
   useEffect(() => {
-    const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext)]);
+    const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext), ...Object.keys(context1MByContext)]);
     const stored = Object.fromEntries(
       [...keys].flatMap((key) => {
         const preference = {
           model: modelByContext[key] ?? "",
           effort: effortByContext[key] ?? "",
+          ...(Object.hasOwn(context1MByContext, key) ? { context1M: context1MByContext[key] } : {}),
         };
-        return preference.model || preference.effort ? [[key, preference]] : [];
+        return preference.model || preference.effort || preference.context1M !== undefined ? [[key, preference]] : [];
       }),
     );
     localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify(stored));
-  }, [effortByContext, modelByContext]);
+  }, [context1MByContext, effortByContext, modelByContext]);
 
   // SET on every mount, not just cleared on teardown: StrictMode runs this
   // setup, its cleanup, and this setup again, and the ref survives all three.
@@ -2417,7 +2434,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * BEFORE that event, so without the fence it walks an older set of cards --
    * and older per-agent counts -- back over the newer ones.
    */
-  const acceptActiveThreads = useCallback((next: ActiveThreads | undefined, seq: number) => {
+  const acceptActiveThreads = useCallback((incoming: ActiveThreads | undefined, seq: number) => {
+    const next = incoming === undefined ? undefined : { ...incoming,
+      threads: incoming.threads.map((row) => compactionOrderRef.current.accept(row)),
+    };
     // A server that predates this listing has no opinion about what is running.
     // Keeping the last known answer is honest; replacing it with nothing is
     // an authoritative zero this console was never given.
@@ -2573,15 +2593,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setDetail(null);
       return;
     }
-    // The sidecars are compared too: a transition arrives on a read that
-    // changed neither the summary nor a single message -- the marker IS the
-    // only new thing in that answer -- and comparing only those two published
-    // the transcript without it until the next unrelated write.
     setDetail((current) => (current !== null
       && current.thread === entry.thread
       && current.messages === entry.messages
-      && current.projectTransitions === (entry.projectTransitions ?? NO_SIDECARS)
-      && current.modelTransitions === (entry.modelTransitions ?? NO_SIDECARS)
       && current.messagesNextCursor === entry.messagesNextCursor)
       ? current
       : projectDetail(entry));
@@ -2664,8 +2678,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         cache.restore({
           thread: stored.thread,
           messages: stored.messages,
-          projectTransitions: stored.projectTransitions ?? [],
-          modelTransitions: stored.modelTransitions ?? [],
           ...(stored.messagesNextCursor === undefined
             ? {}
             : { messagesNextCursor: stored.messagesNextCursor }),
@@ -2786,6 +2798,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // conversations, and letting it fire would write them straight back.
     cancelPersist();
     threadCacheRef.current.clear();
+    compactionOrderRef.current.reset();
     noteHeldRunStateRef.current();
     selectedThreadRef.current = null;
     setDetail(null);
@@ -2894,7 +2907,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // one on every SSE event, including the one the delete itself produced.
     const next: Bootstrap = {
       ...rawNext,
-      threads: admitThreads(removedThreadsRef.current, rawNext.threads, issuedAt),
+      threads: admitThreads(removedThreadsRef.current,
+        rawNext.threads.map((row) => compactionOrderRef.current.accept(row)), issuedAt),
+      ...(rawNext.activeThreads === undefined ? {} : { activeThreads: { ...rawNext.activeThreads,
+        threads: rawNext.activeThreads.threads.map((row) => compactionOrderRef.current.accept(row)) } }),
     };
     // REPLACED, not added to. A bootstrap answers with one bucket and the
     // projection it lands in is a wholesale replacement, so every other bucket
@@ -3172,7 +3188,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         (signal) => api.threads(sourceId, archived, before, signal, threadPageLimit()),
         THREAD_READ_TIMEOUT_MS,
       );
-      const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+      const admitted = admitThreads(removedThreadsRef.current,
+        page.threads.map((row) => compactionOrderRef.current.accept(row)), issuedAt);
       // A page is a server summary for every row in it, exactly as a bootstrap's
       // listing is -- and a bootstrap carries ONE bucket, so a conversation held
       // for any other agent is confirmed by nothing until that agent's bucket is
@@ -3409,6 +3426,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (reconcileListing && entry !== undefined) reconcileSelectedListing(entry);
   }, [reconcileSelectedListing]);
 
+  const noteManualCompactionResult = useCallback((threadId: string, messages: readonly WebMessage[]) => {
+    const timestamps = messages.map(manualCompactionResultTimestamp)
+      .filter((value): value is number => value !== undefined);
+    if (!timestamps.some((at) => compactionOrderRef.current.clear(threadId, at))) return;
+    const held = threadCacheRef.current.get(threadId);
+    if (held !== undefined && threadCacheRef.current.patchThread(threadId,
+      compactionOrderRef.current.accept(held.thread))) publishDetail(threadId);
+    setBootstrap((current) => current === null ? current : { ...current,
+      threads: current.threads.map((row) => row.id === threadId
+        ? compactionOrderRef.current.accept(row) : row),
+    });
+  }, [publishDetail]);
+
   /**
    * Apply one admitted read of the selected conversation.
    *
@@ -3423,7 +3453,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     reconcileListing: boolean,
   ) => {
     if (selectedThreadRef.current !== next.thread.id) return;
-    const entry = threadCacheRef.current.upsertFull(next, {
+    noteManualCompactionResult(next.thread.id, next.messages);
+    const entry = threadCacheRef.current.upsertFull({ ...next,
+      thread: compactionOrderRef.current.accept(next.thread) }, {
       reset: true,
       issuedAt: observedAt,
       ...(next.etag === undefined ? {} : { etag: next.etag }),
@@ -3435,7 +3467,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     if (!reconcileListing || entry === undefined) return;
     reconcileSelectedListing(entry);
-  }, [publishDetail, reconcileSelectedListing]);
+  }, [noteManualCompactionResult, publishDetail, reconcileSelectedListing]);
 
   /**
    * Read one conversation in full and put it into the cache.
@@ -3803,7 +3835,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the gap lost, so NOTHING it is keeping can say it is current -- and there
    * is no cheaper evidence available. A listing summary cannot stand in for it:
    * `writeMessageParts` moves a transcript without touching the conversation
-   * row at all (a Monitor wake, every mid-turn flush), so a page that reports
+   * row at all (every mid-turn flush), so a page that reports
    * an unchanged summary is silent about writes the console actually missed.
    *
    * So: everything held is suspect, and each conversation pays when it is
@@ -3869,7 +3901,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * The answer to every gap: a delta whose base is not the version held, a
    * `message.changed` naming a message this tab already has, a replay these
    * parts cannot mean. Four assistant-row write paths -- notification
-   * reconciliation, cron-run reconciliation, the process-job card, Monitor
+   * reconciliation, cron-run reconciliation, the process-job card,
    * activity -- bump a message's version with NO delta and arrive as a hint, so
    * the mismatch is the ordinary, intended signal rather than an error.
    *
@@ -3929,6 +3961,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             cache.markStale(threadId);
             return;
           }
+          noteManualCompactionResult(threadId, [message]);
           if (cache.upsertMessage(threadId, message)) publishDetail(threadId);
           const landedSeq = message.seq ?? Number.NEGATIVE_INFINITY;
           if (!pending.dirty && pending.wantedSeq <= landedSeq) return;
@@ -3951,7 +3984,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     })();
     messageRepairsRef.current.set(key, pending);
     return pending.promise;
-  }, [publishDetail, refreshSelectedThread]);
+  }, [noteManualCompactionResult, publishDetail, refreshSelectedThread]);
 
   /**
    * Publishes what the batched deltas have already written into the cache.
@@ -4040,7 +4073,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [flushDeltaPublishes, noteTranscriptWrite, publishDetail, repairMessage]);
 
-  const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
+  const applyThreadUpdate = useCallback((incoming: ThreadSummary, issuedAt: number) => {
+    const nextThread = compactionOrderRef.current.accept(incoming);
     // A response can outlive the conversation it describes: the migration's
     // read, an optimistic rollback, any write already in flight when the
     // operator deleted the thread. `mergeThreads` would re-add it, so the
@@ -4264,7 +4298,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (projectMembersGenerationRef.current !== generation
         || openProjectIdRef.current !== projectId) return;
       const issuedAt = removedThreadsRef.current.epoch();
-      const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+      const admitted = admitThreads(removedThreadsRef.current,
+        page.threads.map((row) => compactionOrderRef.current.accept(row)), issuedAt);
       for (const row of admitted) {
         reconcileCronRevision(row);
         threadCacheRef.current.confirmListed(row.id, row);
@@ -4819,6 +4854,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
         case "message.changed": {
           if (threadId === undefined) return;
+          notifyThreadUsageChanged(threadId);
           if (threadId !== selectedThreadRef.current) {
             // Not on screen: remember that its transcript moved, and read it
             // when the operator opens it rather than now.
@@ -5282,8 +5318,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // window rather than dropping the pages the operator scrolled to.
       threadCacheRef.current.prependOlder(current.thread.id, {
         messages: page.messages,
-        projectTransitions: page.projectTransitions ?? [],
-        modelTransitions: page.modelTransitions ?? [],
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       });
       publishDetail(current.thread.id);
@@ -5929,10 +5963,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
+      const catalog = Object.fromEntries(Object.entries(catalogByProvider).map(([provider, state]) => [provider, state.models]));
+      const draft = validateRunPreference(selectedAgent, {
+        model: modelByContext[draftPreferenceKey] ?? "", effort: effortByContext[draftPreferenceKey] ?? "",
+        ...(Object.hasOwn(context1MByContext, draftPreferenceKey) ? { context1M: context1MByContext[draftPreferenceKey] } : {}),
+      }, selectedAgent?.providers?.map((provider) => provider.id), catalog,
+      Object.hasOwn(modelByContext, draftPreferenceKey) ? undefined : selectedAgent?.runSettings.effective.model);
+      const selected = (modelByContext[draftPreferenceKey] && selectedAgent ? effectiveModelForAgent(selectedAgent, modelByContext[draftPreferenceKey]!) : Object.hasOwn(modelByContext, draftPreferenceKey)
+        ? selectedAgent?.defaultModel : selectedAgent?.runSettings.effective.model) ?? selectedAgent?.defaultModel;
+      const eligible = (selectedAgent?.modelOptions?.[selected ?? ""] ?? findCatalogModel(catalog, selected ?? ""))?.supportsContext1M === true;
+      // A pinned model inherits its own configured policy, not another model's web default.
+      const contextSelection = Object.hasOwn(context1MByContext, draftPreferenceKey) ? draft.context1M ?? null
+        : Object.hasOwn(modelByContext, draftPreferenceKey) && selectedAgent?.runSettings.override?.context1M !== undefined ? null : undefined;
       const runConfig = {
         ...(Object.hasOwn(modelByContext, draftPreferenceKey)
           ? { model: modelByContext[draftPreferenceKey] || null }
           : {}),
+        ...(eligible && contextSelection !== undefined ? { context1M: contextSelection } : {}),
         ...(Object.hasOwn(effortByContext, draftPreferenceKey)
           ? { effort: effortByContext[draftPreferenceKey] || null }
           : {}),
@@ -5962,6 +6009,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         delete next[draftPreferenceKey];
         return next;
       });
+      setContext1MByContext((current) => { const next = { ...current }; delete next[draftPreferenceKey]; return next; });
       const stillOwnsSelection = operatorSelectionRef.current === request.generation
         && selectedAgentRef.current === request.sourceId;
       if (stillOwnsSelection) {
@@ -6006,6 +6054,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [
     beginOperatorSelection,
+    catalogByProvider,
+    selectedAgent,
+    context1MByContext,
     effortByContext,
     modelByContext,
     publishDetail,
@@ -6172,10 +6223,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         });
   }, []);
 
-  const setAgentRunDefaults = useCallback(async (model: string | null, effort: string | null) => {
+  const setAgentRunDefaults = useCallback(async (model: string | null, effort: string | null, context1M?: boolean | null) => {
     if (!selectedAgentId) throw new Error("Select an agent before changing its defaults.");
     try {
-      const agent = await api.setAgentRunDefaults(selectedAgentId, { model, effort });
+      const agent = await api.setAgentRunDefaults(selectedAgentId, { model, effort, ...(context1M === undefined ? {} : { context1M }) });
       applyAgentUpdate(agent);
       setActionError(null);
     } catch (settingsError) {
@@ -6412,6 +6463,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       delete next[preferenceKey];
       return next;
     });
+    setContext1MByContext((current) => { const next = { ...current }; delete next[preferenceKey]; return next; });
     setBootstrap((current) => current
       ? { ...current, threads: current.threads.filter((item) => item.id !== thread.id) }
       : current);
@@ -6719,12 +6771,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // value.
   const serverOverrideActive =
     selectedThread !== null &&
-    ((selectedThread.runModel ?? null) !== null || (selectedThread.runEffort ?? null) !== null);
+    ((selectedThread.runModel ?? null) !== null || (selectedThread.runEffort ?? null) !== null || selectedThread.runContext1M != null);
   const storedPreference = serverOverrideActive
-    ? { model: selectedThread?.runModel ?? "", effort: selectedThread?.runEffort ?? "" }
+    ? { model: selectedThread?.runModel ?? "", effort: selectedThread?.runEffort ?? "", context1M: selectedThread?.runContext1M }
     : {
         model: modelByContext[preferenceKey] ?? "",
         effort: effortByContext[preferenceKey] ?? "",
+        ...(Object.hasOwn(context1MByContext, preferenceKey) ? { context1M: context1MByContext[preferenceKey] } : {}),
       };
   // A provider advertised by the agent can own persisted catalog-only models
   // before this tab has fetched its first page. Catalog keys remain included
@@ -6738,6 +6791,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     storedPreference,
     advertisedProviders,
     catalogModels,
+    selectedThread === null && !localModelPresent ? selectedAgent?.runSettings.effective.model : undefined,
   );
   const model = validatedPreference.model;
   const configModel = selectedAgent ? effectiveModelForAgent(selectedAgent, "") ?? "" : "";
@@ -6767,9 +6821,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ) ?? "");
   // An override is what the operator chose for THIS conversation, as opposed to
   // whatever the agent would otherwise start with.
+  const contextAdvertisement = selectedAgent?.modelOptions?.[effectiveModel] ?? findCatalogModel(catalogModels, effectiveModel);
+  const inheritsWebContext = draftInheritsWebModel && !Object.hasOwn(context1MByContext, preferenceKey)
+    && (!selectedAgent?.runSettings.override?.model || selectedAgent.runSettings.override.context1M != null);
+  const context1M = contextAdvertisement?.supportsContext1M === true
+    ? validatedPreference.context1M ?? (inheritsWebContext
+      ? selectedAgent?.runSettings.effective.context1M : contextAdvertisement.context1M) ?? false
+    : undefined;
   const hasRunOverride = selectedThread === null
-    ? localModelPresent || localEffortPresent
-    : model.length > 0 || effort.length > 0;
+    ? localModelPresent || localEffortPresent || Object.hasOwn(context1MByContext, preferenceKey)
+    : model.length > 0 || effort.length > 0 || selectedThread?.runContext1M != null;
 
   useEffect(() => {
     if (!preferenceKey || serverOverrideActive) return;
@@ -6778,6 +6839,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         ...current,
         [preferenceKey]: validatedPreference.model,
       }));
+    }
+    if (storedPreference.context1M !== validatedPreference.context1M) {
+      setContext1MByContext((current) => { const next = { ...current }; delete next[preferenceKey]; return next; });
     }
     if (storedPreference.effort !== validatedPreference.effort) {
       setEffortByContext((current) => ({
@@ -6789,8 +6853,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     preferenceKey,
     serverOverrideActive,
     storedPreference.effort,
+    storedPreference.context1M,
     storedPreference.model,
     validatedPreference.effort,
+    validatedPreference.context1M,
     validatedPreference.model,
   ]);
 
@@ -6817,13 +6883,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (migratedKeysRef.current.has(preferenceKey)) return;
     if (
       (selectedThread.runModel ?? null) !== null ||
-      (selectedThread.runEffort ?? null) !== null
+      (selectedThread.runEffort ?? null) !== null || selectedThread.runContext1M != null
     ) return;
     const local = {
       model: modelByContext[preferenceKey] ?? "",
       effort: effortByContext[preferenceKey] ?? "",
+      // Preserve legacy route adoption; only sanitize the new context policy.
+      ...(validatedPreference.context1M == null ? {} : { context1M: validatedPreference.context1M }),
     };
-    if (local.model === "" && local.effort === "") return;
+    if (local.model === "" && local.effort === "" && local.context1M == null) return;
     const threadId = selectedThread.id;
     // Already tombstoned: do not start, and above all do not MARK. The delete
     // owns this conversation's preference key from here -- it removes it when
@@ -6834,6 +6902,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const writeGeneration = overrideWriteRef.current.get(threadId) ?? 0;
     migratedKeysRef.current.add(preferenceKey);
     const dropLocal = () => {
+      setContext1MByContext((current) => { const next = { ...current }; delete next[preferenceKey]; return next; });
       setModelByContext((current) => {
         const nextMap = { ...current };
         delete nextMap[preferenceKey];
@@ -6870,7 +6939,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         }
         if (
           (fresh.thread.runModel ?? null) !== null
-          || (fresh.thread.runEffort ?? null) !== null
+          || (fresh.thread.runEffort ?? null) !== null || fresh.thread.runContext1M != null
         ) {
           // Someone set an override while this tab held a stale projection.
           // Adopt theirs and drop the local copy rather than overwriting it.
@@ -6891,6 +6960,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         const next = await api.patchThread(threadId, {
           model: local.model || null,
           effort: local.effort || null,
+          ...(local.context1M == null ? {} : { context1M: local.context1M }),
           ifRunConfigUnset: true,
         }, signal);
         applyThreadUpdate(next, migrationIssuedAt);
@@ -6903,6 +6973,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }).catch(() => undefined);
   }, [
     applyThreadUpdate,
+    context1MByContext,
+    validatedPreference.model,
+    validatedPreference.effort,
+    validatedPreference.context1M,
     effortByContext,
     enqueueThreadWrite,
     modelByContext,
@@ -6913,7 +6987,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   ]);
 
   const patchThreadOverride = useCallback(async (
-    patch: { model?: string | null; effort?: string | null },
+    patch: { model?: string | null; effort?: string | null; context1M?: boolean | null },
   ) => {
     const thread = selectedThread;
     if (!thread) return;
@@ -6921,7 +6995,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // operator has spoken since it read the thread.
     const generations = overrideWriteRef.current;
     generations.set(thread.id, (generations.get(thread.id) ?? 0) + 1);
-    const previous = { model: thread.runModel ?? null, effort: thread.runEffort ?? null };
+    const previous = { model: thread.runModel ?? null, effort: thread.runEffort ?? null, context1M: thread.runContext1M ?? null };
     const issuedAt = removedThreadsRef.current.epoch();
     // Optimistic straight away; the write itself queues behind whatever else
     // is already writing to this conversation, so the server sees the
@@ -6930,6 +7004,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ...thread,
       runModel: "model" in patch ? patch.model ?? null : previous.model,
       runEffort: "effort" in patch ? patch.effort ?? null : previous.effort,
+      runContext1M: "context1M" in patch ? patch.context1M ?? null : previous.context1M,
     }, issuedAt);
     try {
       const next = await enqueueThreadWrite(thread.id, (signal) =>
@@ -6957,6 +7032,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         const currentEffort = selectedThread.runEffort ?? "";
         void patchThreadOverride({
           model: next === "" ? null : next,
+          ...((selectedAgent?.modelOptions?.[nextEffectiveModel] ?? findCatalogModel(catalogModels, nextEffectiveModel))?.supportsContext1M === true || selectedThread.runContext1M == null ? {} : { context1M: null }),
           ...(currentEffort !== "" && !nextEfforts.includes(currentEffort)
             ? { effort: null }
             : {}),
@@ -6972,6 +7048,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         nextEffectiveModel,
         findCatalogModel(catalogModels, nextEffectiveModel),
       );
+      if ((selectedAgent?.modelOptions?.[nextEffectiveModel] ?? findCatalogModel(catalogModels, nextEffectiveModel))?.supportsContext1M !== true) {
+        setContext1MByContext((current) => Object.hasOwn(current, preferenceKey) || selectedAgent?.runSettings.effective.context1M !== undefined
+          ? { ...current, [preferenceKey]: null } : current);
+      }
       setEffortByContext((current) => {
         const authored = Object.hasOwn(current, preferenceKey);
         const candidate = authored
@@ -7005,10 +7085,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       delete next[preferenceKey];
       return next;
     });
+    setContext1MByContext((current) => { const next = { ...current }; delete next[preferenceKey]; return next; });
     if (selectedThread) {
-      void patchThreadOverride({ model: null, effort: null });
+      void patchThreadOverride({ model: null, effort: null, context1M: null });
     }
   }, [patchThreadOverride, preferenceKey, selectedThread]);
+
+  const setContext1M = useCallback((enabled: boolean) => {
+    if (!preferenceKey || !selectedAgentId || contextAdvertisement?.supportsContext1M !== true) return;
+    if (selectedThread) { void patchThreadOverride({ context1M: enabled }); return; }
+    setContext1MByContext((current) => ({ ...current, [preferenceKey]: enabled }));
+  }, [contextAdvertisement, patchThreadOverride, preferenceKey, selectedAgentId, selectedThread]);
 
   const setEffort = useCallback(
     (next: string) => {
@@ -7163,6 +7250,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         attachmentIds: input.attachmentIds ?? [],
         model: input.model ?? null,
         effort: input.effort ?? null,
+        ...(input.context1M == null ? {} : { context1M: input.context1M }),
       });
       const pending = pendingSubmissionPayloadsRef.current.get(threadId);
       const submissionId = pending?.payload === payload ? pending.submissionId : crypto.randomUUID();
@@ -7182,6 +7270,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         const rejection = applySubmissionReceipt(receipt);
         if (rejection !== undefined) throw new Error(rejection);
       } catch (submissionError) {
+        // The server owns admission. A missed busy event, or a stale busy hint
+        // after a different rejection, needs an authoritative thread re-read.
+        if ((submissionError instanceof ApiError && submissionError.code === "compaction_busy")
+          || (selectedThread?.id === threadId && runningManualCompaction(selectedThread))) {
+          scheduleRefreshRef.current({ detail: true, bootstrap: true });
+        }
         if (selectedThreadRef.current === threadId) setActionError(errorMessage(submissionError));
         throw submissionError;
       } finally {
@@ -7223,6 +7317,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hiddenOfflineAgentCount,
       model,
       effort,
+      context1M,
       effectiveModel,
       effectiveEffort,
       hasRunOverride,
@@ -7269,6 +7364,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadMoreProjectMembers,
       selectAgent,
       setAgentPinned,
+      requestAgentRestart: api.requestAgentRestart,
+      restartFromProposal: api.restartFromProposal,
+      restartStatus: api.restartStatus,
+      latestAgentRestart: api.latestAgentRestart,
       setAgentRunDefaults,
       clearAgentRunDefaults,
       selectThread,
@@ -7289,6 +7388,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setShowOfflineAgents,
       setModel,
       setEffort,
+      setContext1M,
       retry: () => {
         setLoading(true);
         setError(null);
@@ -7334,6 +7434,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       threadListError,
       deleteThread,
       effort,
+      context1M,
       effectiveEffort,
       effectiveModel,
       effortOptions,
@@ -7379,6 +7480,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendLiveInput,
       sendSubmission,
       setEffort,
+      setContext1M,
       setAgentPinned,
       setAgentRunDefaults,
       setModel,

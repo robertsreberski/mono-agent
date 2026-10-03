@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/web",
-  "version": "0.21.1",
+  "version": "0.25.1",
   "description": "Always-on assistant-ui web console for discovering and chatting with local mono-agent instances.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -28,22 +28,24 @@
   ],
   "scripts": {
     "build": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build && tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir webapp run typecheck:storybook",
     "test": "vitest run src/__tests__ && pnpm --dir webapp run test"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.21.1",
-    "@mono-agent/config": "workspace:0.21.1",
-    "@mono-agent/observability": "workspace:0.21.1",
+    "@mono-agent/agent-contracts": "workspace:0.25.1",
+    "@mono-agent/config": "workspace:0.25.1",
+    "@mono-agent/observability": "workspace:0.25.1",
+    "@mono-agent/operator-adapter": "workspace:0.25.1",
     "compression": "1.8.1",
+    "cron-parser": "5.5.0",
     "express": "^5.1.0",
-    "undici": "8.9.0",
     "web-push": "3.6.7"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.2",
-    "@types/web-push": "3.6.4"
+    "@types/web-push": "3.6.4",
+    "undici": "8.11.2"
   },
   "publishConfig": {
     "access": "public"

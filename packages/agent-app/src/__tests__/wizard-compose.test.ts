@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
@@ -37,7 +37,7 @@ async function loadComposed(answers: WizardAnswers, ctx: ComposeContext = CTX) {
   const plan = composeWizardPlan(answers, ctx);
   const configPath = join(dir, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify(plan.configJson, null, 2), "utf8");
-  return loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: configPath });
+  return loadMonoAgentConfig({ cwd: dir, jsonPath: configPath });
 }
 
 /** Answers that enable exactly one module, for the per-module round-trip guard. */
@@ -50,8 +50,6 @@ function answersForModule(id: string): WizardAnswers {
       return defaultAnswers({ memory: id });
     case "sandbox":
       return defaultAnswers({ sandbox: true });
-    case "observability":
-      return defaultAnswers({ observability: true });
     case "provider":
       return defaultAnswers({ model: id === "provider:ollama" ? "ollama:llama3.1:8b" : "lmstudio:qwen2.5:7b" });
     default:
@@ -86,10 +84,9 @@ describe("wizard composer — schema + no secret leak", () => {
   it("strips secret inputs so a fake token never reaches the JSON", () => {
     const answers = defaultAnswers({
       channels: ["channel:telegram"],
-      memory: "memory:supermemory",
+      memory: "memory:lite",
       moduleInputs: {
         "channel:telegram": { telegramToken: "xoxb-FAKELEAK" },
-        "memory:supermemory": { supermemoryApiKey: "sk-FAKELEAK" },
       },
     });
     const plan = composeWizardPlan(answers, CTX);
@@ -208,9 +205,9 @@ describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allo
     expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
-  it("includes MemoryRecall for journal and supermemory too", () => {
+  it("includes MemoryRecall for journal and BuJo too", () => {
     expect(alwaysOnTools(defaultAnswers({ memory: "memory:journal" }))).toEqual(["ReadSkill", "MemoryRecall"]);
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["ReadSkill", "MemoryRecall"]);
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
   it("includes recall for lite memory and keeps ReadSkill with no memory", () => {

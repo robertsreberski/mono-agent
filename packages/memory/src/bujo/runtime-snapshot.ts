@@ -91,10 +91,9 @@ function validateSnapshot(value: unknown): asserts value is BujoRuntimeSnapshot 
 }
 
 function validQueues(value: unknown): boolean {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["index", "capture", "intake", "shutdown"]) || !validShutdown(value.shutdown)) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["index", "intake", "shutdown"]) || !validShutdown(value.shutdown)) {
     return false;
   }
-  if (value.capture !== undefined && !validBackgroundQueue(value.capture, [])) return false;
   if (value.intake !== undefined && !validIntake(value.intake)) return false;
   return value.index === undefined || validBackgroundQueue(value.index, [
     "remainingBacklog",

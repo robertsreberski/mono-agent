@@ -15,7 +15,7 @@ import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.j
 
 const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
-export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs", "monitors", "web-control"] as const;
+export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "web", "bridge", "install-skill", "runs", "memory", "continuations", "jobs", "web-control"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -36,7 +36,6 @@ export const JSON_CAPABLE_COMMANDS = [
   "memory",
   "continuations",
   "jobs",
-  "monitors",
   "web-control",
   "web",
 ] as const;
@@ -44,16 +43,18 @@ export const JSON_CAPABLE_COMMANDS = [
 // Human-facing list for the rejection message: the two subcommand-gated surfaces
 // are qualified so the error points at the exact invocation that accepts `--json`.
 const JSON_CAPABLE_COMMANDS_DISPLAY =
-  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, monitors, web-control, web status";
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs, web-control, web status";
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
 // `renderHelpTopic` reuses these so `help <removed>` prints the same pointer.
 export const REMOVED_COMMANDS = new Map<string, string>([
   ["recipes", "`recipes` was removed; use `mono-agent presets`."],
-  ["sessions", "`sessions` was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console)."],
+  ["sessions", "`sessions` was removed; use `mono-agent runs list|show` for recorded-run diagnostics or `mono-agent web run --loopback` for live conversations."],
+  ["tui", "`tui` was removed; use `mono-agent web run --loopback` for live conversations, `mono-agent runs list|show` for bounded recorded-run diagnostics, and `mono-agent config` for resolved configuration."],
   ["metrics", "`metrics` was removed; use `mono-agent runs` (or `mono-agent runs report`)."],
   ["audit-runs", "`audit-runs` was removed; use `mono-agent runs audit`."],
+  ["backfill", "`backfill` was removed with first-party Phoenix/OTLP export; use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report` for retained local artifacts. If a final export is required, perform it before upgrading with the known-good version you already operate."],
 ]);
 
 // `doctor`/`setup` never reach routing: parseCliArgs normalizes them to
@@ -86,6 +87,7 @@ export interface ParsedCliArgs {
   readonly piAuthPath?: string;
   /** auth: explicitly read one API key from redirected standard input. */
   readonly apiKeyStdin?: boolean;
+  readonly authMethod?: "oauth" | "api-key";
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
@@ -111,17 +113,15 @@ export interface ParsedCliArgs {
   readonly follow: boolean;
   /** logs: number of trailing lines to print. */
   readonly lines?: number;
-  /** backfill: export exactly this run id. */
-  readonly run?: string;
-  /** backfill: export every recorded run. */
+  /** web: apply to every managed console. */
   readonly all: boolean;
-  /** backfill: only runs whose startedAt is >= this ISO instant. */
+  /** runs: only runs whose startedAt is >= this ISO instant. */
   readonly since?: string;
-  /** backfill: only runs whose startedAt is <= this ISO instant. */
+  /** runs: only runs whose startedAt is <= this ISO instant. */
   readonly until?: string;
-  /** backfill: map + serialize but do not POST. */
+  /** init: preview generated files without writing. */
   readonly dryRun: boolean;
-  /** runs/backfill: include memory-run artifacts. */
+  /** runs: include memory-run artifacts. */
   readonly includeMemory: boolean;
   /** runs: read this artifact directory directly. */
   readonly artifactDir?: string;
@@ -129,12 +129,8 @@ export interface ParsedCliArgs {
   readonly groupBy?: "model" | "channel" | "failureKind";
   /** validate/runs audit: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
-  /** tui: connect to this running agent (label or sourceId) directly. */
+  /** jobs: connect to this running agent (label or sourceId) directly. */
   readonly agent?: string;
-  /** tui: conversation id to chat under. */
-  readonly conversation?: string;
-  /** tui: build the current-folder responder in-process. */
-  readonly local?: boolean;
   /** install-skill: operate on the current agent's managed project skills. */
   readonly project?: boolean;
   /** install-skill --project: report drift without writing. */
@@ -149,6 +145,10 @@ export interface ParsedCliArgs {
   readonly json?: boolean;
   /** memory audit: fail closed on degraded or unknown health. */
   readonly strict?: boolean;
+  readonly labelKind?: "fact" | "preference" | "lesson";
+  readonly labelAbout?: string;
+  readonly labelScope?: string;
+  readonly propose?: boolean;
   /** memory: max rows for search/top/entity preview. */
   readonly limit?: number;
   /** continuations list: opaque keyset cursor from the previous page. */
@@ -159,6 +159,30 @@ export interface ParsedCliArgs {
   readonly reason?: string;
   /** memory forget prepare/apply: owner-private plan artifact. */
   readonly planPath?: string;
+  /** memory curate prepare: comma-separated source selection buckets. */
+  readonly curateSelect?: string;
+  /** memory curate review: comma-separated action:reason category selectors. */
+  readonly curateAccept?: string;
+  /** memory curate review: comma-separated action:reason category selectors. */
+  readonly curateReject?: string;
+  /** memory curate prepare/review: operator entity merges as `fromId=toId`. */
+  readonly curateMerges?: readonly string[];
+  /** memory curate prepare/review: newline-delimited `fromId=toId` operator merge file. */
+  readonly curateMergeFile?: string;
+  /** memory curate prepare/review: operator merges may join different entity types. */
+  readonly allowCrossType?: boolean;
+  /** memory curate prepare: propose reviewed `person:owner` associations for owner-subject lines. */
+  readonly ownerBackfill?: boolean;
+  /** memory curate prepare --limit 0: propose reviewed links from lines to the persons they name. */
+  readonly linkPeople?: boolean;
+  /** memory curate prepare: propose open task lines as history notes (rule-based). */
+  readonly tasksToNotes?: boolean;
+  /** memory curate prepare --tasks-to-notes: only tasks created before this ISO date or instant. */
+  readonly tasksBefore?: string;
+  /** memory curate prepare --tasks-to-notes: only lines minted by automatic capture. */
+  readonly captureOnly?: boolean;
+  /** memory entities: list folded names shared by more than one entity id. */
+  readonly duplicates?: boolean;
   /** memory forget restore: owner-private backup directory. */
   readonly backupPath?: string;
   /** `mono-agent memory export|import` bundle directory. */
@@ -196,6 +220,109 @@ interface CliFallbackArg {
   readonly effort?: EffortLevel;
 }
 
+// Keep the lightweight pre-parse mode probe aligned with the value-consuming
+// rules below. It is used only to preserve a JSON error envelope after parsing
+// fails; the real parser remains authoritative for validation and dispatch.
+const CLI_VALUE_FLAGS = new Set([
+  "--config",
+  "--since",
+  "--until",
+  "--artifacts",
+  "--by",
+  "--consumer",
+  "--agent",
+  "--stale-after-ms",
+  "--limit",
+  "--select",
+  "--before",
+  "--cursor",
+  "--kind",
+  "--about",
+  "--scope",
+  "--ids-file",
+  "--reason",
+  "--plan",
+  "--merge",
+  "--merge-file",
+  "--accept",
+  "--reject",
+  "--backup",
+  "--bundle",
+  "--on-conflict",
+  "--entity-conflict",
+  "--host",
+  "--port",
+  "--theme",
+  "--source-id",
+  "--model",
+  "--name",
+  "--fallback",
+  "--fallback-effort",
+  "--effort",
+  "--memory",
+  "--preset",
+  "--pi-auth-path",
+  "--auth-method",
+  "--with",
+  "--env-file",
+  "--controller-cli",
+  "--agent-cwd",
+  "--agent-path",
+  "--expected-background-snapshot",
+  "--expected-managed-runtime-launch",
+  "--expected-web-plist-identity",
+  "--target",
+  "--lines",
+]);
+
+const CLI_BOOLEAN_FLAGS = new Set([
+  "--all",
+  "--dry-run",
+  "--include-memory",
+  "--project",
+  "--check",
+  "--update",
+  "--no-docs-mcp",
+  "--json",
+  "--propose",
+  "--strict",
+  "--include-extras",
+  "--allow-pending",
+  "--allow-cross-type",
+  "--owner-backfill",
+  "--link-people",
+  "--tasks-to-notes",
+  "--capture-only",
+  "--duplicates",
+  "--accept-derived-association-drift",
+  "--loopback",
+  "--share-tailnet",
+  "--discover",
+  "--require-tool-environment",
+  "--yes",
+  "--auth",
+  "--api-key-stdin",
+  "--force",
+  "--clear-sessions",
+  "--foreground",
+  "--follow",
+  "-f",
+]);
+
+export function firstCliPositional(tokens: readonly string[]): string | undefined {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (CLI_VALUE_FLAGS.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (CLI_BOOLEAN_FLAGS.has(token)) continue;
+    if (/^-./u.test(token)) return undefined;
+    return token;
+  }
+  return undefined;
+}
+
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   // `--help`/`-h` and a bare invocation render the plain grouped summary (no topic).
@@ -204,6 +331,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   // `help <topic>` keeps the remaining tokens as positionals so the command
   // handler can render `help <command>` / `help notes` detail views.
+  if (command === "memory" && (rest.includes("--help") || rest.includes("-h"))) {
+    const topics: string[] = [];
+    for (let index = 0; index < rest.length; index++) {
+      const token = rest[index]!;
+      if (CLI_VALUE_FLAGS.has(token)) { index++; continue; }
+      if (token.startsWith("-")) continue;
+      topics.push(token);
+    }
+    return { command: "help", positionals: ["memory", ...topics],
+      force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
+  }
   if (command === "help") {
     return { command: "help", positionals: [...rest], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
@@ -257,6 +395,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let auth = false;
   let piAuthPath: string | undefined;
   let apiKeyStdin = false;
+  let authMethod: "oauth" | "api-key" | undefined;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let controllerCliPath: string | undefined;
@@ -271,7 +410,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let foreground = false;
   let follow = false;
   let lines: number | undefined;
-  let run: string | undefined;
   let all = false;
   let since: string | undefined;
   let until: string | undefined;
@@ -281,8 +419,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let groupBy: "model" | "channel" | "failureKind" | undefined;
   let consumerPath: string | undefined;
   let agent: string | undefined;
-  let conversation: string | undefined;
-  let local = false;
   let project = false;
   let check = false;
   let update = false;
@@ -290,11 +426,27 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let staleAfterMs: number | undefined;
   let json = false;
   let strict = false;
+  let labelKind: "fact" | "preference" | "lesson" | undefined;
+  let labelAbout: string | undefined;
+  let labelScope: string | undefined;
+  let propose = false;
   let limit: number | undefined;
   let cursor: string | undefined;
   let idsFile: string | undefined;
   let reason: string | undefined;
   let planPath: string | undefined;
+  let curateSelect: string | undefined;
+  let curateAccept: string | undefined;
+  let curateReject: string | undefined;
+  const curateMerges: string[] = [];
+  let curateMergeFile: string | undefined;
+  let allowCrossType = false;
+  let ownerBackfill = false;
+  let linkPeople = false;
+  let tasksToNotes = false;
+  let tasksBefore: string | undefined;
+  let captureOnly = false;
+  let duplicates = false;
   let backupPath: string | undefined;
   let bundlePath: string | undefined;
   let includeExtras = false;
@@ -317,9 +469,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     switch (flag) {
       case "--config":
         configPath = requireValue(rest, ++i, flag);
-        break;
-      case "--run":
-        run = requireValue(rest, ++i, flag);
         break;
       case "--all":
         all = true;
@@ -355,12 +504,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--agent":
         agent = requireValue(rest, ++i, flag);
         break;
-      case "--conversation":
-        conversation = requireValue(rest, ++i, flag);
-        break;
-      case "--local":
-        local = true;
-        break;
       case "--project":
         project = true;
         break;
@@ -388,14 +531,41 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--strict":
         strict = true;
         break;
+      case "--propose":
+        propose = true;
+        break;
+      case "--kind": {
+        const value = requireValue(rest, ++i, flag);
+        if (value !== "fact" && value !== "preference" && value !== "lesson") throw new Error("--kind must be fact, preference, or lesson.");
+        labelKind = value;
+        break;
+      }
+      case "--about":
+        labelAbout = requireValue(rest, ++i, flag);
+        if (labelAbout.length > 160) throw new Error("--about exceeds 160 characters.");
+        break;
+      case "--scope":
+        labelScope = requireValue(rest, ++i, flag);
+        if (labelScope.length > 128) throw new Error("--scope exceeds 128 characters.");
+        break;
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
-        const maximum = cmd === "continuations" ? 500 : 100;
-        if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
-          throw new Error(`--limit must be an integer between 1 and ${String(maximum)}.`);
+        const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 8192 : cmd === "memory" && positionals[0] === "labels" ? 1000 : 100;
+        // `curate prepare --limit 0` prepares operator merges or an owner backfill without a model pass.
+        const minimum = cmd === "memory" && positionals[0] === "curate" ? 0 : 1;
+        if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+          throw new Error(`--limit must be an integer between ${String(minimum)} and ${String(maximum)}.`);
         }
         limit = parsed;
+        break;
+      }
+      case "--select": {
+        const value = requireValue(rest, ++i, flag);
+        const buckets = value.split(",");
+        if (buckets.length > 4 || buckets.some((bucket) => !["recent", "repeated", "risky", "oldest"].includes(bucket))
+          || new Set(buckets).size !== buckets.length) throw new Error("--select requires distinct recent,repeated,risky,oldest buckets.");
+        curateSelect = value;
         break;
       }
       case "--cursor":
@@ -410,6 +580,47 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--plan":
         planPath = requireValue(rest, ++i, flag);
+        break;
+      case "--accept":
+        curateAccept = requireValue(rest, ++i, flag);
+        break;
+      case "--reject":
+        curateReject = requireValue(rest, ++i, flag);
+        break;
+      case "--merge":
+        curateMerges.push(requireValue(rest, ++i, flag));
+        break;
+      case "--merge-file":
+        curateMergeFile = requireValue(rest, ++i, flag);
+        break;
+      case "--allow-cross-type":
+        allowCrossType = true;
+        break;
+      case "--owner-backfill":
+        ownerBackfill = true;
+        break;
+      case "--link-people":
+        linkPeople = true;
+        break;
+      case "--tasks-to-notes":
+        tasksToNotes = true;
+        break;
+      case "--capture-only":
+        captureOnly = true;
+        break;
+      case "--before": {
+        const value = requireValue(rest, ++i, flag).trim();
+        if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/u.test(value)
+          || !Number.isFinite(Date.parse(value))
+          // Date.parse normalises an impossible calendar day (2026-02-30 → March); round-trip it instead.
+          || new Date(`${value.slice(0, 10)}T00:00:00.000Z`).toISOString().slice(0, 10) !== value.slice(0, 10)) {
+          throw new Error("--before requires a valid ISO date (YYYY-MM-DD) or instant.");
+        }
+        tasksBefore = value;
+        break;
+      }
+      case "--duplicates":
+        duplicates = true;
         break;
       case "--backup":
         backupPath = requireValue(rest, ++i, flag);
@@ -552,6 +763,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--api-key-stdin":
         apiKeyStdin = true;
         break;
+      case "--auth-method": {
+        const method = requireValue(rest, ++i, flag);
+        if (method !== "oauth" && method !== "api-key") throw new Error("--auth-method must be oauth or api-key.");
+        authMethod = method;
+        break;
+      }
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
           .split(",")
@@ -635,9 +852,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (consumerPath !== undefined && cmd !== "validate" && cmd !== "runs") {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent runs`.");
   }
-  if (local && cmd !== "tui") {
-    throw new Error("--local is only supported for `mono-agent tui`.");
-  }
   if (project && cmd !== "install-skill") {
     throw new Error("--project is only supported for `mono-agent install-skill`.");
   }
@@ -680,8 +894,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (cmd === "web" && (configPath !== undefined || envFile !== undefined)) {
     throw new Error("The machine-wide `mono-agent web` console does not load an agent --config or --env-file.");
   }
-  if (includeMemory && cmd !== "runs" && cmd !== "backfill") {
-    throw new Error("--include-memory is only supported for `mono-agent runs` and `mono-agent backfill`.");
+  if (includeMemory && cmd !== "runs") {
+    throw new Error("--include-memory is only supported for `mono-agent runs`.");
   }
   if (limit !== undefined && cmd !== "memory" && cmd !== "continuations") {
     throw new Error("--limit is only supported for `mono-agent memory` and `mono-agent continuations list`.");
@@ -689,8 +903,18 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((limit !== undefined || cursor !== undefined) && cmd === "continuations" && (positionals[0] ?? "list") !== "list") {
     throw new Error("--limit and --cursor are only supported for `mono-agent continuations list`.");
   }
+  if (curateSelect !== undefined && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
+    throw new Error("--select requires `mono-agent memory curate prepare`.");
+  }
   if (cursor !== undefined && cmd !== "continuations") {
     throw new Error("--cursor is only supported for `mono-agent continuations list`.");
+  }
+  if ((labelKind !== undefined || labelAbout !== undefined || labelScope !== undefined)
+    && (cmd !== "memory" || positionals[0] !== "labels")) {
+    throw new Error("--kind, --about, and --scope are only supported for `mono-agent memory labels`.");
+  }
+  if (propose && (cmd !== "memory" || positionals[0] !== "lessons")) {
+    throw new Error("--propose is only supported for `mono-agent memory lessons`.");
   }
   if (strict && (cmd !== "memory" || (positionals[0] ?? "stats") !== "audit")) {
     throw new Error("--strict is only supported for `mono-agent memory audit`.");
@@ -700,7 +924,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   if (
     (planPath !== undefined || backupPath !== undefined)
-    && (cmd !== "memory" || (positionals[0] !== "forget" && positionals[0] !== "import"))
+    && (cmd !== "memory" || (positionals[0] !== "forget" && positionals[0] !== "import" && positionals[0] !== "curate"))
   ) {
     throw new Error("--plan and --backup are only supported for `mono-agent memory forget` and `mono-agent memory import`.");
   }
@@ -721,6 +945,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (piAuthPath !== undefined && cmd !== "auth") {
     throw new Error("--pi-auth-path is only supported for `mono-agent auth`.");
   }
+  if (authMethod !== undefined && cmd !== "auth") {
+    throw new Error("--auth-method is only supported for `mono-agent auth login <provider>`.");
+  }
   if (apiKeyStdin && cmd !== "auth") {
     throw new Error("--api-key-stdin is only supported for `mono-agent auth login <provider>`.");
   }
@@ -731,8 +958,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--clear-sessions is only supported for `mono-agent restart`.");
   }
   // `--json` is uniform on the read/status surfaces only. Reject it on the
-  // lifecycle/interactive commands (init, auth, start, stop, restart, logs, tui,
-  // web, backfill) rather than silently ignoring it. `doctor`/`setup` already
+  // lifecycle/interactive commands (init, auth, start, stop, restart, logs,
+  // web) rather than silently ignoring it. `doctor`/`setup` already
   // normalized to their canonical `cmd` above.
   if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
     throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS_DISPLAY}.`);
@@ -751,31 +978,52 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--json is only supported for `mono-agent sandbox status`, not setup or check.");
   }
   assertFlagCommand(configPath !== undefined, "--config", cmd, [
-    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", "jobs", "monitors", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs",
+    "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(envFile !== undefined, "--env-file", cmd, [
-    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", "jobs", "monitors", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs",
+    "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(name !== undefined, "--name", cmd, ["init", "web"]);
-  assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
+  if ((curateAccept !== undefined || curateReject !== undefined)
+    && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "review")) {
+    throw new Error("--accept and --reject require `mono-agent memory curate review`.");
+  }
+  if ((curateMerges.length > 0 || curateMergeFile !== undefined || allowCrossType)
+    && (cmd !== "memory" || positionals[0] !== "curate" || (positionals[1] !== "prepare" && positionals[1] !== "review"))) {
+    throw new Error("--merge, --merge-file and --allow-cross-type require `mono-agent memory curate prepare|review`.");
+  }
+  if (ownerBackfill && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
+    throw new Error("--owner-backfill requires `mono-agent memory curate prepare`.");
+  }
+  if (linkPeople && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare" || limit !== 0)) {
+    throw new Error("--link-people requires `mono-agent memory curate prepare --limit 0`.");
+  }
+  if (tasksToNotes && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
+    throw new Error("--tasks-to-notes requires `mono-agent memory curate prepare`.");
+  }
+  if ((tasksBefore !== undefined || captureOnly) && !tasksToNotes) {
+    throw new Error("--before and --capture-only require `mono-agent memory curate prepare --tasks-to-notes`.");
+  }
+  if (duplicates && (cmd !== "memory" || positionals[0] !== "entities")) {
+    throw new Error("--duplicates requires `mono-agent memory entities`.");
+  }
+  assertFlagCommand(model !== undefined, "--model", cmd, positionals[0] === "curate" && positionals[1] === "prepare" ? ["init", "memory"] : ["init"]);
   assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
   assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
   assertFlagCommand(memory !== undefined, "--memory", cmd, ["init"]);
   assertFlagCommand(preset !== undefined, "--preset", cmd, ["init", "validate"]);
   assertFlagCommand(withChannels !== undefined, "--with", cmd, ["init"]);
   assertFlagCommand(yes, "--yes", cmd, ["init", "web"]);
-  assertFlagCommand(dryRun, "--dry-run", cmd, ["init", "backfill"]);
-  assertFlagCommand(run !== undefined, "--run", cmd, ["backfill"]);
-  assertFlagCommand(all, "--all", cmd, ["backfill", "web"]);
-  assertFlagCommand(since !== undefined, "--since", cmd, ["runs", "backfill"]);
-  assertFlagCommand(until !== undefined, "--until", cmd, ["runs", "backfill"]);
+  assertFlagCommand(dryRun, "--dry-run", cmd, positionals[0] === "curate" && positionals[1] === "prepare" ? ["init", "memory"] : ["init"]);
+  assertFlagCommand(all, "--all", cmd, ["web"]);
+  assertFlagCommand(since !== undefined, "--since", cmd, ["runs"]);
+  assertFlagCommand(until !== undefined, "--until", cmd, ["runs"]);
   assertFlagCommand(artifactDir !== undefined, "--artifacts", cmd, ["runs"]);
   assertFlagCommand(groupBy !== undefined, "--by", cmd, ["runs"]);
   assertFlagCommand(staleAfterMs !== undefined, "--stale-after-ms", cmd, ["runs"]);
-  assertFlagCommand(agent !== undefined, "--agent", cmd, ["tui", "jobs", "monitors"]);
-  assertFlagCommand(conversation !== undefined, "--conversation", cmd, ["tui"]);
+  assertFlagCommand(agent !== undefined, "--agent", cmd, ["jobs"]);
   assertFlagCommand(target !== undefined, "--target", cmd, ["install-skill"]);
   assertFlagCommand(force, "--force", cmd, ["install-skill", "restart"]);
   assertFlagCommand(foreground, "--foreground", cmd, ["start"]);
@@ -826,6 +1074,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(auth ? { auth } : {}),
     ...(piAuthPath === undefined ? {} : { piAuthPath }),
     ...(apiKeyStdin ? { apiKeyStdin } : {}),
+    ...(authMethod === undefined ? {} : { authMethod }),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(controllerCliPath === undefined ? {} : { controllerCliPath }),
@@ -840,7 +1089,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     foreground,
     follow,
     ...(lines === undefined ? {} : { lines }),
-    ...(run === undefined ? {} : { run }),
     all,
     ...(since === undefined ? {} : { since }),
     ...(until === undefined ? {} : { until }),
@@ -852,11 +1100,27 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
     ...(strict ? { strict } : {}),
+    ...(labelKind === undefined ? {} : { labelKind }),
+    ...(labelAbout === undefined ? {} : { labelAbout }),
+    ...(labelScope === undefined ? {} : { labelScope }),
+    ...(propose ? { propose } : {}),
     ...(limit === undefined ? {} : { limit }),
     ...(cursor === undefined ? {} : { cursor }),
     ...(idsFile === undefined ? {} : { idsFile }),
     ...(reason === undefined ? {} : { reason }),
     ...(planPath === undefined ? {} : { planPath }),
+    ...(curateSelect === undefined ? {} : { curateSelect }),
+    ...(curateAccept === undefined ? {} : { curateAccept }),
+    ...(curateReject === undefined ? {} : { curateReject }),
+    ...(curateMerges.length === 0 ? {} : { curateMerges }),
+    ...(curateMergeFile === undefined ? {} : { curateMergeFile }),
+    ...(allowCrossType ? { allowCrossType } : {}),
+    ...(ownerBackfill ? { ownerBackfill } : {}),
+    ...(linkPeople ? { linkPeople } : {}),
+    ...(tasksToNotes ? { tasksToNotes } : {}),
+    ...(tasksBefore === undefined ? {} : { tasksBefore }),
+    ...(captureOnly ? { captureOnly } : {}),
+    ...(duplicates ? { duplicates } : {}),
     ...(backupPath === undefined ? {} : { backupPath }),
     ...(bundlePath === undefined ? {} : { bundlePath }),
     ...(includeExtras ? { includeExtras } : {}),
@@ -865,8 +1129,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(entityConflict === undefined ? {} : { entityConflict }),
     ...(acceptDerivedAssociationDrift ? { acceptDerivedAssociationDrift } : {}),
     ...(agent === undefined ? {} : { agent }),
-    ...(conversation === undefined ? {} : { conversation }),
-    ...(local ? { local } : {}),
     ...(project ? { project } : {}),
     ...(check ? { check } : {}),
     ...(update ? { update } : {}),

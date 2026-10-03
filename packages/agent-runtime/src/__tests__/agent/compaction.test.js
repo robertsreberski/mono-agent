@@ -7,11 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  DEPRECATED_SETTINGS_WARNING_KIND,
-  deprecatedSettingsWarning,
   estimateFixedOverheadTokens,
   resolveAgentCompactionPolicy,
-  resolveRuntimePolicyInputs,
 } from "../../agent/compaction.js";
 
 // Mirrors pi-ai's chars/4 heuristic so the expected values are derived, not magic.
@@ -113,26 +110,28 @@ describe("resolveAgentCompactionPolicy MCP call timeouts", () => {
   });
 
   it("reads agent_mcp_call_max_total_timeout_ms from settings and falls back on junk", () => {
-    const policy = resolveAgentCompactionPolicy({ agent_mcp_call_max_total_timeout_ms: 300_000 }, null);
+    const policy = resolveAgentCompactionPolicy({ toolLimits: { mcpCallMaxTotalTimeoutMs: 300_000 } }, null);
     expect(policy.mcpCallMaxTotalTimeoutMs).toBe(300_000);
-    const junk = resolveAgentCompactionPolicy({ agent_mcp_call_max_total_timeout_ms: "soon" }, null);
+    const junk = resolveAgentCompactionPolicy({ toolLimits: { mcpCallMaxTotalTimeoutMs: "soon" } }, null);
     expect(junk.mcpCallMaxTotalTimeoutMs).toBe(2_700_000);
   });
 
   it("resolves fixedOverheadEnabled (default true, false only when explicitly disabled)", () => {
     expect(resolveAgentCompactionPolicy({}, null).fixedOverheadEnabled).toBe(true);
-    expect(resolveAgentCompactionPolicy({ agent_compaction_fixed_overhead_enabled: false }, null).fixedOverheadEnabled).toBe(false);
+    expect(resolveAgentCompactionPolicy({ compaction: { fixedOverheadEnabled: false } }, null).fixedOverheadEnabled).toBe(false);
     // Any non-false value keeps the default-on behavior.
-    expect(resolveAgentCompactionPolicy({ agent_compaction_fixed_overhead_enabled: true }, null).fixedOverheadEnabled).toBe(true);
+    expect(resolveAgentCompactionPolicy({ compaction: { fixedOverheadEnabled: true } }, null).fixedOverheadEnabled).toBe(true);
   });
 });
 
 describe("resolveAgentCompactionPolicy adaptive defaults", () => {
   const cases = [
     { window: 32_000, trigger: 16_000, keep: 4_000, summary: 2_000, savings: 4_000 },
-    { window: 128_000, trigger: 89_600, keep: 12_800, summary: 5_120, savings: 12_800 },
-    { window: 272_000, trigger: 190_400, keep: 20_000, summary: 10_880, savings: 20_000 },
-    { window: 372_000, trigger: 260_400, keep: 20_000, summary: 12_000, savings: 20_000 },
+    { window: 128_000, trigger: 112_000, keep: 12_800, summary: 5_120, savings: 12_800 },
+    { window: 200_000, trigger: 180_000, keep: 20_000, summary: 8_000, savings: 20_000 },
+    { window: 272_000, trigger: 244_800, keep: 20_000, summary: 10_880, savings: 20_000 },
+    { window: 372_000, trigger: 334_800, keep: 20_000, summary: 12_000, savings: 20_000 },
+    { window: 400_000, trigger: 360_000, keep: 20_000, summary: 12_000, savings: 20_000 },
   ];
 
   for (const row of cases) {
@@ -141,7 +140,7 @@ describe("resolveAgentCompactionPolicy adaptive defaults", () => {
       expect(policy).toMatchObject({
         enabled: true,
         contextWindow: row.window,
-        triggerRatio: 0.70,
+        triggerRatio: 0.90,
         triggerTokens: row.trigger,
         keepRecentTokens: row.keep,
         summaryMaxTokens: row.summary,
@@ -152,132 +151,61 @@ describe("resolveAgentCompactionPolicy adaptive defaults", () => {
   }
 
   it("lets every explicit scalar override its adaptive value while retaining existing clamps", () => {
-    const policy = resolveAgentCompactionPolicy({
-      agent_compaction_enabled: false,
-      agent_compaction_trigger_ratio: 0.8,
-      agent_compaction_keep_recent_tokens: 9_000,
-      agent_compaction_summary_max_tokens: 3_000,
-      agent_compaction_min_savings_tokens: 7_000,
-      agent_compaction_fixed_overhead_enabled: false,
-    }, { contextWindow: 372_000 });
+    const policy = resolveAgentCompactionPolicy({ compaction: { enabled: false, triggerRatio: 0.8, keepRecentTokens: 9_000, summaryMaxTokens: 3_000, minSavingsTokens: 7_000, fixedOverheadEnabled: false } }, { contextWindow: 372_000 });
+    // The ratio arm binds here: floor(372000 * 0.8) = 297,600 < the 372000 -
+    // 37200 = 334,800 reserve arm. (Before the scale-aware headroom the 25%
+    // reserve arm capped this at 279,000, making ratios above 0.75 inert.)
     expect(policy).toMatchObject({
       enabled: false,
       triggerRatio: 0.8,
-      triggerTokens: 279_000,
+      triggerTokens: 297_600,
       keepRecentTokens: 9_000,
       summaryMaxTokens: 3_000,
       compactionMinSavingsTokens: 7_000,
       fixedOverheadEnabled: false,
     });
   });
-});
 
-describe("resolveRuntimePolicyInputs (typed policy objects <-> deprecated settings shim)", () => {
-  it("consumes no settings when typed objects are supplied (per-group precedence)", () => {
-    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
-      toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
-      compaction: { triggerRatio: 0.9, enabled: false, fixedOverheadEnabled: false },
-    });
-    expect(consumedSettingsKeys).toEqual([]);
-    expect(settingsLike).toMatchObject({
-      agent_tool_text_limit_chars: 1000,
-      agent_search_result_limit: 25,
-      agent_compaction_trigger_ratio: 0.9,
-      agent_compaction_enabled: false,
-      agent_compaction_fixed_overhead_enabled: false,
-    });
+  it("honors a configured 0.9 on large windows while the 16k floor still protects small ones", () => {
+    // 272k: headroom floor(27200) < ratio arm, so the full 0.9 binds.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 272_000 },
+    ).triggerTokens).toBe(244_800);
+    // 400k: headroom hits the 48k ceiling; the ratio arm still binds.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 400_000 },
+    ).triggerTokens).toBe(360_000);
+    // 32k: the 16k headroom floor binds, so the trigger stays at half the window.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 32_000 },
+    ).triggerTokens).toBe(16_000);
+    // 128k: the 16k floor holds the trigger at 87.5% of the window.
+    expect(resolveAgentCompactionPolicy(
+      { compaction: { triggerRatio: 0.9 } },
+      { contextWindow: 128_000 },
+    ).triggerTokens).toBe(112_000);
   });
 
-  it("falls back to settings per-group and reports the consumed keys", () => {
-    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
-      settings: {
-        agent_tool_text_limit_chars: 2000,
-        agent_compaction_trigger_ratio: 0.7,
-        unrelated_key: "ignored",
-      },
-    });
-    expect(settingsLike).toMatchObject({
-      agent_tool_text_limit_chars: 2000,
-      agent_compaction_trigger_ratio: 0.7,
-    });
-    expect(settingsLike.unrelated_key).toBeUndefined();
-    expect(consumedSettingsKeys).toEqual(
-      expect.arrayContaining(["agent_tool_text_limit_chars", "agent_compaction_trigger_ratio"]),
-    );
-  });
-
-  it("ignores retired tool-payload compaction and pruning settings", () => {
-    const retiredSettings = {
-      agent_tool_payload_compaction_trigger_chars: 32_000,
-      agent_tool_prune_trigger_tokens: 40_000,
-    };
-    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
-      settings: retiredSettings,
-    });
-    const policy = resolveAgentCompactionPolicy(retiredSettings);
-
-    expect(settingsLike).toEqual({});
-    expect(consumedSettingsKeys).toEqual([]);
-    expect(policy).not.toHaveProperty("toolPayloadCompactionTriggerChars");
-    expect(policy).not.toHaveProperty("toolPruneTriggerTokens");
-  });
-
-  it("mixes a typed group with a settings fallback for the OTHER group", () => {
-    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
-      toolLimits: { toolTextLimitChars: 1000 },
-      // compaction absent -> its settings keys are consumed; toolLimits present ->
-      // its settings key is ignored.
-      settings: { agent_tool_text_limit_chars: 9999, agent_compaction_trigger_ratio: 0.6 },
-    });
-    expect(settingsLike.agent_tool_text_limit_chars).toBe(1000); // typed wins for its group
-    expect(settingsLike.agent_compaction_trigger_ratio).toBe(0.6); // settings fallback for compaction
-    // Only the compaction key was consumed from settings.
-    expect(consumedSettingsKeys).toEqual(["agent_compaction_trigger_ratio"]);
-  });
-
-  it("reports no consumed keys when neither typed objects nor settings are passed", () => {
-    expect(resolveRuntimePolicyInputs()).toEqual({ settingsLike: {}, consumedSettingsKeys: [] });
-    expect(resolveRuntimePolicyInputs({ settings: {} })).toEqual({ settingsLike: {}, consumedSettingsKeys: [] });
-  });
-
-  it("PARITY: settings and equivalent typed objects resolve to identical policies", () => {
-    const settings = {
-      agent_tool_text_limit_chars: 1500,
-      agent_search_result_limit: 40,
-      agent_mcp_call_timeout_ms: 90_000,
-      agent_compaction_trigger_ratio: 0.8,
-      agent_compaction_keep_recent_tokens: 12_000,
-      agent_compaction_summary_max_tokens: 8000,
-      agent_compaction_min_savings_tokens: 15_000,
-      agent_compaction_enabled: true,
-      agent_compaction_fixed_overhead_enabled: false,
-    };
-    const viaSettings = resolveRuntimePolicyInputs({ settings });
-    const viaTyped = resolveRuntimePolicyInputs({
-      toolLimits: { toolTextLimitChars: 1500, searchResultLimit: 40, mcpCallTimeoutMs: 90_000 },
-      compaction: {
-        triggerRatio: 0.8,
-        keepRecentTokens: 12_000,
-        summaryMaxTokens: 8000,
-        minSavingsTokens: 15_000,
-        enabled: true,
-        fixedOverheadEnabled: false,
-      },
-    });
-    const model = { contextWindow: 200_000 };
-    expect(resolveAgentCompactionPolicy(viaTyped.settingsLike, model))
-      .toEqual(resolveAgentCompactionPolicy(viaSettings.settingsLike, model));
-  });
-});
-
-describe("deprecatedSettingsWarning", () => {
-  it("builds the one-per-run deprecation warning with the consumed keys", () => {
-    const warning = deprecatedSettingsWarning(["agent_tool_text_limit_chars", "agent_compaction_trigger_ratio"]);
-    expect(warning.warning_kind).toBe(DEPRECATED_SETTINGS_WARNING_KIND);
-    expect(warning.warning_kind).toBe("deprecated_settings_option");
-    expect(warning.source).toBe("runtime");
-    expect(warning.settings_keys).toEqual(["agent_tool_text_limit_chars", "agent_compaction_trigger_ratio"]);
-    expect(warning.message).toContain("deprecated");
-    expect(warning.message).toContain("agent_tool_text_limit_chars");
+  it("always keeps triggerTokens strictly below the context window", () => {
+    // The compaction driver maps triggerTokens to
+    // reserveTokens = contextWindow - triggerTokens + 1 and depends on the
+    // trigger staying below the window (reserveTokens >= 2). Headroom is at
+    // least 16,000 tokens, so both arms stay below the window for every
+    // supported window and every ratio in [0.2, 0.95].
+    const windows = [32_000, 64_000, 128_000, 200_000, 272_000, 372_000, 400_000, 1_000_000];
+    const ratios = [0.2, 0.5, 0.7, 0.75, 0.8, 0.9, 0.95];
+    for (const window of windows) {
+      for (const ratio of ratios) {
+        const policy = resolveAgentCompactionPolicy(
+          { compaction: { triggerRatio: ratio } },
+          { contextWindow: window },
+        );
+        expect(policy.triggerTokens).toBeLessThan(policy.contextWindow);
+        expect(policy.contextWindow - policy.triggerTokens + 1).toBeGreaterThanOrEqual(2);
+      }
+    }
   });
 });

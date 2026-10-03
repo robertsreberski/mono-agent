@@ -28,19 +28,13 @@ describe("memory benchmark", () => {
     expect(report.policyCategories).toContain("high-similarity-adjacent");
     expect(report.policyCategories).toContain("ambiguous-binding");
     expect(report.policyCategories).toContain("direct-fact");
-    expect(report.policyCalibration.passed).toBe(true);
+    expect(report.proximityCalibration).toMatchObject({ positiveCases: 6, positivePresence: 1, positiveWindowCases: 6,
+      nearMissCases: 6, nearMissWindowCases: 6, floorNegativeCases: 1, floorNegativeInjectedCases: 0 });
     expect(report.gates.passed).toBe(true);
     expect(report.quality.recallAt5).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.mrr).toBeGreaterThanOrEqual(0.8);
-    expect(report.quality.directFactCaseCount).toBeGreaterThanOrEqual(6);
-    expect(report.quality.directFactAutomaticCoverage).toBeGreaterThanOrEqual(0.9);
-    expect(report.quality.ambiguousBindingCaseCount).toBeGreaterThanOrEqual(6);
-    expect(report.quality.ambiguousBindingAbstentionRate).toBe(1);
-    expect(report.quality.abstentionRate).toBeGreaterThanOrEqual(0.9);
-    expect(report.quality.missingAttributeAbstentionRate).toBe(1);
-    expect(report.quality.outOfDomainAbstentionRate).toBe(1);
-    expect(report.quality.staleRecallRate).toBeLessThanOrEqual(0.05);
-    expect(report.quality.falseRecallRate).toBeLessThanOrEqual(0.05);
+    expect(report.quality).toMatchObject({ negativeCases: 13, negativeInjectedCases: 1, maxNegativeLines: 1 });
+    expect(report.gates.checks.providerPositivePresence).toBe(true);
     expect(report.efficiency).toMatchObject({
       contextBytes: expect.any(Object),
       indexingLatencyMs: expect.any(Object),
@@ -81,16 +75,17 @@ describe("memory benchmark", () => {
       provider: "deterministic",
       disposableStore: true,
       passed: true,
-      eligibleDirectFact: { cases: 6, coverage: 1 },
-      unsupported: { cases: 2, abstentionRate: 1 },
+      eligibleDirectFact: { cases: 6, coverage: 5 / 6 },
+      maxSelectedLines: 1,
       efficiency: {
         embeddings: { calls: 9, texts: 17 },
         llm: { calls: 0 },
       },
       store: { records: 9, duplicateRatio: 0, vectorCoverage: 1 },
     });
-    expect(report.gates.checks.providerEligibleDirectFactCaseCount).toBe(true);
-    expect(report.gates.checks.providerEligibleDirectFactCoverage).toBe(true);
+    expect(report.gates.checks.providerPositiveCases).toBe(true);
+    expect(report.gates.checks.namesDatesNegativeLines).toBe(true);
+    expect(report.calibrations.namesDates.cases).toBe(14);
   });
 
   it("adapts opt-in LongMemEval session ids and LoCoMo dialogue evidence", async () => {
@@ -104,7 +99,7 @@ describe("memory benchmark", () => {
           question_type: "fact",
           question: "Where is the launch office?",
           haystack_session_ids: ["session-alpha"],
-          haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
+          haystack_sessions: [[{ content: "The launch office is in Quillmere." }]],
           answer_session_ids: ["session-alpha"],
         },
         {
@@ -119,7 +114,7 @@ describe("memory benchmark", () => {
       await writeFile(locomo, JSON.stringify([{
         conversation: {
           speaker_a: "Morgan",
-          session_1: [{ dia_id: "D1:1", text: "The launch office is in Amsterdam." }],
+          session_1: [{ dia_id: "D1:1", text: "The launch office is in Quillmere." }],
         },
         qa: [
           {
@@ -217,99 +212,26 @@ describe("memory benchmark", () => {
     }
   });
 
-  it("fails the gate when automatic injection finds no answers or does not abstain", () => {
-    const base = {
-      recallAt5: 1,
-      mrr: 1,
-      automaticAnswerCoverage: 1,
-      directFactCaseCount: 6,
-      directFactAutomaticCoverage: 1,
-      ambiguousBindingCaseCount: 6,
-      ambiguousBindingAbstentionRate: 1,
-      abstentionRate: 1,
-      missingAttributeAbstentionRate: 1,
-      outOfDomainAbstentionRate: 1,
-      staleRecallRate: 0,
-      falseRecallRate: 0,
-    };
-    const providerContract = {
-      eligibleDirectFact: { cases: 6, coverage: 1 },
-      unsupported: { cases: 2, abstentionRate: 1 },
-    };
-
-    expect(memoryBenchmarkGateResults(
-      { ...base, directFactAutomaticCoverage: 0 },
-      { passed: true },
-      providerContract,
-    )).toMatchObject({
-      passed: false,
-      checks: { directFactAutomaticCoverage: false },
-    });
-    expect(memoryBenchmarkGateResults(
-      { ...base, ambiguousBindingAbstentionRate: 0 },
-      { passed: true },
-      providerContract,
-    )).toMatchObject({
-      passed: false,
-      checks: { ambiguousBindingAbstentionRate: false },
-    });
-    expect(memoryBenchmarkGateResults(
-      { ...base, directFactCaseCount: 0 },
-      { passed: true },
-      providerContract,
-    )).toMatchObject({
-      passed: false,
-      checks: { directFactCaseCount: false },
-    });
-    expect(memoryBenchmarkGateResults(
-      { ...base, ambiguousBindingCaseCount: 5 },
-      { passed: true },
-      providerContract,
-    )).toMatchObject({
-      passed: false,
-      checks: { ambiguousBindingCaseCount: false },
-    });
-    expect(memoryBenchmarkGateResults(
-      { ...base, automaticAnswerCoverage: 0 },
-      { passed: true },
-      providerContract,
-    ).passed).toBe(true);
-    expect(memoryBenchmarkGateResults(
-      { ...base, abstentionRate: 0 },
-      { passed: true },
-      providerContract,
-    )).toMatchObject({
-      passed: false,
-      checks: { abstentionRate: false },
-    });
-    expect(memoryBenchmarkGateResults(base, { passed: false }, providerContract)).toMatchObject({
-      passed: false,
-      checks: { policyCalibration: false },
-    });
-    expect(memoryBenchmarkGateResults(base, { passed: true }, {
-      eligibleDirectFact: { cases: 0, coverage: 1 },
-      unsupported: { cases: 2, abstentionRate: 1 },
-    })).toMatchObject({
-      passed: false,
-      checks: { providerEligibleDirectFactCaseCount: false },
-    });
-    expect(memoryBenchmarkGateResults(base, { passed: true }, {
-      eligibleDirectFact: { cases: 6, coverage: 0 },
-      unsupported: { cases: 2, abstentionRate: 1 },
-    })).toMatchObject({
-      passed: false,
-      checks: { providerEligibleDirectFactCoverage: false },
-    });
-    // Unsupported relational/paraphrase behavior remains informational. Zero
-    // unsupported coverage or abstention cannot make the eligible contract fail.
-    expect(memoryBenchmarkGateResults(base, { passed: true }, {
-      eligibleDirectFact: { cases: 6, coverage: 1 },
-      unsupported: { cases: 2, abstentionRate: 0 },
-    }).passed).toBe(true);
-    expect(memoryBenchmarkGateResults(base, { passed: true }, {
-      eligibleDirectFact: { cases: 6, coverage: 1 },
-      unsupported: { cases: 0, abstentionRate: 0 },
-    }).passed).toBe(true);
+  it("fails when the live selector drops positives or widens near-miss and negative context", () => {
+    const quality = { recallAt5: 1, mrr: 1, negativeCases: 13, negativeInjectedCases: 1, maxNegativeLines: 1 };
+    const proximity = { positiveCases: 6, positivePresence: 1, positiveWindowCases: 6,
+      nearMissCases: 6, nearMissWindowCases: 6, floorNegativeCases: 1, floorNegativeInjectedCases: 0, maxSelectedLines: 2 };
+    const provider = { eligibleDirectFact: { cases: 6, coverage: 5 / 6 }, maxSelectedLines: 1 };
+    const names = { maxNegativeLines: 0 };
+    expect(memoryBenchmarkGateResults(quality, proximity, provider, names).passed).toBe(true);
+    for (const [q, p, r, n, check] of [
+      [quality, { ...proximity, positivePresence: 0 }, provider, names, "positivePresence"],
+      [quality, { ...proximity, nearMissWindowCases: 0 }, provider, names, "nearMissWindow"],
+      [quality, { ...proximity, positiveWindowCases: 0 }, provider, names, "positiveWindow"],
+      [quality, { ...proximity, floorNegativeInjectedCases: 1 }, provider, names, "floorNegativeInjected"],
+      [{ ...quality, negativeInjectedCases: 2 }, proximity, provider, names, "negativeInjected"],
+      [{ ...quality, maxNegativeLines: 2 }, proximity, provider, names, "negativeLines"],
+      [quality, proximity, { ...provider, eligibleDirectFact: { cases: 6, coverage: 0 } }, names, "providerPositivePresence"],
+      [quality, proximity, provider, { maxNegativeLines: 1 }, "namesDatesNegativeLines"],
+      [quality, { ...proximity, maxSelectedLines: 4 }, provider, names, "selectedLines"],
+    ]) {
+      expect(memoryBenchmarkGateResults(q, p, r, n).checks[check]).toBe(false);
+    }
   });
 
   it("rejects LongMemEval answer evidence that cannot map to a haystack session", async () => {
@@ -321,7 +243,7 @@ describe("memory benchmark", () => {
         question_type: "fact",
         question: "Where is the launch office?",
         haystack_session_ids: ["session-alpha"],
-        haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
+        haystack_sessions: [[{ content: "The launch office is in Quillmere." }]],
         answer_session_ids: ["missing-session"],
       }]));
       await expect(runMemoryBenchmark({ suite: "longmemeval", datasetPath: dataset }))

@@ -39,9 +39,10 @@ process.stdout.write(readFileSync(process.argv[1]).toString("base64"));
 
 /**
  * @param {{file_path: string, offset?: number, start_line?: number, limit?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, sandboxPolicy?: any, sandboxEngine?: any}} options
  */
-export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy, sandboxEngine, ctx } = {}) {
+export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, options) {
+  const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const target = resolveToolPath(file_path, workdir, ctx);
   const protectedTarget = protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx });
   const protectedExecution = protectedTarget !== null;

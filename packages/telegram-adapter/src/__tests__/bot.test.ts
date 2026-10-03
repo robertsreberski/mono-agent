@@ -147,6 +147,14 @@ function buildTestBot(
             text: typedPayload.text,
           });
         }
+        if (method === "sendRichMessage") {
+          return ok({
+            message_id: nextMessageId++,
+            date: 0,
+            chat: { id: typedPayload.chat_id, type: "private" },
+            rich_message: typedPayload.rich_message,
+          });
+        }
         if (method === "editMessageText") {
           return ok({
             message_id: typedPayload.message_id ?? 0,
@@ -222,6 +230,64 @@ function textUpdate(
             },
           }),
       ...(options?.quote === undefined ? {} : { quote: options.quote }),
+    },
+  } as unknown as Parameters<Bot["handleUpdate"]>[0];
+}
+
+function forwardedRichItineraryUpdate(
+  options?: {
+    chatId?: number;
+    updateId?: number;
+    messageId?: number;
+    chatType?: "private" | "supergroup";
+  },
+): Parameters<Bot["handleUpdate"]>[0] {
+  const chatId = options?.chatId ?? 42;
+  return {
+    update_id: options?.updateId ?? 1,
+    message: {
+      message_id: options?.messageId ?? 10,
+      date: 1234,
+      chat: {
+        id: chatId,
+        type: options?.chatType ?? "private",
+        ...(options?.chatType === "supergroup" ? { title: "Trip planning" } : {}),
+      },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      forward_origin: {
+        type: "user",
+        sender_user: { id: 8, is_bot: false, first_name: "Planner" },
+        date: 1200,
+      },
+      rich_message: {
+        blocks: [
+          { type: "heading", size: 2, text: "Weekend itinerary" },
+          {
+            type: "table",
+            cells: [
+              [
+                { text: "Day", is_header: true, align: "left", valign: "top" },
+                { text: "Plan", is_header: true, align: "left", valign: "top" },
+              ],
+              [
+                { text: "Saturday", align: "left", valign: "top" },
+                { text: "Museum", align: "left", valign: "top" },
+              ],
+            ],
+          },
+          {
+            type: "list",
+            items: [{
+              label: "•",
+              blocks: [{
+                type: "details",
+                summary: "Tickets",
+                blocks: [{ type: "paragraph", text: "Book before Friday" }],
+              }],
+            }],
+          },
+        ],
+      },
     },
   } as unknown as Parameters<Bot["handleUpdate"]>[0];
 }
@@ -539,8 +605,20 @@ function reactionEmojis(calls: RecordedCall[]): Array<string | undefined> {
     .map((call) => (call.payload.reaction as Array<{ emoji: string }>)[0]?.emoji);
 }
 
+function messageSendCalls(calls: RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => call.method === "sendMessage" || call.method === "sendRichMessage");
+}
+
+function callText(call: RecordedCall): unknown {
+  const richMessage = call.payload.rich_message as { markdown?: unknown } | undefined;
+  return richMessage?.markdown ?? call.payload.text;
+}
+
 function texts(calls: RecordedCall[], method: string): unknown[] {
-  return calls.filter((call) => call.method === method).map((call) => call.payload.text);
+  const matching = method === "sendMessage"
+    ? messageSendCalls(calls)
+    : calls.filter((call) => call.method === method);
+  return matching.map(callText);
 }
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -552,36 +630,45 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void
 }
 
 describe("createTelegramBot", () => {
-  it("delivers generated reply files through sendDocument without adding fallback text", async () => {
-    const attachment: AgentReplyAttachmentPart = {
-      type: "attachment",
-      id: "reply-file-1",
-      reference: { scheme: "mono-agent-artifact", id: "11111111-1111-4111-8111-111111111111" },
-      name: "report.txt",
-      mediaType: "text/plain",
-      sizeBytes: 5,
-      integrityId: `sha256:${"b".repeat(64)}`,
-    };
-    const responder: AgentResponder = {
-      async respond() { return { text: "Answer", parts: [attachment] }; },
-      async openReplyArtifact() {
-        return {
-          attachment,
-          body: (async function* () { yield new TextEncoder().encode("hello"); })(),
-        };
-      },
-    };
-    const { bot, calls } = buildTestBot({ responder });
+  it("delivers generated reply files after stopping typing and without adding fallback text", async () => {
+    vi.useFakeTimers();
+    try {
+      const attachment: AgentReplyAttachmentPart = {
+        type: "attachment",
+        id: "reply-file-1",
+        reference: { scheme: "mono-agent-artifact", id: "11111111-1111-4111-8111-111111111111" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 5,
+        integrityId: `sha256:${"b".repeat(64)}`,
+      };
+      const responder: AgentResponder = {
+        async respond() { return { text: "Answer", parts: [attachment] }; },
+        async openReplyArtifact() {
+          // Final file preparation can be slow. Advancing past the refresh window
+          // must not resurrect typing once terminal delivery has begun.
+          await vi.advanceTimersByTimeAsync(4_000);
+          return {
+            attachment,
+            body: (async function* () { yield new TextEncoder().encode("hello"); })(),
+          };
+        },
+      };
+      const { bot, calls } = buildTestBot({ responder });
 
-    await bot.handleUpdate(textUpdate("hello"));
+      await bot.handleUpdate(textUpdate("hello"));
 
-    const document = calls.find((call) => call.method === "sendDocument");
-    expect(document?.payload).toMatchObject({
-      chat_id: 42,
-      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
-    });
-    expect(texts(calls, "sendMessage")).toEqual(["Answer"]);
-    expect(JSON.stringify(calls.filter((call) => call.method === "sendMessage"))).not.toContain("report.txt");
+      const document = calls.find((call) => call.method === "sendDocument");
+      expect(document?.payload).toMatchObject({
+        chat_id: 42,
+        reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+      });
+      expect(calls.filter((call) => call.method === "sendChatAction")).toHaveLength(1);
+      expect(texts(calls, "sendMessage")).toEqual(["Answer"]);
+      expect(JSON.stringify(messageSendCalls(calls))).not.toContain("report.txt");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails closed unless chats are explicitly allowed", () => {
@@ -1273,6 +1360,7 @@ describe("createTelegramBot", () => {
       messageId: 10,
       updateId: 1,
       userId: 7,
+      captureSpeakerKind: "human-turn",
       username: "person_a",
       text: "hello agent",
       metadata: {
@@ -1286,16 +1374,17 @@ describe("createTelegramBot", () => {
     });
     expect(requests[0]?.abortSignal).toBeInstanceOf(AbortSignal);
 
-    // Final-only delivery: no interim edits. The single sendMessage at finish()
-    // carries the final answer (the lazy first send happens at finish), rendered
-    // as MarkdownV2, and replies to the inbound message.
+    // Final-only delivery: no interim edits. The lazy first send at finish uses
+    // native Rich Markdown and replies to the inbound message.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload).toMatchObject({
-      chat_id: 42,
-      text: "final",
-      parse_mode: "MarkdownV2",
-      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend).toMatchObject({
+      method: "sendRichMessage",
+      payload: {
+        chat_id: 42,
+        rich_message: { markdown: "final" },
+        reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+      },
     });
   });
 
@@ -1339,6 +1428,97 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "sendMessage")).not.toContain(
       "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
     );
+  });
+
+  it("admits a forwarded native rich itinerary through the authorized bot handler", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls } = buildTestBot({
+      allowAllChats: false,
+      allowedChatIds: ["42"],
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "itinerary received" };
+      }),
+    });
+
+    await bot.handleUpdate(forwardedRichItineraryUpdate());
+    await bot.handleUpdate(forwardedRichItineraryUpdate({ chatId: 99, updateId: 2, messageId: 11 }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      chatId: 42,
+      conversationId: "telegram:42",
+      sender: { id: "7", displayName: "Person A", handle: "person_a", isBot: false },
+    });
+    expect(requests[0]?.text).toContain("## Weekend itinerary");
+    expect(requests[0]?.text).toContain("Day | Plan\nSaturday | Museum");
+    expect(requests[0]?.text).toContain("• Details: Tickets\n  Book before Friday");
+    expect(messageSendCalls(calls).some((call) =>
+      call.method === "sendRichMessage"
+      && call.payload.chat_id === 42
+      && (call.payload.rich_message as { markdown?: string }).markdown === "itinerary received"
+    )).toBe(true);
+    expect(texts(calls, "sendMessage")).toContain("This Telegram chat is not authorized to use this bot.");
+  });
+
+  it("quotes a native rich bot response when the user replies", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+    const update = {
+      update_id: 1,
+      message: {
+        message_id: 10,
+        date: 1234,
+        chat: { id: 42, type: "private" },
+        from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+        text: "please revise this",
+        reply_to_message: {
+          message_id: 9,
+          date: 1233,
+          chat: { id: 42, type: "private" },
+          from: FAKE_BOT_INFO,
+          rich_message: {
+            blocks: [{ type: "paragraph", text: "Original rich answer" }],
+          },
+        },
+      },
+    } as unknown as Parameters<Bot["handleUpdate"]>[0];
+
+    await bot.handleUpdate(update);
+
+    expect(requests[0]?.text).toContain("> Original rich answer");
+    expect(requests[0]?.text).toContain("please revise this");
+    expect(requests[0]?.metadata.telegram.replyToMessage?.id).toBe(9);
+  });
+
+  it("reuses projected rich text as listen-mode background context", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      groupMode: "listen",
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(forwardedRichItineraryUpdate({
+      chatId: -10042,
+      chatType: "supergroup",
+    }));
+    await bot.handleUpdate(groupTextUpdate("@ExampleBot compare the options", {
+      updateId: 2,
+      mentionedUsername: "ExampleBot",
+    }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.precedingMessages?.[0]?.text).toContain("Weekend itinerary");
+    expect(requests[0]?.precedingMessages?.[0]?.text).toContain("Saturday | Museum");
   });
 
   it("decodes text/* document downloads into the attachment text field", async () => {
@@ -1687,12 +1867,14 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    // The reasoning is never rendered. Final-only delivery: no interim edits;
-    // the answer arrives as a single sendMessage rendered as MarkdownV2.
+    // The reasoning is never rendered. Final-only delivery has no interim edits;
+    // the answer arrives as one native rich message.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.text).toBe("the answer");
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend).toMatchObject({
+      method: "sendRichMessage",
+      payload: { rich_message: { markdown: "the answer" } },
+    });
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
   });
 
@@ -1741,11 +1923,11 @@ describe("createTelegramBot", () => {
 
     expect(texts(calls, "sendMessage")).toEqual([
       "🔧 Todoist",
-      "No response text was returned\\.",
+      "No response text was returned.",
     ]);
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend?.method).toBe("sendRichMessage");
     expect(calls.filter((call) => call.method === "deleteMessage").map((call) => call.payload))
       .toEqual([{ chat_id: 42, message_id: 1000 }]);
   });
@@ -1761,12 +1943,14 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("stream only"));
 
-    // Final-only delivery: the streamed answer is held back and delivered as a
-    // single sendMessage at finish(), rendered as MarkdownV2 (no interim edits).
+    // Final-only delivery: the streamed answer is held back and delivered as one
+    // native rich message at finish(), with no interim edits.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.text).toBe("streamed answer");
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend).toMatchObject({
+      method: "sendRichMessage",
+      payload: { rich_message: { markdown: "streamed answer" } },
+    });
   });
 
   it("does not reject a second concurrent message in the same chat (admits it in order)", async () => {
@@ -2374,8 +2558,9 @@ describe("createTelegramBot", () => {
     // Editing always fails fatally (no retry, no recreate) — final-only mode does
     // not edit, but this guards any future interim path too.
     failures.set("editMessageText", () => err(403, "Forbidden: bot was blocked by the user"));
-    // Final-only delivery posts the answer with a single sendMessage at finish();
-    // every send fails, so there is no delivery path left.
+    // Native rich delivery and its MarkdownV2 fallback both fail, so there is no
+    // delivery path left.
+    failures.set("sendRichMessage", () => err(403, "Forbidden: bot was blocked by the user"));
     failures.set("sendMessage", () => err(403, "Forbidden: bot was blocked by the user"));
 
     // The AI run succeeded, so a delivery failure must not throw out of the handler.
@@ -2505,13 +2690,18 @@ describe("createTelegramBot", () => {
         const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
         bot.api.config.use(async (_prev, method, payload) => {
           const typedPayload = payload as Record<string, unknown>;
-          if (method === "sendMessage") {
-            sent.push(typedPayload.text);
+          if (method === "sendMessage" || method === "sendRichMessage") {
+            const text = method === "sendRichMessage"
+              ? (typedPayload.rich_message as { markdown?: unknown } | undefined)?.markdown
+              : typedPayload.text;
+            sent.push(text);
             return ok({
               message_id: 1,
               date: 0,
               chat: { id: typedPayload.chat_id, type: "private" },
-              text: typedPayload.text,
+              ...(method === "sendRichMessage"
+                ? { rich_message: typedPayload.rich_message }
+                : { text: typedPayload.text }),
             });
           }
           return ok(true);
@@ -2759,6 +2949,90 @@ describe("createTelegramBot pending asks and status posts", () => {
     });
     expect(requests).toHaveLength(0);
     expect(reactionEmojis(calls)).toContain("👍");
+  });
+
+  it("posts the next AskUser question below a custom text reply instead of editing the old card", async () => {
+    const pending = multiQuestionAskSnapshot();
+    const advanced: ChannelAskSnapshot = {
+      ...pending,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "Use my wording" }],
+      activeQuestionIndex: 1,
+    };
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot: advanced }));
+    const { bot, controller, calls } = buildTestBot({
+      responder: { respond: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => pending),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+    await controller.presentAsk(42, pending);
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData(pending.interactionId, 0, { kind: "other" }),
+    }));
+
+    await bot.handleUpdate(textUpdate("Use my wording", { updateId: 2 }));
+    await controller.updateAsk(42, advanced);
+
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "telegram:42",
+      interactionId: pending.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "Use my wording" }],
+    });
+    expect(texts(calls, "editMessageText")).toEqual(["Answer recorded."]);
+    expect(String(texts(calls, "sendMessage").at(-1))).toContain("Follow-up · 2/2");
+  });
+
+  it("serializes rapid custom AskUser answers so a completed ask cannot leave a stale next card", async () => {
+    const first = multiQuestionAskSnapshot();
+    const second: ChannelAskSnapshot = {
+      ...first,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "First answer" }],
+      activeQuestionIndex: 1,
+    };
+    const terminal: ChannelAskSnapshot = {
+      ...second,
+      answers: [
+        ...second.answers,
+        { questionId: "q1", selectedOptionIds: [], customReply: "Second answer" },
+      ],
+      activeQuestionIndex: 2,
+      status: "answered",
+    };
+    let current = first;
+    let controllerRef: ReturnType<typeof createTelegramBot> | undefined;
+    const updatePromises: Promise<void>[] = [];
+    const submitAskAnswers = vi.fn(async () => {
+      current = current.activeQuestionIndex === 0 ? second : terminal;
+      updatePromises.push(controllerRef!.updateAsk(42, current));
+      return { accepted: true, snapshot: current };
+    });
+    const { bot, controller, calls, failures } = buildTestBot({
+      responder: { respond: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => current),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+    controllerRef = controller;
+    await controller.presentAsk(42, first);
+    const editGate = createDeferred<void>();
+    failures.set("editMessageText", () => editGate.promise.then(() => ok(true)));
+
+    await bot.handleUpdate(textUpdate("First answer"));
+    await bot.handleUpdate(textUpdate("Second answer", { updateId: 2 }));
+    editGate.resolve();
+    await Promise.all(updatePromises);
+
+    const followUpPosts = calls.filter(
+      (call) => call.method === "sendMessage" && String(call.payload.text).includes("Follow-up · 2/2"),
+    );
+    expect(followUpPosts).toHaveLength(1);
+    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
+    expect(String(finalEdit?.payload.text)).toContain("Follow-up: custom answer");
+    expect(finalEdit?.payload).not.toHaveProperty("reply_markup");
   });
 
   it("does not run a deadlocking turn when a pending AskUser submission is rejected", async () => {

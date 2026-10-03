@@ -7,7 +7,7 @@ sidebar:
 
 This page documents every `mono-agent` command and its flags, verified against the CLI implementation. It also covers the two cross-cutting behaviors you hit on most invocations: automatic `.env` loading and the per-section reports `validate` and `start` print.
 
-Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves the permanent aliases (`doctor` → `validate`, `setup` → `init`), and a removed command (`recipes`, `sessions`, `metrics`, or `audit-runs`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
+Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves the permanent aliases (`doctor` → `validate`, `setup` → `init`), and a removed command (`recipes`, `sessions`, `metrics`, `audit-runs`, or `backfill`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
 
 ## Exit codes and `--json`
 
@@ -26,7 +26,46 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 - Hints, warnings, and deprecation notices go to stderr, never stdout.
 - Secrets are redacted exactly as the human view redacts them; a raw secret value never appears in JSON output.
 
-`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`, `backfill`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
+`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
+
+## Console-initiated supervised agent restart
+
+The browser's selected-agent Restart action and an agent's web-only
+`ProposeRestart` card are **not** `mono-agent restart` and do not run a shell
+command. They request one supervised worker through its keyed operator HTTP
+endpoint; the proposal tool only suggests, and a human confirms the web
+request. `GET {basePath}/v1/info` advertises `capabilities.restart` with a
+supported flag and short refusal reason; an older/malformed capability is
+unsupported. `POST {basePath}/v1/restart` requires a configured operator API
+key and matching bearer even though other operator routes can be keyless.
+The adapter returns `202` only after the supervised CLI host synchronously
+commits a single operation id and its nonzero exit disposition; overlapping
+requests return `409` with that same id. A `202` is acceptance, not proof that
+another process became ready. See [web-console restart](./web-console.md#restart-one-agent)
+for the operator-facing stages and two-minute confirmation bound.
+
+**Internal worker exit code `42`** marks an accepted supervised restart. This
+is deliberately outside ordinary CLI command result codes `0`/`1`/`2` above:
+the worker stops gracefully and releases its lease, then exits nonzero so its
+supervisor relaunches it. Exit `0` would retire the worker under launchd's
+`KeepAlive.SuccessfulExit=false` and systemd's `Restart=on-failure`.
+Verification reads the **loaded** supervisor's ownership of this PID, worker
+identity and relaunch policy again when requested. On launchd, `launchctl print`
+represents that policy in `semaphores = { successful exit => 0 }`; absence or
+`=> 1` is not support. systemd requires an active loaded matching unit with a
+nonzero-exit relaunch policy (`Restart=on-failure` or `always`); `Restart=no`
+is unsupported. `RestartPreventExitStatus` or `SuccessExitStatus` naming exit
+`42` also refuses support: either setting defeats nonzero relaunch. The installed
+systemd unit limits restarts with `StartLimitIntervalSec=60` and
+`StartLimitBurst=5`; roughly a sixth rapid start within 60 seconds leaves the
+unit failed until it is explicitly recovered. A signal before acceptance
+prevents it; a signal after acceptance cannot change the committed nonzero
+exit to exit 0. A **second external** `SIGTERM` after the shutdown listener is
+removed takes the OS default action instead of making an orderly restart
+promise. Once accepted teardown has completed, a bounded 10-second fallback
+forces exit 42 if an unrelated referenced handle prevents the process from
+draining on its own. None of this changes the explicit CLI `restart` lifecycle
+command.
 
 ## Command summary
 
@@ -35,7 +74,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the bundled Pi provider catalog and local discovery, configure exact route efforts, verify every selected route, then on macOS start the background agent and print the browser-first handoff (`mono-agent status`, `mono-agent web run --loopback`, open `http://127.0.0.1:5050`). Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--preset`, `--with`, `--yes`, `--dry-run`, `--name`, `--model`, `--effort`, repeated `--fallback`/`--fallback-effort`, `--auth`, `--memory` |
 | `setup` | Alias of `init`. | (same as `init`) |
 | `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the removed `recipes` alias. | `list`, `show <id>`, `--json` |
-| `auth login` | Run the bundled Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--config <path>` |
+| `auth login` | Run bundled Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or explicitly choose ChatGPT OAuth or an API key for `openai`; OpenCode-Go retains its API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider>`, `--pi-auth-path <path>`, `--auth-method oauth|api-key` (`openai`), `--api-key-stdin`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check`, `--json` (status only) |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
@@ -47,10 +86,10 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `status` | Show this config's service and readiness; macOS also lists other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print and optionally follow the macOS log files or Linux user journal. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help; managed macOS start also installs its paired fixed-policy log-maintenance helper. | `start`, `restart`, `stop`, `status [--json]`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>`, `--share-tailnet` |
-| `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). | — |
-| `tui` | Open remote discovery/chat or use ordinary in-process local chat. | `--agent`, `--conversation`, `--local` |
+| `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent runs list` / `mono-agent runs show` (recorded-run diagnostics) or `mono-agent web` (live console). | — |
+| `tui` (removed) | The terminal renderer was removed on the current unreleased source branch; it now errors with migration pointers and exits `2`. | — |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
-| `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
+| `backfill` (removed) | Fails with migration guidance. Use `runs`, `runs audit`, or `runs report` for retained local artifacts; perform any final legacy export before upgrading with the complete version set you already operate. | — |
 | `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
 | `help` | Print the grouped command summary, a single command's detail (`help <command>`), or the notes block (`help notes`). | `<command>`, `notes` |
 
@@ -103,6 +142,47 @@ unreadable byte inventory is reported as unavailable.
 `validate` / `doctor` also reports the owner-private monitor snapshot: last
 inspection, cumulative wake count, last outcome, and cooldown deadline.
 
+
+Unattended macOS maintenance waits for an idle worker before ordinary log-size
+rotation or replacing a healthy worker for snapshot, definition, or runtime
+drift. The worker publishes an owner-private, content-free activity snapshot
+under `~/.mono-agent/worker-activity/`: in-flight responder invocations across
+all channels and wakes, admitted queued/starting/running ProcessJobs work (including background commands,
+detached persistent children, and in-flight completion wakes), and pending `AskUser`.
+A child waiting only for an `AskParent` reply is idle. Memory curation/capture
+model calls and MCP-app or context-import work outside a responder turn are not
+counted as busy. The helper checks the
+snapshot against launchd's current PID and OS process incarnation immediately
+before stopping; missing, unsafe, malformed, or mismatched snapshots are
+unknown and receive the same bounded protection as busy workers. A dead or
+unready worker still recovers immediately.
+
+Busy size checks record `deferred-busy` without waking the helper or increasing
+the request cooldown. Retries reuse the five-minute worker monitor and hourly
+helper schedule; there is no extra helper retry loop. The helper persists a
+per-agent deferral episode in `~/.mono-agent/launchd-maintenance/`. It proceeds
+when idle, or forces after four hours or 48 deferrals (the count backstop bounds
+clock rollback). Log-size maintenance also forces when an active stream reaches
+10 MiB: this is an emergency scheduling threshold, **not** a new log cap. The
+monitor reads the helper episode when available and otherwise remembers its
+first over-limit observation until restart. Sampling and deferrals can let logs
+exceed these thresholds.
+
+Permission repair, authenticated started-transaction recovery/cleanup, explicit
+CLI lifecycle commands, and accepted supervised restarts/signals remain
+immediate. Ceilings never override unsafe-path refusals, lock contention, or
+stopped-writer proof. Snapshot publication and a final re-read reduce but do not
+eliminate the residual sub-second race with newly arriving work; there is no
+admission reservation and jobs do not survive a forced restart.
+
+`doctor` and `status` (including `status --json`) show the monitor outcome and
+helper decision, pending reasons, first deferral, count, probe counts, force-by
+time, and retained forced-decision history. A stop decision retains the episode
+until successful rotation/reconciliation or a fresh healthy explicit start/restart;
+a failed stop or explicit stop does not reset its budget. The files contain no prompts or job
+text. Linux systemd workers have no scheduled maintenance helper today; explicit
+Linux lifecycle behavior is unchanged.
+
 The managed macOS web console applies the same 5 MiB active-file plus three
 retained-generation policy independently under `~/.mono-agent/web/logs/`.
 Its foreground worker only performs a bounded wake check; it never renames,
@@ -121,7 +201,7 @@ Failures and refusals instead persist in bounded owner-private state shown by
 
 Scaffolds a new agent in the current folder. Existing `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` scaffold files are kept, not overwritten. The wizard names `IDENTITY.md` → `## Role` as the one Role destination. Its result distinguishes a created Role from a preserved identity; when preserved, the entered Role was not written anywhere and the summary says to add or edit that heading manually. Generated scaffold targets and their parent chain must remain inside the agent directory and cannot be symbolic links; this write-time check also applies to **Save incomplete**, so recovery cannot bypass staging through a linked capability directory. Guided secret setup is the deliberate exception: after masked entry and review, it may harden/update `.env` and `.gitignore` under the transaction below.
 
-On an interactive terminal with **no flags**, `init` launches the readiness-proven wizard. Pick a preset or custom setup, choose the public display name, enter the exact Role text for `IDENTITY.md` → `## Role`, choose model, effort, and fallback routes, answer the optional-capabilities gate (channels, memory, observability — default **No** for the custom journey; a seeded preset opens it at Yes), and confirm the tool/access and sandbox choices before the concrete creation review. Declining the gate at any point still runs the tool framing, the sandbox choice, and the default-No high-risk confirmation. Escape moves back one logical step; Ctrl-C asks before exiting. Primary and fallback pickers are real autocomplete fields over every bundled model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and local Ollama/LM Studio). Catalog availability, credential detection, and live verification are separate. The bundled Pi catalog entry leads whenever that catalog is readable; the curated static `openai-codex:gpt-5.6-terra` candidate is the offline fallback. That offline entry exposes no guessed effort metadata, so it offers only **Provider default** until catalog or local discovery supplies the model's real effort levels.
+On an interactive terminal with **no flags**, `init` launches the readiness-proven wizard. Pick a preset or custom setup, choose the public display name, enter the exact Role text for `IDENTITY.md` → `## Role`, choose model, effort, and fallback routes, answer the optional-capabilities gate (channels and memory — default **No** for the custom journey; a seeded preset opens it at Yes), and confirm the tool/access and sandbox choices before the concrete creation review. Declining the gate at any point still runs the tool framing, the sandbox choice, and the default-No high-risk confirmation. Escape moves back one logical step; Ctrl-C asks before exiting. Primary and fallback pickers are real autocomplete fields over every bundled model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and local Ollama/LM Studio). Catalog availability, credential detection, and live verification are separate. The bundled Pi catalog entry leads whenever that catalog is readable; the curated static `openai-codex:gpt-5.6-terra` candidate is the offline fallback. That offline entry exposes no guessed effort metadata, so it offers only **Provider default** until catalog or local discovery supplies the model's real effort levels.
 
 The default **Allow all tools** choice means every built-in shell/file/web tool and every enabled channel's send/ask tool. The wizard states that scope before confirmation and requires a second explicit confirmation when no enforceable sandbox constrains it. Use Pi when exact mono-agent roots, deny-write globs, or network policy must cover every attempt.
 
@@ -139,9 +219,9 @@ Once configuration passes, routes run sequentially (90 seconds cloud / 240 secon
 
 Before setup, **Creation review** names the agent, labels the exact Role target and text, says whether `IDENTITY.md` will be created or preserved, and lists routes/efforts, safety contracts, provider and SRT actions, exact files/secret destinations, total real model calls, and potentially billed calls. The prompt is `Create “<name>”?`; its primary action says **Run setup and readiness checks, then create agent** only when setup is needed, otherwise **Run readiness checks, then create agent**. **Edit choices** and **Cancel without writing** remain available.
 
-After committed-file validation on macOS, guided init materializes the exact already-resolved executing dependency closure, including configured channel plugins and the optional Supermemory package, into a private, versioned runtime under `~/.mono-agent/runtimes/agent-app/`, never an npm-cache path. This path does not invoke npm, re-resolve package ranges, inherit provider secrets into lifecycle scripts, or hand `workspace:` ranges to another installer; the full source-closure digest plus a relative-path/type/mode/content-hash installed manifest are bound to the runtime marker. First installation and fallback verification recheck that content, while warm reuse validates the marker-bound owner-private inode/stat proof described below. The LaunchAgent enters Node through `/usr/bin/env -i`, restoring only the reviewed operational allowlist, so ambient launchd variables such as `NODE_OPTIONS` cannot run before worker sanitization. It creates or fully reloads the canonical per-config LaunchAgent. The worker holds an owner-only lifetime lease for that canonical config across HOME, symlink-parent, filename-case aliases, and PID reuse, preventing a second launchd or manual foreground host, and freezes the attested config, Identity, optional Soul, and external MCP authority file as private read-only startup inputs while continuing to advertise the canonical config path.
+After committed-file validation on macOS, guided init materializes the exact already-resolved executing dependency closure, including configured channel plugins, into a private, versioned runtime under `~/.mono-agent/runtimes/agent-app/`, never an npm-cache path. This path does not invoke npm, re-resolve package ranges, inherit provider secrets into lifecycle scripts, or hand `workspace:` ranges to another installer; the full source-closure digest plus a relative-path/type/mode/content-hash installed manifest are bound to the runtime marker. First installation and fallback verification recheck that content, while warm reuse validates the marker-bound owner-private inode/stat proof described below. The LaunchAgent enters Node through `/usr/bin/env -i`, restoring only the reviewed operational allowlist, so ambient launchd variables such as `NODE_OPTIONS` cannot run before worker sanitization. It creates or fully reloads the canonical per-config LaunchAgent. The worker holds an owner-only lifetime lease for that canonical config across HOME, symlink-parent, filename-case aliases, and PID reuse, preventing a second launchd or manual foreground host, and freezes the attested config, Identity, optional Soul, and external MCP authority file as private read-only startup inputs while continuing to advertise the canonical config path.
 
-Start and restart print progress for durable-runtime verification, worker replacement, and readiness. A matching v5 managed runtime uses an owner-private inode/stat proof; any mismatch falls back to the full content verifier and repair path. The command reports whether it used warm reuse, full verification, installation, or repair and how long that phase took. Launchctl control operations retain their own bounded wait, followed by up to 60 seconds for worker readiness. The worker publishes durable `metadata.lifecycle.startupCompleted: true` only after channels, memory rituals, and final memory-health work complete, alongside content-free total and per-phase startup timings. Later trace refreshes retain that proof while `metadata.reason` remains the latest diagnostic publication reason. A ready result additionally requires the trace PID to be alive and launchd-owned, the committed config/`.env`/Identity/Soul/MCP authority and operational-environment fingerprints to match, configured channels and current memory health not to have failed, and the TUI endpoint to be reachable when configuration is requested. Start, restart, and configuration attach reconstruct registry/config values from the same durable dotenv-plus-operational environment as the worker, so shell-only overrides cannot select a different instance. Workers without the durable marker must restart once before configuration can attach.
+Start and restart print progress for durable-runtime verification, worker replacement, and readiness. A matching v5 managed runtime uses an owner-private inode/stat proof; any mismatch falls back to the full content verifier and repair path. The command reports whether it used warm reuse, full verification, installation, or repair and how long that phase took. Launchctl control operations retain their own bounded wait, followed by up to 60 seconds for worker readiness. The worker publishes durable `metadata.lifecycle.startupCompleted: true` only after channels, memory rituals, and final memory-health work complete, alongside content-free total and per-phase startup timings. Later trace refreshes retain that proof while `metadata.reason` remains the latest diagnostic publication reason. A ready result additionally requires the trace PID to be alive and launchd-owned, the committed config/`.env`/Identity/Soul/MCP authority and operational-environment fingerprints to match, configured channels and current memory health not to have failed, and the operator endpoint to be reachable when configuration is requested. Start, restart, and configuration attach reconstruct registry/config values from the same durable dotenv-plus-operational environment as the worker, so shell-only overrides cannot select a different instance. Workers without the durable marker must restart once before configuration can attach.
 
 On success init prints **Agent ready** and the browser-first handoff: confirm the running agent with `status`, run `mono-agent web run --loopback` in a second terminal, and open `http://127.0.0.1:5050` (with the `validate`/`restart` pair for later config edits). A readiness timeout preserves the committed files, then tries to unload both worker and scheduled maintenance and remove both definitions through the ownership-proven stop path. If stopped state cannot be proven, the command explicitly warns that a process may still be running. Either outcome prints exact `start`, `status`, and `logs --follow` commands plus log paths. Off macOS, init makes no process/readiness claim: it prints the manual start handoff (`mono-agent start`, or `--foreground` without a service manager) followed by `mono-agent web run --loopback`, and the terminal console remains an optional extra rather than the handoff.
 
@@ -193,20 +273,21 @@ The result reports each path as created, updated, unchanged, or planned (dry run
 
 ```bash
 mono-agent auth login openai-codex
+mono-agent auth login openai --auth-method oauth # ChatGPT subscription
+mono-agent auth login openai --auth-method api-key # OpenAI API key
 mono-agent auth login opencode-go                # masked TTY prompt
 printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-stdin
 ```
 
-Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex` through their bundled OAuth flows, plus the `opencode-go` API-key flow. Other Pi runtime refs remain hand-authored configuration and are not implied interactive-login targets. Pi path precedence is:
+Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex` through their bundled OAuth flows; `openai` supports both ChatGPT OAuth and API-key login (choose with `--auth-method`); and `opencode-go` supports API-key login. Other Pi runtime refs remain hand-authored configuration and are not implied interactive-login targets. Pi path precedence is:
 
 1. `--pi-auth-path`
-2. `MONO_AGENT_PI_AUTH_PATH`
-3. `providers.piAuthPath`
-4. Pi default `~/.pi/agent/auth.json`
+2. `providers.piAuthPath`
+3. Pi default `~/.pi/agent/auth.json`
 
 `~` expands to the current user's home directory. Relative values from the flag, environment, or config resolve against the agent/invocation working directory before the Pi OAuth flow is staged, so discovery, login, validation, readiness, and runtime all address the same absolute store. A missing config falls through to env/default resolution; a malformed or unreadable config is an error and never silently falls through.
 
-Pi login never runs an unpinned global Pi command. mono-agent launches an app-owned terminal wrapper around the bundled Pi provider OAuth implementation against a private staged `auth.json`, validates the requested credential and unchanged siblings, then promotes under an owner-only identity-bound lock. Anthropic races its localhost callback against an active terminal prompt: a pasted final redirect URL is passed intact to Pi, which requires its authorization code and validates OAuth state before exchange. OpenCode-Go uses a masked prompt on a TTY; `--api-key-stdin` accepts exactly one explicitly redirected, bounded line for a headless invocation and is rejected for OAuth providers. Ambient `OPENCODE_API_KEY` is never copied implicitly. A pre-existing lock is removed only when its secure record remains identity-stable and the recorded PID is proven absent with `ESRCH`; active, permission-denied, malformed, or racing locks are preserved. Automatic credential persistence refuses Windows and Pi auth paths inside Git worktrees.
+Pi login never runs an unpinned global Pi command. mono-agent launches an app-owned terminal wrapper around the bundled Pi provider OAuth implementation against a private staged `auth.json`, validates the requested credential and unchanged siblings, then promotes under an owner-only identity-bound lock. Anthropic races its localhost callback against an active terminal prompt: a pasted final redirect URL is passed intact to Pi, which requires its authorization code and validates OAuth state before exchange. OpenCode-Go uses a masked prompt on a TTY; `--api-key-stdin` accepts exactly one explicitly redirected, bounded line for a headless invocation and is rejected for OAuth providers. Ambient `OPENCODE_API_KEY` is never copied implicitly. For ChatGPT OAuth, the fixed localhost callback is `127.0.0.1:1455`: a remote browser or occupied port must use the complete final redirect URL pasted at the terminal prompt (not a code alone). `--api-key-stdin` implies `api-key` for `openai`; it conflicts with `--auth-method oauth`. Headless OpenAI OAuth requires `--auth-method oauth` to avoid unintended interactive login. A successful login replaces only the current provider's stored credential. A pre-existing lock is removed only when its secure record remains identity-stable and the recorded PID is proven absent with `ESRCH`; active, permission-denied, malformed, or racing locks are preserved. Automatic credential persistence refuses Windows and Pi auth paths inside Git worktrees.
 
 The web console can expose the same Pi-store authentication boundary in an
 agent's **Agent settings** dialog. GitHub Copilot and OpenAI Codex use Pi's native
@@ -244,7 +325,7 @@ mono-agent presets show telegram-assistant --json
 
 ## `validate`
 
-Loads every config section and prints a status report. It exits `0` when the configuration is structurally valid, including non-fatal `waiting` sections, and `1` on errors. A clean report says it is ready to start; this is a config/liveness result, not the guided wizard's real all-route proof or full **Agent ready** claim. A report with `waiting` sections instead says it needs attention before start. The Runtime provenance section names the full content-addressed closure id and sanitized install metadata when the CLI producing the report has a valid managed marker, freshly recomputed installed closure, and coherent current closure manifest; otherwise it reports `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance, not an attestation of a separately running daemon. `mono-agent doctor` is an alias — same flags, same report. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
+Loads every config section and prints a status report. It exits `0` when the configuration is structurally valid, including non-fatal `waiting` sections, and `1` on errors. A clean report says it is ready to start; this is a config/liveness result, not the guided wizard's real all-route proof or full **Agent ready** claim. A report with `waiting` sections instead says it needs attention before start. The Runtime provenance section names the full content-addressed closure id and sanitized install metadata when the CLI producing the report has a valid managed marker, freshly recomputed installed closure, and coherent current closure manifest; otherwise it reports `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance, not an attestation of a separately running daemon. Duplicate JSON object keys produce an error-level core finding with the exact nested path, including keys inside arrays; `--json` carries it in the core section details. The runtime loader instead warns and keeps the last value to avoid breaking existing starts. `mono-agent doctor` is an alias — same flags, same report. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
 
 ```bash
 mono-agent validate
@@ -267,11 +348,11 @@ Each section prints a status badge, a label, and its details. The statuses are:
 | Status | Meaning |
 | --- | --- |
 | `ok` | The section is configured and ready. |
-| `waiting` | Configured but a runtime dependency is not up yet (e.g. Ollama or Phoenix not reachable), or a credential is missing/expired. Runtime-soft — never blocks start. Advisory detail lines are prefixed `[WARN]`. |
+| `waiting` | Configured but a runtime dependency is not up yet (for example Ollama), or a credential is missing/expired. Runtime-soft — never blocks start. Advisory detail lines are prefixed `[WARN]`. |
 | `disabled` | The section is intentionally off — a channel with `enabled: false`, or no models of a kind that needs this check. Never blocks start. |
 | `error` | A structural problem that must be fixed; any `error` section fails the run. |
 
-`validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
+`validate` runs liveness probes, so it can show `waiting` for configured network dependencies. First-party Phoenix/OTLP probing was removed with the bundled exporter.
 
 For built-in memory, Journal and BuJo require a valid managed `.index/manifest.json`; only Lite
 may remain unmanaged. A missing/corrupt manifest, configured-versus-active tier/provider/model/dimension
@@ -285,7 +366,7 @@ The **Tools & MCP** section reports the tool policy: allow-all (the default) sho
 
 ### Provider credentials
 
-`validate` includes a **Provider credentials** section covering the primary `runtime.model`, every canonical `runtime.fallbacks` entry, the `agent-host` `memory.llm` model, and every enabled static webhook/cron model override (the legacy `runtime.fallbackModels` form is retired and rejected at load with the replacement named). Disabled channels/entries are ignored; a dynamic request-body override is checked when the request runs because its value does not exist at validate time. Each Pi runtime ref must resolve through an enabled `providers` entry (a provider-id key, a legacy `providers.local[]` entry, or autodiscovery) or an exact model in Pi's built-in catalog. Built-in Pi credentials resolve against the same effective Pi auth path used by `auth login` (including `MONO_AGENT_PI_AUTH_PATH`); the Pi CLI's ambient sibling `models.json` is not imported by the mono-agent runtime. It never mints tokens or makes a model request. Static validation (`liveness: false`, including start preflight) launches no process. Live validation can detect unprobed credentials from the effective Pi auth store and from declared `apiKeyEnv` variables; detection is not labelled as a verified model turn. During guided init, each exact selected route is promoted to verified only after its own live check succeeds.
+`validate` includes a **Provider credentials** section covering the primary `runtime.model`, every canonical `runtime.fallbacks` entry, the `agent-host` `memory.llm` model, and every enabled static webhook/cron model override (the legacy `runtime.fallbackModels` form is retired and rejected at load with the replacement named). Disabled channels/entries are ignored; a dynamic request-body override is checked when the request runs because its value does not exist at validate time. Each Pi runtime ref must resolve through an enabled `providers` entry (a provider-id key, a legacy `providers.local[]` entry, or autodiscovery) or an exact model in Pi's built-in catalog. Built-in Pi credentials resolve against the same effective Pi auth path used by `auth login`; the Pi CLI's ambient sibling `models.json` is not imported by the mono-agent runtime. It never mints tokens or makes a model request. Static validation (`liveness: false`, including start preflight) launches no process. Live validation can detect unprobed credentials from the effective Pi auth store and from declared `apiKeyEnv` variables; detection is not labelled as a verified model turn. During guided init, each exact selected route is promoted to verified only after its own live check succeeds.
 
 - A provider configured through a `providers` map entry needs no OAuth. If it declares `apiKeyEnv`, that variable must resolve to a non-empty key (or a schema-compatible inline fallback must resolve); source configs should still keep the secret in `.env` and store only `apiKeyEnv`. Only providers with no key declaration are reported as intentionally keyless. Disabled provider/model entries are rejected.
 - Without a providers entry, the provider/model pair must exist exactly in Pi's built-in catalog. An unknown model is an `error`, even if an ambient `models.json` happens to name its provider.
@@ -335,7 +416,7 @@ stale state that the next writer can resume. Busy state held by a live writer is
 
 ### Secret placement
 
-`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `webhook.apiKey`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
+`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the supported core secret `memory.embeddings.apiKey` and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `webhook.apiKey`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
 
 ```text
 [WARN] telegram.botToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_TELEGRAM_BOT_TOKEN).
@@ -391,18 +472,18 @@ mono-agent memory import restore --backup /path/from/apply --json
 
 | Subcommand | Effect |
 | --- | --- |
-| `stats` | Shows backend, configured tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. For Supermemory it reports the known remote endpoint/container and explicitly lists fields that are not knowable locally. |
+| `stats` | Shows backend, configured tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. |
 | `today` | Renders today's local BuJo daily log. |
 | `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
-| `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
-| `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
+| `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. |
+| `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. |
 | `audit` | Without `--strict`, emits detailed local operator telemetry: counts, bytes, duplicate ratio, vector coverage, access concentration, active generation/source accounting, configured paths/source locations, and available runtime queue/backlog/shutdown plus embedding/LLM call counts. With `--strict`, emits the exact provider-free content-free health schema: `schemaVersion`, `backend`, built-in `mode`, `status`, `checkedAt`, closed `issues`, and all eight closed `counts`. |
 | `inspect [<id>]` | Reads built-in completed-turn intake metadata. It returns ids, state/timestamps, attempt/revision, due flags, bounded failure categories, and aggregate counts—never run/conversation ids, payload hashes, summary/capture text, paths, or raw errors. The optional id is exactly 64 lowercase hex characters. |
 | `retry [<id>]` | With the configured agent stopped, moves selected dead letters back to pending and/or makes delayed pending work due. Omitting the id selects all eligible items. It does not process the work; start the store afterward. Check JSON `changed`/`retried`, because a successful no-op exits `0`. |
 | `resolve <id> <reason>` | With the agent stopped, explicitly retires one pending/dead item as `operator_resolved` without claiming capture succeeded. The lowercase 1–64 character slug starts with a letter/digit, then permits letters/digits/underscores/hyphens. Permanent duplicate protection remains, retained semantic plans are refused, and a missing/already-resolved id is a successful `changed: false` no-op. |
 | `rebuild` | Built-in Lite/Journal/BuJo only. Refuses a running configured agent, builds and fully validates a side-by-side generation from canonical files, then atomically activates it. BuJo fingerprints and preserves the exact replay sidecar and refuses to infer a nonempty projection from SQLite. It retains the previous generation only when that index has exact canonical-source parity (a Journal vector backlog is recoverable); a source-ahead/stale index is omitted rather than mislabeled as rollback-safe. It uses configured embeddings when the tier requires them and never calls a chat LLM. |
 | `rollback` | Built-in Lite/Journal/BuJo only. Atomically swaps to the retained generation after verifying its tier/provider/model/dimension and full source fingerprint, including BuJo replay authority. Restore the prior config identity first when those settings changed. No embedding or chat-model request is made. Replay-source changes retire an advertised BuJo rollback before publication; Lite/Journal rollbacks do not fingerprint that source domain. |
-| `adopt-replay` | Explicit SSH-safe one-time trust-on-first-use for a stopped managed generation or legacy unmanaged built-in BuJo `memory.db` whose replay-owned SQLite lifecycle/edges legitimately predate `.replay-projection-v1.json`. It verifies semantic identity, the exact non-replay canonical base, an owner-only (`0600`) SQLite database/WAL family, and a root lease plus SQLite writer fence/logical digest. A bounded set of disjoint capture intents/receipts and at most one migration marker can attest already-applied replay rows. Mutable pending capture and a pending migration are mutually exclusive; immutable completed receipts may coexist with the migration, and retained receipts remain until intake resolves. Unexplained state, overlapping mutable capture plans, malformed state, an existing sidecar, or any live writer fails closed. Replay publication retires only an advertised BuJo rollback. Success is metadata-only with `rebuildRequired: true`; failures are fixed code/message objects with no paths, ids, payloads, DB/marker details, or raw errors. Not available for Lite, Journal, Supermemory, empty roots, or ordinary repair. |
+| `adopt-replay` | Explicit SSH-safe one-time trust-on-first-use for a stopped managed generation or legacy unmanaged built-in BuJo `memory.db` whose replay-owned SQLite lifecycle/edges legitimately predate `.replay-projection-v1.json`. It verifies semantic identity, the exact non-replay canonical base, an owner-only (`0600`) SQLite database/WAL family, and a root lease plus SQLite writer fence/logical digest. A bounded set of disjoint capture intents/receipts and at most one migration marker can attest already-applied replay rows. Mutable pending capture and a pending migration are mutually exclusive; immutable completed receipts may coexist with the migration, and retained receipts remain until intake resolves. Unexplained state, overlapping mutable capture plans, malformed state, an existing sidecar, or any live writer fails closed. Replay publication retires only an advertised BuJo rollback. Success is metadata-only with `rebuildRequired: true`; failures are fixed code/message objects with no paths, ids, payloads, DB/marker details, or raw errors. Not available for Lite, Journal, empty roots, or ordinary repair. |
 | `forget prepare` | Built-in BuJo with embeddings only. Reads at most 32 newline-delimited explicit ids, validates each against exactly one non-terminal canonical bullet, and writes a new owner-only (`0600`), single-link plan outside the memory root. The plan binds the canonical root and source fingerprints, reason slug, timestamp, ids, and edit-detection checksum; it contains no memory text and does not change the memory root. |
 | `forget apply` | Requires the configured agent to be stopped and an unchanged owner-only plan. Under the authoritative root writer lease and a durable sibling transaction fence, it completes prior recovery, revalidates every id, creates and fsync-verifies a complete owner-only sibling backup, applies the existing durable migration-forget protocol, and rebuilds the managed index. Output is metadata-only and includes the deterministic backup path. A failure after transaction publication restores the complete pre-apply tree; a process death leaves startup blocked until that recovery is resumed. |
 | `forget restore` | Requires the configured agent to be stopped and the exact backup path returned by apply. Restore is allowed only while the current tree still matches the post-apply fingerprint; every later durable file blocks overwrite. The exact active SQLite coordination files are checkpointed under the writer lease, while arbitrary `*-shm`/`*-wal` files remain durable input. The verified sibling snapshot is atomically renamed into place without a third copy, and the current root remains quarantined until validation plus durable manifest publication commit. |
@@ -419,7 +500,7 @@ mono-agent memory import restore --backup /path/from/apply --json
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file before resolving the config. |
 
-Stop the configured agent before `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`, `forget apply`, or `forget restore`; each semantic mutation also acquires the memory writer lease. `forget prepare` is canonical-source-only and can run live, but an intervening source change makes apply reject the stale plan. After adoption, run `memory rebuild` immediately before any restart or other writer. Rebuild finishes mutable attested capture/migration work without repeating paid provider work and removes retireable markers; a retained completed capture receipt remains until its intake item resolves. The replacement semantic generation still uses the configured embeddings provider before activation. `inspect` is read-only and can run live. Intake commands and index transitions reject Supermemory because that service owns its remote state. The strict audit itself makes no embedding/chat/provider request and never emits paths, filenames, ids, payloads, model text, raw errors, or arbitrary extras. Orphaned replay-sidecar publication temps are counted and report `temporary_artifacts`.
+Stop the configured agent before `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`, `forget apply`, or `forget restore`; each semantic mutation also acquires the memory writer lease. `forget prepare` is canonical-source-only and can run live, but an intervening source change makes apply reject the stale plan. After adoption, run `memory rebuild` immediately before any restart or other writer. Rebuild finishes mutable attested capture/migration work without repeating paid provider work and removes retireable markers; a retained completed capture receipt remains until its intake item resolves. The replacement semantic generation still uses the configured embeddings provider before activation. `inspect` is read-only and can run live. The strict audit itself makes no embedding/chat/provider request and never emits paths, filenames, ids, payloads, model text, raw errors, or arbitrary extras. Orphaned replay-sidecar publication temps are counted and report `temporary_artifacts`.
 
 If a stopped legacy managed generation or unmanaged BuJo index is specifically diagnosed as having a
 missing sidecar beside nonempty replay state, the complete SSH-only flow is:
@@ -504,7 +585,6 @@ mono-agent start --foreground
 On start the CLI prints per-section status blocks:
 
 - **instance** — the resolved config path and traceability status (`running (source <id>)`, or `<kind>: <reason>`).
-- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. contentPatternRedaction=true replaces a closed set of high-confidence credential shapes. Strings are capped. Substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
 - **channels** — active communication channels keep one line each; disabled channel ids are folded into one compact line while warnings retain their full reason. A channel rendered `degraded: <reason>` carries a warning badge — it is a non-fatal, still-serving state where the live transport dropped but the responder is kept alive and the adapter is self-recovering (e.g. a Telegram poll crash on a network switch). `degraded` counts as an active/serving transport (not idle, not failed) and flips back to `running` once the transport recovers.
 - **operator** — the local operator transport is separated from communication channels. The stable `tui` metadata id is shown as `gui` with `TUI + Web` and its discovered `/gui` URL. JSON output keeps the original `tui` id unchanged.
 - **runs health** — in foreground mode, the active selected skills, local artifact directory, total recorded summaries, last runs with relative ages, status counts, stale/process-gone `running` summaries, and compact failure-kind counts with explanations.
@@ -529,7 +609,7 @@ mono-agent restart
 mono-agent restart --clear-sessions   # macOS: clear provider, message/tool, and ACP continuity
 ```
 
-`piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
+`piSessionsRoot` is set via `providers.piNative.piSessionsRoot`, e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
 `--clear-sessions` permanently deletes saved provider transcripts, canonical message and tool history, and ACP session authorizations for this instance. The agent's durable long-term memory, recorded run artifacts, and process-job records/output are preserved, but the current-chat context and retained `SessionHistory` evidence cannot be recovered after the reset, and previously issued ACP session ids are revoked.
@@ -598,27 +678,14 @@ Agent discovery, credentials, connection, or response validation failures exit
 uses `remote_refused`. Invalid subcommands, missing/extra ids, or ids longer
 than 256 characters exit `2`.
 
-## `tui`
+## Removed terminal renderer
 
-Opens the [operator console](/observability/tui/) from **any directory**: live chat with structured thinking/tool/telemetry insight, bounded recorded-run replay, and a source-annotated config view. Discovers running agents via the trace-source registry — zero running agents prints a `mono-agent start` hint and exits `1`, one connects directly, several open an in-TUI picker. Requires an interactive TTY.
-
-```bash
-mono-agent tui                          # discover + connect
-mono-agent tui --agent personal-agent   # connect by label or sourceId
-mono-agent tui --conversation ops       # chat under a stable conversation id
-mono-agent tui --local                  # ordinary current-folder chat, no daemon
-```
-
-| Flag | Effect |
-| --- | --- |
-| `--agent <label\|sourceId>` | Connect to a specific running instance; errors with the available list when there is no match. |
-| `--conversation <id>` | Conversation id for the chat (default `tui-<sourceId>`). |
-| `--config <path>` | Resolve a custom `traceability.registryDir` from this config (for agents registered outside the global registry). |
-| `--env-file <path>` | Use the same non-default dotenv file as the managed background instance and its recovery commands. |
-| `--local` | Build the current folder's configured responder in-process for ordinary chat. No channel service or launchd state is created. |
-
-The remote live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views. Edit `mono-agent.config.json` or `IDENTITY.md`, run `mono-agent validate`, and restart to apply configuration changes.
-
+`mono-agent tui`, `mono-agent help tui`, the standalone `mono-agent-tui` binary,
+and `@mono-agent/tui` are removed on the current unreleased source branch. Use
+`mono-agent web` for live operation, `mono-agent runs list|show` for bounded
+prior-run diagnostics, and
+`mono-agent config` for resolved configuration. The `tui` config and wire names
+remain compatibility identifiers for the maintained [operator stream endpoint](/channels/tui/).
 
 ## `web`
 
@@ -659,7 +726,7 @@ streams. The helper does not rotate before the fixed policy requires it.
 
 ## `sessions`
 
-The `mono-agent sessions` command was removed. Running it now errors with a pointer to its replacements and exits `2`. For operator run inspection use [`mono-agent tui`](#tui) (recorded-run replay) or [`mono-agent web`](#web) (live console).
+The `mono-agent sessions` command was removed. Running it now errors with a pointer to its replacements and exits `2`. For operator run inspection use `mono-agent runs list|show` (bounded offline diagnostics) or [`mono-agent web`](#web) (live console).
 
 The `@mono-agent/session-web` package, read-only `live` event relay, and `live.*` config/env surface have also been removed. Existing configs must delete the `live` section before validation. `MONO_AGENT_WEB_AUTH_TOKEN` is no longer read by any code. See the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
@@ -716,7 +783,7 @@ Aggregates run summaries into latency, cost, and failure-rate numbers over the w
 | --- | --- |
 | `--artifacts <path>` | Read this artifact directory directly. Wins over config-based `artifacts.dir` resolution. |
 | `--config <path>` | Use a non-default config file when resolving `artifacts.dir`. |
-| `--env-file <path>` | Load env overrides before resolving `MONO_AGENT_ARTIFACT_DIR`. |
+| `--env-file <path>` | Load referenced credentials and adapter-owned settings. |
 | `--since <iso>` | Only summaries whose `startedAt` is at or after this ISO instant. |
 | `--until <iso>` | Only summaries whose `startedAt` is at or before this ISO instant. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |
@@ -741,55 +808,22 @@ Audits run summaries for structural integrity. Use it when you need a structural
 
 It only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
 
-## `backfill`
+## `backfill` (removed)
 
-Exports already-recorded run artifacts to the configured Phoenix exporter with their historical timestamps. `--all` defaults to agent runs only; add `--include-memory` to export memory-maintenance runs from both the legacy mixed namespace and the `memory/` namespace. Explicit `--run mem-*` reads the requested memory run even without `--include-memory`. Trace ids are deterministic per run, so re-running overwrites rather than duplicating. Honors `--config <path>` and `--env-file <path>`.
+First-party Phoenix/OTLP export and `mono-agent backfill` were removed. Both
+`mono-agent backfill` and `mono-agent help backfill` return migration guidance:
+use `mono-agent runs`, `mono-agent runs audit`, or `mono-agent runs report` for
+retained local artifacts. If a final export through the legacy path is required,
+perform it before upgrading with the complete currently working version set that
+the consumer already operates.
 
-| Flag | Effect |
-| --- | --- |
-| `--run <id>` | Export exactly this run id. |
-| `--all` | Export every recorded run. |
-| `--since <iso>` | Only runs whose `startedAt` is ≥ this ISO instant. |
-| `--until <iso>` | Only runs whose `startedAt` is ≤ this ISO instant. |
-| `--include-memory` | With `--all`, include memory-maintenance runs in addition to agent runs. |
-| `--dry-run` | Map and serialize but do not POST. |
-| `--config <path>` | Use a non-default config. |
-| `--env-file <path>` | Load secrets from a non-default dotenv file. |
-
-```bash
-# one run
-mono-agent backfill --run 2026-06-21T10-15-03Z-abcd
-
-# a window, mapped but not sent
-mono-agent backfill --all --since 2026-06-01T00:00:00Z \
-  --until 2026-06-21T00:00:00Z --dry-run
-```
-
-The exporter is configured under `observability.exporters[]` (env `MONO_AGENT_OBSERVABILITY_EXPORTERS`, a JSON array):
-
-```json
-{
-  "observability": {
-    "exporters": [
-      {
-        "type": "phoenix",
-        "endpoint": "http://localhost:6006",
-        "projectName": "support-agent",
-        "includeSensitiveData": false,
-        "contentPatternRedaction": false,
-        "headers": {},
-        "timeoutMs": 5000
-      }
-    ]
-  }
-}
-```
-
-Full backfill semantics and the JSONL artifact format live in [Phoenix & backfill](/observability/phoenix-and-backfill/) and [Artifacts & traces](/observability/artifacts-and-traces/).
+An upgrade does not export, rewrite, convert, or delete local artifacts, and it
+does not delete remote traces. Active `observability.exporters` or
+`MONO_AGENT_OBSERVABILITY_EXPORTERS` values fail config loading rather than being
+silently ignored. See [Framework simplification migration](/reference/framework-simplification-migration/#retired-phoenixotlp-export).
 
 ## See also
 
 - [Observability overview](/observability/)
-- [Live TUI](/observability/tui/)
 - [Config blueprint](/config/blueprint/) and [Environment variables](/config/env-vars/)
 - [Programmatic composition](/programmatic/) for embedding the host without the CLI

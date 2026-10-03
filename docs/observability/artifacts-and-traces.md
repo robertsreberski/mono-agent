@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It redacts non-numeric values under sensitive-looking object keys, scans retained free text for a closed set of high-confidence credential shapes, and buffers later events with a 4,096-byte default cap per string. It schedules incremental `running` snapshots and writes a final snapshot at `finish()`/`fail()`. Every boundary replaces the events file first and summary second. These temp-file-and-rename writes provide no append, fsync, power-loss durability, or cross-file transaction guarantee. The artifacts are the best-effort on-disk prefix after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
+mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It redacts non-numeric values under sensitive-looking object keys, scans retained free text for a closed set of high-confidence credential shapes, and buffers later events with a 4,096-byte default cap per string. It schedules incremental `running` snapshots and writes a final snapshot at `finish()`/`fail()`. Every boundary replaces the events file first and summary second. These temp-file-and-rename writes provide no append, fsync, power-loss durability, or cross-file transaction guarantee. The artifacts are the best-effort on-disk prefix after a successful recorder boundary. The framework does not bundle a trace exporter.
 
 This page covers where artifacts land, the latency-attribution events inside them, and the trace-source registry that `mono-agent status` reads.
 
@@ -16,7 +16,7 @@ Each agent run writes two files into `artifacts.dir`:
 - `run-<id>.events.jsonl` — the latest successfully replaced snapshot of sensitive-key-redacted, credential-scanned, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
 - `run-<id>.summary.json` — a private local roll-up of the run (final `status`, aggregate usage/cost, model, and the compiled `systemPrompt` when captured). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. Routed runs preserve normalized `failoverHistory` (model, failure, subkind, and request id when available). The companion events JSONL records the bounded `provider_retry_started`, `provider_failover_started` and `provider_failover_completed` events. These mark transitions, not attempts: a retry event precedes each same-model retry, a failover event marks each route change, and a completion event is written only when a *different* model than the configured route ultimately answered. A run whose primary route succeeds first time emits none of the three — its `failoverHistory` is the record of what happened. Credentials and private resolver options are never copied into either artifact.
 
-Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory export, audit, and metrics flows.
+Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory audit and metrics flows.
 
 Artifacts are written for every run regardless of whether any exporter is configured. Non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. Long strings are capped. The closed scan is defense in depth, not a general secret or privacy scrubber. Summaries intentionally retain private operator context such as the compiled system prompt; keep the artifact directory access-controlled and do not expose it as an application response. Public `AgentHarnessResponse.metadata.summary` is typed as `ExternalRunSummary` and excludes `systemPrompt` on every path. The webhook adapter repeats that sanitization for sync, async, status, and callback destinations, including custom responders. Separately from JSONL recording, the tool-bloat guard offers each oversized tool-result block to a per-run sink under `tool-output/<runId>/`. Successful owner-private files hold the raw, untrusted payload; failures stay best-effort while text-only results still retain a bounded head/tail sample in context (coverage: `auto`).
 
@@ -62,15 +62,17 @@ write, or after a filesystem failure can still lose the unsaved tail.
 
 | Key | Default | Env var | Coverage |
 | --- | --- | --- | --- |
-| `artifacts.dir` | `./.mono-agent/artifacts` | `MONO_AGENT_ARTIFACT_DIR` | config |
-| `artifacts.retention.maxAgeDays` | `365` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | config |
-| `artifacts.retention.maxCount` | `50000` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | config |
-| `artifacts.retention.dryRun` | `false` | `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | config |
-| `artifacts.memoryRetention.maxAgeDays` | `7` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS` | config |
-| `artifacts.memoryRetention.maxCount` | `5000` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT` | config |
-| `artifacts.memoryRetention.dryRun` | `artifacts.retention.dryRun` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN` | config |
+| `artifacts.dir` | `./.mono-agent/artifacts` | — | config |
+| `artifacts.replyFiles.maxStorageBytes` | `2147483648` (2 GiB) | — | reply files and MCP App content; `"unlimited"` disables quota rejection, not retention |
+| `artifacts.replyFiles.maxFileBytes` | `20971520` (20 MiB) | — | reply files only; 20 MiB delivery ceiling |
+| `artifacts.retention.maxAgeDays` | `365` | — | config |
+| `artifacts.retention.maxCount` | `50000` | — | config |
+| `artifacts.retention.dryRun` | `false` | — | config |
+| `artifacts.memoryRetention.maxAgeDays` | `7` | — | config |
+| `artifacts.memoryRetention.maxCount` | `5000` | — | config |
+| `artifacts.memoryRetention.dryRun` | `artifacts.retention.dryRun` | — | config |
 
-These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps. The default backfill/audit/metrics/operator views read agent runs only; pass `--include-memory` where supported to add memory-maintenance runs. Explicit `--run mem-*` backfills can still reach memory artifacts, including legacy top-level `mem-*` files from older mixed directories. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly-failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
+The default audit, metrics, and operator views read agent runs only; pass `--include-memory` where supported to add memory-maintenance runs, including legacy top-level `mem-*` files from older mixed directories. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
 
 The host applies artifact retention once at startup, after stale-run reconciliation, and then on a periodic in-app sweep. Agent runs and `tool-output/<runId>/` directories use `artifacts.retention`; memory runs use `artifacts.memoryRetention`, defaulting to a shorter 7-day / 5,000-run window. Retention deletes terminal run summary/event pairs and independently selects tool-output run directories by directory modification time and count. An aged orphan is eligible even when no lifecycle or tool-history record persisted. Summaries still marked `running` are never deleted, and their run ids are projected through the sink's exact sanitizer to protect every matching tool-output directory without assuming a directory name can be reversed into a run id. Malformed or uncertain summaries conservatively protect any directory they can identify. A directory modified within the last hourly sweep interval is also kept, including when `maxCount` would otherwise select it, and its identity and modification time are rechecked immediately before removal. Set `dryRun: true` to log both planned JSONL-pair and tool-output-directory removals without deleting them; memory retention inherits the agent dry-run setting when its own `dryRun` is unset. A configured `tool-output` path that is itself a symlink is resolved before any containment check, exactly as the sink resolves it when writing. Retention then prunes eligible run directories beneath the resolved target, so pointing `tool-output` at a shared location makes that location subject to recursive deletion; keep it a directory the agent owns.
 
@@ -88,9 +90,9 @@ A run summary's `status` is one of:
 | `cancelled` | The turn was aborted after admission. Its `cancellationReason` preserves the host-observed provenance without changing this terminal status. |
 | `interrupted` | The run never settled on its own — the process died mid-run, or a watchdog (e.g. the [cron run watchdog](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve)) aborted a wedged run. |
 
-A crashed process can leave the most recent incrementally checkpointed summary at `running`. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`) while preserving the checkpointed event trail. It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. In the [Phoenix export](/observability/phoenix-and-backfill/), `interrupted` maps to an ERROR span, alongside `failed` and `cancelled`.
+A crashed process can leave the most recent incrementally checkpointed summary at `running`. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`) while preserving the checkpointed event trail. It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. The local readers retain `interrupted` as a distinct terminal status alongside `failed` and `cancelled`.
 
-Reconciliation repairs status only and can report only data that reached a recorder write boundary. It can preserve the last completed checkpointed prefix; a death before the first incremental checkpoint or after a failed write can still reconcile as `process_death` with `eventCount: 0` even though events occurred. A death between the two file renames can also leave a newer events file beside the prior summary. The live broadcast may show connected TUI/web clients a newer best-effort tail, but it is not recovery for data absent from disk. A failed or signal-aborted run that unwinds through the harness can publish its bounded canonical continuity account; a hard process death cannot run that publisher, so its reconciled artifact/web projection does not imply any canonical message-history append.
+Reconciliation repairs status only and can report only data that reached a recorder write boundary. It can preserve the last completed checkpointed prefix; a death before the first incremental checkpoint or after a failed write can still reconcile as `process_death` with `eventCount: 0` even though events occurred. A death between the two file renames can also leave a newer events file beside the prior summary. The live broadcast may show connected operator clients a newer best-effort tail, but it is not recovery for data absent from disk. A failed or signal-aborted run that unwinds through the harness can publish its bounded canonical continuity account; a hard process death cannot run that publisher, so its reconciled artifact/web projection does not imply any canonical message-history append.
 
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `context_limit`, `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint. `context_limit` specifically means request input still exceeded the selected model's usable window after bridge recovery; unlike quota/output/max-turn `usage_limit`, it is eligible for configured route fallback.
 
@@ -104,7 +106,7 @@ mono-agent runs audit --artifacts /path/to/.mono-agent/artifacts --stale-after-m
 ```
 
 :::tip
-The artifacts directory is the on-disk record after a successful recorder boundary; it is not a crash-safe journal of in-flight events. Keep it out of version control (it grows per run) but back it up if you care about historical runs you might want to backfill or audit later.
+The artifacts directory is the on-disk record after a successful recorder boundary; it is not a crash-safe journal of in-flight events. Keep it out of version control (it grows per run) but back it up if you care about historical runs you may need to audit later.
 :::
 
 ## Agent-facing prior-run evidence (`RunHistory`)
@@ -247,7 +249,7 @@ not remove retained sidecar records.
 
 ## Artifact metrics
 
-`mono-agent runs report` (the default `runs` mode) aggregates recorded run summaries into operational numbers: status rates, failure-kind rates, duration percentiles, and total plus per-run cost. It is offline and read-only. It reads `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts. By default it reports agent runs only; pass `--include-memory` to include memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.
+`mono-agent runs report` (the default `runs` mode) aggregates recorded run summaries into operational numbers: status rates, failure-kind rates, duration percentiles, and total plus per-run cost. It is offline and read-only. It reads `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact a network service, reconcile stale runs, or rewrite artifacts. By default it reports agent runs only; pass `--include-memory` to include memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.
 
 ```bash
 mono-agent runs report --artifacts ./.mono-agent/artifacts
@@ -260,7 +262,7 @@ mono-agent runs report --include-memory --json
 | --- | --- |
 | `--artifacts <path>` | Read this artifact directory directly. Wins over config-based `artifacts.dir` resolution. |
 | `--config <path>` | Use a non-default config file when resolving `artifacts.dir`. |
-| `--env-file <path>` | Load env overrides before resolving `MONO_AGENT_ARTIFACT_DIR`. |
+| `--env-file <path>` | Load referenced credentials and adapter-owned settings. |
 | `--since <iso>` / `--until <iso>` | Include only summaries whose `startedAt` falls inside the ISO window. Summaries with missing or unparseable timestamps are excluded once a window is active. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. Channel grouping is derived from the `conversationId` prefix before `:` until summaries carry a first-class channel field. |
 | `--include-memory` | Include memory-maintenance summaries in addition to default agent runs. |
@@ -278,13 +280,13 @@ The event stream is annotated so you can separate model-reasoning time from time
 | `tool_timing` (`execution_ms`) | per tool call | How long each tool's execution took. |
 | `mcp_call_duration_ms` | per MCP tool result | Duration of the underlying MCP call, carried on the result. |
 
-Because these live in the JSONL, you get the attribution even with no exporter configured. When the Phoenix exporter is on, a tool's `tool_use` + `tool_timing` + `tool_result` events merge by `tool_use_id` into a single TOOL span — see [Phoenix export & backfill](/observability/phoenix-and-backfill/).
+Because these events live in JSONL, local audit and replay retain the attribution without a bundled exporter.
 
 ## Trace-source registry
 
 The host periodically writes a heartbeat manifest describing this agent into `traceability.registryDir`. `mono-agent status` reads that directory to list known trace sources and mark any whose last heartbeat is older than `staleAfterMs` as stale. This is how the CLI discovers running agents on the machine without a central service.
 
-When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent tui`/`status` run from anywhere on the machine still finds this agent. See [Terminal UI](/observability/tui/) for how discovery merges the two registries.
+When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent status`, the web console, and other maintained discovery clients can still find this agent from outside the project directory. A relative `registryDir` is resolved against the current directory, so `mono-agent status --config <path>` run from another directory also looks for the agent's manifest in the global registry. Only `status` reads the mirror; `stop`, `restart` and `start` use `registryDir`. Source ids are expected to be unique per machine: two agents with the same configured `sourceId` overwrite each other's mirror entry.
 
 ```json
 {
@@ -301,12 +303,12 @@ When `registryDir` is a config-local override (as `mono-agent init` scaffolds), 
 
 | Key | Default | Env var | Notes |
 | --- | --- | --- | --- |
-| `traceability.registryDir` | `./.mono-agent/trace-sources` | `MONO_AGENT_TRACE_REGISTRY_DIR` | Directory of heartbeat manifests. |
-| `traceability.sourceId` | `my-agent` | `MONO_AGENT_TRACE_SOURCE_ID` | Stable id for this agent; keys its manifest. |
-| `traceability.sourceLabel` | `My Agent` | `MONO_AGENT_TRACE_SOURCE_LABEL` | Human-friendly name shown by `status` (and used as the default Phoenix project name). |
-| `traceability.heartbeatMs` | `10000` | `MONO_AGENT_TRACE_HEARTBEAT_MS` | How often the manifest is refreshed. |
-| `traceability.staleAfterMs` | `30000` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | Age after which `status` marks a source stale. |
-| `traceability.globalDiscovery` | `true` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
+| `traceability.registryDir` | `./.mono-agent/trace-sources` | — | Directory of heartbeat manifests. |
+| `traceability.sourceId` | `my-agent` | — | Stable id for this agent; keys its manifest. |
+| `traceability.sourceLabel` | `My Agent` | — | Human-friendly name shown by local status and discovery surfaces. |
+| `traceability.heartbeatMs` | `10000` | — | How often the manifest is refreshed. |
+| `traceability.staleAfterMs` | `30000` | — | Age after which `status` marks a source stale. |
+| `traceability.globalDiscovery` | `true` | — | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
 
 ### Content-free memory health
 
@@ -318,32 +320,31 @@ not turn into a fast full memory audit. It publishes the same value to the prima
 enabled best-effort global mirror. Memory health is independent of process health: a source can be `running` while its
 memory is `degraded`, or have memory `in_progress` while durable work drains normally.
 
-The nested contract is discriminated by `backend`. Built-in `bujo` requires `mode`
-(`lite`, `journal`, or `bujo`), its core status, canonically ordered closed issues, and optional
-whitelisted counts (`pending`, `due`, `dead`, `outbox`, `temporary`, `memories`, `vectors`, and
-`missingVectors`). `supermemory` carries only `unknown`; `none` carries `not_configured` or
-`unknown`; neither remote/absent variant carries mode, issues, or counts. Registry readers normalize
-this as untrusted input: unknown fields are discarded, while a semantically contradictory newest
-snapshot becomes a timestamp-preserving `unknown` variant rather than disappearing and leaving an
-older green value authoritative. A duplicate local/global source keeps the independently freshest
-`memoryHealth.checkedAt` rather than coupling it to whichever process manifest won the ordinary
-source merge.
+The nested current contract is discriminated by `backend`. Local `bujo` requires
+`mode` (`lite`, `journal`, or `bujo`), its core status, canonically ordered closed
+issues, and optional whitelisted counts (`pending`, `due`, `dead`, `outbox`,
+`temporary`, `memories`, `vectors`, and `missingVectors`). `none` carries
+`not_configured` or `unknown` without mode, issues, or counts. Registry readers
+normalize this as untrusted input: unknown fields are discarded, while a
+semantically contradictory newest snapshot becomes a timestamp-preserving
+`none/unknown` variant rather than disappearing and leaving an older green value
+authoritative. A persisted legacy `supermemory/unknown` snapshot is likewise
+normalized to `none/unknown` while retaining its valid timestamp and source
+identity; a new strict report that uses the retired backend is malformed. A
+duplicate local/global source keeps the independently freshest
+`memoryHealth.checkedAt` rather than coupling it to whichever process manifest
+won the ordinary source merge.
 
 The snapshot is safe for discovery surfaces: it contains no paths, filenames, record/run ids,
 memory or model text, payloads, or raw provider/native errors. `none/not_configured`,
-`none/unknown`, and `supermemory/unknown` omit `mode`; the latter is unknown because a local trace registry cannot
-assert health of the remote index. For the exact strict CLI schema and exit contract, see
+and `none/unknown` omit `mode`. For the exact strict CLI schema and exit contract, see
 [Memory validation & CLI](/memory/validation-and-cli/#strict-provider-free-health-gate).
 
-Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
-
-:::note
-`sourceLabel` doubles as the default Phoenix project name when no `projectName` is set on the exporter, so pick a label that reads well in a trace UI as well as in the CLI.
-:::
+Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts.
 
 ## How `start` and `status` use this
 
-`mono-agent start` prints the active traceability source — Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts — and `mono-agent status` reads the registry to report each known source as live or stale. See the [CLI reference](/observability/cli-reference/) for the full command surface, and [Phoenix export & backfill](/observability/phoenix-and-backfill/) for sending these same events to a trace viewer.
+`mono-agent start` prints the active traceability source and local artifact directory, and `mono-agent status` reads the registry to report each known source as live or stale. See the [CLI reference](/observability/cli-reference/) for the full command surface.
 
 The launchd fleet green check does not trust the interactive shell runtime. Generic mode discovers
 every matching plist present; a host gate can pass `--expect-labels <csv>` to require an exact
@@ -366,7 +367,7 @@ environment for the Node/ABI, build-marker, `validate --json`, `memory audit --s
 structured arguments, working directory, origin plist, and PID. The running PID's actual Node executable
 device/inode and cwd must also match.
 On supported POSIX/macOS hosts, the root build holds an exclusive lock from before clearing the old
-marker through the package build, required CLI/TUI executable-mode finalization, output sync,
+marker through the package build, required CLI executable-mode finalization, output sync,
 deterministic output-digest calculation, installed
 root/workspace dependency-tree calculation, and atomic owner-only marker publication. The dependency
 digest covers file bytes, modes, and canonical symlink topology without following links, so rebuilding a

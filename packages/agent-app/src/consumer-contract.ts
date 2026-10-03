@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { readMonoAgentConfigJson } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
+import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 import type { RunSummaryStatus } from "@mono-agent/observability";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
@@ -199,7 +200,7 @@ async function seedPrivateConsumerMemoryGeneration(
   config: Awaited<ReturnType<typeof loadAppCoreConfig>>,
 ): Promise<void> {
   const memory = config.memory;
-  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory") return;
+  if (memory === undefined) return;
 
   const privateRoot = resolve(privateFixtureRoot);
   const memoryRoot = resolve(memory.path);
@@ -223,7 +224,7 @@ async function seedPrivateConsumerMemoryGeneration(
     root: memoryRoot,
     tier: memory.mode,
     embeddings: {
-      id: `${embeddings.provider}:${embeddings.model}`,
+      id: configuredEmbeddingIdentity(embeddings),
       embed: async (texts) => texts.map(() => {
         const vector = new Array<number>(dimension).fill(0);
         vector[0] = 1;
@@ -261,9 +262,6 @@ function consumerContractIssues(fixture: ConsumerFixture): readonly ConsumerCont
   }
   if (typeof fixture.sourceJson.artifacts?.dir !== "string" || fixture.sourceJson.artifacts.dir.trim().length === 0) {
     issues.push(issue("artifacts.dir", "Source fixture must explicitly include artifacts.dir."));
-  }
-  if (fixture.config.observability?.exporters[0]?.type !== "phoenix") {
-    issues.push(issue("observability.exporters", "Expected first observability exporter type to be phoenix."));
   }
   issues.push(...retiredMcpMemorySurfaceIssues(fixture));
 

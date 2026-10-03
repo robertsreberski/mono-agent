@@ -1,10 +1,11 @@
+import { WorkerActivityTracker } from "../worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { processJobPublicError, type ProcessJobProjection } from "@mono-agent/agent-contracts";
+import { parseProcessJobProjection, processJobPublicError, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type {
   ProcessJobProcessHandle,
   ProcessJobProcessResult,
@@ -32,6 +33,7 @@ import {
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_STORE_MAX_RECORD_ENTRIES,
   PROCESS_JOB_TRANSACTION_FILE,
+  projectProcessJob,
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
   type ProcessJobStore,
@@ -66,7 +68,22 @@ afterEach(async () => {
 });
 
 describe("held subagent obligations", () => {
-  it.each(["ownership", "publication", "legacy"])("pins terminal %s through retention, reopen, admission and projection", async (mode) => {
+  it("reopens optional child tokens from a durable progress record without producing them", async () => {
+    const cwd = await mkdtemp(join(process.cwd(), ".job-usage-reader-")); ownershipRoots.push(cwd);
+    const stateDir = join(cwd, "jobs");
+    const store = await openProcessJobStore(cwd, stateDir);
+    const jobId = randomUUID();
+    const record = durableRecord(jobId, { tool: "Agent", kind: "internal", instanceId: "child", childStillBusy: false,
+      pid: null, pgid: null, state: "succeeded", completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0, durationMs: 2_000 });
+    const usage = { input: 8, output: 3, cacheRead: 2, cacheWrite: 1 };
+    delete record.processIncarnation;
+    record.subagentProgress = { revision: 1, profile: "helper", toolCalls: 0, failedCalls: 0, recent: [], usage };
+    await store.mutate((draft) => { draft.set(jobId, record); });
+    await store.ensureArtifacts(jobId);
+    const reopened = await openProcessJobStore(cwd, stateDir);
+    expect((await reopened.get(jobId))?.subagentProgress?.usage).toEqual(usage);
+  });
+  it.each(["ownership", "publication", "legacy"])("pins terminal %s through retention, reopen, admission and projection (synthetic settings)", async (mode) => {
     const cwd = await mkdtemp(join(process.cwd(), ".job-ownership-")); ownershipRoots.push(cwd);
     const fixture = { cwd, settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: join(cwd, "jobs"),
       maxConcurrent: 1, maxQueued: 0, maxActivePerConversation: 1,
@@ -96,7 +113,7 @@ describe("held subagent obligations", () => {
     expect(await service.checkSubagentOwnerIndex!(ORIGIN.conversationId, [{ instanceId: "child", incarnation: instanceIncarnation, jobId }])).toBe("clear");
     const launch = vi.fn(() => handleOf(deferred<ProcessJobProcessResult>()));
     await expect(service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch }))
-      .rejects.toMatchObject({ code: "process_job_conversation_capacity" });
+      .rejects.toMatchObject({ code: "process_job_queue_full" });
     expect(launch).not.toHaveBeenCalled();
     expect(wake).not.toHaveBeenCalled();
     await service.stop();
@@ -110,14 +127,18 @@ describe("held subagent obligations", () => {
 });
 
 describe("process job service", () => {
-  it("settles an exact silent wake as suppressed even when the adapter reports no answer", async () => {
+  it.each([
+    { text: "NOTHING_TO_REPORT" },
+    { text: "", metadata: { turnDisposition: "silent" as const } },
+  ])("settles an exact silent wake as suppressed even when the adapter reports no answer: %j", async (answer) => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();
-    const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "NOTHING_TO_REPORT" }) });
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => answer });
     const wake = vi.fn(async (input: ProcessJobWakeInput) => await runWithProcessJobWakeContext(
       { jobId: input.projection.jobId, chainDepth: input.chainDepth }, async () => {
         expect(await responder.respond({ conversationId: ORIGIN.conversationId, text: input.prompt,
-          abortSignal: new AbortController().signal, metadata: {} }, {} as never)).toEqual({ text: "" });
+          abortSignal: new AbortController().signal, metadata: {} }, {} as never))
+          .toEqual({ ...answer, text: "" });
         return { delivered: false as const, code: "agent_produced_no_answer", retryable: false };
       }, input.deliveryKey));
     const service = await startService(fixture, { wake });
@@ -144,6 +165,31 @@ describe("process job service", () => {
     await restarted.activateWakes();
     expect(await restarted.get(started.jobId)).toMatchObject({ state: "succeeded", wake: { state: "suppressed", attempts: 0 } });
     expect(wake).not.toHaveBeenCalled();
+  });
+
+  it.each(["slack", "web"] as const)("records a pre-acceptance web refusal for %s as failed rather than unknown without replay", async (channel) => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+      if (channel === "web") expect(input.wakeRecovery?.version).toBe(1);
+      return { delivered: false as const, code: "process_job_wake_failed" as const,
+        retryable: false, reason: "The web console rejected the process-job notification before accepting its wake." };
+    });
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    const origin = channel === "web" ? { ...ORIGIN, channel, conversationId: "web:fictional#2026-08-14",
+      baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" } : ORIGIN;
+    const started = await service.controller(origin, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "failed");
+    expect(await service.get(started.jobId)).toMatchObject({ wake: { state: "failed", attempts: 1 },
+      lastError: processJobPublicError("process_job_wake_failed") });
+    await expect((await openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).get(started.jobId))
+      .resolves.toMatchObject({ wake: { retrySafe: false } });
+    await service.stop();
+    const restarted = await startService(fixture, { wake });
+    await restarted.activateWakes();
+    expect(wake).toHaveBeenCalledOnce();
   });
 
   it("retains a delayed ambiguous wake as unknown and never replays it after restart", async () => {
@@ -604,7 +650,7 @@ describe("process job service", () => {
     expect(second.state).toBe("queued");
 
     await expect(service.controller(ORIGIN, 0).start(requestOf(handleOf(deferred<ProcessJobProcessResult>()))))
-      .rejects.toMatchObject({ code: "process_job_conversation_capacity" });
+      .rejects.toMatchObject({ code: "process_job_queue_full", occupancy: 1, limit: 1 });
     await expect(service.controller({
       ...ORIGIN,
       conversationId: "slack:C2:2.2",
@@ -624,6 +670,58 @@ describe("process job service", () => {
       timestamps: { admittedAt: "2026-08-14T10:00:00.000Z", startedAt: null, runtimeDeadlineAt: null },
     });
     expect((await service.get(first.jobId))?.timestamps.runtimeDeadlineAt).toBe("2026-08-14T10:30:01.000Z");
+  });
+
+  it("queues conversation-limited work, skips blocked heads, and starts oldest eligible work", async () => {
+    const fixture = await createFixture({ maxConcurrent: 3, maxActivePerConversation: 1, maxQueued: 3 });
+    const service = await startService(fixture);
+    const firstDone = deferred<ProcessJobProcessResult>();
+    const first = await service.controller(ORIGIN, 0).start(requestOf(handleOf(firstDone)));
+    const secondDone = deferred<ProcessJobProcessResult>();
+    const secondLaunch = vi.fn(() => handleOf(secondDone));
+    const second = await service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: secondLaunch });
+    const thirdDone = deferred<ProcessJobProcessResult>();
+    const thirdLaunch = vi.fn(() => handleOf(thirdDone));
+    const third = await service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: thirdLaunch });
+    expect([second.state, third.state]).toEqual(["queued", "queued"]);
+    expect([second.queuePosition, third.queuePosition]).toEqual([1, 2]);
+    expect(secondLaunch).not.toHaveBeenCalled();
+    const other = { ...ORIGIN, conversationId: "slack:C2:1.1#2026-08-14", baseConversationId: "slack:C2:1.1",
+      replyToConversationId: "slack:C2:1.1", normalizedReplyTarget: "slack:C2:1.1" };
+    const otherDone = deferred<ProcessJobProcessResult>();
+    expect((await service.controller(other, 0).start(requestOf(handleOf(otherDone)))).state).toBe("running");
+    expect(await service.capacity(ORIGIN.normalizedReplyTarget)).toMatchObject({
+      perConversation: { running: 1, queued: 2, availableRunningSlots: 0 }, global: { running: 2, queued: 2 },
+    });
+    firstDone.resolve(processResult());
+    await waitFor(async () => (await service.get(second.jobId))?.state === "running");
+    expect(secondLaunch).toHaveBeenCalledOnce();
+    expect(thirdLaunch).not.toHaveBeenCalled();
+    await service.cancel(second.jobId);
+    secondDone.resolve(processResult());
+    await waitFor(async () => (await service.get(third.jobId))?.state === "running");
+    expect(thirdLaunch).toHaveBeenCalledOnce();
+    await service.cancel(third.jobId);
+    thirdDone.resolve(processResult());
+    otherDone.resolve(processResult());
+    expect(first.state).toBe("running");
+  });
+
+  it("permits nested descendants to use a global slot without waiting on their running ancestor", async () => {
+    const fixture = await createFixture({ maxConcurrent: 2, maxActivePerConversation: 1, maxQueued: 2 });
+    const service = await startService(fixture);
+    const parentDone = deferred<ProcessJobProcessResult>();
+    await service.controller(ORIGIN, 0).start(requestOf(handleOf(parentDone)));
+    const childDone = deferred<ProcessJobProcessResult>();
+    expect((await service.controller(ORIGIN, 1).start(requestOf(handleOf(childDone)))).state).toBe("running");
+    const peer = await service.controller(ORIGIN, 0).start(requestOf(handleOf(deferred<ProcessJobProcessResult>())));
+    expect(peer.state).toBe("queued");
+    const nested = await service.controller(ORIGIN, 2).start(requestOf(handleOf(deferred<ProcessJobProcessResult>())));
+    expect(nested.state).toBe("queued"); // global bound still applies
+    await service.cancel(peer.jobId);
+    await service.cancel(nested.jobId);
+    parentDone.resolve(processResult());
+    childDone.resolve(processResult());
   });
 
   it("tracks only the newest queue timer when overlapping arms resolve out of order", async () => {
@@ -2648,7 +2746,7 @@ describe("process job service", () => {
       },
     };
     const signalProcess = vi.fn();
-    const service = await startService(fixture, {
+    await startService(fixture, {
       store,
       sameIncarnation: async () => true,
       signalProcess,
@@ -3230,6 +3328,28 @@ describe("process job store", () => {
     expect(await readFile(target, "utf8")).toBe("must stay untouched\n");
   });
 
+  it("loads and projects a stored internal job that still carries the legacy AgentSend tool name", async () => {
+    // `AgentSend` was renamed to `AgentManage` with no alias. Records written
+    // before the rename must still validate on reopen and project unchanged;
+    // nothing emits the old name for a new job.
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a";
+    await store.ensureArtifacts(jobId);
+    const record = durableRecord(jobId, {
+      tool: "AgentSend", kind: "internal", instanceId: "critic-1", childStillBusy: false,
+      pid: null, pgid: null, state: "succeeded", completedAt: "2026-08-14T10:00:03.000Z",
+    });
+    delete (record as { processIncarnation?: unknown }).processIncarnation;
+    await store.mutate((records) => records.set(jobId, record));
+
+    const reopened = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const loaded = await reopened.get(jobId);
+    expect(loaded?.tool).toBe("AgentSend");
+    expect(parseProcessJobProjection(projectProcessJob(loaded!)))
+      .toMatchObject({ tool: "AgentSend", kind: "internal", instanceId: "critic-1", childStillBusy: false });
+  });
+
   it("fails closed when a retained record points at a missing artifact", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -3509,6 +3629,184 @@ function resetStoreWorkCounter(counter: ProcessJobStoreWorkCounter): void {
   Object.assign(counter, emptyStoreWorkCounter());
 }
 
+it("projects PeerAgent at start, during progress, and at completion without subagent telemetry", async () => {
+  const fixture = await createFixture();
+  const gate = deferred<void>();
+  const surfaceUpdate = vi.fn(async (projection: ProcessJobProjection) => { parseProcessJobProjection(projection); });
+  const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+    parseProcessJobProjection(input.projection);
+    return { delivered: true as const };
+  });
+  const service = await startService(fixture, { surfaceUpdate, wake });
+  await service.activateWakes();
+  const started = await service.internalController(ORIGIN, 0).startInternal({
+    kind: "internal", tool: "PeerAgent", jobId: randomUUID(), instanceId: "ledger",
+    description: "Peer ledger thread planning", wakeOnCompletion: true,
+    run: async (_signal, writeOutput, reportProgress) => {
+      reportProgress({ type: "started", profile: "Subagent" });
+      reportProgress({ type: "tool_started", id: "call-1", toolName: "ExampleTool" });
+      writeOutput("Example peer answer");
+      await gate.promise;
+      return { status: "ok", output: "Example peer answer", answer: "Example peer answer",
+        question: { question: "This is not a subagent question." } };
+    },
+    cleanup: async () => {},
+  });
+  const assertPeer = (projection: ProcessJobProjection | undefined) => {
+    expect(projection).toBeDefined();
+    parseProcessJobProjection(projection);
+    expect(projection).not.toHaveProperty("subagentProgress");
+    expect(projection).not.toHaveProperty("subagentQuestion");
+  };
+  assertPeer(await service.get(started.jobId));
+  await waitFor(() => surfaceUpdate.mock.calls.length > 0);
+  for (const [projection] of surfaceUpdate.mock.calls) assertPeer(projection);
+  await new Promise((resolve) => setTimeout(resolve, 300)); // past the progress persist interval
+  assertPeer(await service.get(started.jobId));
+  const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+  expect((await store.get(started.jobId))?.subagentProgress).toBeUndefined();
+  gate.resolve();
+  await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+  assertPeer(await service.get(started.jobId));
+  expect((await service.get(started.jobId))?.output.preview).toContain("Example peer answer");
+  expect(wake.mock.calls[0]?.[0].prompt).toContain("Example peer answer");
+  for (const [projection] of surfaceUpdate.mock.calls) assertPeer(projection);
+  expect((await store.get(started.jobId))?.subagentProgress).toBeUndefined();
+});
+
+it("loads legacy PeerAgent telemetry but omits it from every projection", async () => {
+  const fixture = await createFixture();
+  const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+  const jobId = randomUUID();
+  const record = durableRecord(jobId, { tool: "PeerAgent", kind: "internal", instanceId: "ledger",
+    pid: null, pgid: null, state: "succeeded", completedAt: "2026-08-14T10:00:03.000Z",
+    exitCode: 0, durationMs: 2_000, preview: "Example peer answer",
+    wake: { state: "delivered", attempts: 1, deliveryKey: `process-job:${jobId}`,
+      lastAttemptAt: "2026-08-14T10:00:04.000Z" },
+    subagentProgress: { revision: 1, profile: "Subagent", toolCalls: 0, failedCalls: 0,
+      recent: [], answerHead: "Example peer answer" },
+    subagentQuestion: { question: "Legacy question" },
+  });
+  delete record.processIncarnation;
+  record.childStillBusy = false;
+  await store.mutate((draft) => { draft.set(jobId, record); });
+  await store.ensureArtifacts(jobId);
+  await expect((await openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).get(jobId)).resolves.toMatchObject({
+    subagentProgress: { answerHead: "Example peer answer" },
+  });
+  parseProcessJobProjection(projectProcessJob(record));
+  const service = await startService(fixture);
+  const projection = await service.get(jobId);
+  parseProcessJobProjection(projection);
+  expect(projection).not.toHaveProperty("subagentProgress");
+  expect(projection).not.toHaveProperty("subagentQuestion");
+  expect(projection?.output.preview).toBe("Example peer answer");
+});
+
+it.each(["Agent", "AgentManage"] as const)("keeps %s subagent progress during and after execution", async (tool) => {
+  const fixture = await createFixture();
+  const gate = deferred<void>();
+  const service = await startService(fixture);
+  const started = await service.internalController(ORIGIN, 0).startInternal({ kind: "internal",
+    tool, jobId: randomUUID(), instanceId: "helper", cleanup: async () => {},
+    run: async (_signal, _writeOutput, reportProgress) => {
+      reportProgress({ type: "started", profile: "Subagent" });
+      await gate.promise;
+      return { status: "ok", output: "Example helper answer", answer: "Example helper answer" };
+    },
+  });
+  await waitFor(async () => {
+    const projection = await service.get(started.jobId);
+    return projection?.kind === "internal" && projection.subagentProgress?.profile === "Subagent";
+  });
+  parseProcessJobProjection(await service.get(started.jobId));
+  gate.resolve();
+  await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+  const terminal = await service.get(started.jobId);
+  parseProcessJobProjection(terminal);
+  expect(terminal?.kind).toBe("internal");
+  if (terminal?.kind !== "internal") throw new Error("Expected an internal process job.");
+  expect(terminal.subagentProgress).toMatchObject({ profile: "Subagent", answerHead: "Example helper answer" });
+});
+
+it("delivers a bounded PeerAgent completion to the exact caller without subagent ownership", async () => {
+  const fixture = await createFixture();
+  const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+  const service = await startService(fixture, { wake });
+  await service.activateWakes();
+  const started = await service.internalController(ORIGIN, 0).startInternal({
+    kind: "internal", tool: "PeerAgent", jobId: "77777777-7777-4777-8777-777777777777",
+    instanceId: "finance", description: "Peer finance thread portfolio", wakeOnCompletion: true,
+    run: async () => ({ status: "ok", output: "[Untrusted peer answer] done", answer: "[Untrusted peer answer] done" }),
+    cleanup: async () => {},
+  });
+  await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+  const record = await service.get(started.jobId);
+  expect(record).toMatchObject({ tool: "PeerAgent", kind: "internal", state: "succeeded" });
+  expect(record).not.toHaveProperty("subagentOwnership");
+  expect(record?.output.preview).toContain("Untrusted peer answer");
+  await waitFor(() => wake.mock.calls.length === 1);
+  expect(wake).toHaveBeenCalledOnce();
+  expect(wake.mock.calls[0]?.[0]).toMatchObject({
+    conversationId: ORIGIN.replyToConversationId,
+    projection: { tool: "PeerAgent", kind: "internal" },
+    prompt: expect.stringContaining("<untrusted_process_job_result>"),
+  });
+});
+
+it("publishes a typed untrusted peer question and wakes the exact caller for answer", async () => {
+  const fixture = await createFixture();
+  const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+  const surfaceUpdate = vi.fn(async (_projection: ProcessJobProjection, _options?: { readonly retirementOnly?: boolean }) => {});
+  const service = await startService(fixture, { wake, surfaceUpdate });
+  await service.activateWakes();
+  const peerQuestion = { state: "awaiting_answer" as const, peer: "finance", thread: "portfolio",
+    questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+    requestedSchema: { type: "object", properties: { question_1: { type: "string" } } },
+    expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const started = await service.internalController(ORIGIN, 0).startInternal({ kind: "internal",
+    tool: "PeerAgent", jobId: "88888888-8888-4888-8888-888888888888", instanceId: "finance",
+    description: "Peer finance thread portfolio", wakeOnCompletion: true,
+    run: async () => ({ status: "awaiting_reply", output: "Peer question awaiting caller answer (untrusted).", peerQuestion }),
+    cleanup: async () => {},
+  });
+  await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+  expect(await service.get(started.jobId)).toMatchObject({ tool: "PeerAgent", kind: "internal",
+    peerQuestion, state: "succeeded" });
+  expect(wake.mock.calls[0]?.[0]).toMatchObject({ conversationId: ORIGIN.replyToConversationId,
+    prompt: expect.stringContaining("PeerAgent answer with this exact peer/thread/questionId"),
+    projection: { peerQuestion } });
+  expect(wake.mock.calls[0]?.[0].prompt).toContain("<untrusted_process_job_result>");
+  await service.settlePeerQuestion?.(started.jobId, peerQuestion.questionId, "expired");
+  expect(await service.get(started.jobId)).toMatchObject({ peerQuestion: { state: "expired" } });
+  expect(wake).toHaveBeenCalledOnce();
+  // Only the retirement surface update carries the explicit retirement-only marker.
+  await waitFor(() => surfaceUpdate.mock.calls.some(([projection, options]) => options?.retirementOnly === true
+    && projection.kind === "internal" && projection.peerQuestion?.state === "expired"));
+  expect(surfaceUpdate.mock.calls.filter(([, options]) => options?.retirementOnly === true)).toHaveLength(1);
+});
+
+it("applies a peer question retirement that raced ahead of the question's completion persist", async () => {
+  const fixture = await createFixture();
+  const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+  const service = await startService(fixture, { wake });
+  await service.activateWakes();
+  const peerQuestion = { state: "awaiting_answer" as const, peer: "finance", thread: "portfolio",
+    questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+    requestedSchema: { type: "object", properties: {} }, expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const gate = deferred<void>();
+  const started = await service.internalController(ORIGIN, 0).startInternal({ kind: "internal",
+    tool: "PeerAgent", jobId: "99999999-9999-4999-8999-999999999999", instanceId: "finance",
+    wakeOnCompletion: true, cleanup: async () => {},
+    run: async () => { await gate.promise; return { status: "awaiting_reply", output: "question", peerQuestion }; },
+  });
+  await service.settlePeerQuestion?.(started.jobId, peerQuestion.questionId, "interrupted");
+  gate.resolve();
+  await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+  expect(await service.get(started.jobId)).toMatchObject({ peerQuestion: { state: "interrupted" } });
+  expect(wake.mock.calls[0]?.[0].prompt).not.toContain("PeerAgent answer with this exact");
+});
+
 it("external and internal jobs share the same durable admission and queue", async () => {
   const fixture = await createFixture({ maxConcurrent: 1, maxQueued: 1 });
   const completion = deferred<ProcessJobProcessResult>();
@@ -3521,4 +3819,318 @@ it("external and internal jobs share the same durable admission and queue", asyn
   completion.resolve(processResult());
   await waitFor(async () => (await service.get(internal.jobId))?.state === "succeeded");
   expect(internalRun).toHaveBeenCalledOnce(); expect((await service.get(external.jobId))?.state).toBe("succeeded");
+});
+
+describe("accepted restart drain", () => {
+  it("lets a child settle inside the remaining shutdown budget without cancelling it", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handle));
+    const beforeStop = performance.now();
+    const stopping = service.stop(beforeStop + 3_500);
+    setTimeout(() => completion.resolve(processResult()), 30);
+    await stopping;
+    expect(performance.now() - beforeStop).toBeLessThan(3_500);
+    expect(handle.cancel).not.toHaveBeenCalled();
+    expect(await service.get(started.jobId)).toMatchObject({ state: "succeeded", wake: { state: "pending" } });
+    // Shutdown closes wake delivery; the next owner delivers the ordinary
+    // terminal wake, not a fabricated interruption notification.
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake });
+    await next.activateWakes();
+    await waitFor(async () => (await next.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake.mock.calls[0]![0].projection.state).toBe("succeeded");
+  });
+
+  it("cancels an overdue child after the short drain, within the shared window", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    handle.cancel.mockImplementation(() => completion.resolve(processResult({ aborted: true, code: null })));
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handle));
+    const beforeStop = performance.now();
+    await service.stop(beforeStop + 3_100);
+    const elapsed = performance.now() - beforeStop;
+    expect(elapsed).toBeGreaterThanOrEqual(75);
+    expect(elapsed).toBeLessThan(3_100);
+    expect(handle.cancel).toHaveBeenCalledOnce();
+    expect((await service.get(started.jobId))?.state).toBe("interrupted");
+  });
+});
+
+it("counts starting/running executions synchronously, including attestation, and releases on settlement/spawn failure", async () => {
+  const fixture = await createFixture(); const changes: number[] = [];
+  const attestation = deferred<void>(); const entered = deferred<void>();
+  const service = await startService(fixture, { onActivityChange: (count) => changes.push(count),
+    readIncarnation: async () => { entered.resolve(); await attestation.promise; return INCARNATION; } });
+  const completion = deferred<ProcessJobProcessResult>();
+  const starting = service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+  await entered.promise; expect(service.activeExecutionCount()).toBe(1); expect(changes.at(-1)).toBe(1);
+  attestation.resolve(); const started = await starting;
+  expect(service.activeExecutionCount()).toBe(1);
+  completion.resolve(processResult({ aborted: true, signal: "SIGTERM" }));
+  await waitFor(async () => service.activeExecutionCount() === 0);
+  expect(changes.at(-1)).toBe(0);
+  await waitFor(async () => (await service.get(started.jobId))?.state === "cancelled");
+  await expect(service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: () => { throw new Error("spawn failed"); } })).rejects.toMatchObject({ code: "process_job_spawn_failed" });
+  expect(service.activeExecutionCount()).toBe(0); expect(changes.at(-1)).toBe(0);
+});
+
+it("late settlement from a stopped service cannot erase a replacement service's executing jobs", async () => {
+  const tracker = new WorkerActivityTracker();
+  const oldFinish = deferred<void>(); const newFinish = deferred<ProcessJobProcessResult>();
+  const oldService = await startService(await createFixture(), { onActivityChange: tracker.jobExecutionObserver() });
+  const newService = await startService(await createFixture(), { onActivityChange: tracker.jobExecutionObserver() });
+  try {
+    await oldService.internalController(ORIGIN, 0).startInternal({
+      kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "old-fictional-child", timeoutMs: 60_000,
+      run: async () => { await oldFinish.promise; return { status: "ok", output: "", childStillBusy: false }; },
+      cleanup: async () => {}, wakeOnCompletion: false,
+    });
+    expect(tracker.snapshot().jobs).toBe(1);
+    // Reporting grace releases service ownership, but the actual old invocation
+    // is deliberately still executing as the replacement begins new work.
+    await oldService.stop();
+    expect(oldService.activeExecutionCount()).toBe(1);
+    expect(tracker.snapshot().jobs).toBe(1);
+    await newService.controller(ORIGIN, 0).start(requestOf(handleOf(newFinish)));
+    expect(tracker.snapshot().jobs).toBe(2);
+    oldFinish.resolve();
+    await waitFor(async () => oldService.activeExecutionCount() === 0);
+    expect(newService.activeExecutionCount()).toBe(1);
+    expect(tracker.snapshot().jobs).toBe(1); expect(tracker.busy()).toBe(true);
+    newFinish.resolve(processResult());
+    await waitFor(async () => newService.activeExecutionCount() === 0);
+    expect(tracker.snapshot().jobs).toBe(0); expect(tracker.busy()).toBe(false);
+  } finally { oldFinish.resolve(); newFinish.resolve(processResult()); }
+}, 30_000);
+
+it.each(["delivered", "failed"] as const)("keeps a completed job busy across pre-wake work and %s receipt settlement", async (outcome) => {
+  const tracker = new WorkerActivityTracker();
+  const surfaceBlocked = deferred<void>(); const releaseSurface = deferred<void>();
+  const wakeEntered = deferred<void>(); const releaseWake = deferred<void>();
+  const completion = deferred<ProcessJobProcessResult>();
+  const service = await startService(await createFixture(), {
+    onActivityChange: tracker.jobExecutionObserver(),
+    surfaceUpdate: async (projection) => {
+      if (projection.wake.attempts === 1 && projection.wake.state === "pending") {
+        surfaceBlocked.resolve(); await releaseSurface.promise;
+      }
+    },
+    wake: async () => {
+      wakeEntered.resolve(); await releaseWake.promise;
+      if (outcome === "failed") throw new Error("fictional wake failure");
+      return { delivered: true as const };
+    },
+  });
+  try {
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await surfaceBlocked.promise;
+    expect((await service.get(started.jobId))?.state).toBe("succeeded");
+    expect(service.activeExecutionCount()).toBe(1); expect(tracker.busy()).toBe(true);
+    releaseSurface.resolve(); await wakeEntered.promise;
+    expect(service.activeExecutionCount()).toBe(1); expect(tracker.busy()).toBe(true);
+    releaseWake.resolve();
+    await waitFor(async () => service.activeExecutionCount() === 0);
+    expect((await service.get(started.jobId))?.wake.state).toBe(outcome === "delivered" ? "delivered" : "unknown");
+    expect(tracker.busy()).toBe(false);
+  } finally { releaseSurface.resolve(); releaseWake.resolve(); completion.resolve(processResult()); }
+});
+
+it("counts admitted queued jobs and never advertises idle while handing a slot to them", async () => {
+  const first = deferred<ProcessJobProcessResult>(); const second = deferred<ProcessJobProcessResult>();
+  const observed: number[] = [];
+  const service = await startService(await createFixture({ maxConcurrent: 1, maxActivePerConversation: 2, maxQueued: 1 }),
+    { onActivityChange: (count) => observed.push(count) });
+  try {
+    await service.controller(ORIGIN, 0).start(requestOf(handleOf(first)));
+    const queued = await service.controller(ORIGIN, 0).start(requestOf(handleOf(second)));
+    expect(queued.state).toBe("queued"); expect(service.activeExecutionCount()).toBe(2);
+    first.resolve(processResult());
+    await waitFor(async () => (await service.get(queued.jobId))?.state === "running");
+    expect(service.activeExecutionCount()).toBe(1);
+    expect(observed).not.toContain(0);
+    second.resolve(processResult()); await waitFor(async () => service.activeExecutionCount() === 0);
+  } finally { first.resolve(processResult()); second.resolve(processResult()); }
+});
+
+describe("private web wake admission fences", () => {
+  it.each(["not_crossed", "crossed", "legacy"] as const)("recovers only durable %s evidence across reopen", async (mode) => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const jobId = randomUUID(); const token = randomUUID(); const boundary = randomUUID();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const record = durableRecord(jobId, { state: "succeeded", pid: null, pgid: null, stdoutRef: null, stderrRef: null,
+      completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0,
+      origin: { ...ORIGIN, channel: "web", conversationId: "web:fictional#2026-08-14", baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" },
+      wake: { state: "pending", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:03.000Z", retrySafe: false,
+        ...(mode === "legacy" ? {} : { admission: { version: 1, token, state: mode, ...(mode === "crossed" ? { boundary } : {}) } }) } });
+    delete record.processIncarnation;
+    await store.mutate((records) => records.set(jobId, record));
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+      expect(input.wakeRecovery?.notCrossed).toEqual([token]);
+      expect(input.wakeRecovery?.token).not.toBe(token);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(false);
+      expect(await service.wakeAdmission!.claim("process-job:missing", "", boundary)).toBe(false);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, boundary)).toBe(true);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, randomUUID())).toBe(false);
+      return { delivered: true as const };
+    });
+    let service = await startService(fixture, { wake });
+    // Proof must survive another restart before ingress becomes available.
+    await service.stop();
+    service = await startService(fixture, { wake });
+    await service.activateWakes();
+    await waitFor(async () => (await service.get(jobId))?.wake.state === (mode === "not_crossed" ? "delivered" : "unknown"));
+    expect(wake).toHaveBeenCalledTimes(mode === "not_crossed" ? 1 : 0);
+    expect(JSON.stringify(await service.get(jobId))).not.toContain(token);
+    await service.stop();
+    const nextWake = vi.fn(async () => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake: nextWake }); await next.activateWakes();
+    expect(nextWake).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("persists exact safe refusal=%s before a lost receipt and never trusts transport errors", async (safe) => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const service = await startService(fixture, { wake: async (input) => {
+      const token = input.wakeRecovery!.token; const boundary = randomUUID();
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(true);
+      expect(await service.wakeAdmission!.release(input.deliveryKey, token, randomUUID())).toBe(false);
+      if (safe) expect(await service.wakeAdmission!.release(input.deliveryKey, token, boundary)).toBe(true);
+      return { delivered: false, code: "destination_channel_unavailable", retryable: !safe, ambiguous: safe };
+    } });
+    await service.activateWakes();
+    const done = deferred<ProcessJobProcessResult>();
+    const origin = { ...ORIGIN, channel: "web" as const, conversationId: "web:fictional#2026-08-14", baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" };
+    const started = await service.controller(origin, 0).start(requestOf(handleOf(done)));
+    done.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+    await service.stop();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake }); await next.activateWakes();
+    if (safe) await waitFor(async () => (await next.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledTimes(safe ? 1 : 0);
+  });
+});
+
+
+describe("crossed web wake uncertainty remains non-replayable", () => {
+  it.each(["possibly_applied_steer", "lost_admission_response", "socket_loss", "timeout", "release_write_failure"] as const)(
+    "never retries %s across restart even with a retryable transport receipt", async (failure) => {
+      const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+      const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+      const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+        const token = input.wakeRecovery!.token; const boundary = randomUUID();
+        expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(true);
+        if (failure === "release_write_failure") {
+          const write = vi.spyOn(store, "mutate").mockRejectedValueOnce(new Error("fictional write failure"));
+          await expect(service.wakeAdmission!.release(input.deliveryKey, token, boundary)).rejects.toThrow();
+          write.mockRestore();
+        }
+        return { delivered: false as const, code: "agent_connection_lost", retryable: true, ambiguous: false };
+      });
+      const service = await startService(fixture, { store, wake }); await service.activateWakes();
+      const done = deferred<ProcessJobProcessResult>();
+      const origin = { ...ORIGIN, channel: "web" as const, conversationId: "web:fictional#2026-08-14", baseConversationId: "web:fictional",
+        replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" };
+      const started = await service.controller(origin, 0).start(requestOf(handleOf(done))); done.resolve(processResult());
+      await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+      expect(wake).toHaveBeenCalledOnce(); await service.stop();
+      const nextWake = vi.fn(async () => ({ delivered: true as const }));
+      const next = await startService(fixture, { wake: nextWake }); await next.activateWakes();
+      expect((await next.get(started.jobId))?.wake.state).toBe("unknown");
+      expect(nextWake).not.toHaveBeenCalled();
+    },
+  );
+});
+
+
+describe("wake fence review regressions", () => {
+  const webOrigin = { ...ORIGIN, channel: "web" as const, conversationId: "web:fictional#2026-08-14",
+    baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" };
+
+  it("allows one token-less legacy steer-refused follow-up, then suppresses all replay", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+      const steer = randomUUID(); const followUp = randomUUID();
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", steer)).toBe(true);
+      expect((await store.get(input.projection.jobId))?.wake.admission).toMatchObject({ state: "crossed", legacy: true });
+      expect(await service.wakeAdmission!.release(input.deliveryKey, "", randomUUID())).toBe(false);
+      expect(await service.wakeAdmission!.release(input.deliveryKey, "", steer)).toBe(true);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, followUp)).toBe(false);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", followUp)).toBe(true);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", randomUUID())).toBe(false);
+      return { delivered: true as const };
+    });
+    const service = await startService(fixture, { store, wake }); await service.activateWakes();
+    const done = deferred<ProcessJobProcessResult>();
+    const started = await service.controller(webOrigin, 0).start(requestOf(handleOf(done))); done.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledOnce(); await service.stop();
+    const nextWake = vi.fn(async () => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake: nextWake }); await next.activateWakes();
+    expect(nextWake).not.toHaveBeenCalled();
+  });
+
+  it.each(["crossed", "not_crossed"] as const)("never recovers a legacy crash at %s, including after safe refusal", async (state) => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const jobId = randomUUID(); const token = randomUUID(); const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const record = durableRecord(jobId, { state: "succeeded", origin: webOrigin, pid: null, pgid: null, stdoutRef: null, stderrRef: null,
+      completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0,
+      wake: { state: "pending", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:03.000Z", retrySafe: false,
+        admission: { version: 1, token, state, legacy: true, ...(state === "crossed" ? { boundary: randomUUID() } : {}) } } });
+    delete record.processIncarnation; await store.mutate((records) => records.set(jobId, record));
+    const wake = vi.fn(async () => ({ delivered: true as const })); const service = await startService(fixture, { wake });
+    await service.activateWakes(); expect((await service.get(jobId))?.wake.state).toBe("unknown");
+    expect(await service.wakeAdmission!.claim(record.wake.deliveryKey, "", randomUUID())).toBe(false);
+    expect((await (await openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).get(jobId))?.wake.notCrossed).toBeUndefined();
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("refuses token-less requests to a revoked modern attempt before any retry starts", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const jobId = randomUUID(); const token = randomUUID(); const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const record = durableRecord(jobId, { state: "succeeded", origin: webOrigin, pid: null, pgid: null, stdoutRef: null, stderrRef: null,
+      completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0,
+      wake: { state: "pending", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:03.000Z", retrySafe: false,
+        admission: { version: 1, token, state: "not_crossed" } } });
+    delete record.processIncarnation; await store.mutate((records) => records.set(jobId, record));
+    const service = await startService(fixture);
+    expect(await service.wakeAdmission!.claim(record.wake.deliveryKey, "", randomUUID())).toBe(false);
+  });
+
+  it("continues cancellation, cleanup and owner release when wake fencing sees a poisoned store", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const release = vi.fn(async () => {}); const done = deferred<ProcessJobProcessResult>(); const handle = handleOf(done);
+    handle.cancel.mockImplementation(() => done.resolve(processResult({ aborted: true, code: null })));
+    const cleanup = vi.fn(async () => {});
+    const service = await startService(fixture, { store, acquireLock: async () => ({ path: "fictional-lock", ownerPid: process.pid, release }) });
+    await service.controller(ORIGIN, 0).start(requestOf(handle, cleanup));
+    const mutation = vi.spyOn(store, "mutate").mockRejectedValue(new Error("fictional poisoned store"));
+    try {
+      await expect(service.stop()).rejects.toThrow("shutdown encountered failures");
+      expect(handle.cancel).toHaveBeenCalled(); expect(cleanup).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+      await expect(service.stop()).rejects.toThrow("shutdown encountered failures"); expect(release).toHaveBeenCalledOnce();
+    } finally { mutation.mockRestore(); }
+  });
+
+  it("records a stable wake failure when certificate capacity is exhausted", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const service = await startService(fixture, { store, wake: async (input) => {
+      await store.mutate((records) => { records.get(input.projection.jobId)!.wake.notCrossed = Array.from({ length: 16 }, () => randomUUID()); });
+      return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+    } });
+    await service.activateWakes(); const done = deferred<ProcessJobProcessResult>();
+    const started = await service.controller(webOrigin, 0).start(requestOf(handleOf(done))); done.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+    expect((await service.get(started.jobId))?.lastError).toEqual(processJobPublicError("process_job_wake_unknown"));
+  });
 });

@@ -1,3 +1,4 @@
+import { projectSummary, projectCapture } from "./helpers.js";
 import {
   chmodSync,
   existsSync,
@@ -89,11 +90,29 @@ describe("strict BuJo memory health", () => {
     });
   });
 
+  it("keeps three stability attempts by default while a one-attempt audit preserves mutation truth", () => {
+    const root = tempRoot();
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    db.close();
+    writeCaptureIntent(root, [], {}, NOW.toISOString());
+    publishRuntime(root, "lite");
+
+    const periodic = auditBujoMemoryHealth({ root, mode: "lite", now: NOW, maxStabilityAttempts: 1 });
+    const strictDefault = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
+    const strictExplicit = auditBujoMemoryHealth({ root, mode: "lite", now: NOW, maxStabilityAttempts: 3 });
+
+    expect(periodic.issues).toContain("mutation_in_progress");
+    expect(strictDefault).toEqual(strictExplicit);
+    expect(strictDefault.issues).toContain("mutation_in_progress");
+    expect(() => auditBujoMemoryHealth({ root, mode: "lite", maxStabilityAttempts: 4 })).toThrow(/invalid strict health options/iu);
+  });
+
   it("keeps a normal live Lite append healthy despite repairable source provenance", async () => {
     const root = tempRoot();
     const store = createBujoMemoryStore({ root, clock: () => NOW });
     try {
-      await store.appendHostSummary("private-conversation", "A normal live fact is canonical.");
+      await projectSummary(store, "private-conversation", "A normal live fact is canonical.");
+      await store.flush();
 
       const result = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
 
@@ -114,7 +133,8 @@ describe("strict BuJo memory health", () => {
 
     const store = createBujoMemoryStore({ root, clock: () => NOW });
     try {
-      await store.appendHostSummary("private-conversation", "The live append advances canonical truth.");
+      await projectSummary(store, "private-conversation", "The live append advances canonical truth.");
+      await store.flush();
 
       expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
       const result = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
@@ -152,10 +172,8 @@ describe("strict BuJo memory health", () => {
       clock: () => NOW,
     });
     try {
-      await expect(store.capture("private-conversation", "Remember the captured fact.")).resolves.toMatchObject({
-        actions: 1,
-        entities: 1,
-      });
+      await projectCapture(store, "private-conversation", "Remember the captured fact.");
+      expect(store.queueSnapshot().intake?.resolved).toBe(1);
 
       expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
       const result = auditBujoMemoryHealth({
@@ -228,7 +246,8 @@ describe("strict BuJo memory health", () => {
     try {
       await store.load("private-conversation", "nothing yet");
       await store.consolidate();
-      await store.appendHostSummary("private-conversation", "BuJo raw audit is outside rollback source truth.");
+      await projectSummary(store, "private-conversation", "BuJo raw audit is outside rollback source truth.");
+      await store.flush();
       appendGraphBatch(root, { entities: [], relations: [], associations: [] });
 
       expect(readManagedIndexManifest(root)?.rollback?.name).toBe(rollbackName);
@@ -262,8 +281,8 @@ describe("strict BuJo memory health", () => {
     const store = createBujoMemoryStore({ root, clock: () => NOW });
     try {
       await Promise.all([
-        store.appendHostSummary("one", "Concurrent fact one is durable."),
-        store.appendHostSummary("two", "Concurrent fact two is durable."),
+        projectSummary(store, "one", "Concurrent fact one is durable."),
+        projectSummary(store, "two", "Concurrent fact two is durable."),
       ]);
 
       expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
@@ -303,7 +322,8 @@ describe("strict BuJo memory health", () => {
     await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 4 });
     const store = createBujoMemoryStore({ root, embeddings: provider, dim: 4, clock: () => NOW });
     try {
-      await store.appendHostSummary("private-conversation", "A normal Journal fact is canonical.");
+      await projectSummary(store, "private-conversation", "A normal Journal fact is canonical.");
+      await store.flush();
       await store.flush();
 
       const result = auditBujoMemoryHealth({
@@ -370,13 +390,11 @@ describe("strict BuJo memory health", () => {
     expect(result.issues).toEqual([]);
   });
 
-  it("accepts a healthy BuJo runtime before the legacy capture queue is activated", async () => {
+  it("accepts a healthy BuJo runtime with completed-turn intake", async () => {
     const root = tempRoot();
     const provider = fakeEmbeddings(4);
     await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
-    publishRuntime(root, "bujo", 0, false, false, {}, {
-      legacyCaptureActive: false,
-    });
+    publishRuntime(root, "bujo");
 
     const result = auditBujoMemoryHealth({
       root,
@@ -1613,7 +1631,6 @@ function publishRuntime(
   recoveryPaused = false,
   runtimeFault = false,
   intakeOverrides: Partial<ReturnType<CompletedTurnIntakeManager["snapshot"]>> = {},
-  options: { readonly legacyCaptureActive?: boolean } = {},
 ): void {
   const queue = {
     capacity: { items: 64, bytes: 1024 * 1024, batchSize: 32 },
@@ -1652,7 +1669,6 @@ function publishRuntime(
           recoveryRefillQueries: 0,
         },
       } : {}),
-      ...(tier === "bujo" && options.legacyCaptureActive !== false ? { capture: queue } : {}),
       intake: {
         pending: 0,
         dead: 0,

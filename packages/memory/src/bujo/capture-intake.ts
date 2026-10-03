@@ -14,12 +14,14 @@ import { join } from "node:path";
 
 import type {
   MemoryCompletedTurn,
+  MemoryCaptureEvidence,
   MemoryCompletedTurnAdmissionStatus,
 } from "@mono-agent/agent-contracts";
 
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { acquireMemoryWriterLease } from "./generations.js";
 import { findRetainedCaptureIntent } from "./capture-outbox.js";
+import { discardCapturePlan } from "./capture-plan-cache.js";
 import {
   appendCanonicalFile,
   canonicalMemoryRootPath,
@@ -74,6 +76,8 @@ interface IntakePayload {
   readonly conversationId: string;
   readonly summary: string;
   readonly captureText?: string;
+  readonly captureSpeakerKind?: "human-turn" | "trigger";
+  readonly captureEvidence?: MemoryCaptureEvidence;
 }
 
 interface PendingRecord extends IntakePayload {
@@ -208,11 +212,12 @@ export interface CompletedTurnIntakeManagerOptions {
     id: string,
     admittedAt: string,
     signal: AbortSignal,
+    isFinalAttempt: boolean,
   ) => Promise<"captured" | "summary_only">;
   /** Retire a run-owned semantic plan only after its resolved receipt is durable. */
   readonly afterResolved?: (id: string) => void | Promise<void>;
   /** Startup cleanup for receipts published before a crash interrupted plan retirement. */
-  readonly cleanupResolved?: (ids: readonly string[]) => void;
+  readonly cleanupResolved?: (resolvedIds: readonly string[], activeIds: readonly string[]) => void;
   /** Content-free notification after intake runtime or durable metadata changes. */
   readonly onChange?: (urgency?: "urgent") => void;
   readonly warn?: (message: string) => void;
@@ -243,7 +248,7 @@ export class CompletedTurnIntakeManager {
   private readonly capture: CompletedTurnIntakeManagerOptions["capture"];
   private readonly warn: (message: string) => void;
   private readonly afterResolved: ((id: string) => void | Promise<void>) | undefined;
-  private readonly cleanupResolved: ((ids: readonly string[]) => void) | undefined;
+  private readonly cleanupResolved: CompletedTurnIntakeManagerOptions["cleanupResolved"];
   private readonly onChange: (urgency?: "urgent") => void;
   private readonly maxAttempts: number;
   private readonly retryBaseMs: number;
@@ -301,11 +306,14 @@ export class CompletedTurnIntakeManager {
       }
       this.cleanupResolved?.(
         materialized.located.filter(({ record }) => record.state === "resolved").map(({ record }) => record.id),
+        materialized.located.filter(({ record }) => record.state !== "resolved").map(({ record }) => record.id),
       );
       this.scheduleWorker();
       this.notifyChange();
     } else if (readIntakeSchemaMarker(this.root) !== undefined) {
       throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
+    } else {
+      this.cleanupResolved?.([], []);
     }
   }
 
@@ -364,6 +372,8 @@ export class CompletedTurnIntakeManager {
       conversationId: payload.conversationId,
       summary: payload.summary,
       ...(payload.captureText === undefined ? {} : { captureText: payload.captureText }),
+      ...(payload.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: payload.captureSpeakerKind }),
+      ...(payload.captureEvidence === undefined ? {} : { captureEvidence: payload.captureEvidence }),
       admittedAt,
       revision: 0,
       attempt: 0,
@@ -531,7 +541,8 @@ export class CompletedTurnIntakeManager {
         this.setRuntimeRecord(current.record);
         this.notifyChange();
       }
-      const outcome = await this.capture(turn, current.record.id, current.record.admittedAt, controller.signal);
+      const outcome = await this.capture(turn, current.record.id, current.record.admittedAt, controller.signal,
+        current.record.attempt + 1 >= this.maxAttempts);
       controller.signal.throwIfAborted();
       const resolved = resolvePending(
         this.root,
@@ -924,6 +935,8 @@ export function retryCompletedTurnIntake(
         conversationId: located.record.conversationId,
         summary: located.record.summary,
         ...(located.record.captureText === undefined ? {} : { captureText: located.record.captureText }),
+        ...(located.record.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: located.record.captureSpeakerKind }),
+        ...(located.record.captureEvidence === undefined ? {} : { captureEvidence: located.record.captureEvidence }),
         admittedAt: located.record.admittedAt,
         revision: located.record.revision + 1,
         attempt: 0,
@@ -982,6 +995,9 @@ export function resolveCompletedTurnIntake(
       reason,
     };
     moveRecord(lease.root, source, "resolved", receipt);
+    // A crash here is repaired by startup inventory cleanup; explicit operator
+    // resolution must not leave its extraction plan behind indefinitely.
+    discardCapturePlan(lease.root, id);
     pruneResolved(lease.root, DEFAULT_RESOLVED_RETENTION, id);
     return { resolved: true };
   } finally {
@@ -1700,6 +1716,8 @@ function moveToDead(
     conversationId: source.record.conversationId,
     summary: source.record.summary,
     ...(source.record.captureText === undefined ? {} : { captureText: source.record.captureText }),
+    ...(source.record.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: source.record.captureSpeakerKind }),
+    ...(source.record.captureEvidence === undefined ? {} : { captureEvidence: source.record.captureEvidence }),
     admittedAt: source.record.admittedAt,
     revision: source.record.revision + 1,
     attempt,
@@ -1853,8 +1871,11 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
     conversationId: value.conversationId as string,
     summary: value.summary as string,
     ...(value.captureText === undefined ? {} : { captureText: value.captureText as string }),
+    ...(value.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: value.captureSpeakerKind as "human-turn" | "trigger" }),
+    ...(value.captureEvidence === undefined ? {} : { captureEvidence: value.captureEvidence as MemoryCaptureEvidence }),
   });
-  if (hashPayload(payload) !== value.payloadHash || idFor(payload.runId) !== value.id) {
+  if ((value.captureSpeakerKind !== undefined && value.captureSpeakerKind !== "human-turn" && value.captureSpeakerKind !== "trigger")
+    || hashPayload(payload) !== value.payloadHash || idFor(payload.runId) !== value.id) {
     throw new Error("memory-bujo: completed-turn intake payload commitment is invalid.");
   }
   if (typeof value.summaryWritten !== "boolean") {
@@ -1862,7 +1883,7 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
   }
   if (state === "pending") {
     if (!hasOnlyKeys(value, [
-      "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText",
+      "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText", "captureSpeakerKind", "captureEvidence",
       "admittedAt", "revision", "attempt", "nextAttemptAt", "summaryWritten", "lastError",
     ]) || !canonicalTimestamp(value.nextAttemptAt)
       || (value.lastError !== undefined && !validFailureCode(value.lastError))) {
@@ -1871,7 +1892,7 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
     return value as unknown as PendingRecord;
   }
   if (!hasOnlyKeys(value, [
-    "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText",
+    "schemaVersion", "state", "id", "payloadHash", "runId", "conversationId", "summary", "captureText", "captureSpeakerKind", "captureEvidence",
     "admittedAt", "revision", "attempt", "deadAt", "summaryWritten", "lastError",
   ]) || !canonicalTimestamp(value.deadAt) || !validFailureCode(value.lastError)) {
     throw new Error("memory-bujo: completed-turn dead letter is malformed.");
@@ -1880,7 +1901,7 @@ function validateRecord(value: unknown, state: IntakeState, expectedId: string):
 }
 
 function validatePayload(value: MemoryCompletedTurn): IntakePayload {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["runId", "conversationId", "summary", "captureText"])) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["runId", "conversationId", "summary", "captureText", "captureSpeakerKind", "captureEvidence"])) {
     throw new Error("memory-bujo: completed-turn payload has unknown or missing fields.");
   }
   const runId = boundedText(value.runId, "runId", MAX_RUN_ID_BYTES, false);
@@ -1893,7 +1914,43 @@ function validatePayload(value: MemoryCompletedTurn): IntakePayload {
   if (value.captureText !== undefined) {
     captureText = boundedText(value.captureText, "captureText", MAX_CAPTURE_TEXT_BYTES, true);
   }
-  return { runId, conversationId, summary, ...(captureText === undefined ? {} : { captureText }) };
+  const captureSpeakerKind = value.captureSpeakerKind;
+  if (captureSpeakerKind !== undefined && captureSpeakerKind !== "unknown"
+    && captureSpeakerKind !== "human-turn" && captureSpeakerKind !== "trigger") {
+    throw new Error("memory-bujo: completed-turn captureSpeakerKind is invalid.");
+  }
+  const captureEvidence = value.captureEvidence === undefined ? undefined : validateCaptureEvidence(value.captureEvidence);
+  // Absent evidence and unknown speaker preserve the exact pre-upgrade retry hash.
+  return { runId, conversationId, summary, ...(captureText === undefined ? {} : { captureText }),
+    ...(captureSpeakerKind === undefined || captureSpeakerKind === "unknown" ? {} : { captureSpeakerKind }),
+    ...(captureEvidence === undefined ? {} : { captureEvidence }) };
+}
+
+function validateCaptureEvidence(value: unknown): MemoryCaptureEvidence {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["userText", "senderToken", "ownerTurn", "toolOutcomes"])
+    || !Array.isArray(value.toolOutcomes) || value.toolOutcomes.length > 16) {
+    throw new Error("memory-bujo: capture evidence is invalid.");
+  }
+  const userText = value.userText === "" ? ""
+    : boundedText(value.userText, "capture evidence userText", 16 * 1024, true);
+  const senderToken = value.senderToken;
+  if (senderToken !== undefined && (typeof senderToken !== "string" || !/^[a-f0-9]{32}$/u.test(senderToken))) {
+    throw new Error("memory-bujo: capture evidence sender is invalid.");
+  }
+  if (value.ownerTurn !== undefined && value.ownerTurn !== true) {
+    throw new Error("memory-bujo: capture evidence owner turn is invalid.");
+  }
+  const toolOutcomes = value.toolOutcomes.map((entry: unknown) => {
+    if (!isRecord(entry) || !hasOnlyKeys(entry, ["category", "outcome"])
+      || !["read", "write", "edit", "execute", "search"].includes(String(entry.category))
+      || (entry.outcome !== "failed" && entry.outcome !== "succeeded")) {
+      throw new Error("memory-bujo: capture evidence tool outcome is invalid.");
+    }
+    return { category: entry.category as MemoryCaptureEvidence["toolOutcomes"][number]["category"],
+      outcome: entry.outcome as "failed" | "succeeded" };
+  });
+  return { userText, ...(senderToken === undefined ? {} : { senderToken }),
+    ...(value.ownerTurn === true ? { ownerTurn: true as const } : {}), toolOutcomes };
 }
 
 function boundedText(value: unknown, label: string, maxBytes: number, allowLayoutWhitespace: boolean): string {
@@ -1906,6 +1963,8 @@ function payloadOf(record: PendingRecord | DeadRecord): MemoryCompletedTurn {
     conversationId: record.conversationId,
     summary: record.summary,
     ...(record.captureText === undefined ? {} : { captureText: record.captureText }),
+    ...(record.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: record.captureSpeakerKind }),
+    ...(record.captureEvidence === undefined ? {} : { captureEvidence: record.captureEvidence }),
   };
 }
 

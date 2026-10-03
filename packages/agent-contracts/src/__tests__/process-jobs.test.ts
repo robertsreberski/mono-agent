@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  normalizeProcessJobSubagentUsage,
   isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
@@ -68,7 +71,7 @@ describe("process-job contracts", () => {
   });
 
   it("discriminates private subagent projections and bounds structured questions", () => {
-    const internal = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: true,
+    const internal = { ...projection(), kind: "internal", tool: "AgentManage", instanceId: "helper", childStillBusy: true,
       subagentQuestion: { question: "Which branch?", options: ["one", "two"] } };
     expect(parseProcessJobProjection(internal)).toEqual(internal);
     for (const invalid of [
@@ -78,6 +81,48 @@ describe("process-job contracts", () => {
       { ...internal, subagentQuestion: { question: "q", options: ["same", "same"] } },
       { ...projection(), childStillBusy: false },
     ]) expect(() => parseProcessJobProjection(invalid)).toThrow(TypeError);
+  });
+
+  it("parses a PeerAgent job without classifying it as a managed subagent", () => {
+    const peer = { ...projection(), kind: "internal", tool: "PeerAgent", instanceId: "finance", childStillBusy: false };
+    expect(parseProcessJobProjection(peer)).toEqual(peer);
+    const peerQuestion = { state: "awaiting_answer", questionId: "11111111-1111-4111-8111-111111111111",
+      peer: "finance", thread: "portfolio", message: "Proceed?", expiresAt: "2026-09-23T22:00:00.000Z",
+      requestedSchema: { type: "object", properties: { question_1: { type: "string" } } } };
+    expect(parseProcessJobProjection({ ...peer, peerQuestion })).toMatchObject({ peerQuestion });
+    expect(() => parseProcessJobProjection({ ...peer, peerQuestion: { ...peerQuestion, message: "x".repeat(2_001) } })).toThrow(TypeError);
+    expect(() => parseProcessJobProjection({ ...projection(), peerQuestion })).toThrow(TypeError);
+    expect(() => parseProcessJobProjection({ ...peer, subagentQuestion: { question: "Owner approval?" } })).toThrow(TypeError);
+    expect(() => parseProcessJobProjection({ ...peer, subagentProgress: {} })).toThrow(TypeError);
+  });
+
+  it("summarizes peer ACP form fields for display without trusting their shape", () => {
+    expect(describePeerQuestionForm({ type: "object", required: ["question_1"], properties: {
+      question_1: { type: "string", title: "Decision", description: "Proceed?", oneOf: [
+        { const: "yes", title: "Yes" }, { const: "__custom__", title: "Other" }] },
+      question_1_other: { type: "string", title: "Decision — Other response" },
+      tags: { type: "array", items: { enum: ["a", "b"], enumNames: ["Alpha"] } },
+      bad: "not-a-schema",
+    } })).toEqual([
+      { key: "question_1", label: "Decision", description: "Proceed?", options: ["Yes", "Other"], required: true, multiple: false, freeText: false },
+      { key: "question_1_other", label: "Decision — Other response", options: [], required: false, multiple: false, freeText: true },
+      { key: "tags", label: "tags", options: ["Alpha", "b"], required: false, multiple: true, freeText: false },
+    ]);
+    expect(describePeerQuestionForm({ type: "object" })).toEqual([]);
+    // Arbitrary JSON enum values never throw and are never coerced into labels.
+    expect(describePeerQuestionForm({ properties: { q: { enum: [{ toString: "bad" }, null, [1], 3, true, "ok"] } } }))
+      .toEqual([{ key: "q", label: "q", options: ["3", "true", "ok"], required: false, multiple: false, freeText: false }]);
+    expect(() => describePeerQuestionForm({ properties: { q: { oneOf: [{ const: { toString: "bad" } }, 7] }, r: null },
+      required: [{ toString: "bad" }] })).not.toThrow();
+    expect(describePeerQuestionForm("nope")).toEqual([]);
+    expect(peerQuestionStateLabel("awaiting_answer")).toBe("Waiting for the agent's answer");
+  });
+
+  it("still parses a stored projection carrying the legacy AgentSend tool name", () => {
+    // `AgentSend` was renamed to `AgentManage` with no alias. Jobs persisted
+    // before the rename must keep loading; nothing emits the old name again.
+    const legacy = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: false };
+    expect(parseProcessJobProjection(legacy)).toEqual(legacy);
   });
 
   it("accepts the configured retention plus transient active-record boundary", () => {
@@ -208,6 +253,33 @@ describe("internal subagent progress projection", () => {
     const parsedLegacy = parseProcessJobProjection({ ...internal(), subagentProgress: legacyProgress });
     expect(parsedLegacy.kind === "internal" ? parsedLegacy.subagentProgress : undefined).toEqual(legacyProgress);
     expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
+  });
+
+  it("accepts a reported token sample without allowing unknown or malformed fields", () => {
+    const usage = { input: 12, output: 3, cacheRead: 4, cacheWrite: 1 };
+    const withTokens = { ...progress, usage };
+    expect(isProcessJobSubagentProgress(withTokens)).toBe(true);
+    expect(normalizeProcessJobSubagentUsage(usage)).toEqual(usage);
+    expect(normalizeProcessJobSubagentUsage({ ...usage, input: 0 })).toEqual({ ...usage, input: 0 });
+    expect(parseProcessJobProjection({ ...internal(), subagentProgress: withTokens })).toEqual({ ...internal(), subagentProgress: withTokens });
+    for (const invalid of [{ ...withTokens, privateText: "redacted" },
+      { ...withTokens, usage: { ...usage, output: -1 } },
+      { ...withTokens, usage: { ...usage, input: 0.5 } },
+      { ...withTokens, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      { ...withTokens, usage: { ...usage, extra: 1 } }]) {
+      if (!("privateText" in invalid)) expect(normalizeProcessJobSubagentUsage(invalid.usage)).toBeUndefined();
+      expect(isProcessJobSubagentProgress(invalid)).toBe(false);
+      expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: invalid })).toThrow(TypeError);
+    }
+  });
+
+  it("accepts a bounded optional command directory and rejects malformed locations", () => {
+    const withDirectory = { ...progress, recent: [{ ...progress.recent[0], workdir: "~/worktrees/project" }] };
+    expect(parseProcessJobProjection({ ...internal(), subagentProgress: withDirectory }))
+      .toEqual({ ...internal(), subagentProgress: withDirectory });
+    for (const workdir of ["😀".repeat(65), 17, null]) {
+      expect(isProcessJobSubagentProgress({ ...withDirectory, recent: [{ ...withDirectory.recent[0], workdir }] })).toBe(false);
+    }
   });
 
   it("accepts absent and non-negative bounded cost while rejecting malformed prices", () => {

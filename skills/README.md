@@ -9,7 +9,7 @@ UI labels, descriptions, and default prompts while keeping `SKILL.md` as the
 agent-facing workflow.
 
 They are **NOT runtime skills for mono-agent instances** — those live in each
-agent's own folder (e.g. `~/example-instance/skills/`) and are selected via
+agent's own folder (e.g. `<instance-dir>/skills/`) and are selected via
 `context.selectedSkills` in `mono-agent.config.json`.
 
 ## File layout
@@ -30,6 +30,7 @@ when the request explicitly crosses that boundary. In particular:
 - `live-smoke` runs one scenario matching the changed surface, not every scenario.
 - `docs-sync` checks only documentation surfaces affected by the diff.
 - `repo-hygiene-gc` is an explicit bulk-maintenance workflow; normal PR cleanup stays in `worktree-feature`.
+- `flaky-tests` fixes a flake inside the current PR only when it is in that PR's scope; anything else becomes a GitHub issue.
 
 `verify-green` is the shared lane selector. A docs/skills/process diff does not
 build the monorepo. Ordinary code gets focused checks plus one broad CI gate.
@@ -44,9 +45,11 @@ Only high-risk runtime changes add a local full gate and one live smoke.
 | `fleet-deploy` | Restart or deploy only the explicitly requested live consumers |
 | `live-smoke` | Run one real end-to-end scenario matching the changed surface |
 | `release-lockstep` | Cut and registry-verify a lockstep npm release; no implicit deploy |
+| `changelog` | File an `Unreleased` entry per user-visible change; cut release notes |
 | `docs-sync` | Update and verify only documentation surfaces affected by a change |
 | `pi-upstream-recon` | Reading vendored pi source before building; pi bumps |
 | `new-package` | Adding a package that passes `check:architecture` first try |
 | `dead-code-audit` | Prove-or-remove sweeps: dead exports, orphaned wiring, deprecation removability |
 | `repo-hygiene-gc` | Explicit bulk branch/worktree GC with API-bound deletion proof |
 | `ops-log-hygiene` | Targeted post-restart log checks or an explicitly requested full audit |
+| `flaky-tests` | Confirm a flaky test; fix it in the PR when in scope, otherwise file an issue |

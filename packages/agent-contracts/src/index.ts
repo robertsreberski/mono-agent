@@ -1,9 +1,24 @@
 import { types as nodeUtilTypes } from "node:util";
+import type { MemoryCaptureSpeakerKind } from "./memory.js";
+
+export {
+  createLogRedactor,
+  isSafePrototypeInstance,
+  readSafeDataProperty,
+} from "./log-redaction.js";
+export type { LogRedactorOptions, LogRedactor, SecretSafeLogSink } from "./log-redaction.js";
+export { assertMatchingReplyAttachment, collectExactReplyArtifactBytes } from "./reply-artifacts.js";
 
 export * from "./provider-auth.js";
 
 export type AgentRequestMetadata = Record<string, unknown>;
-export type AgentResponseMetadata = Record<string, unknown>;
+export { registerNativeNotifyRequest, isNativeNotifyRequest,
+  markSilentTurnAlreadyVisible, isSilentTurnAlreadyVisible } from "./silent-turn.js";
+
+export type AgentResponseMetadata = Record<string, unknown> & {
+  /** Host-certified terminal delivery intent; absence preserves legacy text classification. */
+  readonly turnDisposition?: "silent" | "visible";
+};
 export {
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   PROCESS_JOB_ERROR_CODES,
@@ -12,12 +27,19 @@ export {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  normalizeProcessJobSubagentUsage,
+  isPeerProcessJobQuestion,
+  describePeerQuestionForm,
+  peerQuestionStateLabel,
   isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
   processJobPublicError,
 } from "./process-jobs.js";
 export type {
+  InternalProcessJobTool,
+  PeerProcessJobQuestion,
+  PeerQuestionFormField,
   ProcessJobErrorCode,
   ProcessJobOperator,
   ProcessJobProjection,
@@ -32,37 +54,15 @@ export type {
   ProcessJobSubagentRoute,
   ProcessJobWakeState,
 } from "./process-jobs.js";
-export {
-  MAX_MONITOR_OUTSTANDING_LIFECYCLES,
-  MONITOR_ERROR_CODES,
-  MONITOR_PUBLIC_ERROR_MESSAGES,
-  MONITOR_STATES,
-  isMonitorErrorCode,
-  isMonitorState,
-  isTerminalMonitorState,
-  monitorPublicError,
-  parseMonitorProjection,
-  parseMonitorProjections,
-} from "./monitors.js";
-export type {
-  MonitorErrorCode,
-  MonitorOperator,
-  MonitorProjection,
-  MonitorProjectionCounters,
-  MonitorProjectionError,
-  MonitorProjectionLimits,
-  MonitorProjectionOrigin,
-  MonitorProjectionTimestamps,
-  MonitorState,
-} from "./monitors.js";
 export type {
   MemoryBlock,
+  MemoryCaptureSpeakerKind,
+  MemoryCaptureEvidence,
   MemoryCompletedTurn,
   MemoryCompletedTurnAdmissionStatus,
   MemoryCompletedTurnResult,
   MemoryLoadOptions,
   MemoryStore,
-  MemoryWriteResult,
 } from "./memory.js";
 
 /**
@@ -564,6 +564,11 @@ export type AgentLiveInputOwnership =
   | { readonly status: "closed"; readonly reason: "closed" | "unsupported" };
 
 export interface AgentRequestBase {
+  /**
+   * Host-stamped provenance for memory capture. Never copy this from a request
+   * body, channel payload or metadata.source; an absent value is unknown.
+   */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   /** Never serialized into metadata, history, or prompts. */
   readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;
@@ -663,6 +668,37 @@ export interface AgentReplyMcpAppPart {
   readonly expiresAt?: string;
 }
 
+/** Non-blocking choices delivered with an assistant reply in the web console. */
+export interface AgentReplyOptionsPart {
+  readonly type: "reply_options";
+  readonly id: string;
+  readonly options: readonly string[];
+}
+
+/** Validate canonical labels at delivery/persistence boundaries without coercion. */
+export function isAgentReplyOptions(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.length >= 2 && value.length <= 8
+    && Array.from(value).every((label) => typeof label === "string"
+      && label === label.trim() && label.length >= 1 && label.length <= 75
+      && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(label))
+    && new Set(value).size === value.length;
+}
+
+/** A display-only restart suggestion. Target and authority are NEVER model-supplied. */
+export interface AgentReplyRestartProposalPart {
+  readonly type: "restart_proposal";
+  /** Stable identifier within the assistant reply; not a restart operation id. */
+  readonly id: string;
+  readonly reason?: string;
+}
+
+/** Keep proposed reasons display-only, short, single-line and free of control characters. */
+export function sanitizeRestartProposalReason(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/[\x00-\x1f\x7f-\x9f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 280);
+  return normalized.length === 0 ? undefined : normalized;
+}
+
 /** One rich reply part failed while other text/parts remained deliverable. */
 export interface AgentReplyPartFailure {
   readonly type: "failure";
@@ -689,6 +725,8 @@ export interface AgentReplyPartFailure {
 export type AgentReplyPart =
   | AgentReplyAttachmentPart
   | AgentReplyMcpAppPart
+  | AgentReplyRestartProposalPart
+  | AgentReplyOptionsPart
   | AgentReplyPartFailure;
 
 export interface AgentMessageFinishOptions {
@@ -897,6 +935,8 @@ export interface AgentLiveInputRequest {
   /** Stable transport message id, used to make duplicate delivery idempotent. */
   readonly id: string;
   readonly text: string;
+  /** Web owner-authored text, accepted for memory only when bound to text. */
+  readonly ownerText?: string;
   /** ISO-8601 transport receipt time, preserved in canonical history. */
   readonly receivedAt: string;
   /**
@@ -957,6 +997,22 @@ export type AgentLiveInputOffer =
   | { readonly status: "unavailable"; readonly reason: AgentLiveInputUnavailableReason }
   | { readonly status: "accepted"; readonly settled: Promise<AgentLiveInputSettlement> };
 
+export type AgentManualCompactionOptions = {
+  readonly context1M?: boolean;
+  /** Canonical `<provider>:<model>` selection, resolved exactly like a turn's model override. */
+  readonly model?: string;
+};
+
+export type AgentManualCompactionResult = {
+  readonly status: "succeeded" | "skipped" | "failed";
+  readonly operationId: string;
+  readonly trigger: "manual";
+  readonly tokensBefore?: number;
+  readonly tokensAfter?: number;
+  readonly tokenCountsExact?: boolean;
+  readonly reason?: string;
+};
+
 export interface AgentResponder<
   Request extends AgentRequestBase = AgentRequestBase,
   Stream extends AgentMessageStream = AgentMessageStream,
@@ -964,6 +1020,12 @@ export interface AgentResponder<
 > {
   readonly liveInputOwnership?: { readonly version: 1 };
   respond(request: Request, stream: Stream): Promise<Response>;
+  /**
+   * Compact the exact idle conversation without submitting a user turn.
+   * `model` is the same per-conversation model selection a turn would carry;
+   * omitted means the host default.
+   */
+  compactConversation?(conversationId: string, options?: AgentManualCompactionOptions, signal?: AbortSignal): Promise<AgentManualCompactionResult>;
   /**
    * Optional: offer a text follow-up to the active turn without starting a
    * parallel response. Callers reserve their ordinary queue position first so
@@ -1168,8 +1230,6 @@ export type {
   NotifyDestination,
   HostWakeDeliveryResult,
   HostWakeDisposition,
-  MonitorWakeDeliveryInput,
-  RunningMonitorChannel,
   ProcessJobWakeDeliveryInput,
   ProcessJobWakeDeliveryResult,
   ProcessJobWakeDisposition,

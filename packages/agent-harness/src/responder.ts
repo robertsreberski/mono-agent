@@ -1,6 +1,8 @@
 import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./types.js";
+import { AgentHarnessError } from "./harness/error.js";
 import type {
   AgentLiveInputRequest,
+  AgentManualCompactionOptions,
   AgentMessageStream,
   AgentRequestBase,
   AgentResponder,
@@ -10,6 +12,7 @@ import type {
 import {
   AgentResponseCancelledError,
   formatLiveInputActivityLine,
+  markSilentTurnAlreadyVisible,
   suppressesNotification,
 } from "@mono-agent/agent-contracts";
 
@@ -72,6 +75,18 @@ export function createAgentResponder(options: {
 
   return {
     ...(options.harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: options.harness.liveInputOwnership }),
+    ...(options.harness.compactConversation === undefined ? {} : {
+      async compactConversation(conversationId: string, compactionOptions?: AgentManualCompactionOptions, signal?: AbortSignal) {
+        const key = responseSerializationKey(conversationId, options.rollover);
+        // Reject rather than joining the normal turn queue. serializeByKey
+        // reserves synchronously before its first await, fencing later turns.
+        if (responseTailsByBaseConversation.has(key)) {
+          throw new AgentHarnessError("compaction_busy", "This conversation has a turn or compaction in progress.");
+        }
+        return await serializeByKey(responseTailsByBaseConversation, key, async () =>
+          await options.harness.compactConversation!(bucket(conversationId), compactionOptions, signal));
+      },
+    }),
     async dispose(): Promise<void> {
       pendingLiveInputByBaseConversation.clear();
       await options.harness.dispose?.();
@@ -234,6 +249,7 @@ export function createAgentResponder(options: {
       ? `${sessionRolloverNotice(boundary)}\n\n`
       : undefined;
     if (notice !== undefined) {
+      markSilentTurnAlreadyVisible(request);
       runtimeEventStream.enqueueText(notice);
     }
     // Per-turn scratch: tool_timing arrives strictly before its tool_result and
@@ -251,6 +267,7 @@ export function createAgentResponder(options: {
       ...(request.onLiveInputOwnership === undefined ? {} : { onLiveInputOwnership: request.onLiveInputOwnership }),
       abortSignal: request.abortSignal,
       ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+      ...(request.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: request.captureSpeakerKind }),
       ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
       ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
       ...(request.sender === undefined ? {} : { sender: request.sender }),
@@ -298,7 +315,8 @@ export function createAgentResponder(options: {
       throw new AgentHarnessFailureError(response.failure);
     }
 
-    const text = composeResponseText(response.text, notice, routing);
+    const text = response.metadata?.turnDisposition === "silent"
+      ? "" : composeResponseText(response.text, notice, routing);
     return {
       ...(text === undefined ? {} : { text }),
       metadata: { ...response.metadata },
@@ -816,14 +834,14 @@ function processJobStartReceipt(
   details: Record<string, unknown>,
   toolName: string | undefined,
 ): Record<string, unknown> | undefined {
-  if (!["Exec", "Bash", "Agent", "AgentSend"].includes(toolName ?? "")) return undefined;
+  if (!["Exec", "Bash", "Agent", "AgentManage"].includes(toolName ?? "")) return undefined;
   try {
     if (details.tool !== toolName || !isPlainRecord(details.outcome)) return undefined;
     const outcome = details.outcome;
     const actualKeys = Object.keys(outcome);
     const allowedKeys: readonly string[] = [
       ...PROCESS_JOB_OUTCOME_KEYS,
-      "max_runtime_ms",
+      "max_runtime_ms", "queue_position", "queue_deadline_at",
       ...(toolName === "Bash" ? ["legacyTimeoutUsed"] : []),
     ];
     if (!PROCESS_JOB_OUTCOME_KEYS.every((key) => hasOwn(outcome, key))
@@ -848,10 +866,16 @@ function processJobStartReceipt(
       || (outcome.started_at !== null && !canonicalIsoTimestamp(outcome.started_at))) return undefined;
     if (hasOwn(outcome, "max_runtime_ms")
       && (!Number.isSafeInteger(outcome.max_runtime_ms) || Number(outcome.max_runtime_ms) <= 0)) return undefined;
+    if (hasOwn(outcome, "queue_position")
+      && (outcome.state !== "queued" || !Number.isSafeInteger(outcome.queue_position) || Number(outcome.queue_position) < 1)) return undefined;
+    if (hasOwn(outcome, "queue_deadline_at")
+      && (outcome.state !== "queued" || !canonicalIsoTimestamp(outcome.queue_deadline_at))) return undefined;
     if (hasOwn(outcome, "legacyTimeoutUsed")
       && (toolName !== "Bash" || outcome.legacyTimeoutUsed !== true)) return undefined;
     const expectedLength = PROCESS_JOB_OUTCOME_KEYS.length
       + (hasOwn(outcome, "max_runtime_ms") ? 1 : 0)
+      + (hasOwn(outcome, "queue_position") ? 1 : 0)
+      + (hasOwn(outcome, "queue_deadline_at") ? 1 : 0)
       + (hasOwn(outcome, "legacyTimeoutUsed") ? 1 : 0);
     if (actualKeys.length !== expectedLength) return undefined;
     return {

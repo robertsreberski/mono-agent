@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  describeSensitiveDataExportWarning,
   isPathUnderTmpdir,
   resolveAppTraceRegistryDir,
   resolveAppTraceGlobalDiscovery,
@@ -16,18 +15,6 @@ import {
 } from "../app-config.js";
 
 const ACCOUNT_TRACE_REGISTRY = join(userInfo().homedir, ".mono-agent", "trace-sources");
-
-describe("describeSensitiveDataExportWarning", () => {
-  it("states the default key-based boundary and the separate content-scan opt-in", () => {
-    const warning = describeSensitiveDataExportWarning("http://127.0.0.1:6006/v1/traces");
-
-    expect(warning).toContain("non-numeric values under sensitive-looking object keys are redacted");
-    expect(warning).toContain("numeric values under matched keys are retained");
-    expect(warning).toContain("free text is not content-scanned by default");
-    expect(warning).toContain("contentPatternRedaction=true replaces a closed set");
-    expect(warning).toContain("Substantive run content leaves this machine");
-  });
-});
 
 describe("resolveAppTraceSourceLabel", () => {
   it("uses agent.name as the display default while preserving an explicit trace label", async () => {
@@ -40,7 +27,7 @@ describe("resolveAppTraceSourceLabel", () => {
         env: { MONO_AGENT_NAME: "Environment Companion" },
         cwd: dir,
         configPath,
-      })).resolves.toBe("Environment Companion");
+      })).resolves.toBe("Research Companion");
       await expect(resolveAppTraceSourceLabel({
         env: {
           MONO_AGENT_NAME: "Environment Companion",
@@ -48,7 +35,7 @@ describe("resolveAppTraceSourceLabel", () => {
         },
         cwd: dir,
         configPath,
-      })).resolves.toBe("Explicit Trace");
+      })).resolves.toBe("Research Companion");
 
       await writeFile(configPath, JSON.stringify({
         agent: { name: "Research Companion" },
@@ -103,7 +90,7 @@ describe("resolveAppTraceRegistryDir", () => {
     }
   });
 
-  it("preserves explicit config and environment overrides", async () => {
+  it("preserves explicit config and ignores stale environment overrides", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-trace-registry-"));
     const configPath = join(dir, "mono-agent.config.json");
     try {
@@ -116,7 +103,7 @@ describe("resolveAppTraceRegistryDir", () => {
         env: { MONO_AGENT_TRACE_REGISTRY_DIR: "./environment-registry" },
         cwd: dir,
         configPath,
-      })).resolves.toBe(join(dir, "environment-registry"));
+      })).resolves.toBe(join(dir, "config-registry"));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -142,16 +129,16 @@ describe("resolveAppTraceGlobalDiscovery", () => {
     ).resolves.toBe(true);
   });
 
-  it("honors the MONO_AGENT_TRACE_GLOBAL_DISCOVERY env override", async () => {
+  it("ignores the stale MONO_AGENT_TRACE_GLOBAL_DISCOVERY env override", async () => {
     await expect(
       resolveAppTraceGlobalDiscovery({ env: { MONO_AGENT_TRACE_GLOBAL_DISCOVERY: "false" }, cwd: "/nowhere", configPath }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
   });
 
-  it("rejects a non-boolean env override", async () => {
+  it("silently ignores a malformed stale env override", async () => {
     await expect(
       resolveAppTraceGlobalDiscovery({ env: { MONO_AGENT_TRACE_GLOBAL_DISCOVERY: "sometimes" }, cwd: "/nowhere", configPath }),
-    ).rejects.toThrow(/must be true or false/u);
+    ).resolves.toBe(true);
   });
 });
 

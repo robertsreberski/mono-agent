@@ -11,19 +11,21 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 
 ## Write modes (`memory.writeMode`)
 
-`memory.writeMode` controls how the **host runtime** persists each completed turn. It is independent of the tier's recall capability. Coverage: **config** (env: `MONO_AGENT_MEMORY_WRITE_MODE`).
+`memory.writeMode` controls how the **host runtime** persists each completed turn. It is independent of the tier's recall capability. Coverage: **config** .
 
 | Mode | What it does | Backend / tiers | LLM |
 |------|--------------|-------|-----|
-| `disabled` | Never persist turns. Recall still works over existing backend state. | all | no |
-| `append-host-summary` | Admit one deterministic host observation by provider run id. The built-in backend fsyncs and projects it; Supermemory awaits a remote upsert. | built-in Lite/Journal/BuJo; Supermemory | built-in: no; Supermemory: service-owned |
-| `capture` | Admit the host summary plus full approved capture text by provider run id. Built-in BuJo curates in the background; Supermemory sends it for server-side extraction. | built-in BuJo; Supermemory | BuJo: configured chat model; Supermemory: service-owned |
+| `disabled` | Never persist turns. Recall still works over existing memory state. | Lite/Journal/BuJo | no |
+| `append-host-summary` | Admit one deterministic host observation by provider run id, then fsync and project it. | Lite/Journal/BuJo | no |
+| `capture` | Admit the host summary plus full approved capture text by provider run id, then curate it in the background. | BuJo | configured chat model |
 
-The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line, and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
+The host deliberately skips memory writes for one low-signal successful turn, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line. There is no host word list for probes or filler such as `test` / `ping`; those turns reach capture, whose extraction may return an empty plan.
 
-Cron and webhook turns are also capture-hygienic: when they do write memory, only the assistant answer is written. The trigger prompt or webhook pre-instructions are never sent to the deterministic host summary or intelligent capture pipeline.
+Memory is not a task list. Automatic capture never writes an open BuJo task (`[ ]`): a line the extractor types as a task is stored as a dated history note, and it gains no host-derived coarse fact. Plans, requests and scheduled work live in the agent's task tools; memory keeps only their durable history. Capture never rewrites an existing task line in place either: when reconciliation would update one, the task stays as written and the new information becomes its own note, always threaded to that task. A supersede is the intended exception: the old task is marked invalidated and its replacement is a note, because memory is not a task tracker and a superseded task becomes history. A capture plan retained before this rule is recovered with the same task-to-note mapping. Explicit task lines written by an operator are unchanged.
 
-Memory persistence is **host-owned**. When a user says “remember this,” the agent should acknowledge the request normally and let the configured write mode decide whether and how to persist the completed turn after the reply succeeds. It must not use shell, filesystem, or database tools to edit `.mono-agent/memory`, canonical Markdown, SQLite rows, manifests, generations, or indexes directly. Operators should stop the agent and use the `mono-agent memory ...` maintenance commands when they need to rebuild, migrate, audit, or repair memory state. `memory export` is the one exception: it is strictly read-only and can back up a live agent. `memory import apply` and `import restore` do require a stopped agent.
+Cron and webhook turns omit their trigger prompt and webhook pre-instructions from memory. Intelligent capture receives an honest scheduled-task or webhook source label (not `User`) plus the assistant answer; the deterministic host summary remains assistant-answer-only. The extractor must not treat an assistant recap as a first-party report. There is no deterministic recap classifier, so model-guided capture may still make mistakes; the no-op sentinel remains the deterministic skip.
+
+Memory persistence is **host-owned**. When a user says “remember this,” an allowed `Remember` tool can write a deliberate fact immediately; otherwise the configured write mode determines completed-turn persistence. In BuJo, `Remember({ text, about?, supersedes?, replaceable? })` optionally links an existing person entity (`about`) and replaces a recalled current ordinary note (`supersedes`), leaving the old state in history. It cannot create a person or replace owner-stated facts, preferences, lessons, or text-only Remember lines; supersession is limited to captured notes/events and enhanced Remember writes. Source, author, observation date and uncertainty belong in the self-contained sentence; enhanced writes carry assistant-noted, not verified owner, attribution. Lite and Journal accept text-only writes. For scan observations without a known person ID, use `replaceable: true` on the first write so a later change can supersede it; plain text-only Remember writes are protected from scan replacement. Exact repeats are idempotent; recall and compare before writing paraphrases. If a later plain Remember repeats the **exact text** of an existing replaceable write, it reports a duplicate and does not remove its replaceable marker; use distinct dated/source-specific wording when a protected owner-stated fact must be recorded. Do not use shell, filesystem, or database tools to edit `.mono-agent/memory`, canonical Markdown, SQLite rows, manifests, generations, or indexes directly. Operators should stop the agent and use the `mono-agent memory ...` maintenance commands when they need to rebuild, migrate, audit, or repair memory state. `memory export` is the one exception: it is strictly read-only and can back up a live agent. `memory import apply` and `import restore` do require a stopped agent.
 
 ```json
 {
@@ -35,8 +37,8 @@ Memory persistence is **host-owned**. When a user says “remember this,” the 
 }
 ```
 
-```bash
-MONO_AGENT_MEMORY_WRITE_MODE=append-host-summary
+```json
+{ "memory": { "writeMode": "append-host-summary" } }
 ```
 
 ### Durable completed-turn admission
@@ -79,36 +81,27 @@ Lite or Journal is refused before source mutation, because those tiers cannot pr
 BuJo run-derived ids and provider-bound replay contract. Start the current BuJo configuration to
 finish the durable intake before changing tiers.
 
-External `MemoryStore` implementations can opt into the same contract with
-`persistCompletedTurn`. Stores without it retain the legacy `appendHostSummary` plus optional
-`scheduleCapture` behavior. The bundled Supermemory backend implements the strong method as one
-awaited, run-id-keyed remote upsert and propagates admission failure to the harness warning path.
-Within one store process, the 10,000 most recently completed or exactly retried run fingerprints
-are retained in a bounded LRU by default. An exact retained retry is returned as a duplicate
-without a second request and refreshes its position; a retained run id reused with different
-payload bytes fails before any request. Failed and still-in-flight admissions do not consume the
-completed-entry budget, while concurrent exact retries remain coalesced separately. Each retained
-entry is only two SHA-256 digests, without raw ids or content. After LRU eviction or process
-restart, the remote stable custom id still makes a retry converge on one logical upsert, but the
-remote API does not expose a conditional create/read result that lets mono-agent classify that
-request as a duplicate or detect an older conflicting payload. A different post-eviction payload
-can therefore replace the remote document at the same stable id. That first request becomes the
-new in-flight/local fingerprint, so its exact concurrent retries coalesce and concurrent
-alternatives still fail as conflicts.
+External writable `MemoryStore` implementations must implement `persistCompletedTurn`
+and own stable `runId` admission and deduplication semantics. Read-only stores may
+omit it; the harness rejects enabled writing when the method is absent. Mono-agent
+does not infer, provision, or configure an external service. The optional
+`captureSpeakerKind` on completed turns is host-verified outer-turn provenance,
+not a label extracted from text or `metadata.source`: `human-turn`, `trigger`, or
+`unknown` (the default for legacy and direct callers). An external store must
+preserve the distinction without silently upgrading unknown/trigger assertions
+into first-party evidence. Owner-authorized operator turns, including keyless
+loopback-only clients, are treated as the human owner; automation using that
+interface is consequently attributed as the owner. A keyless non-loopback
+operator endpoint is not trusted for human attribution. Channel adapters must
+verify the sender before setting `human-turn`; a copied payload field is not
+verification. This provenance contract does not itself produce typed graph facts.
 
-### Legacy BuJo capture compatibility
+### Direct integrations
 
-The bundled harness does not call `scheduleCapture` on `BujoMemoryStore`.
-Because the built-in store implements `persistCompletedTurn`, configured BuJo
-agents always use the strong branch described above; capture mode reaches the
-strict parser only after durable, run-idempotent admission.
-
-BuJo retains `scheduleCapture`, direct `capture()`, and the loose capture exports
-as explicit opt-in compatibility/composition surfaces for direct embedders and
-offline calibration tooling. No bundled host invokes them. Their best-effort
-queue is created only when a direct caller invokes `scheduleCapture`; it is absent
-during normal bundled host operation. New integrations should use
-`persistCompletedTurn` instead.
+The harness, direct embedders, and offline calibration use `persistCompletedTurn`.
+Capture mode reaches strict extraction after durable, run-idempotent admission.
+The legacy capture queue, direct `capture()` method, and loose capture exports have
+been removed. See the [migration guide](/reference/framework-simplification-migration/).
 
 ### Strict tier write behavior
 
@@ -185,9 +178,11 @@ the liveness fence, exact inputs, and no-op semantics.
 `capture` fsyncs the completed turn into durable intake, then projects its compact raw audit and
 runs curation in the background, except for the low-signal skipped turns described above. The plan
 uses exactly one chat-LLM call to extract up to eight atomic memories plus their precise
-entities/relations, then at most one additional batched call to classify close existing candidates
-as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP`. Clearly novel candidates skip the second call. Entity
-extraction is part of the first call, not a third pass.
+entities/relations, then at most one small review call over the admitted lines (below), then at
+most one additional batched call to classify close existing candidates as `ADD` / `UPDATE` /
+`SUPERSEDE` / `NOOP`: at most three calls per turn. Turns without review-eligible lines skip the
+review, and clearly novel candidates skip the reconcile call. Entity extraction is part of the
+first call, not a separate pass.
 
 Key properties:
 
@@ -197,14 +192,17 @@ Key properties:
 - **Bounded shutdown without admitted-work loss.** A normal stop drains accepted work with a 10-second safety deadline. If a provider ignores cancellation, stop still returns and the durable pending record resumes on restart.
 - **Strict model contracts.** Extraction and reconciliation accept one exact, bounded JSON value with complete arrays/decisions and no duplicate keys, unknown fields, partial filtering, unsafe text, or ambiguous target collisions. Reconciliation spells out the exact per-action shape: `ADD` has index/action only; `NOOP` requires a supplied target id; `UPDATE` and `SUPERSEDE` require that target plus complete replacement text. Invalid output retries and never counts as successful capture.
 - **Reconcile is intelligent**, not append-only: the pipeline classifies each observation as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP` against existing memories to avoid duplication.
+- **The user's own word wins.** When a `user`-sourced candidate contradicts an existing line, the classifier supersedes that line with the user's statement rather than updating it or adding beside it. This includes a recorded assistant inference, estimate or recommendation whose claim or premise the user corrects (the assistant recommended resuming a game because it was unfinished; the user says they finished it). Other details about the same subject stay separate lines. This is a model rule, in any language. A preference line is replaced only when it is the owner's own (scope `agent`, or the owner turn's own `user:` sender scope), on a host-verified owner turn, by a memory the model sources to the user; the old line stays as superseded history. A peer's or project preference is never replaced this way. Otherwise a preference or lesson line is never superseded, and the change is added beside it.
+- **Duplicates are checked structurally.** Two memories with the same words in the same order are a duplicate; there is no word-shape near-duplicate rule. Whether differently worded lines say the same thing is the model's judgement, at extraction and against the store at reconciliation.
 - **Crash-idempotent semantic commit.** Run-derived fact ids, a retained semantic plan, and the exact replay projection make a post-commit/pre-receipt replay converge without another model call, duplicate fact, or unattested lifecycle/edge.
+- **The assistant's own low-salience lines are not kept.** The extraction model marks each memory's `source` and scores its salience. A memory whose host-bounded source is `assistant` (including a `user` claim on a turn without human user text) needs a salience of at least `0.5`; below that it is dropped before reconciliation, together with any entity or relation only it named. This removes the assistant's progress and status reports and generic advice without word lists, in any language. User, tool and document lines, and retained plans without a `source`, have no floor.
+- **One constrained review pass after extraction.** When a turn has assistant-sourced lines, or owner user lines without a preference label, one small model call reviews only those admitted lines. It may add a preference label to a line that records the owner's own stated like, dislike or taste; the label goes through the same host gates and sits beside the coarse owner fact. It may drop an assistant line that is general information about the world unrelated to the user, or a transient report about the assistant's own process or tooling; user-specific findings and consequential outcomes stay, and it keeps when uncertain. It never changes text, source, entities or salience and never drops user, tool or document lines. Entities and relations named only by dropped lines are pruned. The review runs before `capture.only` filtering, and its decisions are retained with the capture plan, so a retry never reviews again. Turns with no eligible line make no call. The review must return one allowed decision for every listed line; a missing, extra or disallowed decision (or a model failure) rejects the whole review and the capture retries. On the final durable attempt the unreviewed plan is kept, so an uncertain or failed review always means keep.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
+- **Time is observation-grounded.** Capture asks the model to resolve unambiguous relative calendar dates against the immutable host-owned UTC admission instant, retain broad intervals when precision is unavailable, and express an age snapshot as historical (`was 14.5 months old as of 2026-09-08`), not a permanent current age. When the anchor is absent it must not fabricate one. Reconciliation converts an UPDATE whose text carries an ISO date into a dated supersession, rather than rewriting an older daily bullet, when its target is undated or carries an earlier date; other time sensitivity is the classifier's observation-date rule, with no age or "currently" word lists. Reconciliation also offers up to three of a candidate's same-entity lines (those sharing a structured fact key first, then the newest) without a vector score, so the classifier can recognise a changed state. These are model instructions plus structural guards, not factual verification.
 
-On the built-in backend, this path uses a chat LLM, so `writeMode: "capture"`
-**requires `mode: "bujo"`** and fails config validation otherwise—there is no
-silent fallback or tier downshift. The external Supermemory backend accepts
-`capture` independently of the compatibility `mode` value because extraction is
-owned by the service.
+This path uses a chat LLM, so `writeMode: "capture"` **requires
+`mode: "bujo"`** and fails config validation otherwise—there is no silent fallback
+or tier downshift.
 
 ```json
 {
@@ -218,32 +216,97 @@ owned by the service.
 }
 ```
 
-```bash
-MONO_AGENT_MEMORY_MODE=bujo
-MONO_AGENT_MEMORY_WRITE_MODE=capture
+```json
+{ "memory": { "mode": "bujo", "writeMode": "capture" } }
 ```
 
+To use a different model only for the reconciliation classifier, set
+`memory.capture.reconcileModel` to a validated agent-host runtime model reference
+(for example, `openai-codex:gpt-6-sol`). Unset means all capture stages use
+`memory.llm` as before. Extraction and review **always** use `memory.llm`;
+classification alone uses the optional model. The alternate is not a fallback:
+its failure retries capture, and on the final durable attempt nonduplicate
+candidates are added rather than dropped while exact duplicates stay no-ops.
+The optional model uses the agent-host memory runtime and inherits applicable
+timeout and recording settings when the capture LLM is also agent-host. With
+an Ollama capture LLM, extraction/review remain on Ollama and the classifier
+runs through agent-host, so configure that provider's credentials separately.
+No tools or channel fallback are added. A separate classifier effort key is not
+supported.
+On a fictional EN/PL/ES correction set (12 expected corrections, 6 unrelated
+cases, repeated twice), missed corrections changed from 3 to 1 and from 3 to 0,
+with zero unrelated false supersedes in either condition. These are variable,
+bounded observations, not a correctness guarantee; classifier median call time
+rose from about 3.1–3.3 seconds to 7.3–7.5 seconds in the fictional trials.
+Provider costs and latency may vary.
+
+Set `memory.capture.cron: false` or `memory.capture.webhook: false` (BuJo capture
+mode) to skip automatic admission for host-identified cron firings (including
+run-now) or webhook turns, respectively. Only host metadata counts, never a
+conversation-ID prefix. Unset/true keeps the existing default. Other turns,
+history, recall and explicit Remember calls are unchanged; raw summaries in
+`audit/` for skipped turns are also omitted. Previously admitted work still drains.
+When the allowed Remember tool is enabled, the host injects brief manual-write
+guidance into the per-turn session context on affected runs, not the system prompt.
+BuJo receives detail-aware guidance; text-only stores receive text-only guidance.
+If Remember is disabled or not allowed, no manual-write guidance is injected.
+
+An agent can optionally narrow automatic capture with `memory.capture.focus` (up to
+2048 UTF-8 bytes of operator-written guidance, inside a delimited extraction-prompt
+section) and `memory.capture.only` (a subset of `fact`, `preference`, `lesson`).
+For example, a fictional coding agent might use:
+
+```json
+{
+  "memory": {
+    "mode": "bujo", "writeMode": "capture", "path": "./.mono-agent/memory",
+    "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5", "dim": 768 },
+    "llm": { "provider": "agent-host", "model": "openai-codex:gpt-5.6-terra" },
+    "capture": {
+      "focus": "Keep durable coding preferences and lessons; skip PR and CI status.",
+      "only": ["preference", "lesson"]
+    }
+  }
+}
+```
+
+`focus` guides selection, but cannot override the strict JSON contract, attribution
+or host safety checks. `only` is deterministic: after host label validation and
+reconciliation, capture stores a memory only if one accepted label has an allowed
+kind; unrelated graph nodes are also dropped. An empty `only` list suppresses
+all automatic capture; unset preserves existing capture behavior. These settings
+require BuJo capture mode, and never affect explicit `Remember` writes or the
+compact host audit of admitted turns.
+
 :::caution
-The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model; see [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
+The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs`, **default `60000`** — for a slow model; see [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
 :::
 
 The BuJo chat model used by capture comes from the tier's required `memory.llm` block. [Scheduled consolidation](/memory/rituals/) keeps that strict tier contract but is projection-only and makes no LLM call. With `memory.llm.provider: "agent-host"`, capture can point at an SDK runtime model reference (e.g. `openai-codex:gpt-5.6-terra`). The extraction prompt explicitly states exact fields, array bounds, identifier/reference grammar, lowercase relations, and the canonical `0..1` salience range. The provider-neutral strict parser remains authoritative and never clamps, rescales, or coerces model values. Standalone `migrate` remains Ollama-only; legacy `reflect` is a read-only due-state report and needs no model.
 
 ## The `MemoryRecall` tool
 
-The agent performs targeted durable-memory search through the read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** (env: `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`).
+The agent performs targeted durable-memory search through the read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** .
 
-`MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
+`MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads. Search one short, specific topic per call; use several calls for several topics instead of a keyword list. Leave the owner's name out unless the question is specifically about the owner. Weak or related hits alone are not answers.
 
-Questions about the active chat are intentionally not durable-memory queries. For
-unqualified prompts such as `What did you send in the last message?`, `What was your
-previous reply?`, or `What happened in this conversation?`, automatic recall injects
-nothing and `MemoryRecall` returns guidance to use the active conversation history
-without calling the memory backend. A targeted archived question such as `Which release
-color did we decide on?` still uses durable recall. A broad explicit-period question such
-as `What did we work on last week?` belongs to `MemoryJournal` when available. This
-prevents an older semantically similar record from displacing the actual latest message
-and keeps broad chronology distinct from targeted search.
+Local labelled **Preferences & lessons** appear only when their memory lines rank in the effective query's top eight retrieved candidates and clear the automatic background guidance score floor. Within that window, higher-scoring lines rank first *within* each scope; scope precedence is user, then conversation, then agent, with six lines at most. Explicit `kind: "preference"` or `kind: "lesson"` requests keep the query ranking and scope precedence but may display retrieved lines below the score floor. If no eligible lines were retrieved, the section is omitted. The entity-driven fact sheet and ordinary dated hits are unchanged; `about` requests have no guidance section.
+
+Recall returns live records, which includes completed, scheduled, and migrated
+items — not only open ones. Terminal `dropped`/`invalidated` records stay
+excluded. So that a finished or deferred item cannot read as a current fact, a
+result whose status is not `open` is prefixed with that status, for example
+`0.800  [recorded 2026-07-06T12:00:00.000Z] [done] Ship the 0.9 release.`; an ordinary open record also includes the recorded timestamp when supplied. Explicit tool hits keep the backend's ranking. Structured results carry optional `type`, `status`, `createdAt`, `validFrom`, `validTo`, and `dueAt` alongside `id`, `score`, and `text` whenever the backend supplies them — a remote backend that reports none keeps its previous result shape unchanged. `createdAt` is the recording instant, not necessarily the event date.
+
+Questions about the active chat belong to current conversation history, not durable
+memory. The tool description tells the model to use that history rather than
+`MemoryRecall` for the current or last message. If explicitly called, however,
+`MemoryRecall` searches without English-only grammar that would suppress some
+languages but not others. The automatic possibly-relevant block likewise uses
+scores and host-stamped owner status, not an English last-message gate; the
+main model decides whether the lines are relevant. Hits remain evidence, not asserted answers; only
+structured conflicting current facts produce an automatic conflict note. A broad
+explicit-period question belongs to `MemoryJournal` when available.
 
 Interrupted-run recovery is also not a durable-memory query. For a request to
 pick up, continue, or recover interrupted work, the model-facing tool contract
@@ -259,6 +322,50 @@ memory searches for evidence owned by run history.
 
 The configured harness auto-provisions `MemoryRecall` from the single `config.memory` block unless `config.memory.recallTool.enabled` is explicitly `false`. This default applies both to config loaded from disk and to direct `createConfiguredAgentHarness` / `createConfiguredAgentResponder` composition whose typed memory block omits `recallTool`. It exposes a request-scoped loopback MCP endpoint backed by the **same open store and retrieval service** as automatic recall. Identical normalized automatic/tool queries share one per-turn lookup; a different tool query may search again. No second SQLite handle, embedding request, or hand-maintained MCP config is involved. Caller-supplied request extensions are composed with the default tool instead of replacing it.
 
+On this request-scoped configured-harness path, the tool also offers a deliberate
+`useOriginalQuery: true` mode. It reuses the bounded direct lookup already made for
+the current logical turn's original user question, even when the automatic
+score window shows no lines and a later rephrased search would retrieve a
+different set. Existing deliberate-recall graph expansion still applies when
+supported; it can add related evidence within the existing result limit. The mode
+does not combine results from different queries, widen automatic injection, or
+repeat the direct backend lookup. Supply either `query` for an ordinary
+query-local search or `useOriginalQuery: true`, never both. The mode is unavailable
+after an in-turn nonduplicate memory write, for empty questions, after turn
+cleanup, and on standalone or capability-free
+programmatic recall servers that do not own the bound automatic lookup.
+
+The shared writable store counts only delivered memory IDs, once per logical
+turn, in either mode, including tiers without graph expansion.
+
+For the local store's hybrid results, `MemoryRecall` returns fewer weak hits and
+says when the evidence is weak. Scores are ranking evidence, not probabilities:
+
+- **Tail cut.** A hit more than `0.15` below the best hit is dropped. When the
+  best hit clears the calibrated `0.65` automatic-recall floor, hits below that
+  floor are dropped too. The best hit is always kept. Direct hits are cut before
+  one-hop graph expansion and the final list once more after it.
+- **Source date and currentness.** Each hit shows its recorded date and any
+  validity interval. Superseded or invalidated records are `superseded`;
+  a past structured `validTo` or event `dueAt` is `ended <date>`; current values
+  stay unmarked. Date-only values close after the host's local calendar day;
+  timestamped values close when their ISO instant passes, preserving its offset.
+  Local means the host process timezone: a daemon running in UTC uses UTC.
+  Structured hits carry `currentness: "current" | "superseded" | "ended"`.
+- **Evidence note.** When the fact sheet holds conflicting current values, or
+  the top candidates give different values for the same subject, property and
+  scope, the result starts with `Conflicting values:`. Conflicts are checked on
+  at least the top eight candidates before the tail cut, so the note stays even
+  when the cut removes one of the values; structured content
+  carries `evidence: "conflicting"`. When the best hit is below the floor it
+  starts with `Insufficient evidence:` and carries `evidence: "insufficient"`.
+
+The change is additive. The existing text and structured fields keep their
+meaning; `currentness` and `evidence` are new optional fields. Original-query
+mode keeps the automatic lookup's hit list uncut but adds the same notes. A
+degraded lexical-only result and array-only backends that do not report a
+retrieval mode keep their previous output unchanged.
+
 The endpoint is allocated only after the turn acquires a provider-concurrency slot, so queued turns do not accumulate listeners. If endpoint startup fails, the host warns and omits the explicit tool for that turn; automatic recall and the provider response continue. If the memory backend itself fails during a tool call, `MemoryRecall` returns an explicit degraded result instead of fabricated hits.
 
 ```json
@@ -272,8 +379,8 @@ The endpoint is allocated only after the turn acquires a provider-concurrency sl
 }
 ```
 
-```bash
-MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED=true
+```json
+{ "memory": { "recallTool": { "enabled": true } } }
 ```
 
 | `recallTool.enabled` default | Condition |
@@ -289,8 +396,45 @@ Recall fuses two retrievers and re-ranks the result:
 
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
-- Results are combined with **Reciprocal Rank Fusion (RRF)** and evidence strength; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
-- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a direct event date/time, or a direct work/live location. Coordination, reported or ditransitive speech, negation/unknown values, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate tool calls may inspect more results (up to the requested limit).
+- With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus: each query anchor carries an equal share of up to `0.15` for numbers and dates and `0.08` for names. The embedding already reflects a name, so the smaller name bonus keeps records that only share a name from being lifted as far. A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), or a word of at least three letters in the name of an entity associated with a candidate record; there is no question-word or stop-word list; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
+- Without embeddings (Lite, or a temporary embedding outage), and for a record still waiting for its vector, evidence remains lexical term overlap as before.
+
+On web turns, recall and capture use the model-visible owner's unprefixed text rather than the host's project, tag, or conversation-marker envelope. Recall also uses the extracted attachment text, while capture keeps only redacted attachment metadata. The model still receives that envelope, and canonical history retains the dispatched text. This applies to bound live follow-ups too; other hosts use their existing message text. An authenticated direct adapter client can supply a matching trailing owner text that omits earlier model-visible context from capture; the web console always sends the whole owner message.
+
+Automatic recall at the start of a turn shows a small **possibly relevant** block. The main agent model decides what matters; the block never claims to answer:
+
+```text
+## Memory (possibly relevant — may be unrelated; verify before relying)
+
+- – Morgan joined the Maple book club. (recorded 2026-03-01; superseded)
+- – Morgan prefers green tea. (recorded 2026-05-01; current; you said)
+```
+
+Selection uses scores only, with no question grammar or word lists, so it works the same way in any language:
+- the strongest hybrid (embedding-first) hit must reach `0.62`;
+- further lines must score within `0.04` of it;
+- at most three lines are shown, and identical text appears once;
+- tasks remain historical context without a live `[ ]` marker; current lines say `task/plan recorded`, while closed lines keep their ended or superseded status, attribution and insight marker. Use a task tracker for current status;
+- current lines come before superseded or ended ones (date-only `validTo` or event `dueAt` before the host's local day; timestamps before the host instant). Events without a structured date are not inferred from prose;
+- the chosen lines are listed oldest first, so the latest statement reads last.
+
+Each line shows when it was recorded and whether it is `current`, `superseded` or `ended <date>`. When every label on the line agrees, it also shows who said it: `you said`, `assistant noted` or `from a document`.
+
+The block has a 1.5 KB budget. Each line's text is capped at 360 bytes, and a line that doesn't fit is left out. The whole automatic context, including the background card below, stays under about 2.5 KB. Opposite statements can appear together; the model weighs them.
+
+Automatic **possibly relevant** lines are suppressed when host-verified owner text on web, TUI or ACP is at most 16 Unicode code points after NFC normalization and trimming. The person card and labelled background remain available. The backend lookup remains available through explicit `MemoryRecall`; this structural gate uses no word lists and does not apply to standalone `BujoMemoryStore.load()`. Dense scripts can convey more in fewer code points.
+
+Two cases show nothing automatically:
+- Lexical-only (degraded) results. The host warns instead.
+- Turns that are not host-verified owner turns: group chats, other senders, cron triggers, and peers. Host-owned process-job completion wakes suppress both the possibly-relevant block and the automatic memory background card even when routed through an authenticated web channel, without changing capture attribution. This is a privacy default; these turns can still use `MemoryRecall` deliberately.
+
+The floor, window and line count were measured on three real stores that use `nomic-embed-text:v1.5`, with English, Polish and Spanish questions. They were chosen to keep the answer present as often as possible while negative and near-miss probes average at most two lines.
+
+Retrieval quality still limits other languages. With an English-centred embedding model and English memory text, Polish or Spanish questions often don't retrieve the answer at all. A multilingual embedding model is the lever for that.
+
+Programmatic `BujoMemoryStore.load()` now uses the same hybrid-only, score-based selector and three-line bound. It lacks the app's verified-owner privacy gate and richer attribution; standalone callers must gate injection by audience themselves. Lite and degraded lexical-only stores return no automatic block; use `recallWithOutcome()` for deliberate retrieval.
+
+Labelled background stays language-neutral too. Preferences and verified lessons in the turn's scopes join when their memory ranks among the top retrieved hits and clearly leads the candidate median. Opposite advice is shown together. A person card appears when the message contains an exact person name or `person:` id, such as `Morgan`, `¿Dónde trabaja Morgan?` or `Gdzie pracuje Morgan?`. The card shows that person's current user-stated or document facts with the recording date, in the form `home town: Maple Harbor (you said, recorded 2026-09-06)`, plus age for a birth date. It does not filter keys by the question's wording. Two or more current distinct values for one key show as `conflicting values — ask`. First-person wording no longer selects the owner's card. Keys drop the `other:` namespace and values render as text, not JSON, in both the automatic card and the explicit `MemoryRecall` fact sheet.
 
 You can exercise the same hybrid scoring config-aware from the agent folder with `mono-agent memory search`:
 
@@ -320,7 +464,7 @@ The first call requires all three range fields:
 {
   "fromDate": "2026-09-01",
   "throughDate": "2026-09-07",
-  "timeZone": "Europe/Amsterdam",
+  "timeZone": "CET",
   "limit": 10
 }
 ```
@@ -339,10 +483,10 @@ Coverage says whether the range scan completed and why it stopped. A complete
 empty range is successful with `noData: true`; backend failure is the generic
 `journal_unavailable` error; unsupported backends do not advertise the tool.
 
-Lite, Journal, and BuJo are supported, including read-only local stores.
-Supermemory is explicitly unsupported because targeted external search has no
-stable local chronology. Results include canonical daily source references and
-stored validity/supersession state at snapshot time. Dropped records, raw BuJo
+Lite, Journal, and BuJo are supported, including read-only local stores. Custom
+stores must affirm chronological support before the tool is advertised. Results
+include canonical daily source references and stored validity/supersession state
+at snapshot time. Dropped records, raw BuJo
 audit observations, session ids, memory-root paths, embeddings, salience,
 access telemetry, and raw backend errors are excluded. Unsafe text and ids are
 replaced with fixed markers, and all returned content is untrusted historical
@@ -364,7 +508,7 @@ carrying a credential is rejected and nothing is written. See
 ### Tool policy for explicit memory reads
 
 `memory.recallTool.enabled` is the shared opt-out for both explicit read tools.
-It defaults on for every configured backend. `MemoryRecall` is gated by that
+It defaults on for configured memory. `MemoryRecall` is gated by that
 declaration rather than `tools.allowedTools`, so a restrictive or empty
 allowlist still leaves targeted search available. `MemoryJournal` enumerates a
 date range and has the additional normal app-tool policy gate: under a
@@ -372,8 +516,8 @@ restrictive allowlist, include `MemoryJournal`; exact/server/global deny wins.
 
 :::caution
 Setting `config.memory.recallTool.enabled: false` removes both explicit memory
-read tools. It does not disable automatic score- and answer-evidence-gated
-context recall from an otherwise configured backend, and it does not disable
+read tools. It does not disable the automatic possibly-relevant
+context block from an otherwise configured backend, and it does not disable
 operator-only `mono-agent memory` inspection.
 :::
 
@@ -383,15 +527,15 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 
 | Env var | Config key | Notes |
 |---------|-----------|-------|
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; built-in `capture` requires `mode: bujo`, while Supermemory extraction is service-owned |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Explicit memory-read family: targeted `MemoryRecall` for every backend plus policy-allowed `MemoryJournal` on local tiers; default on |
-| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline |
-| `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
-| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call in-app chat-LLM timeout, **default `60000`**. See [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `lmstudio` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present; no cross-provider fallback |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama; `text-embedding-nomic-embed-text-v1.5` for LM Studio) |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
+| — | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; `capture` requires `mode: bujo` |
+| — | `memory.recallTool.enabled` | Explicit memory-read family: targeted `MemoryRecall` plus policy-allowed `MemoryJournal` on local tiers; default on |
+| — | `memory.mode` | `lite` / `journal` / `bujo` |
+| — | `memory.llm.model` | Chat model for the capture pipeline |
+| — | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
+| — | `memory.llm.timeoutMs` | Per-call in-app chat-LLM timeout, **default `60000`**. See [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout). |
+| — | `memory.embeddings.provider` | `ollama` / `lmstudio` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present; no cross-provider fallback |
+| — | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama; `text-embedding-nomic-embed-text-v1.5` for LM Studio) |
+| — | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
 
 See [Environment variables](/config/env-vars/) for the full table and precedence rules.
 

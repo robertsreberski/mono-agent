@@ -26,6 +26,10 @@ vi.mock("./api", async (importOriginal) => ({
     patchThread: vi.fn(),
     deleteThread: vi.fn(),
     patchAgent: vi.fn(),
+    latestAgentRestart: vi.fn(),
+    requestAgentRestart: vi.fn(),
+    restartFromProposal: vi.fn(),
+    restartStatus: vi.fn(),
     setAgentRunDefaults: vi.fn(),
     clearAgentRunDefaults: vi.fn(),
     agentSkills: vi.fn(),
@@ -146,6 +150,7 @@ beforeEach(async () => {
   vi.mocked(api.activeThreads).mockResolvedValue({
     threads: [], total: 0, truncated: false, runningCounts: {},
   });
+  vi.mocked(api.latestAgentRestart).mockResolvedValue(null);
   vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
   vi.mocked(api.threads).mockResolvedValue({ threads: [] });
   vi.mocked(api.projects).mockResolvedValue([]);
@@ -158,6 +163,8 @@ beforeEach(async () => {
 afterEach(async () => {
   cleanup();
   document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
+  document.documentElement.style.removeProperty("--status-bar-inset");
+  document.documentElement.style.removeProperty("--top-edge-clearance");
   await commands.emulateColorScheme(null);
   await persistence.clearAll();
   localStorage.clear();
@@ -454,18 +461,17 @@ describe("the dashboard as the mobile entrance screen", () => {
     await capture("conversation-search-mobile");
   });
 
-  it("opens the settings dialog over this screen, and closing it stays here", async () => {
+  it("pushes the settings index over the Dashboard, and closing it stays here", async () => {
     openConsole();
     await loaded();
 
     await userEvent.click(within(panel()).getByRole("button", { name: "Agent settings" }));
-    const dialog = await screen.findByRole("dialog");
-    // The conversation was never pushed, so there is nothing behind the dialog
-    // for the operator to be dropped into.
+    await waitFor(() => expect(document.querySelector(".settings-screen[data-section='index']")).not.toBeNull());
     expect(chatRegion()).toHaveAttribute("inert");
+    expect(panel()).toHaveAttribute("inert");
 
     await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
     expect(chatRegion()).toHaveAttribute("inert");
     expect(panel()).not.toHaveAttribute("inert");
   });
@@ -492,11 +498,22 @@ function expectStatusBarSurface(surface: Element): void {
   expect(getComputedStyle(document.body).backgroundColor).toBe(color);
   expect(getComputedStyle(document.documentElement).backgroundColor).toBe(color);
   expect(sampler.getBoundingClientRect().top).toBe(0);
-  expect(sampler.getBoundingClientRect().height).toBe(1);
-  expect(sampler.getBoundingClientRect().width).toBe(window.innerWidth);
+  expect(sampler.getBoundingClientRect().height).toBe(47);
+  expect(sampler.getBoundingClientRect().width).toBeGreaterThanOrEqual(window.innerWidth * 0.9);
   expect(sampler.inert).toBe(true);
-  expect(getComputedStyle(sampler).pointerEvents).toBe("none");
-  expect(document.elementsFromPoint(10, 0)).not.toContain(sampler);
+  const style = getComputedStyle(sampler);
+  expect(style.position).toBe("fixed");
+  expect(style.zIndex).toBe("50"); // Chat is 40; interactive overlays are 100+.
+  expect(style.opacity).toBe("1");
+  expect(style.backdropFilter).toBe("none");
+  expect(style.pointerEvents).toBe("none");
+  // Chromium excludes inert nodes from normal hit tests too; remove inert only
+  // for this geometric probe and restore both interaction guards immediately.
+  sampler.inert = false;
+  sampler.style.pointerEvents = "auto";
+  expect(document.elementFromPoint(window.innerWidth / 2, 4)).toBe(sampler);
+  sampler.style.removeProperty("pointer-events");
+  sampler.inert = true;
 }
 
 /**
@@ -531,6 +548,7 @@ const expectStationary = (rect: DOMRect, before: DOMRectReadOnly): void => {
 describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
   it.each(["light", "dark"] as const)("tracks the %s Dashboard and conversation without changing layout", async (scheme) => {
     await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
     await commands.emulateColorScheme(scheme);
     const snapshot = bootstrap(agents, [alphaThread, cronThread, failedThread], alphaThread.id, { threadsSourceId: "alpha" });
     vi.mocked(api.bootstrap).mockResolvedValue({
@@ -544,6 +562,9 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
     const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
     expectStatusBarSurface(shell);
     expectStatusBarSurface(dashboard);
+    for (const control of dashboard.querySelectorAll<HTMLElement>(".dashboard-header button")) {
+      expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(sampler.getBoundingClientRect().bottom);
+    }
     expect(shell.getBoundingClientRect().height).toBe(viewport.height);
     expect(shell.getBoundingClientRect().top).toBe(0);
 
@@ -562,8 +583,13 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
     await waitFor(() => expect(chat.getBoundingClientRect().left).toBe(viewport.name === "phone" ? 0 : 340));
     await slideSettled();
     expectStatusBarSurface(chat);
+    for (const control of header.querySelectorAll<HTMLElement>("button")) {
+      if (control.getClientRects().length > 0) {
+        expect(control.getBoundingClientRect().top).toBeGreaterThanOrEqual(sampler.getBoundingClientRect().bottom);
+      }
+    }
     expect(header.getBoundingClientRect().top).toBe(0);
-    expect(getComputedStyle(header).paddingTop).toBe(viewport.name === "phone" ? "7px" : "10px");
+    expect(getComputedStyle(header).paddingTop).toBe("47px");
     for (let step = 0; step < 4; step += 1) {
       await userEvent.keyboard("{Tab}");
       expect(document.activeElement).not.toBe(sampler);
@@ -575,6 +601,7 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
 
   it("keeps the status surface and header stationary while the transcript scrolls", async () => {
     await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
     vi.mocked(api.thread).mockResolvedValue(detail(alphaThread,
       `Alpha transcript\n\n${Array.from({ length: 80 }, (_, index) => `Transcript paragraph ${index}.`).join("\n\n")}`,
     ));
@@ -598,6 +625,7 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
 
   it.each(["loading", "service-error", "render-error"] as const)("preserves the distinct %s screen surface", async (state) => {
     await page.viewport(viewport.width, viewport.height);
+    document.documentElement.style.setProperty("--status-bar-inset", "47px");
     if (state === "render-error") {
       render(<RootErrorFallback />, { container: mountDocument() });
     } else {
@@ -616,5 +644,36 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
       await commands.emulateColorScheme(scheme);
       expectStatusBarSurface(surface);
     }
+  });
+});
+
+const ipadClearanceShots = import.meta.env.VITE_IPAD_CLEARANCE_SHOTS as string | undefined;
+describe("installed iPad header clearance (Chromium simulation)", () => {
+  it.each(["light", "dark"] as const)("keeps %s dashboard and conversation content below the blur", async (scheme) => {
+    await page.viewport(1366, 1024);
+    await commands.emulateColorScheme(scheme);
+    document.documentElement.style.setProperty("--status-bar-inset", "32px");
+    // Chromium is a browser tab: override the single media-gated property with
+    // the same expression used by the installed iPad rule, not the header CSS.
+    document.documentElement.style.setProperty("--top-edge-clearance", "min(40px, calc(var(--status-bar-inset) * 100))");
+    openConsole();
+    expect(await screen.findByRole("button", { name: "Open Alpha thread" })).toBeVisible();
+    const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
+    expect(sampler.getBoundingClientRect().height).toBe(32);
+    expect(sampler.getBoundingClientRect().top).toBe(0);
+    const dashboard = document.querySelector<HTMLElement>(".dashboard-header")!;
+    expect(getComputedStyle(dashboard).paddingTop).toBe("72px");
+    for (const child of dashboard.querySelectorAll<HTMLElement>(".eyebrow, button")) {
+      expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    }
+    if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-dashboard.png` });
+    await userEvent.click(screen.getByRole("button", { name: "Open Alpha thread" }));
+    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    const header = document.querySelector<HTMLElement>(".chat-header")!;
+    expect(getComputedStyle(header).paddingTop).toBe("72px");
+    for (const child of header.querySelectorAll<HTMLElement>(".eyebrow, button")) {
+      if (child.getClientRects().length > 0) expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    }
+    if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-conversation.png` });
   });
 });

@@ -61,6 +61,21 @@ describe("CronRunPart", () => {
   });
 });
 
+it("labels a preflight gate skip as a terminal, non-failure row", () => {
+  render(<CronRunPart type="data" name="cron-run" status={{ type: "complete" }} data={{
+    runId: "cron:digest:gate",
+    trigger: "scheduled",
+    status: "skipped_gate",
+    sequence: 4,
+    eventCount: 0,
+  }} />);
+
+  const row = screen.getByRole("group", { name: "Cron run cron:digest:gate, scheduled, skipped gate" });
+  expect(row).toHaveClass("is-skipped_gate");
+  expect(screen.getByText("scheduled · skipped gate")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Load activity" })).not.toBeInTheDocument();
+});
+
 it("hides legacy silent synthetic cards but preserves a card with real content", () => {
   const data = { runId: "silent", status: "succeeded", silent: true };
   const { rerender } = render(<CronRunPart type="data" name="cron-run" status={{ type: "complete" }} data={data} />);

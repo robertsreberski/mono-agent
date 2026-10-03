@@ -99,6 +99,18 @@ describe("SubagentPart", () => {
     expect(within(nested[2] as HTMLElement).getByText("failed")).toBeInTheDocument();
   });
 
+  it("shows inline subagent commands without a visible directory label", () => {
+    const { container } = render(part({ ...delegation, calls: [
+      { toolCallId: "bash", toolName: "Bash", args: { command: "cd '/repo/fixture work' && pnpm test" }, status: "complete" },
+      { toolCallId: "exec", toolName: "Exec", args: { executable: "pnpm", args: ["test"], workdir: "/repo/fixture work" }, status: "complete" },
+    ] }));
+    const steps = container.querySelectorAll("details.activity-step");
+    expect(steps[1]?.querySelector(".process-job-command-preview")?.textContent).toBe("pnpm test");
+    expect(steps[1]?.querySelector(".process-job-command-summary")?.getAttribute("title")).toBe("/repo/fixture work");
+    expect(steps[2]?.querySelector(".process-job-command-summary")?.getAttribute("title")).toBe("/repo/fixture work");
+    expect(container.querySelector(".process-job-command-location")).toBeNull();
+  });
+
   it("clusters repeated nested calls and exposes durations and errors per step", () => {
     render(part({
       ...delegation,

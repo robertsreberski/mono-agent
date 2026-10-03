@@ -148,6 +148,21 @@ remaining the destination boundary.
   normal outbound message. The send returns immediately; a later tap removes the
   keyboard and starts a separate user turn that names the original message and
   selected label. Use `AskUser` instead when the current run must wait.
+- **`message_thread_id`** (optional on both tools) posts into a Telegram forum
+  topic. When it is omitted, a send to the chat the current conversation is in
+  stays in the current topic (a reply follows the replied message instead), and
+  any other chat receives its main conversation, including a forum's General
+  topic. A message sent into a topic is recorded in that topic's own history.
+- **`projectId`** (both tools, only with
+  [`telegram.projects.enabled`](/channels/telegram/#forum-topics-as-projects))
+  posts into the forum topic of a Telegram-linked project instead of naming
+  `chat_id`/`message_thread_id`, which it excludes. The web console resolves it;
+  the send is refused (and never redirected to General) when the project has no
+  topic, the topic is closed or gone, the chat is outside the allowlist, or the
+  console is unreachable. The result names the project, not the chat or topic.
+  A send Telegram answers with "thread not found" marks that topic gone. In
+  `producing-conversation` scope the destination is already bound, so
+  `projectId` is not offered.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
@@ -166,7 +181,9 @@ For an agent shared by multiple Telegram chats, add a stricter per-run boundary:
 ```
 
 `scope` binds message, button, and file delivery to the Telegram chat that
-produced the current request, even if another chat is globally allowed.
+produced the current request, even if another chat is globally allowed. In a
+forum topic the binding includes the topic: sends go to the producing topic and a
+different `message_thread_id` is rejected.
 For `TelegramSendFile`, that binding is entirely host-owned: strict mode removes
 `chat_id` from the model-facing schema, derives the chat from trusted request
 context, rechecks the adapter allowlist, and omits the raw chat id from the tool
@@ -291,7 +308,7 @@ The example assumes `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, 
 }
 ```
 
-The allowlist also accepts `MONO_AGENT_ALLOWED_TOOLS` (and `MONO_AGENT_DISALLOWED_TOOLS` for denials, where deny wins). See [Tool policy](/tools/policy/) for allow/deny precedence and how MCP tool names are matched.
+Configure the allowlist with `tools.allowedTools` and denials with `tools.disallowedTools` (deny wins). See [Tool policy](/tools/policy/) for allow/deny precedence and how MCP tool names are matched.
 
 :::note
 Allowing a send tool but leaving the adapter disabled or unconfigured means the tool is present in name but has no working destination — the send fails. Enable and configure the adapter (Slack / Telegram) as well.
@@ -305,7 +322,7 @@ This is AI-native: the operator just writes the cron/webhook prompt, and its fin
 
 Cron has one failure-side notification path as well: if a `notify: true` cron job fails because **all configured models failed** (`provider_unavailable_exhausted`), the app can send a short one-line error notice to the job's explicit `notifyConversationId`. This notice is verbatim, never starts another model turn, never infers a destination, and is rate-limited per job by `notifyFailureCooldownHours` (default `6` hours).
 
-`conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread). The special notify-only destination `web:new` means “create a new web-console conversation”; other `web:*` values are rejected.
+`conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `telegram:-1001234567890:12` (a Telegram forum topic), `slack:C123`, or `slack:C123:1718.99` (a Slack thread). The special notify-only destination `web:new` means “create a new web-console conversation”; other `web:*` values are rejected.
 
 ### Destination resolution
 
@@ -331,7 +348,7 @@ When the web console's header bell is enabled, a new marked conversation is comm
 
 ### Staying silent ("nothing to report")
 
-To send nothing for a tick or request, the agent either produces an **empty final answer** or replies with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is posted.
+To send nothing for a `notify: true` tick or request, call `FinishSilently({})` alone without narration or attachments. The host records the silent disposition and posts no notification. `FinishSilently` is Pi-runtime-only and must be included in explicit `tools.allowedTools` lists (including `DEFAULT_SAFE_TOOLS`-based lists); allow-all admits it. A prior ordinary tool error or refused silence call does not by itself prevent a later accepted silence, but runtime failure/cancellation, prior answer text or rich output, an answered `AskUser` interaction, a pending `AskParent` question, or consumed live input does. When the tool is unavailable, reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). An empty final answer is an `empty_response` failure.
 
 ### How native notification differs from send tools
 

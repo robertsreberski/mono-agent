@@ -14,7 +14,6 @@ import {
   type CronOperatorRunTrigger,
   type CronOperatorRunTruncatedField,
   type SessionToolHistoryEventMetadata,
-  type MonitorProjection,
   type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
@@ -100,7 +99,7 @@ export const WEB_MAX_PROJECT_CONTEXT_CHARACTERS = 4_000;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
-export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job" | "monitor";
+export type WebNotificationTriggerKind = WebThreadNotificationTriggerKind | "job";
 
 export type WebThreadTrigger =
   | { readonly kind: "webhook" }
@@ -124,6 +123,8 @@ export interface WebModelOption {
   readonly reasoningMode?: string;
   readonly label?: string;
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
 }
 
 export type WebRunSettingSource = "config" | "override";
@@ -133,17 +134,41 @@ export interface WebAgentRunSettings {
   readonly config: {
     readonly model?: string;
     readonly effort?: string;
+    readonly context1M?: boolean;
   };
   readonly override: {
     readonly model?: string;
     readonly effort?: string;
+    readonly context1M?: boolean;
   } | null;
   readonly effective: {
     readonly model?: string;
     readonly modelSource: WebRunSettingSource;
     readonly effort?: string;
+    readonly context1M?: boolean;
     readonly effortSource: WebRunSettingSource;
+    readonly context1MSource?: WebRunSettingSource;
   };
+}
+
+export interface WebAgentRestartSupport {
+  readonly supported: boolean;
+  readonly reason?: string;
+}
+
+export type WebAgentRestartStage = "requesting" | "restarting" | "back_online";
+export type WebAgentRestartOutcome = "success" | "failure" | "not_confirmed";
+/** Secret-free, reload-safe operation status; 202 acceptance is not success. */
+export interface WebAgentRestartOperation {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly stage: WebAgentRestartStage;
+  readonly outcome?: WebAgentRestartOutcome;
+  readonly reason?: string;
+  readonly requestedAt: string;
+  readonly deadline: string;
+  /** Count from web-owned in-flight turns only; never an admission fence. */
+  readonly approximateRunningTurns?: number;
 }
 
 export interface WebAgentSummary {
@@ -176,7 +201,10 @@ export interface WebAgentSummary {
    * Usability is projected from the live connection's `/v1/info`; a stored bit
    * is presentation state, never authorization to call the agent.
    */
+  /** Current live capability; old/malformed and offline producers fail closed. */
+  readonly restart?: WebAgentRestartSupport;
   readonly supportsProviderAuth?: true;
+  readonly supportsManualCompaction?: true;
   readonly supportsProviderUsage?: true;
   readonly supportsProviderUsageRefresh?: true;
   /** Additive explicit live-check action; passive status remains traffic-free. */
@@ -333,6 +361,7 @@ export interface WebRunActivity {
 export type WebCancelOrigin = "user-stop" | "client-disconnect" | "client-reconnect" | "service-shutdown" | "api";
 
 export interface WebRunState {
+  readonly context1M?: boolean;
   readonly cancelOrigin?: WebCancelOrigin;
   readonly id?: string;
   readonly status: WebRunStatus;
@@ -366,7 +395,26 @@ export interface WebJobActivity {
   };
 }
 
+export type WebWakeScheduleDefinition =
+  | { readonly kind: "once"; readonly timezone: string; readonly localAt: string; readonly message?: string; readonly compactFirst?: boolean }
+  | { readonly kind: "weekly"; readonly timezone: string; readonly days: readonly number[]; readonly times: readonly string[]; readonly message?: string; readonly compactFirst?: boolean };
+
+export interface WebWakeSchedule {
+  readonly scheduleId: string;
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly definition: WebWakeScheduleDefinition;
+  readonly state: "active" | "paused" | "completed";
+  readonly revision: number;
+  readonly nextFireAt: string | null;
+  readonly lastOutcome: "fired" | "skipped" | "uncertain" | "failed" | null;
+  readonly createdAt: string;
+}
+
 export interface WebThread {
+  /** Transient service-owned operation; not part of the stored thread or revision. */
+  readonly compaction?: { readonly status: "running"; readonly trigger: "manual"; readonly startedAt: string };
+  readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"]; readonly compactFirst?: boolean };
   readonly id: string;
   readonly sourceId: string;
   readonly title: string;
@@ -399,6 +447,7 @@ export interface WebThread {
   readonly runModel: string | null;
   /** Per-conversation effort override, or null when the agent default applies. */
   readonly runEffort: string | null;
+  readonly runContext1M?: boolean | null;
 }
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
@@ -445,16 +494,6 @@ export type WebTagChangedPayload =
 
 export type WebProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
 
-export interface WebProjectTransition {
-  readonly id: number;
-  readonly afterMessageId: string | null;
-  readonly turnId: string | null;
-  readonly before: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
-  readonly after: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
-  readonly createdAt: string;
-}
-
-/** One end of a {@link WebModelTransition}: a resolved route, never a guess. */
 export interface WebRouteSelection {
   /** Resolved model id, or null when nothing reported one for that turn. */
   readonly model: string | null;
@@ -462,30 +501,46 @@ export interface WebRouteSelection {
   readonly effort: string | null;
 }
 
+export type WebConversationMarkerPart = {
+  readonly type: "conversation-marker";
+  /** Actual event instant, independent of monotonic transcript ordering. */
+  readonly at: string;
+} & (
+  | { readonly kind: "model"; readonly before: WebRouteSelection; readonly after: WebRouteSelection }
+  | { readonly kind: "project"; readonly before: WebProjectIdentity | null; readonly after: WebProjectIdentity | null }
+  | { readonly kind: "resumed"; readonly previousMessageAt: string; readonly idleMs: number }
+  | { readonly kind: "compaction"; readonly operationId: string; readonly trigger: "manual" | "automatic"; readonly status: "succeeded" | "skipped" | "failed"; readonly tokensBefore?: number; readonly tokensAfter?: number; readonly tokenCountsExact?: boolean; readonly reason?: "model_changed" | "nothing_to_compact" | "outcome_unknown" }
+);
+
+export interface WebProjectIdentity {
+  readonly id: string;
+  readonly name: string;
+  readonly color: WebProjectColor;
+}
+
+/** Channels whose conversations can be mirrored into a project. */
+export type WebExternalConversationChannel = "telegram";
+
 /**
- * One change of the conversation's SELECTED route, recorded where it took
- * effect: between the last turn that ran on the old model/effort and the first
- * turn admitted on the new one.
- *
- * Deliberately not a log of picker writes. The model picker persists an
- * override the moment it is touched and can be flipped any number of times
- * before the next turn is sent, so each row is written at turn admission by
- * comparing that turn's frozen resolved route with the last turn that reported
- * one. A flip that came back to where it started leaves no row, a run of flips
- * leaves one, and a route nothing resolved is never claimed as a change.
- *
- * A provider fallback is NOT a route change: what a run actually executed with
- * stays in that run's own {@link WebRunAttribution}. `turnId` names the first
- * turn on the new route, and `afterMessageId` the settled message it follows
- * (null only for a row whose anchor predates the loaded page).
+ * `open`/`closed` follow the channel's own lifecycle messages; `gone` means a
+ * send proved the conversation no longer exists (Telegram sends no deletion
+ * update). A gone conversation keeps its project, context and web chats.
  */
-export interface WebModelTransition {
-  readonly id: number;
-  readonly afterMessageId: string | null;
-  readonly turnId: string | null;
-  readonly before: WebRouteSelection;
-  readonly after: WebRouteSelection;
-  readonly createdAt: string;
+export type WebExternalConversationState = "open" | "closed" | "gone";
+
+/**
+ * A conversation that lives on another channel, such as a Telegram forum
+ * topic, mirrored one way into a project. The id is opaque; channel routing
+ * identities never leave the host. Its history is not viewable in the console.
+ */
+export interface WebExternalConversation {
+  readonly id: string;
+  readonly channel: WebExternalConversationChannel;
+  /** Sanitized `Chat › Topic` label. */
+  readonly label: string;
+  readonly state: WebExternalConversationState;
+  readonly projectId: string | null;
+  readonly lastSeenAt: string;
 }
 
 export interface WebProject {
@@ -503,6 +558,8 @@ export interface WebProject {
   /** Members with a foreground turn running. */
   readonly runningCount: number;
   readonly monthUsd?: number;
+  /** The channel conversation this project mirrors, when it is bound to one. */
+  readonly external?: WebExternalConversation;
 }
 
 export interface CreateWebProjectInput {
@@ -616,8 +673,25 @@ export interface WebToolCall {
   readonly argsDigest?: string;
 }
 
+export type WebRestartProposalAvailability =
+  | "available" | "stale" | "offline" | "unsupported" | "in_progress" | "used";
+
 export type WebMessagePart =
+  | { readonly type: "reply_options"; readonly id: string; readonly options: readonly string[] }
+  | WebConversationMarkerPart
   | { readonly type: "text"; readonly text: string }
+  | {
+      readonly type: "restart_proposal";
+      readonly id: string;
+      readonly reason?: string;
+      /** Computed by the web service, not persisted or supplied by the agent. */
+      readonly restartable?: {
+        readonly state: WebRestartProposalAvailability;
+        readonly reason?: string;
+        /** Web-owned poll id for a used proposal; never the adapter operation id. */
+        readonly operationId?: string;
+      };
+    }
   | { readonly type: "reasoning"; readonly text: string }
   | WebCronReplyContextPart
   | ({ readonly type: "tool-call" } & WebToolCall)
@@ -640,6 +714,8 @@ export type WebMessagePart =
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
+      /** Child token counts, when measured; omitted for unreported runs. */
+      readonly usage?: WebUsageTokens;
       /** Provider route requested, attempted, and executed by this child. */
       readonly attribution?: WebRunAttribution;
       /** Metadata for the persisted parent `Agent` call; child internals omit it. */
@@ -661,6 +737,14 @@ export type WebMessagePart =
       readonly job: ProcessJobProjection;
       /** Bounded normal-turn answer produced by the terminal wake, when ready. */
       readonly responseText?: string;
+    }
+  | {
+      readonly type: "scheduled-wake";
+      readonly occurrenceId: string;
+      readonly scheduledAt: string;
+      readonly firedAt: string;
+      readonly timezone: string;
+      readonly message?: string;
     }
   | {
       /** Chronological marker for the point where a retained job wake was applied. */
@@ -690,15 +774,6 @@ export type WebMessagePart =
       readonly receivedAt?: string;
       /** The steer author's quote, when the standalone bubble carries one. */
       readonly quote?: WebQuote;
-    }
-  | {
-      readonly type: "monitor-activity";
-      /** One compact run-level row, with one latest projection per Monitor. */
-      readonly monitors: readonly {
-        readonly projection: MonitorProjection;
-        /** Exact delivered wake identities, retained only for idempotent UI aggregation. */
-        readonly deliveryKeys: readonly string[];
-      }[];
     }
   /**
    * One runtime/provider diagnostic. `data` is present only for the events the
@@ -805,9 +880,32 @@ export interface WebQuote {
   readonly messageId: string;
 }
 
+export interface WebUsageTokens {
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly output: number;
+}
+
+export interface WebUsageSlice {
+  readonly tokens?: WebUsageTokens;
+  readonly costUsd?: number;
+  readonly tokensPartial?: true;
+  readonly costPartial?: true;
+}
+
+export interface WebThreadUsage {
+  readonly total: WebUsageSlice;
+  readonly subagents?: WebUsageSlice & { readonly runs: number; readonly runsWithTokens?: number };
+  /** Costs are additive. Tokens are main-run and detached tokens only: synchronous
+   * child tokens are folded into their parent's model, not added to child rows. */
+  readonly byModel: readonly (WebUsageSlice & { readonly model?: string })[];
+  readonly computedAt: string;
+  /** Settled assistant rows with a turn, including cron/notification runs; excludes process-job cards. */
+  readonly settledAssistantTurns?: number;
+}
+
 export interface WebThreadDetail {
-  readonly projectTransitions?: readonly WebProjectTransition[];
-  readonly modelTransitions?: readonly WebModelTransition[];
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];
   /** Opaque keyset cursor for the next older message page. */
@@ -857,8 +955,6 @@ export interface WebActiveThreads {
 }
 
 export interface WebMessagePage {
-  readonly projectTransitions?: readonly WebProjectTransition[];
-  readonly modelTransitions?: readonly WebModelTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }
@@ -949,6 +1045,8 @@ export interface WebCatalogModel {
   readonly provider: string;
   readonly providerLabel: string;
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   readonly reasoning?: boolean;
   readonly effortLevels?: readonly string[];
   readonly reasoningMode?: string;
@@ -1204,11 +1302,13 @@ export interface CreateWebThreadInput {
   readonly effort?: string | null;
   /** Optional project the new conversation joins; same agent, not archived. */
   readonly projectId?: string;
+  readonly context1M?: boolean | null;
 }
 
 export interface PutWebAgentRunSettingsInput {
   readonly model: string | null;
   readonly effort: string | null;
+  readonly context1M?: boolean | null;
 }
 
 export interface PatchWebAgentInput {
@@ -1237,6 +1337,7 @@ export interface PatchWebThreadInput {
    * back untouched, which is exactly what the caller must adopt.
    */
   readonly ifRunConfigUnset?: boolean;
+  readonly context1M?: boolean | null;
 }
 
 export interface StartWebTurnInput {
@@ -1245,6 +1346,7 @@ export interface StartWebTurnInput {
   readonly attachmentIds?: readonly string[];
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: boolean | null;
 }
 
 export interface StartWebLiveInputInput {

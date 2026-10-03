@@ -1,3 +1,4 @@
+import type { WorkerActivityTracker } from "./worker-activity.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
@@ -29,8 +30,10 @@ import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.j
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 
 export interface ContinuationControllerPort {
+  readonly activityTracker?: WorkerActivityTracker;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly running: Map<ChannelId, RunningChannel>;
@@ -78,8 +81,11 @@ export function ensureInteractionBridge(controller: ContinuationControllerPort, 
       suppressInteractionTools: true,
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
     });
+    const telegramSend = adapterSendSettings?.telegram;
+    // `projectId` sends resolve their forum topic through this bridge too.
     const deliveryHistoryNeeded = adapterSendSettings?.slack !== undefined
-      || adapterSendSettings?.telegram?.tools.send === true;
+      || telegramSend?.tools.send === true
+      || (telegramSend?.projects === true && telegramSend.tools.file);
     const scopedProgressNeeded = settings.progressEnabled
       && (coreConfig.tools.mcpRequestContextServers?.length ?? 0) > 0;
     if (!askUserAllowed && !deliveryHistoryNeeded && !scopedProgressNeeded && !settings.configured) {
@@ -87,6 +93,7 @@ export function ensureInteractionBridge(controller: ContinuationControllerPort, 
     }
     try {
       const bridge = await startInteractionBridge({
+        onActivityChange: (count) => controller.activityTracker?.set("asks", count),
         host: settings.host,
         port: settings.port,
         askTimeoutMs: settings.askTimeoutMs,
@@ -167,7 +174,8 @@ export async function startContinuationServiceIfConfigured(controller: Continuat
   if (controller.stopped) return;
   let coreConfig: MonoAgentConfig;
   try {
-    coreConfig = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
+    coreConfig = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) });
   } catch (error) {
     if (isAppCoreConfigError(error)) {
       controller.logger?.debug?.("Continuation service is waiting for valid core configuration.", { reason });

@@ -8,7 +8,7 @@ sidebar:
 This playbook wires a timezone-aware cron job to Telegram, Slack, or a new web-console conversation. On a schedule, the agent builds a daily digest using shared conversation history, returns the digest as its final answer, and `mono-agent` delivers that final answer **verbatim** through native notification.
 
 :::note
-Opt in with `notify: true` per cron job (the same model is available to webhook endpoints). On a notify turn the harness injects guidance: the agent's final reply is delivered to the destination as-is (no second LLM turn) and recorded to that conversation's history, so a user's reply resumes with it in context. To say nothing, the agent produces empty final text or replies with exactly `NOTHING_TO_REPORT` — then no notification is sent. Defaults stay off: a job without `notify` delivers nothing.
+Opt in with `notify: true` per cron job (the same model is available to webhook endpoints). On a notify turn the harness injects guidance: the agent's final reply is delivered to the destination as-is (no second LLM turn) and recorded to that conversation's history, so a user's reply resumes with it in context. To say nothing, the agent calls `FinishSilently({})` alone, or replies with exactly `NOTHING_TO_REPORT` if that tool is unavailable — then no notification is sent. Defaults stay off: a job without `notify` delivers nothing.
 :::
 
 ## Who this is for
@@ -23,7 +23,7 @@ A timezone-aware cron job that builds a daily digest with shared run history and
 
 - **`cron.scheduled-prompts`** — in-app scheduled prompts; see [Cron](/channels/cron/). *(config)*
 - **`cron.jobs-dir`** — author jobs as `cron/<id>.md` frontmatter files; see [Cron](/channels/cron/). *(config)*
-- **`channel.native-notify`** — `notify: true` delivers the cron final answer verbatim to Telegram, Slack, or exact `web:new` after a successful run; `NOTHING_TO_REPORT` (or empty final text) stays silent. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`channel.native-notify`** — `notify: true` delivers the cron final answer verbatim to Telegram, Slack, or exact `web:new` after a successful run; `FinishSilently({})` (or fallback `NOTHING_TO_REPORT`) stays silent. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`slack.socket-mode`** or **`telegram.bot`** — the destination adapter that owns the allowlist. *(config)*
 - **`memory.journal`** — shared run history via `conversationId`; see [Capture and Recall](/memory/capture-and-recall/). *(config)*
 
@@ -61,11 +61,7 @@ Enable the destination adapter and add the cron job. `conversationId` is the cro
 
 Equivalent environment variables for the secrets and model:
 
-```bash
-export MONO_AGENT_MODEL="anthropic:claude-sonnet-4-6"
-export MONO_AGENT_SLACK_BOT_TOKEN="xoxb-..."
-export MONO_AGENT_SLACK_APP_TOKEN="xapp-..."
-```
+Set `runtime.model` in `mono-agent.config.json`.
 
 The same job can instead live in `cron/morning-digest.md`:
 
@@ -104,7 +100,7 @@ Slack's current default for that preview type.
 ## Smoke test
 
 :::tip
-Run a one-off cron tick; verify the agent's final answer is the digest and it lands verbatim in the destination — no tool call involved. With the example Slack config, also verify the post has no link or media preview. To check the silent path, have the prompt reply `NOTHING_TO_REPORT` and confirm nothing is posted. Delivery is best-effort: skipped or failed notification attempts are logged without changing the cron job result.
+Run a one-off cron tick; verify the agent's final answer is the digest and it lands verbatim in the destination — no tool call involved. With the example Slack config, also verify the post has no link or media preview. To check the silent path, have the prompt call `FinishSilently({})` alone (or reply `NOTHING_TO_REPORT` if unavailable) and confirm nothing is posted. Delivery is best-effort: skipped or failed notification attempts are logged without changing the cron job result.
 :::
 
 ## Related

@@ -3,12 +3,17 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createModels, fauxProvider } from '@earendil-works/pi-ai';
+import { createModels, fauxProvider, normalizeContext } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
+import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
 import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+
+// Direct tool construction in this file binds one explicit context.
+const ctx = createToolContext();
 
 const roots = [];
 const sessions = new Set();
@@ -163,26 +168,24 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const model = { ...fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const processJobs = { start: async () => { throw new Error('must not start'); }, limits: { maxRuntimeMs: 10000 } };
-  const monitors = { start: async () => { throw new Error('must not start'); }, stop: async () => {}, limits: { maxRuntimeMs: 10000, persistentMaxRuntimeMs: 20000, maxActivePerConversation: 2, maxWakeIntervalMs: 1000 } };
   const instances = { reserve: () => {}, releaseReservation: () => {}, inspect: () => {}, checkAcknowledgement: () => {} };
   const parent = { run: async () => { throw new Error('must not run'); }, instances };
   for (const profile of ['parent', 'persistent-child']) {
-    const exposure = { monitors: profile === 'parent', persistentSubagents: profile === 'parent', askParent: profile === 'persistent-child' };
+    const exposure = { persistentSubagents: profile === 'parent', askParent: profile === 'persistent-child' };
     let baseline;
     const envelopes = new Set();
-    for (const [index, kind] of ['user', 'job-wake', 'monitor-wake', 'cron', 'child-continuation', 'exhausted-lineage', 'absent-controller'].entries()) {
+    for (const [index, kind] of ['user', 'job-wake', 'cron', 'child-continuation', 'exhausted-lineage', 'absent-controller'].entries()) {
       const admitted = index < 3;
       const subagents = profile === 'parent' ? { ...parent, ...(admitted ? { backgroundSubagentController: {} } : {}), ...(index === 6 ? { instances: undefined } : {}) } : { depth: 1 };
       const options = {
         toolExposure: exposure, subagents,
         processJobs: admitted ? processJobs : undefined,
-        monitors: admitted ? monitors : undefined,
         askParentController: profile === 'persistent-child' && admitted ? { submit: async () => {} } : undefined,
         toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
         processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) },
       };
-      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Monitor', 'MonitorStop', 'Agent', 'AgentSend', 'AskParent'], {
-        ...options, processJobsController: options.processJobs, monitorsController: options.monitors,
+      const tools = getPiBuiltinTools(['Bash', 'Exec', 'Agent', 'AgentManage', 'AskParent'], {
+        ...options, ctx, processJobsController: options.processJobs,
       });
       if (profile === 'persistent-child') expect(tools.map((tool) => tool.name)).toEqual(['AskParent', 'Bash', 'Exec']);
       const envelope = composeHostTurnEnvelope(formatHostCapabilities(options), kind);
@@ -200,7 +203,7 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps actual %s tool arrays
       baseline ??= bytes;
       expect(bytes, `${profile}/${kind}`).toBe(baseline);
     }
-    expect(envelopes.size).toBe(7);
+    expect(envelopes.size).toBe(6);
   }
 });
 
@@ -210,9 +213,13 @@ it.each([
   ['anthropic-messages', 'long', false, '5m'],
   ['anthropic-messages', 'short', true, '5m'],
   ['anthropic-messages', undefined, true, '1h'],
+  ['anthropic-messages', undefined, undefined, '1h'],
+  ['anthropic-messages', undefined, false, '5m'],
+  ['openai-responses', undefined, true, null],
   ['openai-responses', 'long', true, null],
 ])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
-  vi.stubEnv('PI_CACHE_RETENTION', 'long');
+  vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
+  const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
   const { AgentHarness } = await import('@earendil-works/pi-agent-core');
   const create = vi.spyOn(AgentHarness, 'create');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
@@ -230,17 +237,17 @@ it.each([
   } });
   await generatePiNativeResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
     piResolvedModel: model, piResolvedModels: models, messages: [{ role: 'user', content: 'test' }], allowedTools: ['Read'],
-    ...(cacheRetention === undefined ? {} : { cacheRetention }), promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
+    cacheRetention: resolvedRetention, promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
   });
   expect(payloads).toHaveLength(1);
-  if (api === 'anthropic-messages' && cacheRetention !== undefined) expect(streamOptions[0].cacheRetention).toBe(cacheRetention);
+  if (api === 'anthropic-messages') expect(streamOptions[0].cacheRetention).toBe(resolvedRetention);
   else {
     expect(create.mock.calls[0][0].streamOptions).not.toHaveProperty('cacheRetention');
     // Pi itself materializes an undefined option in its downstream projection.
     expect(streamOptions[0].cacheRetention).toBeUndefined();
   }
   const diagnostic = events.find((event) => event.type === 'prompt_cache_diagnostic');
-  expect(diagnostic).toMatchObject({ requestedCacheRetention: cacheRetention ?? 'unset', observedCacheTtls: ttl ? [ttl] : [] });
+  expect(diagnostic).toMatchObject({ requestedCacheRetention: resolvedRetention, observedCacheTtls: ttl ? [ttl] : [] });
   if (ttl === '1h') expect(JSON.stringify(payloads[0])).toContain('"ttl":"1h"');
   else expect(JSON.stringify(payloads[0])).not.toContain('"ttl":"1h"');
 });
@@ -259,10 +266,10 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
   const model = { ...fauxProvider({ provider: 'app-wire-fixture', models: [{ id: 'fixture' }] }).getModel(), api, baseUrl: 'https://fixture.invalid/v1' };
   const mutations = vi.fn(); const bridgeFetch = vi.fn();
   let baseline; const envelopes = new Set();
-  for (const [index, kind] of ['user', 'job-wake', 'monitor-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
+  for (const [index, kind] of ['user', 'job-wake', 'cron', 'exhausted-lineage', 'absent-controller'].entries()) {
     const interactive = ['user', 'exhausted-lineage'].includes(kind);
     const web = { threadId: 'thread', turnId: `turn-${index}`, conversationTitle: { schema: 1, writable: true }, consoleProjects: { schema: 1 },
-      ...(['job-wake', 'monitor-wake'].includes(kind) ? { trigger: kind } : {}) };
+      ...(['job-wake'].includes(kind) ? { trigger: kind } : {}) };
     const metadata = kind === 'cron' ? { source: 'cron' } : kind === 'absent-controller' ? { source: 'web' } : { source: 'web', web };
     const input = { request: { conversationId: 'web:thread', userMessage: kind, abortSignal: new AbortController().signal, metadata }, runId: `run-${index}`, context: {} };
     const store = { supportsRemember: () => interactive, remember: mutations };
@@ -283,8 +290,8 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
     const bound = await extension(input);
     const runOptions = { ...bound.runtimeOptions, toolLimits: { bashTimeoutMs: 120000 - index * 1000 },
       processJobsAvailability: { chainDepth: index, maxChainDepth: 4, remainingStarts: Math.max(0, 4 - index), ...(index >= 4 ? { unavailableReason: 'chain_depth_exhausted' } : {}) } };
-    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read', 'Monitor', 'MonitorStop'], { toolLimits: runOptions.toolLimits });
-    const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)));
+    const builtins = getPiBuiltinTools(['Bash', 'Exec', 'Read'], { ctx, toolLimits: runOptions.toolLimits });
+    const mcp = await initPiMcpTools(runOptions.mcpServers, new Set(builtins.map((tool) => tool.name)), { ctx });
     try {
       expect(mcp.warnings).toEqual([]);
       if (!interactive) {
@@ -301,7 +308,10 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
       }
       const envelope = composeHostTurnEnvelope(formatHostCapabilities(runOptions), kind); envelopes.add(envelope);
       let payload;
-      await send(model, { systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }, {
+      // pi-ai 0.86.0 moved prompt/tool folding into `Models`: the api-level
+      // stream entry points take the normalized TranscriptContext, so fold
+      // here exactly as `Models.streamSimple` does before dispatch.
+      await send(model, normalizeContext({ systemPrompt: 'fixed', tools: [...builtins, ...mcp.tools, ...adapterTools], messages: [{ role: 'user', content: envelope, timestamp: 1 }] }), {
         apiKey: 'synthetic-test-value', maxRetries: 0, fetch: async (_url, init) => {
           payload = JSON.parse(init.body);
           return new Response(JSON.stringify({ error: { message: 'intercepted', type: 'test_error' } }), { status: 400, headers: { 'content-type': 'application/json' } });
@@ -312,5 +322,5 @@ it.each(['anthropic-messages', 'openai-responses'])('keeps combined app-owned MC
       expect(bytes).toContain('SetConversationTitle'); expect(bytes).toContain('Remember'); expect(bytes).toContain('AskUser'); expect(bytes).toContain('CreateProject');
     } finally { await closePiMcpClients(mcp.clients); await bound.cleanup?.(); await adapterClient.close(); await adapterServer.close(); }
   }
-  expect(envelopes.size).toBe(6); expect(mutations).not.toHaveBeenCalled(); expect(bridgeFetch).not.toHaveBeenCalled();
+  expect(envelopes.size).toBe(5); expect(mutations).not.toHaveBeenCalled(); expect(bridgeFetch).not.toHaveBeenCalled();
 });

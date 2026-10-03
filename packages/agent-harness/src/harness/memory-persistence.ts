@@ -1,13 +1,29 @@
-import { classifyNotifySuppression, type AgentMessageSender } from "@mono-agent/agent-contracts";
+import { classifyNotifySuppression, type AgentMessageSender, type MemoryCaptureSpeakerKind, type MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
+import { createHash } from "node:crypto";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
-import type { AgentHarnessOptions } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
 import type { AppliedLiveInput } from "../live-input.js";
 import { senderLabel } from "./speaker-context.js";
 import { compactOneLine } from "./value-utils.js";
 
 const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
+
+/** Web passes the unprefixed operator input alongside its model-visible envelope.
+ * Other hosts (and non-owner turns) keep their existing memory text. */
+export function memoryUserText(request: AgentHarnessRequest): string {
+  const web = request.metadata?.web;
+  const ownerText = typeof web === "object" && web !== null && !Array.isArray(web)
+    ? (web as Record<string, unknown>).ownerText : undefined;
+  const modelText = request.userMessage;
+  const wake = (request.metadata as Record<PropertyKey, unknown> | undefined)
+    ?.[Symbol.for("mono-agent.process-job-wake.delivery-key.v1")] !== undefined;
+  return request.captureSpeakerKind === "human-turn" && request.metadata?.source === "web"
+    && !wake && typeof ownerText === "string"
+    && (modelText === ownerText || modelText.endsWith(`\n\n${ownerText}`))
+    ? ownerText : modelText;
+}
 
 export async function buildSuccessfulTurn(
   options: AgentHarnessOptions,
@@ -17,16 +33,20 @@ export async function buildSuccessfulTurn(
   assistantText: string,
   runId: string,
   sender?: AgentMessageSender,
+  request?: AgentHarnessRequest,
+  silentTurn = false,
 ): Promise<{
   readonly capturedAt: string;
   readonly messages: readonly HistoryMessage[];
   readonly userMemoryText: string;
 }> {
-    const userLiveInputs = liveInputs.filter((input) => !input.deliveryKey?.startsWith("monitor:"));
+    const userLiveInputs = liveInputs;
     const capturedAt = options.now?.().toISOString() ?? new Date().toISOString();
-    let assistantHistoryText = assistantText;
+    // Canonical text history cannot represent an empty assistant completion;
+    // this annotation is host-authored, never model prose or the legacy sentinel.
+    let assistantHistoryText = silentTurn ? "[Host: silent completion]" : assistantText;
     try {
-      assistantHistoryText = await options.turnHistoryEnricher?.enrichAssistantHistory({
+      if (!silentTurn) assistantHistoryText = await options.turnHistoryEnricher?.enrichAssistantHistory({
         runId,
         conversationId,
         assistantText,
@@ -36,9 +56,12 @@ export async function buildSuccessfulTurn(
       // original bytes when the optional app-owned enrichment fails.
     }
     const senderName = senderLabel(sender);
+    const captureInitial = request !== undefined && userMessage.startsWith(request.userMessage)
+      ? memoryUserText(request) + userMessage.slice(request.userMessage.length)
+      : userMessage;
     return {
       capturedAt,
-      userMemoryText: composeUserMemoryText(userMessage, userLiveInputs),
+      userMemoryText: composeUserMemoryText(captureInitial, userLiveInputs, request),
       messages: [
         {
           role: "user",
@@ -60,11 +83,17 @@ export async function buildSuccessfulTurn(
     };
 }
 
-function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[]): string {
+export function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[], request?: AgentHarnessRequest): string {
   if (liveInputs.length === 0) return initial;
   return [
     initial,
-    ...liveInputs.map((input, index) => `Live follow-up ${index + 1}:\n${input.text}`),
+    ...liveInputs.map((input, index) => {
+      const ownerText = request?.captureSpeakerKind === "human-turn" && request.metadata?.source === "web"
+        && input.deliveryKey === undefined && typeof input.ownerText === "string"
+        && (input.text === input.ownerText || input.text.endsWith(`\n\n${input.ownerText}`))
+        ? input.ownerText : input.text;
+      return `Live follow-up ${index + 1}:\n${ownerText}`;
+    }),
   ].join("\n\n");
 }
 
@@ -80,40 +109,43 @@ export async function persistSuccessfulMemory(
   assistantText: string,
   persistenceOptions: {
     readonly runId: string;
+    /** Host-owned cron metadata, not a conversation-id/source-name guess. */
+    readonly cronRequest?: boolean;
+    /** Host-owned webhook metadata, not a conversation-id/source-name guess. */
+    readonly webhookRequest?: boolean;
     readonly source?: string;
+    readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
+    readonly ownerTurn?: true;
+    readonly trustedUserText?: string;
+    readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
     readonly emit?: (event: RuntimeEventLike) => void;
   },
 ): Promise<void> {
     const mode = harnessOptions.memoryWriteMode;
+    if (mode === "capture" && ((harnessOptions.memoryCaptureCron === false && persistenceOptions.cronRequest === true)
+      || (harnessOptions.memoryCaptureWebhook === false && persistenceOptions.webhookRequest === true))) return;
     if (harnessOptions.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
-      if (shouldSkipMemoryPersistence(userMessage, assistantText, persistenceOptions)) {
+      if (shouldSkipMemoryPersistence(assistantText)) {
         return;
       }
       const memory = harnessOptions.memory;
       const summary = deterministicHostSummary(userMessage, assistantText, persistenceOptions);
+      const evidence = mode === "capture" ? captureEvidence(persistenceOptions) : undefined;
       try {
-        const persistCompletedTurn = memory.persistCompletedTurn;
-        if (persistCompletedTurn !== undefined) {
-          // A strong store owns the entire write. Its stable run id makes a
-          // retry idempotent, and awaiting it keeps successful completion behind
-          // the store's admission boundary without replaying either legacy call.
-          await persistCompletedTurn.call(memory, {
-            runId: persistenceOptions.runId,
-            conversationId,
-            summary,
-            ...(mode === "capture"
-              ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions) }
-              : {}),
-          });
-        } else {
-          // Legacy stores retain the deterministic rapid log plus optional
-          // best-effort curation queue exactly as before.
-          await memory.appendHostSummary(conversationId, summary);
-          if (mode === "capture") {
-            memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, persistenceOptions));
-          }
-        }
+        // Harness construction guarantees write capability. Await the stable-run
+        // admission boundary before returning the already-successful provider answer.
+        await memory.persistCompletedTurn!({
+          runId: persistenceOptions.runId,
+          conversationId,
+          summary,
+          ...(persistenceOptions.captureSpeakerKind === undefined || persistenceOptions.captureSpeakerKind === "unknown"
+            ? {} : { captureSpeakerKind: persistenceOptions.captureSpeakerKind }),
+          ...(mode === "capture"
+            ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions),
+              ...(evidence === undefined ? {} : { captureEvidence: evidence }) }
+            : {}),
+        });
       } catch {
         // The provider answer already succeeded. Memory is additive and must
         // never retroactively turn that answer into a failed turn. Keep this
@@ -143,7 +175,7 @@ function deterministicHostSummary(
   assistantText: string,
   options: MemoryTurnOptions = {},
 ): string {
-  if (isTriggerSource(options.source)) {
+  if (isTriggerSource(options.source) || options.captureSpeakerKind === "trigger") {
     return [
       "Host-observed completed trigger turn.",
       `Assistant: ${compactOneLine(assistantText, 240)}`,
@@ -162,10 +194,44 @@ function captureTurnText(
   options: MemoryTurnOptions = {},
 ): string {
   // Richer than the compacted host summary: the distiller wants the real turn content.
-  if (isTriggerSource(options.source)) {
-    return `Assistant: ${assistantText}`;
+  if (isTriggerSource(options.source) || options.captureSpeakerKind === "trigger") {
+    // Do not include the untrusted trigger body (especially webhook payloads).
+    // The source label gives the extractor the missing speaker context without
+    // pretending that a scheduled instruction was a human statement.
+    const trigger = options.source === "cron" ? "Scheduled task trigger"
+      : options.source === "webhook" ? "Webhook trigger" : "Automated trigger";
+    return `${trigger} (not a user message; trigger text omitted):\nAssistant: ${assistantText}${toolOutcomeBlock(options)}`;
   }
-  return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}`;
+  return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}${toolOutcomeBlock(options)}`;
+}
+
+function toolOutcomeBlock(options: MemoryTurnOptions): string {
+  const outcomes = options.toolOutcomes ?? [];
+  if (!outcomes.some((item) => item.outcome === "failed")) return "";
+  return `\nHOST-OBSERVED TOOL OUTCOMES (categories only; not user text):\n${outcomes.slice(0, 16)
+    .map(({ category, outcome }) => `${category}: ${outcome}`).join("\n")}`;
+}
+
+export function memorySenderToken(source: string | undefined, sender: AgentMessageSender | undefined): string | undefined {
+  const id = sender?.id;
+  return typeof id === "string" && id.length > 0 && Buffer.byteLength(id, "utf8") <= 256
+    ? createHash("sha256").update(`${source ?? "unknown"}\0${id}`).digest("hex").slice(0, 32)
+    : undefined;
+}
+
+function captureEvidence(options: MemoryTurnOptions): MemoryCaptureEvidence | undefined {
+  // Only a host-stamped human turn may retain its outer message as evidence.
+  // Automated/webhook bodies never enter the intake, even when supplied by a caller.
+  const userText = options.captureSpeakerKind === "human-turn" && !isTriggerSource(options.source)
+    ? options.trustedUserText : "";
+  if (userText === undefined || Buffer.byteLength(userText, "utf8") > 16 * 1024
+    || /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(userText)) return undefined;
+  const senderToken = options.captureSpeakerKind === "human-turn"
+    ? memorySenderToken(options.source, options.sender)
+    : undefined;
+  return { userText, ...(senderToken === undefined ? {} : { senderToken }),
+    ...(options.ownerTurn === true ? { ownerTurn: true as const } : {}),
+    toolOutcomes: [...(options.toolOutcomes ?? [])] };
 }
 
 /**
@@ -181,32 +247,20 @@ function speakerSuffix(sender: AgentMessageSender | undefined): string {
 
 interface MemoryTurnOptions {
   readonly source?: string;
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly sender?: AgentMessageSender;
+  readonly ownerTurn?: true;
+  readonly trustedUserText?: string;
+  readonly toolOutcomes?: MemoryCaptureEvidence["toolOutcomes"];
 }
 
 function isTriggerSource(source: string | undefined): boolean {
   return source === "cron" || source === "webhook";
 }
 
-const MAX_TRIVIAL_MEMORY_TURN_CHARS = 48;
-const TRIVIAL_MEMORY_ANCHOR_TOKENS = new Set([
-  "ping",
-  "pong",
-  "test",
-  "testing",
-]);
-const TRIVIAL_MEMORY_FILLER_TOKENS = new Set([
-  "ok",
-  "okay",
-  "works",
-]);
-
-function shouldSkipMemoryPersistence(
-  userMessage: string,
-  assistantText: string,
-  options: { readonly source?: string } = {},
-): boolean {
-  return isNothingToReportSentinel(assistantText) || isTrivialMemoryTurn(userMessage, assistantText, options);
+// No word lists: a probe or filler turn goes to extraction, which may return empty.
+function shouldSkipMemoryPersistence(assistantText: string): boolean {
+  return isNothingToReportSentinel(assistantText);
 }
 
 // Deliberately not `suppressesNotification`, which also treats empty text as
@@ -215,26 +269,4 @@ function shouldSkipMemoryPersistence(
 function isNothingToReportSentinel(assistantText: string): boolean {
   const suppression = classifyNotifySuppression(assistantText);
   return suppression === "sentinel" || suppression === "narrated-sentinel";
-}
-
-function isTrivialMemoryTurn(
-  userMessage: string,
-  assistantText: string,
-  options: { readonly source?: string } = {},
-): boolean {
-  const candidate = isTriggerSource(options.source) ? assistantText : `${userMessage} ${assistantText}`;
-  const compact = candidate.replace(/\s+/gu, " ").trim();
-  if (compact.length === 0 || compact.length > MAX_TRIVIAL_MEMORY_TURN_CHARS) {
-    return false;
-  }
-  const tokens = compact
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, " ")
-    .trim()
-    .split(/\s+/u)
-    .filter((token) => token.length > 0);
-  return (
-    tokens.some((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token)) &&
-    tokens.every((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token) || TRIVIAL_MEMORY_FILLER_TOKENS.has(token))
-  );
 }

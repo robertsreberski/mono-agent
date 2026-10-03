@@ -13,7 +13,7 @@ import {
   listPiBuiltinProviders,
   type PiBuiltinModelSnapshot,
 } from "@mono-agent/agent-runtime";
-import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { CONTEXT_1M_TOKENS, supportsPiContext1M, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type {
   DiscoveredLocalModel,
   LocalProviderDefinition,
@@ -115,6 +115,7 @@ function boundedEffortLevels(levels: readonly string[] | undefined): readonly st
 }
 
 export interface ProviderModelCatalogInput {
+  readonly context1MModels?: Readonly<Record<string, boolean>>;
   /** Configured provider definitions (the canonical `providers.entries` map). */
   readonly providers?: readonly ProviderDefinition[];
   /** Local-provider projection used for precise effort/context resolution. */
@@ -307,7 +308,6 @@ export function buildProviderModelCatalog(
     );
     return embeddingRefs.has(`${ref.provider}:${model?.name ?? ref.model}`);
   };
-  const configuredRouteKeys = new Set(configuredRoutes.map((ref) => modelReferenceKey(ref)));
   // `providers` is the operator's explicit support list, and a route's own
   // provider is supported by construction — you cannot route through a provider
   // you did not mean to use. Either one marks the provider configured, so a
@@ -317,8 +317,7 @@ export function buildProviderModelCatalog(
     ...configuredRoutes.map((ref) => ref.provider),
   ]);
 
-  // The authoritative 39-entry static catalog. The dynamic "radius" gateway is
-  // already excluded by the facade.
+  // The authoritative 41-entry static catalog (pi-ai 0.87.0) via the facade.
   let builtinProviders: readonly { readonly id: string; readonly label: string }[] = [];
   try {
     builtinProviders = listPiBuiltinProviders();
@@ -348,7 +347,7 @@ export function buildProviderModelCatalog(
   // `providers` is a support gate, not a hint: an agent advertises exactly the
   // providers it declared, the providers its own routes use, and whatever local
   // discovery found. A Pi built-in nobody declared is NOT selectable — offering
-  // all 39 would let an operator pick a provider the agent holds no credential
+  // all 41 would let an operator pick a provider the agent holds no credential
   // for, and the failure would only surface at turn time.
   //
   // Deterministic order: declared providers (config order, id-sorted at load),
@@ -394,12 +393,16 @@ export function buildProviderModelCatalog(
     providerLabel: string,
   ): TuiCatalogModel => {
     const effort = resolveAdvertisedModelEffortForBuiltin(snapshot);
-    const contextWindow = positiveContextWindow(snapshot.contextWindow);
+    const reference = `${snapshot.provider}:${snapshot.id}`;
+    const supportsContext1M = configuredById.get(snapshot.provider)?.type === undefined && !localProviders?.some((provider) => provider.id === snapshot.provider) && supportsPiContext1M(reference);
+    const context1M = input.context1MModels?.[reference] === true;
+    const contextWindow = positiveContextWindow(supportsContext1M && context1M ? CONTEXT_1M_TOKENS : snapshot.contextWindow);
     return {
       id: snapshot.id,
       name: snapshot.name,
       provider: snapshot.provider,
       providerLabel,
+      ...(supportsContext1M ? { supportsContext1M: true as const, context1M } : {}),
       ...(contextWindow === undefined ? {} : { contextWindow }),
       reasoning: effort.reasoning,
       ...(effort.reasoningMode === undefined ? {} : { reasoningMode: effort.reasoningMode }),
@@ -470,9 +473,13 @@ export function buildProviderModelCatalog(
         // unverifiable. The provider still appears with `modelCount: 0` rather
         // than vanishing from the picker.
         if (treatAsBuiltin && snapshot === undefined) return [];
-        const contextWindow = positiveContextWindow(model.capabilities?.context_window)
+        const reference = `${id}:${model.name}`;
+        const supportsContext1M = treatAsBuiltin && supportsPiContext1M(reference);
+        const context1M = input.context1MModels?.[reference] === true;
+        const declaredWindow = positiveContextWindow(model.capabilities?.context_window)
           ?? positiveContextWindow(model.capabilities?.num_ctx)
           ?? (snapshot === undefined ? undefined : positiveContextWindow(snapshot.contextWindow));
+        const contextWindow = supportsContext1M && context1M ? CONTEXT_1M_TOKENS : declaredWindow;
         const effort = snapshot === undefined
           ? undefined
           : resolveAdvertisedModelEffortForBuiltin(snapshot);
@@ -481,6 +488,7 @@ export function buildProviderModelCatalog(
           name: model.displayName ?? model.alias ?? snapshot?.name ?? model.name,
           provider: id,
           providerLabel,
+          ...(supportsContext1M ? { supportsContext1M: true as const, context1M } : {}),
           ...(contextWindow === undefined ? {} : { contextWindow }),
           ...(effort === undefined ? {} : {
             reasoning: effort.reasoning,
@@ -570,7 +578,9 @@ export function buildProviderModelCatalog(
     const effort = resolveAdvertisedModelEffort(ref, {
       ...(localProviders === undefined ? {} : { localProviders }),
     });
-    const contextWindow = resolveContextWindow(ref);
+    const supportsContext1M = configuredById.get(ref.provider)?.type === undefined && !localProviders?.some((provider) => provider.id === ref.provider) && supportsPiContext1M(modelReferenceKey(ref));
+    const context1M = input.context1MModels?.[modelReferenceKey(ref)] === true;
+    const contextWindow = supportsContext1M && context1M ? CONTEXT_1M_TOKENS : resolveContextWindow(ref);
     const configuredModel = configuredById.get(ref.provider)?.models?.find(
       (model) => model.name === ref.model || model.alias === ref.model,
     );
@@ -584,6 +594,7 @@ export function buildProviderModelCatalog(
     // is charged, not hidden, by the caller's per-entry byte measurement.
     const effortLevels = boundedEffortLevels(effort.effortLevels);
     return {
+      ...(supportsContext1M ? { supportsContext1M: true as const, context1M } : {}),
       ...(label === undefined ? {} : { label }),
       ...(effortLevels === undefined ? {} : { effortLevels }),
       reasoning: effort.reasoning,

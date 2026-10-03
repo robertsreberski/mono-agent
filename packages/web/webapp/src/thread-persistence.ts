@@ -1,6 +1,4 @@
-import { readModelTransitions } from "./model-transitions";
-import { readProjectTransitions } from "./project-transitions";
-import type { ModelTransition, ProjectTransition } from "./types";
+import { isConversationMarker } from "./conversation-markers";
 import { sanitizeCronTranscript } from "./cron-visibility";
 import { mergeSeenRevisions, readSeenRevisions, type SeenRevision } from "./unread";
 import type { ThreadCacheEntry } from "./thread-cache";
@@ -83,8 +81,6 @@ const SEEN_KEY = "seen";
 
 /** One conversation, as it is written to the device. */
 export interface PersistedThread {
-  readonly projectTransitions?: readonly ProjectTransition[];
-  readonly modelTransitions?: readonly ModelTransition[];
   readonly id: string;
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -260,6 +256,11 @@ export const stripCapabilityUrls = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const withoutTransientCompaction = (thread: ThreadSummary): ThreadSummary => {
+  const { compaction: _transient, ...stored } = thread;
+  return stored;
+};
+
 /**
  * A summary the sidebar and the header can actually draw.
  *
@@ -281,6 +282,10 @@ const isSummary = (value: unknown): value is ThreadSummary =>
 const stringsOf = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
+const isUnknownStoredMarker = (part: unknown): boolean => isRecord(part)
+  && part.type === "conversation-marker" && typeof part.kind === "string"
+  && !["model", "project", "resumed", "compaction"].includes(part.kind);
+
 const isStoredMessage = (value: unknown): value is WebMessage =>
   isRecord(value)
   && typeof value.id === "string"
@@ -289,7 +294,7 @@ const isStoredMessage = (value: unknown): value is WebMessage =>
   // The two the renderer AND the write path walk unconditionally. A row that
   // reached the cache without them turned the next flush into a `TypeError` --
   // an unhandled rejection, with persistence dead behind it.
-  && Array.isArray(value.parts)
+  && Array.isArray(value.parts) && value.parts.every((part: unknown) => !isRecord(part) || part.type !== "conversation-marker" || isConversationMarker(part))
   && Array.isArray(value.attachments);
 
 /**
@@ -303,18 +308,21 @@ const isStoredMessage = (value: unknown): value is WebMessage =>
 const readThreadRow = (value: unknown): PersistedThread | undefined => {
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || !isSummary(value.thread)) return undefined;
-  if (!Array.isArray(value.messages) || !value.messages.every(isStoredMessage)) return undefined;
-  const sanitized = sanitizeCronTranscript(value.thread, value.messages as readonly WebMessage[]);
+  if (!Array.isArray(value.messages)) return undefined;
+  const hasUnknownMarkers = value.messages.some((message: unknown) => isRecord(message)
+    && Array.isArray(message.parts) && message.parts.some(isUnknownStoredMarker));
+  const messages = value.messages.map((message: unknown) => isRecord(message) && Array.isArray(message.parts)
+    ? { ...message, parts: message.parts.filter((part: unknown) => !isUnknownStoredMarker(part)) } : message);
+  if (!messages.every(isStoredMessage)) return undefined;
+  const sanitized = sanitizeCronTranscript(value.thread, messages as readonly WebMessage[]);
   return {
     id: value.id,
-    thread: sanitized.thread,
+    thread: withoutTransientCompaction(sanitized.thread),
     messages: sanitized.messages,
-    projectTransitions: readProjectTransitions(value.projectTransitions),
-    modelTransitions: readModelTransitions(value.modelTransitions),
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
       : {}),
-    ...(typeof value.etag === "string" && !sanitized.changed ? { etag: value.etag } : {}),
+    ...(typeof value.etag === "string" && !sanitized.changed && !hasUnknownMarkers && !("modelTransitions" in value) && !("projectTransitions" in value) ? { etag: value.etag } : {}),
     repairedToolCallIds: stringsOf(value.repairedToolCallIds),
     pagedInIds: stringsOf(value.pagedInIds).filter((id) => sanitized.messages.some((message) => message.id === id)),
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,
@@ -327,7 +335,7 @@ const readBucketRow = (value: unknown): PersistedBucket | undefined => {
   if (!Array.isArray(value.threads) || !value.threads.every(isSummary)) return undefined;
   return {
     key: value.key,
-    threads: value.threads,
+    threads: value.threads.map(withoutTransientCompaction),
     nextCursor: typeof value.nextCursor === "string" ? value.nextCursor : null,
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,
   };
@@ -604,8 +612,6 @@ export const createThreadPersistence = (
     entry: ThreadCacheEntry,
   ): boolean => previous !== undefined
     && previous.thread === entry.thread
-    && previous.projectTransitions === entry.projectTransitions
-    && previous.modelTransitions === entry.modelTransitions
     && previous.messages === entry.messages
     && previous.messagesNextCursor === entry.messagesNextCursor
     && previous.etag === entry.etag
@@ -617,10 +623,8 @@ export const createThreadPersistence = (
     const transcript = stripCapabilityUrls(entry.messages);
     return {
       id: entry.thread.id,
-      thread: entry.thread,
+      thread: withoutTransientCompaction(entry.thread),
       messages: transcript.messages,
-      projectTransitions: entry.projectTransitions ?? [],
-      modelTransitions: entry.modelTransitions ?? [],
       ...(entry.messagesNextCursor === undefined
         ? {}
         : { messagesNextCursor: entry.messagesNextCursor }),
@@ -857,7 +861,8 @@ export const createThreadPersistence = (
           decide();
         };
         if (state.bucket !== undefined) {
-          transaction.objectStore(BUCKET_STORE).put({ ...state.bucket, savedAt });
+          transaction.objectStore(BUCKET_STORE).put({ ...state.bucket,
+            threads: state.bucket.threads.map(withoutTransientCompaction), savedAt });
         }
         if (state.snapshot !== undefined) {
           const meta = transaction.objectStore(META_STORE);

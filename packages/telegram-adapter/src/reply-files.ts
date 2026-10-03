@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 
-import type {
-  AgentReplyAttachmentPart,
-  AgentReplyPart,
-  AgentResponder,
+import {
+  assertMatchingReplyAttachment,
+  collectExactReplyArtifactBytes,
+  type AgentReplyAttachmentPart,
+  type AgentReplyPart,
+  type AgentResponder,
 } from "@mono-agent/agent-contracts";
 
 import type { TelegramMessageStreamLogger } from "./message-stream.js";
@@ -14,6 +16,8 @@ const CONFIRMED_DELIVERY_CACHE_MAX = 512;
 export interface TelegramReplyFileTarget {
   readonly conversationId: string;
   readonly chatId: TelegramChatId;
+  /** Forum topic the file belongs in; omit outside topics. */
+  readonly messageThreadId?: number;
   readonly replyToMessageId?: number;
   readonly silent?: boolean;
   readonly signal?: AbortSignal;
@@ -51,7 +55,7 @@ export class TelegramReplyFileDelivery {
     if (this.responder.openReplyArtifact === undefined || this.sender.sendDocument === undefined) {
       return false;
     }
-    const key = deliveryKey(part.integrityId, target.chatId, target.replyToMessageId);
+    const key = deliveryKey(part.integrityId, target.chatId, target.messageThreadId, target.replyToMessageId);
     if (this.confirmed.delete(key)) {
       this.confirmed.set(key, true);
       return true;
@@ -96,13 +100,14 @@ export class TelegramReplyFileDelivery {
       reference: part.reference,
       expectedIntegrityId: part.integrityId,
     });
-    assertMatchingAttachment(part, opened.attachment);
-    const document = await collectExactBytes(opened.body, part.sizeBytes, target.signal);
+    assertMatchingReplyAttachment(part, opened.attachment);
+    const document = await collectExactReplyArtifactBytes(opened.body, part.sizeBytes, target.signal);
     const requestOptions = target.signal === undefined ? undefined : { signal: target.signal };
     await sendDocument.call(
       this.sender,
       {
         chat_id: target.chatId,
+        ...(target.messageThreadId === undefined ? {} : { message_thread_id: target.messageThreadId }),
         document,
         filename: part.name,
         ...(target.replyToMessageId === undefined
@@ -121,52 +126,17 @@ export class TelegramReplyFileDelivery {
 function deliveryKey(
   integrityId: string,
   chatId: TelegramChatId,
+  messageThreadId: number | undefined,
   replyToMessageId: number | undefined,
 ): string {
   return createHash("sha256")
-    .update("telegram-reply-file-v1\0")
+    .update("telegram-reply-file-v2\0")
     .update(integrityId)
     .update("\0")
     .update(String(chatId))
     .update("\0")
+    .update(messageThreadId === undefined ? "" : String(messageThreadId))
+    .update("\0")
     .update(replyToMessageId === undefined ? "" : String(replyToMessageId))
     .digest("hex");
-}
-
-function assertMatchingAttachment(
-  expected: AgentReplyAttachmentPart,
-  actual: AgentReplyAttachmentPart,
-): void {
-  if (
-    actual.reference.id !== expected.reference.id
-    || actual.integrityId !== expected.integrityId
-    || actual.sizeBytes !== expected.sizeBytes
-    || actual.name !== expected.name
-    || actual.mediaType !== expected.mediaType
-  ) {
-    throw new Error("Authorized reply artifact metadata did not match the reply part.");
-  }
-}
-
-async function collectExactBytes(
-  body: AsyncIterable<Uint8Array>,
-  expectedBytes: number,
-  signal: AbortSignal | undefined,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of body) {
-    if (signal?.aborted === true) throw signal.reason ?? new Error("Reply-file upload aborted.");
-    total += chunk.byteLength;
-    if (total > expectedBytes) throw new Error("Reply artifact exceeded its declared size.");
-    chunks.push(chunk);
-  }
-  if (total !== expectedBytes) throw new Error("Reply artifact did not match its declared size.");
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
 }

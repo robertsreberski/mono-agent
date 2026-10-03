@@ -20,6 +20,17 @@ const INPUT = {
 } as unknown as AgentHarnessRuntimeOptionsInput;
 
 describe("composeRuntimeOptionExtensions", () => {
+  it("chains user-message decorators in extension order and omits the hook when none is set", async () => {
+    const plain = async () => ({ runtimeOptions: {}, cleanup: async () => {} });
+    const composed = composeRuntimeOptionExtensions([
+      async () => ({ runtimeOptions: {}, decorateUserMessage: (message: string) => `A:${message}` }),
+      plain,
+      async () => ({ runtimeOptions: {}, decorateUserMessage: (message: string) => `B:${message}` }),
+    ])!;
+    expect((await composed(INPUT)).decorateUserMessage!("m")).toBe("B:A:m");
+    expect((await composeRuntimeOptionExtensions([plain, plain])!(INPUT)).decorateUserMessage).toBeUndefined();
+  });
+
   it("attests recovery before inner extension work and rejects unresolved state", async () => {
     const inner = vi.fn(async () => ({ runtimeOptions: {}, cleanup: async () => {} }));
     const extension = createClearSessionsRuntimeExtension(inner, {

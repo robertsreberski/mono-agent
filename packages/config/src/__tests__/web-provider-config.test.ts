@@ -1,0 +1,83 @@
+import { describe, expect, it } from "vitest";
+import { resolveJsonMonoAgentConfig } from "../config.js";
+import type { MonoAgentConfigJson } from "../json-source.js";
+
+const base = {
+  runtime: { model: "pi:openai-codex:gpt-5.5" },
+  context: { identityPath: "IDENTITY.md" },
+} as const;
+
+type WebJson = NonNullable<NonNullable<MonoAgentConfigJson["tools"]>["web"]>;
+
+function load(web: WebJson, extraTools?: MonoAgentConfigJson["tools"]) {
+  return resolveJsonMonoAgentConfig({
+    cwd: "/repo",
+    json: { ...base, tools: { ...extraTools, web } } as MonoAgentConfigJson,
+  }).tools.web;
+}
+
+describe("explicit web provider selection", () => {
+  it("defaults to Parallel then local Ollama, with local fetch", () => {
+    expect(load({})).toMatchObject({ search: { backend: ["parallel", "ollama"], ollama: { baseUrl: "http://127.0.0.1:11434" } }, fetch: { provider: "local" } });
+  });
+  it.each(["parallel", "ollama", "codex", "keyless", "duckduckgo", "startpage"])("accepts strict %s", (backend) => {
+    expect(load({ search: { backend } })?.search.backend).toBe(backend);
+  });
+  it("retains array order, including single-element arrays, and tolerates comma-separated strings", () => {
+    expect(load({ search: { backend: ["ollama", "parallel"] } })?.search.backend).toEqual(["ollama", "parallel"]);
+    expect(load({ search: { backend: ["parallel"] } })?.search.backend).toEqual(["parallel"]);
+    expect(load({ search: { backend: "parallel,ollama" } })?.search.backend).toEqual(["parallel", "ollama"]);
+  });
+  it.each([[], ["parallel", "parallel"], ["missing"], "missing"].map((value) => [value]))("rejects invalid search selection %j", (backend) => {
+    expect(() => load({ search: { backend } })).toThrow();
+  });
+  it("requires only SearXNG configuration, not an Ollama block", () => {
+    expect(() => load({ search: { backend: ["parallel", "searxng"] } })).toThrow(/searxng\.endpoint/);
+    expect(load({ search: { backend: ["parallel", "ollama"] } })?.search.ollama?.baseUrl).toBe("http://127.0.0.1:11434");
+  });
+  it.each([
+    [{}, '["codex","keyless"]'],
+    [{ searxng: { endpoint: "http://127.0.0.1:8088" } }, '["searxng","codex","keyless"]'],
+    [{ ollama: {}, searxng: { endpoint: "http://127.0.0.1:8088" } }, '["ollama","searxng","codex","keyless"]'],
+  ])("spells the previous auto order for %j", (blocks, chain) => {
+    expect(() => load({ search: { ...blocks, backend: "auto" } })).toThrow(`tools.web.search.backend "auto" was removed; use ${chain} (the previous auto order for this configuration)`);
+  });
+  it("loads fetch provider chains and rejects empty, duplicate, or unknown providers", () => {
+    expect(load({ fetch: { provider: ["local", "parallel"] } })?.fetch.provider).toEqual(["local", "parallel"]);
+    expect(load({ fetch: { provider: "local,parallel" } })?.fetch.provider).toEqual(["local", "parallel"]);
+    for (const provider of [[], ["local", "local"], "missing"]) expect(() => load({ fetch: { provider } })).toThrow();
+  });
+  it("rejects parallel-only browser rendering", () => {
+    for (const provider of ["parallel", ["parallel"]]) expect(() => load({ fetch: { provider, render: "auto" } })).toThrow(/requires the local/);
+    expect(load({ fetch: { provider: ["local", "parallel"], render: "auto" } })?.fetch.render).toBe("auto");
+  });
+  it("retains only a credential name and never resolves its value at load", () => {
+    for (const apiKeyEnv of ["not a name", "", " "]) {
+      expect(() => load({ fetch: { parallel: { apiKeyEnv } } })).toThrow(/name an environment/);
+    }
+    // A declared name is preserved verbatim even when nothing in the loader
+    // could resolve it: the Parallel runtime reads it at call time.
+    const config = load({
+      search: { parallel: { apiKeyEnv: "TEST_PARALLEL_KEY" } },
+      fetch: { parallel: { apiKeyEnv: "TEST_PARALLEL_KEY" } },
+    });
+    expect(config?.search.parallel).toEqual({ apiKeyEnv: "TEST_PARALLEL_KEY" });
+    expect(JSON.stringify(config)).not.toContain("sentinel-secret");
+  });
+  it("selects native local without endpoints and preserves explicit ordering", () => {
+    expect(load({ search: { backend: "local" }, fetch: { provider: "local" } })).toMatchObject({ search: { backend: "local" }, fetch: { provider: "local" } });
+    expect(load({ search: { backend: ["parallel", "local"] }, fetch: { provider: ["local", "parallel"] } })).toMatchObject({ search: { backend: ["parallel", "local"] }, fetch: { provider: ["local", "parallel"] } });
+  });
+  it("rejects renamed Hound selections with a migration diagnostic", () => {
+    expect(() => load({ search: { backend: "hound" } })).toThrow("was renamed to `local`");
+    expect(() => load({ search: { backend: ["parallel", "hound"] } })).toThrow("was renamed to `local`");
+    expect(() => load({ fetch: { provider: "hound" } })).toThrow("performs no robots preflight");
+    expect(() => load({ fetch: { provider: ["local", "hound"] } })).toThrow("was renamed to `local`");
+  });
+  it.each(["", " ", "http://127.0.0.1:8765/mcp", "http://user:sentinel@remote.example/mcp", "not-a-url"])("rejects retired Hound endpoints without echoing values (%s)", (endpoint) => {
+    for (const kind of ["search", "fetch"] as const) {
+      expect(() => load({ [kind]: { hound: { endpoint } } })).toThrow(new RegExp(`was removed: local ${kind} is built in`));
+      try { load({ [kind]: { hound: { endpoint } } }); } catch (error) { expect(String(error)).not.toContain("sentinel"); }
+    }
+  });
+});

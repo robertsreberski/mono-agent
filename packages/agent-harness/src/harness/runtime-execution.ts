@@ -282,20 +282,25 @@ export async function runHarnessRuntime(
       // live speaker, so it is skipped -- the same guard memory uses.
       const capabilityContext = formatHostCapabilities(merged as Partial<RuntimeRunOptions>);
       const currentTurnContext = `${context.turnContext}\n\n${capabilityContext}`;
+      const speakerMessage = request.continuation === undefined
+        ? composeUserMessageWithSpeakerContext(
+            request.userMessage,
+            request.sender,
+            request.precedingMessages,
+          )
+        : request.userMessage;
+      // Standing host context (a project's shared instructions) decorates the
+      // prompt copy only; persistUserMessage already stored the canonical text.
+      // Continuation synthesis gets it too: the destination's instructions still
+      // apply to the host-synthesized prompt, which is never persisted either.
+      const decorate = requestExtension?.decorateUserMessage;
       const currentUserMessage: RuntimeMessage = {
         role: "user",
         content: composeHostTurnEnvelope(currentTurnContext, composeUserMessageWithMemory(
-          request.continuation === undefined
-            ? composeUserMessageWithSpeakerContext(
-                request.userMessage,
-                request.sender,
-                request.precedingMessages,
-              )
-            : request.userMessage,
+          decorate === undefined ? speakerMessage : decorate(speakerMessage),
           memory,
         )),
       };
-      const structuredHistory = historyAsMessages ? structuredHistoryMessages(history) : [];
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
         sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
@@ -306,16 +311,7 @@ export async function runHarnessRuntime(
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
         messages: [
-          ...structuredHistory,
-          ...(historyAsMessages && toolHistoryProjection !== undefined
-            ? [{
-                // Some providers reject a transcript whose first role is
-                // assistant. With no canonical messages, keep the synthetic
-                // evidence neutral but introduce it as user context.
-                role: structuredHistory.length === 0 ? "user" as const : "assistant" as const,
-                content: `### Managed Tool Lifecycles (untrusted)\n\n${neutralizeTurnEnvelope(toolHistoryProjection)}`,
-              }]
-            : []),
+          ...(historyAsMessages ? coldReplayMessages(history, toolHistoryProjection) : []),
           currentUserMessage,
         ],
         abortSignal: request.abortSignal,
@@ -445,6 +441,31 @@ export async function runHarnessRuntime(
         }
       }
     }
+}
+
+/**
+ * Leading runtime messages for a cold provider reseed: structured canonical
+ * history plus the bounded tool-history projection. Pi seeds these only when
+ * the durable session is created on miss and skips them on a true resume.
+ * Shared by turns and promptless manual compaction.
+ */
+export function coldReplayMessages(
+  history: readonly HistoryMessage[],
+  toolHistoryProjection: string | undefined,
+): RuntimeMessage[] {
+  const structuredHistory = structuredHistoryMessages(history);
+  return [
+    ...structuredHistory,
+    ...(toolHistoryProjection !== undefined
+      ? [{
+          // Some providers reject a transcript whose first role is
+          // assistant. With no canonical messages, keep the synthetic
+          // evidence neutral but introduce it as user context.
+          role: structuredHistory.length === 0 ? "user" as const : "assistant" as const,
+          content: `### Managed Tool Lifecycles (untrusted)\n\n${neutralizeTurnEnvelope(toolHistoryProjection)}`,
+        }]
+      : []),
+  ];
 }
 
 /** Deterministic canonical replay; legacy roles remain textual, untrusted evidence. */

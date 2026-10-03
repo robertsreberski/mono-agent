@@ -22,8 +22,6 @@ import {
   createChannelUserCancelReason,
   decodeAgentAttachmentText,
   isAgentResponseCancelledError,
-  parseMonitorProjection,
-  parseMonitorProjections,
   parseProcessJobProjection,
   parseProcessJobProjections,
   parseProviderAuthSessionInput,
@@ -36,10 +34,9 @@ import {
   type AgentAttachment,
   type AgentContextImportRequest,
   type AgentMessageStream,
-  type MonitorOperator,
   type AgentReplyAttachmentPart,
   type AgentReplyPart,
-  type AgentLiveInputOffer,
+  type AgentLiveInputRequest,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -83,16 +80,8 @@ function liveInputTargetKey(conversationId: string, turnId: string): string {
   return `${conversationId.length}:${conversationId}${turnId}`;
 }
 
-function settleLiveInputOffer(res: Response, offer: AgentLiveInputOffer): void {
-  if (offer.status === "unavailable") {
-    res.status(200).json(offer);
-    return;
-  }
-  void offer.settled.then((settlement) => {
-    if (!res.writableEnded) res.status(200).json(settlement);
-  }).catch(() => {
-    if (!res.writableEnded) res.status(200).json({ status: "uncertain", reason: "delivery_uncertain" });
-  });
+function validWakeAttempt(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(value);
 }
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";
@@ -104,6 +93,7 @@ import {
   type CronOperatorService,
 } from "./cron.js";
 import { TuiAdapterError } from "./errors.js";
+import { scheduleRestartStop } from "./restart-response.js";
 import type { RequestToolEnvironmentConfig } from "./config.js";
 
 export interface TuiAdapterLogger {
@@ -150,6 +140,8 @@ export interface TuiModelOption {
   readonly label?: string;
   /** Known model context capacity, in tokens. Omitted when unknown. */
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   /** Canonical provider id the model belongs to. */
   readonly provider?: string;
   /** Provider display label. */
@@ -179,6 +171,8 @@ export interface TuiCatalogModel {
   readonly provider: string;
   readonly providerLabel: string;
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   readonly reasoning?: boolean;
   readonly effortLevels?: readonly string[];
   readonly reasoningMode?: string;
@@ -242,6 +236,27 @@ export interface TuiAdapterInfo {
   readonly skills?: TuiSkillRegistry;
 }
 
+export interface TuiRestartSupport {
+  readonly supported: boolean;
+  readonly reason?: string;
+}
+
+export type TuiRestartAcceptance =
+  | { readonly kind: "accepted"; readonly operationId: string }
+  | { readonly kind: "conflict"; readonly operationId: string }
+  | { readonly kind: "refused"; readonly reason: string };
+
+/** The supervised CLI host owns acceptance and the nonzero process disposition. */
+export interface TuiRestartAuthority {
+  /** Cached, prompt response for /v1/info and proposal-tool visibility. */
+  verify(): Promise<TuiRestartSupport>;
+  /** Fresh, bounded request-time inspection before the host commits acceptance. */
+  verifyFresh?(): Promise<TuiRestartSupport>;
+  accept(verified: TuiRestartSupport): TuiRestartAcceptance;
+  processIdentity(): { readonly pid: number; readonly startedAt: string };
+  beginStop(operationId: string): void;
+}
+
 export interface TuiAdapterOptions {
   readonly host?: string;
   readonly port?: number;
@@ -279,17 +294,20 @@ export interface TuiAdapterOptions {
   readonly interaction?: ChannelInteractionHub;
   /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
   readonly cron?: CronOperatorService;
+  /** Private app-owned v1 fence; deliberately not an AgentResponder contract. */
+  readonly processJobWakeAdmission?: {
+    claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+    release(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+  };
   /** Owner-authorized process-job control plane; omitted when unavailable. */
   readonly processJobs?: ProcessJobOperator;
   /** Independent owner bearer for process-job routes. Required with processJobs. */
   readonly processJobsBearer?: string;
-  /** Owner-authorized monitor control plane; omitted when unavailable. */
-  readonly monitors?: MonitorOperator;
-  /** Independent owner bearer for monitor routes. Required with monitors. */
-  readonly monitorsBearer?: string;
   /** Pi credential status/login surface; uses apiKey when the endpoint has one. */
   readonly providerAuth?: ProviderAuthOperator;
   readonly providerUsage?: ProviderUsageOperator;
+  /** Present only on a supervised CLI worker. Keyless endpoints cannot use it. */
+  readonly restart?: TuiRestartAuthority;
 }
 
 export interface TuiAdapterStartResult {
@@ -348,13 +366,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       "processJobs and processJobsBearer must be configured together.",
     );
   }
-  const monitorsBearer = normalizeOptionalString(options.monitorsBearer);
-  if ((options.monitors === undefined) !== (monitorsBearer === undefined)) {
-    throw new TuiAdapterError(
-      "invalid_config",
-      "monitors and monitorsBearer must be configured together.",
-    );
-  }
   if (options.requestToolEnvironment !== undefined && !isLoopbackHost(host)) {
     throw new TuiAdapterError(
       "unsafe_host",
@@ -388,6 +399,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
   const contextImportPath = `${basePath}/v1/conversations/:conversationId/context-imports`;
+  const manualCompactionPath = `${basePath}/v1/conversations/:conversationId/compact`;
   const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
   const replyArtifactPath = `${basePath}/v1/conversations/:conversationId/reply-artifacts/:artifactId`;
   const mcpAppPath = `${basePath}/v1/conversations/:conversationId/mcp-apps/:invocationId`;
@@ -403,9 +415,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const jobsPath = `${basePath}/v1/jobs`;
   const jobPath = `${basePath}/v1/jobs/:jobId`;
   const jobCancelPath = `${basePath}/v1/jobs/:jobId/cancel`;
-  const monitorsPath = `${basePath}/v1/monitors`;
-  const monitorPath = `${basePath}/v1/monitors/:monitorId`;
-  const monitorCancelPath = `${basePath}/v1/monitors/:monitorId/cancel`;
   const providerAuthPath = `${basePath}/v1/provider-auth`;
   const providerAuthSessionsPath = `${providerAuthPath}/sessions`;
   const providerAuthSessionPath = `${providerAuthSessionsPath}/:sessionId`;
@@ -431,8 +440,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           });
           return { kind: "degraded" } as const;
         });
-    void Promise.all([resolveInfo(options.info), cronInfo])
-      .then(([info, cronState]) => {
+    void Promise.all([resolveInfo(options.info), cronInfo, describeRestartSupport(options.restart, apiKey)])
+      .then(([info, cronState, restartSupport]) => {
         sendBoundedInfo(res, {
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
@@ -452,6 +461,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                 }
               : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
+            ...(options.processJobWakeAdmission === undefined ? {} : { processJobWakeAdmission: { version: 1 } }),
             ...(typeof options.responder.offerLiveInput === "function"
               && options.responder.liveInputOwnership?.version === 1
               ? { liveInputTargeting: { version: 1 } }
@@ -460,6 +470,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(typeof options.responder.importContext === "function"
               ? { contextImport: { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } }
               : {}),
+            ...(typeof options.responder.compactConversation === "function" ? { manualCompaction: { version: 1 } } : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
             ...(typeof options.interaction?.getAsk === "function" ? { askById: true } : {}),
             ...(cronState.kind === "absent"
@@ -475,8 +486,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                         && cronState.overview.actionsEnabled === true,
                     },
                   }),
+            restart: restartSupport,
             ...(options.processJobs === undefined || processJobsBearer === undefined ? {} : { jobs: true }),
-            ...(options.monitors === undefined || monitorsBearer === undefined ? {} : { monitors: true }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
             ...(options.modelCatalog === undefined
               ? {}
@@ -506,6 +517,53 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
         sendJsonError(res, 500, error);
       });
+  });
+
+  // The operator key is mandatory here; generic authorize() permits keyless callers.
+  // The host commits exit disposition synchronously BEFORE a 202 can be written.
+  app.post(`${basePath}/v1/restart`, express.json({ limit: "4kb", strict: true }), (req, res) => {
+    if (apiKey === undefined) {
+      res.status(403).json({ error: { code: "restart_requires_api_key", message: "Agent restart requires a configured operator API key." } });
+      return;
+    }
+    if (!authorize(req, res, apiKey)) return;
+    if (req.body === null || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body as object).length !== 0) {
+      res.status(400).json({ error: { code: "invalid_request", message: "Restart requires an empty JSON object." } });
+      return;
+    }
+    const authority = options.restart;
+    if (authority === undefined) {
+      res.status(409).json({ error: { code: "restart_unsupported", message: "Agent is not a supervised worker." } });
+      return;
+    }
+    // Capture callbacks without relying on a receiver; injected authorities may
+    // be prototype methods and must bind their own state explicitly.
+    const verify = (authority.verifyFresh ?? authority.verify).bind(authority);
+    const accept = authority.accept.bind(authority);
+    const identity = authority.processIdentity.bind(authority);
+    const beginStop = authority.beginStop.bind(authority);
+    void boundedRestartVerify(verify, 6_500).then((support) => {
+      if (res.destroyed || res.closed) return;
+      const result = accept(support);
+      if (result.kind === "refused") {
+        res.status(409).json({ error: { code: "restart_unsupported", message: restartReason(result.reason) } });
+        return;
+      }
+      if (result.kind === "conflict") {
+        res.status(409).json({ error: { code: "restart_in_progress", message: "Agent restart is already in progress." }, operation: { id: result.operationId } });
+        return;
+      }
+      const id = result.operationId;
+      // Acceptance cannot be rolled back if the client disappears. Either a
+      // finished response or a bounded timer begins the one host-owned stop.
+      scheduleRestartStop(res, () => beginStop(id));
+      res.status(202).json({ operation: { id }, process: identity() });
+    }).catch((error: unknown) => {
+      options.logger?.error?.("Restart verification failed.", { error: errorToMessage(error) });
+      if (!res.headersSent && !res.destroyed) {
+        res.status(409).json({ error: { code: "restart_unsupported", message: "Supervisor verification failed." } });
+      }
+    });
   });
 
   app.get(modelsPath, (req, res, next) => {
@@ -599,77 +657,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       });
   });
 
-  app.get(monitorsPath, (req, res, next) => {
-    if (!authorize(req, res, monitorsBearer)) return;
-    if (options.monitors === undefined || monitorsBearer === undefined) {
-      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
-      return;
-    }
-    void options.monitors.list()
-      .then((monitors) => {
-        res.status(200).json({ monitors: parseMonitorProjections(monitors) });
-      })
-      .catch(next);
-  });
-
-  app.get(monitorPath, (req, res, next) => {
-    if (!authorize(req, res, monitorsBearer)) return;
-    if (options.monitors === undefined || monitorsBearer === undefined) {
-      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
-      return;
-    }
-    const monitorId = boundedMonitorId(req.params.monitorId);
-    if (monitorId === undefined) {
-      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded monitorId is required."));
-      return;
-    }
-    void options.monitors.get(monitorId)
-      .then((monitor) => {
-        if (monitor === undefined) {
-          res.status(404).json({ error: { code: "monitor_not_found", message: "Monitor was not found." } });
-        } else {
-          res.status(200).json(parseMonitorProjection(monitor));
-        }
-      })
-      .catch(next);
-  });
-
-  app.post(monitorCancelPath, (req, res, next) => {
-    if (!authorize(req, res, monitorsBearer)) return;
-    if (options.monitors === undefined || monitorsBearer === undefined) {
-      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Monitors are unavailable."));
-      return;
-    }
-    const monitorId = boundedMonitorId(req.params.monitorId);
-    if (monitorId === undefined) {
-      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A bounded monitorId is required."));
-      return;
-    }
-    void options.monitors.cancel(monitorId)
-      .then((monitor) => {
-        res.status(200).json(parseMonitorProjection(monitor));
-      })
-      .catch((error: unknown) => {
-        const code = typeof error === "object" && error !== null
-          ? (error as { code?: unknown }).code
-          : undefined;
-        if (code === "monitor_not_found") {
-          res.status(404).json({ error: { code, message: errorToMessage(error) } });
-        } else if (code === "monitor_conflict") {
-          res.status(409).json({ error: { code, message: errorToMessage(error) } });
-        } else {
-          next(error);
-        }
-      });
-  });
-
   // Keep the enlarged parser scoped to turn submission. 64 MiB of decoded
   // files expands to about 85.4 MiB in base64, while info/cancel stay bodyless.
   app.post(turnsPath, express.json({ limit: MAX_TURN_BODY_BYTES }), (req, res) => {
     if (!authorize(req, res, apiKey)) {
       return;
     }
-    if (!authorizeMonitorWake(req, res, req.body?.processJobWakeDeliveryKey, monitorsBearer)) return;
     void handleTurn(req, res).catch((error: unknown) => {
       options.logger?.error?.("TUI turn failed before response.", { error: errorToMessage(error) });
       if (!res.headersSent) {
@@ -887,6 +880,103 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     },
   );
 
+  app.post(manualCompactionPath, express.json({ limit: "1kb", strict: true }), (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (!authorize(req, res, apiKey)) return;
+    const id = req.params.conversationId;
+    if (typeof id !== "string" || id.length === 0 || id.includes("\0")
+      || Buffer.byteLength(id, "utf8") > 4096
+      || typeof req.body !== "object" || req.body === null || Array.isArray(req.body)
+      || Object.keys(req.body as object).some((key) => key !== "model" && key !== "context1M")) {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "A conversation id and an object with optional model/context1M are required." } });
+      return;
+    }
+    // Optional: the same model selection a turn on this conversation carries.
+    const context1M = (req.body as { context1M?: unknown }).context1M;
+    if (context1M !== undefined && typeof context1M !== "boolean") {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "context1M must be boolean." } }); return;
+    }
+    const model = (req.body as { model?: unknown }).model;
+    if (model !== undefined && (typeof model !== "string" || model.trim().length === 0
+      || Buffer.byteLength(model, "utf8") > 256)) {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "model must be a non-empty model reference." } });
+      return;
+    }
+    if (typeof options.responder.compactConversation !== "function") {
+      res.status(501).json({ error: { code: "compaction_unsupported", message: "This agent does not support manual compaction." } });
+      return;
+    }
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableFinished) controller.abort(); };
+    res.on("close", onClose);
+    void options.responder.compactConversation(id, model === undefined && context1M === undefined ? undefined : { ...(model === undefined ? {} : { model }), ...(context1M === undefined ? {} : { context1M }) }, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      const status = ["succeeded", "skipped", "failed"].includes(result.status) ? result.status : "failed";
+      res.status(200).json({
+        status,
+        trigger: "manual",
+        operationId: typeof result.operationId === "string" ? result.operationId.slice(0, 128) : "",
+        ...(typeof result.reason === "string" ? { reason: result.reason.slice(0, 128) } : {}),
+        ...(typeof result.tokensBefore === "number" && Number.isFinite(result.tokensBefore) && result.tokensBefore >= 0 ? { tokensBefore: result.tokensBefore } : {}),
+        ...(typeof result.tokensAfter === "number" && Number.isFinite(result.tokensAfter) && result.tokensAfter >= 0 ? { tokensAfter: result.tokensAfter } : {}),
+        tokenCountsExact: result.tokenCountsExact === true,
+      });
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      const kind = typeof error === "object" && error !== null && "failureKind" in error ? error.failureKind : undefined;
+      const busy = kind === "compaction_busy";
+      const unsupported = kind === "compaction_unsupported";
+      if (unsupported) {
+        // Only trusted harness-authored reasons may enter host logs. An arbitrary
+        // responder error can carry provider output or conversation content.
+        const reason = errorToMessage(error);
+        const knownReasons = [
+          "Manual compaction needs a durable Pi session.",
+          "Manual compaction is unavailable for this conversation's model.",
+          "The history store cannot report the session model binding.",
+          "The runtime cannot compact a durable session.",
+        ];
+        options.logger?.warn?.("TUI manual compaction unsupported.", {
+          reason: knownReasons.includes(reason) ? reason : "unknown",
+        });
+      } else if (!busy) {
+        // Host-side diagnostics only; the response stays generic.
+        options.logger?.error?.("TUI manual compaction failed.", { error: errorToMessage(error).slice(0, 512) });
+      }
+      res.status(busy ? 409 : unsupported ? 501 : 500).json({ error: {
+        code: busy ? "compaction_busy" : unsupported ? "compaction_unsupported" : "compaction_failed",
+        message: busy ? "This conversation is busy; wait for the turn to finish." : unsupported
+          ? "Manual compaction is unavailable for this agent." : "Context compaction failed.",
+      } });
+    }).finally(() => res.off("close", onClose));
+  });
+
+  async function offerWakeLiveInput(res: Response, body: Record<string, unknown>, request: AgentLiveInputRequest): Promise<void> {
+    const token = body.processJobWakeAttempt;
+    const boundary = randomUUID();
+    const fenced = token !== undefined || (request.deliveryKey?.startsWith("process-job:") === true
+      && options.processJobWakeAdmission !== undefined);
+    if (stopping) throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    if (fenced && (options.processJobWakeAdmission === undefined
+      || !await options.processJobWakeAdmission.claim(request.deliveryKey!, typeof token === "string" ? token : "", boundary))) {
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    }
+    if (stopping) {
+      if (fenced) await options.processJobWakeAdmission!.release(request.deliveryKey!, typeof token === "string" ? token : "", boundary);
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    }
+    const offer = options.responder.offerLiveInput!(request);
+    const settlement = offer.status === "unavailable" ? offer : await offer.settled.catch(() => ({
+      status: "uncertain" as const, reason: "delivery_uncertain" as const,
+    }));
+    if (fenced && (settlement.status === "unavailable" || settlement.status === "requeue")) {
+      if (!await options.processJobWakeAdmission!.release(request.deliveryKey!, typeof token === "string" ? token : "", boundary)) {
+        throw new TuiAdapterError("invalid_request", "Process-job wake release is unavailable.");
+      }
+    }
+    if (!res.writableEnded) res.status(200).json(settlement);
+  }
+
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
     if (!authorize(req, res, apiKey)) return;
     const conversationId = normalizeOptionalString(
@@ -908,6 +998,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         && (typeof body.deliveryKey !== "string"
           || body.deliveryKey.trim().length === 0
           || body.deliveryKey.length > 1_024))
+      || (body.processJobWakeAttempt !== undefined
+        && (!validWakeAttempt(body.processJobWakeAttempt) || typeof body.deliveryKey !== "string"))
       || (body.targetTurnId !== undefined
         && (typeof body.targetTurnId !== "string" || body.targetTurnId.trim().length === 0 || body.targetTurnId.length > 4_096))
       || (body.targetRunId !== undefined
@@ -919,7 +1011,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       ));
       return;
     }
-    if (!authorizeMonitorWake(req, res, body.deliveryKey, monitorsBearer)) return;
     if (typeof options.responder.offerLiveInput !== "function") {
       res.status(200).json({ status: "unavailable", reason: "unsupported" });
       return;
@@ -942,14 +1033,16 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           return;
         }
         try {
-          settleLiveInputOffer(res, options.responder.offerLiveInput!({
+          void offerWakeLiveInput(res, body, {
             conversationId,
             id: inputId,
             text: inputText,
+            ...(typeof body.ownerText === "string" && body.ownerText.length <= inputText.length
+              ? { ownerText: body.ownerText } : {}),
             receivedAt,
             targetRunId: runId,
             ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
-          }));
+          }).catch(next);
         } catch (error) {
           next(error);
         }
@@ -986,21 +1079,15 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.once("close", abort);
       return;
     }
-    let offer: AgentLiveInputOffer;
-    try {
-      offer = options.responder.offerLiveInput({
-        conversationId,
-        id: body.id,
-        text: body.text,
-        receivedAt: body.receivedAt,
-        ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
-        ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
-      });
-    } catch (error) {
-      next(error);
-      return;
-    }
-    settleLiveInputOffer(res, offer);
+    void offerWakeLiveInput(res, body, {
+      conversationId,
+      id: inputId,
+      text: inputText,
+      ...(typeof body.ownerText === "string" && body.ownerText.length <= inputText.length ? { ownerText: body.ownerText } : {}),
+      receivedAt,
+      ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
+      ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
+    }).catch(next);
   });
 
   app.get(askPath, (req, res) => {
@@ -1425,8 +1512,21 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     const targetKey = webTurnId === undefined || options.responder.liveInputOwnership?.version !== 1
       ? undefined
       : liveInputTargetKey(body.conversationId, webTurnId);
+    if (stopping) throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
     if (targetKey !== undefined && liveInputTargets.has(targetKey)) {
       throw new TuiAdapterError("invalid_request", "Web turn is already active.");
+    }
+    const fenced = body.processJobWakeAttempt !== undefined
+      || (body.processJobWakeDeliveryKey?.startsWith("process-job:") === true && options.processJobWakeAdmission !== undefined);
+    if (fenced && (options.processJobWakeAdmission === undefined
+      || !await options.processJobWakeAdmission.claim(body.processJobWakeDeliveryKey!, body.processJobWakeAttempt ?? "", requestId))) {
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    }
+    // Claim persistence yields. A certain synchronous refusal afterward must
+    // release only this boundary; it must not leave a false admission marker.
+    if (stopping || (targetKey !== undefined && liveInputTargets.has(targetKey))) {
+      if (fenced) await options.processJobWakeAdmission!.release(body.processJobWakeDeliveryKey!, body.processJobWakeAttempt ?? "", requestId);
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
     }
     const controller = new AbortController();
     activeTurns.add(controller);
@@ -1441,6 +1541,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       text: body.text,
       abortSignal: controller.signal,
       metadata: requestMetadata(body, requestId),
+      // Provenance is stamped after authorization from server bind/key state,
+      // never from the client-selected display label or request metadata.
+      captureSpeakerKind: apiKey !== undefined || !boundNonLoopback ? "human-turn" : "unknown",
       ...(target === undefined ? {} : {
         onLiveInputOwnership: (event) => {
           if (target?.state === "closed") return;
@@ -1975,6 +2078,7 @@ interface NormalizedTurnBody {
   readonly metadata: Record<string, unknown>;
   readonly client: "tui" | "web" | "acp";
   readonly processJobWakeDeliveryKey?: string;
+  readonly processJobWakeAttempt?: string;
   readonly attachments?: readonly AgentAttachment[];
   readonly toolEnvironment?: AgentToolEnvironment;
 }
@@ -2089,6 +2193,10 @@ function normalizeTurnBody(
       ? record.processJobWakeDeliveryKey
       : undefined,
   );
+  const processJobWakeAttempt = record.processJobWakeAttempt;
+  if (processJobWakeAttempt !== undefined && (!validWakeAttempt(processJobWakeAttempt) || processJobWakeDeliveryKey === undefined)) {
+    throw new TuiAdapterError("invalid_request", "processJobWakeAttempt is invalid.");
+  }
   if (processJobWakeDeliveryKey !== undefined
     && (client !== "web" || processJobWakeDeliveryKey.length > 1_024)) {
     throw new TuiAdapterError("invalid_request", "processJobWakeDeliveryKey is invalid.");
@@ -2108,6 +2216,7 @@ function normalizeTurnBody(
     metadata,
     client,
     ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
+    ...(processJobWakeAttempt === undefined ? {} : { processJobWakeAttempt: processJobWakeAttempt as string }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(toolEnvironment === undefined ? {} : { toolEnvironment }),
   };
@@ -2121,7 +2230,11 @@ function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<st
     return { ...body.metadata, source: "acp", acpRequestId: requestId };
   }
 
-  const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+  const incomingWeb = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+  const web = incomingWeb !== undefined && typeof incomingWeb.ownerText === "string"
+    && incomingWeb.ownerText.length > body.text.length
+    ? Object.fromEntries(Object.entries(incomingWeb).filter(([key]) => key !== "ownerText"))
+    : incomingWeb;
   const existingTui = isRecord(body.metadata.tui) ? body.metadata.tui : undefined;
   const overrideMirror = web === undefined
     ? undefined
@@ -2639,13 +2752,33 @@ function sendBoundedCronJson(res: Response, status: number, value: unknown): voi
   res.status(status).type("application/json").send(serialized);
 }
 
-/** A wake key identifies a flight; only the independent owner bearer authorizes it. */
-function authorizeMonitorWake(req: Request, res: Response, key: unknown, ownerBearer: string | undefined): boolean {
-  if (typeof key !== "string" || !key.trim().startsWith("monitor:")) return true;
-  const presented = readAuthorizationBearer(req.header("x-mono-agent-monitor-wake-authorization"));
-  if (ownerBearer !== undefined && presented !== undefined && bearerTokensEqual(presented, ownerBearer)) return true;
-  res.status(401).json({ error: { message: "Monitor wake requires owner authorization.", code: "invalid_api_key" } });
-  return false;
+function restartReason(reason: unknown): string {
+  return typeof reason === "string" && reason.length > 0 && Buffer.byteLength(reason, "utf8") <= 256
+    ? reason : "Agent restart is unavailable.";
+}
+
+async function boundedRestartVerify(verify: () => Promise<TuiRestartSupport>, deadlineMs: number): Promise<TuiRestartSupport> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(verify),
+      new Promise<TuiRestartSupport>((resolve) => {
+        timer = setTimeout(() => resolve({ supported: false, reason: "Supervisor verification timed out." }), deadlineMs);
+        timer.unref();
+      }),
+    ]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
+async function describeRestartSupport(authority: TuiRestartAuthority | undefined, apiKey: string | undefined): Promise<TuiRestartSupport> {
+  if (apiKey === undefined) return { supported: false, reason: "Agent restart requires a configured operator API key." };
+  if (authority === undefined) return { supported: false, reason: "Agent is not a supervised worker." };
+  try {
+    const support = await boundedRestartVerify(() => authority.verify(), 150);
+    return support.supported === true ? { supported: true } : { supported: false, reason: restartReason(support.reason) };
+  } catch {
+    return { supported: false, reason: "Supervisor verification failed." };
+  }
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
@@ -2839,9 +2972,4 @@ function normalizeBasePath(basePath: string): string {
     throw new TuiAdapterError("invalid_config", "basePath must start with '/'.");
   }
   return basePath.length === 1 ? "" : basePath.replace(/\/+$/u, "");
-}
-
-function boundedMonitorId(value: unknown): string | undefined {
-  const monitorId = normalizeOptionalString(typeof value === "string" ? value : undefined);
-  return monitorId === undefined || monitorId.length > 256 ? undefined : monitorId;
 }

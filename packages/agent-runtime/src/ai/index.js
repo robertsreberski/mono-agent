@@ -16,7 +16,6 @@ export { generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/pi-
 // (PiBuiltinModelSnapshot, PiBuiltinProviderSnapshot, …) travel with the
 // functions; runtime-adapter re-exports these for host-side catalog builders.
 export * from "./pi-interop.js";
-export * from "./pi-supplement.js";
 export * from "./provider-check.js";
 export {
   buildCapabilitiesUsed,

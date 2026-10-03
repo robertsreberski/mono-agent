@@ -24,6 +24,7 @@ type BreakerState = "closed" | "open" | "half-open";
  */
 export class CircuitBreakerEmbeddingProvider implements EmbeddingProvider {
   readonly id: string;
+  readonly legacyId?: string;
   private readonly inner: EmbeddingProvider;
   private readonly failureThreshold: number;
   private readonly cooldownMs: number;
@@ -42,6 +43,7 @@ export class CircuitBreakerEmbeddingProvider implements EmbeddingProvider {
     this.cooldownMs = options.cooldownMs ?? DEFAULT_COOLDOWN_MS;
     this.now = options.now ?? Date.now;
     this.id = inner.id;
+    if (inner.legacyId !== undefined) this.legacyId = inner.legacyId;
   }
 
   async embed(texts: readonly string[]): Promise<number[][]> {

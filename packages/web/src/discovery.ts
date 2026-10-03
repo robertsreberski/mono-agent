@@ -23,17 +23,18 @@ const MAX_LOCAL_CONFIGURATION_BYTES = 1024 * 1024;
 export interface DiscoverOperatorAgentsOptions {
   readonly registryDirs?: readonly string[];
   readonly staleAfterMs?: number;
+  /** Include stopped manifests for the web console's offline-agent projection. */
+  readonly includeStopped?: boolean;
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
-export type DiscoverAcpBridgeAgentsOptions = DiscoverOperatorAgentsOptions;
+export type DiscoverAcpBridgeAgentsOptions = Omit<DiscoverOperatorAgentsOptions, "includeStopped">;
 
 export interface DiscoveredOperatorAgent {
   readonly source: TraceSourceListItem;
   readonly baseUrl?: string;
   readonly apiKey?: string;
   readonly processJobsBearer?: string;
-  readonly monitorsBearer?: string;
 }
 
 export function defaultTraceRegistryDir(env: Readonly<Record<string, string | undefined>> = process.env): string {
@@ -49,23 +50,23 @@ export async function discoverOperatorAgents(
   const env = options.env ?? process.env;
   const sources = await discoverTraceSources(options, env);
   return Promise.all(sources
-    .filter((source) => source.health !== "stopped")
+    .filter((source) => options.includeStopped === true || source.health !== "stopped")
     .map(async (source): Promise<DiscoveredOperatorAgent> => {
+      // A stopped source supplies identity only, never endpoint authority.
+      if (source.health === "stopped") return { source };
       const baseUrl = operatorBaseUrlFromMetadata(source.metadata);
       const apiKey = baseUrl === undefined ? undefined : await resolveOperatorApiKey(source, env);
       const processJobsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "processJobs");
-      const monitorsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "monitors");
       return {
         source,
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(apiKey === undefined ? {} : { apiKey }),
         ...(processJobsBearer === undefined ? {} : { processJobsBearer }),
-        ...(monitorsBearer === undefined ? {} : { monitorsBearer }),
       };
     }));
 }
 
-async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJobs" | "monitors"): Promise<string | undefined> {
+async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJobs"): Promise<string | undefined> {
   const channels = record(source.metadata?.channels);
   const tui = record(channels?.tui);
   const owner = record(tui?.[kind]);
@@ -96,7 +97,7 @@ async function resolveOwnerBearer(source: TraceSourceListItem, kind: "processJob
     const secret = Buffer.from(value, "base64url");
     if (secret.byteLength !== 32 || secret.toString("base64url") !== value) return undefined;
     return createHmac("sha256", secret)
-      .update(kind === "monitors" ? "mono-agent-monitor-operator-v1" : "mono-agent-process-job-operator-v1")
+      .update("mono-agent-process-job-operator-v1")
       .digest("base64url");
   } catch {
     return undefined;
@@ -270,26 +271,26 @@ async function resolveOperatorApiKey(
   source: TraceSourceListItem,
   env: Readonly<Record<string, string | undefined>>,
 ): Promise<string | undefined> {
+  if (source.configPath !== undefined) {
+    // Managed workers publish only the path/fingerprint of their selected
+    // dotenv. Read the one exact key locally; never copy secret values into the
+    // trace registry or browser-facing agent metadata.
+    const dotenvPath = dotenvPathFromMetadata(source);
+    if (dotenvPath !== undefined) {
+      const fromDotenv = await readDotenvOperatorApiKey(dotenvPath);
+      if (fromDotenv !== undefined) return fromDotenv;
+    }
+
+    try {
+      const parsed = JSON.parse(await readOwnerRegularFile(source.configPath)) as { tui?: { apiKey?: unknown } };
+      const key = typeof parsed.tui?.apiKey === "string" ? parsed.tui.apiKey.trim() : "";
+      if (key.length > 0) return key;
+    } catch {
+      // A missing or unreadable source key can still use the shared ambient key.
+    }
+  }
   const fromEnv = env.MONO_AGENT_TUI_API_KEY?.trim();
-  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
-  if (source.configPath === undefined) return undefined;
-
-  // Managed workers publish only the path/fingerprint of their selected
-  // dotenv. Read the one exact key locally; never copy secret values into the
-  // trace registry or browser-facing agent metadata.
-  const dotenvPath = dotenvPathFromMetadata(source);
-  if (dotenvPath !== undefined) {
-    const fromDotenv = await readDotenvOperatorApiKey(dotenvPath);
-    if (fromDotenv !== undefined) return fromDotenv;
-  }
-
-  try {
-    const parsed = JSON.parse(await readOwnerRegularFile(source.configPath)) as { tui?: { apiKey?: unknown } };
-    const key = typeof parsed.tui?.apiKey === "string" ? parsed.tui.apiKey.trim() : "";
-    return key.length === 0 ? undefined : key;
-  } catch {
-    return undefined;
-  }
+  return fromEnv === undefined || fromEnv.length === 0 ? undefined : fromEnv;
 }
 
 function dotenvPathFromMetadata(source: TraceSourceListItem): string | undefined {

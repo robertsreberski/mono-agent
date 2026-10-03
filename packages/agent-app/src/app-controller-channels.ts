@@ -1,5 +1,6 @@
 import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
 import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
 import {
@@ -24,7 +25,6 @@ import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { createProviderAuthOperator } from "./provider-auth-operator.js";
@@ -38,6 +38,7 @@ export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly drivers: readonly ChannelDriver[];
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
@@ -48,12 +49,11 @@ export interface ChannelsControllerPort {
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
-  readonly monitorsService: MonitorsServiceHandle | undefined;
-  /** Protected state root the monitor service actually opened, when it is live. */
-  readonly monitorsStateDir: string | undefined;
   readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
+  readonly restartAuthority?: TuiRestartAuthority | undefined;
+  restartToolKeyed?: boolean;
   providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
@@ -87,7 +87,8 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     kind: "waiting_for_config",
     reason: `${driver.label} start was superseded.`,
   };
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+    ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
 
   let config: unknown;
   try {
@@ -174,7 +175,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:superseded`);
       return currentStatus();
     }
-    const observability = driver.id === "tui"
+    // The console channel binds work to its source; Telegram mirrors forum
+    // topics into that source's projects when `telegram.projects` is on.
+    const observability = driver.id === "tui" || driver.id === "telegram"
       ? await controller.observabilityContext()
       : {};
     if (!isCurrentGeneration()) {
@@ -199,6 +202,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         }
         controller.channelStartGenerations.delete(driver.id);
         controller.running.delete(driver.id);
+        if (driver.id === "tui") controller.restartToolKeyed = false;
         controller.setStatus(driver.id, { kind: "failed", reason: failureReason });
         controller.logger?.error?.(`${driver.label} channel stopped with an error.`, { reason: failureReason });
         // The running-channel entry (which holds the stop/reload dispose handle)
@@ -279,9 +283,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       driver,
       channelStartInput,
       controller.processJobsService,
-      controller.monitorsService,
       providerAuth,
       controller.providerUsageFor?.(coreConfig),
+      controller.restartAuthority,
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {
@@ -298,29 +302,12 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     const protectionSummary = protectionStatus === undefined
       ? {}
       : { processJobsProtection: protectionStatus };
-    // Monitors share the process-job state root, so the operator surface only
-    // has to advertise that the controller is live; `monitors list` reads the
-    // directory from the process-job entry.
-    const monitorsSummary = controller.monitorsService === undefined
-      ? {}
-      : {
-          monitors: {
-            // The state root is republished here rather than only under
-            // `processJobs`: the two services start independently, and a
-            // degraded process-job start must not make a live monitor
-            // controller look unreachable to `mono-agent monitors`.
-            stateDir: controller.monitorsStateDir,
-            maxActive: controller.monitorsService.settings.maxActive,
-            maxActivePerConversation: controller.monitorsService.settings.maxActivePerConversation,
-          },
-        };
     const summary = driver.id !== "tui"
       ? runningChannel.summary
       : controller.processJobsService !== undefined
         ? {
             ...runningChannel.summary,
             ...protectionSummary,
-            ...monitorsSummary,
             processJobs: {
               stateDir: controller.processJobsService.settings.stateDir,
               health: controller.processJobsService.health.state,
@@ -328,13 +315,18 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
             },
           }
         : controller.processJobsDegradation === undefined
-          ? { ...runningChannel.summary, ...protectionSummary, ...monitorsSummary }
+          ? { ...runningChannel.summary, ...protectionSummary }
           : {
               ...runningChannel.summary,
               ...protectionSummary,
-              ...monitorsSummary,
               processJobsDegraded: controller.processJobsDegradation,
             };
+    if (driver.id === "tui") {
+      controller.restartToolKeyed = appOwnedTuiStart !== undefined
+        && typeof (channelStartInput.config as { readonly apiKey?: unknown }).apiKey === "string"
+        && (channelStartInput.config as { readonly apiKey: string }).apiKey.length > 0
+        && controller.restartAuthority !== undefined;
+    }
     controller.running.set(driver.id, {
       ...runningChannel,
       summary,
@@ -354,6 +346,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     );
     return status;
   } catch (error) {
+    if (driver.id === "tui") controller.restartToolKeyed = false;
     if (disposeResponder !== undefined) {
       await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:start-failure`);
     }
@@ -367,6 +360,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
 export async function stopChannel(controller: ChannelsControllerPort, id: ChannelId, reason: string): Promise<void> {
   const startInFlight = controller.startsInFlight.get(id);
   controller.channelStartGenerations.delete(id);
+  if (id === "tui") controller.restartToolKeyed = false;
   const driver = controller.driversById.get(id);
   const runningChannel = controller.running.get(id);
   if (driver !== undefined && runningChannel !== undefined) {

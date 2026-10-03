@@ -11,7 +11,6 @@ import * as memoryStore from "@mono-agent/memory/store";
 import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
 import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
 import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../doctor.js";
-import type { DoctorStatusExecFile } from "../doctor.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import {
@@ -533,14 +532,14 @@ describe("validateMonoAgentFolder", () => {
   it.each([false, true])("reports detached subagent configuration with persistence=%s", async (enabled) => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" }, tools: { allowedTools: ["Agent", "AgentSend"] },
+      runtime: { model: "openai-codex:gpt-5.5" }, tools: { allowedTools: ["Agent", "AgentManage"] },
       context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true },
       subagents: { enabled, instances: { enabled } },
     });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
     const text = sectionById(report, "process-jobs").details.join("\n");
     expect(text).toContain(enabled ? "Background subagents: configured" : "Background subagents unavailable");
-    expect(text).toContain("persistent Agent/AgentSend");
+    expect(text).toContain("persistent Agent/AgentManage");
   });
 
   it("reports enabled process jobs without creating their local state", async () => {
@@ -679,7 +678,7 @@ describe("validateMonoAgentFolder", () => {
     const configPath = await writeConfig({
       runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "./IDENTITY.md" },
       processJobs: { enabled: true }, subagents: { enabled: true, instances: { enabled: true } },
-      tools: { allowedTools: ["Agent", "AgentSend"] },
+      tools: { allowedTools: ["Agent", "AgentManage"] },
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
@@ -1879,7 +1878,7 @@ describe("validateMonoAgentFolder", () => {
     expect(report.ok).toBe(false);
     const core = sectionById(report, "core");
     expect(core.status).toBe("error");
-    expect(core.details.join("\n")).toContain("MONO_AGENT_MODEL");
+    expect(core.details.join("\n")).toContain("runtime.model");
   });
 
   it("warns non-fatally when a secret is sourced from JSON", async () => {
@@ -1909,7 +1908,7 @@ describe("validateMonoAgentFolder", () => {
     const placement = sectionById(report, "secret-placement");
     expect(placement.status).toBe("waiting");
     expect(placement.details).toEqual([
-      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).",
+      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — put it in an environment variable of your choice and set memory.embeddings.apiKeyEnv in JSON to that variable's name.",
     ]);
   });
 
@@ -1929,6 +1928,7 @@ describe("validateMonoAgentFolder", () => {
         embeddings: {
           provider: "openai",
           model: "text-embedding-3-small",
+          apiKeyEnv: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
         },
       },
     });
@@ -1976,7 +1976,7 @@ describe("validateMonoAgentFolder", () => {
     expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
   });
 
-  it("warns non-fatally for removed memory env keys without requiring a memory path", async () => {
+  it("silently ignores stale core memory env keys without requiring a memory path", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "openai-codex:gpt-5.5" },
@@ -1997,13 +1997,7 @@ describe("validateMonoAgentFolder", () => {
 
       expect(report.ok).toBe(true);
       expect(sectionById(report, "memory").status).toBe("disabled");
-      const placement = sectionById(report, "secret-placement");
-      expect(placement.status).toBe("waiting");
-      expect(placement.details).toEqual([
-        "[WARN] MONO_AGENT_MEMORY_REFLECTION_ENABLED is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
-        "[WARN] MONO_AGENT_MEMORY_MIGRATION_CRON is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
-      ]);
-      expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
+      expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
     } finally {
       warn.mockRestore();
     }
@@ -2470,7 +2464,7 @@ describe("validateMonoAgentFolder", () => {
   it("keeps opencode-go under the native mono-agent sandbox", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: { mode: "native", fallback: "fail-closed" },
     });
@@ -2559,136 +2553,6 @@ describe("validateMonoAgentFolder", () => {
 
     expect(report.ok).toBe(true);
     expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
-  });
-});
-
-describe("validateMonoAgentFolder — observability exporter section", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  async function writeExporterConfig(exporters?: unknown): Promise<string> {
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    return writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      ...(exporters === undefined ? {} : { observability: { exporters } }),
-    });
-  }
-
-  it("reports disabled when no exporter is configured", async () => {
-    const configPath = await writeExporterConfig();
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("disabled");
-    expect(section.details.join("\n")).toMatch(/no observability exporter/iu);
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports ok when the Phoenix endpoint is reachable", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("ok");
-    const text = section.details.join("\n");
-    expect(text).toContain("http://127.0.0.1:6006/v1/traces");
-    expect(text).toMatch(/JSONL artifacts remain local/iu);
-    expect(text).not.toContain("[WARN] includeSensitiveData=true");
-    expect(report.ok).toBe(true);
-  });
-
-  it("warns when sensitive data export is enabled but keeps the report ok", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    const endpoint = "http://127.0.0.1:6006/v1/traces";
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint, includeSensitiveData: true }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("ok");
-    const text = section.details.join("\n");
-    expect(text).toContain("[WARN] includeSensitiveData=true");
-    expect(text).toContain(endpoint);
-    expect(text).toContain("user input");
-    expect(text).toContain("assistant replies");
-    expect(text).toContain("tool args/results");
-    expect(text).toContain("system prompt");
-    expect(text).toMatch(/JSONL artifacts remain local/iu);
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports waiting (not error) when the endpoint is unreachable", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("waiting");
-    const text = section.details.join("\n");
-    expect(text).toMatch(/WARN/u);
-    expect(text).toMatch(/ECONNREFUSED|not reachable|unreachable/iu);
-    expect(text).toMatch(/JSONL artifacts remain local/iu);
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports waiting (not a false ok) when the endpoint rejects the protobuf POST with 415", async () => {
-    // The old OPTIONS probe treated this endpoint as healthy; the real export
-    // POST returns 415 (wrong content type). The probe now POSTs protobuf, so it
-    // catches the export incompatibility instead of reporting a false ok.
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 415 }));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("waiting");
-    const text = section.details.join("\n");
-    expect(text).toMatch(/WARN/u);
-    expect(text).toContain("HTTP 415");
-    expect(report.ok).toBe(true);
-  });
-
-  it("POSTs application/x-protobuf when probing (exercises the real export wire format)", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal("fetch", fetchSpy);
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
-    expect(init.method).toBe("POST");
-    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/x-protobuf");
-  });
-
-  it("reports waiting when the endpoint responds but with a non-ok status (wrong path)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
-    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/wrong" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("waiting");
-    const text = section.details.join("\n");
-    expect(text).toMatch(/WARN/u);
-    expect(text).toContain("HTTP 404");
-    // Still non-fatal: a wrong/unready endpoint never fails the report.
-    expect(report.ok).toBe(true);
-  });
-
-  it("reports error (fails the report) for an invalid exporter type", async () => {
-    const configPath = await writeExporterConfig([{ type: "bogus", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const section = sectionById(report, "observability");
-    expect(section.status).toBe("error");
-    expect(report.ok).toBe(false);
   });
 });
 
@@ -3179,127 +3043,6 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
     expect(memory.details.join("\n")).toContain("bujo");
     expect(memory.details.join("\n")).toMatch(/Chronological journal: supported/iu);
-  });
-
-  it("reports the supermemory backend as reachable for any HTTP response without sending auth or data", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 405 }));
-    vi.stubGlobal("fetch", fetchSpy);
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    const configPath = await writeMinimalConfig({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: {
-          baseUrl: "http://127.0.0.1:6767",
-          container: "agent-alpha",
-          apiKey: "fixture-key",
-        },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("ok");
-    const text = memory.details.join("\n");
-    expect(text).toContain("Backend: supermemory");
-    expect(text).toContain("http://127.0.0.1:6767");
-    expect(text).toContain("agent-alpha");
-    expect(text).toContain("transport reachable");
-    expect(text).toContain("HTTP 405");
-    expect(text).toMatch(/Chronological journal: unsupported by Supermemory/iu);
-    // bujo-only "Mode:" line is not used for external backends.
-    expect(text).not.toMatch(/^Mode:/mu);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [endpoint, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(endpoint).toBe("http://127.0.0.1:6767");
-    expect(init.method).toBe("HEAD");
-    expect(init.redirect).toBe("manual");
-    expect(init.signal).toBeInstanceOf(AbortSignal);
-    expect(init.headers).toBeUndefined();
-    expect(init.body).toBeUndefined();
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 3_000);
-  });
-
-  it.each([
-    ["connection refusal", new Error("ECONNREFUSED"), "ECONNREFUSED"],
-    ["abort", new DOMException("probe timed out", "AbortError"), "probe timed out"],
-  ])("reports Supermemory %s as non-fatal waiting", async (_case, failure, expectedReason) => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(failure));
-    const configPath = await writeMinimalConfig({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("waiting");
-    expect(report.ok).toBe(true);
-    const text = memory.details.join("\n");
-    expect(text).toContain("[WARN] Supermemory is not reachable");
-    expect(text).toContain(expectedReason);
-    expect(text).toContain("memory.supermemory.baseUrl");
-    expect(text).toContain("mono-agent validate");
-    expect(text).toContain("capture and recall will degrade");
-  });
-
-  it("resolves the Supermemory validator from the explicit agent folder", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const packageRoot = join(
-      dir,
-      "node_modules",
-      "@mono-agent",
-      "memory-supermemory",
-    );
-    await mkdir(join(packageRoot, "dist"), { recursive: true });
-    await writeFile(
-      join(packageRoot, "package.json"),
-      JSON.stringify({
-        name: "@mono-agent/memory-supermemory",
-        version: agentAppPackageVersion(),
-        type: "module",
-        exports: {
-          ".": { import: "./dist/index.js" },
-          "./package.json": "./package.json",
-        },
-      }),
-      "utf8",
-    );
-    await writeFile(
-      join(packageRoot, "dist", "index.js"),
-      [
-        "export const createSupermemoryStore = () => ({});",
-        "export const validateSupermemoryConfig = () => ({",
-        "  valid: false, errors: ['agent-local-validator'],",
-        "});",
-      ].join("\n"),
-      "utf8",
-    );
-    const configPath = await writeMinimalConfig({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("error");
-    expect(memory.details.join("\n")).toContain("agent-local-validator");
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("warns (status=waiting, no throw) when Ollama is unreachable", async () => {
@@ -3945,23 +3688,6 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("skips the Phoenix probe — exporter stays ok and fetch is never called", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    expect(sectionById(report, "observability").status).toBe("ok");
-    expect(report.ok).toBe(true);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it("skips the Ollama probe — memory stays ok, no WARNs, fetch never called", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -3993,32 +3719,6 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("skips the Supermemory probe — config stays ok and fetch is never called", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        path: dir,
-        writeMode: "capture",
-        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-      },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("ok");
-    expect(memory.details.join("\n")).toContain("liveness probe skipped");
-    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
-    expect(report.ok).toBe(true);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it("fails an unmanaged memory root before local or network probes", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -4045,25 +3745,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("yields the same ok verdict as a full run when only waiting differs", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
-    });
 
-    const live = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
-    const fast = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-
-    expect(live.ok).toBe(true);
-    expect(fast.ok).toBe(true);
-    // The full run downgrades the exporter to waiting; the fast run keeps it ok —
-    // either way the report passes, which is what the gate relies on.
-    expect(sectionById(live, "observability").status).toBe("waiting");
-    expect(sectionById(fast, "observability").status).toBe("ok");
-  });
 });
 
 describe("validateMonoAgentFolder — web tools", () => {
@@ -4075,6 +3757,40 @@ describe("validateMonoAgentFolder — web tools", () => {
       tools: { web },
     });
   }
+
+  it("probes strict Parallel with tools/list only and reports anonymous access", async () => {
+    const methods: string[] = [];
+    const fetchSpy = vi.fn(async (_url: unknown, init: RequestInit) => {
+      if (init.method === "GET") return new Response(null, { status: 405 });
+      const message = JSON.parse(String(init.body)) as { method: string; id?: number };
+      methods.push(message.method);
+      if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const result = message.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+        : { tools: ["web_search", "web_fetch"].map((name) => ({ name, inputSchema: { type: "object" } })) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({ search: { backend: "parallel" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Parallel search: anonymous access.");
+    expect(methods).toContain("tools/list");
+    expect(methods).not.toContain("tools/call");
+    expect(fetchSpy.mock.calls.every(([, init]) => init.redirect === "error")).toBe(true);
+  });
+
+  it("reports native local readiness without contacting an endpoint or public engines", async () => {
+    const fetchSpy = vi.fn(); vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({ search: { backend: "local" }, fetch: { provider: "local" } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const section = sectionById(report, "web-tools");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Local is a built-in Node provider; no endpoint or Python service is required.");
+    expect(section.details).toContain("Local web capability is available (public engines and extraction not probed).");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
   it("reports the static defaults without running a liveness probe", async () => {
     const fetchSpy = vi.fn();
@@ -4093,10 +3809,10 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(sectionById(report, "web-tools")).toMatchObject({
       status: "ok",
       details: expect.arrayContaining([
-        "WebSearch backend: auto.",
+        "WebSearch backend: parallel,ollama.",
         "WebSearch request budget: 4 per logical run.",
-        "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.",
-        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it as the first eligible backend.",
+        "SearXNG is not configured.",
+        "Ordered chain: parallel → ollama. Unavailable providers advance to the next entry.",
         "WebFetch browser rendering: never.",
         "Static Defuddle/Readability extraction is active; agent-browser is not required.",
       ]),
@@ -4148,8 +3864,36 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy.mock.calls.every(([, init]) => !("Authorization" in ((init as RequestInit).headers as Record<string, string>)))).toBe(true);
   });
 
-  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {
-    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
+  it("sends the resolved apiKeyEnv bearer on the hosted Ollama probe", async () => {
+    // Without resolve-at-use the probe sends "Bearer undefined" even with the
+    // variable set, misdiagnosing a correct configuration as an auth failure.
+    const fetchSpy = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKeyEnv: "DOCTOR_TEST_OLLAMA_KEY" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { DOCTOR_TEST_OLLAMA_KEY: "env-resolved-key" },
+      cwd: dir,
+      configPath,
+      liveness: true,
+    });
+    expect(sectionById(report, "web-tools").details).toContain(
+      "Ollama Web Search JSON probe succeeded.",
+    );
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["Authorization"]).toBe("Bearer env-resolved-key");
+  });
+
+  it("stops an Ollama Web Search probe response that exceeds its streamed byte limit", async () => {    const oversized = new Uint8Array((2 * 1024 * 1024) + 1);
     const fetchSpy = vi.fn().mockResolvedValue(new Response(new ReadableStream({
       start(controller) {
         controller.enqueue(oversized);
@@ -4180,7 +3924,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("probes explicitly configured Ollama in auto and documents the remaining chain", async () => {
+  it("reports lazy Ollama readiness in an explicit chain", async () => {
     const fetchSpy = vi.fn(async (url: string | URL) => {
       const target = String(url);
       if ([
@@ -4194,7 +3938,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     vi.stubGlobal("fetch", fetchSpy);
     const configPath = await writeWebToolsConfig({
       search: {
-        backend: "auto",
+        backend: ["ollama", "searxng", "codex", "keyless"],
         maxRequestsPerRun: 6,
         ollama: { baseUrl: "http://127.0.0.1:11434" },
         searxng: { endpoint: "http://127.0.0.1:8088" },
@@ -4205,18 +3949,17 @@ describe("validateMonoAgentFolder — web tools", () => {
     const web = sectionById(report, "web-tools");
     expect(web.status).toBe("ok");
     expect(web.details).toContain("WebSearch request budget: 6 per logical run.");
-    expect(web.details).toContain("Ollama Web Search JSON probe succeeded.");
-    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable.");
+    expect(web.details).toContain("Ollama Web Search readiness is checked lazily when the chain reaches it.");
+    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Ordered chain: ollama → searxng → codex → keyless. Unavailable providers advance to the next entry.");
     expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
       "http://127.0.0.1:8088/search",
-      "http://127.0.0.1:11434/api/experimental/web_search",
     ]);
   });
 
-  it("omits absent SearXNG from the auto fallback diagnostics", async () => {
+  it("omits absent SearXNG from explicit chain diagnostics", async () => {
     const configPath = await writeWebToolsConfig({
       search: {
-        backend: "auto",
+        backend: ["ollama", "codex", "keyless"],
         ollama: { baseUrl: "http://127.0.0.1:11434" },
       },
     });
@@ -4224,10 +3967,10 @@ describe("validateMonoAgentFolder — web tools", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const details = sectionById(report, "web-tools").details;
     expect(details).toContain(
-      "Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to Codex, then keyless when Ollama is unavailable.",
+      "Ollama Web Search origin: http://127.0.0.1:11434. Ordered chain: ollama → codex → keyless. Unavailable providers advance to the next entry.",
     );
     expect(details).toContain(
-      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it after configured Ollama.",
+      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when the chain reaches it.",
     );
     expect(details.some((detail) => detail.includes("advances to configured SearXNG"))).toBe(false);
   });
@@ -4406,10 +4149,29 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(report.ok).toBe(false);
   });
 
-  it("accepts the supplemented opencode-go DeepSeek V4.1 Flash model", async () => {
+  it("accepts the upstream opencode-go DeepSeek V4.1 Flash model", async () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
     const configPath = await writeCredConfig({
       runtime: { model: "opencode-go:deepseek-v4.1-flash" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "credentials").status).toBe("ok");
+  });
+
+  it.each([
+    ["anthropic:claude-sonnet-5-5", "anthropic", { type: "api_key", key: "sk-ant-test" }],
+    ["anthropic:claude-opus-5-5", "anthropic", { type: "api_key", key: "sk-ant-test" }],
+    ["openai-codex:gpt-6-sol", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
+    ["openai-codex:gpt-6-luna", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
+    ["openai:gpt-6-sol", "openai", { type: "api_key", key: "sk-test" }],
+  ])("accepts Pi 0.99.2 native model %s", async (model, provider, credential) => {
+    const authPath = await writeAuthStore({ [provider]: credential });
+    const configPath = await writeCredConfig({
+      runtime: { model },
       providers: { piAuthPath: authPath },
     });
 
@@ -4446,7 +4208,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
   it("rejects an unknown exact Pi agent-host memory LLM before execution", async () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
       memory: {
         mode: "bujo",
@@ -4503,7 +4265,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4511,7 +4273,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("ok");
-    expect(creds.details.join("\n")).toMatch(/Primary opencode-go:kimi-k2\.6: API key credentials for `opencode-go` present/u);
+    expect(creds.details.join("\n")).toMatch(/Primary opencode-go:kimi-k3: API key credentials for `opencode-go` present/u);
     expect(report.ok).toBe(true);
   });
 
@@ -4521,7 +4283,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     });
     await chmod(authPath, 0o644);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4545,7 +4307,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     }), { mode: 0o600 });
     await symlink(targetPath, authPath);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4566,7 +4328,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     }), { mode: 0o600 });
     await link(targetPath, authPath);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4583,7 +4345,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = join(dir, "auth.json");
     await writeFile(authPath, Buffer.alloc(1_048_577, 0x78), { mode: 0o600 });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4598,7 +4360,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = join(dir, "auth.json");
     await writeFile(authPath, "{malformed-secret-sentinel", { mode: 0o600 });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4611,10 +4373,12 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(text).not.toContain("malformed-secret-sentinel");
   });
 
+  // Pi 0.99.1 removes kimi-k2.6 from the native OpenCode-Go catalog; use
+  // a still-listed chat model so credential checks do not fail on routing first.
   it("flags missing OpenCode-Go API key credentials with an API-key hint", async () => {
     const authPath = await writeAuthStore({});
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4631,7 +4395,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
   it("recognizes an OpenCode-Go key in the resolved environment without exposing it", async () => {
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
     });
 
     const report = await validateMonoAgentFolder({
@@ -4647,10 +4411,23 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(credentials.details.join("\n")).not.toContain("hidden-opencode-key");
   });
 
+  it("asks to reconnect an OpenAI OAuth credential missing its issued client ID", async () => {
+    const authPath = await writeAuthStore({ openai: {
+      type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: FUTURE,
+    } });
+    const configPath = await writeCredConfig({ runtime: { model: "openai:gpt-5.5" }, providers: { piAuthPath: authPath } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "credentials");
+    expect(section.status).toBe("waiting");
+    expect(section.details.join("\n")).toContain("missing its issued client ID");
+    expect(section.details.join("\n")).toContain("--auth-method oauth");
+    expect(section.details.join("\n")).not.toContain("fake-access");
+  });
+
   it("does not treat an empty Pi auth object as an authenticated API-key provider", async () => {
     const authPath = await writeAuthStore({ "opencode-go": {} });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4665,7 +4442,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST, refresh: "r" } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4688,7 +4465,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ anthropic: { type: "oauth", expires: FUTURE } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4705,7 +4482,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
       memory: {
         mode: "bujo",
@@ -4721,6 +4498,27 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("waiting");
     expect(creds.details.join("\n")).toMatch(/Memory LLM openai-codex:gpt-5\.5: stored OAuth credential for `openai-codex` has no usable access or refresh token/u);
+  });
+
+  it("flags missing credentials for the capture reconcile model separately from the capture LLM", async () => {
+    const authPath = await writeAuthStore({});
+    await writeModelsStore(["opencode-go"]);
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode-go:kimi-k3" },
+      providers: { piAuthPath: authPath },
+      memory: {
+        mode: "bujo", path: dir, writeMode: "capture",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+        llm: { provider: "ollama", model: "qwen3.6:latest" },
+        capture: { reconcileModel: "openai-codex:gpt-5.5" },
+      },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    expect(creds.details.join("\n"))
+      .toMatch(/Capture reconcile model openai-codex:gpt-5\.5: no Pi credentials found for provider `openai-codex`/u);
+    expect(creds.details.join("\n")).not.toContain("Memory LLM openai-codex");
   });
 
   it("ignores credentials and model resolution for a globally disabled webhook", async () => {
@@ -4811,14 +4609,18 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
       provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY" },
       env: { LOCAL_PROVIDER_API_KEY: "env-secret-sentinel" },
       secret: "env-secret-sentinel",
+      // JSON-only configs carry the reference while the value stays in env, so
+      // doctor names the resolving variable (never the value).
+      expected: "with LOCAL_PROVIDER_API_KEY present in the resolved environment",
     },
     {
       name: "an inline fallback when apiKeyEnv is absent",
       provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY", apiKey: "inline-secret-sentinel" },
       env: {},
       secret: "inline-secret-sentinel",
+      expected: "(API key configured)",
     },
-  ])("reports $name generically without exposing the key", async ({ provider, env, secret }) => {
+  ])("reports $name generically without exposing the key", async ({ provider, env, secret, expected }) => {
     const configPath = await writeCredConfig({
       runtime: { model: "local-secure:private-model" },
       providers: {
@@ -4836,7 +4638,8 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("ok");
     const text = creds.details.join("\n");
-    expect(text).toContain("provider `local-secure` configured via config providers.local (API key configured)");
+    expect(text).toContain("provider `local-secure` configured via config providers.local");
+    expect(text).toContain(expected);
     expect(text).not.toContain(secret);
     expect(text).not.toContain("keyless local provider");
     expect(report.ok).toBe(true);
@@ -4948,7 +4751,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
 
   it("checks a persistent subagent root without creating it and rejects a file as its parent", async () => {
     const root = join(dir, "children", "nested");
-    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentSend"] }, {
+    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentManage"] }, {
       subagents: { enabled: true, instances: { root } },
     });
     const good = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
@@ -4961,18 +4764,18 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
   });
 
   it.each([
-    [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentSend"], false],
+    [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentManage"], false],
     [["*"], ["Agent"], false],
   ])("reports persistence only when both tools are effective: %j/%j", async (allowedTools, disallowedTools, enabled) => {
     const configPath = await writeToolsConfig({ allowedTools, disallowedTools }, { subagents: { enabled: true } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const details = sectionById(report, "tools").details.join("\n");
     expect(details.includes("Persistent subagents:")).toBe(enabled);
-    expect(details.includes("effective tool policy must expose both Agent and AgentSend")).toBe(!enabled);
+    expect(details.includes("effective tool policy must expose both Agent and AgentManage")).toBe(!enabled);
   });
 
   it("reports an explicit AskParent deny as an operator choice", async () => {
-    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentSend"], disallowedTools: ["AskParent"] }, { subagents: { enabled: true } });
+    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentManage"], disallowedTools: ["AskParent"] }, { subagents: { enabled: true } });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     expect(sectionById(report, "tools").details.join("\n")).toContain("AskParent dialogue disabled by global tool policy (operator choice)");
     expect(sectionById(report, "tools").status).not.toBe("error");
@@ -5381,6 +5184,35 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("names the AgentManage rename for a stale AgentSend allow entry (waiting)", async () => {
+    // The rename ships without an alias, so an unmigrated allow entry grants
+    // nothing; doctor must say what to rename instead of calling it unknown.
+    const configPath = await writeToolsConfig({ allowedTools: ["Read", "AgentSend"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toContain(
+      "allowedTools lists AgentSend, which was renamed to AgentManage. There is no alias: rename the entry to AgentManage.",
+    );
+    expect(tools.details.join("\n")).not.toContain('Unknown tool name "AgentSend"');
+  });
+
+  it("names the AgentManage rename for a stale AgentSend deny entry (waiting)", async () => {
+    // The dangerous direction: a stale deny entry stops matching, so the
+    // renamed tool would be silently allowed again.
+    const configPath = await writeToolsConfig({ allowedTools: ["Read"], disallowedTools: ["AgentSend"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toContain(
+      "disallowedTools lists AgentSend, which was renamed to AgentManage. There is no alias: rename the entry to AgentManage. The old name denies nothing.",
+    );
+  });
+
   it("recognizes NodeRepl as a built-in tool", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["NodeRepl"] });
 
@@ -5450,24 +5282,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(sectionById(disabled, "memory").details.join("\n")).toMatch(/Explicit memory read tools are disabled/iu);
   });
 
-  it("reports allowed Supermemory chronology as unsupported and honors deny-wins", async () => {
-    const supermemoryPath = await writeToolsConfig(
-      { allowedTools: ["MemoryJournal"] },
-      {
-        memory: {
-          backend: "supermemory",
-          mode: "lite",
-          path: dir,
-          supermemory: { baseUrl: "http://127.0.0.1:6767", container: "synthetic" },
-        },
-      },
-    );
-    const unsupported = await validateMonoAgentFolder({
-      env: {}, cwd: dir, configPath: supermemoryPath, liveness: false,
-    });
-    expect(sectionById(unsupported, "tools")).toMatchObject({ status: "waiting" });
-    expect(sectionById(unsupported, "tools").details.join("\n")).toMatch(/Supermemory.*no chronological journal surface/iu);
-
+  it("honors deny-wins for the local memory journal tool", async () => {
     const deniedPath = await writeToolsConfig(
       { allowedTools: ["MemoryJournal"], disallowedTools: ["mcp__mono-agent-memory-journal__*"] },
       { memory: { mode: "lite", path: dir, recallTool: { enabled: true } } },

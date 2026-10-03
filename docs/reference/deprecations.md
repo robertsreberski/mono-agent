@@ -31,12 +31,25 @@ programmatic surfaces are simply no longer exported.
 | `mono-agent audit-runs` and its `--artifact-dir` flag | `mono-agent runs audit --artifacts <path>` |
 | `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` |
 | `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` |
-| `mono-agent sessions` (Session Recorder launcher) | `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) |
-| `@mono-agent/session-web`, `live.*` config/env, and the read-only live-event relay APIs | `mono-agent tui` for recorded-run replay or `mono-agent web` for live conversations |
+| `mono-agent sessions` (Session Recorder launcher) | `mono-agent runs list` / `mono-agent runs show` (recorded-run diagnostics) or `mono-agent web` (live console) |
+| `@mono-agent/session-web`, `live.*` config/env, and the read-only live-event relay APIs | `mono-agent runs list` / `mono-agent runs show` for recorded-run diagnostics or `mono-agent web` for live conversations |
+| `mono-agent tui` and `mono-agent help tui` | `mono-agent web` for live operation, `mono-agent runs list` / `mono-agent runs show` for bounded prior-run diagnostics, and `mono-agent config` for resolved configuration |
+| `mono-agent-tui` and direct `@mono-agent/tui` imports | Remove the renderer integration and compose against the maintained package that owns the required capability; no compatibility exports were relocated |
 | CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
 | Runtime compatibility exports `./ai/backend.js`, `./ai/registry.js`, `findProviderForModel`, `listProviders`, and backend capability/provider constants | `resolveRuntimeBridge` and `listRuntimeBridges` |
 | Memory helpers `reflect`, `ReflectDeps`, `ReflectResult`, and no-op `applyDecay` | Supported capture, consolidate, reconcile, and store APIs |
+| BuJo English automatic-recall helpers (`composeRecallBlock`, `selectAutomaticRecallHits`, `hasConflictingAutomaticRecallEvidence`, `isConversationRelativeQuery`, `AUTO_RECALL_MAX_HITS`, `AUTO_RECALL_RELATIVE_SCORE`) | `selectPossiblyRelevantRecallHits` for score-only context; `BujoMemoryStore.recallWithOutcome()` for explicit retrieval |
+| First-party Phoenix/OTLP package, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status/probing, and `@mono-agent/observability/run-export` | Bounded local JSONL artifacts, `mono-agent runs` / `runs audit` / `runs report`, trace-source discovery, and provider-neutral `RunExporter` composition. Perform any final legacy export before upgrading with the complete working version set already in use. |
+
+First-party Phoenix/OTLP support is removed without an automatic replacement.
+Active legacy JSON/env values fail with fixed secret-safe guidance; absent, blank,
+and structurally empty tombstones are accepted only to avoid breaking consumers
+that had already disabled export. The upgrade does not export, rewrite, convert,
+or delete local artifacts and does not delete remote traces. The public registry
+does not provide a separately published Phoenix plugin, so retain only a complete
+currently working version set already in use when a final pre-upgrade export is
+required.
 
 The three run/lifecycle compatibility spellings were removed in v0.14.0 after
 their scheduled sunset. `--force` on `install-skill` and `web reset` is a
@@ -47,6 +60,14 @@ configuration/env surface were removed together after repository-wide
 reachability checks found no supported caller. Unknown `live` config now fails
 strict validation instead of being ignored. `MONO_AGENT_WEB_AUTH_TOKEN` is no
 longer read by any code; its only reader was the removed `sessions` command.
+
+The terminal-renderer removal is current unreleased source truth. It does not
+change already installed releases, migrate consumer folders, or deprecate or
+remove the historical package from npm. Version `0.22.0` still contains the
+renderer. Direct package/bin consumers must keep a complete known-good version
+set until they remove that integration. The `tui.*`, `MONO_AGENT_TUI_*`,
+`metadata.channels.tui`, channel/source id, `/gui`, and public operator wire
+names remain maintained compatibility contracts for web, ACP, and jobs clients.
 
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were **retired** in
 0.21.0 and are now rejected at load with the replacement named; the CLI CSV flag
@@ -64,7 +85,7 @@ recipe → preset mapping is recorded as static documentation in
 
 Every retired environment variable (`MONO_AGENT_EXECUTION_MODE`,
 `MONO_AGENT_ROUTE_SAFETY`, `MONO_AGENT_FALLBACK_MODELS`,
-`MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`) fails config load when it carries a
+`memory.llm.executionMode`) fails config load when it carries a
 value, naming the exact repair in environment terms. All of them that are set are
 reported in a single load, not one per run. An empty assignment (`KEY=`) is still
 treated as unset — an inert leftover line in a deployed `.env` does not break
@@ -78,7 +99,7 @@ usually a few `mono-agent validate` passes rather than one.
 
 A rejected model reference names its concrete replacement in the message
 `doctor`, `mono-agent validate`, `mono-agent config` and the startup error all
-print — for example `` MONO_AGENT_MODEL `codex:gpt-5.6-terra` is not a valid
+print — for example `` runtime.model `codex:gpt-5.6-terra` is not a valid
 runtime model reference: codex is no longer a runtime backend; use
 openai-codex:gpt-5.6-terra ``. See
 [the runtime migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)

@@ -48,7 +48,7 @@ const SOURCE_ID_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const DEFAULT_MAX_RUNS = 100;
 const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
 
-const MEMORY_BACKENDS = ["bujo", "supermemory", "none"] as const satisfies readonly TraceSourceMemoryBackend[];
+const MEMORY_BACKENDS = ["bujo", "none"] as const satisfies readonly TraceSourceMemoryBackend[];
 const MEMORY_MODES = ["lite", "journal", "bujo"] as const satisfies readonly TraceSourceMemoryMode[];
 const MEMORY_ISSUES = [
   "manifest_missing",
@@ -660,13 +660,6 @@ function normalizeMemoryHealth(value: unknown): TraceSourceMemoryHealth | undefi
     const status = enumValue(value.status, ["not_configured", "unknown"] as const);
     if (status !== undefined && value.mode === undefined && value.issues === undefined && value.counts === undefined) {
       return { backend, status, checkedAt };
-    }
-    return { backend, status: "unknown", checkedAt };
-  }
-  if (backend === "supermemory") {
-    if (value.status === "unknown" && value.mode === undefined
-      && value.issues === undefined && value.counts === undefined) {
-      return { backend, status: "unknown", checkedAt };
     }
     return { backend, status: "unknown", checkedAt };
   }

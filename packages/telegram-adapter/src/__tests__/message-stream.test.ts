@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  splitTelegramText,
   TelegramDeliveryError,
   TelegramMessageStream,
 } from "../message-stream.js";
@@ -10,8 +9,12 @@ import type {
   TelegramBotApi,
   TelegramDeleteMessageParams,
   TelegramEditMessageTextParams,
+  TelegramEditRichMessageParams,
   TelegramGetUpdatesParams,
+  TelegramRequestOptions,
+  TelegramSendChatActionParams,
   TelegramSendMessageParams,
+  TelegramSendRichMessageParams,
   TelegramSentMessage,
   TelegramUpdate,
 } from "../types.js";
@@ -20,11 +23,13 @@ class FakeTelegramApi implements TelegramBotApi {
   readonly sendMessageCalls: TelegramSendMessageParams[] = [];
   readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
   readonly deleteMessageCalls: TelegramDeleteMessageParams[] = [];
+  readonly sendChatActionCalls: TelegramSendChatActionParams[] = [];
   readonly writeOperations: string[] = [];
   nextMessageId = 100;
   failSendWith: Error | undefined;
   failEditWith: Error | undefined;
   failDeleteWith: Error | undefined;
+  hangChatActionAfter: number | undefined;
 
   async sendMessage(
     params: TelegramSendMessageParams,
@@ -67,8 +72,61 @@ class FakeTelegramApi implements TelegramBotApi {
     return true;
   }
 
+  async sendChatAction(
+    params: TelegramSendChatActionParams,
+    options?: TelegramRequestOptions,
+  ): Promise<true> {
+    this.sendChatActionCalls.push(params);
+    if (
+      this.hangChatActionAfter !== undefined
+      && this.sendChatActionCalls.length > this.hangChatActionAfter
+    ) {
+      return await new Promise<true>((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(true), { once: true });
+      });
+    }
+    return true;
+  }
+
   async getUpdates(_params: TelegramGetUpdatesParams): Promise<TelegramUpdate[]> {
     return [];
+  }
+}
+
+class FakeRichTelegramApi extends FakeTelegramApi {
+  readonly sendRichMessageCalls: TelegramSendRichMessageParams[] = [];
+  readonly editRichMessageCalls: TelegramEditRichMessageParams[] = [];
+  failRichSendWith: Error | undefined;
+  failRichEditWith: Error | undefined;
+
+  async sendRichMessage(
+    params: TelegramSendRichMessageParams,
+  ): Promise<TelegramSentMessage> {
+    this.sendRichMessageCalls.push(params);
+    this.writeOperations.push(`send-rich:${params.rich_message.markdown}`);
+    if (this.failRichSendWith !== undefined) {
+      throw this.failRichSendWith;
+    }
+    return {
+      message_id: this.nextMessageId++,
+      chat: { id: params.chat_id },
+      rich_message: params.rich_message,
+    };
+  }
+
+  async editRichMessage(
+    params: TelegramEditRichMessageParams,
+  ): Promise<TelegramSentMessage | true> {
+    this.editRichMessageCalls.push(params);
+    this.writeOperations.push(`edit-rich:${params.rich_message.markdown}`);
+    if (this.failRichEditWith !== undefined) {
+      throw this.failRichEditWith;
+    }
+    return {
+      message_id: params.message_id ?? 0,
+      chat: { id: params.chat_id ?? 0 },
+      rich_message: params.rich_message,
+    };
   }
 }
 
@@ -79,6 +137,77 @@ describe("TelegramMessageStream", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("keeps the topic typing action alive through tool activity and stops it before the answer", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: -1001,
+      messageThreadId: 77,
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.status("Thinking…");
+    expect(api.sendChatActionCalls).toEqual([
+      { chat_id: -1001, message_thread_id: 77, action: "typing" },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(api.sendChatActionCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.sendChatActionCalls).toHaveLength(2);
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebSearch",
+      arguments: { query: "release notes" },
+    });
+    // Posting the ledger clears Telegram's prior action, so the stream restores
+    // it immediately rather than waiting for the next scheduled heartbeat.
+    expect(api.sendChatActionCalls).toHaveLength(3);
+
+    await stream.finish("done");
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(api.sendChatActionCalls).toHaveLength(3);
+  });
+
+  it("stops the typing heartbeat when the turn aborts without an explicit finish", async () => {
+    const api = new FakeTelegramApi();
+    const controller = new AbortController();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      finalOnly: true,
+      abortSignal: controller.signal,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebSearch",
+      arguments: { query: "release notes" },
+    });
+    const activityCount = api.sendChatActionCalls.length;
+
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(api.sendChatActionCalls).toHaveLength(activityCount);
+  });
+
+  it("does not let a stalled heartbeat block final delivery", async () => {
+    const api = new FakeTelegramApi();
+    api.hangChatActionAfter = 1;
+    const stream = new TelegramMessageStream({ api, chatId: 42, finalOnly: true });
+
+    await stream.status("Thinking…");
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(api.sendChatActionCalls).toHaveLength(2);
+
+    await expect(stream.finish("done")).resolves.toBeUndefined();
+    expect(api.sendMessageCalls.at(-1)?.text).toBe("done");
   });
 
   it("sends a placeholder and debounces Telegram edit updates", async () => {
@@ -329,6 +458,9 @@ describe("TelegramMessageStream", () => {
     await stream.dismissTransient();
 
     expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+    const activityCount = api.sendChatActionCalls.length;
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(api.sendChatActionCalls).toHaveLength(activityCount);
   });
 
   it("never renders assistant reasoning as message text", async () => {
@@ -416,6 +548,116 @@ describe("TelegramMessageStream", () => {
     ]);
   });
 
+  it("sends tables and emphasis as native Rich Markdown", async () => {
+    const api = new FakeRichTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: -1001,
+      messageThreadId: 77,
+      replyToMessageId: 9,
+      finalOnly: true,
+      silent: true,
+      editDebounceMs: 0,
+    });
+    const answer = [
+      "**Recommended**",
+      "",
+      "| Option | Nights |",
+      "|---|---|",
+      "| **A** | 26 |",
+    ].join("\n");
+
+    await stream.finish(answer);
+
+    expect(api.sendMessageCalls).toEqual([]);
+    expect(api.sendRichMessageCalls).toEqual([{
+      chat_id: -1001,
+      message_thread_id: 77,
+      reply_to_message_id: 9,
+      allow_sending_without_reply: true,
+      disable_notification: true,
+      rich_message: { markdown: answer },
+    }]);
+  });
+
+  it("falls back to safe MarkdownV2 when Telegram rejects Rich Markdown", async () => {
+    const api = new FakeRichTelegramApi();
+    api.failRichSendWith = new TelegramApiError("rich markdown rejected", {
+      kind: "telegram",
+      method: "sendRichMessage",
+      errorCode: 400,
+      telegramDescription: "Bad Request: can't parse rich message",
+    });
+    const stream = new TelegramMessageStream({ api, chatId: 42, finalOnly: true });
+    const answer = "**Recommended**\n\n| Option | Nights |\n|---|---|\n| **A** | 26 |";
+
+    await stream.finish(answer);
+
+    expect(api.sendRichMessageCalls).toHaveLength(1);
+    expect(api.sendMessageCalls).toEqual([{
+      chat_id: 42,
+      parse_mode: "MarkdownV2",
+      text: [
+        "*Recommended*",
+        "",
+        "```",
+        "Option │ Nights",
+        "───────┼───────",
+        "A      │ 26",
+        "```",
+      ].join("\n"),
+    }]);
+  });
+
+  it("edits a streamed placeholder into native Rich Markdown", async () => {
+    const api = new FakeRichTelegramApi();
+    const stream = new TelegramMessageStream({ api, chatId: 42, editDebounceMs: 0 });
+    const answer = "**Bold**\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+
+    await stream.append(answer);
+    await stream.finish(answer);
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 42, message_id: 100, text: answer },
+    ]);
+    expect(api.editRichMessageCalls).toEqual([
+      { chat_id: 42, message_id: 100, rich_message: { markdown: answer } },
+    ]);
+  });
+
+  it("falls back to MarkdownV2 when Telegram rejects a rich edit", async () => {
+    const api = new FakeRichTelegramApi();
+    api.failRichEditWith = new TelegramApiError("rich markdown rejected", {
+      kind: "telegram",
+      method: "editMessageText",
+      errorCode: 400,
+      telegramDescription: "Bad Request: can't parse rich message",
+    });
+    const stream = new TelegramMessageStream({ api, chatId: 42, editDebounceMs: 0 });
+    const answer = "**Bold**\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+
+    await stream.append(answer);
+    await stream.finish(answer);
+
+    expect(api.editRichMessageCalls).toEqual([
+      { chat_id: 42, message_id: 100, rich_message: { markdown: answer } },
+    ]);
+    expect(api.editMessageTextCalls.at(-1)).toEqual({
+      chat_id: 42,
+      message_id: 100,
+      parse_mode: "MarkdownV2",
+      text: [
+        "*Bold*",
+        "",
+        "```",
+        "A   │ B",
+        "────┼────",
+        "1   │ 2",
+        "```",
+      ].join("\n"),
+    });
+  });
+
   it("preserves an already-streamed answer when finish receives no final text", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
@@ -478,7 +720,7 @@ describe("TelegramMessageStream", () => {
 
     await stream.finish(finalText);
 
-    const expectedChunks = splitTelegramText(finalText, 32);
+    const expectedChunks = ["a".repeat(32), "a".repeat(32), "a".repeat(6)];
     expect(api.editMessageTextCalls).toEqual([
       { chat_id: 99, message_id: 100, text: expectedChunks[0], parse_mode: "MarkdownV2" },
     ]);
@@ -500,10 +742,11 @@ describe("TelegramMessageStream", () => {
     });
 
     await stream.append("x".repeat(60));
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(api.editMessageTextCalls[0]?.text).toHaveLength(32);
     expect(api.editMessageTextCalls[0]?.text.startsWith("…\n")).toBe(true);
+    await stream.finish();
   });
 
   it("shows the empty-content placeholder for a blank interim status update", async () => {
@@ -857,10 +1100,3 @@ function telegramApiError(
     ...(overrides?.retryAfterMs === undefined ? {} : { retryAfterMs: overrides.retryAfterMs }),
   });
 }
-
-describe("splitTelegramText", () => {
-  it("splits text without dropping characters", () => {
-    expect(splitTelegramText("abcdef", 2)).toEqual(["ab", "cd", "ef"]);
-    expect(splitTelegramText("abc", 10)).toEqual(["abc"]);
-  });
-});

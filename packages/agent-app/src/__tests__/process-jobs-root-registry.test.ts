@@ -411,7 +411,7 @@ describe("durable monotonic process-job root registry", () => {
   it.each(["freeze", "register"] as const)(
     "completes an exact same-inode mid-restore pair before the next locked %s mutation",
     async (mutation) => {
-      const { fixture, ownership, registration } = await registeredRegistry(`mid-restore-${mutation}`);
+      const { fixture, ownership } = await registeredRegistry(`mid-restore-${mutation}`);
       const paths = processJobsRootRegistryPaths(fixture.root);
       await rename(paths.manifestPath, paths.previousPath);
       await link(paths.previousPath, paths.manifestPath);

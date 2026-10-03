@@ -1,4 +1,8 @@
-import { extractCapturePlan, extractCapturePlanStrict } from "./capture-batch.js";
+import { extractCapturePlanStrict } from "./capture-batch.js";
+import { capturePlanInputHash, recoveredCapturePlan, retainCapturePlan } from "./capture-plan-cache.js";
+import { captureLabels } from "./capture-labels.js";
+import { reviewCapturePlan } from "./capture-review.js";
+import { labelsOf } from "./labels.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -6,7 +10,7 @@ import {
   type CaptureIntentHandle,
 } from "./capture-outbox.js";
 import type { ExtractedEntity } from "./entities.js";
-import { selectKnownEntityHints } from "./entity-reuse.js";
+import { selectKnownEntityHints, type KnownEntityHint } from "./entity-reuse.js";
 import { readGraph, type GraphBatchInput } from "./graph.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
@@ -18,23 +22,9 @@ export interface CaptureTurnResult {
   readonly associations: number;
 }
 
-/**
- * Full capture pipeline for a single conversation turn:
- *  1. Extract bounded candidate memories plus their precise graph evidence in one LLM call.
- *  2. Reconcile all close candidates in at most one additional LLM call.
- *  3. Persist entities and relations canonical-first, then mirror them to the index.
- *  4. Persist only each candidate's explicit memory/entity associations.
- *
- * Never throws on a single bad entity/relation item — each write is wrapped defensively.
- * Returns the action and graph-write counts.
- */
-export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
-  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, false));
-}
-
 /** Strong completed-turn capture: strict all-or-nothing extraction and reconciliation. */
 export async function captureTurnStrict(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
-  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, true));
+  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps));
 }
 
 /**
@@ -43,9 +33,12 @@ export async function captureTurnStrict(text: string, deps: ReconcileDeps): Prom
  * must never fail because the reuse hint could not be read, and an unreadable
  * graph simply reverts to today's behaviour of minting a fresh id.
  */
-function knownEntityHints(root: string, text: string): ExtractedEntity[] {
+function knownEntityHints(root: string, text: string): KnownEntityHint[] {
   try {
-    return selectKnownEntityHints(text, readGraph(root).entities);
+    const graph = readGraph(root);
+    const associations = new Map<string, number>();
+    for (const { entityId } of graph.associations) associations.set(entityId, (associations.get(entityId) ?? 0) + 1);
+    return selectKnownEntityHints(text, graph.entities.map((entity) => ({ ...entity, associations: associations.get(entity.id) ?? 0 })));
   } catch {
     return [];
   }
@@ -54,29 +47,87 @@ function knownEntityHints(root: string, text: string): ExtractedEntity[] {
 async function captureTurnUnlocked(
   text: string,
   deps: ReconcileDeps,
-  strictModelOutput: boolean,
 ): Promise<CaptureTurnResult> {
   deps.abortSignal?.throwIfAborted();
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
-  const knownEntities = knownEntityHints(deps.root, text);
-  const extraction = strictModelOutput
-    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities)
-    : await extractCapturePlan(text, deps.llm, deps.abortSignal, knownEntities);
+  // Strict capture samples the host-owned clock once, before extraction, and
+  // uses that same instant for the observation anchor and capture metadata.
+  // Durable intake retries replace this clock with immutable admittedAt.
+  const ownerTurn = deps.captureSpeakerKind === "human-turn" && deps.captureEvidence?.ownerTurn === true;
+  // Only a host-verified owner turn may bind the canonical owner id; never offer it elsewhere.
+  const knownEntities: ExtractedEntity[] = knownEntityHints(deps.root, text)
+    .filter((entity) => ownerTurn || entity.id !== "person:owner");
+  if (ownerTurn) {
+    // The host owner has exactly one canonical id. Offer it first so owner
+    // facts bind there rather than to a name-based duplicate further down.
+    const index = knownEntities.findIndex((entity) => entity.id === "person:owner");
+    const owner = index < 0 ? { id: "person:owner", name: "Owner", type: "person" } : knownEntities.splice(index, 1)[0]!;
+    knownEntities.unshift(owner);
+  }
+  const observedAt = deps.now();
+  const key = deps.captureRetentionKey;
+  const inputHash = capturePlanInputHash(text);
+  const recovered = key === undefined ? undefined : recoveredCapturePlan(deps.root, key, inputHash);
+  // A retained plan already carries its review decisions; never review it twice.
+  const extraction = recovered ?? await reviewCapturePlan(
+    await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
+      observedAt: observedAt.toISOString(),
+      ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
+      ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
+      ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
+    }, deps.captureSettings?.focus),
+    {
+      llm: deps.llm,
+      ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+      ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
+      ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
+      ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
+      ...(deps.captureSettings?.focus === undefined ? {} : { focus: deps.captureSettings.focus }),
+      isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
+    },
+  );
   deps.abortSignal?.throwIfAborted();
-  const now = deps.now();
-  const createdAt = now.toISOString();
+  const only = deps.captureSettings?.only;
+  // The extractor already host-validates labels; don't let unaccepted candidates
+  // influence reconcile decisions or persist unrelated graph nodes.
+  const selected = only === undefined ? extraction : {
+    ...extraction,
+    candidates: extraction.candidates.filter((candidate) => candidate.labels?.some((label) => only.includes(label.kind))),
+  };
+  if (key !== undefined) retainCapturePlan(deps.root, key, inputHash, selected);
+  const createdAt = observedAt.toISOString();
+  const labelContext = { ...deps, entityNames: new Map(extraction.entities.map((entity) => [entity.id, entity.name])) };
   let intentHandle: CaptureIntentHandle | undefined;
   let preparedActions: readonly CaptureIntentAction[] = [];
-  await reconcileBatch(extraction.candidates, {
+  await reconcileBatch(selected.candidates, {
     ...deps,
-    strictModelOutput,
+    ...(only === undefined ? {} : { keepCaptureAction: (action: CaptureIntentAction): boolean => {
+      const bullet = action.kind === "supersede" ? action.afterNew.bullet
+        : action.kind === "noop" ? undefined : action.after.bullet;
+      return bullet !== undefined && labelsOf(bullet).some((label) => only.includes(label.kind));
+    } }),
+    // Reconciliation must reuse the same host-owned observation sample; it
+    // cannot observe a later wall clock or reinterpret relative-time anchors.
+    now: () => observedAt,
+    strictModelOutput: true,
+    fallbackOnClassifierFailure: true,
+    isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
+    // A candidate without a source (a plan retained before `source` existed)
+    // keeps the labels its extraction already validated while its text is
+    // unchanged; changed text is re-checked under the current rules, which
+    // never make it user-stated without a source.
+    labelsForAction: (_action, candidate, _previous, finalText) => candidate.labels === undefined ? undefined
+      : candidate.source === undefined && (finalText ?? candidate.text) === candidate.text ? candidate.labels
+      : captureLabels(candidate.labels, finalText ?? candidate.text, { ...labelContext,
+        ...(candidate.entityIds === undefined ? {} : { entityIds: candidate.entityIds }),
+        ...(candidate.source === undefined ? {} : { source: candidate.source }) }),
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the
     // SQLite/canonical transaction without improving durability.
     deferBatchCommit: true,
     beforeBatchCommit: (prepared) => {
-      const graph = graphForPreparedActions(extraction, prepared, createdAt);
+      const graph = graphForPreparedActions(selected, prepared, createdAt, only !== undefined);
       intentHandle = writeCaptureIntent(
         deps.root,
         prepared,
@@ -112,9 +163,10 @@ function reconcileActionForIntent(action: CaptureIntentAction): ReconcileAction 
 }
 
 function graphForPreparedActions(
-  extraction: Awaited<ReturnType<typeof extractCapturePlan>>,
+  extraction: Awaited<ReturnType<typeof extractCapturePlanStrict>>,
   prepared: Parameters<NonNullable<ReconcileDeps["beforeBatchCommit"]>>[0],
   createdAt: string,
+  filterGraph = false,
 ): GraphBatchInput {
   const byIndex = new Map(prepared.map((action) => [action.candidateIndex, action]));
   const associations = extraction.candidates.flatMap((candidate, index) => {
@@ -128,14 +180,17 @@ function graphForPreparedActions(
       createdAt,
     }));
   });
+  const keptEntities = new Set(associations.map((association) => association.entityId));
   return {
-    entities: extraction.entities.map((entity) => ({
+    entities: extraction.entities.filter((entity) => !filterGraph || keptEntities.has(entity.id)).map((entity) => ({
       id: entity.id,
       name: entity.name,
       ...(entity.type !== undefined ? { type: entity.type } : {}),
       createdAt,
     })),
-    relations: extraction.relations.map((relation) => ({ ...relation, createdAt })),
+    relations: extraction.relations.filter((relation) => !filterGraph
+      || (keptEntities.has(relation.src) && keptEntities.has(relation.dst)))
+      .map((relation) => ({ ...relation, createdAt })),
     associations,
   };
 }

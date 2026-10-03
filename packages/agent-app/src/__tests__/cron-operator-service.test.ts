@@ -27,7 +27,7 @@ const job = {
   id: "digest",
   enabled: true,
   expression: "*/5 * * * *",
-  timezone: "Europe/Amsterdam",
+  timezone: "CET",
   prompt: "Prepare digest",
 };
 
@@ -100,6 +100,9 @@ describe("cron operator service", () => {
       confirmation: { message: expect.stringContaining("scheduled firing will be recorded as skipped_overlap") },
     });
     if (first instanceof Promise || first.kind !== "confirmation_required") throw new Error("confirmation required");
+    expect(first.confirmation.message).toContain(
+      "If the job defines a preflight, it still runs and its input is used, but a run:false verdict cannot suppress a manual run.",
+    );
     const accepted = service.runNow("digest", {
       idempotencyKey: "manual-one",
       confirmationToken: first.confirmation.token,

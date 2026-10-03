@@ -28,8 +28,6 @@ import {
 } from "../app-controller-process-jobs.js";
 import { traceMetadata } from "../app-controller-traceability.js";
 
-import { runWithMonitorWakeContext, monitorWakeContextForRequest } from "../monitors-context.js";
-import { createMonitorsRuntimeExtension, monitorsAvailableForRequest } from "../monitors-runtime.js";
 
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 const PROCESS_JOBS_STATE_DIR = "/agent/.mono-agent/process-jobs";
@@ -107,7 +105,6 @@ describe("process-job request availability", () => {
       drivers: [],
       startupCompleted: false,
       backgroundSnapshot: undefined,
-      exporterStatusValue: { kind: "disabled", reason: "test" },
       sandboxStatusValue: {
         configured: false,
         effective: "off",
@@ -210,6 +207,14 @@ describe("process-job request availability", () => {
       request: { conversationId: "telegram:42", text: "hello" } as never,
     }, "telegram")).toMatchObject({ channel: "telegram", replyToConversationId: "telegram:42" });
     expect(processJobOriginForRequest({
+      runId: "run-tg-topic",
+      request: { conversationId: "telegram:-1001:7#2026-09-28", text: "hello" } as never,
+    }, "telegram")).toMatchObject({
+      channel: "telegram",
+      baseConversationId: "telegram:-1001:7",
+      replyToConversationId: "telegram:-1001:7",
+    });
+    expect(processJobOriginForRequest({
       runId: "run-web",
       request: { conversationId: "web:thread-1", text: "hello", metadata: { source: "web" } } as never,
     }, "tui")).toMatchObject({ channel: "web", replyToConversationId: "web:thread-1" });
@@ -243,6 +248,9 @@ describe("process-job request availability", () => {
       ["slack", { conversationId: "telegram:42", replyTo: { conversationId: "slack:C1:1.1" } }],
       ["slack", { conversationId: "slack:c1:1.1", replyTo: { conversationId: "slack:c1:1.1" } }],
       ["telegram", { conversationId: "telegram:042", replyTo: { conversationId: "telegram:042" } }],
+      ["telegram", { conversationId: "telegram:-1001:0", replyTo: { conversationId: "telegram:-1001:0" } }],
+      ["telegram", { conversationId: "telegram:-1001:07", replyTo: { conversationId: "telegram:-1001:07" } }],
+      ["telegram", { conversationId: "telegram:-1001:7:8", replyTo: { conversationId: "telegram:-1001:7:8" } }],
       ["tui", { conversationId: "web:thread-1", replyTo: { conversationId: "web:thread-2" }, metadata: { source: "web" } }],
     ] as const;
     for (const [channelId, request] of cases) {
@@ -250,7 +258,7 @@ describe("process-job request availability", () => {
     }
   });
 
-  it.each(["monitor", "process-job"])("denies both controllers for stale and unmatched host %s keys", async (kind) => {
+  it.each(["process-job"])("denies the process-job controller for stale and unmatched host %s keys", async (kind) => {
     const coreConfig = {
       runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["*"], disallowedTools: [] },
@@ -260,7 +268,6 @@ describe("process-job request availability", () => {
     const options = { service, coreConfig, channelId: "slack" as const };
     const extension = createProcessJobsRuntimeExtension({
       ...processJobsBoundary(coreConfig), ...options, sandboxEngine: availableSandboxEngine,
-      next: createMonitorsRuntimeExtension(options),
     });
     const deliveryKey = `${kind}:expired:1`;
     const input = (metadata: Record<string, unknown>) => ({ runId: "stale-wake", request: {
@@ -269,30 +276,21 @@ describe("process-job request availability", () => {
     const check = async (key: string) => {
       const metadata = { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: key };
       expect(processJobWakeContextForRequest({ metadata })).toEqual({ kind: "missed" });
-      if (kind === "monitor") expect(monitorWakeContextForRequest({ metadata })).toEqual({ kind: "missed" });
       const result = await extension(input(metadata));
       try {
-        expect(result.runtimeOptions).not.toHaveProperty("monitors");
         expect(result.runtimeOptions).not.toHaveProperty("processJobs");
-        expect(monitorsAvailableForRequest(input(metadata), options)).toBe(false);
         expect(processJobsAvailableForRequest(input(metadata), options)).toBe(false);
       } finally { await result.settleCleanup?.(); }
     };
-    if (kind === "monitor") {
-      await runWithMonitorWakeContext({ monitorId: "expired", chainDepth: 4 }, async () => {}, deliveryKey);
-    } else {
-      await runWithProcessJobWakeContext({ jobId: "expired", chainDepth: 4 }, async () => {}, deliveryKey);
-    }
+    await runWithProcessJobWakeContext({ jobId: "expired", chainDepth: 4 }, async () => {}, deliveryKey);
     await check(deliveryKey);
     await check(`${kind}:never-registered:1`);
     expect(controller).not.toHaveBeenCalled();
     // String metadata is user data, not the host-only symbol.
     for (const metadata of [{}, { processJobWakeDeliveryKey: deliveryKey, chainDepth: 999 }]) {
       expect(processJobWakeContextForRequest({ metadata })).toEqual({ kind: "none" });
-      expect(monitorWakeContextForRequest({ metadata })).toEqual({ kind: "none" });
       const result = await extension(input(metadata));
       try {
-        expect(result.runtimeOptions).toHaveProperty("monitors");
         expect(result.runtimeOptions).toHaveProperty("processJobs");
       } finally { await result.settleCleanup?.(); }
     }
@@ -436,7 +434,7 @@ describe("process-job request availability", () => {
   it("preserves parent-plus-one depth through a busy live-session queue and removes capability at max depth", async () => {
     const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({
@@ -549,7 +547,7 @@ describe("process-job request availability", () => {
       const conversationId = channel === "slack" ? "slack:C1:1.1" : "telegram:42";
       const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
-        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never;
       const extension = createProcessJobsRuntimeExtension({
@@ -639,7 +637,7 @@ describe("process-job request availability", () => {
       await writeFile(identityPath, "You are Mono.", "utf8");
       const controller = vi.fn((_request: unknown, _chainDepth: number | (() => number)) => ({ start: vi.fn() }));
       const coreConfig = {
-        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+        runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
         tools: { allowedTools: ["Exec"], disallowedTools: [] },
       } as never;
       const extension = createProcessJobsRuntimeExtension({
@@ -770,7 +768,7 @@ describe("process-job request availability", () => {
         });
       }, deliveryKey);
       expect(offeredRequests[0]).toMatchObject({ targetRunId: "active-run" });
-      expect(target.chainDepth()).toBe(4);
+      expect(target.chainDepth()).toBe(3);
       if (offer.status !== "accepted") throw new Error("expected accepted offer");
       offers[0]!.resolve({ status: "requeue", reason: "closed" });
       await expect(offer.settled).resolves.toEqual({ status: "requeue", reason: "closed" });
@@ -789,7 +787,7 @@ describe("process-job request availability", () => {
       if (applied.status !== "accepted") throw new Error("expected accepted offer");
       offers[1]!.resolve({ status: "applied", runId: "active-run" });
       await expect(applied.settled).resolves.toEqual({ status: "applied", runId: "active-run" });
-      expect(target.chainDepth()).toBe(3);
+      expect(target.chainDepth()).toBe(2);
 
       let wrongRun!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
       await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 4 }, async () => {
@@ -804,7 +802,7 @@ describe("process-job request availability", () => {
       if (wrongRun.status !== "accepted") throw new Error("expected accepted offer");
       offers[2]!.resolve({ status: "applied", runId: "different-run" });
       await expect(wrongRun.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
-      expect(target.chainDepth()).toBe(3);
+      expect(target.chainDepth()).toBe(2);
 
       let rejected!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
       await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 5 }, async () => {
@@ -819,7 +817,7 @@ describe("process-job request availability", () => {
       if (rejected.status !== "accepted") throw new Error("expected accepted offer");
       offers[3]!.reject(new Error("settlement lost"));
       await expect(rejected.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
-      expect(target.chainDepth()).toBe(3);
+      expect(target.chainDepth()).toBe(2);
     } finally {
       target.release();
     }
@@ -861,7 +859,7 @@ describe("process-job request availability", () => {
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const coreConfig = {
-      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, executionMode: "sdk", workspace: "/agent" },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
       tools: { allowedTools: ["Exec"], disallowedTools: [] },
     } as never;
     const extension = createProcessJobsRuntimeExtension({
@@ -999,7 +997,7 @@ describe("process-job request availability", () => {
 
 it("detached child holds an independent generation lease after parent settlement and abort", async () => {
   const coreConfig = { runtime: { model: CLAUDE_MODEL, workspace: "/agent" },
-    tools: { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] }, subagents: { enabled: true } } as never;
+    tools: { allowedTools: ["Agent", "AgentManage"], disallowedTools: [] }, subagents: { enabled: true } } as never;
   const boundary = processJobsBoundary(coreConfig);
   const releases: ReturnType<typeof vi.fn>[] = [];
   const ownership = { coordinator: { acquireRequestLease: () => {

@@ -67,7 +67,7 @@ describe("resolvePricing precedence", () => {
     });
   });
 
-  it("prices the opencode-go DeepSeek V4.1 Flash supplement from its own row", () => {
+  it("prices the opencode-go DeepSeek V4.1 Flash upstream row from the pi catalog", () => {
     const pricing = resolvePricing({ model: "opencode-go:deepseek-v4.1-flash" });
     expect(getBuiltinModel).toHaveBeenCalledWith("opencode-go", "deepseek-v4.1-flash");
     expect(pricing).toMatchObject({
@@ -132,8 +132,8 @@ describe("estimateCost", () => {
       outputTokens: 1_000_000,
     });
 
-    expect(atThreshold).toBeCloseTo(1.36 + 30, 6);
-    expect(aboveThreshold).toBeCloseTo(2.72001 + 45, 6);
+    expect(atThreshold).toBeCloseTo(1.088 + 20, 6);
+    expect(aboveThreshold).toBeCloseTo(2.176008 + 30, 6);
   });
 
   it.each(["openai", "openai-codex"])("delegates GPT-6 Astra tier selection for %s", (provider) => {

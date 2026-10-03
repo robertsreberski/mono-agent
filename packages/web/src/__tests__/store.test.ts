@@ -9,6 +9,7 @@ import {
   MAX_AGENT_REPLY_PARTS,
   type AgentReplyPart,
   type AgentStreamWireFrame,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
 import type {
@@ -30,7 +31,7 @@ import {
 } from "../store.js";
 import { WebConsoleError } from "../errors.js";
 import { WEB_STORAGE_SCHEMA_VERSION } from "../store-migrations.js";
-import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 // The console replays these same vectors, so they live where both suites can
 // take them verbatim rather than each inventing its own reading of an op.
 import { MESSAGE_DELTA_VECTORS } from "../../webapp/src/test/message-delta-vectors.js";
@@ -105,7 +106,190 @@ function measureStatements<T>(store: WebStore, read: () => T): { statements: num
   }
 }
 
+function capturePreparedSql<T>(store: WebStore, read: () => T): { sql: readonly string[]; value: T } {
+  const sql: string[] = [];
+  const holder = store as unknown as { database: DatabaseSync };
+  const real = holder.database;
+  holder.database = new Proxy(real, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      if (property !== "prepare") return value.bind(target);
+      return (text: string) => {
+        sql.push(text);
+        return (value as (statement: string) => object).call(target, text);
+      };
+    },
+  }) as DatabaseSync;
+  try {
+    return { sql, value: read() };
+  } finally {
+    holder.database = real;
+  }
+}
+
+function transcriptMarkers(store: WebStore, threadId: string, kind: "model" | "project" | "resumed") {
+  return store.getThreadDetail(threadId)!.messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "conversation-marker" && part.kind === kind ? [{ ...part, turnId: message.turnId }] : []));
+}
+
 describe("WebStore", () => {
+  it("drops retired monitor activity on read without rewriting historical message bytes", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Retained request", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "Retained answer");
+    const retained = [{ type: "text", text: "Before" }, { type: "reasoning", text: "After" }];
+    const historical = JSON.stringify([retained[0], { type: "monitor-activity", monitors: [] }, retained[1]]);
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(historical, turn.assistantMessageId);
+      expect(store.getMessage(turn.assistantMessageId)?.parts).toEqual(retained);
+      store.close();
+      const reopened = await WebStore.open({ stateDir });
+      try { expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toEqual(retained); }
+      finally { reopened.close(); }
+      expect(raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId))
+        .toEqual({ parts_json: historical });
+    } finally { raw.close(); store.close(); }
+  });
+
+  it("preserves every message-page tie-breaker, filtered part and attachment order across cursors", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const at = "2026-09-21T10:00:00.000Z";
+    const rows = [
+      ["assistant-a", "assistant", [{ type: "text", text: "assistant a" }]],
+      ["user-a", "user", [{ type: "text", text: "user a" }]],
+      ["system-a", "system", [{ type: "conversation-marker", kind: "resumed", previousMessageAt: at, idleMs: 3_600_001, at }, { type: "monitor-activity", monitors: [] }]],
+      ["assistant-b", "assistant", [{ type: "text", text: "assistant b" }]],
+      ["user-b", "user", [{ type: "text", text: "user b" }]],
+      ["system-b", "system", [{ type: "text", text: "system b" }]],
+    ] as const;
+    try {
+      raw.prepare(`INSERT INTO turns
+        (id, thread_id, status, text, assistant_message_id, started_at, finished_at)
+        VALUES ('tie-turn', ?, 'complete', 'tied', 'assistant-a', ?, ?)`)
+        .run(thread.id, at, at);
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'tie-turn', ?, ?, ?, ?, 'complete')`);
+      for (const [id, role, parts] of rows) insert.run(id, thread.id, role, JSON.stringify(parts), at, at);
+      const insertAttachment = raw.prepare(`INSERT INTO attachments
+        (id, thread_id, message_id, name, content_type, size_bytes, kind, status, uploaded, origin, storage_name, created_at, updated_at)
+        VALUES (?, ?, 'user-a', ?, 'text/plain', 1, 'document', 'committed', 1, 'upload', ?, ?, ?)`);
+      insertAttachment.run("attachment-b", thread.id, "b.txt", "attachment-b.txt", at, at);
+      insertAttachment.run("attachment-a", thread.id, "a.txt", "attachment-a.txt", at, at);
+
+      const expected = ["system-a", "user-a", "user-b", "system-b", "assistant-a", "assistant-b"];
+      expect(store.listMessagesPage(thread.id).messages.map((message) => message.id)).toEqual(expected);
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 2, ...(cursor === undefined ? {} : { before: cursor }) });
+        ids.unshift(...page.messages.map((message) => message.id));
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(expected);
+      expect(store.getMessage("system-a")?.parts).toEqual([
+        { type: "conversation-marker", kind: "resumed", previousMessageAt: at, idleMs: 3_600_001, at },
+      ]);
+      expect(store.getMessage("user-a")?.attachments.map((attachment) => attachment.id))
+        .toEqual(["attachment-a", "attachment-b"]);
+    } finally {
+      raw.close();
+      store.close();
+    }
+  });
+
+  it("hydrates one and thirty message rows with a constant statement count", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      for (let index = 0; index < 15; index += 1) {
+        const turn = store.beginTurn({ threadId: thread.id, text: `request ${String(index)}`, attachmentIds: [] });
+        store.completeTurn(turn.turnId, `answer ${String(index)}`);
+      }
+      const one = measureStatements(store, () => store.listMessagesPage(thread.id, { limit: 1 }));
+      const thirty = measureStatements(store, () => store.listMessagesPage(thread.id, { limit: 30 }));
+      expect(one.value.messages).toHaveLength(1);
+      expect(thirty.value.messages).toHaveLength(30);
+      expect(thirty.statements).toBe(one.statements);
+    } finally { store.close(); }
+  });
+
+  it("fetches message blobs only after the bounded page and preview key sets", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "request", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "answer");
+
+      const pageSql = capturePreparedSql(store, () => store.listMessagesPage(thread.id)).sql
+        .find((sql) => sql.includes("WITH page AS MATERIALIZED"));
+      expect(pageSql).toBeDefined();
+      expect(pageSql!.indexOf("LIMIT ?")).toBeLessThan(pageSql!.indexOf("SELECT m.*, page.ordered_at"));
+
+      const previewSql = capturePreparedSql(store, () => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+      })).sql.find((sql) => sql.includes("WITH latest AS MATERIALIZED"));
+      expect(previewSql).toBeDefined();
+      expect(previewSql).not.toContain("SELECT m.*, ROW_NUMBER()");
+      expect(previewSql!.indexOf("WHERE latest.rn = 1"))
+        .toBeGreaterThan(previewSql!.indexOf("SELECT latest.thread_id, m.parts_json"));
+    } finally { store.close(); }
+  });
+
+  it("discards unrenderable retired activity when recovery rewrites an interrupted historical message", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Interrupted request", attachmentIds: [] });
+    const retained = [{ type: "text", text: "Before" }, { type: "reasoning", text: "After" }];
+    const historical = JSON.stringify([retained[0], { type: "monitor-activity", monitors: [] }, retained[1]]);
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(historical, turn.assistantMessageId);
+      store.close();
+      // Opening recovers the still-running turn. This ordinary rewrite deliberately
+      // drops retired, unrenderable activity rather than merging dead parts back in.
+      const reopened = await WebStore.open({ stateDir });
+      const expectedParts = [...retained, {
+        type: "error",
+        code: "interrupted",
+        message: "The web service restarted before this turn completed.",
+      }];
+      try {
+        expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)).toMatchObject({
+          status: "interrupted",
+          parts: expectedParts,
+        });
+        expect(reopened.getMessage(turn.assistantMessageId)?.parts).toEqual(expectedParts);
+      } finally { reopened.close(); }
+      const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(turn.assistantMessageId) as { parts_json: string };
+      expect(JSON.parse(row.parts_json)).toEqual(expectedParts);
+      expect(row.parts_json).not.toContain("monitor-activity");
+    } finally { raw.close(); store.close(); }
+  });
+
   it("scopes chats before pagination and search while retaining webhook conversations", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -426,6 +610,38 @@ describe("WebStore", () => {
     expect(store.applyAgentTitle(thread.id, "Agent overwrite")).toBeUndefined();
     expect(store.getThread(thread.id)).toMatchObject({ title: "My permanent title", revision: 3 });
     store.close();
+  });
+
+  it("collects stopped-source retention reasons in one statement, including archived conversations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    try {
+      store.replaceAgents(["pinned", "conversation", "archived", "restarting", "completed", "unused"]
+        .map((sourceId) => agent(sourceId)));
+      store.setAgentPinned("pinned", true);
+      store.createThread("conversation");
+      for (let index = 0; index < 50; index += 1) {
+        const thread = store.createThread("archived");
+        store.patchThread(thread.id, { archived: true });
+      }
+      const restart = (sourceId: string) => store.createRestartOperation({
+        sourceId, generation: "generation-one", requestedAt: "2026-07-17T09:00:00.000Z",
+        deadline: "2026-07-17T09:02:00.000Z", approximateRunningTurns: 0,
+      }).operation;
+      const pending = restart("restarting");
+      store.updateRestartOperation(restart("completed").id, { outcome: "failure" });
+      const result = measureStatements(store, () => store.retainedStoppedAgentSourceIds());
+      expect(result.statements).toBe(1);
+      expect([...result.value].sort()).toEqual(["archived", "conversation", "pinned", "restarting"]);
+      store.setAgentPinned("pinned", false);
+      store.updateRestartOperation(pending.id, { outcome: "not_confirmed" });
+      // Reasons survive loss of discovery presence, but settled operations do not.
+      store.replaceAgents([]);
+      expect([...store.retainedStoppedAgentSourceIds()].sort()).toEqual(["archived", "conversation"]);
+    } finally {
+      store.close();
+    }
   });
 
   it("hides departed agents while preserving their pins and conversations for restoration", async () => {
@@ -971,6 +1187,72 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("finalizes a dispatched pending steer on its receipt before any HTTP settlement", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const pending = store.reserveLiveInput(thread.id, "Use the API instead");
+    expect(store.markLiveInputDispatchStarted(pending.input.id, turn.turnId)).toBe(true);
+    const frame = { kind: "event" as const, event: {
+      type: "tool_call_started" as const, id: `live-input:${pending.input.id}`, name: "↪️ Steered: guide",
+      metadata: { liveInput: true, synthetic: true, inputId: pending.input.id },
+    } };
+    const write = store.applyStreamFrames(turn.turnId, [frame]);
+    expect(write.recoveredSteers).toEqual([expect.objectContaining({
+      id: pending.message.id, turnId: turn.turnId, liveInputStatus: "applied",
+    })]);
+    expect(store.storedLiveInput(pending.input.id)).toBeUndefined();
+    expect(store.getMessage(pending.message.id)?.liveInputStatus).toBe("applied");
+    expect(store.markLiveInputUncertain(pending.input.id)).toBeUndefined();
+    expect(store.markLiveInputApplied(pending.input.id)).toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [frame]).recoveredSteers).toBeUndefined();
+    store.close();
+  });
+
+  it("recovers only a same-thread uncertain input with an exact stream receipt", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const other = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const otherTurn = store.beginTurn({ threadId: other.id, text: "elsewhere", attachmentIds: [] });
+    const uncertain = store.reserveLiveInput(thread.id, "Use the API instead");
+    const cancelled = store.reserveLiveInput(thread.id, "Never sent");
+    expect(store.markLiveInputUncertain(uncertain.input.id)).toMatchObject({ liveInputStatus: "uncertain" });
+    expect(store.cancelLiveInput(cancelled.input.id)?.liveInputStatus).toBe("cancelled");
+    const receipt = (inputId: string) => (["tool_call_started", "tool_call_completed"] as const).map((type) => ({
+      kind: "event" as const,
+      event: { type, id: `live-input:${inputId}`, name: "↪️ Steered: guide",
+        metadata: { liveInput: true, synthetic: true, inputId } },
+    }));
+    store.applyStreamFrames(otherTurn.turnId, receipt(uncertain.input.id));
+    store.applyStreamFrames(turn.turnId, [
+      ...receipt("different-input"), ...receipt(cancelled.input.id),
+    ]);
+    expect(store.getMessage(uncertain.message.id)).toMatchObject({ liveInputStatus: "uncertain" });
+    expect(store.getMessage(uncertain.message.id)?.turnId).toBeUndefined();
+    expect(store.getMessage(cancelled.message.id)).toMatchObject({ liveInputStatus: "cancelled" });
+    expect(store.getMessage(cancelled.message.id)?.turnId).toBeUndefined();
+    const write = store.applyStreamFrames(turn.turnId, receipt(uncertain.input.id));
+    expect(write.recoveredSteers).toEqual([expect.objectContaining({
+      id: uncertain.message.id, turnId: turn.turnId, liveInputStatus: "applied",
+    })]);
+    expect(store.applyStreamFrames(turn.turnId, receipt(uncertain.input.id)).recoveredSteers).toBeUndefined();
+    expect(store.markLiveInputApplied(uncertain.input.id)).toBeUndefined();
+    const assistant = store.getMessage(turn.assistantMessageId);
+    expect(assistant?.parts.filter((part) => part.type === "steer")).toEqual([
+      expect.objectContaining({ inputId: uncertain.input.id, messageId: uncertain.message.id }),
+    ]);
+    expect(assistant?.parts.filter((part) => part.type === "tool-call")).toHaveLength(2);
+    expect(store.getMessage(otherTurn.assistantMessageId)?.parts.filter((part) => part.type === "tool-call")).toHaveLength(1);
+    store.close();
+  });
+
   it("projects two applied steers in one turn as two markers at their own consumption points", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1065,95 +1347,6 @@ describe("WebStore", () => {
       result: "Applied to current run",
       status: "complete",
     });
-    store.close();
-  });
-
-  it("groups exact Monitor steering receipts without splitting assistant messages", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
-    store.replaceAgents([agent()]);
-    const thread = store.createThread("agent-one");
-    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
-    const first = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 1 });
-    const second = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 2 });
-    for (const [monitor, deliveryKey] of [
-      [first, `monitor:${first.monitorId}:1`],
-      [second, `monitor:${second.monitorId}:2`],
-    ] as const) {
-      expect(store.reserveMonitorWake({
-        sourceId: "agent-one",
-        threadId: thread.id,
-        monitorId: monitor.monitorId,
-        deliveryKey,
-        payloadSha256: deliveryKey.endsWith(":1") ? "a".repeat(64) : "b".repeat(64),
-        monitor,
-      })).toEqual({ kind: "new" });
-    }
-    const monitorEvent = (type: "tool_call_started" | "tool_call_completed", deliveryKey: string) => ({
-      kind: "event" as const,
-      event: {
-        type,
-        id: `live-input:${deliveryKey}`,
-        name: "↪️ Steered: “A monitor you started…”",
-        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
-        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
-      },
-    });
-    const firstKey = `monitor:${first.monitorId}:1`;
-    const secondKey = `monitor:${second.monitorId}:2`;
-    store.applyStreamFrames(turn.turnId, [
-      { kind: "append", delta: "Monitor started. Await" },
-      monitorEvent("tool_call_started", firstKey),
-      monitorEvent("tool_call_completed", firstKey),
-      { kind: "append", delta: "ing updates." },
-      {
-        kind: "event",
-        // Older agents emitted context_usage at message_end but not the
-        // explicit boundary. The store must preserve that rollout-safe split
-        // before replacing the legacy Steered row with compact activity.
-        event: {
-          type: "runtime_telemetry",
-          kind: "context_usage",
-          data: { tokens: { input: 10, output: 2, total: 12 } },
-        },
-      },
-      { kind: "append", delta: "Event wake one." },
-      monitorEvent("tool_call_started", secondKey),
-      monitorEvent("tool_call_completed", secondKey),
-      {
-        kind: "event",
-        event: { type: "runtime_telemetry", kind: "assistant_message_boundary", data: { messageId: "a2" } },
-      },
-      { kind: "append", delta: "Event wake two." },
-    ] as never);
-    expect(store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: first.monitorId,
-      deliveryKey: firstKey,
-      disposition: "steered",
-      turnId: turn.turnId,
-    })).toBeUndefined();
-    expect(store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: second.monitorId,
-      deliveryKey: secondKey,
-      disposition: "steered",
-      turnId: turn.turnId,
-    })).toBeUndefined();
-    const detail = store.completeTurn(turn.turnId, "Event wake two.");
-    const parts = detail.messages.at(-1)?.parts ?? [];
-    expect(parts.filter((part) => part.type === "tool-call")).toEqual([]);
-    expect(parts.filter((part) => part.type === "text")).toEqual([
-      { type: "text", text: "Monitor started. Awaiting updates." },
-      { type: "text", text: "Event wake one." },
-      { type: "text", text: "Event wake two." },
-    ]);
-    expect(parts.filter((part) => part.type === "monitor-activity")).toEqual([{
-      type: "monitor-activity",
-      monitors: [{ projection: second, deliveryKeys: [firstKey, secondKey] }],
-    }]);
-    expect(JSON.stringify(parts)).not.toContain("A monitor you started");
     store.close();
   });
 
@@ -2046,6 +2239,52 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("persists manual markers and keeps usage telemetry on the last settled answer", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const other = store.createThread("agent-one");
+    expect(store.recordManualCompaction(thread.id, { status: "skipped", trigger: "manual", operationId: "no-answer", reason: "nothing_to_compact" })).toBeUndefined();
+    const turn = store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "answer");
+    const id = store.recordManualCompaction(thread.id, {
+      status: "succeeded", trigger: "manual", operationId: "c1", tokensBefore: 50_000, tokensAfter: 10_000,
+    });
+    expect(id).toBe(turn.assistantMessageId);
+    expect(store.getThreadDetail(thread.id)?.messages.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "no-answer")?.parts[0]).toMatchObject({ reason: "nothing_to_compact" });
+    store.recordManualCompaction(thread.id, { status: "succeeded", trigger: "manual", operationId: "c1", tokensBefore: 50_000, tokensAfter: 10_000 });
+    store.recordManualCompaction(thread.id, { status: "failed", trigger: "manual", operationId: "unknown-reason", reason: "synthetic-provider-detail" });
+    const markers = store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system" && m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction");
+    expect(markers).toHaveLength(3);
+    expect(markers?.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "unknown-reason")?.parts[0]).not.toHaveProperty("reason");
+    const next = store.beginTurn({ threadId: thread.id, text: "follow up", attachmentIds: [] });
+    expect(store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "compaction", operationId: "c1" })]));
+    expect(JSON.stringify(store.getThreadDetail(thread.id)?.messages.find((m) => m.id === id)?.parts)).toContain('"status":"succeeded"');
+    expect(store.getThreadDetail(other.id)?.messages).toEqual([]);
+    store.close();
+  });
+
+  it("retains a lost manual compaction response as an unknown timeline row across restart", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.recordManualCompactionFailure(thread.id, "outcome_unknown");
+    expect(store.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({
+      kind: "compaction", status: "failed", reason: "outcome_unknown", trigger: "manual",
+    });
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({
+      kind: "compaction", status: "failed", reason: "outcome_unknown",
+    });
+    reopened.close();
+  });
+
   it("updates a compaction lifecycle in place while keeping distinct operations", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -2053,20 +2292,17 @@ describe("WebStore", () => {
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
     const turn = store.beginTurn({ threadId: thread.id, text: "compact", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event: {
+      type: "runtime_telemetry", kind: "context_compaction",
+      data: { operationId: "compact-1", status: "running", sdk: "pi", trigger: "proactive" },
+    } }]);
+    expect(store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system")).toHaveLength(0);
     store.applyStreamFrames(turn.turnId, [
       {
         kind: "event",
         event: {
           type: "runtime_telemetry",
           kind: "context_compaction",
-          data: { operationId: "compact-1", status: "running", sdk: "pi", trigger: "proactive" },
-        },
-      },
-      {
-        kind: "event",
-        event: {
-          type: "runtime_telemetry",
-          kind: "context_compaction",
           data: {
             operationId: "compact-1",
             status: "succeeded",
@@ -2083,13 +2319,23 @@ describe("WebStore", () => {
         event: {
           type: "runtime_telemetry",
           kind: "context_compaction",
-          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual" },
+          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual", reason: "model_changed" },
         },
       },
     ]);
 
-    const assistant = store.getThreadDetail(thread.id)?.messages.at(-1);
-    expect(assistant?.parts).toEqual([
+    const markers = () => store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system" && m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction");
+    expect(markers()).toHaveLength(2);
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "runtime_telemetry", kind: "context_compaction", data: { operationId: "compact-1", status: "succeeded", sdk: "pi", trigger: "proactive", tokensBefore: 80_000, tokensAfter: 20_000, tokenCountsExact: false } } }]);
+    expect(markers()).toHaveLength(2);
+    store.completeTurn(turn.turnId, "done");
+    const next = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+    expect(store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "compaction", operationId: "compact-1", trigger: "automatic" }),
+      expect.objectContaining({ kind: "compaction", operationId: "compact-2", status: "skipped", reason: "model_changed" }),
+    ]));
+    const assistant = store.getThreadDetail(thread.id)?.messages.find((m) => m.id === turn.assistantMessageId);
+    expect(assistant?.parts).toEqual(expect.arrayContaining([
       {
         type: "telemetry",
         event: "runtime_telemetry",
@@ -2113,11 +2359,35 @@ describe("WebStore", () => {
         data: {
           type: "runtime_telemetry",
           kind: "context_compaction",
-          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual" },
+          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual", reason: "model_changed" },
         },
       },
-    ]);
+    ]));
     store.close();
+  });
+
+  it("hides unknown future marker kinds from persisted messages and snapshots", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "answer");
+    const next = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+    const databasePath = store.paths.database;
+    store.close();
+    const raw = new DatabaseSync(databasePath);
+    const future = { type: "conversation-marker", kind: "future", at: "2026-01-15T10:00:00Z" };
+    raw.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, NULL, 'system', ?, ?, ?, 'complete')`).run("fictional-future-marker", thread.id, JSON.stringify([future]), "2026-01-15T10:00:00Z", "2026-01-15T10:00:00Z");
+    raw.prepare("UPDATE turns SET conversation_markers_json = ? WHERE id = ?").run(JSON.stringify([future]), next.turnId);
+    raw.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.find((message) => message.id === "fictional-future-marker")?.parts).toEqual([]);
+    expect(reopened.conversationMarkersForTurn(next.turnId)).toEqual([]);
+    reopened.close();
   });
 
   it("reconciles a divergent replace frame across interleaved text without dropping tools", async () => {
@@ -2196,7 +2466,7 @@ describe("WebStore", () => {
       { kind: "append", delta: "Anything else?" },
     ]);
     const detail = store.completeTurn(turn.turnId, "");
-    const assistant = detail.messages.at(-1);
+    const assistant = detail.messages.find((message) => message.id === turn.assistantMessageId);
 
     expect(assistant?.parts.map((part) => part.type)).toEqual([
       "text",
@@ -2312,12 +2582,12 @@ describe("WebStore", () => {
     store.applyStreamFrames(turn.turnId, [
       { kind: "append", delta: "The" },
       { kind: "event", event: { type: "assistant_thought", text: "." } },
-      { kind: "append", delta: " targeted search only surfaced daycare threads." },
+      { kind: "append", delta: " targeted search only surfaced invoice threads." },
     ]);
     const detail = store.completeTurn(turn.turnId, "");
 
     expect(detail.messages.at(-1)?.parts).toEqual([
-      { type: "text", text: "The targeted search only surfaced daycare threads." },
+      { type: "text", text: "The targeted search only surfaced invoice threads." },
       { type: "reasoning", text: "." },
     ]);
     store.close();
@@ -2616,6 +2886,33 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("plans active membership and job summaries from cards without scanning message JSON", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    const db = (store as unknown as { database: DatabaseSync }).database;
+    const prepare = db.prepare.bind(db);
+    const plans: string[][] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("WITH active AS") || sql.includes("WITH jobs AS")) {
+        expect(sql).not.toContain("parts_json");
+        const bindings = sql.includes("WITH jobs AS") ? [JSON.stringify([thread.id])] : [];
+        plans.push(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => String(row.detail)));
+      }
+      return prepare(sql);
+    });
+    expect(store.listActiveThreads().total).toBe(1);
+    spy.mockRestore();
+    expect(plans).toHaveLength(2);
+    expect(plans[0]!.join("\n")).toContain("process_job_cards_by_state");
+    expect(plans[1]!.join("\n")).toContain("process_job_cards_by_thread");
+    for (const plan of plans) expect(plan.join("\n")).not.toMatch(/SCAN m\b/);
+    store.close();
+  });
+
   it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
     "projects terminal job state %s without marking the foreground as running", async (state) => {
       const base = await temporaryRoot();
@@ -2627,6 +2924,10 @@ describe("WebStore", () => {
       store.upsertProcessJobCard({
         sourceId: "agent-one", threadId: thread.id, processJob, deliveryKey: processJob.wake.deliveryKey,
       });
+      const db = (store as unknown as { database: DatabaseSync }).database;
+      expect(db.prepare("SELECT state, completed_at FROM process_job_cards").get())
+        .toEqual({ state, completed_at: processJob.timestamps.completedAt });
+      expect(store.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({ type: "process-job", job: { state } });
       expect(store.getThread(thread.id)).toMatchObject({
         runState: { status: "idle" },
         jobActivity: {
@@ -2647,8 +2948,12 @@ describe("WebStore", () => {
     const job = { ...fakeProcessJob({ conversationId: "web:" + thread.id }), tool: "Agent" as const,
       kind: "internal" as const, instanceId: "helper", childStillBusy: false,
       subagentProgress: { revision: 3, profile: "helper", toolCalls: 1, failedCalls: 0,
-        recent: [{ id: "call", toolName: "Read", status: "complete" as const, argsSummary: "src/file.ts" }], answerHead: "Safe report" } };
+        recent: [{ id: "call", toolName: "Read", status: "complete" as const, argsSummary: "src/file.ts" }], answerHead: "Safe report",
+        usage: { input: 8, output: 3, cacheRead: 2, cacheWrite: 1 } } };
     store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    expect(() => store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
+      processJob: { ...job, subagentProgress: { ...job.subagentProgress, privateField: "never" } } as unknown as ProcessJobProjection,
+      deliveryKey: job.wake.deliveryKey })).toThrow();
     store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
       processJob: { ...job, subagentProgress: { ...job.subagentProgress, revision: 1, recent: [], toolCalls: 0 } }, deliveryKey: job.wake.deliveryKey });
     store.close();
@@ -2656,6 +2961,41 @@ describe("WebStore", () => {
     const parts = reopened.getThreadDetail(thread.id)!.messages.flatMap((message) => message.parts);
     expect(parts.find((part) => part.type === "process-job")).toMatchObject({ job: { subagentProgress: job.subagentProgress } });
     reopened.close();
+  });
+
+  it("reads future or malformed persisted job token usage without relaxing ingest", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+      const usage = { input: 8, output: 2, cacheRead: 1, cacheWrite: 0 };
+      for (const [index, sample] of [
+        { ...usage, future: 17 }, { ...usage, input: -4 },
+      ].entries()) {
+        const id = `${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}-1111-4111-8111-111111111111`;
+        const job = { ...fakeProcessJob({ conversationId: `web:${thread.id}`, jobId: id }),
+          tool: "Agent", kind: "internal", instanceId: "helper", childStillBusy: false,
+          subagentProgress: { revision: 1, profile: "helper", toolCalls: 0, failedCalls: 0, recent: [], usage: sample } };
+        if (index === 0) expect(() => store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
+          processJob: job as unknown as ProcessJobProjection, deliveryKey: job.wake.deliveryKey })).toThrow();
+        insert.run(`persisted-job-${index}`, thread.id, JSON.stringify([{ type: "process-job", job }]),
+          `2026-07-21T09:00:0${index}Z`, `2026-07-21T09:00:0${index}Z`);
+      }
+      const cards = store.getThreadDetail(thread.id)!.messages.flatMap((message) => message.parts)
+        .filter((part) => part.type === "process-job");
+      expect(cards).toHaveLength(2);
+      const progress = (part: (typeof cards)[number] | undefined) => part?.job.kind === "internal"
+        ? part.job.subagentProgress : undefined;
+      expect(progress(cards[0])?.usage).toEqual(usage);
+      expect(progress(cards[1])).not.toHaveProperty("usage");
+      const aggregate = await store.threadUsage(thread.id);
+      expect(aggregate.subagents).toMatchObject({ runs: 2, runsWithTokens: 1, tokensPartial: true });
+    } finally { raw.close(); store.close(); }
   });
 
   it("orders terminal jobs by completion instead of card creation or wake retries", async () => {
@@ -2681,6 +3021,38 @@ describe("WebStore", () => {
     expect(store.getThread(thread.id)?.jobActivity?.latestTerminal)
       .toEqual({ state: "succeeded", completedAt: "2026-07-21T09:00:05.000Z" });
     store.close();
+  });
+
+  it("breaks equal job completion ties by non-success state, then newest message ordinal", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const olderFailure = fakeProcessJob({ state: "failed", conversationId: `web:${thread.id}` });
+    const newerSuccess = fakeProcessJob({ state: "succeeded", conversationId: `web:${thread.id}`,
+      jobId: "22222222-2222-4222-8222-222222222222" });
+    const newestFailure = fakeProcessJob({ state: "failed", conversationId: `web:${thread.id}`,
+      jobId: "33333333-3333-4333-8333-333333333333" });
+    const upsert = (job: ReturnType<typeof fakeProcessJob>, responseText?: string) => store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      ...(responseText === undefined ? {} : { responseText }),
+    });
+    try {
+      upsert(olderFailure, "older failure");
+      upsert(newerSuccess, "newer success");
+      expect(olderFailure.timestamps.completedAt).toBe(newerSuccess.timestamps.completedAt);
+      expect(store.getThread(thread.id)?.jobActivity?.latestTerminal).toEqual({
+        state: "failed", completedAt: olderFailure.timestamps.completedAt, replyPreview: "older failure",
+      });
+      upsert(newestFailure, "newest failure");
+      expect(newestFailure.timestamps.completedAt).toBe(olderFailure.timestamps.completedAt);
+      // A later wake update must not change the older message's ordinal.
+      upsert({ ...olderFailure, wake: { ...olderFailure.wake, state: "delivered", attempts: 1,
+        lastAttemptAt: "2026-07-21T09:00:06.000Z" } });
+      expect(store.getThread(thread.id)?.jobActivity?.latestTerminal).toEqual({
+        state: "failed", completedAt: newestFailure.timestamps.completedAt, replyPreview: "newest failure",
+      });
+    } finally { store.close(); }
   });
 
   it("uses a completed job response as its message preview", async () => {
@@ -2862,152 +3234,6 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("can keep an assistant-only Monitor prompt out of durable web state", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
-    store.replaceAgents([agent()]);
-    const thread = store.createThread("agent-one");
-    const secretPrompt = "monitor output contains credential-shape-value";
-
-    const started = store.beginAssistantTurn({
-      threadId: thread.id,
-      prompt: secretPrompt,
-      storedPrompt: "[Monitor wake]",
-    });
-    expect(started.text).toBe(secretPrompt);
-    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
-    const row = raw.prepare("SELECT text FROM turns WHERE id = ?").get(started.turnId) as { text: string };
-    raw.close();
-    expect(row.text).toBe("[Monitor wake]");
-    expect(row.text).not.toContain("credential-shape-value");
-    store.close();
-  });
-
-  it("persists completed and ambiguous Monitor wake claims without raw event text", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    const store = await WebStore.open({ stateDir });
-    store.replaceAgents([agent(), agent("agent-two")]);
-    const thread = store.createThread("agent-one");
-    const otherThread = store.createThread("agent-two");
-    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 3 });
-    const deliveryKey = `monitor:${monitor.monitorId}:3`;
-
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "a".repeat(64),
-      monitor,
-    })).toEqual({ kind: "new" });
-    store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      disposition: "steered",
-    });
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "a".repeat(64),
-      monitor,
-    })).toEqual({ kind: "completed", disposition: "steered" });
-    expect(() => store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "b".repeat(64),
-      monitor,
-    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
-    expect(() => store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: otherThread.id,
-      monitorId: "other-monitor",
-      deliveryKey: "monitor:other-monitor:1",
-      payloadSha256: "c".repeat(64),
-      monitor: fakeMonitor({ monitorId: "other-monitor", conversationId: `web:${otherThread.id}` }),
-    })).toThrowError(expect.objectContaining({ code: "invalid_notification" }));
-
-    const pendingKey = `monitor:${monitor.monitorId}:4`;
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey: pendingKey,
-      payloadSha256: "d".repeat(64),
-      monitor,
-    })).toEqual({ kind: "new" });
-    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
-    const rows = raw.prepare("SELECT * FROM monitor_wake_deliveries ORDER BY delivery_key").all();
-    raw.close();
-    expect(JSON.stringify(rows)).not.toContain("credential-shape-value");
-    store.close();
-
-    const reopened = await WebStore.open({ stateDir });
-    expect(reopened.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey: pendingKey,
-      payloadSha256: "d".repeat(64),
-      monitor,
-    })).toEqual({ kind: "uncertain" });
-    reopened.close();
-  });
-
-  it("retains Monitor delivery tombstones after their conversation is deleted", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
-    store.replaceAgents([agent()]);
-    const thread = store.createThread("agent-one");
-    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 7 });
-    const deliveryKey = `monitor:${monitor.monitorId}:7`;
-    const payloadSha256 = "e".repeat(64);
-
-    expect(store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256,
-      monitor,
-    })).toEqual({ kind: "new" });
-    store.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      disposition: "follow_up",
-    });
-    store.patchThread(thread.id, { archived: true });
-    await store.deleteArchivedThread(thread.id);
-
-    const raw = new DatabaseSync(store.paths.database, { readOnly: true });
-    const retained = raw.prepare(`
-      SELECT thread_id, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get("agent-one", deliveryKey);
-    raw.close();
-    expect(retained).toEqual({ thread_id: null, state: "completed", disposition: "follow_up" });
-
-    const replacement = store.createThread("agent-one");
-    expect(() => store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: replacement.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256,
-      monitor,
-    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
-    store.close();
-  });
-
   it("persists completed and ambiguous process-job wake claims across reopen", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -3180,112 +3406,6 @@ describe("WebStore", () => {
       "SELECT discovered FROM agents WHERE source_id = 'agent-one'",
     ).get()).toMatchObject({ discovered: 1 });
     inspected.close();
-  });
-
-  it("migrates schema v12 by creating the Monitor wake ledger", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    const initial = await WebStore.open({ stateDir });
-    const databasePath = initial.paths.database;
-    initial.close();
-
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec("DROP TABLE monitor_wake_deliveries; PRAGMA user_version = 12");
-    legacy.close();
-
-    const migrated = await WebStore.open({ stateDir });
-    migrated.close();
-    const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
-    expect(inspected.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
-    ).get()).toBeDefined();
-    inspected.close();
-  });
-
-  it("migrates schema v13 Monitor receipts from cascading deletion to retained tombstones", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    const seeded = await WebStore.open({ stateDir });
-    seeded.replaceAgents([agent()]);
-    const thread = seeded.createThread("agent-one");
-    const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 9 });
-    const deliveryKey = `monitor:${monitor.monitorId}:9`;
-    expect(seeded.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: thread.id,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "f".repeat(64),
-      monitor,
-    })).toEqual({ kind: "new" });
-    seeded.completeMonitorWake({
-      sourceId: "agent-one",
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      disposition: "steered",
-    });
-    seeded.close();
-
-    const databasePath = join(stateDir, "state.sqlite");
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec(`
-      PRAGMA foreign_keys = OFF;
-      ALTER TABLE monitor_wake_deliveries RENAME TO monitor_wake_deliveries_v14_source;
-      CREATE TABLE monitor_wake_deliveries (
-        source_id TEXT NOT NULL REFERENCES agents(source_id),
-        monitor_id TEXT NOT NULL,
-        delivery_key TEXT NOT NULL,
-        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-        payload_sha256 TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
-        disposition TEXT CHECK (disposition IN ('steered', 'follow_up')),
-        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
-        created_at TEXT NOT NULL,
-        completed_at TEXT,
-        PRIMARY KEY (source_id, delivery_key)
-      );
-      INSERT INTO monitor_wake_deliveries (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
-        state, disposition, turn_id, created_at, completed_at
-      ) SELECT
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256,
-        state, disposition, turn_id, created_at, completed_at
-      FROM monitor_wake_deliveries_v14_source;
-      DROP TABLE monitor_wake_deliveries_v14_source;
-      PRAGMA user_version = 13;
-    `);
-    legacy.close();
-
-    const migrated = await WebStore.open({ stateDir });
-    const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
-    const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
-      from: string;
-      on_delete: string;
-    }>).find((foreignKey) => foreignKey.from === "thread_id");
-    expect(threadForeignKey?.on_delete).toBe("SET NULL");
-    const monitorColumns = (inspected.prepare("PRAGMA table_info(monitor_wake_deliveries)").all() as Array<{
-      name: string;
-    }>).map((column) => column.name);
-    expect(monitorColumns).toContain("projection_json");
-    inspected.close();
-
-    migrated.patchThread(thread.id, { archived: true });
-    await migrated.deleteArchivedThread(thread.id);
-    const retained = new DatabaseSync(databasePath, { readOnly: true });
-    expect(retained.prepare(`
-      SELECT thread_id, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get("agent-one", deliveryKey)).toEqual({
-      thread_id: null,
-      state: "completed",
-      disposition: "steered",
-    });
-    retained.close();
-    migrated.close();
   });
 
   it("sets, merges, and clears per-thread model and effort overrides", async () => {
@@ -3663,7 +3783,9 @@ describe("WebStore subagent parts", () => {
     return detail.messages.at(-1)?.parts ?? [];
   }
 
-  it.each(["Agent", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
+  // "AgentSend" is retained history only: the tool was renamed to
+  // "AgentManage" with no alias, and stored transcripts still carry it.
+  it.each(["Agent", "AgentManage", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
     const receipt = { schema: "mono-agent.process-job-start-receipt.v1", tool, jobId: "job", state: "running", startedAt: "2026-09-13T10:00:00.000Z" };
     const parts = await turnWith([
       { kind: "event", event: { type: "tool_call_started", id: "launch", name: tool } },
@@ -4082,6 +4204,30 @@ describe("WebStore subagent parts", () => {
     ]);
 
     expect(parts.find((part) => part.type === "tool-call")).toMatchObject({ type: "tool-call", toolCallId: "t1", toolName: "Read" });
+  });
+
+  it("persists safe token counts from the closing delegation bookend", async () => {
+    const usage = { input: 42, output: 9, cacheRead: 7, cacheWrite: 2 };
+    const parts = await turnWith([
+      launch("call-1", "researcher"), bookend("call-1", "researcher"),
+      { kind: "event", event: { type: "tool_call_completed", id: "agent:call-1", name: "Agent(researcher)",
+        metadata: { subagent: { id: "call-1", name: "researcher", usage }, subagentLifecycle: true } } },
+    ]);
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({ usage });
+  });
+
+  it.each([
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    { input: -1, output: 2, cacheRead: 0, cacheWrite: 0 },
+    { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, future: 99 },
+  ])("drops invalid synchronous usage at ingest without losing the delegation %j", async (usage) => {
+    const parts = await turnWith([
+      launch("call-1", "researcher"), bookend("call-1", "researcher"),
+      { kind: "event", event: { type: "tool_call_completed", id: "agent:call-1", name: "Agent(researcher)",
+        metadata: { subagent: { id: "call-1", name: "researcher", usage }, subagentLifecycle: true } } },
+    ]);
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({ status: "complete" });
+    expect(parts.find((part) => part.type === "subagent")).not.toHaveProperty("usage");
   });
 
   it("records what a delegation cost from its closing bookend", async () => {
@@ -4818,6 +4964,7 @@ describe("WebStore message sequence and part deltas", () => {
     expect(delta.baseSeq).toBe(before.seq);
     expect(delta.seq).toBe(before.seq + 1);
     expect(message.seq).toBe(delta.seq);
+    expect(message).toEqual(context.store.getMessage(context.messageId));
     expect(delta.updatedAt).toBe(message.updatedAt);
     expect(delta.status).toBe(message.status);
     expect(applyDeltaOps(before.parts, delta.ops)).toEqual(message.parts);
@@ -4856,9 +5003,9 @@ describe("WebStore message sequence and part deltas", () => {
       return write(id, parts, now, columns);
     });
     try {
-      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+      expect(() => context.store.completeTurn(context.turnId, "ab"))
         .toThrow(WebConsoleError);
-      expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "b" }]))
+      expect(() => context.store.completeTurn(context.turnId, "ab"))
         .toThrow(/moved from 1 to 2 while its delta was built/u);
     } finally {
       spy.mockRestore();
@@ -4869,6 +5016,148 @@ describe("WebStore message sequence and part deltas", () => {
     const message = context.store.getMessage(context.messageId);
     expect(message?.seq).toBe(1);
     expect(message?.parts).toEqual([{ type: "text", text: "a" }]);
+    context.store.close();
+  });
+
+  it("invalidates a stale stream snapshot and replays once against the durable sequence", async () => {
+    const context = await openStreamingStore();
+    const first = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    db.prepare("UPDATE messages SET parts_json = ?, seq = seq + 1 WHERE id = ?")
+      .run(JSON.stringify([{ type: "text", text: "external" }]), context.messageId);
+    const durable = context.store.getMessage(context.messageId)!;
+    const prepare = db.prepare.bind(db);
+    let guardedWrites = 0;
+    let rereads = 0;
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("AND seq = ? RETURNING seq")) guardedWrites++;
+      if (sql === "SELECT * FROM messages WHERE id = ?") rereads++;
+      return prepare(sql);
+    });
+    const next = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "+new" }]);
+    spy.mockRestore();
+    expect(guardedWrites).toBe(2);
+    expect(rereads).toBe(1);
+    expect(next.delta).toMatchObject({ baseSeq: durable.seq, seq: durable.seq + 1 });
+    expect(applyDeltaOps(durable.parts, next.delta!.ops)).toEqual(next.message.parts);
+    expect(next.message).toEqual(context.store.getMessage(context.messageId));
+    expect(next.message.parts).toEqual([{ type: "text", text: "external+new" }]);
+    expect(first.message.parts).toEqual([{ type: "text", text: "cached" }]);
+    const read = vi.spyOn(db, "prepare");
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "+cached-again" }]);
+    expect(read.mock.calls.some(([sql]) => sql === "SELECT * FROM messages WHERE id = ?")).toBe(false);
+    read.mockRestore();
+    context.store.close();
+  });
+
+  /** Release the first writer's lock before injecting a genuine second-connection commit. */
+  function interleaveAfterStreamConflict(
+    context: StreamingStore, change: (writer: DatabaseSync) => void, afterCommit?: () => void,
+  ): {
+    readonly count: () => number; readonly close: () => void;
+  } {
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    const writer = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+    writer.exec("PRAGMA foreign_keys = ON");
+    // Make the cached sequence stale so the first guarded attempt must roll back.
+    writer.prepare("UPDATE messages SET seq = seq + 1 WHERE id = ?").run(context.messageId);
+    const exec = db.exec.bind(db);
+    let count = 0;
+    const spy = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      exec(sql);
+      if (sql === "ROLLBACK" && count === 0) {
+        count++;
+        writer.exec("BEGIN IMMEDIATE");
+        try { change(writer); writer.exec("COMMIT"); }
+        catch (error) { writer.exec("ROLLBACK"); throw error; }
+        afterCommit?.();
+      }
+    });
+    return { count: () => count, close: () => { spy.mockRestore(); writer.close(); } };
+  }
+
+  it("does not replay frames when a second writer settles between conflict and retry", async () => {
+    const context = await openStreamingStore();
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+    const interleave = interleaveAfterStreamConflict(context, (writer) => {
+      writer.prepare("UPDATE turns SET status = 'complete', finished_at = ? WHERE id = ?")
+        .run("2026-09-21T00:00:00.000Z", context.turnId);
+      writer.prepare("UPDATE messages SET status = 'complete', parts_json = ?, seq = seq + 1 WHERE id = ?")
+        .run(JSON.stringify([{ type: "text", text: "settled by second writer" }]), context.messageId);
+    });
+    try {
+      const write = context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]);
+      expect(interleave.count()).toBe(1);
+      expect(write.delta).toBeUndefined();
+      expect(write.message).toEqual(context.store.getMessage(context.messageId));
+      expect(write.message).toMatchObject({ seq: 3, status: "complete",
+        parts: [{ type: "text", text: "settled by second writer" }] });
+      expect((context.store as unknown as { streamSnapshots: Map<string, WebMessage> }).streamSnapshots.has(context.turnId)).toBe(false);
+    } finally { interleave.close(); context.store.close(); }
+  });
+
+  it.each(["thread", "turn", "both"] as const)(
+    "rejects a second writer reparenting the assistant %s between conflict and retry", async (moved) => {
+      const context = await openStreamingStore();
+      context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+      const otherThread = context.store.createThread("agent-one");
+      const other = context.store.beginTurn({ threadId: otherThread.id, text: "other turn", attachmentIds: [] });
+      let reparented: WebMessage | undefined;
+      const interleave = interleaveAfterStreamConflict(context, (writer) => {
+        writer.prepare("UPDATE messages SET thread_id = ?, turn_id = ?, seq = seq + 1 WHERE id = ?")
+          .run(moved === "turn" ? context.threadId : otherThread.id,
+            moved === "thread" ? context.turnId : other.turnId, context.messageId);
+      }, () => { reparented = context.store.getMessage(context.messageId); });
+      try {
+        expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]))
+          .toThrow(expect.objectContaining({ code: "storage_corrupt" }));
+        expect(interleave.count()).toBe(1);
+        expect(context.store.getMessage(context.messageId)).toEqual(reparented);
+        expect(reparented).toMatchObject({ seq: 3, parts: [{ type: "text", text: "cached" }] });
+      } finally { interleave.close(); context.store.close(); }
+    },
+  );
+
+  it.each(["thread", "turn"] as const)(
+    "guards cached ownership when a second writer moves only the %s without changing seq", async (moved) => {
+      const context = await openStreamingStore();
+      context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "cached" }]);
+      const otherThread = context.store.createThread("agent-one");
+      const other = context.store.beginTurn({ threadId: otherThread.id, text: "other turn", attachmentIds: [] });
+      const writer = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+      try {
+        writer.prepare(`UPDATE messages SET ${moved === "thread" ? "thread_id" : "turn_id"} = ? WHERE id = ?`)
+          .run(moved === "thread" ? otherThread.id : other.turnId, context.messageId);
+        const reparented = context.store.getMessage(context.messageId);
+        expect(() => context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: "must not append" }]))
+          .toThrow(expect.objectContaining({ code: "storage_corrupt" }));
+        expect(context.store.getMessage(context.messageId)).toEqual(reparented);
+      } finally { writer.close(); context.store.close(); }
+    },
+  );
+
+  it("indexes a large settled snapshot exactly once and rolls search back with a failed settlement", async () => {
+    const context = await openStreamingStore();
+    const db = (context.store as unknown as { database: DatabaseSync }).database;
+    const text = "searchneedle " + "x".repeat(4_000_000) + "\u0002 final\u0003";
+    context.store.applyStreamFrames(context.turnId, [{ kind: "append", delta: text }]);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    db.exec(`CREATE TRIGGER force_settle_failure BEFORE UPDATE OF status ON messages
+      WHEN new.status = 'complete' BEGIN SELECT RAISE(ABORT, 'forced failure'); END;`);
+    expect(() => context.store.completeTurn(context.turnId)).toThrow("forced failure");
+    expect(db.prepare("SELECT * FROM message_search_writes").all()).toEqual([]);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    db.exec("DROP TRIGGER force_settle_failure");
+    context.store.completeTurn(context.turnId);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT body FROM message_search WHERE message_search MATCH 'searchneedle'").get())
+      .toEqual({ body: text.replace(/[\u0002\u0003]/gu, "") });
+    expect(db.prepare("SELECT * FROM message_search_writes").all()).toEqual([]);
+    // Direct SQL callers still get the trigger-owned fallback, never a stale body.
+    db.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(JSON.stringify([{ type: "text", text: "replacementneedle" }]), context.messageId);
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'searchneedle'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) AS n FROM message_search WHERE message_search MATCH 'replacementneedle'").get()).toEqual({ n: 1 });
     context.store.close();
   });
 
@@ -5265,16 +5554,6 @@ describe("WebStore message sequence and part deltas", () => {
 
   it("never edits a stored part in place, which is what makes the diff sound", async () => {
     const context = await openStreamingStore();
-    const monitor = fakeMonitor({ conversationId: `web:${context.threadId}` });
-    const deliveryKey = `monitor:${monitor.monitorId}:1`;
-    context.store.reserveMonitorWake({
-      sourceId: "agent-one",
-      threadId: context.threadId,
-      monitorId: monitor.monitorId,
-      deliveryKey,
-      payloadSha256: "a".repeat(64),
-      monitor,
-    });
     // Every write path reads its previous parts through `requireMessage`, and
     // the diff calls a part that compares reference-equal unchanged. Freeze what
     // those paths read, so an in-place edit throws instead of vanishing.
@@ -5351,21 +5630,10 @@ describe("WebStore message sequence and part deltas", () => {
         },
       }]);
     }
-    // A Monitor wake receipt folds into the single activity row.
-    stream(context, [{
-      kind: "event",
-      event: {
-        type: "tool_call_completed",
-        id: "monitor-wake",
-        name: "MonitorWake",
-        metadata: { liveInput: true, synthetic: true, inputId: deliveryKey },
-      },
-    }]);
     stream(context, [{ kind: "append", delta: "One file." }]);
     stream(context, [{ kind: "replace", text: "Exactly one file." }]);
 
-    // The finish rewrites hardest of all: reconciliation, reply parts, and the
-    // Monitor terminal normalization the delivery key turns on.
+    // The finish reconciles text and rich reply parts.
     finish(context, () => context.store.completeTurn(
       context.turnId,
       "Exactly one file. Nothing else.",
@@ -5379,7 +5647,6 @@ describe("WebStore message sequence and part deltas", () => {
         sizeBytes: 5,
         integrityId: `sha256:${"c".repeat(64)}`,
       }] as const satisfies readonly AgentReplyPart[],
-      { monitorWakeDeliveryKey: deliveryKey },
     ));
 
     expect(frozen).toBeGreaterThan(0);
@@ -5388,7 +5655,6 @@ describe("WebStore message sequence and part deltas", () => {
       "tool-call",
       "subagent",
       "telemetry",
-      "monitor-activity",
       "text",
       "attachment",
     ]);
@@ -5536,7 +5802,7 @@ describe("WebStore message sequence and part deltas", () => {
     store.close();
   });
 
-  it("reads a silent legacy history in the same number of statements for one card and fifty", async () => {
+  it("reads a silent host history in the same number of statements for one card and fifty", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
@@ -5546,35 +5812,17 @@ describe("WebStore message sequence and part deltas", () => {
     });
     store.replaceAgents([agent()]);
 
-    // The one shape that used to drop this reader back to a thread at a time: a
-    // conversation active only through a retained job, whose whole
-    // prior-outcome window is historical Monitor no-ops. Old rows keep their
-    // raw sentinel bytes and normalize only on read, so nothing but a read of
-    // the parts can tell that those turns said nothing -- and the meaningful
-    // outcome the sidebar has to show sits behind all of them.
+    // Retained jobs remain bounded when their conversations contain deep
+    // histories of silent host turns.
     let cards = 0;
-    const silenced: string[] = [];
     const addSilentCard = (depth: number): void => {
       cards += 1;
       const thread = store.createThread("agent-one");
       const answered = store.beginTurn({ threadId: thread.id, text: "ask", attachmentIds: [] });
       store.completeTurn(answered.turnId, "the answer that still stands");
-      const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
       for (let index = 0; index < depth; index += 1) {
-        const deliveryKey = `monitor:${monitor.monitorId}:${String(cards)}:${String(index)}`;
         const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
-        store.reserveMonitorWake({
-          sourceId: "agent-one", threadId: thread.id, monitorId: monitor.monitorId,
-          deliveryKey, payloadSha256: "a".repeat(64), monitor,
-        });
-        store.completeMonitorWake({
-          sourceId: "agent-one", monitorId: monitor.monitorId,
-          deliveryKey, disposition: "follow_up", turnId: wake.turnId,
-        });
-        store.completeTurn(wake.turnId, "NOTHING_TO_REPORT", undefined, undefined, {
-          monitorWakeDeliveryKey: deliveryKey,
-        });
-        silenced.push(wake.assistantMessageId);
+        store.completeTurn(wake.turnId, "");
       }
       const job = fakeProcessJob({
         state: "queued",
@@ -5586,30 +5834,13 @@ describe("WebStore message sequence and part deltas", () => {
       });
     };
 
-    // Put the sentinel bytes back the way a store written before normalization
-    // still holds them. A current write strips them, which would make these
-    // turns cheap to reject in SQL and never reach the deep path at all.
-    const restoreHistoricalBytes = (): void => {
-      const raw = new DatabaseSync(store.paths.database);
-      try {
-        const parts = JSON.stringify([{ type: "text", text: "NOTHING_TO_REPORT" }]);
-        const update = raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?");
-        for (const id of silenced) update.run(parts, id);
-      } finally {
-        raw.close();
-      }
-    };
-
     addSilentCard(9);
-    restoreHistoricalBytes();
     const one = measureStatements(store, () => store.listActiveThreads());
     // The same one card, twice as deep in silence: an eight-turn window used to
     // be asked again for every further block of no-ops.
     addSilentCard(17);
-    restoreHistoricalBytes();
     const deeper = measureStatements(store, () => store.listActiveThreads());
     for (let index = 2; index < 50; index += 1) addSilentCard(9);
-    restoreHistoricalBytes();
     const full = measureStatements(store, () => store.listActiveThreads());
 
     expect(one.value.threads).toHaveLength(1);
@@ -5798,21 +6029,21 @@ describe("WebStore conversation projects", () => {
       expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
       store.patchThread(thread.id, { projectId: second.id });
       store.patchThread(thread.id, { projectId: second.id });
-      expect(store.projectTransitions(thread.id)).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "project")).toHaveLength(1);
       if (outcome === "complete") store.completeTurn(turn.turnId, "done");
       else if (outcome === "interrupted") store.interruptTurn(turn.turnId);
       else store.failTurn(turn.turnId, { message: "stopped", cancelled: outcome === "cancelled" });
       expect(store.getThread(thread.id)).toMatchObject({ projectId: second.id });
       expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
       expect(store.projectContextForThread(thread.id)).toEqual({ name: "Second", context: "Next" });
-      expect(store.projectTransitions(thread.id)).toHaveLength(2);
-      expect(store.projectTransitions(thread.id)[1]).toMatchObject({
-        afterMessageId: turn.assistantMessageId, turnId: turn.turnId,
+      expect(transcriptMarkers(store, thread.id, "project")).toHaveLength(2);
+      expect(transcriptMarkers(store, thread.id, "project")[1]).toMatchObject({
+        turnId: undefined,
         before: { id: first.id, name: "Edited", color: "amber" },
         after: { id: second.id, name: "Second", color: "rose" },
       });
       store.deleteProject(second.id);
-      expect(store.projectTransitions(thread.id)[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
+      expect(transcriptMarkers(store, thread.id, "project")[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
       expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("Edited context");
     } finally { store.close(); }
   });
@@ -5829,29 +6060,29 @@ describe("WebStore conversation projects", () => {
       expect(store.projectContextForThread(thread.id)).toBeUndefined();
       store.completeTurn(turn.turnId, "");
       expect(store.projectContextForThread(thread.id)).toEqual({ name: "P", context: "Next" });
-      expect(store.projectTransitions(thread.id)[0]).toMatchObject({ afterMessageId: turn.assistantMessageId });
+      expect(transcriptMarkers(store, thread.id, "project")[0]).toMatchObject({ kind: "project", turnId: undefined });
     } finally { store.close(); }
   });
 
-  it("pages every transition with its actual anchor, including start and repeated idle changes", async () => {
+  it("pages markers as independent rows including initial and repeated idle membership changes", async () => {
     const { store } = await openStore();
     try {
       const project = store.createProject({ sourceId: "agent-one", name: "P" });
       const thread = store.createThread("agent-one", { projectId: project.id });
-      expect(store.listMessagesPage(thread.id, { limit: 1 }).projectTransitions).toHaveLength(1);
       const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
-      store.patchThread(thread.id, { projectId: null });
       store.completeTurn(turn.turnId, "done");
-      store.patchThread(thread.id, { projectId: project.id });
       store.patchThread(thread.id, { projectId: null });
-      const latest = store.listMessagesPage(thread.id, { limit: 1 });
-      expect(latest.messages.map((message) => message.id)).toEqual([turn.assistantMessageId]);
-      expect(latest.projectTransitions).toHaveLength(3);
-      const oldest = store.listMessagesPage(thread.id, { limit: 1, before: latest.nextCursor! });
-      expect(oldest.messages.map((message) => message.id)).toEqual([turn.userMessageId]);
-      expect(oldest.projectTransitions).toHaveLength(1);
-      expect(oldest.projectTransitions?.[0]?.afterMessageId).toBeNull();
-      expect(store.getThread(thread.id)?.messageCount).toBe(2);
+      store.patchThread(thread.id, { projectId: project.id });
+      const messages = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 1, ...(cursor === undefined ? {} : { before: cursor }) });
+        messages.unshift(...page.messages);
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "system", "system"]);
+      expect(messages.filter((m) => m.role === "system").every((m) => m.parts[0]?.type === "conversation-marker")).toBe(true);
+      expect(store.getThread(thread.id)?.messageCount).toBe(5);
     } finally { store.close(); }
   });
 
@@ -5875,7 +6106,7 @@ describe("WebStore conversation projects", () => {
     try {
       expect(store.getThread(threadId)).toMatchObject({ projectId });
       expect(store.getThread(threadId)).not.toHaveProperty("pendingProject");
-      expect(store.projectTransitions(threadId)).toHaveLength(1);
+      expect(transcriptMarkers(store, threadId, "project")).toHaveLength(1);
       expect(store.projectContextForThread(threadId)).toEqual({ name: "After restart", context: "Fresh" });
     } finally { store.close(); }
   });
@@ -5895,7 +6126,7 @@ describe("WebStore conversation projects", () => {
       const second = queued === undefined ? store.beginTurn({ threadId: thread.id, text: "second", attachmentIds: [] }) : store.promoteNextQueuedLiveInput(thread.id)!;
       store.completeTurn(second.turnId, "second answer");
       expect(store.listMessagesPage(thread.id).messages.map((item) => item.id)).toEqual([
-        first.userMessageId, first.assistantMessageId, second.userMessageId, second.assistantMessageId,
+        first.userMessageId, first.assistantMessageId, expect.any(String), second.userMessageId, second.assistantMessageId,
       ]);
     } finally { store.close(); }
   });
@@ -6221,11 +6452,11 @@ describe("WebStore model transitions", () => {
     try {
       const thread = store.createThread("agent-one");
       const first = ran(store, thread.id, "one", "provider/sol", "low");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       const second = ran(store, thread.id, "two", "provider/astra", "high");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
-      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
-        afterMessageId: first.assistantMessageId,
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")[0]).toMatchObject({
+
         turnId: second.turnId,
         before: { model: "provider/sol", effort: "low" },
         after: { model: "provider/astra", effort: "high" },
@@ -6242,11 +6473,11 @@ describe("WebStore model transitions", () => {
       store.patchThread(thread.id, { model: "provider/astra" });
       store.patchThread(thread.id, { model: "provider/sol" });
       ran(store, thread.id, "two", "provider/sol", "low");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       // Effort alone still counts, and it names itself by the pair it changed.
       ran(store, thread.id, "three", "provider/sol", "high");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
-      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")[0]).toMatchObject({
         before: { model: "provider/sol", effort: "low" },
         after: { model: "provider/sol", effort: "high" },
       });
@@ -6261,21 +6492,21 @@ describe("WebStore model transitions", () => {
       // baseline: the one before it is what the next turn is measured against.
       const unreported = store.beginTurn({ threadId: thread.id, text: "unreported", attachmentIds: [] });
       store.completeTurn(unreported.turnId, "answered");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       const first = ran(store, thread.id, "one", "provider/sol", "low");
-      expect(store.modelTransitions(thread.id)).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
       const blind = store.beginTurn({ threadId: thread.id, text: "blind", attachmentIds: [] });
       store.completeTurn(blind.turnId, "answered");
       const next = ran(store, thread.id, "two", "provider/astra", "low");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
-      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
-        afterMessageId: blind.assistantMessageId,
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")[0]).toMatchObject({
+
         turnId: next.turnId,
         before: { model: "provider/sol", effort: "low" },
       });
       // An effort only one side reports stays unclaimed while the model holds.
       ran(store, thread.id, "three", "provider/astra");
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
     } finally { store.close(); }
   });
 
@@ -6286,8 +6517,8 @@ describe("WebStore model transitions", () => {
       const first = ran(store, thread.id, "one", "provider/sol", "low");
       const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake", requestedModel: "provider/astra", requestedEffort: "low" });
       store.completeTurn(wake.turnId, "woke");
-      expect(store.modelTransitions(thread.id)).toMatchObject([
-        { afterMessageId: first.assistantMessageId, turnId: wake.turnId, after: { model: "provider/astra" } },
+      expect(transcriptMarkers(store, thread.id, "model")).toMatchObject([
+        { turnId: wake.turnId, after: { model: "provider/astra" } },
       ]);
       const queued = store.reserveLiveInput(thread.id, "queued work");
       store.queueLiveInput(queued.input.id);
@@ -6298,23 +6529,22 @@ describe("WebStore model transitions", () => {
       // The queued input froze the agent default, which resolves to no reported
       // route, so the promotion claims nothing; the turn after it is measured
       // against the last route that WAS reported.
-      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(transcriptMarkers(store, thread.id, "model")).toHaveLength(1);
       const last = ran(store, thread.id, "last", "provider/terra", "high");
-      const rows = store.modelTransitions(thread.id);
+      const rows = transcriptMarkers(store, thread.id, "model");
       expect(rows).toHaveLength(2);
       expect(rows[1]).toMatchObject({
-        afterMessageId: promoted!.assistantMessageId,
+
         turnId: last.turnId,
         before: { model: "provider/astra" },
         after: { model: "provider/terra", effort: "high" },
       });
       const detail = store.getThreadDetail(thread.id);
-      expect(detail?.modelTransitions).toHaveLength(2);
+      expect(detail?.messages.filter((m) => m.parts[0]?.type === "conversation-marker")).toHaveLength(2);
       const latest = store.listMessagesPage(thread.id, { limit: 1 });
-      expect(latest.modelTransitions).toEqual([]);
+      expect(latest.messages[0]?.role).toBe("assistant");
       const pageWithAnchor = store.listMessagesPage(thread.id, { limit: 3 });
-      expect(pageWithAnchor.modelTransitions).toHaveLength(1);
-      expect(pageWithAnchor.modelTransitions?.[0]?.afterMessageId).toBe(promoted!.assistantMessageId);
+      expect(pageWithAnchor.messages.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
     } finally { store.close(); }
   });
 });
@@ -6369,6 +6599,64 @@ describe("WebStore console discovery tools", () => {
       .prepare("SELECT COUNT(*) AS count FROM console_tool_operations").get() as { count: number };
     expect(receipts.count).toBe(0);
     store.close();
+  });
+});
+
+describe("WebStore console wake tools", () => {
+  it("gets, creates, replaces and clears only the originating conversation with receipts and revision checks", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent(), agent("agent-two")]);
+      const thread = store.createThread("agent-one");
+      const other = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "Plan a reminder", attachmentIds: [] });
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId: turn.turnId };
+      let n = 0;
+      const run = (tool: import("../console-tools.js").ConsoleToolName, args: Record<string, unknown>) =>
+        store.consoleToolOperation(scope, { operationId: `wake-tool-operation-${String(n++)}`, tool, args });
+      const count = () => ((store as unknown as { database: DatabaseSync }).database
+        .prepare("SELECT COUNT(*) AS count FROM console_tool_operations").get() as { count: number }).count;
+      expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(count()).toBe(0);
+      const future = new Date(Date.now() + 15 * 60_000).toISOString().slice(0, 16);
+      const create = { operationId: "wake-replay-create", tool: "SetWakeSchedule" as const, args: { kind: "once", timezone: "UTC", localAt: future } };
+      const created = store.consoleToolOperation(scope, create);
+      expect(created.threads).toEqual([thread.id]);
+      expect(created.result).toMatchObject({ schedule: { threadId: thread.id, revision: 1, definition: { kind: "once", timezone: "UTC", localAt: future }, nextFireAt: expect.any(String) } });
+      expect(count()).toBe(1);
+      expect(store.consoleToolOperation(scope, create)).toEqual({ ...created, threads: [] });
+      expect(run("GetWakeSchedule", {}).result).toEqual(created.result);
+      expect(count()).toBe(1);
+      expect(store.wakeSchedule(other.id)).toBeNull();
+      const weekly = { kind: "weekly", timezone: "America/New_York", days: [1, 3], times: ["09:00"], message: "Check status" };
+      expect(() => run("SetWakeSchedule", weekly)).toThrowError(expect.objectContaining({ code: "wake_revision_conflict" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, expectedRevision: 2 })).toThrowError(expect.objectContaining({ code: "wake_revision_conflict" }));
+      const replaced = run("SetWakeSchedule", { ...weekly, expectedRevision: 1 });
+      expect(replaced.result).toMatchObject({ schedule: { revision: 2, definition: weekly } });
+      expect(() => run("ClearWakeSchedule", { expectedRevision: 1 })).toThrowError(expect.objectContaining({ code: "wake_revision_conflict" }));
+      expect(run("ClearWakeSchedule", { expectedRevision: 2 })).toMatchObject({ result: { cleared: true }, threads: [thread.id] });
+      expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(() => run("ClearWakeSchedule", { expectedRevision: 2 })).toThrowError(expect.objectContaining({ code: "wake_schedule_not_found" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, conversationId: other.id })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => run("GetWakeSchedule", { conversationId: other.id })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => run("ClearWakeSchedule", { expectedRevision: 2, conversationId: other.id })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => store.consoleToolOperation({ ...scope, sourceId: "agent-two" }, { operationId: "wrong-source-wake-operation", tool: "GetWakeSchedule", args: {} }))
+        .toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
+      expect(() => run("SetWakeSchedule", { kind: "once", timezone: "UTC", localAt: new Date(Date.now() + 2 * 60_000).toISOString().slice(0, 16) }))
+        .toThrowError(expect.objectContaining({ code: "wake_lead_time" }));
+      expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(() => run("SetWakeSchedule", { ...weekly, localAt: future }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { kind: "once", timezone: "UTC", localAt: future, days: [1] }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, times: Array(9).fill("09:00") }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, message: "é".repeat(501) }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      store.patchThread(thread.id, { archived: true });
+      expect(() => run("SetWakeSchedule", weekly)).toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
+    } finally { store.close(); }
   });
 });
 
@@ -6639,5 +6927,484 @@ describe("WebStore conversation read watermark", () => {
         expect(() => run(args)).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
       }
     } finally { store.close(); }
+  });
+});
+
+describe("durable conversation markers", () => {
+  async function fixture() {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    let time = Date.parse("2026-09-16T08:00:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(time) });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    return { store, thread, setTime: (value: number) => { time = value; }, time };
+  }
+
+  it.each([0, 3_600_000, 3_600_001, -1])("only resumes after more than one hour (%s ms), using creation not update time", async (idle) => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "first", attachmentIds: [] });
+      expect(transcriptMarkers(store, thread.id, "resumed")).toEqual([]);
+      setTime(time + 100_000);
+      store.completeTurn(first.turnId, "answer");
+      setTime(time + idle);
+      const next = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+      expect(transcriptMarkers(store, thread.id, "resumed")).toHaveLength(idle > 3_600_000 ? 1 : 0);
+      if (idle > 3_600_000) {
+        const rows = store.listMessagesPage(thread.id).messages;
+        expect(rows.map((m) => m.role)).toEqual(["user", "assistant", "system", "user", "assistant"]);
+        expect(rows[2]).toMatchObject({ turnId: next.turnId, createdAt: rows[3]!.createdAt, seq: 0,
+          parts: [{ type: "conversation-marker", kind: "resumed", idleMs: idle, at: new Date(time + idle).toISOString() }] });
+      }
+    } finally { store.close(); }
+  });
+
+  it("freezes the undispatched marker window, excludes prior admission markers, and keeps rows out of excerpts/search", async () => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const p = store.createProject({ sourceId: "agent-one", name: "Quizzacious", context: "" });
+      store.patchThread(thread.id, { projectId: p.id });
+      const first = store.beginTurn({ threadId: thread.id, text: "plain", attachmentIds: [], requestedModel: "A" });
+      expect(store.conversationMarkersForTurn(first.turnId).map((m) => m.kind)).toEqual(["project"]);
+      // Failed attachment preparation never stamps dispatch; the next attempt replays this marker.
+      store.failTurn(first.turnId, { message: "attachment unavailable" });
+      const retry = store.beginTurn({ threadId: thread.id, text: "retry", attachmentIds: [], requestedModel: "B" });
+      expect(store.conversationMarkersForTurn(retry.turnId).map((m) => m.kind)).toEqual(["project", "model"]);
+      store.markTurnDispatchStarted(retry.turnId);
+      store.completeTurn(retry.turnId, "retained preview");
+      setTime(time + 4_000_000);
+      store.patchThread(thread.id, { projectId: null });
+      expect(store.getThread(thread.id)?.lastMessagePreview).toBe("retained preview");
+      expect(store.searchThreads({ sourceId: "agent-one", query: "Quizzacious" }).hits).toEqual([]);
+      const next = store.beginTurn({ threadId: thread.id, text: "raw text", attachmentIds: [], requestedModel: "C" });
+      expect(store.conversationMarkersForTurn(next.turnId).map((m) => m.kind)).toEqual(["project", "model", "resumed"]);
+      expect(store.getMessage(next.userMessageId)?.parts).toEqual([{ type: "text", text: "raw text" }]);
+      store.patchThread(thread.id, { projectId: p.id });
+      expect(store.conversationMarkersForTurn(next.turnId).map((m) => m.kind)).toEqual(["project", "model", "resumed"]);
+      store.markTurnDispatchStarted(next.turnId);
+      store.completeTurn(next.turnId, "done");
+      const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      expect(store.conversationMarkersForTurn(wake.turnId).map((m) => m.kind)).toEqual(["project"]);
+    } finally { store.close(); }
+  });
+
+  it("orders project and admission markers through tied and regressed clocks with one-row backward paging", async () => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "one", attachmentIds: [], requestedModel: "A" });
+      store.completeTurn(first.turnId, "answer");
+      setTime(time - 60_000);
+      const p = store.createProject({ sourceId: "agent-one", name: "P" });
+      store.patchThread(thread.id, { projectId: p.id });
+      const second = store.beginTurn({ threadId: thread.id, text: "two", attachmentIds: [], requestedModel: "B" });
+      const expected = store.listMessagesPage(thread.id).messages;
+      expect(expected.map((m) => m.role)).toEqual(["user", "assistant", "system", "system", "user", "assistant"]);
+      expect(expected[3]?.turnId).toBe(second.turnId);
+      expect(expected[2]?.parts[0]).toMatchObject({ at: new Date(time - 60_000).toISOString() });
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listMessagesPage(thread.id, { limit: 1, ...(cursor === undefined ? {} : { before: cursor }) });
+        ids.unshift(...page.messages.map((m) => m.id));
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      expect(ids).toEqual(expected.map((m) => m.id));
+    } finally { store.close(); }
+  });
+
+  it("rolls back markers and notifications on complete-prefix overflow, and notifies only after commit", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "one", attachmentIds: [], requestedModel: "A" });
+      store.completeTurn(first.turnId, "answer");
+      const seen: string[] = [];
+      store.onConversationMarker = ({ messageId }) => {
+        expect(store.getMessage(messageId)).toBeDefined();
+        expect((store as unknown as { transactionDepth: number }).transactionDepth).toBe(0);
+        seen.push(messageId);
+      };
+      expect(() => store.beginTurn({ threadId: thread.id, text: "x".repeat(200_000), attachmentIds: [], requestedModel: "B" }))
+        .toThrowError(expect.objectContaining({ code: "turn_text_too_large" }));
+      expect(seen).toEqual([]);
+      expect(transcriptMarkers(store, thread.id, "model")).toEqual([]);
+      expect(store.getThread(thread.id)?.runState.status).toBe("complete");
+      store.beginTurn({ threadId: thread.id, text: "two", attachmentIds: [], requestedModel: "B" });
+      expect(seen).toHaveLength(1);
+    } finally { store.close(); }
+  });
+
+  it("does not roll back a committed marker when an observer throws, or leak it into the next transaction", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      store.onConversationMarker = () => { throw new Error("observer failed"); };
+      expect(() => store.patchThread(thread.id, { projectId: project.id })).toThrow("observer failed");
+      expect(store.getThread(thread.id)?.projectId).toBe(project.id);
+      expect(transcriptMarkers(store, thread.id, "project")).toHaveLength(1);
+      const seen = vi.fn();
+      store.onConversationMarker = seen;
+      store.patchThread(thread.id, { title: "renamed" });
+      expect(seen).not.toHaveBeenCalled();
+      store.patchThread(thread.id, { projectId: null });
+      expect(seen).toHaveBeenCalledTimes(1);
+    } finally { store.close(); }
+  });
+
+  it("never resumes assistant-only admissions or live-input sends during an active turn", async () => {
+    const { store, thread, setTime, time } = await fixture();
+    try {
+      const first = store.beginTurn({ threadId: thread.id, text: "one", attachmentIds: [] });
+      setTime(time + 8_000_000);
+      store.reserveLiveInput(thread.id, "steer");
+      expect(transcriptMarkers(store, thread.id, "resumed")).toEqual([]);
+      store.completeTurn(first.turnId, "done");
+      store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      expect(transcriptMarkers(store, thread.id, "resumed")).toEqual([]);
+    } finally { store.close(); }
+  });
+});
+
+describe("thread usage aggregation", () => {
+  it("loads persisted subagent parts with extended or malformed optional usage", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      const insert = raw.prepare(`INSERT INTO messages (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+      const add = (id: string, usage: unknown) => insert.run(id, thread.id, JSON.stringify([{ type: "subagent",
+        toolCallId: id, name: "helper", status: "complete", calls: [], usage }]),
+        "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+      add("extended-usage", { input: 8, output: 2, cacheRead: 1, cacheWrite: 0, future: 99 });
+      add("malformed-usage", { input: -2, output: 3, cacheRead: 0, cacheWrite: 0 });
+      const parts = store.getThreadDetail(thread.id)!.messages.flatMap((message) => message.parts)
+        .filter((part) => part.type === "subagent");
+      expect(parts[0]?.usage).toEqual({ input: 8, output: 2, cacheRead: 1, cacheWrite: 0 });
+      expect(parts[1]).not.toHaveProperty("usage");
+      const aggregated = await store.threadUsage(thread.id);
+      expect(aggregated.subagents).toMatchObject({ runs: 2, runsWithTokens: 1, tokensPartial: true });
+      expect(aggregated.total).toMatchObject({ tokens: { input: 8, output: 2 }, tokensPartial: true });
+    } finally { raw.close(); store.close(); }
+  });
+  it("counts all 90 rows, including suppressed and detached cards, then memoizes by seq and evicts", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const memo = (store as unknown as { usageMemo: Map<string, unknown> }).usageMemo;
+    try {
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+      for (let index = 0; index < 90; index++) {
+        const parts = index === 0 ? [{ type: "process-job", job: { ...fakeProcessJob(), tool: "Agent", kind: "internal", instanceId: "child-one", childStillBusy: false,
+          subagentProgress: { revision: 1, profile: "researcher", toolCalls: 0, failedCalls: 0, recent: [], costUsd: 3 },
+        } }] : [{ type: "telemetry", event: "usage_update", data: {
+          model: "atlas/standard", cumulativeUsd: 0.5,
+          tokens: { input: 10, cacheRead: 2, cacheWrite: 1, output: 4 },
+        } },
+          ...(index === 1 ? [{ type: "telemetry", event: "cron_run", data: { silent: true } }] : [])];
+        insert.run(`usage-${index}`, thread.id, JSON.stringify(parts), `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`, "2026-01-01T00:02:00Z");
+      }
+      raw.prepare("UPDATE messages SET cron_suppressed = 1 WHERE id = 'usage-1'").run();
+      expect(store.getMessage("usage-1")).toBeUndefined();
+      expect(store.getThreadDetail(thread.id)?.messages).toHaveLength(30);
+      vi.stubEnv("DEBUG", "web");
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+      const first = await store.threadUsage(thread.id);
+      expect(debug).toHaveBeenCalledWith("web thread usage", expect.objectContaining({ messages: 90, misses: 90, parsedBytes: expect.any(Number), elapsedMs: expect.any(Number) }));
+      debug.mockRestore();
+      vi.stubEnv("DEBUG", "webpack");
+      const unrelatedDebug = vi.spyOn(console, "debug").mockImplementation(() => {});
+      await store.threadUsage(thread.id);
+      expect(unrelatedDebug).not.toHaveBeenCalled();
+      unrelatedDebug.mockRestore();
+      vi.unstubAllEnvs();
+      expect(first.total.costUsd).toBe(47.5);
+      expect(first.total.tokens).toMatchObject({ input: 890, cacheRead: 178, cacheWrite: 89, output: 356 });
+      expect(first.total.tokensPartial).toBe(true);
+      expect(first.subagents?.costUsd).toBe(3);
+      const row = raw.prepare("SELECT rowid FROM messages WHERE id = 'usage-1'").get() as { rowid: number };
+      const key = `usage-1:${row.rowid}:0`;
+      const held = memo.get(key);
+      const holder = store as unknown as { database: DatabaseSync };
+      const database = holder.database;
+      let partReads = 0;
+      holder.database = new Proxy(database, { get(target, property) {
+        if (property !== "prepare") return Reflect.get(target, property).bind(target) as unknown;
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes("SELECT id, parts_json FROM messages")) return statement;
+          return new Proxy(statement, { get(inner, method) {
+            if (method !== "all") return Reflect.get(inner, method).bind(inner) as unknown;
+            return (...args: unknown[]) => { partReads += 1; return inner.all(...args as string[]); };
+          } });
+        };
+      } }) as DatabaseSync;
+      try { await store.threadUsage(thread.id); }
+      finally { holder.database = database; }
+      expect(partReads).toBe(0);
+      expect(memo.get(key)).toBe(held);
+      raw.prepare("UPDATE messages SET seq = seq + 1, parts_json = ? WHERE id = 'usage-1'")
+        .run(JSON.stringify([{ type: "telemetry", event: "usage_update", data: { cumulativeUsd: 1 } }]));
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(48);
+      expect(memo.has(`usage-1:${row.rowid}:1`)).toBe(true);
+      for (let n = 0; n < 20_000; n++) memo.set(`eviction-${n}`, { main: {}, subagents: [] });
+      const afterEviction = await store.threadUsage(thread.id);
+      expect(afterEviction.total.costUsd).toBe(48);
+      expect(memo.size).toBe(20_000);
+      expect(memo.has("eviction-0")).toBe(false);
+      await expect(store.threadUsage("unknown-thread")).rejects.toMatchObject({ code: "thread_not_found" });
+    } finally { raw.close(); store.close(); }
+  });
+  it("keeps same-batch hits when misses precede them at LRU capacity, and does not reuse a reinserted id", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const memo = (store as unknown as { usageMemo: Map<string, unknown> }).usageMemo;
+    const insert = raw.prepare(`INSERT INTO messages
+      (id, thread_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+    const parts = (cost: number) => JSON.stringify([{ type: "telemetry", event: "usage_update", data: {
+      model: "atlas/standard", cumulativeUsd: cost, tokens: { input: 10, output: 1 },
+    } }]);
+    try {
+      for (let index = 0; index < 10; index++) {
+        insert.run(`memo-${index}`, thread.id, parts(1), `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`, "2026-01-01T00:01:00Z");
+      }
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(10);
+      for (let index = 0; index < 19_990; index++) memo.set(`other-${index}`, { main: {}, subagents: [] });
+      expect(memo.size).toBe(20_000);
+      for (let index = 0; index < 3; index++) {
+        const row = raw.prepare("SELECT rowid FROM messages WHERE id = ?").get(`memo-${index}`) as { rowid: number };
+        memo.delete(`memo-${index}:${row.rowid}:0`);
+      }
+      for (let index = 0; index < 3; index++) memo.set(`refill-${index}`, { main: {}, subagents: [] });
+      expect(memo.size).toBe(20_000);
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(10);
+      const before = raw.prepare("SELECT rowid FROM messages WHERE id = 'memo-0'").get() as { rowid: number };
+      raw.prepare("DELETE FROM messages WHERE id = 'memo-0'").run();
+      // The same cron run keeps its ordering time: id, seq and created_at all recur.
+      insert.run("memo-0", thread.id, parts(4), "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z");
+      const after = raw.prepare("SELECT rowid FROM messages WHERE id = 'memo-0'").get() as { rowid: number };
+      expect(after.rowid).not.toBe(before.rowid);
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(13);
+    } finally { raw.close(); store.close(); }
+  });
+
+  it("counts settled assistant turns even when none reported telemetry", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      expect((await store.threadUsage(thread.id)).settledAssistantTurns).toBe(0);
+      const turn = store.beginTurn({ threadId: thread.id, text: "Example prompt", attachmentIds: [] });
+      expect((await store.threadUsage(thread.id)).settledAssistantTurns).toBe(0);
+      store.completeTurn(turn.turnId, "Example answer");
+      expect(await store.threadUsage(thread.id)).toMatchObject({ settledAssistantTurns: 1, total: {} });
+    } finally { store.close(); }
+  });
+
+});
+
+describe("parent turn interruption ledger", () => {
+  it("migrates an existing database and preserves generation-bound failed and startup-running turns once", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const running = store.createThread("agent-one");
+    const interrupted = store.beginTurn({ threadId: running.id, text: "first", attachmentIds: [] });
+    store.markTurnDispatchStarted(interrupted.turnId, "old-generation");
+    const failedThread = store.createThread("agent-one");
+    const failed = store.beginTurn({ threadId: failedThread.id, text: "second", attachmentIds: [] });
+    store.markTurnDispatchStarted(failed.turnId, "old-generation");
+    store.failTurn(failed.turnId, { message: "terminated", code: "agent_connection_lost" });
+    const legacyThread = store.createThread("agent-one");
+    const legacy = store.beginTurn({ threadId: legacyThread.id, text: "legacy", attachmentIds: [] });
+    store.markTurnDispatchStarted(legacy.turnId);
+    store.failTurn(legacy.turnId, { message: "terminated" });
+    const cancelledThread = store.createThread("agent-one");
+    const cancelled = store.beginTurn({ threadId: cancelledThread.id, text: "stop", attachmentIds: [] });
+    store.markTurnDispatchStarted(cancelled.turnId, "old-generation");
+    store.recordCancelOrigin(cancelled.turnId, "user-stop");
+    store.failTurn(cancelled.turnId, { message: "terminated", cancelled: true });
+    store.close();
+    const raw = new DatabaseSync(join(stateDir, "state.sqlite"));
+    raw.exec("DROP TABLE parent_turn_interruptions; ALTER TABLE turns DROP COLUMN web_recovery_generation_confirmed_at; ALTER TABLE turns DROP COLUMN dispatch_generation; PRAGMA user_version = 38;");
+    // The pre-migration schema has no marker; only newly dispatched turns can be proven.
+    raw.close();
+    const migrated = await WebStore.open({ stateDir });
+    try {
+      expect(migrated.pendingParentInterruptions("agent-one")).toEqual([]);
+      migrated.markTurnDispatchStarted(interrupted.turnId, "old-generation");
+      migrated.markTurnDispatchStarted(failed.turnId, "old-generation");
+      migrated.markTurnDispatchStarted(cancelled.turnId, "old-generation");
+      expect(migrated.reconcileParentInterruptions("agent-one", "new-generation")).toHaveLength(2);
+      expect(migrated.reconcileParentInterruptions("agent-one", "new-generation")).toEqual([]);
+      expect(migrated.pendingParentInterruptions("agent-one").map((row) => row.wakeKey))
+        .toEqual(expect.arrayContaining([
+          `parent-interruption:agent-one:${interrupted.turnId}`,
+          `parent-interruption:agent-one:${failed.turnId}`,
+        ]));
+      expect(migrated.getThreadDetail(running.id)?.messages.at(-1)?.parts)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("AgentManage inspect") })]));
+      expect(migrated.pendingParentInterruptions("agent-one")).toHaveLength(2);
+      expect(migrated.claimParentInterruptionWake("agent-one", failed.turnId)).toBe(true);
+      expect(migrated.claimParentInterruptionWake("agent-one", failed.turnId)).toBe(false);
+      // An attempted dispatch with no confirmation is ambiguous after a crash.
+      const afterAttempt = new DatabaseSync(migrated.paths.database);
+      expect(afterAttempt.prepare("SELECT state FROM parent_turn_interruptions WHERE turn_id = ?")
+        .get(failed.turnId)).toMatchObject({ state: "attempted" });
+      afterAttempt.close();
+      migrated.completeParentInterruptionWake("agent-one", failed.turnId, interrupted.turnId);
+      expect(migrated.pendingParentInterruptions("agent-one")).toHaveLength(1);
+      expect(migrated.getThreadDetail(legacyThread.id)?.messages).toHaveLength(2);
+    } finally { migrated.close(); }
+  });
+});
+
+describe("persisted interruption wake boundary", () => {
+  it("retains only one notice after reopen and expires an unattempted wake", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const stateDir = join(root, "state");
+    let now = new Date("2026-09-01T09:00:00.000Z");
+    const store = await WebStore.open({ stateDir, clock: () => now });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "question", attachmentIds: [] });
+    store.markTurnDispatchStarted(turn.turnId, "generation-a");
+    store.failTurn(turn.turnId, { message: "terminated", code: "agent_connection_lost" });
+    store.close();
+    const reopened = await WebStore.open({ stateDir, clock: () => now });
+    try {
+      expect(reopened.reconcileParentInterruptions("agent-one", "generation-b")).toHaveLength(1);
+      expect(reopened.reconcileParentInterruptions("agent-one", "generation-c")).toEqual([]);
+      expect(reopened.pendingParentInterruptions("agent-one")).toHaveLength(1);
+      expect(reopened.claimParentInterruptionWake("agent-one", turn.turnId, turn.turnId)).toBe(true);
+      reopened.deferParentInterruptionWake("agent-one", turn.turnId, turn.turnId);
+      expect(reopened.pendingParentInterruptions("agent-one")).toHaveLength(1);
+      now = new Date(now.getTime() + 11 * 60_000);
+      reopened.expireParentInterruptionWake("agent-one", turn.turnId);
+      expect(reopened.claimParentInterruptionWake("agent-one", turn.turnId)).toBe(false);
+      expect(reopened.pendingParentInterruptions("agent-one")).toEqual([]);
+    } finally { reopened.close(); }
+  });
+});
+
+describe("web startup versus agent process loss", () => {
+  it("does not retro-classify a web-crashed turn after first observing its original agent generation", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const same = store.createThread("agent-one");
+    const sameTurn = store.beginTurn({ threadId: same.id, text: "request", attachmentIds: [] });
+    store.markTurnDispatchStarted(sameTurn.turnId, "generation-a");
+    const changed = store.createThread("agent-one");
+    const changedTurn = store.beginTurn({ threadId: changed.id, text: "request", attachmentIds: [] });
+    store.markTurnDispatchStarted(changedTurn.turnId, "generation-b");
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      expect(reopened.turnStatus(sameTurn.turnId)).toBe("interrupted");
+      expect(reopened.reconcileParentInterruptions("agent-one", "generation-a"))
+        .toEqual([expect.objectContaining({ turnId: changedTurn.turnId })]);
+      expect(reopened.reconcileParentInterruptions("agent-one", "generation-c")).toEqual([]);
+      expect(reopened.getThreadDetail(same.id)?.messages.some((message) => message.parts.some((part) =>
+        part.type === "text" && part.text.includes("AgentManage inspect")))).toBe(false);
+      const db = new DatabaseSync(reopened.paths.database);
+      try {
+        expect(db.prepare("SELECT dispatch_generation, web_recovery_generation_confirmed_at FROM turns WHERE id = ?")
+          .get(sameTurn.turnId)).toMatchObject({
+            dispatch_generation: "generation-a", web_recovery_generation_confirmed_at: expect.any(String),
+          });
+      } finally { db.close(); }
+    } finally { reopened.close(); }
+  });
+});
+
+describe("nullable 1M context selection", () => {
+  it("persists false, copies defaults only into future threads and fences adoption", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state");
+    let store = await WebStore.open({ stateDir });
+    const ref = "openai-codex:gpt-6.1-sol";
+    store.replaceAgents([{ ...agent(), defaultModel: ref, models: [ref], modelOptions: { [ref]: { supportsContext1M: true, context1M: false } } }]);
+    const old = store.createThread("agent-one");
+    store.setAgentRunOverride("agent-one", { model: null, effort: null, context1M: true });
+    const future = store.createThread("agent-one");
+    expect(future.runContext1M).toBe(true);
+    expect(store.getThread(old.id)?.runContext1M).toBeUndefined();
+    store.setAgentRunOverride("agent-one", { model: null, effort: null, context1M: false });
+    const off = store.createThread("agent-one");
+    expect(off.runContext1M).toBe(false);
+    expect(store.patchThreadIfRunConfigUnset(off.id, { context1M: true }).applied).toBe(false);
+    expect(store.patchThreadIfRunConfigUnset(old.id, { context1M: false }).applied).toBe(true);
+    store.close(); store = await WebStore.open({ stateDir });
+    expect(store.getThread(future.id)?.runContext1M).toBe(true);
+    expect(store.getThread(off.id)?.runContext1M).toBe(false);
+    expect(store.getAgent("agent-one")?.runSettings.effective).toMatchObject({ context1M: false, context1MSource: "override" });
+    store.patchThread(off.id, { context1M: null });
+    expect(store.getThread(off.id)?.runContext1M).toBeUndefined();
+    store.clearAgentRunOverride("agent-one");
+    expect(store.getAgent("agent-one")?.runSettings.override).toBeNull();
+    expect(store.getAgent("agent-one")?.runSettings.effective).toMatchObject({ context1M: false, context1MSource: "config" });
+    store.close();
+  });
+  it("retains explicit false in the active and queued turn selection", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") }); store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "synthetic question", attachmentIds: [], context1M: false });
+    expect(turn.thread.runState.context1M).toBe(false);
+    store.patchThread(thread.id, { context1M: true });
+    store.reserveLiveInput(thread.id, "synthetic follow-up");
+    const db = (store as unknown as { database: DatabaseSync }).database;
+    expect(db.prepare("SELECT context_1m FROM live_inputs WHERE thread_id = ?").get(thread.id)).toMatchObject({ context_1m: 0 });
+    store.close();
+  });
+});
+
+describe("wake attempt reconciliation", () => {
+  it("migrates legacy reservations fail-closed and atomically fences every stale writer", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state"); const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]); const thread = store.createThread("agent-one");
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    const input = { sourceId: "agent-one", threadId: thread.id, jobId: job.jobId, deliveryKey: job.wake.deliveryKey };
+    const old = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const next = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    store.upsertProcessJobCard({ ...input, processJob: job });
+    expect(store.reserveProcessJobWake(input)).toEqual({ kind: "new" }); store.close();
+    // Exercise the actual schema-42 -> 43 nullable migration, not a fresh row.
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("ALTER TABLE process_job_wake_deliveries DROP COLUMN attempt_token; PRAGMA user_version=42"); database.close();
+    const reopened = await WebStore.open({ stateDir });
+    const proof = { version: 1 as const, token: next, notCrossed: [old] };
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "uncertain" });
+    expect(reopened.abandonProcessJobWake(input)).toBe(true);
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: { version: 1, token: old, notCrossed: [] } })).toEqual({ kind: "new" });
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: { ...proof, notCrossed: [] } })).toEqual({ kind: "uncertain" });
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "new" });
+    expect(reopened.ownsProcessJobWake(input.deliveryKey, old)).toBe(false);
+    expect(reopened.abandonProcessJobWake({ ...input, attemptToken: old })).toBe(false);
+    expect(() => reopened.completeProcessJobWake({ ...input, attemptToken: old, disposition: "follow_up" })).toThrow();
+    const started = reopened.beginAssistantTurn({ threadId: thread.id, prompt: "Inspect child", processJobWakeAttempt: next,
+      processJobWake: { jobId: job.jobId, deliveryKey: job.wake.deliveryKey, disposition: "follow_up" } });
+    expect(() => reopened.associateProcessJobWakeTurn(input.deliveryKey, started.turnId, true, old)).toThrow();
+    reopened.releaseProcessJobWakeTurn(input.deliveryKey, started.turnId, old);
+    reopened.completeProcessJobWake({ ...input, attemptToken: next, disposition: "follow_up", turnId: started.turnId });
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "completed", disposition: "follow_up" });
+    reopened.close();
   });
 });

@@ -15,9 +15,10 @@ The bundled `references/*.md` remain the source of truth and the fallback when t
 
 Do **not** read or grep the `@mono-agent` TypeScript/package source — `packages/*/src`, `node_modules/@mono-agent/*`, the vendored runtime — to compose, configure, or troubleshoot an agent. For configuration the source is not more authoritative than the references: it is slower, easy to misread, and full of internal-only knobs that are NOT user-configurable. You will usually be working in the user's own agent folder where that source does not even exist.
 
+- For a local agent calling another local mono-agent, use configured `peers` plus the explicitly allowed `PeerAgent` tool; see `references/feature-coverage.md` and the ACP bridge guide. It is not a subagent profile, and AskUser relay is not supported yet.
 - `references/feature-coverage.md` is the **exhaustive** map of every feature to a `config` key, `cli` flag, `auto` behavior, or `code`-only escape hatch. If a capability is listed `config`/`cli`, use that key/flag verbatim. If it is **not in the table, or is marked `code`**, it is not reachable through `mono-agent.config.json` — say so plainly and name the escape hatch. Absence from the table means "not configurable," never "go check the source."
 - The real exception: if the user is **modifying the framework itself** (changing `@mono-agent` package code), that is framework development, not composing an agent — outside this skill. Only then is reading `packages/*/src` correct.
-- The published docs site (<https://mono-agent-docs.vercel.app/>) is the human-facing companion. Do not browse it just to discover links: `mono_agent_docs` searches, expands, and resolves internal links offline, and the bundled references work when the tool is absent.
+- The published docs site (<https://docs.mono-agent.dev/>) is the human-facing companion. Do not browse it just to discover links: `mono_agent_docs` searches, expands, and resolves internal links offline, and the bundled references work when the tool is absent.
 
 **Red flags — STOP, you are about to grep source you should not:**
 
@@ -67,7 +68,7 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## Composition Flow
 
-1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then run `mono-agent presets list` (and `mono-agent presets show <id>`) for a saved answer-set matching the user's intent; `references/playbooks.md` is the prose companion. If a preset fits, use it as the starting shape. The five core presets are `starter`, `telegram-assistant`, `slack-bot`, `local-private`, and `code-sandbox`; optional plugins such as Supermemory ship their own setup skill. Shapes with no core preset (an OpenAI-API gateway, cron digest, A2A provider, Phoenix-observed, Supermemory, or a full multi-channel build) are hand-assembled from the capability modules and playbooks.
+1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then run `mono-agent presets list` (and `mono-agent presets show <id>`) for a saved answer-set matching the user's intent; `references/playbooks.md` is the prose companion. If a preset fits, use it as the starting shape. The five core presets are `starter`, `telegram-assistant`, `slack-bot`, `local-private`, and `code-sandbox`. Shapes with no core preset (an OpenAI-API gateway, cron digest, A2A provider, or a full multi-channel build) are hand-assembled from the capability modules and playbooks.
 2. **Scaffold.** In the user's folder, prefer the preset path when one fits — scaffold non-interactively with `--yes` (the composer is not the interactive `init` wizard):
 
    ```bash
@@ -90,7 +91,7 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent start
    ```
 
-   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly, run `mono-agent validate`, and run `mono-agent restart`; there is no live browser or conversational re-apply. Open ordinary `mono-agent tui` after the restarted agent is ready.
+   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly, run `mono-agent validate`, and run `mono-agent restart`; there is no live browser or conversational re-apply. Open the browser console with `mono-agent web run --loopback` after the restarted agent is ready.
 
 ## When Config Is Not Enough
 
@@ -105,7 +106,7 @@ Config-first covers one responder served over any combination of the seven chann
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 
-`mono_agent_docs` is the primary discovery and reading interface when present; its composer-scoped results are built from these same versioned references. Always progress from `action: "search"` to `action: "read"` before concluding from a short hit, and use the response's exact navigation actions rather than inventing chunk or page locations. The bundled `references/*` files remain authoritative and self-sufficient when the tool is absent or version-mismatched, so use them rather than package source or a remote site. The published documentation site at <https://mono-agent-docs.vercel.app/> is the human-facing companion, not an AI retrieval dependency.
+`mono_agent_docs` is the primary discovery and reading interface when present; its composer-scoped results are built from these same versioned references. Always progress from `action: "search"` to `action: "read"` before concluding from a short hit, and use the response's exact navigation actions rather than inventing chunk or page locations. The bundled `references/*` files remain authoritative and self-sufficient when the tool is absent or version-mismatched, so use them rather than package source or a remote site. The published documentation site at <https://docs.mono-agent.dev/> is the human-facing companion, not an AI retrieval dependency.
 
 ## Done Criteria
 

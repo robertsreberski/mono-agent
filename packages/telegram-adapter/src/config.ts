@@ -20,9 +20,34 @@ import type {
 
 import type { TelegramTranscriptionConfig } from "./transcription.js";
 
-export type TelegramGroupTriggerMode = "any" | "mention";
+/**
+ * Group trigger rule. `any` runs every message; `mention` runs only native
+ * @mentions of the bot and replies to it; `listen` triggers like `mention` but
+ * hands the unaddressed messages since the bot's last turn to that next turn as
+ * untrusted background context.
+ */
+export type TelegramGroupTriggerMode = "any" | "mention" | "listen";
 
-const TELEGRAM_GROUP_TRIGGER_MODES = ["any", "mention"] as const satisfies readonly TelegramGroupTriggerMode[];
+const TELEGRAM_GROUP_TRIGGER_MODES = ["any", "mention", "listen"] as const satisfies readonly TelegramGroupTriggerMode[];
+
+/** Per-topic trigger rule: `inherit` follows the chat's `groupMode`. */
+export type TelegramTopicTriggerMode = TelegramGroupTriggerMode | "inherit";
+
+const TELEGRAM_TOPIC_TRIGGER_MODES = ["inherit", "any", "mention", "listen"] as const satisfies readonly TelegramTopicTriggerMode[];
+
+/**
+ * Settings for one forum topic of an allowlisted chat. The General topic is
+ * the chat itself and always follows `telegram.groupMode`; an entry only
+ * changes which already-authorized messages start a turn, never who may talk.
+ */
+export interface TelegramTopicConfig {
+  /** Chat id exactly as listed in `allowedChatIds` (normalized to a string). */
+  readonly chatId: string;
+  /** Forum topic id (`message_thread_id`), a positive integer. */
+  readonly topicId: number;
+  /** Trigger rule for this topic. Defaults to `inherit`. */
+  readonly groupMode: TelegramTopicTriggerMode;
+}
 
 /**
  * A daily window during which proactive notifications (cron/webhook deliveries)
@@ -76,6 +101,16 @@ export interface TelegramSendToolsConfig {
   readonly pathScope?: "run-output";
 }
 
+/**
+ * Forum topics as web-console projects (JSON-only, off by default). When
+ * enabled the host passively records the forum topics it sees and mirrors each
+ * one, one way, into a web-console project whose shared context reaches every
+ * turn in that topic.
+ */
+export interface TelegramProjectsConfig {
+  readonly enabled: boolean;
+}
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -85,6 +120,8 @@ export interface TelegramAdapterConfig {
   readonly groupMode?: TelegramGroupTriggerMode;
   /** Remove the bot's native @mention from responder text. Defaults to true. */
   readonly stripMentionText?: boolean;
+  /** Per-forum-topic overrides (JSON-only). Omit for every topic to follow `groupMode`. */
+  readonly topics?: readonly TelegramTopicConfig[];
   /**
    * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
    * Omit for the hosted `https://api.telegram.org`. A `--local` server returns
@@ -110,6 +147,8 @@ export interface TelegramAdapterConfig {
    */
   readonly transcription?: TelegramTranscriptionConfig;
   readonly sendTools?: TelegramSendToolsConfig;
+  /** Forum topics as web-console projects. Omit (or `enabled: false`) to leave topics unmirrored. */
+  readonly projects?: TelegramProjectsConfig;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -119,6 +158,8 @@ export interface RedactedTelegramAdapterConfig {
   readonly allowAllChats: boolean;
   readonly groupMode: TelegramGroupTriggerMode;
   readonly stripMentionText: boolean;
+  /** Topic overrides name chats, so only their count is shown, like the allowlist. */
+  readonly topics?: { readonly count: number };
   readonly apiRoot?: string;
   readonly attachments?: TelegramAttachmentsConfig;
   readonly ipFamily?: 4 | 6;
@@ -128,6 +169,7 @@ export interface RedactedTelegramAdapterConfig {
   readonly reactions?: TelegramReactionsConfig;
   readonly transcription?: TelegramTranscriptionConfig;
   readonly sendTools?: TelegramSendToolsConfig;
+  readonly projects?: TelegramProjectsConfig;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -244,6 +286,8 @@ export async function loadTelegramAdapterConfig(
           max: 3_600_000,
         });
   const sendTools = readTelegramSendTools(json);
+  const projects = readTelegramProjects(json);
+  const topics = readTelegramTopics(json, allowedChatIds, allowAllChats);
   const quietHours = readTelegramQuietHours(json);
   const commands = readTelegramCommands(json);
   const reactions = readTelegramReactions(json, env);
@@ -258,6 +302,7 @@ export async function loadTelegramAdapterConfig(
     allowAllChats,
     groupMode,
     stripMentionText,
+    ...(topics.length === 0 ? {} : { topics }),
     ...(apiRoot === undefined ? {} : { apiRoot }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(ipFamily === undefined ? {} : { ipFamily }),
@@ -267,7 +312,26 @@ export async function loadTelegramAdapterConfig(
     ...(reactions === undefined ? {} : { reactions }),
     ...(transcription === undefined ? {} : { transcription }),
     ...(sendTools === undefined ? {} : { sendTools }),
+    ...(projects === undefined ? {} : { projects }),
   };
+}
+
+/** Read `telegram.projects`. Absent or `enabled: false` leaves the feature off. */
+function readTelegramProjects(json: SettingsJson): TelegramProjectsConfig | undefined {
+  const raw = readJsonSection(json, "telegram").projects;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.projects must be an object with { enabled }.");
+  }
+  const record = raw as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => key !== "enabled");
+  if (unknown.length > 0) {
+    throw invalidConfig("telegram.projects contains unknown fields.", { fields: unknown });
+  }
+  if (record.enabled !== undefined && typeof record.enabled !== "boolean") {
+    throw invalidConfig("telegram.projects.enabled must be a boolean.");
+  }
+  return { enabled: record.enabled === true };
 }
 
 function readTelegramSendTools(json: SettingsJson): TelegramSendToolsConfig | undefined {
@@ -455,6 +519,74 @@ function readReactionFlag(value: unknown, field: string): boolean {
   return value;
 }
 
+const TELEGRAM_TOPIC_FIELDS = new Set(["chatId", "topicId", "groupMode"]);
+
+/**
+ * Read `telegram.topics` straight from JSON. Each entry names an allowlisted
+ * chat and one of its forum topics; a malformed, duplicate, or non-allowlisted
+ * entry is a hard error so a typo cannot silently leave a topic on the wrong
+ * trigger rule. Topic entries never extend the chat allowlist.
+ */
+function readTelegramTopics(
+  json: SettingsJson,
+  allowedChatIds: readonly string[],
+  allowAllChats: boolean,
+): readonly TelegramTopicConfig[] {
+  const raw = readJsonSection(json, "telegram").topics;
+  if (raw === undefined || raw === null) {
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    throw invalidConfig("telegram.topics must be an array of { chatId, topicId, groupMode? } objects.");
+  }
+  const allowed = new Set(allowedChatIds);
+  const seen = new Set<string>();
+  return raw.map((entry, index): TelegramTopicConfig => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw invalidConfig("telegram.topics entries must be objects.", { index });
+    }
+    const record = entry as Record<string, unknown>;
+    const unknown = Object.keys(record).filter((key) => !TELEGRAM_TOPIC_FIELDS.has(key));
+    if (unknown.length > 0) {
+      throw invalidConfig("telegram.topics entries contain unknown fields.", { index, fields: unknown });
+    }
+    // Inbound chat ids are integers, so only a canonical integer id can ever
+    // match a topic; anything else would be a silently unreachable override.
+    const chatId = canonicalTelegramChatId(record.chatId);
+    if (chatId === undefined) {
+      throw invalidConfig("telegram.topics entries require an integer chatId (number or numeric string).", { index });
+    }
+    if (!allowAllChats && !allowed.has(chatId)) {
+      throw invalidConfig("telegram.topics chatId must be listed in telegram.allowedChatIds.", { index });
+    }
+    const topicId = record.topicId;
+    if (typeof topicId !== "number" || !Number.isSafeInteger(topicId) || topicId < 1) {
+      throw invalidConfig("telegram.topics topicId must be a positive integer forum topic id.", { index });
+    }
+    const groupMode = record.groupMode === undefined
+      ? "inherit"
+      : TELEGRAM_TOPIC_TRIGGER_MODES.find((mode) => mode === record.groupMode);
+    if (groupMode === undefined) {
+      throw invalidConfig('telegram.topics groupMode must be "inherit", "any", "mention", or "listen".', { index });
+    }
+    const key = `${chatId}:${String(topicId)}`;
+    if (seen.has(key)) {
+      throw invalidConfig("telegram.topics entries must name each chat topic once.", { index });
+    }
+    seen.add(key);
+    return { chatId, topicId, groupMode };
+  });
+}
+
+function canonicalTelegramChatId(value: unknown): string | undefined {
+  const raw = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : undefined;
+  if (raw === undefined || !/^-?\d+$/u.test(raw)) {
+    return undefined;
+  }
+  const numeric = Number(raw);
+  return Number.isSafeInteger(numeric) && String(numeric) === raw ? raw : undefined;
+}
+
 const RESERVED_TELEGRAM_COMMANDS = new Set(["start", "help", "cancel", "new", "model", "effort"]);
 const TELEGRAM_COMMAND_PATTERN = /^[a-z0-9_]{1,32}$/u;
 
@@ -639,6 +771,7 @@ export function redactTelegramAdapterConfig(
     allowAllChats: config.allowAllChats,
     groupMode: config.groupMode ?? "any",
     stripMentionText: config.stripMentionText ?? true,
+    ...(config.topics === undefined ? {} : { topics: { count: config.topics.length } }),
     ...(config.apiRoot === undefined ? {} : { apiRoot: config.apiRoot }),
     ...(config.attachments === undefined ? {} : { attachments: config.attachments }),
     ...(config.ipFamily === undefined ? {} : { ipFamily: config.ipFamily }),
@@ -649,6 +782,7 @@ export function redactTelegramAdapterConfig(
     // The endpoint/model are not secrets, so they pass through verbatim.
     ...(config.transcription === undefined ? {} : { transcription: config.transcription }),
     ...(config.sendTools === undefined ? {} : { sendTools: config.sendTools }),
+    ...(config.projects === undefined ? {} : { projects: config.projects }),
   };
 }
 
@@ -656,7 +790,7 @@ export function redactTelegramAdapterConfig(
  * The `telegram` section's field registry: the single source of truth both the
  * JSON→env layering below and the app's config provenance view derive from.
  * Covers every env-mappable field (JSON-only structures like `commands`,
- * `quietHours`, and object-form `reactions` are read straight from JSON).
+ * `topics`, `quietHours`, and object-form `reactions` are read straight from JSON).
  */
 export const TELEGRAM_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "telegram.enabled", env: "MONO_AGENT_TELEGRAM_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },

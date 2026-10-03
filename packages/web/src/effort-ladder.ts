@@ -40,6 +40,8 @@ export const TOGGLE_EFFORT_LEVELS = ["high", "none"] as const;
  * reads both.
  */
 export interface EffortAdvertisement {
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly effortLevels?: readonly string[];

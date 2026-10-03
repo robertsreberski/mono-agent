@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { isPiOAuthLoginEnabled } from "@mono-agent/agent-runtime/ai";
 
 import { inspectPiAuthStore, MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";
 
@@ -190,41 +191,8 @@ export interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
+  openai: "OPENAI_API_KEY",
 };
-const PROVIDER_STATUS_SECRET_ENV_KEYS = [
-  ...Object.values(PI_API_KEY_PROVIDERS),
-] as const;
-const PROVIDER_STATUS_ENV_ALLOWLIST = new Set([
-  "APPDATA",
-  "COLORTERM",
-  "COMSPEC",
-  "HOMEDRIVE",
-  "HOME",
-  "HOMEPATH",
-  "LANG",
-  "LANGUAGE",
-  "LOCALAPPDATA",
-  "LOGNAME",
-  "NO_COLOR",
-  "PATH",
-  "PATHEXT",
-  "SHELL",
-  "SYSTEMROOT",
-  "TEMP",
-  "TERM",
-  "TMP",
-  "TMPDIR",
-  "USER",
-  "USERPROFILE",
-  "USERNAME",
-  "WINDIR",
-  "XDG_CACHE_HOME",
-  "XDG_CONFIG_DIRS",
-  "XDG_CONFIG_HOME",
-  "XDG_DATA_DIRS",
-  "XDG_DATA_HOME",
-  "XDG_STATE_HOME",
-]);
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS = 5_000;
 const PROVIDER_AUTH_TERM_GRACE_MS = 1_000;
 const PROVIDER_AUTH_KILL_SETTLE_MS = 1_000;
@@ -242,8 +210,8 @@ export function resolvePiCliPath(): string {
   return fileURLToPath(new URL("./pi-oauth-login-main.js", import.meta.url));
 }
 
-export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath()): readonly [string, ...string[]] {
-  return [process.execPath, piCliPath, provider];
+export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath(), durableAuthPath?: string): readonly [string, ...string[]] {
+  return [process.execPath, piCliPath, provider, ...(provider === "openai" && durableAuthPath !== undefined ? [durableAuthPath] : [])];
 }
 
 export function piAuthRecoveryCommand(provider: string, piAuthPath?: string): string {
@@ -307,29 +275,6 @@ export async function detectProviderCredentialStates(
 
 function hasNonEmptyPersistedValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
-}
-
-/**
- * Build the minimal operational environment needed to inspect durable CLI login
- * state. A positive allowlist prevents unrelated shell credentials from being
- * inherited by provider discovery commands.
- */
-export function credentialNeutralProviderStatusEnvironment(
-  source: Readonly<Record<string, string | undefined>> = process.env,
-  _durableEnvironment: Readonly<Record<string, string | undefined>> = {},
-): Record<string, string | undefined> {
-  const sanitized: Record<string, string | undefined> = {};
-  for (const [name, value] of Object.entries(source)) {
-    const normalizedName = name.toUpperCase();
-    if (
-      PROVIDER_STATUS_ENV_ALLOWLIST.has(normalizedName)
-      || normalizedName.startsWith("LC_")
-    ) {
-      sanitized[name] = value;
-    }
-  }
-  for (const name of PROVIDER_STATUS_SECRET_ENV_KEYS) delete sanitized[name];
-  return sanitized;
 }
 
 export interface BoundedProviderCommandResult {
@@ -464,7 +409,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
   // property of the provider itself, alongside the `auth.apiKey` read below.
   const piOAuthProviders = new Set(
     piProviders.getProviders()
-      .filter((provider) => provider.auth.oauth !== undefined)
+      .filter((provider) => isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined)
       .map((provider) => provider.id),
   );
   const authAlreadyDetected = (keys: readonly string[]): boolean =>
@@ -529,7 +474,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
     const supportsOAuth = piOAuthProviders.has(ref.provider);
     const supportsApiKeyLogin = typeof provider?.auth.apiKey?.login === "function";
     const selectedMethod = options.piAuthMethods?.[ref.provider]
-      ?? (supportsOAuth ? "oauth" : supportsApiKeyLogin ? "api-key" : undefined);
+      ?? (ref.provider === "openai" ? undefined : supportsOAuth ? "oauth" : supportsApiKeyLogin ? "api-key" : undefined);
 
     if (selectedMethod === "api-key" && supportsApiKeyLogin) {
       const envVar = PI_API_KEY_PROVIDERS[ref.provider];
@@ -566,7 +511,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       kind: "auth",
       label: `Pi login for ${ref.provider}`,
       modelRefs: [refKey],
-      command: piLoginCommand(ref.provider, options.piCliPath),
+      command: piLoginCommand(ref.provider, options.piCliPath, piAuthPathForSetup(piAuthPath, options.cwd)),
       piAuthPath: piAuthPathForSetup(piAuthPath, options.cwd),
       cwd: piAuthWorkingDirectory(piAuthPath, options.cwd),
       detail: `Runs bundled Pi auth for provider \`${ref.provider}\` and securely replaces providers.piAuthPath.`,
@@ -748,12 +693,17 @@ function isBoundedCredentialString(value: unknown): value is string {
     && !value.includes("\0");
 }
 
-function isUsableStoredPiCredential(_provider: string, value: unknown): boolean {
+export function hasUsablePiOAuthClientId(provider: string, value: { readonly clientId?: unknown }): boolean {
+  return provider !== "openai" || isBoundedCredentialString(value.clientId);
+}
+
+export function isUsableStoredPiCredential(provider: string, value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (!isBoundedCredentialValue(value)) return false;
   if (value.type === "oauth") {
     return (isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh))
-      && (value.expires === undefined || (typeof value.expires === "number" && Number.isFinite(value.expires)));
+      && (value.expires === undefined || (typeof value.expires === "number" && Number.isFinite(value.expires)))
+      && hasUsablePiOAuthClientId(provider, value);
   }
   if (value.type !== "api_key") return false;
   if (Object.keys(value).some((key) => key !== "type" && key !== "key" && key !== "env")) return false;
@@ -1926,7 +1876,8 @@ function assertOAuthCredential(value: unknown, provider: string): void {
   const credential = value as Record<string, unknown>;
   const access = typeof credential.access === "string" ? credential.access.trim() : "";
   const refresh = typeof credential.refresh === "string" ? credential.refresh.trim() : "";
-  if (credential.type !== "oauth" || (access.length === 0 && refresh.length === 0)) {
+  if (credential.type !== "oauth" || (access.length === 0 && refresh.length === 0)
+    || !isUsableStoredPiCredential(provider, credential)) {
     throw new Error(`Bundled Pi login produced invalid OAuth credentials for ${provider}; the configured store was not changed.`);
   }
 }

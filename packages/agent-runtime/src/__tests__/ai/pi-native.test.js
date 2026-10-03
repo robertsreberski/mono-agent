@@ -24,6 +24,7 @@ import {
   fauxText,
   fauxThinking,
   fauxToolCall,
+  getCurrentTools,
 } from "@earendil-works/pi-ai";
 import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -45,6 +46,8 @@ import {
   startLiveInput,
 } from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
@@ -684,11 +687,12 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.failureKind).toBe("provider_auth");
   });
 
-  it("routes the supplemented opencode-go model through the run collection to provider_auth", async () => {
+  it("routes the upstream opencode-go model through the run collection to provider_auth", async () => {
     // No `piResolvedModel`/`piResolvedModels` seam: production resolution
     // (`resolvePiRuntimeModel`) plus the real `builtinModels()` run collection
-    // (with the supplement registered) serve this turn. With no credential the
-    // run must reach the auth stage — only possible if the harness resolved
+    // serve this turn — pi-ai 0.87.0 ships `deepseek-v4.1-flash` natively, so no
+    // backfill registration is needed. With no credential the run must reach
+    // the auth stage — only possible if the harness resolved
     // `deepseek-v4.1-flash` by id inside the collection. The env is stubbed so
     // a ambient OPENCODE_API_KEY can never turn this into a live request.
     vi.stubEnv("OPENCODE_API_KEY", "");
@@ -710,6 +714,39 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.failureKind).toBe("provider_auth");
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    ["anthropic", "claude-sonnet-5-5", "high"],
+    ["anthropic", "claude-opus-5-5", "medium"],
+    ["openai-codex", "gpt-6-sol", "none"],
+    ["openai-codex", "gpt-6-luna", "none"],
+  ])("resolves catalog %s:%s through the real run collection before auth", async (provider, model, effort) => {
+    // No injected model or collection: Pi's built-in run collection plus the
+    // upstream-first supplement registration must resolve this id. Isolate
+    // Pi's entire ambient auth context, including
+    // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_OAUTH_TOKEN, not just the API key.
+    // Pi 0.99.2 then probes workload identity federation, which stops at its
+    // first missing required setting.
+    // Stored credentials are also disabled by the null resolver below.
+    const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };
+    const result = await generatePiNativeResponse("system", {
+      model: { provider, model, reference: `${provider}:${model}` },
+      messages: [{ role: "user", content: "hello" }],
+      effort,
+      allowedTools: [],
+      resolvePiApiKey: async () => null,
+      providerCheckAuthContext: authContext,
+      piSessionsRoot: sessionsRoot,
+    });
+    expect(result.error).toBe(`Provider is not configured: ${provider}`);
+    expect(result.failureKind).toBe("provider_auth");
+    if (provider === "anthropic") {
+      expect(authContext.env.mock.calls.map(([name]) => name)).toEqual([
+        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
+        "ANTHROPIC_FEDERATION_RULE_ID",
+      ]);
     }
   });
 
@@ -1116,7 +1153,37 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
-  it("serializes a Pi 0.85 batch when any offered tool requires sequential execution", async () => {
+  it("does not certify silence after a consumed live input", async () => {
+    const model = setup();
+    let releaseFirst;
+    const firstReleased = new Promise((resolve) => { releaseFirst = resolve; });
+    let firstSeen = false;
+    faux.setResponses([
+      async () => {
+        firstSeen = true;
+        await firstReleased;
+        return fauxAssistantMessage([fauxToolCall("Read", { file_path: "missing.txt" }, { id: "read-1" })]);
+      },
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })]),
+    ]);
+    const acknowledge = vi.fn();
+    const liveInput = (async function* () {
+      await vi.waitFor(() => expect(firstSeen).toBe(true));
+      yield { id: "input-1", body: "New instruction", accepted: releaseFirst, acknowledge,
+        uncertain: releaseFirst };
+    })();
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["Read", "FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      liveInput,
+    }));
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(result.turnDisposition).toBeUndefined();
+  });
+
+  it("serializes invoked Bash calls while preserving source-ordered results", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
     try {
       const model = setup();
@@ -1147,8 +1214,8 @@ describe("pi-native AgentHarness bridge", () => {
           : `end:${block.tool_use_id}`);
       expect(lifecycle).toEqual([
         "start:bash-1",
+        "start:bash-2", // Pi publishes intent before the second call enters the gate.
         "end:bash-1",
-        "start:bash-2",
         "end:bash-2",
       ]);
       expect(blocks.filter((block) => block.type === "tool_result")).toEqual([
@@ -1337,6 +1404,223 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.error).toBeNull();
     expect(result.structuredResult).toEqual({ answer: 42 });
     expect(result.structuredResultSource).toBe("StructuredOutput");
+  });
+
+  it("settles a terminal StructuredOutput submission successfully at maxTurns one", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "so-max-one" })]),
+    ]);
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "give structured output" }],
+      maxTurns: 1,
+      outputSchema: {
+        type: "object",
+        properties: { answer: { type: "number" } },
+        required: ["answer"],
+        additionalProperties: false,
+      },
+    }));
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      structuredResult: { answer: 42 },
+      structuredResultSource: "StructuredOutput",
+    });
+    expect(result.diagnostics).toMatchObject({ max_turns_hit: false, turn_count: 1 });
+  });
+
+  it("certifies a sole terminal FinishSilently call at the max-turn ceiling", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })])]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check the scheduled job" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      maxTurns: 1,
+    }));
+    expect(result).toMatchObject({ text: "", error: null, turnDisposition: "silent" });
+    expect(result.diagnostics).toMatchObject({ max_turns_hit: false });
+    expect(result.events.some((event) => event.type === "user"
+      && event.message?.content?.some((part) => part.type === "tool_result"))).toBe(true);
+  });
+
+  it("does not force sequential execution on an admitted read-only batch", async () => {
+    const model = setup();
+    let active = 0;
+    let peak = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active -= 1;
+      return new Response("<html><body>Sample result</body></html>", {
+        status: 200, headers: { "content-type": "text/html" },
+      });
+    };
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall("WebFetch", { url: "https://example.test/one" }, { id: "fetch-1" }),
+          fauxToolCall("WebFetch", { url: "https://example.test/two" }, { id: "fetch-2" }),
+        ]),
+        fauxAssistantMessage([fauxText("Visible answer")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        allowedTools: ["FinishSilently", "WebFetch"],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(result.error).toBeNull();
+      expect(peak).toBe(2);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it("never exposes FinishSilently on an interactive request without a controller", async () => {
+    const model = setup();
+    let exposedTools;
+    faux.setResponses([(context) => {
+      exposedTools = getCurrentTools(context.messages).map((tool) => tool.name);
+      return fauxAssistantMessage([fauxText("Visible answer")]);
+    }]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Hello" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+    }));
+    expect(exposedTools).not.toContain("FinishSilently");
+    expect(result).toMatchObject({ error: null, text: "Visible answer" });
+    expect(result.turnDisposition).toBeUndefined();
+  });
+
+  it("refuses narrated and mixed-batch silent calls without certifying silence", async () => {
+    const model = setup();
+    for (const content of [
+      [fauxText("Earlier answer"), fauxToolCall("FinishSilently", {}, { id: "silent-narrated" })],
+      [fauxToolCall("FinishSilently", {}, { id: "silent-mixed" }), fauxToolCall("Read", { file_path: "unused" }, { id: "read-mixed" })],
+    ]) {
+      faux.setResponses([fauxAssistantMessage(content), fauxAssistantMessage([fauxText("Visible answer")])]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        allowedTools: ["FinishSilently", "Read"],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(result.turnDisposition).toBeUndefined();
+      expect(result.events.some((event) => event.type === "user"
+        && event.message?.content?.some((part) => part.type === "tool_result"
+          && part.is_error === true && part.content.includes(content[0].type === "text" ? "visible_content" : "not_sole_call")))).toBe(true);
+    }
+  });
+
+  it("allows silence after an ordinary tool error and a refused mixed-batch silence", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("Read", { file_path: "/missing-fictional-file" }, { id: "read-error" })]),
+      fauxAssistantMessage([
+        fauxToolCall("FinishSilently", {}, { id: "silent-refused" }),
+        fauxToolCall("Read", { file_path: "/missing-fictional-file" }, { id: "read-again" }),
+      ]),
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-accepted" })]),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["Read", "FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+    }));
+    expect(result).toMatchObject({ error: null, text: "", turnDisposition: "silent" });
+    expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+      part.type === "tool_result" && part.is_error && part.content.includes("not_sole_call")))).toBe(true);
+  });
+
+  it.each(["PublishReplyFile", "AskUser"])("refuses FinishSilently after a successful %s round trip", async (toolName) => {
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: toolName, description: "Complete an interaction", inputSchema: { type: "object", properties: {} } }],
+    });
+    const call = vi.spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "Published" }] });
+    try {
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall(toolName, {}, { id: "interaction-1" })]),
+        fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silence-after-file" })]),
+        fauxAssistantMessage([fauxText("Visible answer")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        allowedTools: ["FinishSilently"],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ error: null, text: "Visible answer" });
+      expect(result.turnDisposition).toBeUndefined();
+      expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+        part.type === "tool_result" && part.is_error && part.content.includes("visible_content")))).toBe(true);
+    } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+  });
+
+  it("refuses silence after a prior rich output in the same run", async () => {
+    // The MCP app/reply-file bridge marks rich output before the next model batch.
+    const silentTurnState = { soleCall: true, visibleContent: true, pendingQuestion: false,
+      failed: false, accepted: false, completed: false };
+    const tool = getPiBuiltinTools(["FinishSilently"], {
+      ctx: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true }, silentTurnState,
+    }).find((entry) => entry.name === "FinishSilently");
+    await expect(tool.execute("silence-after-file", {}, new AbortController().signal))
+      .rejects.toThrow("visible_content");
+    expect(silentTurnState.accepted).toBe(false);
+  });
+
+  it("never certifies silence on runtime failure or cancellation", async () => {
+    const model = setup();
+    faux.setResponses([() => { throw new Error("Provider unavailable"); }]);
+    const failed = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+    }));
+    expect(failed.error).toContain("Provider unavailable");
+    expect(failed.turnDisposition).toBeUndefined();
+
+    const controller = new AbortController(); controller.abort();
+    const cancelled = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      abortSignal: controller.signal,
+    }));
+    expect(cancelled.cancelled).toBe(true);
+    expect(cancelled.turnDisposition).toBeUndefined();
+  });
+
+  it("does not certify an ineligible request", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-denied" })]),
+      fauxAssistantMessage([fauxText("Visible answer")]),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => false },
+    }));
+    expect(result.turnDisposition).toBeUndefined();
+    expect(result.events.some((event) => event.type === "user"
+      && event.message?.content?.some((part) => part.type === "tool_result"
+        && part.is_error === true && part.content.includes("ineligible_turn")))).toBe(true);
   });
 
   it("forwards maxRetries to the provider stream options", async () => {
@@ -1530,7 +1814,7 @@ describe("pi-native AgentHarness bridge", () => {
       // so the params are filled in purely from the resolved tool limits. The
       // configured clamps are set BELOW the pi-bridge fallbacks (16000 text /
       // 100 search) so the normalized params can only equal the configured values
-      // if settings-driven clamping reached the tool builder + display path.
+      // if typed policy clamping reached the tool builder + display path.
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle" }, { id: "g-1" })]),
         fauxAssistantMessage([fauxText("done")]),
@@ -1540,13 +1824,7 @@ describe("pi-native AgentHarness bridge", () => {
         cwd: root,
         allowedTools: ["Grep"],
         messages: [{ role: "user", content: "search" }],
-        settings: {
-          // Both below the pi-bridge fallbacks (16000 text / 100 search) AND
-          // within resolveAgentCompactionPolicy's clamp floors (>=1000 text,
-          // >=10 search) so they survive policy resolution verbatim.
-          agent_tool_text_limit_chars: 1000,
-          agent_search_result_limit: 25,
-        },
+        toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
         onEvent,
       }));
       expect(result.error).toBeNull();
@@ -1576,19 +1854,19 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.capabilitiesUsed.context_compaction_applied).toBe(false);
   });
 
-  it("reports context_compaction_applied as null when disabled via settings", async () => {
+  it("reports context_compaction_applied as null when disabled via typed policy", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generatePiNativeResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
-      settings: { agent_compaction_enabled: false },
+      compaction: { enabled: false },
     }));
     expect(result.error).toBeNull();
     expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
   });
 });
 
-describe("pi-native typed policy objects + deprecated settings shim", () => {
+describe("pi-native typed policy objects", () => {
   const deprecationWarnings = (result) =>
     (result.runtimeWarnings || []).filter((warning) => warning?.warning_kind === "deprecated_settings_option");
 
@@ -1629,7 +1907,10 @@ describe("pi-native typed policy objects + deprecated settings shim", () => {
       const advertised = [];
       faux.setResponses([
         (context) => {
-          advertised.push(...context.tools);
+          // pi-ai 0.86.0 folds the request tools into the transcript's leading
+          // system message: provider-facing factories see a TranscriptContext
+          // and must replay tools with getCurrentTools(), not context.tools.
+          advertised.push(...getCurrentTools(context.messages));
           return fauxAssistantMessage([
             fauxToolCall("Bash", { command: "echo bash", timeout_ms: 3_600_000 }, { id: "budget-bash" }),
             fauxToolCall("Exec", { executable: process.execPath, args: ["--version"], timeout_ms: 3_600_000 }, { id: "budget-exec" }),
@@ -1668,27 +1949,11 @@ describe("pi-native typed policy objects + deprecated settings shim", () => {
     expect(deprecationWarnings(result)).toHaveLength(0);
   });
 
-  it("emits exactly one deprecated_settings_option warning (with the consumed keys) when settings is used", async () => {
-    const { result } = await grepClampRun({
-      settings: { agent_tool_text_limit_chars: 1000, agent_search_result_limit: 25 },
-    });
-    const warnings = deprecationWarnings(result);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].settings_keys).toEqual(
-      expect.arrayContaining(["agent_tool_text_limit_chars", "agent_search_result_limit"]),
-    );
-  });
-
-  it("lets a typed toolLimits object win over settings for its group (settings ignored, no warning)", async () => {
-    const { result, toolUse } = await grepClampRun({
-      toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
-      settings: { agent_tool_text_limit_chars: 5000, agent_search_result_limit: 77 },
-    });
-    // Typed object wins; the settings tool keys are ignored, so no group falls
-    // back to settings and no deprecation warning fires.
-    expect(toolUse.input.max_output_chars).toBe(1000);
-    expect(toolUse.input.head_limit).toBe(25);
-    expect(deprecationWarnings(result)).toHaveLength(0);
+  it("rejects the removed settings bag before provider or tool execution", async () => {
+    await expect(grepClampRun({ settings: { agent_tool_text_limit_chars: 1000 } }))
+      .rejects.toThrow("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
+    await expect(grepClampRun({ toolLimits: { toolTextLimitChars: 1000 }, settings: {} }))
+      .rejects.toThrow("runOptions.settings was removed");
   });
 
   it("emits no deprecation warning when neither settings nor typed objects are passed", async () => {
@@ -1836,6 +2101,102 @@ describe("pi-native auto-compaction", () => {
     expect(summaryCalled).toBe(true);
     expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
     expect(result.diagnostics.context_compaction_proactive).toBe(true);
+  });
+
+  it("manually compacts a cold seeded session without submitting a user prompt", async () => {
+    const base = setup();
+    let summaries = 0;
+    let summaryContext;
+    faux.setResponses([(context) => {
+      summaries += 1;
+      summaryContext = context;
+      return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]);
+    }]);
+    const result = await generatePiNativeResponse("HOST-PLACEHOLDER-PROMPT", runOptions(base, {
+      manualCompaction: true,
+      piResolvedModel: { ...base, contextWindow: 128_000 },
+      model: { provider: "faux", model: "manual", reference: "faux:manual" },
+      messages: bigHistory(60, 2000),
+      sessionKeepAlive: true,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(result.manualCompaction).toMatchObject({ status: "succeeded" });
+    expect(summaries).toBe(1);
+    expect(result.events).toBeUndefined();
+    // The only provider request is Pi's own summarization prompt; the host
+    // system prompt never reaches a model in manual mode.
+    expect(summaryContext.messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("context summarization assistant") });
+    expect(JSON.stringify(summaryContext)).not.toContain("HOST-PLACEHOLDER-PROMPT");
+  });
+
+  it("reopens a synced manual summary from durable JSONL without replaying canonical history", async () => {
+    const base = setup();
+    const id = "d".repeat(64);
+    const history = bigHistory(60, 2000);
+    faux.setResponses([fauxAssistantMessage([fauxText("SUMMARY durable cut")])]);
+    const compacted = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true, messages: history, sessionId: id, providerSessionId: id,
+      sessionKeepAlive: true, piSessionsRoot: sessionsRoot,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(compacted.manualCompaction).toMatchObject({ status: "succeeded" });
+    expect(await syncProviderSession(id)).toBe(true);
+    await refreshProviderSession(id);
+    let resumedContext;
+    faux.setResponses([(context) => {
+      resumedContext = context;
+      return fauxAssistantMessage([fauxText("continued")]);
+    }]);
+    const reply = await generatePiNativeResponse("system", runOptions(base, {
+      messages: [...history, { role: "user", content: "after-cut" }],
+      sessionId: id, providerSessionId: id, sessionKeepAlive: true,
+      piSessionsRoot: sessionsRoot, resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(reply.error).toBeNull();
+    expect(reply.text).toBe("continued");
+    expect(JSON.stringify(resumedContext)).toContain("SUMMARY durable cut");
+    expect(JSON.stringify(resumedContext)).not.toContain("u0 xxxxx");
+  });
+
+  it("aborts an in-flight manual summary when the host cancels", async () => {
+    const base = setup();
+    const controller = new AbortController();
+    let summarySignal;
+    faux.setResponses([async (_context, streamOptions) => {
+      summarySignal = streamOptions?.signal;
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return fauxAssistantMessage([fauxText("SUMMARY too late")]);
+    }]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: bigHistory(60, 2000),
+      abortSignal: controller.signal,
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(result.manualCompaction).toBeUndefined();
+    expect(result.cancelled).toBe(true);
+    expect(summarySignal?.aborted).toBe(true);
+  });
+
+  it("does not answer a user turn when a manual summary fails or there is nothing to cut", async () => {
+    const base = setup();
+    faux.setResponses([]);
+    const skipped = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: [{ role: "user", content: "short" }],
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(skipped.manualCompaction).toMatchObject({ status: "skipped" });
+    expect(skipped.manualCompaction.reason).toBe("nothing_to_compact");
+    faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "summary failed" })]);
+    const failed = await generatePiNativeResponse("system", runOptions(base, {
+      manualCompaction: true,
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+    }));
+    expect(failed.manualCompaction).toBeUndefined();
+    expect(failed.error).toBeTruthy();
   });
 
   it("uses the same OpenCode session headers for compaction and the main turn", async () => {
@@ -2007,7 +2368,7 @@ describe("pi-native auto-compaction", () => {
     // Several distinct tools so toolSchemaTokens is non-trivial too (the bridge's
     // built-in tools are also counted, but allowing a couple makes the intent
     // explicit and keeps the schemas in the overhead estimate).
-    const messages = bigHistory(28, 4000); // ~56k-token transcript, under 75000.
+    const messages = bigHistory(28, 4000); // ~56k-token transcript, under the 84k trigger.
     return { base, windowed, reference, bigSystemPrompt, messages };
   }
 
@@ -2037,7 +2398,7 @@ describe("pi-native auto-compaction", () => {
     expect(result.diagnostics.context_fixed_overhead_tokens).toBeGreaterThan(0);
     expect(result.diagnostics.context_system_prompt_tokens).toBeGreaterThan(0);
     expect(typeof result.diagnostics.context_tool_schema_tokens).toBe("number");
-    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(70000);
+    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(84000);
     expect(result.diagnostics.context_transcript_estimate)
       .toBeGreaterThanOrEqual(result.diagnostics.context_compaction_trigger_tokens);
     // Regression guard for the transcript double-count: only the TRAILING per-turn
@@ -2067,7 +2428,7 @@ describe("pi-native auto-compaction", () => {
       piSessionsRoot: sessionsRoot,
       // Escape hatch: explicitly disable the correction to restore the prior
       // transcript-only trigger (under-counts overhead).
-      settings: { agent_compaction_fixed_overhead_enabled: false },
+      compaction: { fixedOverheadEnabled: false },
     }));
     expect(result.error).toBeNull();
     // Disabling overhead reproduces the prior under-counting behavior: the proactive

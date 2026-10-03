@@ -7,7 +7,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { AgentSettingsDialog } from "./components/AgentSettingsDialog";
+import { AgentSettingsScreen } from "./components/agent-settings/AgentSettingsScreen";
+import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry, replaceMobileHistoryEntry, routeWriteState, type MobileScreen, type SettingsSection } from "./mobile-history";
+import { closeSettingsHistory, parseSettingsParam, pushSettingsEntries, stripSettingsParam } from "./settings-navigation";
 import { BrandMark } from "./components/BrandMark";
 import { Chat } from "./components/Chat";
 import { Dashboard } from "./components/dashboard/Dashboard";
@@ -89,58 +91,6 @@ const isMobileViewport = (): boolean =>
  * notifications.tsx, which pushes this same screen for a warm notification.
  */
 const NOTIFICATION_OPEN_CONVERSATION_EVENT = "mono-agent:open-conversation";
-type MobileScreen = "dashboard" | "conversation";
-type MobileHistorySurface =
-  | { readonly version: 1; readonly surface: MobileScreen }
-  | { readonly version: 1; readonly surface: "project"; readonly projectId: string };
-type MobileHistoryEntry = MobileHistorySurface & { readonly href?: string };
-const MOBILE_HISTORY_STATE_KEY = "monoAgentMobileNavigation";
-
-const mobileHistoryHref = (value: unknown): string | undefined => {
-  if (typeof value !== "string") return undefined;
-  try {
-    const url = new URL(value);
-    return url.origin === window.location.origin ? url.href : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-const mobileHistoryEntry = (state: unknown): MobileHistoryEntry | null => {
-  if (typeof state !== "object" || state === null || Array.isArray(state)) return null;
-  const candidate = (state as Record<string, unknown>)[MOBILE_HISTORY_STATE_KEY];
-  if (typeof candidate !== "object" || candidate === null) return null;
-  const entry = candidate as Record<string, unknown>;
-  if (entry.version !== 1) return null;
-  const href = mobileHistoryHref(entry.href);
-  if (entry.surface === "dashboard" || entry.surface === "conversation") {
-    return { version: 1, surface: entry.surface, ...(href === undefined ? {} : { href }) };
-  }
-  if (entry.surface === "project" && typeof entry.projectId === "string" && entry.projectId.length > 0) {
-    return { version: 1, surface: "project", projectId: entry.projectId, ...(href === undefined ? {} : { href }) };
-  }
-  return null;
-};
-
-const stateWithMobileHistoryEntry = (entry: MobileHistorySurface, href: string): Record<string, unknown> => ({
-  ...(typeof window.history.state === "object"
-    && window.history.state !== null
-    && !Array.isArray(window.history.state)
-    ? window.history.state as Record<string, unknown>
-    : {}),
-  [MOBILE_HISTORY_STATE_KEY]: { ...entry, href },
-});
-
-const replaceMobileHistoryEntry = (entry: MobileHistorySurface, target = window.location.href): void => {
-  const href = new URL(target, window.location.href).href;
-  window.history.replaceState(stateWithMobileHistoryEntry(entry, href), "", href);
-};
-
-const pushMobileHistoryEntry = (entry: MobileHistorySurface, target = window.location.href): void => {
-  const href = new URL(target, window.location.href).href;
-  window.history.pushState(stateWithMobileHistoryEntry(entry, href), "", href);
-};
-
 const notificationDashboardUrl = (href: string): string => {
   const url = new URL(href);
   url.searchParams.delete("thread");
@@ -160,7 +110,7 @@ const initialMobileScreen = (): MobileScreen => {
 };
 
 interface DrawerGestureStart extends DrawerGesturePoint {
-  readonly intent: "back" | "close-project";
+  readonly intent: "back" | "close-project" | "settings-back";
 }
 
 function useModalFocus(
@@ -444,7 +394,13 @@ export function App() {
   const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
-  const [agentSettings, setAgentSettings] = useState(false);
+  const [settings, setSettings] = useState<{ readonly section: SettingsSection | null; readonly intent?: number } | null>(() => {
+    const owned = ownedSettingsEntry();
+    if (owned !== null) return { section: owned.section };
+    const requested = parseSettingsParam(window.location.href);
+    return requested === undefined ? null : { section: requested };
+  });
+  const settingsOpen = settings !== null;
   const [tagSettings, setTagSettings] = useState<TagSettingsState | null>(null);
   const tagSettingsRef = useRef<HTMLElement>(null);
   const closeTagSettings = useCallback(() => setTagSettings(null), []);
@@ -454,7 +410,7 @@ export function App() {
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
-  const agentSettingsRef = useRef<HTMLElement>(null);
+  const settingsInvokerRef = useRef<HTMLElement | null>(null);
   const projectSettingsRef = useRef<HTMLElement>(null);
   const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
   const conversationOpen = mobile && screen === "conversation";
@@ -470,10 +426,12 @@ export function App() {
    * mark conversations read that nobody has opened.
    */
   useEffect(() => {
-    setConversationVisible(documentVisible && (!mobile || conversationOpen));
-  }, [conversationOpen, documentVisible, mobile, setConversationVisible]);
+    setConversationVisible(documentVisible && !settingsOpen && (!mobile || conversationOpen));
+  }, [conversationOpen, documentVisible, mobile, settingsOpen, setConversationVisible]);
 
   const openConversation = useCallback(() => {
+    const wasSettingsOpen = settings !== null;
+    setSettings(null);
     if (isMobileViewport()) {
       const current = mobileHistoryEntry(window.history.state);
       if (current?.surface !== "conversation") {
@@ -489,7 +447,8 @@ export function App() {
       }
     }
     setScreen("conversation");
-  }, []);
+    if (!isMobileViewport() && wasSettingsOpen) window.setTimeout(() => chatRef.current?.focus(), 0);
+  }, [settings]);
   const showDashboard = useCallback(() => {
     if (isMobileViewport() && mobileHistoryEntry(window.history.state)?.surface === "conversation") {
       setScreen("dashboard");
@@ -499,9 +458,25 @@ export function App() {
     setScreen("dashboard");
   }, []);
   const closePalette = useCallback(() => setPalette(false), []);
-  const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
+  const closeAgentSettings = useCallback(() => {
+    setSettings(null);
+    closeSettingsHistory();
+    const invoker = settingsInvokerRef.current;
+    window.setTimeout(() => {
+      // Palette commands run on the next frame, after their option has unmounted;
+      // the active element is then body, which is connected but not focusable.
+      if (invoker?.isConnected && invoker !== document.body && invoker !== document.documentElement) invoker.focus();
+      if (document.activeElement !== invoker || invoker === document.body) dashboardRef.current?.focus();
+    }, 0);
+  }, []);
   const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
   const togglePalette = useCallback(() => setPalette((current) => !current), []);
+
+  useEffect(() => {
+    if (mobile || parseSettingsParam(window.location.href) === undefined) return;
+    const stripped = stripSettingsParam(window.location.href);
+    window.history.replaceState(routeWriteState(window.history.state, stripped, "replace"), "", stripped);
+  }, [mobile]);
 
   const previousProjectIdRef = useRef<string | null>(openProjectId);
   const projectHistoryCloseRef = useRef(false);
@@ -517,6 +492,7 @@ export function App() {
     if (openProjectId !== null) {
       setScreen("dashboard");
       const current = mobileHistoryEntry(window.history.state);
+      if (current?.surface === "settings") return;
       if (current?.surface === "project" && current.projectId === openProjectId) return;
       const projectEntry = { version: 1, surface: "project", projectId: openProjectId } as const;
       if (current === null) {
@@ -549,7 +525,16 @@ export function App() {
     }
     if (mobileHistoryInitializedRef.current) return;
     mobileHistoryInitializedRef.current = true;
+    const requested = parseSettingsParam(window.location.href);
+    if (requested !== undefined) {
+      const stripped = stripSettingsParam(window.location.href);
+      window.history.replaceState(routeWriteState(window.history.state, stripped, "replace"), "", stripped);
+    }
     const initialEntry = mobileHistoryEntry(window.history.state);
+    if (initialEntry?.surface === "settings") {
+      setSettings({ section: initialEntry.section });
+      return;
+    }
     if (initialEntry === null) {
       const initialUrl = window.location.href;
       const dashboardUrl = screen === "conversation"
@@ -561,6 +546,7 @@ export function App() {
       } else if (openProjectId !== null) {
         pushMobileHistoryEntry({ version: 1, surface: "project", projectId: openProjectId });
       }
+      if (settings !== null || requested !== undefined) pushSettingsEntries(requested === undefined ? settings!.section : requested);
       return;
     }
     // History entries created by the first release of this owner did not yet
@@ -570,17 +556,23 @@ export function App() {
     if (initialEntry.surface === "project") {
       setScreen("dashboard");
       if (openProjectId !== initialEntry.projectId) openProjectById(initialEntry.projectId);
+      if (settings !== null || requested !== undefined) pushSettingsEntries(requested === undefined ? settings!.section : requested);
       return;
     }
     if (openProjectId !== null) closeProject();
     setScreen(initialEntry.surface);
-  }, [closeProject, mobile, openProjectById, openProjectId, screen]);
+    if (settings !== null || requested !== undefined) pushSettingsEntries(requested === undefined ? settings!.section : requested);
+  }, [closeProject, mobile, openProjectById, openProjectId, screen, settings]);
 
   useEffect(() => {
-    if (!mobile) return;
     const onPopState = (event: PopStateEvent) => {
       const entry = mobileHistoryEntry(event.state);
-      if (entry === null) return;
+      if (entry?.surface === "settings") {
+        setSettings({ section: entry.section });
+        return;
+      }
+      setSettings(null);
+      if (!mobile || entry === null) return;
       if (entry.surface === "project") {
         setScreen("dashboard");
         if (openProjectId !== entry.projectId) openProjectById(entry.projectId);
@@ -622,7 +614,7 @@ export function App() {
     // to the Dashboard, and an open project page closes to the agent's
     // conversations. The plain entrance screen owns no shell gesture, so its
     // agent strip and lists keep every horizontal swipe for themselves.
-    const intent = screen === "conversation"
+    const intent = settingsOpen ? "settings-back" as const : screen === "conversation"
       ? "back" as const
       : screen === "dashboard" && openProjectId !== null
         ? "close-project" as const
@@ -636,7 +628,7 @@ export function App() {
     ) return;
 
     drawerGestureRef.current = { x: touch.clientX, y: touch.clientY, intent };
-  }, [openProjectId, screen]);
+  }, [openProjectId, screen, settings]);
 
   const finishDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const start = drawerGestureRef.current;
@@ -649,15 +641,15 @@ export function App() {
     if (!isMobileDrawerSwipe(start, end, "right")) return;
 
     event.preventDefault();
-    if (start.intent === "close-project") closeMobileProject();
+    if (start.intent === "settings-back") closeAgentSettings();
+    else if (start.intent === "close-project") closeMobileProject();
     else showDashboard();
-  }, [closeMobileProject, showDashboard]);
+  }, [closeMobileProject, closeAgentSettings, showDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
   }, []);
 
-  useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
   useModalFocus(tagSettings !== null, tagSettingsRef, closeTagSettings);
   useModalFocus(projectSettings !== null, projectSettingsRef, closeProjectSettings);
 
@@ -689,9 +681,22 @@ export function App() {
       const detail = (event as CustomEvent<{ message?: string }>).detail;
       if (detail?.message) setNotice(detail.message);
     };
-    const onAgentSettings = () => {
+    const onAgentSettings = (event: Event) => {
+      const requested = (event as CustomEvent<{ section?: SettingsSection }>).detail?.section;
+      const section = requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
+      if (settings === null && document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
       setPalette(false);
-      setAgentSettings(true);
+      if (!isMobileViewport() && settings !== null && requested === undefined) {
+        closeAgentSettings();
+        return;
+      }
+      if (settings !== null) {
+        // A second intent for the same section is still an explicit navigation.
+        setSettings((current) => ({ section, intent: (current?.intent ?? 0) + 1 }));
+        return;
+      }
+      if (isMobileViewport()) pushSettingsEntries(section);
+      setSettings({ section });
     };
     const onTagSettings = (event: Event) => {
       const detail = (event as CustomEvent<TagSettingsState | undefined>).detail;
@@ -715,7 +720,7 @@ export function App() {
       window.removeEventListener("mono-agent:tag-settings", onTagSettings);
       window.removeEventListener("mono-agent:project-settings", onProjectSettings);
     };
-  }, [togglePalette]);
+  }, [closeAgentSettings, settings, togglePalette]);
 
   useEffect(() => {
     if (!notice && !actionError) return;
@@ -801,7 +806,7 @@ export function App() {
         target?.tagName === "TEXTAREA" ||
         target?.isContentEditable;
       const modalOpen = Boolean(document.querySelector(
-        '[role="dialog"][aria-modal="true"]:not([aria-hidden="true"]), [data-slot="model-selector-content"]',
+        '[role="dialog"][aria-modal="true"]:not([aria-hidden="true"]), [data-slot="model-selector-content"], [data-modal-surface="settings"]',
       ));
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -850,7 +855,7 @@ export function App() {
 
   return (
     <div
-      className="app-shell"
+      className={`app-shell${settingsOpen ? " is-settings-open" : ""}`}
       onTouchStart={startDrawerGesture}
       onTouchEnd={finishDrawerGesture}
       onTouchCancel={cancelDrawerGesture}
@@ -869,8 +874,8 @@ export function App() {
         role="navigation"
         aria-label="Dashboard"
         tabIndex={-1}
-        aria-hidden={conversationOpen || undefined}
-        inert={conversationOpen}
+        aria-hidden={(settingsOpen && mobile || conversationOpen) || undefined}
+        inert={settingsOpen && mobile || conversationOpen}
       >
         {/* A row is marked as the open conversation only where that
             conversation is on screen: beside the list on a desktop, and on a
@@ -878,15 +883,16 @@ export function App() {
         <Dashboard
           onNavigate={openConversation}
           onCloseProject={closeMobileProject}
-          highlightSelected={!mobile || conversationOpen}
+          highlightSelected={!settingsOpen && (!mobile || conversationOpen)}
+          settingsOpen={settingsOpen}
         />
       </div>
       <div
         ref={chatRef}
         className={`chat-region${conversationOpen ? " is-open" : ""}`}
         tabIndex={-1}
-        aria-hidden={(mobile && !conversationOpen) || undefined}
-        inert={mobile && !conversationOpen}
+        aria-hidden={(settingsOpen || mobile && !conversationOpen) || undefined}
+        inert={settingsOpen || mobile && !conversationOpen}
       >
         <Chat onBack={showDashboard} />
       </div>
@@ -961,11 +967,11 @@ export function App() {
         </div>
       )}
       <CommandPalette open={palette} onClose={closePalette} />
-      <AgentSettingsDialog open={agentSettings} onClose={closeAgentSettings} dialogRef={agentSettingsRef} />
+      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
-        <div className="toast" role="alert">
+        <div className="toast" role={settingsOpen && !actionError ? undefined : "alert"}>
           <span>{notice ?? actionError}</span>
           <button
             type="button"

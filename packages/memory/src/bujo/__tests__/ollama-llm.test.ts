@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOllamaLlm } from "../ollama-llm.js";
 
 describe("createOllamaLlm", () => {
@@ -32,6 +32,25 @@ describe("createOllamaLlm", () => {
     expect(JSON.parse(init.body as string)).toEqual({
       model: "llama3.2",
       prompt: "test prompt",
+      stream: false,
+      format: "json",
+    });
+  });
+
+  it("keeps its validated text path when schema metadata is unsupported", async () => {
+    const response = '{"memories":[],"entities":[],"relations":[]}';
+    const fakeFetch = makeFetch(200, { response });
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const llm = createOllamaLlm({ model: "llama3.2" });
+    await expect(llm.complete("strict prompt", {
+      outputSchema: { type: "object", required: ["memories"] },
+    })).resolves.toBe(response);
+
+    const [, init] = (fakeFetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: "llama3.2",
+      prompt: "strict prompt",
       stream: false,
       format: "json",
     });

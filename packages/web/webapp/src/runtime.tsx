@@ -19,10 +19,10 @@ import { clusterToolCalls } from "./activity-clustering";
 import { hasReadableThoughtContent } from "./components/assistant-ui/Reasoning";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import { noteComposerAttachments } from "./composer-draft";
+import { runningManualCompaction } from "./manual-compaction";
 import {
   isAssistantMessageBoundaryPart,
   isContextCompactionPart,
-  parseProcessJobStartReceipt,
   processJobTerminalEvent,
   ProcessJobPresentationProvider,
   projectProcessJobPresentation,
@@ -96,152 +96,6 @@ const jsonObject = (value: unknown): JsonObject => {
   return value === undefined ? {} : { value: normalized };
 };
 
-const isLegacyMonitorToolPart = (part: MessagePart): boolean =>
-  part.type === "tool-call" && part.toolCallId.startsWith("live-input:monitor:");
-
-const MONITOR_ID_MAX_BYTES = 256;
-const MONITOR_WAKE_BOUNDARY_TOOLS = new Set(["askuser", "monitor", "monitorstop"]);
-
-const toolNameLeaf = (toolName: string): string => {
-  const forwarded = toolName.trim().split("▸").at(-1) ?? "";
-  const mcpLeaf = forwarded.split("__").at(-1) ?? forwarded;
-  return (mcpLeaf.split(/[./:]/u).at(-1) ?? mcpLeaf).toLowerCase().replace(/[^a-z0-9]+/gu, "");
-};
-
-const isMonitorWakeBoundaryTool = (tool: ToolCall): boolean =>
-  MONITOR_WAKE_BOUNDARY_TOOLS.has(toolNameLeaf(tool.toolName));
-
-/**
- * Return the one canonical Monitor identity represented by this message.
- *
- * The browser DTO is typed, but a cached payload can outlive the bundle that
- * validated it. Fail closed on empty, oversized, legacy or mixed projections:
- * description text and transcript position are never an identity substitute.
- */
-const monitorIdForMessage = (message: WebMessage): string | undefined => {
-  let monitorId: string | undefined;
-  let found = false;
-  for (const part of message.parts) {
-    if (part.type !== "monitor-activity") continue;
-    if (part.monitors.length === 0) return undefined;
-    for (const entry of part.monitors as readonly unknown[]) {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
-      const projection = (entry as Record<string, unknown>).projection;
-      if (projection === null || typeof projection !== "object" || Array.isArray(projection)) return undefined;
-      const record = projection as Record<string, unknown>;
-      const candidate = record.monitorId;
-      if ((record.schema !== "mono-agent.monitor-projection.v1" && record.schema !== "mono-agent.monitor-projection.v2")
-        || typeof candidate !== "string"
-        || candidate.trim().length === 0
-        || new TextEncoder().encode(candidate).byteLength > MONITOR_ID_MAX_BYTES) {
-        return undefined;
-      }
-      if (monitorId !== undefined && monitorId !== candidate) return undefined;
-      monitorId = candidate;
-      found = true;
-    }
-  }
-  return found ? monitorId : undefined;
-};
-
-/** Parts that must keep this assistant message as its own transcript boundary. */
-const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
-  // A fallback marker is permanent per-run evidence. Folding that message into
-  // a later silent wake would replace its attribution with the newest carrier's
-  // and make the earlier divergence invisible.
-  message.attribution?.disposition === "fallback"
-  || message.attachments.length > 0 || message.parts.some((part) => {
-    switch (part.type) {
-      case "text":
-      case "reasoning":
-      case "monitor-activity":
-        return false;
-      case "tool-call":
-        return isMonitorWakeBoundaryTool(part)
-          || parseProcessJobStartReceipt(part.structuredResult, part.toolName) !== undefined;
-      case "subagent":
-        return part.calls.some(isMonitorWakeBoundaryTool);
-      case "telemetry":
-        return part.event === "cron_run";
-      case "process-job":
-      case "process-job-wake":
-      case "steer":
-      case "cron-reply-context":
-      case "error":
-      case "attachment":
-      case "mcp_app":
-      case "failure":
-        return true;
-      default:
-        return true;
-    }
-  });
-
-/**
- * Join adjacent, otherwise-silent wake turns for one Monitor for presentation.
- *
- * The durable transcript and delta cache keep their exact message/turn ids.
- * Only the array handed to assistant-ui is shaped: the newest message is the
- * carrier, so its status and turn metadata continue to describe live work. A
- * visible reply may close the chain, but can never be a predecessor folded past
- * by a later wake.
- */
-export const coalesceMonitorWakeMessages = (
-  messages: readonly WebMessage[],
-): readonly WebMessage[] => {
-  const coalesced: WebMessage[] = [];
-  let chain: {
-    readonly monitorId: string;
-    readonly threadId: string;
-    carrier: WebMessage;
-    readonly partGroups: Array<readonly MessagePart[]>;
-  } | undefined;
-  const flush = (): void => {
-    if (chain === undefined) return;
-    coalesced.push(chain.partGroups.length === 1
-      ? chain.carrier
-      : { ...chain.carrier, parts: chain.partGroups.flat() });
-    chain = undefined;
-  };
-
-  for (const message of messages) {
-    const monitorId = monitorIdForMessage(message);
-    const hasBoundary = hasMonitorWakePresentationBoundary(message)
-      || (message.projectTransitions?.length ?? 0) > 0
-      || (message.modelTransitions?.length ?? 0) > 0;
-    const currentCanCarry = message.role === "assistant"
-      && monitorId !== undefined
-      && (message.status === "running" || message.status === "complete")
-      && !hasBoundary;
-    const currentIsSilent = currentCanCarry
-      && message.status === "complete"
-      && message.parts.every((part) => part.type !== "text" || part.text.trim().length === 0);
-
-    if (chain !== undefined
-      && currentCanCarry
-      && chain.monitorId === monitorId
-      && chain.threadId === message.threadId) {
-      chain.carrier = message;
-      chain.partGroups.push(message.parts);
-      if (!currentIsSilent) flush();
-      continue;
-    }
-    flush();
-    if (currentIsSilent && monitorId !== undefined) {
-      chain = {
-        monitorId,
-        threadId: message.threadId,
-        carrier: message,
-        partGroups: [message.parts],
-      };
-    } else {
-      coalesced.push(message);
-    }
-  }
-  flush();
-  return coalesced;
-};
-
 type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
 
 /**
@@ -297,6 +151,8 @@ const convertPart = (
       return { type: "data-subagent", data: jsonObject(part) };
     case "process-job":
       return { type: "data-process-job", data: jsonObject(part) };
+    case "scheduled-wake":
+      return { type: "data-scheduled-wake", data: jsonObject(part) };
     case "process-job-wake": {
       const job = processJobs?.get(part.jobId);
       return job === undefined ? null : {
@@ -304,20 +160,19 @@ const convertPart = (
         data: jsonObject(processJobTerminalEvent(job, part.deliveryKey)),
       };
     }
+    case "conversation-marker":
+      return { type: "data-conversation-marker", data: jsonObject(part) };
     case "steer":
       // A consumed steer renders as the operator's own message in place, so
       // it converts to a named data part that deliberately belongs to neither
       // the activity set nor the answer: it breaks the Activity band instead.
       return { type: "data-steer", data: jsonObject(part) };
-    case "monitor-activity":
-      return { type: "data-monitor-activity", data: jsonObject(part) };
     case "cron-reply-context":
       return { type: "data-cron-reply-context", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
-      // Compaction is user-visible activity, so expose that one canonical kind
-      // as a named data part that can join reasoning/tools without leaking raw
-      // provider diagnostics into the transcript.
+      // Compaction is a user-visible transcript event, so expose its canonical
+      // kind without leaking raw provider diagnostics into the transcript.
       if (isContextCompactionPart(part)) {
         return { type: "data-context-compaction", data: jsonObject(part.data) };
       }
@@ -333,6 +188,10 @@ const convertPart = (
       return { type: "data-reply-attachment", data: jsonObject(part) };
     case "mcp_app":
       return { type: "data-mcp-app", data: jsonObject(part) };
+    case "reply_options":
+      return { type: "data-reply-options", data: jsonObject(part) };
+    case "restart_proposal":
+      return { type: "data-restart-proposal", data: jsonObject(part) };
     case "failure":
       return { type: "data-reply-failure", data: jsonObject(part) };
   }
@@ -386,8 +245,7 @@ const joinAdjacentText = (parts: readonly ConvertedPart[], joinReasoning = false
       // later text into the earlier part, so the reader sees the whole
       // sentence and then the thought row; every other visible part remains a
       // barrier.
-      while (joined[previousIndex]?.type === "data-monitor-activity"
-        || (joinReasoning && joined[previousIndex]?.type === "reasoning")) previousIndex -= 1;
+      while (joinReasoning && joined[previousIndex]?.type === "reasoning") previousIndex -= 1;
       const previous = joined[previousIndex];
       if (previous?.type === "text") {
         joined[previousIndex] = { ...previous, text: `${previous.text}${part.text}` };
@@ -403,8 +261,6 @@ const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "reasoning",
   "tool-call",
   "data-subagent",
-  "data-context-compaction",
-  "data-monitor-activity",
   "data-process-job",
   "data-process-job-event",
 ]);
@@ -430,9 +286,12 @@ const isSteerPart = (part: ConvertedPart): boolean => part.type === "data-steer"
  * the band splits at exactly the point the run consumed the follow-up. The
  * answer still closes the turn.
  *
- * An error part is neither: it stays behind the answer so it cannot split the
- * log, and so does any data part a newer server sends that this bundle cannot
- * place. A turn that produced no prose at all is all activity.
+ * A compaction before the final answer is an ordering barrier, like a steer:
+ * it separates adjacent Activity bands at the instant it happened. A manual
+ * result attached after the answer stays after it. Running turns already keep
+ * this source order. Neither divider hides inside Activity. An error part likewise
+ * stays behind the answer, as does any newer unplaced data part. A turn with
+ * no answer text keeps its original stream order.
  */
 const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
   const visible = parts.filter((part) => !isBlankText(part));
@@ -451,7 +310,8 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   };
   visible.forEach((part, index) => {
     if (index === answerIndex) return;
-    if (isSteerPart(part)) {
+    if (isSteerPart(part) || part.type === "data-scheduled-wake"
+      || (part.type === "data-context-compaction" && index < answerIndex)) {
       flush();
       folded.push(part);
       return;
@@ -463,12 +323,17 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
     (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
   });
   flush();
-  return [...folded, visible[answerIndex]!, ...afterAnswer];
+  // Answer actions belong beneath the reply, not in Activity or after files.
+  const choices = afterAnswer.filter((part) => part.type === "data-reply-options");
+  const proposals = afterAnswer.filter((part) => part.type === "data-restart-proposal");
+  return [...folded, visible[answerIndex]!, ...choices, ...proposals,
+    ...afterAnswer.filter((part) => part.type !== "data-restart-proposal" && part.type !== "data-reply-options")];
 };
 
 interface ConvertWebMessageOptions {
   readonly processJobEvents?: readonly ProcessJobActivityEvent[];
   readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
+  readonly compactionMarkerIds?: ReadonlySet<string>;
 }
 
 /**
@@ -492,29 +357,46 @@ const withLaunchArgs = (
   };
 };
 
+/** Manual results use the after-answer marker; automatic results keep their inline telemetry. */
+export const compactionMarkerIdsForMessages = (messages: readonly WebMessage[]): ReadonlySet<string> =>
+  new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "conversation-marker" && part.kind === "compaction" && part.trigger === "manual"
+      ? [part.operationId] : [])));
+
+const inlineCompactionId = (part: WebMessage["parts"][number]): string | undefined => {
+  if (part.type !== "telemetry" || !isContextCompactionPart(part)) return undefined;
+  const outer = part.data as { data?: unknown; operationId?: unknown; status?: unknown; trigger?: unknown } | undefined;
+  const payload = outer?.data !== null && typeof outer?.data === "object"
+    ? outer.data as { operationId?: unknown; status?: unknown; trigger?: unknown } : outer;
+  return typeof payload?.operationId === "string" && payload.trigger !== "manual"
+    && ["succeeded", "skipped", "failed"].includes(String(payload.status)) ? payload.operationId : undefined;
+};
+
+/** Drop only automatic rows whose terminal event is visible in a loaded assistant. */
+export const visibleCompactionMessages = (messages: readonly WebMessage[]): readonly WebMessage[] => {
+  const inline = new Set(messages.flatMap((message) => message.role === "assistant"
+    ? message.parts.flatMap((part) => inlineCompactionId(part) ?? []) : []));
+  if (inline.size === 0) return messages;
+  return messages.filter((message) => !message.parts.some((part) =>
+    part.type === "conversation-marker" && part.kind === "compaction"
+    && part.trigger === "automatic" && inline.has(part.operationId)));
+};
+
 export const convertWebMessage = (
   message: WebMessage,
   options: ConvertWebMessageOptions = {},
 ): ThreadMessageLike => {
-  const hasMonitorActivity = message.parts.some((part) => part.type === "monitor-activity");
   const hasCronReplyContext = message.parts.some((part) => part.type === "cron-reply-context");
-  const legacyMonitorUpdates = hasMonitorActivity
-    ? 0
-    : message.parts.filter(isLegacyMonitorToolPart).length;
-  let legacyMonitorInserted = false;
   const processJobEvents = new Map<string, readonly ProcessJobActivityEvent[]>();
   for (const event of options.processJobEvents ?? []) {
     const current = processJobEvents.get(event.toolCallId) ?? [];
     processJobEvents.set(event.toolCallId, [...current, event]);
   }
   const joined = joinAdjacentText(message.parts.flatMap((part) => {
-    if (isLegacyMonitorToolPart(part)) {
-      if (hasMonitorActivity || legacyMonitorInserted) return [];
-      legacyMonitorInserted = true;
-      return [{
-        type: "data-monitor-activity" as const,
-        data: { type: "monitor-activity", monitors: [], legacyUpdateCount: legacyMonitorUpdates },
-      }];
+    if (part.type === "telemetry" && isContextCompactionPart(part)) {
+      const outer = part.data as { data?: { operationId?: unknown; status?: unknown } } | undefined;
+      const { operationId, status } = outer?.data ?? {};
+      if (status !== "running" && typeof operationId === "string" && options.compactionMarkerIds?.has(operationId)) return [];
     }
     if (part.type === "cron-reply-context") {
       const data = jsonObject(part);
@@ -589,16 +471,20 @@ export const convertWebMessage = (
   return {
     id: message.id,
     role: message.role,
-    content,
+    // assistant-ui restricts system content to one text part. Keep the named
+    // data projection on THIS row's metadata, not on a neighbouring message.
+    content: message.role === "system" && content[0]?.type === "data-conversation-marker"
+      ? [{ type: "text", text: "" }] : content,
     createdAt: new Date(message.createdAt),
     ...(message.role === "assistant" ? { status } : {}),
     attachments:
       message.role === "user" ? message.attachments.map(completeAttachment) : undefined,
     metadata: {
       custom: {
-        projectTransitions: message.projectTransitions,
-        modelTransitions: message.modelTransitions,
+        ...(message.role === "system" && content[0]?.type === "data-conversation-marker"
+          ? { conversationMarker: content[0] } : {}),
         turnId: message.turnId,
+        threadId: message.threadId,
         updatedAt: message.updatedAt,
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
@@ -854,51 +740,38 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
 
   const presentation = useMemo(
     () => projectProcessJobPresentation(
-      coalesceMonitorWakeMessages(
-        (store.detail?.messages ?? []).map((message) => {
-          const transitions = store.detail?.projectTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
-          const routeChanges = store.detail?.modelTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
-          return transitions.length === 0 && routeChanges.length === 0
-            ? message
-            : {
-                ...message,
-                ...(transitions.length === 0 ? {} : { projectTransitions: transitions }),
-                ...(routeChanges.length === 0 ? {} : { modelTransitions: routeChanges }),
-              };
-        }).filter((message) =>
+        visibleCompactionMessages(store.detail?.messages ?? []).filter((message) =>
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
             && message.attachments.length === 0
-            && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "steer")
-            && (message.projectTransitions?.length ?? 0) === 0
-            && (message.modelTransitions?.length ?? 0) === 0
+            && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "scheduled-wake" || part.type === "steer")
             && convertWebMessage(message).content?.length === 0)),
-      ),
       { threadId: store.selectedThreadId },
     ),
     [
       store.detail?.messages,
-      store.detail?.modelTransitions,
-      store.detail?.projectTransitions,
       store.selectedThreadId,
     ],
   );
-  // What a message shows now depends only on the message itself, so switching
-  // the conversation's model no longer rebuilds the converter or reconverts the
-  // loaded transcript.
+  const compactionMarkerIds = useMemo(() => compactionMarkerIdsForMessages(store.detail?.messages ?? []), [store.detail?.messages]);
+  // Manual markers hide their telemetry; automatic markers with inline telemetry
+  // are removed from presentation while their stored rows still reach the agent.
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
+      compactionMarkerIds,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById],
+    [presentation.eventsByMessageId, presentation.jobsById, compactionMarkerIds],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
+    // Travels with the messages, including unlisted cron/deep-link threads.
+    extras: { selectedThreadId: store.selectedThreadId },
     convertMessage,
     isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
-    isSendDisabled: !selectedCanSend || turnStarting,
+    isSendDisabled: !selectedCanSend || turnStarting || runningManualCompaction(store.selectedThread),
     onNew,
     onCancel: () => store.cancelTurn("api"),
     queue: submissionQueue,
@@ -986,6 +859,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       threadId={store.selectedThreadId}
       messages={presentation.messages}
       jobs={presentation.jobs}
+      parentCalls={presentation.parentCalls}
       historyIsBounded={store.hasOlderMessages}
     >
       <AssistantRuntimeProvider runtime={runtime}>

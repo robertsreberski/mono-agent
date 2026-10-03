@@ -11,9 +11,9 @@ The `providers` config map declares which model providers the agent supports, an
 - every provider named by `runtime.model` or a `runtime.fallbacks[]` entry — routing through a provider you did not mean to support is not possible, so those count as declared,
 - `ollama` and `lmstudio` when zero-config discovery finds them running.
 
-Declaring a provider widens selection to that provider's **whole advertised catalog** (up to `maxAdvertisedModels`, default 100), not just the models you route to. A Pi built-in that nobody declared and no route uses is not offered at all: advertising all 39 would let an operator pick a provider the agent holds no credential for, and the failure would surface only when the turn ran.
+Declaring a provider widens selection to that provider's **whole advertised catalog** (up to `maxAdvertisedModels`, default 100), not just the models you route to. A Pi built-in that nobody declared and no route uses is not offered at all: advertising all 41 would let an operator pick a provider the agent holds no credential for, and the failure would surface only when the turn ran.
 
-Coverage: **config**. Configure the map in `mono-agent.config.json` under `providers`, or via `MONO_AGENT_PROVIDERS_JSON` as a JSON object with the same shape.
+Coverage: **config**. Configure the map in `mono-agent.config.json` under `providers`.
 
 ## Reserved keys
 
@@ -21,7 +21,7 @@ Three keys inside `providers` are reserved for Pi runtime configuration; every o
 
 | Key | Purpose |
 | --- | --- |
-| `piAuthPath` | Path to the Pi auth store (default `~/.pi/agent/auth.json`; env `MONO_AGENT_PI_AUTH_PATH`). OAuth/account credentials and API keys live here. |
+| `piAuthPath` | Path to the Pi auth store (default `~/.pi/agent/auth.json`). OAuth/account credentials and API keys live here. |
 | `piNative` | Pi transport and retry tuning: `transport` (`auto`/`sse`/`websocket`/`websocket-cached`), `piMaxRetries` (0–8, default 2), `maxRetryDelayMs` (default 60000), `piSessionsRoot` (durable JSONL session storage). |
 | `local` | Legacy compatibility projection for `providers.local[]`. New configs prefer the provider-map shape below. |
 
@@ -48,7 +48,7 @@ Each non-reserved key is a provider id, and its value is a provider definition:
 
 Each definition accepts: `enabled`, `type` (`ollama`/`lmstudio`/`openai_compat` for a self-hosted endpoint — a `baseUrl` requires one of these unless the id is `ollama` or `lmstudio`), `baseUrl`, `trustPublicUrl`, `apiKey` / `apiKeyEnv` (give the secret's variable name in `.env`, never an inline value), `models[]` (with `name`, optional `alias`/`displayName`, `enabled`, `capabilities` like `context_window`, and `pricing`), and `maxAdvertisedModels`.
 
-In JSON config, providers are always the map above (or the legacy `providers.local[]`). `providers.entries[]` is the **resolved** shape — what `resolveConfiguredProviders()` returns and what a programmatic embedder constructing a `MonoAgentConfig` in code may set directly. It is not accepted from `mono-agent.config.json` or `MONO_AGENT_PROVIDERS_JSON`: `entries` is not a reserved key there, so it would be read as a provider whose id is `entries`. Duplicate provider ids are rejected.
+In JSON config, providers are always the map above (or the legacy `providers.local[]`). `providers.entries[]` is the **resolved** shape — what `resolveConfiguredProviders()` returns and what a programmatic embedder constructing a `MonoAgentConfig` in code may set directly. It is not accepted from `mono-agent.config.json`: `entries` is not a reserved key there, so it would be read as a provider whose id is `entries`. Duplicate provider ids are rejected.
 
 ## Zero-config local autodiscovery
 
@@ -78,7 +78,7 @@ A route that names a provider in none of `providers`, Pi's built-in catalog, nor
 
 ## Credential resolution
 
-- **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex; API-key providers such as OpenCode-Go) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`.
+- **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex, and ChatGPT on `openai`; API-key providers such as OpenCode-Go and `openai`) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`; for `openai` choose `--auth-method oauth|api-key` when headless.
 - **Provider-level keys** resolve through the definition's `apiKeyEnv`: keep the value in `.env` and reference only its variable name in config, so the committed file carries no secret.
 
 ### Provider authentication in Agent Settings
@@ -100,7 +100,7 @@ an invalid expiry, an unsafe/unreadable store, or ambient file existence alone
 needs action. Environment API-key presence may establish only
 `present/not_verified`; it never establishes live health.
 
-The headless login flow is provider-owned by Pi 0.85.1:
+The headless login flow is provider-owned by the bundled Pi version (0.99.2):
 
 - GitHub Copilot and OpenAI Codex use native device authorization: open the
   displayed URL on any browser, enter the displayed code, and leave the dialog
@@ -109,6 +109,14 @@ The headless login flow is provider-owned by Pi 0.85.1:
   URL and, when the browser cannot reach the callback on the remote host, paste
   the complete final localhost redirect URL into the dialog. Pi validates the
   callback state before exchange.
+- `openai` offers **Sign in with ChatGPT** or **OpenAI API key**. A successful
+  selection replaces the previous stored `openai` method, leaving other
+  providers unchanged; cancellation leaves it intact. The ChatGPT callback
+  listens on the agent host at `127.0.0.1:1455`. In a remote browser, or when
+  that port is busy, paste the **entire** final redirect URL from the browser's
+  address bar into Agent settings. A code alone is not accepted, and a bad paste
+  ends the attempt: restart sign-in. The authorization URL carries an
+  installation identifier to OpenAI; it is not stored in console history.
 - OpenCode-Go and other Pi API-key providers render their provider-owned prompts
   in the dialog. Secret prompts are masked and cleared as they are submitted.
 
@@ -119,6 +127,15 @@ owner-only, locked, no-clobber promotion path as `auth login --api-key-stdin`.
 The web service only proxies short-lived, no-store session projections and never
 persists submitted values. This feature does not inspect or modify Codex CLI
 credentials such as `~/.codex/auth.json`.
+
+ChatGPT sign-in creates `mono-agent-installation-id.json` next to the effective
+Pi auth file on first use, with owner-only permissions. Agents using the same
+auth directory share its stable UUID; it is not a credential. To rotate it,
+stop sign-ins, remove the file from that private directory, then explicitly
+sign in again. Pi token refresh does not require the installation ID. A stored
+credential (of either method) takes precedence over `OPENAI_API_KEY`; selecting
+an environment key while a stored entry exists cannot switch methods. Use
+secure-store replacement instead, or explicitly remove the old entry first.
 
 A valid repeated login replaces the current login with a fresh session after
 provider/method validation; invalid requests do not cancel a usable prompt.
@@ -174,34 +191,22 @@ capture header presence before the expected authentication failure; testing
 two successful turns requires an explicitly authorized real provider call. This
 manual check is not performed in CI and must never use a live agent directory.
 
-## Env form
-
-`MONO_AGENT_PROVIDERS_JSON` is a JSON object of the same shape — provider ids plus the reserved `local`/`piAuthPath`/`piNative` keys. Prefer the config file, but the env override is the escape hatch for secrets-free ephemeral setups:
-
-```bash
-export MONO_AGENT_PROVIDERS_JSON='{"ollama": {"type": "ollama"}, "piAuthPath": "~/.pi/agent/auth.json"}'
-```
-
-`MONO_AGENT_LOCAL_PROVIDERS_JSON` is deprecated in favor of this map shape.
-
 ## Related
 
 - [Pi runtime & model references](/runtime/backends/) — the `<provider>:<model>` grammar and rejected legacy spellings.
-- [Local providers](/runtime/local-providers/) — the full local-provider and env reference for self-hosted endpoints.
+- [Local providers](/runtime/local-providers/) — self-hosted endpoint configuration.
 - [Fallback & failover](/runtime/fallback/) — ordered backup routes using the same providers.
-- [Environment variables](/config/env-vars/) — `MONO_AGENT_PROVIDERS_JSON` and friends.
+- [Operational environment variables](/config/env-vars/) — secret references and process plumbing.
 
 ## Prompt-cache diagnostics
 
-`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
+`providers.piNative.promptCacheDiagnostics` (default `false`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
 
-### Optional Anthropic cache retention
+### Anthropic cache retention
 
-`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
-variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
-over JSON, then unset. Either explicit resolved value overrides Pi's separate
-ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
-The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. JSON wins over the `"long"` default, and the
+resolved value overrides Pi's ambient `PI_CACHE_RETENTION`.
 The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
@@ -211,3 +216,10 @@ short-cache writes. Model support is required, and no cache hit is guaranteed.
 Metadata-only diagnostics record the requested setting and observed cache TTL;
 an ephemeral Anthropic cache control without an explicit TTL denotes five
 minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

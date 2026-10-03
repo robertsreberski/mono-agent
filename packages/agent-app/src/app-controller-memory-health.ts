@@ -1,7 +1,9 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TraceSourceMemoryHealth } from "@mono-agent/observability";
+import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
 import { loadAppCoreConfig } from "./app-config.js";
+import { legacyEmbeddingModelOption } from "./memory-embedding-identity.js";
 import {
   traceMemoryHealthFromBujo,
   unknownBujoMemoryHealth,
@@ -9,11 +11,13 @@ import {
 } from "./app-controller-utils.js";
 import type { MonoAgentAppLogger } from "./channels.js";
 import type { TraceSourceHandle } from "@mono-agent/observability";
+import type { MemoryHealthWorkerClient } from "./memory-health-worker-client.js";
 
 export interface MemoryHealthControllerPort {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   stopped: boolean;
   traceSource: TraceSourceHandle | undefined;
@@ -25,6 +29,7 @@ export interface MemoryHealthControllerPort {
   memoryHealthLastCompletedAtMs: number | undefined;
   memoryHealthRefreshDue: boolean;
   memoryHealthGeneration: number;
+  readonly memoryHealthWorker: MemoryHealthWorkerClient;
   startupCompleted: boolean;
   startupTimingValue: {
     readonly durationMs: number;
@@ -65,13 +70,7 @@ export function refreshMemoryHealthSnapshot(controller: MemoryHealthControllerPo
   }).catch(() => {
     const health = controller.memoryHealthValue.backend === "bujo"
       ? unknownBujoMemoryHealth(controller.memoryHealthValue.mode)
-      : controller.memoryHealthValue.backend === "supermemory"
-        ? {
-            backend: "supermemory" as const,
-            status: "unknown" as const,
-            checkedAt: new Date().toISOString(),
-          }
-        : unknownNoMemoryHealth();
+      : unknownNoMemoryHealth();
     if (!controller.stopped && generation === controller.memoryHealthGeneration) {
       controller.memoryHealthValue = health;
       controller.recordMemoryHealthCompletion(generation);
@@ -88,11 +87,18 @@ export function refreshMemoryHealthSnapshot(controller: MemoryHealthControllerPo
 }
 
 export async function computeMemoryHealth(controller: MemoryHealthControllerPort): Promise<TraceSourceMemoryHealth> {
+  // Capture before the asynchronous config load so invalidation can fence a
+  // delayed read before it creates or sends work to an obsolete worker.
+  const generation = controller.memoryHealthGeneration;
   let config: MonoAgentConfig;
   try {
-    config = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
+    config = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) });
   } catch {
     return unknownNoMemoryHealth();
+  }
+  if (controller.stopped || generation !== controller.memoryHealthGeneration) {
+    return controller.memoryHealthValue;
   }
   const memory = config.memory;
   if (memory === undefined) {
@@ -102,22 +108,16 @@ export async function computeMemoryHealth(controller: MemoryHealthControllerPort
       checkedAt: new Date().toISOString(),
     };
   }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    return {
-      backend: "supermemory",
-      status: "unknown",
-      checkedAt: new Date().toISOString(),
-    };
-  }
   try {
-    const { auditBujoMemoryHealth } = await import("@mono-agent/memory/bujo");
-    return traceMemoryHealthFromBujo(auditBujoMemoryHealth({
+    return traceMemoryHealthFromBujo(await controller.memoryHealthWorker.audit({
       root: memory.path,
       mode: memory.mode,
+      maxStabilityAttempts: 1,
       ...(memory.embeddings === undefined
         ? {}
         : {
-            configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+            configuredEmbeddingModel: configuredEmbeddingIdentity(memory.embeddings),
+            ...legacyEmbeddingModelOption(memory.embeddings),
             configuredDimension: memory.embeddings.dim ?? 768,
           }),
     }));
@@ -202,6 +202,7 @@ export function invalidateMemoryHealthRefresh(controller: MemoryHealthController
   controller.memoryHealthRefreshLoopActive = false;
   controller.clearMemoryHealthRefreshTimer();
   controller.memoryHealthGeneration += 1;
+  controller.memoryHealthWorker.invalidate();
   controller.memoryHealthRefreshInFlight = undefined;
   controller.memoryHealthLastCompletedAtMs = undefined;
   controller.memoryHealthRefreshDue = false;

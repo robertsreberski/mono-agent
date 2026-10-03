@@ -19,13 +19,13 @@ The wizard keeps model discovery, credential detection, and verified readiness s
 
 Escape or Ctrl-C interrupts preflight safely. Recovery may resume only route proofs whose non-secret plan fingerprint still matches, restart all checks, edit choices, or cancel without writing. Authentication repair invalidates the previous route proofs because the credential bytes may have changed.
 
-The wizard creates the config only after review and validates that exact snapshot. Any flag or non-TTY invocation is scaffold-only: it does not run the readiness proof, start a process, or label the result ready. Off macOS, guided setup preserves the files and hands control back to the operator for `validate`, `start --foreground`, and then the browser console (`mono-agent web run --loopback`); the terminal console stays optional.
+The wizard creates the config only after review and validates that exact snapshot. Any flag or non-TTY invocation is scaffold-only: it does not run the readiness proof, start a process, or label the result ready. Off macOS, guided setup preserves the files and hands control back to the operator for `validate`, `start --foreground`, and then the browser console (`mono-agent web run --loopback`).
 
 ## Durable secret persistence
 
 Selected secrets are entered through masked prompts and never appear in config JSON, `.env.example`, review output, logs, or file-change summaries. Existing non-empty `.env` assignments and comments are preserved. A selected secret found only in the current shell does not skip the durable prompt: a later background worker cannot inherit that shell, so the entered value must match every non-empty shell and dotenv copy before a missing dotenv value is persisted. Durable provider keys already present in `.env` receive the same preflight and hardening.
 
-The readiness proof uses only inputs a later worker can reconstruct: durable `.env` values, the resolved Pi credential store, and a narrow operational host environment such as `PATH` and `HOME`. Shell-only `MONO_AGENT_*` config overrides cannot make setup pass and then disappear under background execution; persisted non-secret overrides are named and rejected so the reviewed JSON remains the configuration that is validated and started.
+The readiness proof uses only inputs a later worker can reconstruct: durable `.env` values, the resolved Pi credential store, and a narrow operational host environment such as `PATH` and `HOME`. Former core `MONO_AGENT_*` config variables are ignored, so shell-only values cannot make setup pass and then disappear under background execution so the reviewed JSON remains the configuration that is validated and started.
 
 ### POSIX file contract
 
@@ -47,7 +47,7 @@ Promotion uses an identity-bound owner-only lock and installs a `0600` file with
 
 ### Exact executing closure
 
-Guided macOS setup materializes the exact already-resolved CLI dependency closure into a private versioned runtime under `~/.mono-agent/runtimes/agent-app/`. The closure includes config-selected channel plugins and the optional Supermemory package. Copying it does not run npm, lifecycle scripts, or another dependency resolution, and it never daemonizes a disposable npm-cache path.
+Guided macOS setup materializes the exact already-resolved CLI dependency closure into a private versioned runtime under `~/.mono-agent/runtimes/agent-app/`. The closure includes config-selected channel plugins. Copying it does not run npm, lifecycle scripts, or another dependency resolution, and it never daemonizes a disposable npm-cache path.
 
 A complete source digest plus a relative path/type/mode/content-hash manifest is bound to the runtime marker and rechecked before reuse. Dependency or selected-plugin drift therefore prevents a stale managed closure from being treated as current.
 

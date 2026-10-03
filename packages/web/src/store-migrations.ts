@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { parseProcessJobProjection } from "@mono-agent/agent-contracts";
 
 import { WebConsoleError } from "./errors.js";
 
@@ -10,6 +11,7 @@ export interface WebStorageMigrationContext {
   readonly migrateMonitorWakeDeliveries: () => void;
   readonly suppressSilentCronHistory: () => void;
   readonly backfillMessageSearch: () => void;
+  readonly refreshMessageSearch: () => void;
 }
 
 export interface WebStorageMigration {
@@ -39,6 +41,35 @@ function assertColumns(database: DatabaseSync, table: string, required: readonly
 function assertIndex(database: DatabaseSync, index: string, expected: readonly string[]): void {
   const actual = (database.prepare(`PRAGMA index_info(${index})`).all() as Array<{ name: string }>).map((column) => column.name);
   if (actual.join(",") !== expected.join(",")) throw new Error("Invalid migration index.");
+}
+
+function assertWakeScheduleShape(database: DatabaseSync): void {
+  assertColumns(database, "wake_schedules", ["thread_id", "source_id", "schedule_id", "generation", "revision", "definition_json", "kind", "state", "next_due_at", "last_outcome", "created_at", "updated_at"]);
+  assertColumns(database, "wake_occurrences", ["id", "thread_id", "schedule_id", "generation", "scheduled_at", "message", "state", "reason", "claimed_at", "turn_id"]);
+  assertIndex(database, "wake_schedules_due", ["state", "next_due_at"]);
+  assertIndex(database, "wake_occurrences_pending", ["thread_id", "state", "scheduled_at"]);
+  const scheduleDdl = (database.prepare("SELECT sql FROM sqlite_master WHERE name = 'wake_schedules'").get() as { sql: string }).sql;
+  const occurrenceDdl = (database.prepare("SELECT sql FROM sqlite_master WHERE name = 'wake_occurrences'").get() as { sql: string }).sql;
+  const foreignKey = (table: string, from: string, target: string, to: string): boolean =>
+    (database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      from: string; table: string; to: string; on_delete: string;
+    }>).some((key) => key.from === from && key.table === target && key.to === to && key.on_delete === "CASCADE");
+  const occurrenceForeignKey = (database.prepare("PRAGMA foreign_key_list(wake_occurrences)").all() as Array<{
+    from: string; table: string; to: string; on_delete: string;
+  }>).some((key) => key.from === "thread_id" && key.table === "wake_schedules" && key.to === "thread_id" && key.on_delete === "CASCADE");
+  const uniqueOccurrence = (database.prepare("PRAGMA index_list(wake_occurrences)").all() as Array<{
+    name: string; unique: number;
+  }>).some((index) => index.unique === 1 && (database.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>)
+    .map((column) => column.name).join(",") === "schedule_id,generation,scheduled_at");
+  if (!foreignKey("wake_schedules", "thread_id", "threads", "id") || !foreignKey("wake_schedules", "source_id", "agents", "source_id")
+    || !occurrenceForeignKey || !uniqueOccurrence
+    || !/thread_id\s+TEXT\s+PRIMARY\s+KEY\s+REFERENCES\s+threads\(id\)\s+ON\s+DELETE\s+CASCADE/iu.test(scheduleDdl)
+    || !/source_id\s+TEXT\s+NOT\s+NULL\s+REFERENCES\s+agents\(source_id\)\s+ON\s+DELETE\s+CASCADE/iu.test(scheduleDdl)
+    || !/schedule_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE/iu.test(scheduleDdl)
+    || !/thread_id\s+TEXT\s+NOT\s+NULL\s+REFERENCES\s+wake_schedules\(thread_id\)\s+ON\s+DELETE\s+CASCADE/iu.test(occurrenceDdl)
+    || !/UNIQUE\s*\(schedule_id,\s*generation,\s*scheduled_at\)/iu.test(occurrenceDdl)) {
+    throw new Error("Invalid wake schedule ledger constraints.");
+  }
 }
 
 /** Read-path lookup indexes; bootstrap DDL creates them, so the step only asserts them. */
@@ -205,6 +236,151 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 31, name: "turn-cancel-origin", up: ({ database }) => {
     addColumn(database, "turns", "cancel_origin", "TEXT CHECK (cancel_origin IN ('user-stop', 'client-disconnect', 'client-reconnect', 'service-shutdown', 'api'))");
   } },
+  { version: 32, name: "transcript-markers", up: ({ database }) => {
+    database.exec("DROP TABLE IF EXISTS model_transitions; DROP TABLE IF EXISTS project_transitions;");
+    addColumn(database, "turns", "conversation_markers_json", "TEXT");
+    addColumn(database, "turns", "dispatch_started_at", "TEXT");
+  } },
+  { version: 33, name: "process-job-state-projection", up: ({ database }) => {
+    addColumn(database, "process_job_cards", "state", "TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','starting','running','succeeded','failed','timed_out','cancelled','spawn_failed','queue_expired','interrupted'))");
+    addColumn(database, "process_job_cards", "completed_at", "TEXT");
+    // Bounded keyset batches of cards, never a scan of transcript blobs. The
+    // enclosing initialization transaction rolls back DDL and all earlier
+    // batches together if even one canonical card is invalid.
+    const page = database.prepare(`SELECT rowid AS ordinal, job_id, thread_id, message_id
+      FROM process_job_cards WHERE rowid > ? ORDER BY rowid LIMIT 128`);
+    const message = database.prepare("SELECT thread_id, parts_json FROM messages WHERE id = ?");
+    const update = database.prepare("UPDATE process_job_cards SET state = ?, completed_at = ? WHERE rowid = ?");
+    let after = 0;
+    while (true) {
+      const cards = page.all(after) as Array<{ ordinal: number; job_id: string; thread_id: string; message_id: string }>;
+      if (cards.length === 0) break;
+      for (const card of cards) {
+        const row = message.get(card.message_id) as { thread_id: string; parts_json: string } | undefined;
+        if (row === undefined || row.thread_id !== card.thread_id) throw new Error("Invalid retained job reference.");
+        const parts: unknown = JSON.parse(row.parts_json);
+        if (!Array.isArray(parts)) throw new Error("Invalid retained job parts.");
+        const jobs = parts.filter((part) => part?.type === "process-job");
+        if (jobs.length !== 1) throw new Error("Invalid retained job count.");
+        const job = parseProcessJobProjection(jobs[0].job);
+        if (job.jobId !== card.job_id) throw new Error("Invalid retained job identity.");
+        update.run(job.state, job.timestamps.completedAt ?? null, card.ordinal);
+        after = card.ordinal;
+      }
+    }
+    database.exec(`CREATE INDEX IF NOT EXISTS process_job_cards_by_state ON process_job_cards(state, thread_id);
+      CREATE INDEX IF NOT EXISTS process_job_cards_by_thread ON process_job_cards(thread_id);`);
+  } },
+  { version: 34, name: "precomputed-message-search", up: ({ database, refreshMessageSearch }) => {
+    database.exec("DROP TRIGGER IF EXISTS message_search_update; DROP TRIGGER IF EXISTS message_search_settle;");
+    refreshMessageSearch();
+  } },
+  { version: 35, name: "restart-operations", up: ({ database }) => {
+    assertColumns(database, "restart_operations", [
+      "id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome",
+      "reason", "uncertain", "approximate_running_turns",
+    ]);
+    assertIndex(database, "restart_operations_one_active_source", ["source_id"]);
+    const index = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(index?.sql ?? "") || !/\bWHERE\s+outcome\s+IS\s+NULL\b/iu.test(index?.sql ?? "")) {
+      throw new Error("Invalid active-restart uniqueness fence.");
+    }
+  } },
+  { version: 36, name: "restart-proposal-bindings", up: ({ database }) => {
+    assertColumns(database, "restart_proposal_bindings", ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"]);
+    assertIndex(database, "restart_proposal_bindings_by_source", ["source_id", "generation"]);
+  } },
+  { version: 37, name: "conversation-wake-schedules", up: ({ database }) => {
+    assertWakeScheduleShape(database);
+  } },
+  { version: 38, name: "external-conversation-projects", up: ({ database }) => {
+    // Additive only: channel conversations (Telegram forum topics) mirrored one
+    // way into projects, and receipts for console tools called from their
+    // turns. Nothing existing is rewritten, so an older database opens with
+    // its projects, threads and receipts unchanged.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS external_conversations (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        channel TEXT NOT NULL CHECK (channel IN ('telegram')),
+        external_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('topic', 'main')),
+        chat_label TEXT,
+        topic_label TEXT,
+        state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'closed', 'gone')),
+        state_at TEXT NOT NULL,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        project_auto_named INTEGER NOT NULL DEFAULT 1 CHECK (project_auto_named IN (0, 1)),
+        detached_at TEXT,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(source_id, channel, external_key)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS external_conversations_one_per_project
+        ON external_conversations(project_id) WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS external_conversations_by_source
+        ON external_conversations(source_id, last_seen_at);
+      CREATE TABLE IF NOT EXISTS external_tool_operations (
+        operation_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        scope_key TEXT NOT NULL,
+        turn_key TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS external_tool_operations_by_age ON external_tool_operations(created_at);
+    `);
+  } },
+  { version: 39, name: "parent-turn-interruptions", up: ({ database }) => {
+    addColumn(database, "turns", "dispatch_generation", "TEXT");
+    database.exec(`CREATE TABLE IF NOT EXISTS parent_turn_interruptions (
+      source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+      wake_key TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL CHECK (state IN ('pending', 'attempted', 'completed', 'expired')),
+      associated_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      deadline TEXT NOT NULL,
+      PRIMARY KEY(source_id, turn_id)
+    );
+    CREATE INDEX IF NOT EXISTS parent_turn_interruptions_due ON parent_turn_interruptions(source_id, state);`);
+  } },
+  { version: 40, name: "web-recovery-generation-observation", up: ({ database }) => {
+    // Preserve the original dispatch generation even when first discovery
+    // proves a startup-interrupted turn belonged to the still-running agent.
+    addColumn(database, "turns", "web_recovery_generation_confirmed_at", "TEXT");
+  } },
+  { version: 41, name: "turn-reply-disposition", up: ({ database }) => {
+    addColumn(database, "turns", "reply_disposition", "TEXT CHECK (reply_disposition IN ('silent', 'visible'))");
+  } },
+  { version: 42, name: "context-1m-selection", up: ({ database }) => {
+    const ddl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'agent_run_overrides'").get() as { sql: string };
+    if (!ddl.sql.includes("context_1m IS NOT NULL")) {
+      const keys = database.prepare("PRAGMA foreign_key_list(agent_run_overrides)").all() as Array<{ from: string; table: string; on_delete: string }>;
+      if (!keys.some((key) => key.from === "source_id" && key.table === "agents" && key.on_delete === "CASCADE")) throw new Error("Invalid defaults foreign key.");
+      addColumn(database, "agent_run_overrides", "context_1m", "INTEGER CHECK (context_1m IS NULL OR context_1m IN (0,1))");
+      database.exec(`CREATE TABLE agent_run_overrides_context_1m (
+        source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
+        model TEXT, effort TEXT, context_1m INTEGER CHECK (context_1m IS NULL OR context_1m IN (0,1)), updated_at TEXT NOT NULL,
+        CHECK (model IS NOT NULL OR effort IS NOT NULL OR context_1m IS NOT NULL)
+      );
+      INSERT INTO agent_run_overrides_context_1m SELECT source_id, model, effort, context_1m, updated_at FROM agent_run_overrides;
+      DROP TABLE agent_run_overrides;
+      ALTER TABLE agent_run_overrides_context_1m RENAME TO agent_run_overrides;`);
+    }
+    for (const [table, column] of [
+      ["threads", "run_context_1m"], ["agent_run_overrides", "context_1m"],
+      ["cron_reply_operations", "run_context_1m"], ["turns", "context_1m"], ["live_inputs", "context_1m"],
+    ] as const) addColumn(database, table, column, `INTEGER CHECK (${column} IS NULL OR ${column} IN (0,1))`);
+  } },
+  { version: 43, name: "process-job-wake-admission-fence", up: ({ database }) => {
+    addColumn(database, "process_job_wake_deliveries", "attempt_token", "TEXT");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -251,11 +427,14 @@ export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
-      threads: ["trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
+      threads: ["trigger_kind", "run_model", "run_effort", "run_context_1m", "project_id", "read_revision"],
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
-      project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
-      model_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
+      external_conversations: [
+        "id", "source_id", "channel", "external_key", "kind", "chat_label", "topic_label", "state", "state_at",
+        "project_id", "project_auto_named", "detached_at", "first_seen_at", "last_seen_at", "updated_at",
+      ],
+      external_tool_operations: ["operation_id", "source_id", "scope_key", "turn_key", "payload_sha256", "result_json", "created_at"],
       tags: ["id", "source_id", "name", "color", "created_at", "updated_at", "revision"],
       thread_tags: ["thread_id", "tag_id", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
@@ -263,9 +442,14 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       attachments: ["origin"],
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
-      agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
+      agent_run_overrides: ["source_id", "model", "effort", "context_1m", "updated_at"],
+      restart_operations: ["id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome", "reason", "uncertain", "approximate_running_turns"],
+      restart_proposal_bindings: ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"],
       messages: ["seq", "cron_suppressed"],
-      turns: ["cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
+      message_search_writes: ["message_id"],
+      process_job_cards: ["state", "completed_at"],
+      parent_turn_interruptions: ["source_id", "turn_id", "thread_id", "message_id", "wake_key", "state", "associated_turn_id", "created_at", "deadline"],
+      turns: ["reply_disposition", "dispatch_generation", "web_recovery_generation_confirmed_at", "conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
@@ -276,6 +460,16 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    for (const [table, column] of [["threads", "run_context_1m"], ["agent_run_overrides", "context_1m"], ["cron_reply_operations", "run_context_1m"], ["turns", "context_1m"], ["live_inputs", "context_1m"]] as const) {
+      assertColumns(database, table, [column]);
+      const metadata = (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string; notnull: number }>).find((entry) => entry.name === column);
+      if (metadata?.type !== "INTEGER" || metadata.notnull !== 0
+        || database.prepare(`SELECT 1 FROM ${table} WHERE ${column} IS NOT NULL AND ${column} NOT IN (0,1) LIMIT 1`).get() !== undefined) throw new Error("Invalid nullable context selection.");
+    }
+    const overrideDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'agent_run_overrides'").get() as { sql: string };
+    if (!overrideDdl.sql.includes("context_1m IS NOT NULL")) throw new Error("Invalid flag-only default constraint.");
+    assertWakeScheduleShape(database);
+    if (database.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('model_transitions', 'project_transitions')").get() !== undefined) throw new Error("Legacy transition tables remain.");
     const readRevision = (database.prepare("PRAGMA table_info(threads)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
     }>).find((column) => column.name === "read_revision");
@@ -289,6 +483,14 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     if (!/UNIQUE\s*\(\s*source_id\s*,\s*name\s*\)/iu.test(tagDdl.sql)
       || !/\bname\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\b/iu.test(tagDdl.sql)) {
       throw new Error("Invalid tag name uniqueness.");
+    }
+    const cardState = (database.prepare("PRAGMA table_info(process_job_cards)").all() as Array<{
+      name: string; type: string; notnull: number;
+    }>).find((column) => column.name === "state");
+    const cardDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'process_job_cards'").get() as { sql: string };
+    if (cardState?.type !== "TEXT" || cardState.notnull !== 1
+      || !cardDdl.sql.includes("CHECK (state IN ('queued','starting','running','succeeded','failed','timed_out','cancelled','spawn_failed','queue_expired','interrupted'))")) {
+      throw new Error("Invalid process-job state projection.");
     }
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
@@ -316,17 +518,35 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     if (dispatchStartedAt?.type !== "TEXT" || dispatchStartedAt.notnull !== 0) {
       throw new Error("Invalid live-input dispatch marker.");
     }
+    assertColumns(database, "process_job_wake_deliveries", ["attempt_token"]);
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],
+      ["process_job_cards_by_state", ["state", "thread_id"]],
+      ["process_job_cards_by_thread", ["thread_id"]],
       ["cron_run_messages_by_order", ["source_id", "job_id", "ordered_at", "sequence", "run_id"]],
       ["monitor_wake_deliveries_by_thread", ["thread_id", "created_at"]],
       ["notification_deliveries_by_thread", ["thread_id"]],
       ...THREAD_READ_INDEXES,
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
       ["thread_tags_by_tag", ["tag_id", "thread_id"]],
+      ["restart_operations_one_active_source", ["source_id"]],
+      ["restart_proposal_bindings_by_source", ["source_id", "generation"]],
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
+      ["external_conversations_one_per_project", ["project_id"]],
+      ["external_conversations_by_source", ["source_id", "last_seen_at"]],
     ] as const) assertIndex(database, index, expected);
+    const bindingIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'external_conversations_one_per_project'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(bindingIndex?.sql ?? "") || !/\bWHERE\s+project_id\s+IS\s+NOT\s+NULL\b/iu.test(bindingIndex?.sql ?? "")) {
+      throw new Error("Invalid external conversation binding fence.");
+    }
+    const restartIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(restartIndex?.sql ?? "")
+      || !/\bWHERE\s+outcome\s+IS\s+NULL\b/iu.test(restartIndex?.sql ?? "")) {
+      throw new Error("Invalid active-restart uniqueness fence.");
+    }
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
       ["tags", "source_id", "agents", "CASCADE"],
@@ -340,6 +560,12 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["monitor_wake_deliveries", "turn_id", "turns", "SET NULL"],
       ["cron_run_messages", "message_id", "messages", "CASCADE"],
       ["web_submissions", "thread_id", "threads", "CASCADE"],
+      ["restart_proposal_bindings", "message_id", "messages", "CASCADE"],
+      ["restart_proposal_bindings", "thread_id", "threads", "CASCADE"],
+      ["restart_proposal_bindings", "source_id", "agents", "CASCADE"],
+      ["external_conversations", "source_id", "agents", "CASCADE"],
+      ["external_conversations", "project_id", "projects", "SET NULL"],
+      ["external_tool_operations", "source_id", "agents", "CASCADE"],
     ] as const) {
       const keys = database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
         from: string; table: string; to: string; on_delete: string;

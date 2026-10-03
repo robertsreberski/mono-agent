@@ -3,10 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   runMetrics: vi.fn(async () => 0),
   runAuditRuns: vi.fn(async () => 0),
+  runInspection: vi.fn(async () => 0),
+  writeRunInspectionUsageFailure: vi.fn(),
 }));
 
 vi.mock("../metrics.js", () => ({ runMetrics: mocks.runMetrics }));
 vi.mock("../audit-runs.js", () => ({ runAuditRuns: mocks.runAuditRuns }));
+vi.mock("../run-inspection.js", () => ({
+  runInspection: mocks.runInspection,
+  writeRunInspectionUsageFailure: mocks.writeRunInspectionUsageFailure,
+}));
 
 import { parseCliArgs } from "../cli-args.js";
 import { runRunsCommand } from "../cli-runs-command.js";
@@ -14,6 +20,8 @@ import { runRunsCommand } from "../cli-runs-command.js";
 beforeEach(() => {
   mocks.runMetrics.mockClear();
   mocks.runAuditRuns.mockClear();
+  mocks.runInspection.mockClear();
+  mocks.writeRunInspectionUsageFailure.mockClear();
 });
 
 async function captureRuns(argv: readonly string[]): Promise<{ readonly code: number; readonly stderr: string }> {
@@ -66,11 +74,45 @@ describe("runRunsCommand", () => {
     }));
   });
 
-  it("rejects an unknown mode with a usage error (exit 2) naming both modes and calls no engine", async () => {
+  it("routes list and show to the bounded offline inspection seam", async () => {
+    await expect(captureRuns(["runs", "list", "--artifacts", "./runs", "--include-memory", "--json"]))
+      .resolves.toMatchObject({ code: 0 });
+    expect(mocks.runInspection).toHaveBeenLastCalledWith({
+      mode: "list",
+      artifactDir: "./runs",
+      includeMemory: true,
+      json: true,
+    });
+
+    await expect(captureRuns(["runs", "show", "run-1", "--json"]))
+      .resolves.toMatchObject({ code: 0 });
+    expect(mocks.runInspection).toHaveBeenLastCalledWith({
+      mode: "show",
+      runId: "run-1",
+      includeMemory: false,
+      json: true,
+    });
+    expect(mocks.runMetrics).not.toHaveBeenCalled();
+    expect(mocks.runAuditRuns).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing show id", ["runs", "show", "--json"]],
+    ["extra list id", ["runs", "list", "secret-extra", "--json"]],
+    ["report-only flag", ["runs", "list", "--since", "2026-01-01", "--json"]],
+    ["consumer scope", ["runs", "show", "run-1", "--consumer", "/tmp/other", "--json"]],
+  ])("returns stable usage for inspection %s", async (_label, argv) => {
+    const { code } = await captureRuns(argv);
+    expect(code).toBe(2);
+    expect(mocks.writeRunInspectionUsageFailure).toHaveBeenCalledWith(true);
+    expect(mocks.runInspection).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown mode with a usage error (exit 2) naming all modes and calls no engine", async () => {
     const { code, stderr } = await captureRuns(["runs", "bogus"]);
     expect(code).toBe(2);
     expect(stderr).toMatch(/Unknown `runs` mode `bogus`/u);
-    expect(stderr).toMatch(/report or audit/u);
+    expect(stderr).toMatch(/report, audit, list, or show/u);
     expect(mocks.runMetrics).not.toHaveBeenCalled();
     expect(mocks.runAuditRuns).not.toHaveBeenCalled();
   });

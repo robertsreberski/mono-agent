@@ -72,8 +72,6 @@ function createOutputs(root, order = "forward") {
     ["packages/example/dist/nested/value.txt", "nested\n"],
     ["packages/agent-app/package.json", '{"name":"agent-app"}\n'],
     ["packages/agent-app/dist/cli.js", "#!/usr/bin/env node\n"],
-    ["packages/tui/package.json", '{"name":"tui"}\n'],
-    ["packages/tui/dist/bin/mono-agent-tui.js", "#!/usr/bin/env node\n"],
     ["packages/web/package.json", '{"name":"web"}\n'],
     ["packages/web/dist/index.js", "export const server = true;\n"],
     ["packages/web/webapp/dist/index.html", "<!doctype html>\n"],
@@ -712,7 +710,7 @@ describe("provenance build lifecycle", () => {
       const cli = join(root, "packages/agent-app/dist/cli.js");
       rmSync(cli);
       if (condition === "symlink") {
-        symlinkSync("../../tui/dist/bin/mono-agent-tui.js", cli);
+        symlinkSync("../../web/dist/index.js", cli);
       }
       const result = runBuildWithProvenance({
         repo: root,
@@ -889,7 +887,6 @@ describe("provenance build lifecycle", () => {
     const dependencyDigest = computeRuntimeDependencyDigest(root);
     expect(computeBuildOutputDigest(root)).toBe(outputDigest);
     expect(lstatSync(join(root, "packages/agent-app/dist/cli.js")).mode & 0o100).toBe(0o100);
-    expect(lstatSync(join(root, "packages/tui/dist/bin/mono-agent-tui.js")).mode & 0o100).toBe(0o100);
     expect(readBuildMarker(root)).toMatchObject({
       status: "ok",
       marker: marker({

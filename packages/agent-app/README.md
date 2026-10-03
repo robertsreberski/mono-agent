@@ -3,7 +3,7 @@
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
 channel plus traceability. Ships the
-`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `web`, `start`) so an agent folder works without
+`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `runs`, `web`, `start`) so an agent folder works without
 hand-written composition code.
 
 Setup has two deliberate wall-clock paths: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
@@ -72,16 +72,28 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Keep persistent child incarnation/turn intents and minimal recovery fences in
   the owner-private registry. Abandoned linked turns cannot unblock without
   exact registered-owner proof; retained-root index failure blocks replacement
-  creation. Terminal child ownership/publication obligations pin process-job
-  retention, admission and fallback snapshots independently of delivery status.
+  creation. An operational root owner may reconcile an abandoned reservation when
+  no durable job or live admission remains. Missing jobs never prove the child
+  did not start: failed first admissions are retired, while existing instances
+  retain unknown-continuity recovery and require inspect/close/create, not resume.
+  Terminal child ownership/publication obligations pin process-job retention,
+  admission and fallback snapshots independently of delivery status.
+  An interrupted running detached child may contribute bounded read-only Pi v4
+  salvage in its delimited parent wake and authorized `AgentManage inspect`: only
+  branch-placed matching tool results count as completed; other calls remain
+  outcome-unknown. Short redacted excerpts and draft text are best-effort evidence,
+  not proof of session continuity or complete side effects. The old child is not
+  resumable: start a fresh child and verify effects before repeating calls.
   Detached managed turns use an awaited, one-command gated controller on the
   original job slot; registry admission identity, actual provider settlement and
   terminal publication are distinct fences. Failed command ownership never
   falls back to an untracked foreground process. Foreground persistent turns
-  do not gain supervised process ownership. Their failures are currently lost or
-  unknown, not retained acknowledgement epochs; settled authorized inspection
-  returns `structured_job_recovery_unavailable`, and recovery requires explicit
-  close/create. A late answer or existing transcript does not promote continuity.
+  do not gain supervised process ownership. Their failures remain lost or
+  unknown unless a child-owned timeout truly settles with its matching native
+  recovery receipt. A certified timeout then resumes with an ordinary message;
+  other failures return `structured_job_recovery_unavailable` and require
+  explicit close/create. A late answer or existing transcript alone does not
+  promote continuity.
   Ordinary successful foreground continuation and AskParent are unchanged.
   Bounded private command receipts
   retain actual exit/budget/cleanup measurements without argv, environment,
@@ -104,15 +116,6 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   cwd, while root or Git-metadata replacement yields an inconsistent observation.
   Repository config includes are unsupported and fail closed before status;
   initialized submodules are not traversed, so nested changes are not reported.
-- Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
-  and existing web conversations receive coalesced event batches as exact-origin
-  tool-capable wake turns; web uses ordinary assistant turns rather than a
-  Monitor card, and shares one per-thread serialization lane with ProcessJobs
-  wakes and queued user follow-ups.
-  Optional batch deduplication and wake intervals suppress unnecessary inference;
-  exit-only watches deliver one terminal wake. The host clamps intervals through
-  `monitors.maxWakeIntervalMs` (default/cap 300000) and exposes durable suppression
-  and delivery-disposition counters. `maxChainDepth` defaults to 4, with cap 64.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while
@@ -127,20 +130,18 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
   `mono-agent.config.json` or `IDENTITY.md` and take effect after validation and
-  `mono-agent restart`.
+  `mono-agent restart` or a confirmed, authenticated console restart.
 - Check managed launchd logs with bounded metadata reads every five minutes,
   reconcile installed macOS LaunchAgents at login and hourly, and make `status`
   require agreement between the cached trace and launchd's live PID.
-- Resolve and surface any configured `observability.exporters` (the Phoenix
-  preset): `start`/`status` report the configured endpoint and a note that JSONL
-  artifacts remain local; `validate` performs the live reachability probe. Export
-  is best-effort and never changes a run outcome.
 - Preview, strictly audit, and safely maintain the configured memory backend
   from the same config/env resolution path via `mono-agent memory` (including
   provider-free strict health and payload-free intake inspect/retry/resolve).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
-  folders non-destructively.
-- Resolve local-first WebSearch/WebFetch settings into every runtime run and
+  folders non-destructively. Validate/doctor reject duplicate JSON object keys with
+  their paths; runtime loading warns and keeps the last value.
+- Resolve explicit WebSearch/WebFetch provider chains (Parallel then local Ollama
+  search; local fetch by default) into every runtime run and
   report the four-request default WebSearch budget plus separate bounded
   readiness for explicit Ollama or loopback
   SearXNG plus the optional `agent-browser` renderer; the app never owns any
@@ -152,35 +153,67 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   The sink is not injected into out-of-harness child callbacks. The hourly
   artifact sweep bounds run directories with the existing `artifacts.retention`
   policy while conservatively retaining active, uncertain, or recently modified runs.
+- Inspect trusted local run artifacts offline with `mono-agent runs list` and
+  `mono-agent runs show <run-id>`. Output keeps at most 50 rows or 500 first/last
+  events, caps strings at 32 KiB, and applies sensitive-key plus high-confidence
+  credential-shape redaction without claiming comprehensive secret detection.
+  An explicit `--artifacts` directory is trusted local input, not a filesystem
+  sandbox or a symlink-containment boundary.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and a console label
   that defaults to the hostname and can be restored with `--name -`; on macOS
   pair its worker with one helper-only,
   stopped-writer log controller while the worker remains wake-only; publish a
   bounded, refreshable skill registry through each running operator endpoint so
-  the web composer can discover valid `$skill-name` references; use
-  `mono-agent tui` for bounded recorded-run replay.
+  the web composer can discover valid `$skill-name` references; use `mono-agent runs
+  list|show` for bounded recorded-run diagnostics.
 - Discover and expose one exact running agent through the ACP core-session
   profile with `mono-agent bridge acp`, including durable session resume, while
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
-  and credentials.
+  and credentials. The bridge and PeerAgent prefer the target's attested dotenv
+  operator key, then its config `tui.apiKey`; the caller's ambient
+  `MONO_AGENT_TUI_API_KEY` is used only when the target publishes no key.
+  Startup failures identify an allowlisted cause and source without forwarding
+  raw bridge stderr to PeerAgent.
 
-Persistent Agent/AgentSend can run detached through the app-private in-process
-ProcessJobs lane. Durable admission reserves the child; completion and AskParent
-wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
+Persistent Agent/AgentManage can run detached through the app-private in-process
+ProcessJobs lane. Completed job progress reports each child's priced cost and
+non-zero token counts for that job's turn, not cumulative persistent-instance
+usage. Durable admission reserves the child; completion and AskParent wake the
+exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
-Detached children receive a foreground Bash/Exec ceiling bounded by their own
-job’s remaining runtime and `subagents.commandTimeoutMs` (default 30 minutes).
-The job deadline remains authoritative; child-owned background commands are
-unsupported. Interactive and foreground-child caps, and NodeRepl, are unchanged.
+`AgentManage({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
+Children receive a foreground Bash/Exec ceiling bounded by
+`subagents.commandTimeoutMs` (default 30 minutes). Detached children clamp it to
+their job’s remaining runtime; foreground children clamp it to their remaining
+turn time minus a settlement reserve (10% for short turns, at most 15 seconds).
+The child timer, job deadline (when detached), and parent abort remain
+authoritative; child-owned background commands are unsupported. Interactive
+parent turns and NodeRepl keep their 120-second caps.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
+
+**Rollout and rollback.** Run consoles with the #1107 readers before agents
+start emitting detached `usage`. In the wrong order, a pre-#1107 console
+rejects the entire web job notification with HTTP 400, losing the terminal
+card update and the parent wake on that thread. After an agent has written a
+usage-bearing record, do not roll either side back before #1107: older agents
+cannot open their process-job store, and older consoles cannot open conversations
+holding those cards.
 
 ## Install / Usage
 
 Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.
 Background Exec/Bash accepts `wake_on_completion: false` for helpers that only
-need terminal card updates. Exact sentinel-only wakes suppress delivery; a
+need terminal card updates. A host-raised wake may call `FinishSilently({})` alone
+without narration or attachments; the host records silence as a typed terminal
+disposition and suppresses delivery. The exact sentinel-only
+`NOTHING_TO_REPORT` fallback still works. Web wake admission has the same
+exact-live-flight binding as the sentinel, not stronger authentication; an
+expired, missing, or ambiguous delivery key cannot grant silence. A
 receipt timeout before the destination confirms steering or durable follow-up
 admission settles as unknown and never automatically replays. A confirmed web
 follow-up receipt does not wait for that turn's later model outcome.
@@ -199,6 +232,39 @@ mono-agent start
 For a one-off setup without a global install, use
 `npm create mono-agent@latest init`; the `create-mono-agent` alias delegates to this
 same CLI.
+
+### Console restart approvals
+
+A confirmed console restart requires the configured operator API key. The host
+validates current config, `.env`, IDENTITY, SOUL and MCP inputs before stopping.
+On managed macOS workers it stages a secret-free owner-private approval below
+`~/.mono-agent/approved-startup/<label>/<generation>.json`, bound to the original
+cached snapshot, config identity and pinned runtime proof. Synchronous publication
+precedes restart acceptance; launchd's unchanged cached arguments resolve that
+approval on every launch. The effective snapshot also supplies trace metadata and
+maintenance/attestation comparisons. Linux retains structural validation rather
+than fingerprint enforcement.
+
+A `202` means accepted, not replacement readiness. Invalid inputs, validation
+timeouts, lifecycle contention, approval failures or packages unavailable in the
+pinned runtime leave the old worker serving with a cause-specific `409`. Run
+`mono-agent restart` from a terminal for runtime package changes. Terminal
+start/restart/stop and maintenance definition replacement clear approvals only
+at successful stop/replacement commit points, even when runtime and input
+identities are reused. Failed early lifecycle checks preserve active approvals.
+A lifecycle owner repairs or quarantines insecure approval state without
+following links, so terminal restart and maintenance can recover. Edits after
+acceptance or malformed approval state fail closed with the existing `snapshot-refused` status; terminal
+restart is recovery. If publication restoration also fails, the refusal explicitly
+notes that a fully validated approval may remain active, without stopping the
+worker. An abandoned preparation may hold the lifecycle lock until its bounded
+validation/materialization/runtime-verification steps finish; timeout prevents
+publication but does not interrupt those steps.
+
+These readers must already be installed in the worker's pinned runtime; changing
+a checkout does not upgrade an installed runtime. Authentication and owner-private
+files do not protect against hostile same-UID processes; use OS privilege
+separation for that threat model.
 
 ### Guided initialization and readiness
 
@@ -238,16 +304,21 @@ discovery. The live Codex provider default leads when available; offline setup
 falls back to curated `openai-codex:gpt-5.6-terra` without guessing effort metadata, so
 only **Provider default** is offered until live `model/list` succeeds. GPT-6
 Astra is selectable as `openai-codex:gpt-6-astra` for Codex subscriptions;
-`openai:gpt-6-astra` is also runtime-compatible for OpenAI API keys through the
-existing hand-authored provider path, without adding direct OpenAI to guided
-setup. GPT-5.6 Sol remains selectable as `openai-codex:gpt-5.6-sol`.
+`openai:gpt-6-astra` is available in guided setup with an explicit choice
+between ChatGPT sign-in and an OpenAI API key; credentials are stored under the
+same provider id, one at a time. Neither method changes default routes. GPT-5.6 Sol remains selectable as `openai-codex:gpt-5.6-sol`.
 OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
 the Pi auth store or remain environment-provided, and any number of fallback
 models are selected from the same discovered choices one at a time. Each route
 offers only its advertised effort values plus **Provider default**. Standalone
 `mono-agent auth login anthropic` keeps its localhost callback active while
 also reading a pasted final redirect URL through Pi's code/state-validating
-OAuth implementation. `mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
+OAuth implementation. `mono-agent auth login openai` prompts for the method;
+headless callers select `--auth-method oauth|api-key` (or use `--api-key-stdin`
+for an explicitly redirected key). ChatGPT's fixed localhost:1455 callback
+can be replaced by pasting the full final redirect URL when the browser is
+remote or the port is busy. Its owner-only installation ID is scoped to the
+durable Pi auth directory, not the temporary login store. `mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
 must opt in to one-line redirected input with `--api-key-stdin`. Any flag (or a piped/non-TTY
 invocation) takes the silent default/preset scaffold path instead; add `--auth`
 to run supported provider setup in that non-interactive path. Required selected
@@ -279,13 +350,13 @@ true. The worker publishes that proof only after channels, memory rituals, and
 final memory-health work complete; later trace refreshes change the diagnostic
 `metadata.reason` without revoking readiness. Once ready, init prints the manual
 continuation: edit `mono-agent.config.json` or `IDENTITY.md`, run
-`mono-agent validate`, restart, and open the ordinary TUI. A readiness timeout
+`mono-agent validate`, restart, and open the browser console. A readiness timeout
 preserves the committed files, then unloads the worker plus scheduled
 maintenance and removes their definitions only when stopped state is proven. If
 cleanup cannot be proven, the command says that a process may still be running
 and prints exact `start`, `status`, and `logs --follow` recovery commands plus
 log paths. On Linux the next steps use the systemd background service and
-ordinary TUI; platforms without a background backend use foreground start. Any
+the browser console; platforms without a background backend use foreground start. Any
 flag or non-TTY invocation remains scaffold-only and never starts a process.
 
 ### Managed skills and documentation companion
@@ -318,7 +389,7 @@ harness MCP configuration.
 
 Before the first macOS background launch, the CLI copies the exact package and
 already-resolved dependency closure it is currently executing—including configured
-channel plugins and the optional Supermemory backend—into an owner-only,
+channel plugins—into an owner-only,
 version/Node-ABI/CLI/closure-digest runtime under `~/.mono-agent/runtimes/agent-app/`.
 It does not invoke npm or lifecycle scripts, so provider secrets never reach an
 installer and pnpm `workspace:` links do not require registry resolution. A
@@ -460,6 +531,47 @@ retained, and total bytes for safely inspected files; unsafe or unreadable byte
 inventory is unavailable. They also render the owner-private monitor's last
 inspection, cumulative wake count, last outcome, and wall-clock rendering of
 the monotonic cooldown deadline. They never rotate or chmod logs.
+
+
+Unattended macOS maintenance waits for an idle worker before ordinary log-size
+rotation or replacing a healthy worker for snapshot, definition, or runtime
+drift. The worker publishes an owner-private, content-free activity snapshot
+under `~/.mono-agent/worker-activity/`: in-flight responder invocations across
+all channels and wakes, admitted queued/starting/running ProcessJobs work (including background commands,
+detached persistent children, and in-flight completion wakes), and pending `AskUser`.
+A child waiting only for an `AskParent` reply is idle. Memory curation/capture
+model calls and MCP-app or context-import work outside a responder turn are not
+counted as busy. The helper checks the
+snapshot against launchd's current PID and OS process incarnation immediately
+before stopping; missing, unsafe, malformed, or mismatched snapshots are
+unknown and receive the same bounded protection as busy workers. A dead or
+unready worker still recovers immediately.
+
+Busy size checks record `deferred-busy` without waking the helper or increasing
+the request cooldown. Retries reuse the five-minute worker monitor and hourly
+helper schedule; there is no extra helper retry loop. The helper persists a
+per-agent deferral episode in `~/.mono-agent/launchd-maintenance/`. It proceeds
+when idle, or forces after four hours or 48 deferrals (the count backstop bounds
+clock rollback). Log-size maintenance also forces when an active stream reaches
+10 MiB: this is an emergency scheduling threshold, **not** a new log cap. The
+monitor reads the helper episode when available and otherwise remembers its
+first over-limit observation until restart. Sampling and deferrals can let logs
+exceed these thresholds.
+
+Permission repair, authenticated started-transaction recovery/cleanup, explicit
+CLI lifecycle commands, and accepted supervised restarts/signals remain
+immediate. Ceilings never override unsafe-path refusals, lock contention, or
+stopped-writer proof. Snapshot publication and a final re-read reduce but do not
+eliminate the residual sub-second race with newly arriving work; there is no
+admission reservation and jobs do not survive a forced restart.
+
+`doctor` and `status` (including `status --json`) show the monitor outcome and
+helper decision, pending reasons, first deferral, count, probe counts, force-by
+time, and retained forced-decision history. A stop decision retains the episode
+until successful rotation/reconciliation or a fresh healthy explicit start/restart;
+a failed stop or explicit stop does not reset its budget. The files contain no prompts or job
+text. Linux systemd workers have no scheduled maintenance helper today; explicit
+Linux lifecycle behavior is unchanged.
 
 The loaded launchd definition, not the plist bytes on disk, is authoritative
 for migration. Existing agents retain their previously loaded interval until
@@ -711,9 +823,49 @@ or decision, `MemoryJournal` for a broad retrospective over explicit local
 calendar dates, and `RunHistory`/`SessionHistory` for exact execution evidence.
 Unhinted interrupted-work recovery still begins with `RunHistory {}`.
 
+The configured, request-scoped `MemoryRecall` endpoint can deliberately reuse the
+current logical turn's original automatic-lookup question with
+`useOriginalQuery: true`. This reuses the bounded direct lookup after an
+automatic safety abstention, retaining existing deliberate graph expansion when
+supported, without combining different queries or changing ordinary `query`
+search results. Served IDs are counted once per turn in both modes, including
+non-graph writable stores. The two modes are mutually exclusive. Standalone and
+capability-free programmatic recall servers do not advertise original-query mode
+because they do not own that per-turn lookup. Optional `kind` (`fact`, `preference`,
+`lesson`) filters labelled sections without changing the ordinary dated hits;
+`about` selects one exact person entity ID/name. Local BuJo results prepend a
+fact sheet (keys without the `other:` namespace, values as text) with
+attribution, date, current/historical state and conflicts; a keyless coarse
+person fact is a `FactSheetEntry` with the stored line as `text` and no
+`key`/`value`, rendered as `fact: <line>`. Structured rows rank before keyless
+ones so a structured conflict is never cut, plus
+scoped preferences and verified lessons only when ranked among the effective
+query's first eight candidates and above the background guidance floor. A
+specific `kind: "preference"` or `kind: "lesson"` request can show retrieved
+lines below that floor; an empty guidance selection omits the section. Within
+each scope guidance ranks by query score, with user > conversation > agent
+precedence and a six-line cap. Ambiguous names display entity IDs;
+`factSheetTruncated` and `preferencesAndLessonsTruncated` flag capped views.
+An explicit `about` focuses on facts, not guidance. Remote stores without labels keep their
+existing response shape. The CLI `mono-agent memory labels [--kind k] [--about
+entity] [--scope s] [--limit 1..1000] [--json]` lists indexed labels
+including history (200 by default), and
+`mono-agent memory lessons --propose` prints source-linked snippets to copy
+manually. Both commands open the active generation read-only while an agent runs.
+
+For built-in local memory, a narrowly recognized embedding request, circuit, or
+response failure preserves already-computed lexical hits instead of silently
+returning no memory. The automatic block is headed
+`Memory (recalled; lexical-only — semantic retrieval unavailable)`, and the
+explicit tool returns the same closed `embedding_unavailable` status, including
+when lexical search has no matches. One status-bearing lookup is shared across
+the automatic and explicit paths for the turn; graph expansion cannot erase the
+status, and only final served IDs update access telemetry. Lite mode remains
+normal lexical service.
+
 `MemoryJournal` is request-scoped and read-only. It is offered only for a local
 Lite, Journal, or BuJo store when `memory.recallTool.enabled` is on and normal
-tool policy allows it. Supermemory has search but no chronological capability.
+tool policy allows it.
 A first call requires `fromDate`, `throughDate`, and an IANA `timeZone`; the
 inclusive range is capped at 31 calendar days. Pages default to 10 and cap at
 25 entries, 8 KiB projected data, and 2 KiB per entry text. The frozen snapshot
@@ -727,8 +879,13 @@ empty range, unsupported composition, and backend failure remain distinct.
 
 `Remember` gives the agent an explicit way to persist one stated fact, closing
 the loop left by read-only `MemoryRecall`. It is request-scoped, deterministic,
-and append-only, and it writes through the shared memory retrieval service so no
-second store is opened.
+and it writes through the shared memory retrieval service so no second store is
+opened. BuJo alone accepts optional `about` (an existing person ID),
+`replaceable: true` (a scan observation that can change even without `about`),
+and `supersedes` (a current captured note/event or enhanced Remember ID);
+supersession preserves history and never replaces a text-only Remember line or
+upgrades a note to a user-stated fact. A plain exact duplicate of a replaceable
+write remains replaceable; use distinct dated wording for an owner-stated fact. Lite and Journal remain text-only.
 
 Availability is deliberately narrow: a configured memory block with
 `memory.rememberTool.enabled` left on, a store that affirms `supportsRemember()`
@@ -743,10 +900,11 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 ### Console project tools
 
-Writable web turns, typed or woken by a background host job or monitor, can use `ListProjects`, `GetProject`,
+Writable web turns, typed or woken by a background host job, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
-`CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead` under
+`CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, `MarkConversationRead`,
+`GetWakeSchedule`, `SetWakeSchedule`, and `ClearWakeSchedule` under
 per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
 alone never authorizes a callback. Tools return real IDs and applied/pending
 results, restrict all targets to the originating agent, and reject late calls.
@@ -756,6 +914,18 @@ palette and belong to one agent; `UpdateConversationTags` idempotently adds/remo
 IDs on the current or named conversation without replacing other tags. Tag changes
 apply immediately and reach the next turn's context snapshot. The MCP server name
 and policy aliases remain `mono-agent-console-projects`. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
+
+With JSON-only `telegram.projects.enabled`, the Telegram channel opens an
+owner-private topic ledger (`.mono-agent/telegram-topics-v1/`), records the
+forum topics its allowlisted chats reveal, and mirrors them one way to the web
+console, which owns the projects. Each Telegram turn in a project-bound topic
+gets the project context in its prompt copy only (the last snapshot this
+process fetched when the console is unreachable); a message a person sent may
+use the project tools above except tags, read state and wake-ups, through a
+capability bound to this process and revoked at settlement.
+`TelegramSendMessage`/`TelegramSendFile` accept `projectId`, resolved through
+the app-owned interaction bridge with allowlist and closed/gone rechecks. See
+[Forum topics as projects](../../docs/channels/telegram.md#forum-topics-as-projects).
 
 `MarkConversationRead({ conversationId? })` clears the unread dot for one of the
 calling agent's conversations (the current conversation by default). It returns
@@ -767,6 +937,15 @@ Opening a conversation remains device-local, and later activity can make it
 unread again, including the rest of the calling turn. Replaying an operation
 returns its original receipt rather than marking newer activity read. There is
 no mark-all operation.
+
+Wake tools act on this conversation only: `GetWakeSchedule({})` returns its
+schedule or null; `SetWakeSchedule` creates without `expectedRevision` or replaces
+with the current revision; `ClearWakeSchedule({ expectedRevision })` removes it.
+Choose `kind: "once"` with `localAt` (at least five minutes ahead when set by the
+tool), or `kind: "weekly"` with 1–7 weekdays and at most eight times. Dates and
+times are local to the given IANA `timezone`; optional `message` is at most 1,000
+UTF-8 bytes. A fired turn arrives later in this conversation. Changes update the
+browser summary immediately; conflicts require a fresh read.
 
 ### Web conversation titles
 
@@ -788,10 +967,55 @@ select direct OpenCode suppress the tool because that bridge has no compatible
 host MCP seam. When the tool is absent or unused, the existing first-user-message
 title remains the fallback.
 
+### Web-console quick replies
+
+`SuggestReplies` attaches non-blocking quick-action buttons to a final reply
+on web-console turns, including web-bound background/job wakes. It accepts
+`{ options: string[] }`: 2–8 distinct trimmed single-line labels of 1–75
+characters, rejecting control characters and duplicates. The later call
+replaces the earlier set; one set uses one shared reply-part budget slot.
+Clicking sends the label as a later ordinary user turn. Use `AskUser` when the
+current run must wait. A restrictive `tools.allowedTools` must name
+`SuggestReplies`; deny wins. Other channels never receive the tool and use the
+existing sanitized unsupported-part fallback if a producer sends the part.
+
+### Web-console restart proposals
+
+An interactive web turn on a keyed, verified supervised worker may expose the
+request-scoped `ProposeRestart` tool. It accepts an optional short reason and
+adds at most one bounded `restart_proposal` part directly below that assistant
+reply in the web console. The tool **only proposes**; the human must confirm
+separately. It neither touches the host restart latch nor chooses a target, URL
+or command. Telegram, Slack, webhook, ACP, TUI and cron turns do not receive
+the tool. The ordinary app-owned tool policy applies: allow-all permits it,
+a restrictive `tools.allowedTools` list must explicitly include
+`ProposeRestart`, and `tools.disallowedTools` wins. If a part reaches a non-web
+destination anyway, only a safe unsupported-part warning/outcome is delivered.
+
+A console restart does not run the existing `mono-agent restart` CLI command.
+Before stopping, launchd refuses changed approved config, dotenv, Identity, Soul,
+or MCP inputs; systemd refuses inputs that would fail its structural startup
+validation. A refusal leaves the current worker online: run `mono-agent validate`
+and then `mono-agent restart` from the agent folder to approve the new inputs.
+If a launchd input changes after acceptance but before the replacement boots,
+the worker refuses to load it and `mono-agent status` reports a durable
+`snapshot-refused` startup failure until an approved worker starts or the job is
+explicitly stopped. Linux's existing systemd failed-unit status applies to
+startup failures. A valid systemd edit may be loaded on supervised relaunch
+without a new fingerprint approval, matching its existing startup policy.
+On a verified launchd/systemd worker, one synchronous acceptance latches the
+operation id and exit code `42` before the operator route may return `202`;
+`app.stop()` and process-lifetime lease release still run gracefully. The
+nonzero exit is necessary for the supervisor's on-failure relaunch; a signal
+before acceptance prevents it and a later signal cannot change it to exit 0.
+Foreground or keyless workers cannot advertise restart. See
+[web-console restart](../../docs/observability/web-console.md#restart-one-agent)
+for operator-facing confirmation and outcomes.
+
 ### Channel interactions and conversation history
 
 The configured agent preserves the harness's positive `importContext`
-capability through root-ownership, monitor, process-job, posted-reply, reply-file,
+capability through root-ownership, process-job, posted-reply, reply-file,
 and MCP-App decorators. The default durable store exposes it only when complete
 batch retention and provider-state retirement or absence are provable. Slack's
 posted-reply wrapper overlays destination history only on the leased Send view;
@@ -820,21 +1044,33 @@ skill/startup-context reload on its next turn.
 
 The app publishes a cached, content-free `memoryHealth` snapshot in the primary
 trace-source heartbeat and any enabled best-effort global mirror. Built-in
-health is computed through a dynamic memory import so a native SQLite ABI
-failure becomes sanitized `unknown` health
-instead of crashing unrelated CLI startup. Concurrent refreshes coalesce; in
-steady state, ordinary trace events and the completion-based timer never run a
-full audit less than 30 seconds after the prior completion. Startup and reload
-make one explicit post-lifecycle exception so the registered snapshot reflects
-the newly started store. The timer is unreferenced and invalidated at
-stop/reconfigure entry, and the same
-snapshot is used for both registries. The shape is limited to backend/mode,
-closed status and issue vocabularies, ISO check time, and eight whitelisted
-counts—never paths, ids, content, payloads, or raw errors.
+health is audited in a dedicated, lazily started worker thread, so synchronous
+SQLite and canonical-source inspection do not block the controller event loop.
+The periodic worker uses one stability attempt; a real concurrent mutation is
+reported as `mutation_in_progress` and retried on the next normal cycle rather
+than immediately repeating the full audit. Only the deterministic canonical
+graph projection is memoized, and only while the fingerprint of every canonical
+source byte is unchanged. SQLite integrity and inventory, queues, runtime,
+locks, temporary artifacts, mutation markers, and parity against the current DB
+are recomputed on every cycle.
 
-Unexpected built-in audit failures use the stable `health_check_failed` issue,
-while durable work that exceeds its ownership grace uses `work_stalled`; both
-are fixed metadata-only classifications.
+Concurrent refreshes coalesce; in steady state, ordinary trace events and the
+completion-based timer never run an audit less than 30 seconds after the prior
+completion. Startup and reload make one explicit post-lifecycle exception so
+the registered snapshot reflects the newly started store. Stop and reconfigure
+fence pending work, retire the worker without delaying lifecycle teardown, and
+reject results from a replaced store. The timer and idle worker are
+unreferenced, and the same snapshot is used for both registries. `checkedAt` is
+the time of the complete audit that produced the published snapshot, including
+cycles whose unchanged canonical projection was reused.
+
+The shape is limited to backend/mode, closed status and issue vocabularies, ISO
+check time, and eight whitelisted counts—never paths, ids, content, payloads, or
+raw errors. Worker startup, timeout, crash, malformed response, and unexpected
+audit failures publish fresh sanitized `unknown` health with the stable
+`health_check_failed` issue rather than stale counts. Durable work that exceeds
+its ownership grace uses `work_stalled`; both are fixed metadata-only
+classifications.
 
 Operator automation should use:
 
@@ -852,10 +1088,24 @@ mono-agent memory retry <64-character-id> --json
 mono-agent memory resolve <64-character-id> <reason-slug> --json
 
 # Explicit BuJo cleanup: prepare is read-only; apply/restore require stop.
+mono-agent memory curate prepare --plan ./curate-plan.json --limit 120 --dry-run
+mono-agent memory curate prepare --plan ./curate-plan.json
+mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice,label:*
+# Stop the agent before apply; keep the returned backup for a possible restore.
+mono-agent memory curate apply --plan ./curate-plan.json
+mono-agent memory curate restore --backup /path/returned/by/apply
+# Identity: list duplicate entity names, then merge ids without a model pass.
+mono-agent memory entities --duplicates --json
+mono-agent memory curate prepare --plan ./identity-plan.json --limit 0 --merge person:morgan-2=person:morgan
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent memory forget apply --plan ./forget-plan.json --json
 mono-agent memory forget restore --backup /path/returned/by/apply --json
 ```
+
+Curation prepare uses tool-less, single-turn structured model calls without taking
+an agent-root lease; one retry per failed batch precedes bounded discard reasons.
+Review every proposed drop and rewrite before accepting it. A keep-only apply is
+a no-op and has no restore backup.
 
 Journal and BuJo always require a valid managed `.index/manifest.json`; only
 Lite may remain unmanaged. Missing/corrupt authority, active/configured
@@ -963,14 +1213,60 @@ otherwise neither the runtime extension nor operator capability is exposed.
 Stored resources follow `artifacts.retention.maxAgeDays` within that aggregate
 ceiling; live connections are separately bounded by an eight-entry LRU and
 ten-minute idle timeout. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 for native channel behavior, fallbacks, browser security, and limits.
 
-Successful cron answers suppressed by the shared notification classifier project
-`NOTHING_TO_REPORT` as operator summary and detail text. Classification uses the
+Successful legacy cron answers suppressed by the shared notification classifier
+project `NOTHING_TO_REPORT` as operator summary and detail text. Typed
+`FinishSilently` completions instead persist `turnDisposition: "silent"` and
+retain empty result text without synthesizing the sentinel. Classification uses the
 full stored answer before either byte limit, including a sentinel on the final
 line of long narration. Agent SQLite and retained activity keep the original
 text; failures and non-suppressed output retain their existing truncation rules.
+
+### Anthropic cache retention
+
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. Nonempty `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then the `"long"` default. Both the default and explicit values override Pi's
+separate ambient `PI_CACHE_RETENTION`, including explicit `"short"` when Pi's
+environment requests long retention.
+The runtime forwards retention only to Anthropic Messages, including child
+routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
+unsupported models receive no one-hour TTL.
+
+One-hour writes cost **2× normal input**, reads **0.1×**, versus **1.25×** for
+short-cache writes. Model support is required, and no cache hit is guaranteed.
+Metadata-only diagnostics record the requested setting and observed cache TTL;
+an ephemeral Anthropic cache control without an explicit TTL denotes five
+minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.
+
+
+Validated model declarations feed one normalized per-model 1M context policy.
+Per-request `context1M` metadata follows the same six-source precedence as model
+and effort; false is explicit, invalid values are warned and ignored. Overrides
+are turn-scoped: fallback routes and child agents keep their configured policy.
+Catalog advertisements expose inferred capability and configured capacity without
+claiming provider entitlement. Manual compaction honors the conversation selection.
+
+### Local desktop computer use
+
+Opt into the separately installed cua-driver MCP server with
+`tools.computerUse: { "backend": "cua-driver", "command": "/opt/tools/cua-driver" }`.
+`command` is optional; executable discovery also handles supervised workers'
+minimal PATH. Doctor reports the resolved binary/version and waits for unconfirmed
+macOS app-daemon permissions. The reserved `computer-use` server follows ordinary
+MCP/subagent routing; a declared-name collision is a config error. Permission
+modes remain operator-owned and external MCP tools bypass built-in allow/deny
+policy. See [Computer use](../../docs/tools/computer-use.md) for installation,
+OS grants, privacy, and safe unattended-operation limits.
 
 ## Architecture
 
@@ -996,7 +1292,7 @@ path:
    input and enters only the exact app-owned TUI driver through a private
    composition hook. The TUI driver primes its skill registry before binding
    and refreshes changed `SKILL.md` metadata in memory while it runs.
-4. Publish traceability, exporter, sandbox, process-job, continuation, and memory-health
+4. Publish traceability, sandbox, process-job, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.
 5. On stop or reload, stop the transport first, then dispose its responder so
@@ -1014,10 +1310,32 @@ path:
 | Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
-| Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
+| Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-runs.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
 | Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, bounded local memory chronology, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API
+
+Web process-job wakes use an optional owner-private v1 admission fence in the
+existing job record. Each attempt is marked before follow-up execution or a
+steer offer; only an exact explicit safe steer refusal releases that marker.
+Exclusive restart/shutdown recovery fences a still-unmarked token and carries
+its non-admission proof on the next authenticated web wake. Possibly admitted
+attempts and legacy records remain unknown and are never automatically replayed.
+Proofs are bounded to sixteen tokens per job and never evicted to authorize a
+retry; exhaustion fails closed. These identities do not enter job projections,
+prompts, history or browser DTOs. No historical data repair is performed.
+Upgrade the web console first, or together with the agents. A new agent behind
+an older strict console cannot deliver web wakes: the unsupported recovery
+metadata is rejected before acceptance and the agent records a terminal wake
+failure, with no stripped-payload retry. Paired upgrades enable recovery.
+Token-less process-job requests from older consoles are marked as legacy before
+execution. Exact safe steering
+refusals can release their boundary for the same live follow-up, but legacy
+attempts never yield recovery certificates or restart retries. Revoked/fenced
+attempts refuse token-less requests too. Older strict job readers reject the
+new optional private fields: rollback requires a storage-compatible agent, not
+removing proof fields. Existing ProcessJobs retention/reset boundaries apply.
+
 
 ### Start here
 
@@ -1095,7 +1413,6 @@ ContinuationTerminalState
 CronChannelOverrides
 DEFAULT_CONTINUATION_LIMITS
 DEFAULT_CONTINUATION_SERVICE_PORT
-ExporterStatus
 InitFileChange
 InitFileChangeKind
 InitMonoAgentFolderOptions
@@ -1131,7 +1448,6 @@ OpenAIApiChannelOverrides
 PreflightResult
 RUN_HISTORY_MCP_SERVER_NAME
 RUN_HISTORY_TOOL_NAME
-ResolvedExporter
 ResolvedMemoryJournalRange
 RunContinuationCommandOptions
 RunHistoryBinding
@@ -1210,11 +1526,9 @@ loadContinuationSettings
 managedSrtInstallRoot
 normalizeContinuationReplyTarget
 parseCliArgs
-phoenixAppBaseUrl
 printAppStatus
 renderHelp
 resolveAppArtifactDir
-resolveAppObservabilityExporters
 resolveAppTraceHeartbeatMs
 resolveAppTraceRegistryDir
 resolveAppTraceSourceId
@@ -1258,18 +1572,18 @@ compose communication adapters; adapters never depend on it.
 Opt in to metadata-only prompt-cache request fingerprints with
 `providers.piNative.promptCacheDiagnostics` (default `false`) or
 `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
-[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+[Prompt-cache measurement](https://docs.mono-agent.dev/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 
-- [Quickstart](https://mono-agent-docs.vercel.app/getting-started/quickstart/)
-- [Agent folder layout](https://mono-agent-docs.vercel.app/config/folder-layout/)
-- [Configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
-- [CLI reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
-- [Channels](https://mono-agent-docs.vercel.app/channels/)
-- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Quickstart](https://docs.mono-agent.dev/getting-started/quickstart/)
+- [Agent folder layout](https://docs.mono-agent.dev/config/folder-layout/)
+- [Configuration blueprint](https://docs.mono-agent.dev/config/blueprint/)
+- [CLI reference](https://docs.mono-agent.dev/observability/cli-reference/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
+- [Channels](https://docs.mono-agent.dev/channels/)
+- [Local-first web research](https://docs.mono-agent.dev/tools/web-research/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification
@@ -1282,3 +1596,15 @@ pnpm run check:architecture
 
 Smoke path: `mono-agent init` in a temp folder, `mono-agent validate`, then
 `mono-agent start` and a `curl` POST against the printed webhook invoke URL.
+
+For the detached-child stop contract, run from the repository root:
+
+```bash
+pnpm --filter @mono-agent/agent-app... run build
+node packages/agent-app/scripts/smoke-subagent-stop.mjs
+```
+
+This uses built app packages, the runtime's shipped JavaScript and a controlled
+Pi provider (no network credentials). It prints JSON evidence for tool-bearing
+stop/resume/close and bounded uncooperative stop, then removes its private
+throwaway state under the worktree's `node_modules`.

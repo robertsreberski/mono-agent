@@ -1,3 +1,4 @@
+import { projectSummary } from "./helpers.js";
 import {
   existsSync,
   linkSync,
@@ -26,7 +27,6 @@ import {
   auditCanonicalGraphParity,
   appendGraphBatch,
   migrate,
-  readGraph,
   readManagedIndexManifest,
   resolveActiveMemoryDbPath,
   rollbackMemoryIndex,
@@ -1137,7 +1137,7 @@ describe("safe memory index rebuild", () => {
   it("rejects a rebuild while a configured writer is live before making any embedding call", async () => {
     const root = tempRoot();
     const store = createBujoMemoryStore({ root, tier: "lite" });
-    await store.appendHostSummary("conversation", "A live writer owns this memory root.");
+    await projectSummary(store, "conversation", "A live writer owns this memory root.");
     const embed = vi.fn(async (texts: readonly string[]) => texts.map(() => new Array<number>(8).fill(0)));
 
     try {

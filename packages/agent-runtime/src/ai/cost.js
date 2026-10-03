@@ -6,7 +6,6 @@
 // undefined-on-miss behavior the pricing lookup below relies on.
 import { calculateCost as calculatePiCost } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel } from "./pi-supplement.js";
 
 /**
  * @typedef {Object} ParsedModelReference
@@ -159,14 +158,9 @@ function pricingHasRates(pricing = {}) {
 function piCatalogModel(parsed) {
   if (!parsed?.provider || !parsed.model) return null;
   try {
-    // pi-supplement: same upstream-first miss-fallback as the resolve path, so
-    // supplemented models carry their catalog price instead of unknownPricing.
-    // `provider` may be a caller-supplied id (custom providers included), wider
-    // than pi-ai's built-in KnownProvider catalog union; the catalog lookup
-    // itself is the runtime check, guarded by the catch below.
-    return (getPiModel(/** @type {*} */ (parsed.provider), parsed.model)
-      ?? getPiSupplementModel(parsed.provider, parsed.model))
-      || null;
+    // `provider` may be caller-supplied (including custom providers), wider
+    // than pi-ai's built-in provider union; guard the catalog read below.
+    return getPiModel(/** @type {*} */ (parsed.provider), parsed.model) || null;
   } catch {
     return null;
   }

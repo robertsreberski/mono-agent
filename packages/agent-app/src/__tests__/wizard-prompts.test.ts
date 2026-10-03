@@ -36,7 +36,6 @@ import {
   WizardCancelled,
 } from "../wizard/prompts.js";
 import {
-  defaultEffortForModelRef,
   discoverWizardModelCandidates,
   rankWizardModelCandidates,
   type WizardModelCandidate,
@@ -94,10 +93,13 @@ describe("wizard prompt builders", () => {
     ]);
   });
 
-  it("offers the Supermemory plugin only when setup confirms it is available", () => {
-    expect(memorySelectOptions().map((option) => option.value)).not.toContain("memory:supermemory");
-    expect(memorySelectOptions({ includeOptionalPlugins: true }).map((option) => option.value))
-      .toContain("memory:supermemory");
+  it("offers only current built-in memory tiers", () => {
+    expect(memorySelectOptions().map((option) => option.value)).toEqual([
+      "",
+      "memory:lite",
+      "memory:journal",
+      "memory:bujo",
+    ]);
   });
 
   it("modelSelectOptions offers the curated set plus Pi and generic escape hatches", () => {
@@ -260,9 +262,11 @@ describe("wizard prompt builders", () => {
       "RunHistory",
       "SessionHistory",
       "SetConversationTitle",
-      "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead",
+      "SuggestReplies",
+      "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule",
       "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
       "MemoryJournal",
+      "PeerAgent",
       "Remember",
       "TelegramSendMessage",
       "AskUser",
@@ -302,12 +306,14 @@ describe("provider setup planner", () => {
         "openai-codex:gpt-5.6-terra",
         "openai-codex:gpt-5.6-terra",
         "openai:gpt-5.5",
-        "opencode-go:kimi-k2.6",
+        "opencode-go:kimi-k3",
         "ollama:gemma4:31b",
         "lmstudio:qwen/qwen3-8b",
       ],
     });
 
+    // Pi 0.99 adds OpenAI ChatGPT OAuth, but onboarding must not silently
+    // offer a flow whose device-id lifecycle has not been implemented here.
     expect(plan.actions.map((action) => action.id)).toEqual([
       "pi-login:anthropic",
       "pi-login:openai-codex",
@@ -492,19 +498,6 @@ describe("provider setup planner", () => {
 });
 
 describe("wizard model discovery", () => {
-  it("derives only local/reasoning defaults and never fabricates cloud effort metadata", () => {
-    expect(defaultEffortForModelRef("anthropic:claude-sonnet-5")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-terra")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-sol")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-terra")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-sol")).toBeUndefined();
-    expect(defaultEffortForModelRef("ollama:llama3.1:8b")).toBe("none");
-    expect(defaultEffortForModelRef("lmstudio:qwen/qwen3-8b")).toBe("medium");
-    expect(defaultEffortForModelRef("opencode-go:some-model", true)).toBe("medium");
-    expect(defaultEffortForModelRef("opencode-go:some-model", false)).toBe("none");
-    expect(defaultEffortForModelRef("openai:gpt-5.5")).toBeUndefined();
-  });
-
   it("discovers Pi, Ollama, and LM Studio candidates without dropping static Pi options", async () => {
     const exec = vi.fn(async (file: string) => {
       if (file === "ollama") {
@@ -527,7 +520,8 @@ describe("wizard model discovery", () => {
     const values = result.candidates.map((candidate) => candidate.value);
     expect(values).toContain("openai-codex:gpt-5.6-terra");
     expect(values).toContain("openai-codex:gpt-5.6-sol");
-    expect(values).toContain("opencode-go:kimi-k2.6");
+    // Pi 0.99.1 removed kimi-k2.6; discovery follows its current chat catalog.
+    expect(values).toContain("opencode-go:kimi-k3");
     expect(values).toContain("ollama:llama3.1:8b");
     expect(values).toContain("lmstudio:qwen/qwen3-8b");
     expect(result.statuses).toMatchObject([

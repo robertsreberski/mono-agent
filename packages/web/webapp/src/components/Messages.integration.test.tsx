@@ -14,9 +14,9 @@ import {
   ProcessJobPresentationProvider,
   projectProcessJobPresentation,
 } from "../process-job-presentation";
-import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
+import { compactionMarkerIdsForMessages, convertWebMessage, visibleCompactionMessages } from "../runtime";
 import type { WebMessage } from "../types";
-import { monitor, processJob } from "../test/fixtures";
+import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 import { ProcessJobStack } from "./ProcessJobStack";
 import { ToolCallRepairProvider } from "./tool-call-repair";
@@ -52,25 +52,31 @@ afterEach(() => {
 function MessagesHarness({
   messages,
   onRuntime,
+  onNew = async () => undefined,
+  isRunning = false,
 }: {
   readonly messages: readonly WebMessage[];
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
+  readonly onNew?: (message: unknown) => Promise<void>;
+  readonly isRunning?: boolean;
 }) {
   const presentation = projectProcessJobPresentation(
-    coalesceMonitorWakeMessages(messages),
+    visibleCompactionMessages(messages),
     { threadId: messages[0]?.threadId ?? null },
   );
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
+      compactionMarkerIds: compactionMarkerIdsForMessages(messages),
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById],
+    [presentation.eventsByMessageId, presentation.jobsById, messages],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
     convertMessage,
-    onNew: async () => undefined,
+    onNew,
+    isRunning,
     adapters: {
       threadList: {
         threadId: "thread",
@@ -154,19 +160,7 @@ const assistantMessage = (
   ],
 });
 
-const monitorWakeMessage = (
-  id: string,
-  projection = monitor(),
-  status: WebMessage["status"] = "complete",
-): WebMessage => ({
-  ...assistantMessage(status),
-  id,
-  turnId: `turn-${id}`,
-  parts: [{
-    type: "monitor-activity",
-    monitors: [{ projection, deliveryKeys: [`monitor:${projection.monitorId}:${String(projection.counters.seq)}`] }],
-  }],
-});
+
 
 const userMessage: WebMessage = {
   id: "user-message",
@@ -179,7 +173,63 @@ const userMessage: WebMessage = {
   parts: [{ type: "text", text: "Inspect this workspace." }],
 };
 
+describe("compaction marker row and inline divider", () => {
+  const automatic = { type: "conversation-marker" as const, kind: "compaction" as const,
+    operationId: "compact-1", at: "2026-07-17T10:00:13.000Z", trigger: "automatic" as const,
+    status: "succeeded" as const, tokensBefore: 80_000, tokensAfter: 20_000 };
+  const marker = (part: Extract<WebMessage["parts"][number], { type: "conversation-marker" }> = automatic): WebMessage => ({ ...assistantMessage("complete"), id: "compaction-marker", role: "system", parts: [part] });
+  const tool = (id: string) => ({ type: "tool-call" as const, toolCallId: id, toolName: "Read", status: "complete" as const });
+  const compaction = assistantMessage("complete").parts.find((part) => part.type === "telemetry" && part.event === "runtime_telemetry")!;
+
+  it("renders Activity, divider, Activity, answer without a duplicate marker row", () => {
+    const assistant = { ...assistantMessage("complete"), parts: [tool("before"), compaction, tool("after"),
+      { type: "text" as const, text: "The fictional answer is ready." }] };
+    const { container } = render(<MessagesHarness messages={[assistant, marker()]} />);
+    const activities = container.querySelectorAll(".activity-root");
+    expect(activities).toHaveLength(2);
+    expect(activities[0]?.querySelector(".activity-meta")).toHaveTextContent("1 step");
+    expect(activities[1]?.querySelector(".activity-meta")).toHaveTextContent("1 step");
+    const divider = screen.getByRole("note", { name: /Context compacted.*automatic/u });
+    expect(screen.getAllByRole("note", { name: /Context compacted/u })).toHaveLength(1);
+    expect(divider.closest(".activity-root")).toBeNull();
+    expect(activities[0]!.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider.compareDocumentPosition(activities[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(activities[1]!.compareDocumentPosition(screen.getByText("The fictional answer is ready.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps manual markers and falls back to an automatic row without loaded telemetry", () => {
+    const assistant = assistantMessage("complete");
+    const manual = marker({ ...automatic, trigger: "manual" });
+    const { rerender } = render(<MessagesHarness messages={[assistant, manual]} />);
+    expect(screen.getAllByRole("note", { name: /Context compacted/u })).toHaveLength(1);
+    expect(screen.getByRole("note", { name: /Context compacted.*manual/u })).toBeVisible();
+    rerender(<MessagesHarness key="paged-fallback" messages={[{ ...assistant, id: "fallback-assistant", parts: [{ type: "text", text: "Older page without telemetry." }] }, { ...marker(), id: "fallback-marker" }]} />);
+    expect(screen.getByRole("note", { name: /Context compacted.*automatic/u })).toBeVisible();
+  });
+});
+
+/** The jobs shelf is closed by default; its toggle's name starts with its visible title. */
+const openJobShelf = (): void => {
+  const toggle = screen.getByRole("button", { name: /^Background jobs/u });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+};
+
 describe("AssistantMessage grouped parts", () => {
+  it("mounts restart proposals immediately after answer text, not inside the Activity band", () => {
+    const { container } = render(<MessageHarness message={{ ...assistantMessage("complete"), parts: [
+      { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+      { type: "text", text: "Answer completed." },
+      { type: "failure", id: "other", code: "unsupported_destination", message: "Other part unavailable." },
+      { type: "restart_proposal", id: "proposal", reason: "Refresh context", restartable: { state: "stale", reason: "Agent already changed." } },
+    ] }} />);
+    const answer = screen.getByText("Answer completed.");
+    const card = container.querySelector(".restart-agent-card");
+    expect(card).not.toBeNull();
+    expect(card?.closest(".activity-root")).toBeNull();
+    expect((answer.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
+    expect(card).toHaveTextContent("Refresh context");
+    expect(screen.getByRole("button", { name: "Restart agent" })).toBeDisabled();
+  });
 
   const upload = (id: string, name: string, kind: "image" | "document", contentType: string) => ({
     id,
@@ -588,118 +638,7 @@ describe("AssistantMessage grouped parts", () => {
     }
   });
 
-  it("renders one compact secret-free activity row for a run's Monitor wakes", () => {
-    const first = monitor();
-    const second = monitor({
-      monitorId: "33333333-3333-4333-8333-333333333333",
-      description: "Watch the indexer",
-      state: "exited",
-      timestamps: {
-        ...first.timestamps,
-        completedAt: "2026-07-17T10:00:05.000Z",
-      },
-      counters: {
-        ...first.counters,
-        seq: 1,
-        batchesDelivered: 1,
-        linesObserved: 3,
-        linesDelivered: 2,
-        droppedLines: 1,
-      },
-      exitCode: 0,
-    });
-    render(<MessageHarness message={{
-      ...assistantMessage("complete"),
-      parts: [
-        {
-          type: "monitor-activity",
-          monitors: [
-            { projection: first, deliveryKeys: ["monitor:secret-delivery-one", "monitor:secret-delivery-two"] },
-            { projection: second, deliveryKeys: ["monitor:secret-delivery-three"] },
-          ],
-        },
-        { type: "text", text: "Both watches were handled." },
-      ],
-    }} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(screen.getByText("Monitor updates ×3")).toBeVisible();
-    expect(screen.getByText("2 monitors")).toBeVisible();
-    expect(screen.queryByText(/secret-delivery/u)).toBeNull();
-    expect(screen.queryByText(first.monitorId)).toBeNull();
-
-    fireEvent.click(screen.getByText("Monitor updates ×3").closest("summary")!);
-    expect(screen.getByText("Watch the worker queue")).toBeVisible();
-    expect(screen.getByText("Watch the indexer")).toBeVisible();
-    expect(screen.getByText("2 updates · running")).toBeVisible();
-    expect(screen.getByText("1 update · exited")).toBeVisible();
-    expect(screen.getAllByText("Observed")).toHaveLength(2);
-    expect(screen.getAllByText("Suppressed lines")).toHaveLength(2);
-    expect(screen.getAllByText("Suppressed batches")).toHaveLength(2);
-    expect(screen.getAllByText("Follow-up wakes")).toHaveLength(2);
-    expect(screen.getAllByText("Steered wakes")).toHaveLength(2);
-    expect(screen.getAllByText("Unknown disposition wakes")).toHaveLength(2);
-    expect(screen.getByText("Both watches were handled.")).toBeVisible();
-  });
-
-  it("renders streamed same-Monitor wake turns as one gap-free block through terminal state", async () => {
-    const first = monitor({
-      description: "First batch",
-      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-    });
-    const second = monitor({
-      description: "Second batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    });
-    const streaming = monitor({
-      description: "Streaming batch",
-      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-    });
-    const terminal = monitor({
-      description: "Terminal batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
-      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-      exitCode: 0,
-    });
-    const firstMessage = monitorWakeMessage("monitor-first", first);
-    const secondMessage = monitorWakeMessage("monitor-second", second);
-    const runningMessage = monitorWakeMessage("monitor-current", streaming, "running");
-    const rendered = render(
-      <MessagesHarness messages={[firstMessage, secondMessage, runningMessage]} />,
-    );
-
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
-    // #744 deliberately keeps the generic affordance for a Monitor wake while
-    // its model turn is still running; only process jobs convey that progress.
-    expect(rendered.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
-    expect(Array.from(rendered.container.querySelectorAll(".activity-row-summary"))
-      .map((row) => row.textContent)).toEqual(["First batch", "Second batch", "Streaming batch"]);
-
-    rendered.rerender(
-      <MessagesHarness messages={[
-        firstMessage,
-        secondMessage,
-        monitorWakeMessage("monitor-current", terminal),
-      ]} />,
-    );
-    // The external-store adapter publishes prop replacements on its next tick.
-    await act(async () => { await Promise.resolve(); });
-
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
-    expect(rendered.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-    expect(rendered.container.querySelectorAll(".markdown")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(Array.from(rendered.container.querySelectorAll(".activity-row-summary"))
-      .map((row) => row.textContent)).toEqual(["First batch", "Second batch", "Terminal batch"]);
-    expect(screen.getAllByText("1 update · exited")).toHaveLength(1);
-  });
-
-  it("keeps jobs as Monitor boundaries while presenting them once after transcript messages", () => {
+  it("presents jobs once after transcript messages", () => {
     const jobMessage: WebMessage = {
       ...assistantMessage("complete"),
       id: "process-job-message",
@@ -707,61 +646,19 @@ describe("AssistantMessage grouped parts", () => {
       parts: [{ type: "process-job", job: processJob() }],
     };
     const rendered = render(<MessagesHarness messages={[
-      monitorWakeMessage("monitor-before", monitor({ description: "Before job" })),
+      { ...assistantMessage("complete"), id: "before-job", parts: [{ type: "reasoning", text: "Before job" }, { type: "text", text: "Started" }] },
       jobMessage,
-      monitorWakeMessage("monitor-after", monitor({ description: "After job" })),
+      { ...assistantMessage("complete"), id: "after-job", parts: [{ type: "reasoning", text: "After job" }, { type: "text", text: "Done" }] },
     ]} />);
 
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(2);
     expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(2);
-    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".process-job-card")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(2);
     const stack = rendered.container.querySelector(".process-job-stack")!;
     const lastMessage = rendered.container.querySelectorAll(".message-assistant").item(1);
     expect(lastMessage.compareDocumentPosition(stack) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stack.querySelector(".message-actions")).toBeNull();
-  });
-
-  it("keeps a meaningful Monitor reply as a boundary while preserving final answer text", () => {
-    const intermediateBase = monitorWakeMessage("monitor-intermediate", monitor({
-      description: "Attention batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    }));
-    const intermediate: WebMessage = {
-      ...intermediateBase,
-      parts: [...intermediateBase.parts, { type: "text", text: "The queue needs attention." }],
-    };
-    const terminalBase = monitorWakeMessage("monitor-terminal", monitor({
-      description: "Finished batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
-      counters: { ...monitor().counters, seq: 4, batchesDelivered: 4 },
-      exitCode: 0,
-    }));
-    const terminal: WebMessage = {
-      ...terminalBase,
-      parts: [...terminalBase.parts, { type: "text", text: "The watch finished normally." }],
-    };
-
-    const rendered = render(<MessagesHarness messages={[
-      monitorWakeMessage("monitor-first", monitor({
-        description: "First batch",
-        counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-      })),
-      intermediate,
-      monitorWakeMessage("monitor-later", monitor({
-        description: "Later batch",
-        counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-      })),
-      terminal,
-    ]} />);
-
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(2);
-    expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(2);
-    expect(screen.getByText("The queue needs attention.")).toBeVisible();
-    expect(screen.getByText("The watch finished normally.")).toBeVisible();
-    expect(screen.getByText("The queue needs attention.").closest(".activity-root")).toBeNull();
-    expect(screen.getByText("The watch finished normally.").closest(".activity-root")).toBeNull();
   });
 
   it("uses the canonical terminal state but keeps deferred persistence bookkeeping out of the transcript", () => {
@@ -837,6 +734,7 @@ describe("AssistantMessage grouped parts", () => {
       "aria-expanded",
       "false",
     );
+    expect(screen.getByRole("note", { name: /Context compacted · 80k → ≈20k tokens · automatic/u })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     // A thought is a row like any other: its own preview, with no label
     // competing with the text that says what the model was working out.
@@ -844,9 +742,7 @@ describe("AssistantMessage grouped parts", () => {
       selector: ".activity-row-summary",
     })).toBeVisible();
     expect(screen.getByText("Inspect workspace")).toBeVisible();
-    expect(screen.getByRole("status", {
-      name: "Context compacted, proactive, ~80k → ~20k tokens",
-    })).toBeVisible();
+    expect(screen.getByRole("note", { name: /Context compacted · 80k → ≈20k tokens · automatic/u })).toBeVisible();
     expect(screen.queryByText("Telemetry")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Token usage and cost")).not.toBeInTheDocument();
     expect(screen.getByText("The workspace is ready.")).toBeVisible();
@@ -929,14 +825,14 @@ describe("AssistantMessage grouped parts", () => {
     // The runtime settles a message asynchronously, so the settled state is
     // awaited on real timers. The frozen figure comes from the two server
     // stamps, not from the clock; the settled fixture folds to one band of
-    // reasoning + tool + compaction.
+    // reasoning + tool; the compaction divider is outside Activity.
     vi.useRealTimers();
     rerender(<MessageHarness message={{
       ...assistantMessage("complete"),
       finishedAt: "2026-07-17T10:00:05.400Z",
     }} />);
     const settled = await screen.findByRole("button", { name: "Activity" });
-    expect(settled).toHaveTextContent("3 steps \u00b7 5s");
+    expect(settled).toHaveTextContent("2 steps \u00b7 5s");
   });
 
   it("gives the clock to the band still open and counts steps on the rest", () => {
@@ -967,13 +863,13 @@ describe("AssistantMessage grouped parts", () => {
   });
 
   it("shows steps only for a historical record with no finish stamp", () => {
-    // A cancelled turn keeps arrival order: reasoning + tool + compaction form
-    // the band (3 steps); usage telemetry never renders; the text follows.
+    // A cancelled turn keeps arrival order: reasoning + tool form
+    // the band (2 steps); compaction appears as a divider, then text follows.
     const { finishedAt: _omitted, ...legacy } = assistantMessage("cancelled");
     render(<MessageHarness message={legacy} />);
 
     const trigger = screen.getByRole("button", { name: "Activity" });
-    expect(trigger).toHaveTextContent("3 steps");
+    expect(trigger).toHaveTextContent("2 steps");
     expect(trigger.textContent).not.toContain("\u00b7");
   });
 
@@ -1107,29 +1003,62 @@ describe("AssistantMessage grouped parts", () => {
     });
     const runningMessage: WebMessage = {
       ...assistantMessage("running"),
-      parts: [compaction("running")],
+      parts: [{ type: "text", text: "Before compaction." }, compaction("running"),
+        { type: "text", text: "After compaction." }],
     };
     const { rerender } = render(<MessageHarness message={runningMessage} />);
 
-    expect(screen.getByRole("status", { name: "Compacting context" })).toBeVisible();
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    const runningRow = screen.getByRole("note", { name: "Compacting context… · automatic" });
+    expect(runningRow).toBeVisible();
+    expect(screen.getByText("Before compaction.").compareDocumentPosition(runningRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
 
     rerender(<MessageHarness message={{
       ...runningMessage,
       updatedAt: "2026-07-17T10:00:01.000Z",
       parts: [compaction("succeeded")],
     }} />);
-    expect(await screen.findByRole("status", { name: "Context compacted" })).toBeVisible();
-    expect(screen.queryByRole("status", { name: "Compacting context" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(await screen.findByRole("note", { name: "Context compacted · automatic" })).toBeVisible();
+    expect(screen.queryByRole("note", { name: "Compacting context… · automatic" })).not.toBeInTheDocument();
 
     rerender(<MessageHarness message={{
       ...runningMessage,
       status: "interrupted",
       updatedAt: "2026-07-17T10:00:02.000Z",
     }} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
-    expect(await screen.findByRole("status", { name: "Context compaction interrupted" })).toBeVisible();
+    expect(await screen.findByRole("note", { name: "Context compaction interrupted · automatic" })).toBeVisible();
+  });
+
+  it("renders manual results after the answer and automatic results at their original positions outside Activity", () => {
+    const telemetry = (status: string, trigger: string, reason?: string) => ({
+      type: "telemetry" as const, event: "runtime_telemetry",
+      data: { kind: "context_compaction", data: {
+        status, trigger, reason, tokensBefore: 183_400, tokensAfter: 41_300,
+      } },
+    });
+    render(<MessagesHarness messages={[
+      { ...assistantMessage("complete"), parts: [
+        { type: "text", text: "The answer is ready." }, telemetry("succeeded", "manual"),
+      ] },
+      { ...assistantMessage("complete"), id: "auto-skipped", parts: [
+        { type: "text", text: "Before." }, telemetry("skipped", "automatic"), { type: "text", text: "After." },
+      ] },
+      { ...assistantMessage("complete"), id: "auto-failed", parts: [telemetry("failed", "overflow", "synthetic-provider-detail")] },
+      { ...assistantMessage("complete"), id: "model-changed", parts: [telemetry("skipped", "manual", "model_changed")] },
+    ]} />);
+    const rows = screen.getAllByRole("note");
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toHaveTextContent("Context compacted · 183.4k → ≈41.3k tokens · manual");
+    expect(screen.getByText("The answer is ready.").compareDocumentPosition(rows[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rows[1]).toHaveTextContent("Context compaction skipped · automatic");
+    expect(rows[1]!.compareDocumentPosition(screen.getByText("After.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Automatic compaction before the final answer stays in place; manual stays after.
+    expect(rows[2]).toHaveTextContent("Context compaction failed · automatic");
+    expect(rows[2]).not.toHaveTextContent("tokens");
+    expect(rows[2]).not.toHaveTextContent("synthetic-provider-detail");
+    expect(rows[3]).toHaveTextContent("Context compaction skipped · Model changed. · manual");
+    expect(rows[3]).not.toHaveTextContent("tokens");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("keeps activity open while completed tool entries arrive in a running message", async () => {
@@ -1191,13 +1120,13 @@ describe("AssistantMessage grouped parts", () => {
           parts: [
             { type: "text", text: "The" },
             { type: "reasoning", text: "." },
-            { type: "text", text: " targeted search only surfaced daycare threads." },
+            { type: "text", text: " targeted search only surfaced invoice threads." },
           ],
         }}
       />,
     );
 
-    expect(await screen.findByText("The targeted search only surfaced daycare threads.")).toBeVisible();
+    expect(await screen.findByText("The targeted search only surfaced invoice threads.")).toBeVisible();
     // The content-free thought is not a step, and with nothing else to group
     // the band — and its "1 step" header — never renders.
     expect(screen.queryByRole("button", { name: /Activity/ })).not.toBeInTheDocument();
@@ -1376,21 +1305,23 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The background report is ready.")).toBeVisible();
-    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
+    openJobShelf();
     const stackToggle = screen.getByRole("button", { name: "Background job history" });
     expect(stackToggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(stackToggle);
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
-    expect(row).toHaveClass("activity-row", "is-job", "is-complete");
-    expect(within(row).getByText("Exec job")).toBeVisible();
+    expect(row).toHaveClass("process-job-card", "is-complete");
     expect(within(row).getByText("node worker.js --safe-summary")).toBeVisible();
-    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(within(row).getByText("Exec")).toBeVisible();
+    expect(row.querySelector(".process-job-state")).toHaveTextContent("Done");
+    expect(row.querySelector(".process-job-time")).toHaveTextContent("2s");
     expect(row).not.toHaveAttribute("open");
     expect(screen.getByText("Completed normally.")).not.toBeVisible();
 
     fireEvent.click(row.querySelector("summary")!);
     expect(screen.getByText("Completed normally.")).toBeVisible();
-    expect(screen.getByText("done")).toBeVisible();
+    expect(row.querySelector(".process-job-output")).toHaveTextContent("done");
     // Host-local spool paths are not part of the preview.
     expect(screen.queryByText(/stdout\.log/u)).toBeNull();
 
@@ -1442,7 +1373,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The report is ready.")).toBeVisible();
-    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     // The surviving start row carries the launch arguments behind its disclosure.
     fireEvent.click(started.querySelector("summary")!);
@@ -1451,7 +1382,7 @@ describe("message actions", () => {
     expect(within(started).getByText(job.jobId)).toBeInTheDocument();
   });
 
-  it.each(["Agent", "AgentSend"] as const)("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", (tool) => {
+  it.each(["Agent", "AgentManage"] as const)("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", (tool) => {
     const baseJob = processJob();
     const job = { ...baseJob, kind: "internal" as const, tool, instanceId: "helper", childStillBusy: false };
     const origin: WebMessage = {
@@ -1492,7 +1423,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The report is ready.")).toBeVisible();
-    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: `${tool} background job succeeded` })).toBeNull();
     // A wall of prompt text folds into the start row instead of doubling it.
     fireEvent.click(started.querySelector("summary")!);
@@ -1642,7 +1573,7 @@ describe("message actions", () => {
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("Fallback: provider:primary → provider:fallback · overloaded")).toBeVisible();
-    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".process-job-card")).toHaveLength(1);
   });
 
   it("polls one running job every second and stops after the terminal projection", async () => {
@@ -1667,6 +1598,7 @@ describe("message actions", () => {
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     expect(threadJob).toHaveBeenLastCalledWith("thread", running.jobId, expect.any(AbortSignal));
+    openJobShelf();
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     await act(async () => {
       vi.advanceTimersByTime(1_000);
@@ -1711,7 +1643,7 @@ describe("message actions", () => {
     const rendered = render(<MessagesHarness messages={[first, second]} />);
     await act(async () => { await Promise.resolve(); });
 
-    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".process-job-card")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(0);
     expect(threadJob).toHaveBeenCalledTimes(1);
   });
@@ -1852,17 +1784,19 @@ describe("message actions", () => {
       ...assistantMessage("running"),
       parts: [{ type: "process-job", job: running }],
     }} />);
+    openJobShelf();
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
 
     rerender(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
     }} />);
-    await waitFor(() => expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument());
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });
-    expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(settled.querySelector(".process-job-state")).toHaveTextContent("Done");
+    expect(settled.querySelector(".process-job-time")).toHaveTextContent("2s");
   });
 
   it("uses a running process-job row as the turn's only progress affordance", () => {
@@ -1880,12 +1814,12 @@ describe("message actions", () => {
       parts: [{ type: "process-job", job: running }],
     }} />);
 
-    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass(
-      "activity-row",
-      "is-job",
+    // The row lives in the closed shelf: mounted and polling, but not shown.
+    expect(screen.getByRole("group", { name: "Exec background job running", hidden: true })).toHaveClass(
+      "process-job-card",
       "is-running",
     );
-    expect(container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+    expect(container.querySelectorAll(".process-job-card .process-job-glyph")).toHaveLength(1);
     expect(container.querySelectorAll(".activity-dot")).toHaveLength(0);
     expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
   });
@@ -1912,14 +1846,7 @@ describe("message actions", () => {
     expect(tool.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
     tool.unmount();
 
-    const monitorActivity = render(<MessageHarness message={{
-      ...assistantMessage("running"),
-      parts: [{
-        type: "monitor-activity",
-        monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one"] }],
-      }],
-    }} />);
-    expect(monitorActivity.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+
   });
 
   it.each(["succeeded", "failed", "cancelled"] as const)(
@@ -2017,5 +1944,33 @@ describe("GitHub-Flavored Markdown rendering", () => {
     const link = screen.getByRole("link", { name: "https://example.com" });
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer noopener");
+  });
+});
+
+const quickReplyMessage: WebMessage = {
+  id: "choices-answer", threadId: "thread", role: "assistant", status: "complete",
+  createdAt: "2026-09-23T10:00:00.000Z", updatedAt: "2026-09-23T10:00:01.000Z", attachments: [],
+  parts: [{ type: "text", text: "Choose a next step." },
+    { type: "reply_options", id: "choices", options: ["Review draft", "Keep going", "Try another approach"] }],
+};
+describe("non-blocking quick replies", () => {
+  it("sends the exact choice through the normal runtime path and guards double clicks", async () => {
+    const onNew = vi.fn(async (_message: unknown) => undefined);
+    render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} />);
+    const button = screen.getByRole("button", { name: "Review draft" });
+    fireEvent.click(button); fireEvent.click(button);
+    await waitFor(() => expect(onNew).toHaveBeenCalledTimes(1));
+    expect(onNew.mock.calls[0]?.[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "Review draft" }] });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
+  });
+  it("is inert during a running turn and after any later user message", () => {
+    const onNew = vi.fn(async (_message: unknown) => undefined);
+    const { rerender } = render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} isRunning />);
+    expect(screen.getByRole("button", { name: "Review draft" })).toBeDisabled();
+    rerender(<MessagesHarness messages={[quickReplyMessage, { ...quickReplyMessage, id: "later", role: "user", parts: [{ type: "text", text: "Another question" }] }]} onNew={onNew} />);
+    const button = screen.getByRole("button", { name: "Review draft" });
+    expect(button).toBeDisabled(); fireEvent.click(button);
+    expect(onNew).not.toHaveBeenCalled();
   });
 });

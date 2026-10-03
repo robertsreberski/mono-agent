@@ -55,7 +55,7 @@ const MUTATION_CHAINS = new Map<string, Promise<void>>();
  * spans provider-backed planning and the complete durable replay boundary, so
  * a second caller can only plan against the first caller's committed result.
  *
- * Capture is intentionally nested (captureTurn -> reconcileBatch). An async
+ * Capture is intentionally nested (captureTurnStrict -> reconcileBatch). An async
  * context token makes that nesting reentrant while callers from another turn,
  * store queue, or exported surface still wait in FIFO order.
  */

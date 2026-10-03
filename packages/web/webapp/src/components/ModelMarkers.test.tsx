@@ -4,15 +4,15 @@ import { describe, expect, it } from "vitest";
 import styles from "../styles.css?raw";
 
 import { ModelMarkers } from "./ModelMarkers";
-import type { ModelTransition } from "../types";
+import type { ConversationMarkerPart } from "../types";
 
-const transition = (overrides: Partial<ModelTransition> = {}): ModelTransition => ({
-  id: 1,
-  afterMessageId: "m-1",
-  turnId: "turn-2",
+type ModelMarker = Extract<ConversationMarkerPart, { kind: "model" }>;
+const transition = (overrides: Partial<ModelMarker> = {}): ModelMarker => ({
+  type: "conversation-marker",
+  kind: "model",
   before: { model: "openai-codex:gpt-5.6-sol", effort: "high" },
   after: { model: "anthropic:claude-fable-5-1", effort: "medium" },
-  createdAt: "2026-09-12T10:00:00.000Z",
+  at: "2026-09-12T10:00:00.000Z",
   ...overrides,
 });
 

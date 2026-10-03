@@ -34,7 +34,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 let providerIndexCache;
 
 /**
- * `builtinProviders()` freshly constructs every provider (~37 objects) on each
+ * `builtinProviders()` freshly constructs every provider (~41 objects) on each
  * call, and `pi-auth.js` sits on the per-request credential path. The catalog is
  * static for the process lifetime, so index it once.
  *
@@ -62,20 +62,6 @@ export function resetPiProviderIndexForTests() {
 export function getPiOAuthAuth(providerId) {
   if (typeof providerId !== "string" || providerId.length === 0) return undefined;
   return providerIndex().get(providerId)?.auth?.oauth;
-}
-
-/**
- * Every Pi provider id that supports OAuth. Replaces
- * `getOAuthProviders().map((provider) => provider.id)`.
- *
- * @returns {string[]}
- */
-export function getPiOAuthProviderIds() {
-  const ids = [];
-  for (const [id, provider] of providerIndex()) {
-    if (provider.auth?.oauth !== undefined) ids.push(id);
-  }
-  return ids;
 }
 
 /**

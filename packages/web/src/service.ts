@@ -1,6 +1,9 @@
+import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
-import type { WebCancelOrigin } from "./contracts.js";
-import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
+import type { WebCancelOrigin, WebExternalConversationChannel } from "./contracts.js";
+import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
+import type { ExternalConversationObservation } from "./external-conversations.js";
+import type { ExternalTurnContext } from "./store.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
@@ -22,7 +25,6 @@ import {
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
-  type MonitorProjection,
   processJobPublicError,
   type ProcessJobProjection,
   type ProviderAuthSessionInput,
@@ -59,6 +61,8 @@ import {
   type StartWebSubmissionInput,
   type WebAgentsChangedPayload,
   type WebAgentSummary,
+  type WebAgentRestartOperation,
+  type WebRestartProposalAvailability,
   type WebAgentProvider,
   type WebAttachment,
   type WebBootstrap,
@@ -83,6 +87,8 @@ import {
   type WebProject,
   type WebProjectChangedPayload,
   type WebThread,
+  type WebWakeSchedule,
+  type WebWakeScheduleDefinition,
   type WebThreadChangedPayload,
   type WebThreadDetail,
   type WebActiveThreads,
@@ -103,7 +109,7 @@ import {
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
 import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebTagChangedPayload } from "./contracts.js";
-import { withProjectContext, type ProjectContextSource } from "./project-context.js";
+import { formatQuotedTurn, neutraliseProjectContext, withProjectContext, type ProjectContextSource } from "./project-context.js";
 import {
   advertisedEffortLevels,
   effectiveModelForAgent,
@@ -112,7 +118,7 @@ import {
   type EffortAdvertisement,
 } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
-import { OperatorClient, type OperatorInfo } from "./operator-client.js";
+import { OperatorClient, OperatorTurnFrameError, type OperatorInfo } from "./operator-client.js";
 import { isAskUserToolName } from "./run-activity.js";
 import {
   generateWebPushIdentity,
@@ -133,6 +139,8 @@ import {
   WEB_THREAD_PAGE_DEFAULT,
   notificationPushLogicalKey,
   type StoredAttachment,
+  type StoredRestartOperation,
+  type StoredRestartProposalBinding,
   type StoredMessageWrite,
   type CronRunReconciliationResult,
   type StoredTurnExecution,
@@ -149,12 +157,16 @@ import {
 const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
+/** Only bound a human steer after its target turn has settled. */
+export const SETTLED_TURN_LIVE_INPUT_GRACE_MS = 60_000;
 /**
- * Consecutive `/v1/info` probe failures tolerated before a discovered agent is
- * reported offline. ONE missed probe is not evidence of a dead agent: the
- * operator's info route is a synchronous handler, so a probe that runs out
+ * Consecutive inconclusive presence samples tolerated before a discovered
+ * agent is reported offline. ONE missed probe is not evidence of a dead agent:
+ * the operator's info route is a synchronous handler, so a probe that runs out
  * `INFO_TIMEOUT_MS` was queued behind a blocked event loop -- a busy agent --
- * while the same route answers an idle agent in well under a millisecond.
+ * while the same route answers an idle agent in well under a millisecond. A
+ * running manifest can likewise omit its operator endpoint for one publication,
+ * and one failed registry walk is not an authoritative empty fleet.
  * Tolerating a few samples costs about 15s at the discovery interval, and the
  * trace heartbeat's own 30s staleness is the independent backstop that still
  * reports an agent which is genuinely gone.
@@ -460,15 +472,6 @@ function nameWholePayloads(part: WebToolCallPart | WebSubagentPart): WebToolCall
   };
 }
 
-function formatQuotedTurn(quote: string, text: string): string {
-  const blockquote = quote
-    .trim()
-    .split(/\r?\n/u)
-    .map((line) => `> ${line}`)
-    .join("\n");
-  return `Quoted context:\n${blockquote}\n\n${text}`;
-}
-
 function assertTurnTextWithinLimit(operatorText: string): void {
   if (operatorText.length <= WEB_MAX_TURN_TEXT_CHARACTERS) return;
   throw new WebConsoleError(
@@ -476,28 +479,6 @@ function assertTurnTextWithinLimit(operatorText: string): void {
     `The message and quote may contain at most ${WEB_MAX_TURN_TEXT_CHARACTERS} characters after formatting.`,
     413,
   );
-}
-
-function assertMonitorWakeAddress(input: DeliverWebMonitorNotificationInput): void {
-  const originConversation = input.monitor.origin.conversationId.split("#", 1)[0];
-  const expectedDeliveryKey = `monitor:${input.monitor.monitorId}:${String(input.monitor.counters.seq)}`;
-  if (input.monitor.origin.channel !== "web"
-    || originConversation !== `web:${input.threadId}`
-    || input.deliveryKey !== expectedDeliveryKey) {
-    throw new WebConsoleError(
-      "invalid_notification",
-      "The Monitor wake origin or delivery key does not match its web destination.",
-      409,
-    );
-  }
-}
-
-function monitorWakePayloadSha256(monitor: MonitorProjection, wakePrompt: string): string {
-  return createHash("sha256")
-    .update(canonicalJson(monitor))
-    .update("\0")
-    .update(wakePrompt)
-    .digest("hex");
 }
 
 function canonicalJson(value: unknown): string {
@@ -523,9 +504,10 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   readonly clock?: () => Date;
   readonly discoveryIntervalMs?: number;
   /**
-   * Consecutive operator probe failures tolerated before a discovered agent is
-   * reported offline. Test/embedding override; production uses
-   * `PROBE_FAILURE_TOLERANCE`.
+   * Consecutive inconclusive presence samples tolerated before a discovered
+   * agent is reported offline. This covers failed operator probes, temporarily
+   * absent endpoint metadata, and registry discovery failures. Test/embedding
+   * override; production uses `PROBE_FAILURE_TOLERANCE`.
    */
   readonly probeFailureTolerance?: number;
   readonly purgeIntervalMs?: number;
@@ -553,8 +535,10 @@ interface ActiveTurn {
 
 interface ActiveLiveInput {
   readonly threadId: string;
+  readonly turnId: string;
   readonly controller: AbortController;
   readonly completion: Promise<void>;
+  graceTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
@@ -562,6 +546,10 @@ type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  readonly pid: number | undefined;
+  /** Process-only identity, never the endpoint-plus-process connection digest. */
+  readonly processGeneration: string;
+  /** Process plus endpoint identity; unlike a summary generation, an endpoint move retires this client. */
   readonly generation: string;
 }
 
@@ -591,23 +579,14 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly processJob: ProcessJobProjection;
   /** Present only for the terminal wake delivery, not lifecycle-only updates. */
   readonly wakePrompt?: string;
+  readonly wakeRecovery?: ProcessJobWakeRecovery;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 }
 
-export interface DeliverWebMonitorNotificationInput {
-  readonly sourceId: string;
-  readonly triggerKind: "monitor";
-  readonly deliveryKey: string;
-  readonly threadId: string;
-  readonly monitor: MonitorProjection;
-  readonly wakePrompt: string;
-}
-
 export type DeliverWebNotificationInput =
   | DeliverWebThreadNotificationInput
-  | DeliverWebProcessJobNotificationInput
-  | DeliverWebMonitorNotificationInput;
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationResult {
   readonly thread?: WebThread;
@@ -662,6 +641,9 @@ export class WebService {
   private readonly lease: WebStateLease;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  /** Threads with an in-flight manual compaction; wakes wait on the promise. */
+  private readonly activeCompactions = new Map<string, Promise<unknown>>();
+  private readonly manualCompactionStartedAt = new Map<string, string>();
   private readonly activeLiveInputs = new Map<string, ActiveLiveInput>();
   private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
@@ -684,6 +666,9 @@ export class WebService {
   private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
+  /** Preserve the process binding of in-flight turn clients across discovery replacement. */
+  private readonly clientProcessGeneration = new WeakMap<OperatorClient, string>();
+  private readonly clientConnectionGeneration = new WeakMap<OperatorClient, string>();
   /**
    * Source id -> the capability signature projected for it on the last
    * discovery pass. No projected capability is on the summary or in the store,
@@ -692,14 +677,20 @@ export class WebService {
    */
   private projectedCapabilities = new Map<string, string>();
   /**
-   * Source id -> the consecutive `INFO_TIMEOUT_MS` probe failures seen for that
-   * agent's CURRENT generation, and the generation they belong to. One failed
-   * sample is usually a blocked event loop rather than a dead agent, so it is
-   * the COUNT that reaches `PROBE_FAILURE_TOLERANCE` and makes it evidence of
-   * anything. Keyed by generation, so a restart can neither inherit the
-   * previous process's failures nor hide behind them.
+   * Source id -> consecutive failed probe or missing-endpoint samples for that
+   * agent's CURRENT process generation. One failed sample can be a blocked event
+   * loop or transient channel-status publication rather than a dead agent, so it
+   * is the COUNT that reaches `PROBE_FAILURE_TOLERANCE` and makes it evidence of
+   * anything. Keyed by process generation, so endpoint churn keeps one budget
+   * while a restart can neither inherit the previous process's failures nor hide
+   * behind them.
    */
   private readonly probeFailures = new Map<string, { readonly generation: string; readonly count: number }>();
+  /**
+   * Consecutive failed registry walks. A successful walk resets this fleet-wide
+   * counter even when individual operator probes in that result fail.
+   */
+  private discoveryFailures = 0;
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
    *  and appended to by every proxied `/v1/models` page. Admission is `has`,
    *  metadata is `get`. Map preserves insertion order, so evicting the oldest
@@ -728,6 +719,7 @@ export class WebService {
   private sweepingJobCards = false;
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
   private purgeTimer: ReturnType<typeof setInterval> | undefined;
+  private wakeTimer: ReturnType<typeof setInterval> | undefined;
   private purgePromise: Promise<void> | undefined;
   private refreshPromise: Promise<void> | undefined;
   private refreshController: AbortController | undefined;
@@ -743,6 +735,7 @@ export class WebService {
     replyAccessKey: Buffer,
   ) {
     this.store = store;
+    store.onConversationMarker = ({ threadId, messageId, updatedAt }) => this.emit("message.changed", threadId, { messageId, updatedAt });
     this.lease = lease;
     this.options = options;
     this.pushIdentity = pushIdentity;
@@ -790,6 +783,7 @@ export class WebService {
       await service.purgeOrphans();
       await service.refreshAgents();
       service.startTimers();
+      service.dispatchWakes();
       service.pushDispatcher.start();
       return service;
     } catch (error) {
@@ -840,13 +834,13 @@ export class WebService {
         serviceWorkerVersion: WEB_PUSH_SERVICE_WORKER_VERSION,
       },
       agents,
-      threads: page.threads,
+      threads: page.threads.map((thread) => this.projectThread(thread)),
       threadsSourceId,
       threadsNextCursor: page.nextCursor ?? null,
       tags: projectsSourceId === null ? [] : this.store.listTags(projectsSourceId),
       projects,
       projectsSourceId,
-      activeThreads,
+      activeThreads: { ...activeThreads, threads: activeThreads.threads.map((thread) => this.projectThread(thread)) },
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
         maxFileBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
@@ -902,9 +896,16 @@ export class WebService {
     const providerAuth = connection?.info.supportsProviderAuth === true;
     const providerAuthChecks = connection?.info.supportsProviderAuthChecks === true;
     const providerUsage = connection?.info.supportsProviderUsage === true;
+    const restart = connection === undefined || agent.status === "offline"
+      ? { supported: false, reason: "Agent is offline." } as const
+      : connection.pid === undefined || connection.info.pid !== connection.pid
+        ? { supported: false, reason: "Agent process identity could not be verified." } as const
+        : connection.info.restart;
     return {
       ...agent,
+      restart,
       ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
+      ...(connection?.info.supportsManualCompaction === true ? { supportsManualCompaction: true as const } : {}),
       ...(providerUsage ? { supportsProviderUsage: true as const } : {}),
       ...(providerUsage && connection?.info.supportsProviderUsageRefresh === true ? { supportsProviderUsageRefresh: true as const } : {}),
       ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
@@ -918,9 +919,11 @@ export class WebService {
   private projectedCapabilitySignature(agent: WebAgentSummary): string {
     const projected = this.decorateProjectedCapabilities(agent);
     return [
+      JSON.stringify(projected.restart),
       projected.supportsProviderUsage === true ? "providerUsage" : "",
       projected.supportsProviderUsageRefresh === true ? "providerUsageRefresh" : "",
       projected.supportsProviderAuth === true ? "providerAuth" : "",
+      projected.supportsManualCompaction === true ? "manualCompaction" : "",
       projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
     ].join("|");
   }
@@ -940,10 +943,11 @@ export class WebService {
       effort,
       input.model === undefined && inherited?.model !== undefined,
     );
-    const thread = this.store.createThread(sourceId, input);
+    this.validateContext1M(sourceId, agent, model, input.context1M);
+    const thread = this.store.createThread(sourceId, this.supportsContext1M(sourceId, agent, model) ? input : { ...input, context1M: null });
     this.emitThread("threads.changed", { thread });
     this.refreshMemberProject(thread);
-    return thread;
+    return this.projectThread(thread);
   }
 
   /**
@@ -954,6 +958,10 @@ export class WebService {
   private readonly consoleToolTurns = new Set<string>();
 
   assertConsoleToolTurn(scope: ConsoleToolScope): void {
+    if (scope.kind === "external") {
+      this.assertExternalToolScope(scope);
+      return;
+    }
     const thread = this.store.getThread(scope.threadId);
     const active = this.activeTurns.get(scope.threadId);
     if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
@@ -961,6 +969,43 @@ export class WebService {
       || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
       throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
     }
+  }
+
+  /**
+   * A channel-turn scope stays bound to the discovered process generation that
+   * asked for it: a restarted or vanished agent process revokes it, as does
+   * this service stopping. The owning process revokes it when its turn settles.
+   */
+  assertExternalToolScope(scope: ExternalConsoleToolScope): void {
+    const connection = this.connections.get(scope.sourceId);
+    if (this.stopped || connection === undefined || connection.pid !== scope.pid
+      || this.store.getAgent(scope.sourceId) === undefined) {
+      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+    }
+  }
+
+  /** Mirror a channel's observations into projects and announce what changed. */
+  observeExternalConversations(
+    sourceId: string,
+    channel: WebExternalConversationChannel,
+    observations: readonly ExternalConversationObservation[],
+  ): { readonly truncated: boolean } {
+    const commit = this.store.observeExternalConversations(sourceId, channel, observations);
+    for (const id of commit.projects) this.refreshProject(id);
+    return { truncated: commit.truncated };
+  }
+
+  externalTurnContext(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalTurnContext {
+    return this.store.externalTurnContext(sourceId, channel, key);
+  }
+
+  markExternalConversationGone(sourceId: string, channel: WebExternalConversationChannel, key: string): void {
+    const { projectId } = this.store.markExternalConversationGone(sourceId, channel, key);
+    if (projectId !== undefined) this.refreshProject(projectId);
+  }
+
+  resolveExternalProjectDestination(sourceId: string, channel: WebExternalConversationChannel, projectId: string): { readonly key: string; readonly label: string } {
+    return this.store.resolveExternalProjectDestination(sourceId, channel, projectId);
   }
 
   consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
@@ -980,6 +1025,7 @@ export class WebService {
     for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true });
     for (const id of commit.projects) this.refreshProject(id);
     for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
+    if (commit.threads.length > 0 && (operation.tool === "SetWakeSchedule" || operation.tool === "ClearWakeSchedule")) this.dispatchWakes();
     return commit.result;
   }
 
@@ -1053,6 +1099,10 @@ export class WebService {
     this.emitProject({ projectId: id, removed: true });
   }
 
+  threadUsage(id: string): Promise<import("./contracts.js").WebThreadUsage> {
+    return this.store.threadUsage(id);
+  }
+
   thread(id: string, options: WebTranscriptShape = {}): WebThreadDetail {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
@@ -1068,7 +1118,8 @@ export class WebService {
     readonly projectId?: string;
     readonly tagId?: string;
   }): WebThreadPage {
-    return this.store.listThreadsPage(input);
+    const page = this.store.listThreadsPage(input);
+    return { ...page, threads: page.threads.map((thread) => this.projectThread(thread)) };
   }
 
   /**
@@ -1080,7 +1131,8 @@ export class WebService {
    * the snapshot it is refreshing.
    */
   activeThreads(): WebActiveThreads {
-    return this.store.listActiveThreads();
+    const active = this.store.listActiveThreads();
+    return { ...active, threads: active.threads.map((thread) => this.projectThread(thread)) };
   }
 
   /**
@@ -1088,7 +1140,8 @@ export class WebService {
    * console tab needs to hear about.
    */
   searchThreads(input: SearchWebThreadsInput): WebThreadSearchPage {
-    return this.store.searchThreads(input);
+    const page = this.store.searchThreads(input);
+    return { ...page, hits: page.hits.map((hit) => ({ ...hit, thread: this.projectThread(hit.thread) })) };
   }
 
   messagePage(
@@ -1393,6 +1446,13 @@ export class WebService {
   }
 
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    const current = this.store.getThread(id);
+    const agent = current === undefined ? undefined : this.store.getAgent(current.sourceId);
+    if (agent !== undefined && current !== undefined) {
+      const model = patch.model === undefined ? current.runModel ?? undefined : patch.model ?? undefined;
+      this.validateContext1M(current.sourceId, agent, model, patch.context1M);
+      if (patch.model !== undefined && !this.supportsContext1M(current.sourceId, agent, model)) patch = { ...patch, context1M: null };
+    }
     if ((patch.projectId !== undefined || patch.tagIds !== undefined) && patch.ifRunConfigUnset === true) {
       throw new WebConsoleError("invalid_request", "projectId and tagIds cannot be combined with ifRunConfigUnset.", 400);
     }
@@ -1407,14 +1467,14 @@ export class WebService {
       // separate database file and does not stop a second connection to the
       // state DB from writing between a bare read and a bare write.
       const result = this.store.patchThreadIfRunConfigUnset(id, patch);
-      if (!result.applied) return result.thread;
+      if (!result.applied) return this.projectThread(result.thread);
       this.emitThread("thread.changed", { thread: result.thread });
       this.emitThread("threads.changed", { thread: result.thread });
-      return result.thread;
+      return this.projectThread(result.thread);
     }
     const before = this.store.getThread(id);
     const thread = this.store.patchThread(id, patch);
-    if (patch.tagIds !== undefined && before?.revision === thread.revision) return thread;
+    if (patch.tagIds !== undefined && before?.revision === thread.revision) return this.projectThread(thread);
     this.emitThread("thread.changed", { thread });
     this.emitThread("threads.changed", { thread });
     if (before?.projectId !== thread.projectId || before?.archivedAt !== thread.archivedAt) {
@@ -1423,7 +1483,7 @@ export class WebService {
       }
       this.refreshMemberProject(thread);
     }
-    return thread;
+    return this.projectThread(thread);
   }
 
   async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
@@ -1443,6 +1503,205 @@ export class WebService {
     this.emitThread("thread.changed", { threadId: resolved, removed: true });
     this.emitThread("threads.changed", { threadId: resolved, removed: true });
     if (projectId !== null) this.refreshProject(projectId);
+  }
+
+  /** Shared entry point for settings and (later) persisted reply-part clicks. */
+  async requestAgentRestart(
+    sourceId: string,
+    onPrepared?: (operationId: string) => boolean,
+    alreadyBound?: () => string | undefined,
+  ): Promise<WebAgentRestartOperation> {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const active = this.store.activeRestartOperation(sourceId);
+    if (active !== undefined) {
+      const current = this.restartStatus(active.id);
+      if (current.outcome === undefined) return current;
+    }
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined || agent.status === "offline" || agent.generation !== connection.processGeneration) {
+      throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    }
+    if (connection.pid === undefined || connection.info.pid !== connection.pid) {
+      throw new WebConsoleError("restart_unsupported", "Agent process identity could not be verified.", 409);
+    }
+    if (connection.info.restart.supported !== true) {
+      throw new WebConsoleError("restart_unsupported", connection.info.restart.reason ?? "Agent restart is unavailable.", 409);
+    }
+    // Probe support again before committing the web-owned pending marker.
+    // A policy change after advertisement must refuse without forwarding.
+    let verified: OperatorInfo;
+    try {
+      verified = await connection.client.info(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    } catch {
+      throw new WebConsoleError("restart_unavailable", "Could not verify the agent's restart support.", 409);
+    }
+    if (this.connections.get(sourceId) !== connection
+      || this.store.getAgent(sourceId)?.generation !== connection.processGeneration) {
+      throw new WebConsoleError("agent_generation_changed", "This agent changed during restart verification.", 409);
+    }
+    if (verified.restart.supported !== true || verified.pid !== connection.pid) {
+      throw new WebConsoleError("restart_unsupported", verified.restart.reason ?? "Agent process identity changed.", 409);
+    }
+    // A second click may finish its async info probe only after the first
+    // click's operation has already settled. Re-read the card's durable link
+    // before allocating another operation; never shadow its real outcome with
+    // a fabricated failed CAS attempt.
+    const boundId = alreadyBound?.();
+    if (boundId !== undefined) return this.restartStatus(boundId);
+    const now = (this.options.clock ?? (() => new Date()))();
+    const created = this.store.createRestartOperation({
+      sourceId, generation: connection.processGeneration, requestedAt: now.toISOString(),
+      deadline: new Date(now.getTime() + 120_000).toISOString(),
+      approximateRunningTurns: this.store.listActiveThreads().runningCounts[sourceId] ?? 0,
+    });
+    if (!created.created) return this.restartStatus(created.operation.id);
+    const id = created.operation.id;
+    if (onPrepared !== undefined) {
+      let claimed = false;
+      try { claimed = onPrepared(id); } catch {
+        // Bind failure is definitive before forwarding. Do not strand the
+        // unique active-source reservation or send an unaudited POST.
+      }
+      if (!claimed) {
+        this.store.updateRestartOperation(id, { outcome: "failure", reason: "The proposal is no longer available." });
+        throw new WebConsoleError("restart_proposal_unavailable", "The proposal is no longer available.", 409);
+      }
+    }
+    // No await between the durable operation and the adapter POST. The
+    // cancellation frame can arrive before we parse the POST's 202.
+    try {
+      const receipt = await connection.client.restart(AbortSignal.timeout(10_000));
+      if (receipt.kind === "refused") {
+        this.store.updateRestartOperation(id, { outcome: "failure", reason: receipt.reason });
+      } else if (receipt.kind === "accepted" && receipt.pid !== connection.pid) {
+        this.store.updateRestartOperation(id, { uncertain: true,
+          reason: "The responding agent process did not match the discovered agent." });
+      } else {
+        this.store.updateRestartOperation(id, { stage: "restarting", operationId: receipt.operationId });
+      }
+    } catch {
+      this.store.updateRestartOperation(id, {
+        uncertain: true, reason: "The restart request was sent, but acceptance was not confirmed.",
+      });
+    }
+    return this.restartStatus(id);
+  }
+
+  /** Reload-safe settings discovery; never starts or retries a restart. */
+  latestAgentRestart(sourceId: string): WebAgentRestartOperation | null {
+    const latest = this.store.latestRestartOperation(sourceId);
+    if (latest === undefined) {
+      if (this.store.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+      return null;
+    }
+    return this.restartStatus(latest.id);
+  }
+
+  /** Pollable minimal DTO. Success is only a new ready process on the same source id. */
+  restartStatus(id: string): WebAgentRestartOperation {
+    const operation = this.store.restartOperation(id);
+    if (operation === undefined) throw new WebConsoleError("restart_not_found", "Restart request not found.", 404);
+    this.reconcileRestartOperation(operation);
+    const current = this.store.restartOperation(id)!;
+    return {
+      id: current.id, sourceId: current.sourceId, requestedAt: current.requestedAt,
+      deadline: current.deadline, stage: current.stage,
+      ...(current.outcome === undefined ? {} : { outcome: current.outcome }),
+      ...(current.reason === undefined ? {} : { reason: current.reason }),
+      ...(current.approximateRunningTurns === undefined ? {} : { approximateRunningTurns: current.approximateRunningTurns }),
+    };
+  }
+
+  private reconcilePendingRestartOperations(): void {
+    for (const operation of this.store.pendingRestartOperations()) this.reconcileRestartOperation(operation);
+  }
+
+  private reconcileRestartOperation(operation: StoredRestartOperation): void {
+    if (operation.outcome !== undefined) return;
+    const now = (this.options.clock ?? (() => new Date()))().getTime();
+    if (now >= new Date(operation.deadline).getTime()) {
+      this.store.updateRestartOperation(operation.id, { outcome: "not_confirmed", reason: "Agent restart was not confirmed within two minutes." });
+      return;
+    }
+    const agent = this.store.getAgent(operation.sourceId);
+    const connection = this.connections.get(operation.sourceId);
+    if (agent?.generation === undefined || agent.generation === operation.generation
+      || agent.status === "offline" || connection === undefined || connection.processGeneration !== agent.generation
+      || connection.pid === undefined || connection.info.pid !== connection.pid) return;
+    // nextConnections contains only successful /v1/info probes; an endpoint
+    // move with the same PROCESS digest cannot pass this comparison.
+    if (operation.operationId !== undefined) {
+      this.store.updateRestartOperation(operation.id, { stage: "back_online", outcome: "success" });
+    } else if (operation.uncertain) {
+      this.store.updateRestartOperation(operation.id, { stage: "back_online", outcome: "not_confirmed",
+        reason: "A new process is online, but acceptance of the restart request was not confirmed." });
+    }
+  }
+
+  /** Resolve a persisted card, never a model-provided target or generation. */
+  private requireRestartProposal(threadId: string, messageId: string, partId: string): {
+    readonly thread: WebThread;
+    readonly binding: StoredRestartProposalBinding;
+  } {
+    const thread = this.store.getThread(threadId);
+    const message = this.store.getMessage(messageId);
+    if (thread === undefined || message === undefined || message.threadId !== thread.id
+      || message.role !== "assistant"
+      || !message.parts.some((part) => part.type === "restart_proposal" && part.id === partId)) {
+      throw new WebConsoleError("restart_proposal_not_found", "Restart proposal not found.", 404);
+    }
+    const binding = this.store.restartProposalBinding(messageId, partId);
+    if (binding === undefined || binding.threadId !== thread.id || binding.sourceId !== thread.sourceId) {
+      throw new WebConsoleError("restart_proposal_unavailable", "This restart proposal has no valid agent binding.", 409);
+    }
+    return { thread, binding };
+  }
+
+  private restartProposalAvailability(binding: StoredRestartProposalBinding): {
+    readonly state: WebRestartProposalAvailability; readonly reason?: string; readonly operationId?: string;
+  } {
+    if (binding.operationId !== undefined) return {
+      state: "used", reason: "This proposal has already been used.", operationId: binding.operationId,
+    };
+    const agent = this.store.getAgent(binding.sourceId);
+    if (agent?.generation !== undefined && agent.generation !== binding.generation) {
+      return { state: "stale", reason: "The agent has restarted since this suggestion." };
+    }
+    const connection = this.connections.get(binding.sourceId);
+    if (connection === undefined || agent?.status === "offline") return { state: "offline", reason: "The agent is offline." };
+    if (connection.processGeneration !== binding.generation) return { state: "stale", reason: "The agent process changed." };
+    if (connection.pid === undefined || connection.info.pid !== connection.pid
+      || connection.info.restart.supported !== true) {
+      return { state: "unsupported", reason: connection.info.restart.reason ?? "Agent restart is unavailable." };
+    }
+    const active = this.store.activeRestartOperation(binding.sourceId);
+    if (active !== undefined && this.restartStatus(active.id).outcome === undefined) {
+      return { state: "in_progress", reason: "A restart is already in progress." };
+    }
+    return { state: "available" };
+  }
+
+  /** Same operation as settings, but a card must carry persisted source/process proof. */
+  async restartFromProposal(threadId: string, messageId: string, partId: string): Promise<WebAgentRestartOperation> {
+    const { binding } = this.requireRestartProposal(threadId, messageId, partId);
+    if (binding.operationId !== undefined) return this.restartStatus(binding.operationId);
+    const availability = this.restartProposalAvailability(binding);
+    if (availability.state !== "available") {
+      throw new WebConsoleError(`restart_proposal_${availability.state}`, availability.reason ?? "Restart proposal is unavailable.", 409);
+    }
+    const result = await this.requestAgentRestart(binding.sourceId, (id) =>
+      this.store.claimRestartProposalOperation(messageId, partId, binding.sourceId, binding.generation, id), () => {
+      const latest = this.store.restartProposalBinding(messageId, partId);
+      return latest?.sourceId === binding.sourceId && latest.generation === binding.generation
+        && latest.threadId === binding.threadId ? latest.operationId : undefined;
+    });
+    // Another click can join the source's request before the first POST settles.
+    // Only the card that claimed it may treat that operation as its own.
+    if (this.store.restartProposalBinding(messageId, partId)?.operationId !== result.id) {
+      throw new WebConsoleError("restart_proposal_in_progress", "A restart is already in progress.", 409);
+    }
+    return result;
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
@@ -1469,7 +1728,8 @@ export class WebService {
       input.effort ?? undefined,
       true,
     );
-    const updated = this.store.setAgentRunOverride(sourceId, input);
+    this.validateContext1M(sourceId, agent, input.model ?? undefined, input.context1M);
+    const updated = this.store.setAgentRunOverride(sourceId, this.supportsContext1M(sourceId, agent, input.model ?? undefined) ? input : { ...input, context1M: null });
     this.emit("agents.changed");
     return this.decorateProjectedCapabilities(updated);
   }
@@ -1862,35 +2122,11 @@ export class WebService {
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
-    // Monitor wakes are addressed to a retained thread, so they must reach the
-    // wake-specific retry/abandon path even after discovery has removed the
-    // source from the picker. New source-scoped deliveries still refresh before
-    // the store decides whether the agent exists.
-    if (input.triggerKind !== "monitor" && this.store.getAgent(input.sourceId) === undefined) {
+    if (this.store.getAgent(input.sourceId) === undefined) {
       await this.refreshAgents();
     }
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
-    }
-    if (input.triggerKind === "monitor") {
-      assertMonitorWakeAddress(input);
-      const thread = this.store.getThread(input.threadId);
-      if (thread === undefined || thread.sourceId !== input.sourceId) {
-        return {
-          duplicate: true,
-          tombstoned: true,
-          delivery: { delivered: false, code: "monitor_origin_mismatch", retryable: false },
-        };
-      }
-      if (thread.archivedAt !== null || thread.trigger !== undefined) {
-        return {
-          thread,
-          duplicate: false,
-          delivery: { delivered: false, code: "monitor_wake_failed", retryable: false },
-        };
-      }
-      const result = await this.deliverMonitorWake(input);
-      return { thread, duplicate: result.duplicate, delivery: result.receipt };
     }
     if (input.triggerKind === "job") {
       // Destructured off: the card's message id is how this service addresses
@@ -1964,6 +2200,72 @@ export class WebService {
     return job;
   }
 
+  async compactThread(threadId: string): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = thread.id;
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || !thread.canSend) {
+      throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    }
+    if (connection.info.supportsManualCompaction !== true) {
+      throw new WebConsoleError("compaction_unsupported", "This agent does not support manual compaction.", 409);
+    }
+    if (thread.runState.status === "running" || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
+      || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) {
+      throw new WebConsoleError("compaction_busy", "Wait for the current turn or compaction to finish.", 409);
+    }
+    return this.compactIdleThread(threadId, connection);
+  }
+
+  private async compactIdleThread(threadId: string, connection: AgentConnection, drainInputs = true): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult> {
+    // The model the next turn on this thread would declare (see launchTurn metadata).
+    const { model, context1M } = this.resolveTurnSelection(threadId);
+    const operation = (async () => {
+      const result = await connection.client.compactConversation(
+        this.conversationIdForThread(threadId),
+        { ...(model === undefined ? {} : { model }), ...(context1M === undefined ? {} : { context1M }) },
+      );
+      // A thread deleted meanwhile keeps the agent's outcome but records nothing.
+      if (this.store.getThread(threadId) !== undefined) {
+        const messageId = this.store.recordManualCompaction(threadId, result);
+        if (messageId !== undefined) {
+          this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
+        }
+      }
+      return result;
+    })().catch((error: unknown) => {
+      // Only an explicit agent failure is known to have failed. A lost or
+      // malformed response can race an already committed provider revision.
+      if (this.store.getThread(threadId) !== undefined) {
+        this.store.recordManualCompactionFailure(threadId,
+          error instanceof WebConsoleError && ["compaction_failed", "compaction_busy", "compaction_unsupported"].includes(error.code)
+            ? undefined : "outcome_unknown");
+      }
+      throw error;
+    });
+    this.activeCompactions.set(threadId, operation.catch(() => undefined));
+    this.manualCompactionStartedAt.set(threadId, this.currentDate().toISOString());
+    this.emitStoredThread(threadId, ["thread.changed"]);
+    try {
+      return await operation;
+    } finally {
+      // Service restarts forget the in-memory hint; completed requests now
+      // leave a durable outcome (including an explicitly unknown one).
+      this.activeCompactions.delete(threadId);
+      this.manualCompactionStartedAt.delete(threadId);
+      // Preparation keeps its reservation until claim/launch; do not publish
+      // an idle boundary (or drain input) before that synchronous handoff.
+      if (drainInputs) {
+        if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);
+        // Live input queued during manual compaction can now drain.
+        if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
+        this.dispatchWake(threadId);
+      }
+    }
+  }
+
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
@@ -1972,10 +2274,11 @@ export class WebService {
     const operatorText = this.withProjectPrefix(threadId, quotedText);
     assertTurnTextWithinLimit(operatorText);
     const attachmentIds = input.attachmentIds ?? [];
-    const selection = this.resolveTurnSelection(threadId, input.model, input.effort);
-    const { thread, agent, model, effort, requestedModel, requestedEffort } = selection;
+    const selection = this.resolveTurnSelection(threadId, input.model, input.effort, input.context1M);
+    const { thread, model, effort, context1M, requestedModel, requestedEffort } = selection;
     threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
+    if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     if (connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
@@ -1987,10 +2290,11 @@ export class WebService {
       ...(input.quote === undefined ? {} : { quote: input.quote }),
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
+      ...(context1M === undefined ? {} : { context1M }),
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedEffort === undefined ? {} : { requestedEffort }),
     });
-    this.launchTurn(started, connection.client, operatorText);
+    this.launchTurn(started, connection.client, quotedText);
     // The operator's own row, inserted by `beginTurn` and announced by nothing
     // else. A console that did not issue this turn holds neither it nor the
     // assistant row the deltas are about to describe, and it no longer answers
@@ -2002,7 +2306,7 @@ export class WebService {
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emitThread("threads.changed", { thread: started.thread });
     this.refreshMemberProject(started.thread);
-    return { thread: started.thread, turn: started.thread.runState };
+    return { thread: this.projectThread(started.thread), turn: started.thread.runState };
   }
 
   submit(threadId: string, input: StartWebSubmissionInput): WebSubmissionReceipt {
@@ -2010,6 +2314,7 @@ export class WebService {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
+    if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
     const text = input.text ?? "";
     const attachmentIds = input.attachmentIds ?? [];
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
@@ -2022,6 +2327,7 @@ export class WebService {
       attachmentIds,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      ...(input.context1M == null ? {} : { context1M: input.context1M }),
     })).digest("hex");
     const existing = this.store.webSubmission(threadId, input.submissionId);
     if (existing !== undefined) {
@@ -2071,10 +2377,11 @@ export class WebService {
             turnId: activeTurnId,
           };
         }
-        const { model, effort, requestedModel, requestedEffort } = this.resolveTurnSelection(
+        const { model, effort, context1M, requestedModel, requestedEffort } = this.resolveTurnSelection(
           threadId,
           input.model,
           input.effort,
+          input.context1M,
         );
         started = this.store.beginTurn({
           threadId,
@@ -2083,6 +2390,7 @@ export class WebService {
           ...(input.quote === undefined ? {} : { quote: input.quote }),
           ...(model === undefined ? {} : { model }),
           ...(effort === undefined ? {} : { effort }),
+          ...(context1M === undefined ? {} : { context1M }),
           ...(requestedModel === undefined ? {} : { requestedModel }),
           ...(requestedEffort === undefined ? {} : { requestedEffort }),
         });
@@ -2095,7 +2403,7 @@ export class WebService {
     });
 
     if (claimed.created && started !== undefined) {
-      this.launchTurn(started, connection.client, operatorText);
+      this.launchTurn(started, connection.client, quotedText);
       this.emit("message.changed", threadId, { messageId: started.userMessageId, updatedAt: started.thread.updatedAt });
       this.emit("turn.changed", threadId, { turn: started.thread.runState });
       this.emitThread("threads.changed", { thread: started.thread });
@@ -2157,22 +2465,12 @@ export class WebService {
       };
     }
 
-    const controller = new AbortController();
-    const completion = this.deliverLiveInput(
-      reserved.input.id,
-      threadId,
-      active.client,
-      controller,
-      {
-        conversationId: `web:${threadId}`,
-        id: reserved.input.id,
-        text: reserved.input.text,
-        receivedAt: reserved.input.createdAt,
-      },
-    ).finally(() => {
-      this.activeLiveInputs.delete(reserved.input.id);
+    this.startTargetedLiveInput(reserved.input.id, threadId, active, {
+      conversationId: `web:${threadId}`,
+      id: reserved.input.id,
+      text: reserved.input.text,
+      receivedAt: reserved.input.createdAt,
     });
-    this.activeLiveInputs.set(reserved.input.id, { threadId, controller, completion });
     return { message: reserved.message, disposition: "pending" };
   }
 
@@ -2203,7 +2501,7 @@ export class WebService {
     }
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-    return thread;
+    return this.projectThread(thread);
   }
 
   createUpload(input: CreateWebUploadInput): WebAttachment {
@@ -2319,6 +2617,7 @@ export class WebService {
     this.stopped = true;
     if (this.discoveryTimer !== undefined) clearInterval(this.discoveryTimer);
     if (this.purgeTimer !== undefined) clearInterval(this.purgeTimer);
+    if (this.wakeTimer !== undefined) clearInterval(this.wakeTimer);
     const pendingRefresh = this.refreshPromise;
     const pendingPurge = this.purgePromise;
     this.refreshController?.abort(new Error("Web service is stopping."));
@@ -2367,30 +2666,64 @@ export class WebService {
     operatorText: string,
     hostWakeDeliveryKey?: string,
     onAdmitted?: () => void,
+    scheduledWake = false,
+    ownerText?: string,
+    hostWakeAttempt?: string,
+    onRefusedBeforeDispatch?: () => void,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
-        this.emitMessageWrite(started.thread.id, this.store.applyStreamFrames(started.turnId, frames));
+        const write = this.store.applyStreamFrames(started.turnId, frames);
+        this.emitMessageWrite(started.thread.id, write);
+        for (const message of write.recoveredSteers ?? []) {
+          this.emit("message.changed", started.thread.id, { messageId: message.id, updatedAt: message.updatedAt });
+        }
+        if (write.recoveredSteers?.length) this.emitStoredThread(started.thread.id, ["threads.changed"]);
+        return write.serializedBytes ?? 0;
       },
       (error) => controller.abort(error),
     );
     let releaseAttachmentBudget: (() => void) | undefined;
+    let operatorTurnFailure: unknown;
+    let operatorTurnRejected = false;
     try {
       const attachmentBytes = started.attachments.reduce((total, attachment) => total + attachment.sizeBytes, 0);
       releaseAttachmentBudget = await this.attachmentTurnBudget.acquire(attachmentBytes, controller.signal);
       const attachments = await Promise.all(started.attachments.map(async (attachment) => this.toAgentAttachment(attachment)));
+      const agent = this.store.getAgent(started.thread.sourceId);
+      // Queued selections retain intent, but capability can disappear while waiting.
+      const context1M = agent !== undefined && this.supportsContext1M(started.thread.sourceId, agent, started.thread.runState.model)
+        ? started.thread.runState.context1M : undefined;
       const modelMetadata = {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
+        ...(context1M === undefined ? {} : { context1M }),
       };
-      // A host wake (process-job or monitor completion) runs an ordinary live turn
+      // A host wake (process-job completion) runs an ordinary live turn
       // on an ordinary conversation, so it carries the same turn-bound console
       // capability as a typed turn: an agent reacting to finished background work
       // is exactly when filing or moving the conversation is useful. Cron and
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
       const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
-      const response = await client.turn({
+      if (hostWakeDeliveryKey !== undefined && !scheduledWake) {
+        // Attachment preparation yields: re-check the exact wake claim and
+        // connection immediately before dispatch, not just before launchTurn.
+        const connection = this.connections.get(started.thread.sourceId);
+        const restart = this.store.activeRestartOperation(started.thread.sourceId);
+        if (this.stopped || connection === undefined
+          || connection.generation !== this.clientConnectionGeneration.get(client)
+          || (restart !== undefined && restart.generation === connection.processGeneration)
+          || (hostWakeAttempt !== undefined && !connection.info.supportsProcessJobWakeAdmission)
+          || !this.store.ownsProcessJobWake(hostWakeDeliveryKey, hostWakeAttempt)) {
+          onRefusedBeforeDispatch?.();
+          throw new WebConsoleError("process_job_wake_superseded", "The wake's dispatch ownership changed.", 409);
+        }
+      }
+      this.store.markTurnDispatchStarted(started.turnId, this.clientProcessGeneration.get(client));
+      let response;
+      try {
+        response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
         attachments,
@@ -2399,34 +2732,41 @@ export class WebService {
           web: {
             threadId: started.thread.id,
             turnId: started.turnId,
+            // Host-only unprefixed owner text for memory; the dispatched text
+            // still includes project context, tags and conversation markers.
+            ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined ? { ownerText } : {}),
             ...modelMetadata,
             ...(consoleTools ? { consoleProjects: { schema: 1 } } : {}),
-            ...(hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
+            ...(!scheduledWake && hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
               ? { conversationTitle: { schema: 1, writable: true } }
               : {}),
           },
           tui: modelMetadata,
         },
         ...(hostWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey: hostWakeDeliveryKey }),
+        ...(hostWakeAttempt === undefined ? {} : { processJobWakeAttempt: hostWakeAttempt }),
         onFrame: (frame) => {
           this.observeAskUserFrame(started.thread.id, started.turnId, frame);
           this.observeConversationTitleFrame(started.thread.id, started.turnId, frame);
           coalescer.push(frame);
         },
         ...(onAdmitted === undefined ? {} : { onAdmitted }),
-      });
+        });
+      } catch (error) {
+        operatorTurnRejected = true;
+        operatorTurnFailure = error;
+        throw error;
+      }
       await coalescer.flush();
-      const silentMonitorWake = hostWakeDeliveryKey?.startsWith("monitor:") === true
-        && (response.finalText === undefined || response.finalText.length === 0)
-        && (response.parts === undefined || response.parts.length === 0);
+      const replyProcessGeneration = this.clientProcessGeneration.get(client);
       const detail = this.store.completeTurn(
         started.turnId,
         response.finalText,
         response.metadata,
         response.parts,
         {
-          suppressResponsePush: silentMonitorWake,
-          ...(hostWakeDeliveryKey === undefined ? {} : { monitorWakeDeliveryKey: hostWakeDeliveryKey }),
+          ...(hostWakeDeliveryKey === undefined ? {} : { hostWakeDeliveryKey }),
+          ...(replyProcessGeneration === undefined ? {} : { replyProcessGeneration }),
         },
       );
       this.emitMessageWrite(started.thread.id, detail.write);
@@ -2447,15 +2787,37 @@ export class WebService {
       } catch (flushError) {
         failure = flushError;
       }
-      const cancelled = isChannelUserCancelReason(controller.signal.reason)
-        || controller.signal.reason instanceof WebTurnCancellation
-        || (error as { cancelled?: unknown }).cancelled === true;
+      const explicitCancellation = this.store.turnCancelOrigin(started.turnId) !== undefined
+        || isChannelUserCancelReason(controller.signal.reason)
+        || controller.signal.reason instanceof WebTurnCancellation;
+      const cancelled = explicitCancellation || (error as { cancelled?: unknown }).cancelled === true;
       const code = errorCode(failure);
-      const detail = this.store.failTurn(started.turnId, {
-        message: cancelled ? "Turn cancelled." : errorMessage(failure),
-        ...(code === undefined ? {} : { code }),
-        cancelled,
-      });
+      const transportCode = operatorTurnRejected ? errorCode(operatorTurnFailure) : undefined;
+      // An agent error *frame* is a completed transport exchange, even if its
+      // provider error says "terminated" or carries an unreachable-looking code.
+      // Only the operator request/stream can supply this durable classification.
+      const connectionLost = !cancelled && operatorTurnRejected && failure === operatorTurnFailure
+        && !(operatorTurnFailure instanceof OperatorTurnFrameError)
+        && (transportCode === "agent_unreachable" || transportCode === "incomplete_operator_stream"
+          || (operatorTurnFailure instanceof Error && !(operatorTurnFailure instanceof WebConsoleError)
+            && (transportCode === "ECONNRESET" || transportCode === "EPIPE" || transportCode === "UND_ERR_SOCKET"
+              || /\bterminated\b|socket closed|other side closed/iu.test(operatorTurnFailure.message))));
+      const pendingRestart = this.store.activeRestartOperation(started.thread.sourceId);
+      // The pending marker was committed before POST. The shutdown frame can
+      // therefore arrive before the response's 202 is parsed (N3); an actual
+      // user cancel or diagnosed provider failure keeps its own classification.
+      const restartSevered = !explicitCancellation
+        && pendingRestart !== undefined
+        && pendingRestart.generation === this.clientProcessGeneration.get(client)
+        && (this.options.clock ?? (() => new Date()))().getTime() <= new Date(pendingRestart.deadline).getTime()
+        && (code === undefined || code === "cancelled" || connectionLost);
+      const detail = restartSevered
+        ? this.store.interruptTurnForRestart(started.turnId)
+        : this.store.failTurn(started.turnId, {
+            message: cancelled ? "Turn cancelled." : errorMessage(failure),
+            ...(connectionLost ? { code: "agent_connection_lost" } : code === undefined ? {} : { code }),
+            cancelled,
+          });
       this.emitMessageWrite(started.thread.id, detail.write);
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emitThread("thread.changed", { thread: detail.thread });
@@ -2475,11 +2837,17 @@ export class WebService {
     client: OperatorClient,
     operatorText: string,
     hostWakeDeliveryKey?: string,
-  ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
+    scheduledWake = false,
+    hostWakeAttempt?: string,
+  ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean>; readonly refusedBeforeDispatch: () => boolean } {
+    const rawOwnerText = operatorText;
+    operatorText = withProjectContext(operatorText, this.projectContextForThread(started.thread.id), this.store.conversationMarkersForTurn(started.turnId));
+    const ownerText = operatorText === rawOwnerText ? rawOwnerText : neutraliseProjectContext(rawOwnerText);
     const threadId = started.thread.id;
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
     const admitted = new Promise<boolean>((resolve) => { resolveAdmitted = resolve; });
+    let refusedBeforeDispatch = false;
     const completion = this.runTurn(
       started,
       client,
@@ -2487,14 +2855,38 @@ export class WebService {
       operatorText,
       hostWakeDeliveryKey,
       () => { resolveAdmitted(true); },
+      scheduledWake,
+      ownerText,
+      hostWakeAttempt,
+      () => { refusedBeforeDispatch = true; },
     ).finally(() => {
       // Inert once admission already resolved; the turn settled without the
       // operator ever returning a stream when it did not.
       resolveAdmitted(false);
       const active = this.activeTurns.get(threadId);
       if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
+      // Never bound a blocked tool call while its turn is running. Once that
+      // turn settles, a missing HTTP receipt gets one final grace window.
+      for (const input of this.activeLiveInputs.values()) {
+        if (input.threadId !== threadId || input.turnId !== started.turnId || input.controller.signal.aborted) continue;
+        input.graceTimer = setTimeout(() => {
+          input.graceTimer = undefined;
+          input.controller.abort(new Error("Settled turn's live-input receipt did not arrive."));
+        }, SETTLED_TURN_LIVE_INPUT_GRACE_MS);
+        input.graceTimer.unref();
+      }
+      if (scheduledWake) {
+        try {
+          if (this.store.finishWake(started.turnId) !== null) this.emitWakeThread(threadId);
+        } catch (error) {
+          this.options.logger?.error?.("Scheduled wake-up outcome could not be settled.", {
+            threadId, errorCode: errorCode(error) ?? "unknown",
+          });
+        }
+      }
       if (!this.stopped && !this.hostWakeReservations.has(threadId)) {
         void this.drainQueuedLiveInputs(threadId);
+        this.dispatchWake(threadId);
       }
     });
     this.activeTurns.set(threadId, {
@@ -2505,7 +2897,7 @@ export class WebService {
       admitted,
       resolveAdmitted,
     });
-    return { completion, admitted };
+    return { completion, admitted, refusedBeforeDispatch: () => refusedBeforeDispatch };
   }
 
   private submissionReceipt(submission: StoredWebSubmission): WebSubmissionReceipt {
@@ -2557,21 +2949,28 @@ export class WebService {
       return;
     }
     if (!this.store.markLiveInputDispatchStarted(submission.inputId, submission.turnId)) return;
+    this.startTargetedLiveInput(submission.inputId, submission.threadId, active, {
+      conversationId: `web:${submission.threadId}`,
+      id: submission.inputId,
+      text: input.text,
+      receivedAt: input.createdAt,
+      targetTurnId: submission.turnId,
+    });
+  }
+
+  private startTargetedLiveInput(
+    id: string,
+    threadId: string,
+    active: ActiveTurn,
+    input: Omit<Parameters<OperatorClient["liveInput"]>[0], "signal">,
+  ): void {
     const controller = new AbortController();
-    const completion = this.deliverLiveInput(
-      submission.inputId,
-      submission.threadId,
-      active.client,
-      controller,
-      {
-        conversationId: `web:${submission.threadId}`,
-        id: submission.inputId,
-        text: input.text,
-        receivedAt: input.createdAt,
-        targetTurnId: submission.turnId,
-      },
-    ).finally(() => this.activeLiveInputs.delete(submission.inputId!));
-    this.activeLiveInputs.set(submission.inputId, { threadId: submission.threadId, controller, completion });
+    const completion = this.deliverLiveInput(id, threadId, active.client, controller, input).finally(() => {
+      const tracked = this.activeLiveInputs.get(id);
+      if (tracked?.graceTimer !== undefined) clearTimeout(tracked.graceTimer);
+      this.activeLiveInputs.delete(id);
+    });
+    this.activeLiveInputs.set(id, { threadId, turnId: active.turnId, controller, completion, graceTimer: undefined });
   }
 
   private async deliverLiveInput(
@@ -2586,9 +2985,11 @@ export class WebService {
     try {
       // The stored text stays unprefixed; the prefix is resolved anew here, at
       // dispatch, so a context edited while the input waited still applies.
+      const dispatchedText = this.withProjectPrefix(threadId, input.text);
       const result = await client.liveInput({
         ...input,
-        text: this.withProjectPrefix(threadId, input.text),
+        text: dispatchedText,
+        ownerText: dispatchedText === input.text ? input.text : neutraliseProjectContext(input.text),
         signal: controller.signal,
       });
       if (result.status === "applied") {
@@ -2606,7 +3007,7 @@ export class WebService {
       }
     } catch (error) {
       changedMessage = this.store.markLiveInputUncertain(id);
-      if (!controller.signal.aborted) {
+      if (changedMessage !== undefined && !controller.signal.aborted) {
         this.options.logger?.debug?.("Web live-input delivery outcome is uncertain; automatic fallback is suppressed.", {
           threadId,
           error: errorMessage(error),
@@ -2619,13 +3020,14 @@ export class WebService {
         updatedAt: changedMessage.updatedAt,
       });
     }
-    this.emitStoredThread(threadId, ["threads.changed"]);
+    if (changedMessage !== undefined) this.emitStoredThread(threadId, ["threads.changed"]);
     if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
   }
 
   private async drainQueuedLiveInputs(threadId: string): Promise<void> {
     if (this.stopped
       || this.activeTurns.has(threadId)
+      || this.activeCompactions.has(threadId)
       || this.hostWakeReservations.has(threadId)
       || this.drainingLiveInputThreads.has(threadId)) return;
     this.drainingLiveInputThreads.add(threadId);
@@ -2639,7 +3041,7 @@ export class WebService {
         if (started === undefined) return;
         // Resolved anew: the queued text was stored unprefixed, and the
         // membership or context may have changed while it waited.
-        const operatorText = this.withProjectPrefix(threadId, started.text);
+        const operatorText = withProjectContext(started.text, this.projectContextForThread(threadId), this.store.conversationMarkersForTurn(started.turnId));
         if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
           // Never dispatch an over-limit turn, and never throw into the void
           // drain: the promoted turn settles on the launch-failure path, which
@@ -2647,7 +3049,7 @@ export class WebService {
           this.failTurnBeforeDispatch(threadId, started.turnId, operatorText.length);
           continue;
         }
-        this.launchTurn(started, connection.client, operatorText);
+        this.launchTurn(started, connection.client, started.text);
         // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
         // message (its live-input status becomes "applied") as well as opening
         // the assistant row, and a console that heard only about the second was
@@ -2667,6 +3069,7 @@ export class WebService {
       }
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
+      this.dispatchWake(threadId);
     }
   }
 
@@ -2689,10 +3092,91 @@ export class WebService {
     this.announcePushEvent(`turn:${turnId}:terminal`);
   }
 
+  private readonly parentInterruptionWakes = new Set<string>();
+
+  private async deliverParentInterruptionWake(
+    input: { readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string },
+    connection: AgentConnection,
+  ): Promise<void> {
+    if (this.parentInterruptionWakes.has(input.wakeKey)) return;
+    this.parentInterruptionWakes.add(input.wakeKey);
+    const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
+    const delivery = previous.catch(() => undefined).then(async () => {
+      if (this.stopped || this.connections.get(input.sourceId)?.processGeneration !== connection.processGeneration) return;
+      this.store.expireParentInterruptionWake(input.sourceId, input.turnId);
+      const prompt = "The agent process ended during a previous turn. The turn was not replayed. Inspect background jobs and subagents with AgentManage inspect before continuing; this notice does not establish their outcomes.";
+      const active = this.activeTurns.get(input.threadId);
+      if (active !== undefined && this.clientProcessGeneration.get(active.client) === connection.processGeneration
+        && connection.info.supportsLiveInput && this.withProjectPrefix(input.threadId, prompt).length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+        if (!this.store.claimParentInterruptionWake(input.sourceId, input.turnId, active.turnId)) return;
+        try {
+          const settlement = await active.client.liveInput({
+            conversationId: `web:${input.threadId}`, id: input.wakeKey,
+            text: this.withProjectPrefix(input.threadId, prompt),
+            receivedAt: new Date().toISOString(), deliveryKey: input.wakeKey,
+            signal: AbortSignal.timeout(10 * 60_000),
+          });
+          if (settlement.status === "applied") {
+            this.store.completeParentInterruptionWake(input.sourceId, input.turnId, active.turnId);
+          } else if (settlement.status === "requeue" || settlement.status === "unavailable") {
+            this.store.deferParentInterruptionWake(input.sourceId, input.turnId, active.turnId);
+          }
+        } catch {
+          // An attempted steer may have crossed the boundary. Never retry it.
+        }
+        return;
+      }
+      if (active !== undefined) {
+        try { await active.completion; } catch { /* The original turn already owns its failure. */ }
+      }
+      await this.activeCompactions.get(input.threadId);
+      if (this.stopped || this.connections.get(input.sourceId)?.processGeneration !== connection.processGeneration) return;
+      if (this.withProjectPrefix(input.threadId, prompt).length > WEB_MAX_TURN_TEXT_CHARACTERS) return;
+      let started;
+      try {
+        const selection = this.resolveTurnSelection(input.threadId);
+        started = this.store.beginAssistantTurn({
+          threadId: input.threadId, prompt, storedPrompt: "[Parent turn interrupted]",
+          ...(selection.model === undefined ? {} : { model: selection.model }),
+          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+          ...(selection.context1M === undefined ? {} : { context1M: selection.context1M }),
+        });
+      } catch {
+        // Pre-dispatch refusal retains the bounded pending obligation.
+        return;
+      }
+      if (!this.store.claimParentInterruptionWake(input.sourceId, input.turnId, started.turnId)) {
+        this.store.failTurn(started.turnId, { message: "Interruption wake expired before dispatch.", code: "wake_expired" });
+        return;
+      }
+      const { completion, admitted } = this.launchTurn(started, connection.client, prompt);
+      void completion.catch((error: unknown) => {
+        this.options.logger?.warn?.("Parent interruption follow-up settlement failed.", {
+          turnId: started.turnId, errorCode: errorCode(error) ?? "unknown",
+        });
+      });
+      this.emit("message.changed", input.threadId, { messageId: started.assistantMessageId, updatedAt: started.thread.updatedAt });
+      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
+      this.emitThread("threads.changed", { thread: started.thread });
+      if (await admitted) this.store.completeParentInterruptionWake(input.sourceId, input.turnId, started.turnId);
+      // A missing admission receipt is ambiguous, not a reason to replay.
+    });
+    const tail = delivery.then(() => undefined, () => undefined);
+    this.hostWakeTails.set(input.threadId, tail);
+    try { await delivery; } finally {
+      if (this.hostWakeTails.get(input.threadId) === tail) this.hostWakeTails.delete(input.threadId);
+      this.parentInterruptionWakes.delete(input.wakeKey);
+    }
+  }
+
+  private readonly processJobWakeWorkers = new Map<string, AbortController>();
+
   private async deliverProcessJobWake(
     input: DeliverWebProcessJobNotificationInput & { readonly wakePrompt: string },
   ): Promise<HostWakeReceipt> {
-    const activeKey = `${input.sourceId}\0${input.deliveryKey}`;
+    const workerKey = `${input.sourceId}\0${input.deliveryKey}`;
+    const attemptToken = input.wakeRecovery?.token;
+    const activeKey = `${workerKey}\0${attemptToken ?? "legacy"}`;
     const existing = this.activeHostWakes.get(activeKey);
     if (existing !== undefined) return await existing;
 
@@ -2701,6 +3185,7 @@ export class WebService {
       threadId: input.threadId,
       jobId: input.processJob.jobId,
       deliveryKey: input.deliveryKey,
+      ...(input.wakeRecovery === undefined ? {} : { wakeRecovery: input.wakeRecovery }),
     });
     if (reservation.kind === "completed") {
       return { delivered: true, disposition: reservation.disposition };
@@ -2714,40 +3199,67 @@ export class WebService {
       };
     }
 
+    this.processJobWakeWorkers.get(workerKey)?.abort();
+    const worker = new AbortController();
+    this.processJobWakeWorkers.set(workerKey, worker);
+    const ambiguous: HostWakeReceipt = { delivered: false, code: "process_job_wake_ambiguous", retryable: false, ambiguous: true };
+    const ownsClaim = (): boolean => !worker.signal.aborted && this.store.ownsProcessJobWake(input.deliveryKey, attemptToken);
+    const abandonUndispatched = (): HostWakeReceipt => {
+      try {
+        if (ownsClaim() && this.store.abandonProcessJobWake({ sourceId: input.sourceId,
+          jobId: input.processJob.jobId, deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }) })) {
+          return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+        }
+      } catch { /* A failed exact release preserves ambiguity, never retry authority. */ }
+      return ambiguous;
+    };
+    const stoppingConnection = (connection: AgentConnection): boolean => {
+      const restart = this.store.activeRestartOperation(input.sourceId);
+      return restart !== undefined && restart.generation === connection.processGeneration;
+    };
+    const cancelled = new Promise<HostWakeReceipt>((resolve) => worker.signal.addEventListener("abort", () => resolve(ambiguous), { once: true }));
     this.retainHostWakeReservation(input.threadId);
     const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
-    const delivery = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
+    const work = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
+      if (!ownsClaim()) return ambiguous;
       const connection = this.connections.get(input.sourceId);
       if (connection === undefined) {
         this.store.abandonProcessJobWake({
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
+      if (stoppingConnection(connection) || (attemptToken !== undefined && !connection.info.supportsProcessJobWakeAdmission)) return abandonUndispatched();
       const active = this.activeTurns.get(input.threadId);
       // The wake text is steered operator-facing with the member prefix; an
       // oversized composition skips steering and falls through to the normal
       // follow-up below instead of truncating.
       const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
       if (active !== undefined && connection.info.supportsLiveInput
+        && this.clientConnectionGeneration.get(active.client) === connection.generation
         && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         try {
-          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId);
+          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, true, attemptToken);
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,
             id: input.deliveryKey,
             text: steeredText,
             receivedAt: new Date().toISOString(),
             deliveryKey: input.deliveryKey,
-            signal: AbortSignal.timeout(10 * 60 * 1_000),
+            ...(attemptToken === undefined ? {} : { processJobWakeAttempt: attemptToken }),
+            signal: AbortSignal.any([worker.signal, AbortSignal.timeout(10 * 60 * 1_000)]),
           });
+          if (!ownsClaim()) return ambiguous;
           if (settlement.status === "applied") {
             const message = this.store.completeProcessJobWake({
               sourceId: input.sourceId,
               jobId: input.processJob.jobId,
               deliveryKey: input.deliveryKey,
+              ...(attemptToken === undefined ? {} : { attemptToken }),
               disposition: "steered",
               turnId: active.turnId,
             });
@@ -2757,7 +3269,7 @@ export class WebService {
             return { delivered: true, disposition: "steered" };
           }
           if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
-            this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
+            this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId, attemptToken);
             return {
               delivered: false,
               code: "process_job_wake_ambiguous",
@@ -2765,11 +3277,11 @@ export class WebService {
               ambiguous: true,
             };
           }
-          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false);
+          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false, attemptToken);
         } catch (error) {
           // Receipt uncertainty forbids replay, but is not authority to silence
           // the ordinary answer from the active turn indefinitely.
-          this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
+          this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId, attemptToken);
           this.options.logger?.warn?.("Web process-job steering outcome is unknown; automatic fallback is suppressed.", {
             threadId: input.threadId,
             error: errorMessage(error),
@@ -2785,7 +3297,7 @@ export class WebService {
 
       if (active !== undefined) {
         try {
-          await active.completion;
+          if (!await Promise.race([active.completion.then(() => true), cancelled.then(() => false)])) return ambiguous;
         } catch {
           // No live-input request was sent, or the active run explicitly said
           // requeue/unavailable before this wait. This wake therefore has not
@@ -2797,6 +3309,7 @@ export class WebService {
               sourceId: input.sourceId,
               jobId: input.processJob.jobId,
               deliveryKey: input.deliveryKey,
+              ...(attemptToken === undefined ? {} : { attemptToken }),
             });
           } catch {
             // The accepted claim may remain. Preserve ambiguity and no-replay.
@@ -2816,11 +3329,17 @@ export class WebService {
           };
         }
       }
+      // Like an active turn, an in-flight manual compaction is waited out; the
+      // wake's reservation keeps any new compaction from starting meanwhile.
+      if (!await Promise.race([Promise.resolve(this.activeCompactions.get(input.threadId)).then(() => true),
+        cancelled.then(() => false)])) return ambiguous;
+      if (!ownsClaim()) return ambiguous;
       if (this.stopped) {
         this.store.abandonProcessJobWake({
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
@@ -2830,7 +3349,15 @@ export class WebService {
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
+        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+      }
+      if (refreshedConnection.generation !== connection.generation
+        || stoppingConnection(refreshedConnection)
+        || (attemptToken !== undefined && !refreshedConnection.info.supportsProcessJobWakeAdmission)) {
+        this.store.abandonProcessJobWake({ sourceId: input.sourceId, jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey, ...(attemptToken === undefined ? {} : { attemptToken }) });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
       // Bounded before any turn exists: an over-limit composition fails the
@@ -2843,6 +3370,7 @@ export class WebService {
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return { delivered: false, code: "process_job_wake_failed", retryable: false };
       }
@@ -2852,6 +3380,7 @@ export class WebService {
         started = this.store.beginAssistantTurn({
           threadId: input.threadId,
           prompt: input.wakePrompt,
+          ...(attemptToken === undefined ? {} : { processJobWakeAttempt: attemptToken }),
           processJobWake: {
             jobId: input.processJob.jobId,
             deliveryKey: input.deliveryKey,
@@ -2859,6 +3388,7 @@ export class WebService {
           },
           ...(selection.model === undefined ? {} : { model: selection.model }),
           ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+          ...(selection.context1M === undefined ? {} : { context1M: selection.context1M }),
           ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
           ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
         });
@@ -2867,6 +3397,7 @@ export class WebService {
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return {
           delivered: false,
@@ -2874,11 +3405,13 @@ export class WebService {
           retryable: false,
         };
       }
-      const { completion, admitted } = this.launchTurn(
+      const { completion, admitted, refusedBeforeDispatch } = this.launchTurn(
         started,
         refreshedConnection.client,
-        followUpText,
+        input.wakePrompt,
         input.deliveryKey,
+        false,
+        attemptToken,
       );
       // Receipt ownership moves to the durable turn below. The turn remains
       // owned by `activeTurns`, but its completion is no longer part of the
@@ -2913,6 +3446,9 @@ export class WebService {
       // follow-up can no longer start the next job. This waits for admission
       // only; the model turn itself stays detached above.
       if (!await admitted) {
+        // Only this explicit local guard certifies that client.turn was never
+        // called. A dispatched request without a receipt remains ambiguous.
+        if (refusedBeforeDispatch()) return abandonUndispatched();
         // The request may still have reached the agent, so the accepted claim
         // stays put: no abandon, no replay, and any retry fails closed.
         return {
@@ -2922,10 +3458,12 @@ export class WebService {
           ambiguous: true,
         };
       }
+      if (!ownsClaim()) return ambiguous;
       const message = this.store.completeProcessJobWake({
         sourceId: input.sourceId,
         jobId: input.processJob.jobId,
         deliveryKey: input.deliveryKey,
+        ...(attemptToken === undefined ? {} : { attemptToken }),
         disposition: "follow_up",
         turnId: started.turnId,
       });
@@ -2934,6 +3472,7 @@ export class WebService {
       }
       return { delivered: true, disposition: "follow_up" };
     });
+    const delivery = Promise.race([work, cancelled]);
     const tail = delivery.then(() => undefined, () => undefined);
     this.hostWakeTails.set(input.threadId, tail);
     this.activeHostWakes.set(activeKey, delivery);
@@ -2946,211 +3485,7 @@ export class WebService {
       if (this.activeHostWakes.get(activeKey) === delivery) {
         this.activeHostWakes.delete(activeKey);
       }
-      this.releaseHostWakeReservation(input.threadId);
-    }
-  }
-
-  private async deliverMonitorWake(
-    input: DeliverWebMonitorNotificationInput,
-  ): Promise<{ readonly receipt: HostWakeReceipt; readonly duplicate: boolean }> {
-    const activeKey = `${input.sourceId}\0${input.deliveryKey}`;
-    const reservation = this.store.reserveMonitorWake({
-      sourceId: input.sourceId,
-      threadId: input.threadId,
-      monitorId: input.monitor.monitorId,
-      deliveryKey: input.deliveryKey,
-      payloadSha256: monitorWakePayloadSha256(input.monitor, input.wakePrompt),
-      monitor: input.monitor,
-    });
-    if (reservation.kind === "completed") {
-      return {
-        receipt: { delivered: true, disposition: reservation.disposition },
-        duplicate: true,
-      };
-    }
-    if (reservation.kind === "uncertain") {
-      const existing = this.activeHostWakes.get(activeKey);
-      if (existing !== undefined) return { receipt: await existing, duplicate: true };
-      return {
-        receipt: {
-          delivered: false,
-          code: "monitor_wake_ambiguous",
-          retryable: false,
-          ambiguous: true,
-        },
-        duplicate: true,
-      };
-    }
-
-    this.retainHostWakeReservation(input.threadId);
-    const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
-    const delivery = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
-      const abandon = (): void => this.store.abandonMonitorWake({
-        sourceId: input.sourceId,
-        monitorId: input.monitor.monitorId,
-        deliveryKey: input.deliveryKey,
-      });
-      let connection = this.connections.get(input.sourceId);
-      if (connection === undefined) {
-        try {
-          await this.refreshAgents();
-        } catch (error) {
-          abandon();
-          this.options.logger?.debug?.("Web Monitor destination refresh failed before delivery.", {
-            threadId: input.threadId,
-            monitorId: input.monitor.monitorId,
-            error: errorMessage(error),
-          });
-          return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-        }
-        connection = this.connections.get(input.sourceId);
-      }
-      if (this.stopped || connection === undefined) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      const destination = this.store.getThread(input.threadId);
-      if (destination === undefined
-        || destination.sourceId !== input.sourceId
-        || destination.archivedAt !== null
-        || destination.trigger !== undefined) {
-        abandon();
-        return { delivered: false, code: "monitor_origin_mismatch", retryable: false };
-      }
-      const active = this.activeTurns.get(input.threadId);
-      // Steered operator-facing with the member prefix, like every other
-      // dispatch. An oversized composition skips steering for the normal
-      // follow-up below; the stored `[Monitor wake]` text is untouched.
-      const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
-      if (active !== undefined
-        && connection.info.supportsLiveInput
-        && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
-        try {
-          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, true);
-          const settlement = await active.client.liveInput({
-            conversationId: `web:${input.threadId}`,
-            id: input.deliveryKey,
-            text: steeredText,
-            receivedAt: new Date().toISOString(),
-            deliveryKey: input.deliveryKey,
-            signal: AbortSignal.timeout(10 * 60 * 1_000),
-          });
-          if (settlement.status === "applied") {
-            const message = this.store.completeMonitorWake({
-              sourceId: input.sourceId,
-              monitorId: input.monitor.monitorId,
-              deliveryKey: input.deliveryKey,
-              disposition: "steered",
-              turnId: active.turnId,
-            });
-            if (message !== undefined) {
-              this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-            }
-            return { delivered: true, disposition: "steered" };
-          }
-          if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
-            return {
-              delivered: false,
-              code: "monitor_wake_ambiguous",
-              retryable: false,
-              ambiguous: true,
-            };
-          }
-          this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, false);
-        } catch (error) {
-          this.options.logger?.warn?.("Web Monitor steering outcome is unknown; automatic fallback is suppressed.", {
-            threadId: input.threadId,
-            monitorId: input.monitor.monitorId,
-            error: errorMessage(error),
-          });
-          return {
-            delivered: false,
-            code: "monitor_wake_ambiguous",
-            retryable: false,
-            ambiguous: true,
-          };
-        }
-      }
-
-      if (active !== undefined) await active.completion;
-      if (this.stopped) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      const refreshedConnection = this.connections.get(input.sourceId);
-      if (refreshedConnection === undefined) {
-        abandon();
-        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
-      }
-      // Bounded before any turn exists, like the process-job follow-up: no
-      // operator call, and abandoned so a later redelivery can still proceed.
-      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
-      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
-        abandon();
-        return { delivered: false, code: "monitor_wake_failed", retryable: false };
-      }
-      let started;
-      try {
-        const selection = this.resolveTurnSelection(input.threadId);
-        started = this.store.beginAssistantTurn({
-          threadId: input.threadId,
-          prompt: input.wakePrompt,
-          storedPrompt: "[Monitor wake]",
-          ...(selection.model === undefined ? {} : { model: selection.model }),
-          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
-          ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
-          ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
-        });
-      } catch (error) {
-        abandon();
-        return {
-          delivered: false,
-          code: errorCode(error) ?? "monitor_wake_failed",
-          retryable: false,
-        };
-      }
-      const { completion } = this.launchTurn(
-        started,
-        refreshedConnection.client,
-        followUpText,
-        input.deliveryKey,
-      );
-      this.emit("message.changed", input.threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
-      this.refreshMemberProject(started.thread);
-      await completion;
-      if (this.store.turnStatus(started.turnId) !== "complete") {
-        return {
-          delivered: false,
-          code: "monitor_wake_failed",
-          retryable: false,
-          ambiguous: true,
-        };
-      }
-      const message = this.store.completeMonitorWake({
-        sourceId: input.sourceId,
-        monitorId: input.monitor.monitorId,
-        deliveryKey: input.deliveryKey,
-        disposition: "follow_up",
-        turnId: started.turnId,
-      });
-      if (message !== undefined) {
-        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-      }
-      return { delivered: true, disposition: "follow_up" };
-    });
-    const tail = delivery.then(() => undefined, () => undefined);
-    this.hostWakeTails.set(input.threadId, tail);
-    this.activeHostWakes.set(activeKey, delivery);
-    try {
-      return { receipt: await delivery, duplicate: false };
-    } finally {
-      if (this.hostWakeTails.get(input.threadId) === tail) this.hostWakeTails.delete(input.threadId);
-      if (this.activeHostWakes.get(activeKey) === delivery) this.activeHostWakes.delete(activeKey);
+      if (this.processJobWakeWorkers.get(workerKey) === worker) this.processJobWakeWorkers.delete(workerKey);
       this.releaseHostWakeReservation(input.threadId);
     }
   }
@@ -3425,30 +3760,55 @@ export class WebService {
     let discovered: readonly DiscoveredOperatorAgent[];
     try {
       discovered = await discover({
+        includeStopped: true,
         ...(this.options.registryDirs === undefined ? {} : { registryDirs: this.options.registryDirs }),
         ...(this.options.staleAfterMs === undefined ? {} : { staleAfterMs: this.options.staleAfterMs }),
         ...(this.options.env === undefined ? {} : { env: this.options.env }),
       });
     } catch (error) {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
-      const changed = this.store.markDiscoveredAgentsOffline();
+      this.discoveryFailures += 1;
+      const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
+      const changed = this.discoveryFailures >= tolerance
+        ? this.store.markDiscoveredAgentsOffline()
+        : false;
+
+      // A failed registry walk says nothing about whether the process behind a
+      // source id restarted or moved. Keep its last summary below the tolerance,
+      // but never hand out a client whose endpoint/process binding discovery
+      // could not re-establish: sending through that stale authority is less safe
+      // than temporarily refusing an operation. Capabilities derived from those
+      // clients disappear in the same pass and are announced independently of
+      // whether the retained summary itself changed.
       this.connections = new Map();
-      // The live connection that backs the projection is gone, so provider
-      // authentication is unavailable now.
-      // Clearing it here is what makes the recovery a transition worth
-      // announcing rather than a no-op against a stale map. It is belt and
-      // braces today: this projected capability implies a live connection, which
-      // implies a row that was not offline, so `markDiscoveredAgentsOffline`
-      // returns true and the failure is announced anyway.
-      this.projectedCapabilities = new Map();
-      if (changed) this.emit("agents.changed");
+      this.reconcilePendingRestartOperations();
+      const projected = new Map(
+        this.store.listAgents().map((summary) => [
+          summary.sourceId,
+          this.projectedCapabilitySignature(summary),
+        ] as const),
+      );
+      const capabilityChanged = projected.size !== this.projectedCapabilities.size
+        || [...projected].some(([sourceId, signature]) =>
+          this.projectedCapabilities.get(sourceId) !== signature);
+      this.projectedCapabilities = projected;
+      if (changed || capabilityChanged) this.emit("agents.changed");
       return;
+    }
+    this.discoveryFailures = 0;
+    // Registries also retain ephemeral stopped runs. Keep only identities with
+    // console-owned state, without probing them or creating new agent rows.
+    if (discovered.some((agent) => agent.source.health === "stopped")) {
+      const retained = this.store.retainedStoppedAgentSourceIds();
+      discovered = discovered.filter((agent) => agent.source.health !== "stopped"
+        || retained.has(agent.source.sourceId));
     }
 
     const nextConnections = new Map<string, AgentConnection>();
-    // What the cache is allowed to survive: the same process, at the same
-    // endpoint, since the same start. Anything else is a new generation whose
-    // catalog the previous one cannot speak for.
+    // Summary/catalog identity belongs to the process, not the endpoint string:
+    // live metadata can temporarily omit or move that endpoint without replacing
+    // the process that supplied the summary. Connections below carry the stricter
+    // endpoint-bearing identity so a client can never survive such a move.
     const generations = new Map(discovered.map((agent) => [
       agent.source.sourceId,
       agentGeneration(agent),
@@ -3458,12 +3818,29 @@ export class WebService {
     const tolerance = this.options.probeFailureTolerance ?? PROBE_FAILURE_TOLERANCE;
     const summaries = await Promise.all(discovered.map(async (agent): Promise<WebAgentSummary> => {
       const generation = generations.get(agent.source.sourceId)!;
-      if (agent.baseUrl === undefined) return offlineSummary(agent, generation);
+      // A terminal manifest is authoritative, unlike a missing channel field in
+      // an otherwise-running process. It must not spend a tolerance window or
+      // preserve either the previous summary or connection.
+      if (agent.source.status !== "running") {
+        this.probeFailures.delete(agent.source.sourceId);
+        return offlineSummary(agent, generation);
+      }
+      if (agent.baseUrl === undefined) {
+        const failures = this.recordProbeFailure(agent.source.sourceId, generation);
+        return this.retainSummaryAfterPresenceFailure(
+          agent,
+          generation,
+          undefined,
+          failures,
+          tolerance,
+          nextConnections,
+        ) ?? offlineSummary(agent, generation);
+      }
+      const connectionGeneration = agentConnectionGeneration(agent, agent.baseUrl);
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
         ...(agent.processJobsBearer === undefined ? {} : { processJobsBearer: agent.processJobsBearer }),
-        ...(agent.monitorsBearer === undefined ? {} : { monitorsBearer: agent.monitorsBearer }),
         ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
       });
       try {
@@ -3472,7 +3849,9 @@ export class WebService {
         // so the next failure starts a fresh count rather than resuming one
         // from a stall that this pass has just disproved.
         this.probeFailures.delete(agent.source.sourceId);
-        nextConnections.set(agent.source.sourceId, { client, info, generation });
+        nextConnections.set(agent.source.sourceId, { client, info, pid: agent.source.pid, generation: connectionGeneration, processGeneration: generation });
+        this.clientProcessGeneration.set(client, generation);
+        this.clientConnectionGeneration.set(client, connectionGeneration);
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
           client,
@@ -3507,39 +3886,33 @@ export class WebService {
           error: errorMessage(error),
         });
         const failures = this.recordProbeFailure(agent.source.sourceId, generation);
-        const previous = this.store.getAgent(agent.source.sourceId);
-        // Below the tolerance the agent keeps the summary it already had. The
-        // info route is synchronous, so a probe that timed out was queued
-        // behind a busy event loop -- a working agent reported offline is what
-        // makes the console unusable -- while the trace heartbeat's 30s
-        // staleness, which reads `degraded` rather than depending on this
-        // probe, is the backstop that still reports an agent that is really
-        // gone. The stored summary is returned unchanged, deliberately: this
-        // pass learned nothing new about the agent, and a copy rebuilt from the
-        // pass's heartbeat would only rewrite the same row with a newer
-        // `updatedAt`.
-        //
-        // The same generation is required for both the summary and the
-        // connection it is returned with. A restarted agent is a different
-        // process behind the same source id: the summary it replaces cannot
-        // speak for it, and its predecessor's client must not be handed out as
-        // if it were live either.
-        if (failures < tolerance
-          && previous !== undefined
-          && previous.generation === generation
-          && previous.status !== "offline") {
-          const connection = this.connections.get(agent.source.sourceId);
-          if (connection !== undefined && connection.generation === generation) {
-            nextConnections.set(agent.source.sourceId, connection);
-          }
-          return previous;
-        }
-        return offlineSummary(agent, generation);
+        return this.retainSummaryAfterPresenceFailure(
+          agent,
+          generation,
+          connectionGeneration,
+          failures,
+          tolerance,
+          nextConnections,
+        ) ?? offlineSummary(agent, generation);
       }
     }));
     const previousConnections = this.connections;
     this.connections = nextConnections;
     const agentsChanged = this.store.replaceAgents(summaries);
+    for (const [sourceId, connection] of nextConnections) {
+      for (const notice of this.store.reconcileParentInterruptions(sourceId, connection.processGeneration)) {
+        this.emit("message.changed", notice.threadId, { messageId: notice.messageId, updatedAt: this.currentDate().toISOString() });
+        this.emitThread("threads.changed", { thread: this.store.getThread(notice.threadId)! });
+      }
+      for (const pending of this.store.pendingParentInterruptions(sourceId)) {
+        void this.deliverParentInterruptionWake(pending, connection).catch((error: unknown) => {
+          this.options.logger?.warn?.("Parent interruption wake unavailable.", {
+            sourceId, errorCode: errorCode(error) ?? "unknown",
+          });
+        });
+      }
+    }
+    this.reconcilePendingRestartOperations();
     // Usable provider authentication comes from the live connection, so when it
     // turns on or off nothing on the discovery summary moves and `replaceAgents`
     // is right to say so. An operator can start or stop advertising
@@ -3578,14 +3951,51 @@ export class WebService {
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
     await this.reconcileDueProcessJobCards(previousConnections, nextConnections, signal);
+    this.dispatchWakes();
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
     }
   }
 
   /**
-   * Count one more consecutive probe failure for `sourceId`'s current
-   * generation and return the running total. The generation is compared here,
+   * Preserve the last summary for an inconclusive presence sample, but only for
+   * the same process and only below the shared tolerance. A failed info request
+   * can be a busy event loop, and a missing endpoint can be one transient
+   * channel-status publication; neither single sample replaces the process that
+   * supplied the summary. The trace heartbeat's 30s staleness still independently
+   * projects `degraded`, while exhausting this shorter budget projects `offline`.
+   *
+   * Summary identity deliberately excludes the endpoint. Connection identity
+   * does not: a changed or absent endpoint never inherits the previous client,
+   * even while the process's non-offline summary is retained.
+   */
+  private retainSummaryAfterPresenceFailure(
+    agent: DiscoveredOperatorAgent,
+    generation: string,
+    connectionGeneration: string | undefined,
+    failures: number,
+    tolerance: number,
+    nextConnections: Map<string, AgentConnection>,
+  ): WebAgentSummary | undefined {
+    if (failures >= tolerance) return undefined;
+    const sourceId = agent.source.sourceId;
+    const previous = this.store.getAgent(sourceId);
+    if (previous === undefined
+      || previous.generation !== generation
+      || previous.status === "offline") return undefined;
+    const connection = this.connections.get(sourceId);
+    if (connectionGeneration !== undefined
+      && connection !== undefined
+      && connection.generation === connectionGeneration) {
+      nextConnections.set(sourceId, connection);
+    }
+    return previous;
+  }
+
+  /**
+   * Count one more consecutive failed-probe or missing-endpoint sample for
+   * `sourceId`'s current generation and return the running total. The process
+   * generation is compared here,
    * not only in the sweep below, so the count can never be inherited: a count
    * earned by one process must not spend another process's tolerance.
    */
@@ -3648,7 +4058,108 @@ export class WebService {
     });
   }
 
+  wakeSchedule(threadId: string): WebWakeSchedule | null { return this.store.wakeSchedule(threadId); }
+
+  createWakeSchedule(threadId: string, definition: WebWakeScheduleDefinition): WebWakeSchedule {
+    const schedule = this.store.createWakeSchedule(threadId, definition);
+    this.emitWakeThread(threadId);
+    this.dispatchWakes();
+    return schedule;
+  }
+
+  changeWakeSchedule(threadId: string, expectedRevision: number,
+    change: { readonly definition: WebWakeScheduleDefinition } | { readonly state: "active" | "paused" } | { readonly delete: true },
+  ): WebWakeSchedule | null {
+    const schedule = this.store.changeWakeSchedule(threadId, expectedRevision, change);
+    this.emitWakeThread(threadId);
+    this.dispatchWakes();
+    return schedule;
+  }
+
+  private emitWakeThread(threadId: string): void {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
+    this.emitThread("thread.changed", { thread });
+    this.emitThread("threads.changed", { thread });
+  }
+
+  /** Indexed due scan; sync admission avoids an interleaving with ordinary user input. */
+  private dispatchWakes(): void {
+    if (this.stopped) return;
+    for (const threadId of this.store.wakeDueThreadIds()) this.dispatchWake(threadId);
+  }
+
+  private dispatchWake(threadId: string): void {
+    if (this.stopped) return;
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
+    const connection = this.connections.get(thread.sourceId);
+    const revision = thread.revision;
+    this.store.reconcileWake(threadId, connection !== undefined);
+    if (this.store.getThread(threadId)?.revision !== revision) this.emitWakeThread(threadId);
+    if (connection === undefined || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
+      || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
+    const schedule = this.store.wakeSchedule(threadId);
+    if (schedule?.definition.compactFirst === true && this.store.wakeReadyForCompaction(threadId)) {
+      // Leave the occurrence pending until compaction settles. A restart can
+      // retry preparation, but only claimWake can consume/launch the occurrence.
+      this.retainHostWakeReservation(threadId);
+      void (async () => {
+        try {
+          if (connection.info.supportsManualCompaction === true) {
+            try { await this.compactIdleThread(threadId, connection, false); }
+            catch { /* The normal compaction marker records failure/uncertainty. */ }
+          } else {
+            this.store.recordManualCompaction(threadId, { operationId: randomUUID(), trigger: "manual",
+              status: "failed", reason: "unsupported" });
+            this.emitStoredThread(threadId, ["thread.changed"]);
+          }
+          // Do not apply preparation to a replaced schedule or a new connection.
+          if (!this.stopped && this.connections.get(thread.sourceId) === connection
+            && this.store.wakeSchedule(threadId)?.scheduleId === schedule.scheduleId
+            && this.store.wakeSchedule(threadId)?.revision === schedule.revision) {
+            this.launchScheduledWake(threadId, connection, true);
+          }
+        } finally {
+          if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);
+          this.releaseHostWakeReservation(threadId);
+        }
+      })().catch((error: unknown) => {
+        this.options.logger?.error?.("Scheduled wake-up preparation failed.", { threadId, errorCode: errorCode(error) ?? "unknown" });
+      });
+      return;
+    }
+    this.launchScheduledWake(threadId, connection);
+  }
+
+  private launchScheduledWake(threadId: string, connection: AgentConnection, afterCompaction = false): void {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
+    const selection = this.resolveTurnSelection(threadId);
+    const claimed = this.store.claimWake(threadId, thread.sourceId,
+      () => !this.stopped && this.connections.get(thread.sourceId) === connection
+        && (afterCompaction ? this.hostWakeReservations.has(threadId) : !this.hostWakeReservations.has(threadId))
+        && !this.activeCompactions.has(threadId), selection, afterCompaction);
+    if (claimed === null) return;
+    const { started, prompt } = claimed;
+    this.emitWakeThread(threadId);
+    this.emit("message.changed", threadId, { messageId: started.assistantMessageId, updatedAt: started.thread.updatedAt });
+    this.emit("turn.changed", threadId, { turn: started.thread.runState });
+    const { completion, admitted } = this.launchTurn(started, connection.client, prompt, undefined, true);
+    void admitted.then((accepted) => {
+      if (accepted && !this.stopped) {
+        this.store.markWakeAdmitted(started.turnId);
+        this.emitWakeThread(threadId);
+      }
+    });
+    void completion.catch((error: unknown) => {
+      this.options.logger?.error?.("Scheduled wake-up settlement failed.", { threadId, errorCode: errorCode(error) ?? "unknown" });
+    });
+  }
+
   private startTimers(): void {
+    this.wakeTimer = setInterval(() => this.dispatchWakes(), 15_000);
+    this.wakeTimer.unref();
     const discoveryInterval = this.options.discoveryIntervalMs ?? DEFAULT_DISCOVERY_INTERVAL_MS;
     const purgeInterval = this.options.purgeIntervalMs ?? DEFAULT_PURGE_INTERVAL_MS;
     if (discoveryInterval > 0) {
@@ -3696,7 +4207,15 @@ export class WebService {
    * apply the wrong row.
    */
   private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
-    this.emit(type, "thread" in payload ? payload.thread.id : payload.threadId, payload);
+    const projected = "thread" in payload ? { thread: this.projectThread(payload.thread) } : payload;
+    this.emit(type, "thread" in projected ? projected.thread.id : projected.threadId, projected);
+  }
+
+  private projectThread(thread: WebThread): WebThread {
+    const startedAt = this.manualCompactionStartedAt.get(thread.id);
+    return startedAt === undefined ? thread : {
+      ...thread, compaction: { status: "running", trigger: "manual", startedAt },
+    };
   }
 
   /**
@@ -4229,11 +4748,13 @@ export class WebService {
     threadId: string,
     explicitModel?: string,
     explicitEffort?: string,
+    explicitContext1M?: boolean | null,
   ): {
     readonly thread: WebThread;
     readonly agent: WebAgentSummary;
     readonly model?: string;
     readonly effort?: string;
+    readonly context1M?: boolean;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
   } {
@@ -4246,6 +4767,10 @@ export class WebService {
     const model = explicitModel ?? thread.runModel ?? undefined;
     const effort = explicitEffort ?? thread.runEffort ?? undefined;
     this.validateModelAndEffort(thread.sourceId, agent, model, effort);
+    this.validateContext1M(thread.sourceId, agent, model, explicitContext1M);
+    const context1M = this.supportsContext1M(thread.sourceId, agent, model)
+      ? (explicitContext1M === undefined ? thread.runContext1M ?? undefined : explicitContext1M ?? undefined)
+      : undefined;
     const requestedModel = effectiveModelForAgent(agent, model);
     const cached = requestedModel === undefined
       ? undefined
@@ -4261,9 +4786,23 @@ export class WebService {
       agent,
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
+      ...(context1M === undefined ? {} : { context1M }),
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedEffort === undefined ? {} : { requestedEffort }),
     };
+  }
+
+  private supportsContext1M(sourceId: string, agent: WebAgentSummary, model?: string): boolean {
+    const selected = effectiveModelForAgent(agent, model);
+    if (selected === undefined) return false;
+    return (agent.modelOptions?.[selected] ?? this.modelCatalogCache.get(sourceId)?.models.get(selected)?.advertisement)?.supportsContext1M === true;
+  }
+
+  private validateContext1M(sourceId: string, agent: WebAgentSummary, model: string | undefined, value: unknown): void {
+    if (value == null) return;
+    if (typeof value !== "boolean" || !this.supportsContext1M(sourceId, agent, model)) {
+      throw new WebConsoleError("invalid_context_1m", "The selected model does not support a 1M context selection.", 400);
+    }
   }
 
   private validateModelAndEffort(
@@ -4381,7 +4920,7 @@ export class WebService {
     // attempt failed or was interrupted. Idempotent and guarded, so repeated
     // reads of the same thread fetch each image at most once.
     void this.persistReplyImages(detail.thread.id, detail.messages);
-    return { ...detail, messages: this.shapeMessages(detail.messages, options) };
+    return { ...detail, thread: this.projectThread(detail.thread), messages: this.shapeMessages(detail.messages, options) };
   }
 
   /**
@@ -4437,6 +4976,16 @@ export class WebService {
    */
   private shapePart(message: WebMessage, part: WebMessagePart, options: WebTranscriptShape): WebMessagePart {
     if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
+    if (part.type === "restart_proposal") {
+      const binding = this.store.restartProposalBinding(message.id, part.id);
+      const restartable = binding === undefined || binding.threadId !== message.threadId
+        ? { state: "unsupported" as const, reason: "This proposal has no verified agent binding." }
+        : this.restartProposalAvailability(binding);
+      // Reconstruct from allowlisted fields even on ?full=1: the browser never
+      // receives the private source, generation or operation binding.
+      return { type: "restart_proposal", id: part.id,
+        ...(part.reason === undefined ? {} : { reason: part.reason }), restartable };
+    }
     if (options.full === true) return part;
     if (message.role === "assistant"
       && message.turnId === undefined
@@ -4686,7 +5235,8 @@ class WebTurnCancellation extends Error {
   }
 }
 
-class StreamFrameCoalescer {
+export class StreamFrameCoalescer {
+  private intervalMs = STREAM_FLUSH_INTERVAL_MS;
   private pending: AgentStreamWireFrame[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private tail: Promise<void> = Promise.resolve();
@@ -4694,7 +5244,7 @@ class StreamFrameCoalescer {
   private closed = false;
 
   constructor(
-    private readonly persist: (frames: readonly AgentStreamWireFrame[]) => Promise<void>,
+    private readonly persist: (frames: readonly AgentStreamWireFrame[]) => Promise<number>,
     private readonly onFailure: (error: unknown) => void,
   ) {}
 
@@ -4709,7 +5259,7 @@ class StreamFrameCoalescer {
           this.failure = error;
           this.onFailure(error);
         });
-      }, STREAM_FLUSH_INTERVAL_MS);
+      }, this.intervalMs);
       this.timer.unref();
     }
   }
@@ -4722,7 +5272,16 @@ class StreamFrameCoalescer {
     const frames = this.pending;
     this.pending = [];
     if (frames.length > 0) {
-      this.tail = this.tail.then(async () => this.persist(frames));
+      this.tail = this.tail.then(async () => {
+        const started = performance.now();
+        const bytes = await this.persist(frames);
+        // Ordinary replies stay at 50 ms. Large snapshots buy idle time (4x
+        // persistence cost, or 50 ms per MiB), capped at 250 ms batching latency.
+        // The cap is a scheduling bound, not a promise that synchronous I/O is fast.
+        const duration = performance.now() - started;
+        this.intervalMs = Math.min(250, Math.max(STREAM_FLUSH_INTERVAL_MS,
+          Math.ceil(duration * 4), Math.ceil(bytes / (1024 * 1024)) * 50));
+      });
     }
     await this.tail;
     if (this.failure !== undefined) throw this.failure;
@@ -4808,42 +5367,39 @@ export class WeightedTurnBudget {
 
 /**
  * The identity of the agent PROCESS behind a source id. `sourceId` is stable
- * across restarts by design, so it cannot scope anything the running process
- * told us: a reconfigured agent restarts at a new endpoint, with a new pid and
- * a new `startedAt`, and advertises a different catalog under the same id.
- * Deliberately excludes `updatedAt`, which every heartbeat moves.
+ * across restarts by design, so the pid and `startedAt` scope everything the
+ * running process told us. The operator endpoint is deliberately excluded: one
+ * live process can republish it after a transient channel-status omission or a
+ * port move, and neither event invalidates its retained summary or model catalog.
+ * `updatedAt` is excluded because every heartbeat moves it.
  *
- * This is what the model catalog cache is scoped to -- and, since the browser
- * caches the same `/v1/models` pages and had nothing generation-shaped to
- * watch, what `WebAgentSummary.generation` carries to it.
+ * This is what the model catalog cache, probe-failure budget, and
+ * `WebAgentSummary.generation` are scoped to. A separate endpoint-bearing digest
+ * below fences cached clients, because endpoint churn is harmless to a summary
+ * but must always retire an `OperatorClient` bound to the old address.
  *
- * Hashed because it now goes on the wire: the raw form names the agent's
- * operator endpoint and pid, and the console has no reason to hand those to a
- * page. The token only has to be stable while one process lives and different
- * once it is replaced, which a digest of those three fields is.
- *
- * Length-prefixed rather than `|`-joined. A separator that can occur inside a
- * field is not a separator: two different accepted tuples whose parts happen to
- * contain the delimiter flatten to the same string and hash to the same token,
- * and two distinct processes sharing a generation is precisely the state the
- * token exists to make impossible. Nothing first-party produces such a tuple
- * today, which is why this is robustness rather than a live defect --- but a
- * digest whose only defence is what its inputs happen to look like is one
- * unrelated change away from being wrong.
- *
- * Hashed as UTF-16 code units for the same reason the prefix replaced the
- * delimiter. UTF-8 has no encoding for an unpaired surrogate, so a lone high
- * surrogate and a lone low surrogate both became the replacement character and
- * two different one-character fields -- identically length-prefixed -- hashed
- * alike. `utf16le` is a lossless transcription of exactly the code units the
- * length prefix counts, so what is hashed is what was measured.
+ * Hashed because the token goes on the wire and the console has no reason to
+ * expose a pid. Parts are length-prefixed rather than concatenated or joined by
+ * a delimiter, and hashed as UTF-16 code units: that preserves the exact tuple
+ * even for accepted strings containing separators or unpaired surrogates.
  */
 export function agentGeneration(agent: DiscoveredOperatorAgent): string {
-  const parts = [
-    agent.baseUrl ?? "",
+  return agentIdentityDigest([
     String(agent.source.pid ?? ""),
     agent.source.startedAt,
-  ];
+  ]);
+}
+
+/** The stricter process-plus-endpoint identity carried only by cached clients. */
+function agentConnectionGeneration(agent: DiscoveredOperatorAgent, baseUrl: string): string {
+  return agentIdentityDigest([
+    baseUrl,
+    String(agent.source.pid ?? ""),
+    agent.source.startedAt,
+  ]);
+}
+
+function agentIdentityDigest(parts: readonly string[]): string {
   return createHash("sha256")
     .update(parts.map((part) => `${String(part.length)}:${part}`).join(""), "utf16le")
     .digest("hex")

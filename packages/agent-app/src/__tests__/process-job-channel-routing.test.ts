@@ -71,6 +71,52 @@ describe("process-job channel routing", () => {
       running: new Map(),
     })).resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
   });
+
+  it("logs each undelivered surface update exactly once, quietly when the console is away", async () => {
+    const projection = job("discord:channel-1#bucket", "discord");
+    const driver = pluginDriver("discord-plugin", "discord");
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const withUpdate = (update: NonNullable<RunningChannel["processJobs"]>["update"]) => ({
+      projection,
+      conversationId: "discord:channel-1",
+      deliveryKey: projection.wake.deliveryKey,
+      drivers: [driver],
+      running: new Map([[driver.id, {
+        summary: {},
+        stop: async () => undefined,
+        processJobs: { update, wake: async () => ({ delivered: true }) },
+      } satisfies RunningChannel]]),
+      logger,
+    });
+
+    await expect(routeProcessJobSurfaceUpdate(withUpdate(async () => ({
+      delivered: false,
+      code: "destination_channel_unavailable",
+      reason: "console restarting",
+      retryable: true,
+    })))).resolves.toMatchObject({ delivered: false, code: "destination_channel_unavailable" });
+    expect(logger.info).toHaveBeenCalledOnce();
+    expect(logger.info.mock.calls[0]?.[1]).toMatchObject({
+      code: "destination_channel_unavailable",
+      reason: "console restarting",
+    });
+    expect(logger.warn).not.toHaveBeenCalled();
+
+    await expect(routeProcessJobSurfaceUpdate(withUpdate(async () => ({
+      delivered: false,
+      code: "process_job_origin_mismatch",
+      reason: "mismatch",
+      retryable: false,
+    })))).resolves.toMatchObject({ delivered: false });
+    await expect(routeProcessJobSurfaceUpdate(withUpdate(async () => {
+      throw new Error("ingress timed out");
+    }))).resolves.toMatchObject({ delivered: false, reason: "ingress timed out" });
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn.mock.calls.map(([, metadata]) => metadata)).toEqual([
+      expect.objectContaining({ code: "process_job_origin_mismatch", reason: "mismatch" }),
+      expect.objectContaining({ reason: "ingress timed out" }),
+    ]);
+  });
 });
 
 function pluginDriver(id: string, conversationScheme: string): ChannelDriver {

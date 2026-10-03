@@ -35,6 +35,7 @@ describe("prompt cache measurement", () => {
     expect(first.systemBytes).toBeGreaterThan(0);
     expect(first.systemFingerprint).toMatch(/^[a-f0-9]{16}$/u);
     expect(second.systemFingerprint).toBe(first.systemFingerprint);
+    expect(second.toolDefinitionsFingerprint).toBe(first.toolDefinitionsFingerprint);
     expect(first.messageCount).toBeGreaterThan(0);
     expect(second.messageCount).toBeGreaterThan(first.messageCount);
     expect(second.toolDefinitionCount).toBe(1);
@@ -54,6 +55,14 @@ describe("prompt cache measurement", () => {
     if (scenario === "durable-reopen") expect(report.runs[1].reseedEvents).toContainEqual(expect.objectContaining({ kind: "canonical_history_replay" }));
     if (scenario === "recall-changing") expect(report.runs.flatMap((run) => run.controlEvents).filter((event) => event.type === "memory_recalled")).toHaveLength(2);
     if (scenario === "capability-change") expect(report.runs[1].requests[0].toolDefinitionCount).toBe(0);
+  });
+
+  it("reports argument validation failures without an uncaught-exception trailer", () => {
+    const child = spawnSync(process.execPath, [script, "--dry-run", "--scenario", "unknown"], { cwd: root, encoding: "utf8", timeout: 10_000 });
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain("Unknown scenario: unknown");
+    expect(child.stderr).not.toMatch(/Node\.js v\d+|^\s+at /mu);
+    expect(child.stdout).toBe("");
   });
 
   it("refuses live mode before provider dispatch when authorization is incomplete", () => {
@@ -81,6 +90,7 @@ describe("prompt cache measurement", () => {
     });
     expect(child.status).toBe(1);
     expect(child.stderr).toContain("is not Pi's active API-key source for the selected provider");
+    expect(child.stderr).not.toMatch(/Node\.js v\d+|^\s+at /mu);
     expect(child.stderr).not.toContain("mismatched-benchmark-secret");
     expect(child.stdout).toBe("");
   });
@@ -96,6 +106,7 @@ describe("prompt cache measurement", () => {
     });
     expect(child.status).toBe(1);
     expect(child.stderr).toContain("cannot be enforced before dispatch");
+    expect(child.stderr).not.toMatch(/Node\.js v\d+|^\s+at /mu);
     expect(child.stderr).not.toContain("positive-benchmark-secret");
     expect(child.stdout).toBe("");
     expect(existsSync(output)).toBe(false);

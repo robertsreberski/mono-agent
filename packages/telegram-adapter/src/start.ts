@@ -17,7 +17,13 @@ import {
   type TelegramPendingAsks,
   type TelegramRuntimeControls,
 } from "./bot.js";
-import type { TelegramCommandConfig, TelegramGroupTriggerMode, TelegramReactionsConfig } from "./config.js";
+import type {
+  TelegramCommandConfig,
+  TelegramGroupTriggerMode,
+  TelegramReactionsConfig,
+  TelegramTopicTriggerMode,
+} from "./config.js";
+import type { TelegramChatObservation, TelegramDestination, TelegramKnownTopicName } from "./conversation.js";
 import type { TelegramChatId } from "./types.js";
 
 export type { TelegramNotifyOptions, TelegramNotifyResult, TelegramPendingAsks } from "./bot.js";
@@ -33,6 +39,12 @@ export interface TelegramAdapterStartOptions {
   readonly groupMode?: TelegramGroupTriggerMode;
   /** Strip the matching native @mention before passing text to the responder. */
   readonly stripMentionText?: boolean;
+  /** Per-forum-topic trigger overrides; `inherit` or no entry follows {@link groupMode}. */
+  readonly topics?: readonly {
+    readonly chatId: TelegramChatId;
+    readonly topicId: number;
+    readonly groupMode?: TelegramTopicTriggerMode;
+  }[];
   /** Responder the bot routes authorized text messages to. */
   readonly responder: AgentResponder;
   /** Optional per-response stream tuning. */
@@ -59,6 +71,13 @@ export interface TelegramAdapterStartOptions {
   readonly pendingAsks?: TelegramPendingAsks;
   /** Host-owned current-conversation reset used by the built-in `/new` command. */
   readonly startNewSession?: (conversationId: string) => Promise<void>;
+  /** Topic names persisted by the host, restored before polling starts. */
+  readonly knownTopicNames?: readonly TelegramKnownTopicName[];
+  /**
+   * Observes every allowlisted message (after the allowlist gate, before
+   * trigger filtering). Never awaited; throws and rejections are logged.
+   */
+  readonly onChatObserved?: (observation: TelegramChatObservation) => void | Promise<void>;
   /** Base URL of a self-hosted Bot API server (API calls + file downloads). Omit for api.telegram.org. */
   readonly apiRoot?: string;
   /** Delete any configured webhook before polling. Defaults to true. */
@@ -85,27 +104,28 @@ export interface TelegramAdapterStartResult {
   /** Stops polling and waits for the runner to settle. */
   stop(): Promise<void>;
   /**
-   * Deliver a proactive notification to a chat, serialized through that chat's
-   * per-chat queue. By default runs `text` as a turn and posts the answer; with
-   * `options.verbatim` posts `text` unchanged (no model call) and records it to
-   * history. Used by cron/webhook nudges so the destination channel — not a side
-   * channel — owns the message.
+   * Deliver a proactive notification to a chat or one of its forum topics,
+   * serialized through that conversation's queue. By default runs `text` as a
+   * turn and posts the answer; with `options.verbatim` posts `text` unchanged (no
+   * model call) and records it to history. Used by cron/webhook nudges so the
+   * destination channel — not a side channel — owns the message. A bare chat id
+   * addresses the chat's main (General / non-forum) conversation.
    */
-  notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
+  notify(destination: TelegramDestination, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
   /** Optional for custom starters; the built-in host-only path never invokes the responder. */
   updateProcessJob?(
-    chatId: TelegramChatId,
+    destination: TelegramDestination,
     projection: ProcessJobProjection,
-    options?: { readonly silent?: boolean },
+    options?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult>;
   /** Post or edit-in-place a keyed tool-progress status line (best-effort). */
   postStatus(
-    chatId: TelegramChatId,
+    destination: TelegramDestination,
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
-  presentAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
-  updateAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
+  presentAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void>;
+  updateAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void>;
 }
 
 /**
@@ -124,12 +144,12 @@ export async function startTelegramAdapter(
   await controller.start();
   return {
     stop: () => controller.stop(),
-    notify: (chatId, text, notifyOptions) => controller.notify(chatId, text, notifyOptions),
-    updateProcessJob: (chatId, projection, updateOptions) =>
-      controller.updateProcessJob(chatId, projection, updateOptions),
-    postStatus: (chatId, text, statusOptions) => controller.postStatus(chatId, text, statusOptions),
-    presentAsk: (chatId, snapshot) => controller.presentAsk(chatId, snapshot),
-    updateAsk: (chatId, snapshot) => controller.updateAsk(chatId, snapshot),
+    notify: (destination, text, notifyOptions) => controller.notify(destination, text, notifyOptions),
+    updateProcessJob: (destination, projection, updateOptions) =>
+      controller.updateProcessJob(destination, projection, updateOptions),
+    postStatus: (destination, text, statusOptions) => controller.postStatus(destination, text, statusOptions),
+    presentAsk: (destination, snapshot) => controller.presentAsk(destination, snapshot),
+    updateAsk: (destination, snapshot) => controller.updateAsk(destination, snapshot),
   };
 }
 
@@ -141,6 +161,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.allowAllChats === undefined ? {} : { allowAllChats: options.allowAllChats }),
     ...(options.groupMode === undefined ? {} : { groupMode: options.groupMode }),
     ...(options.stripMentionText === undefined ? {} : { stripMentionText: options.stripMentionText }),
+    ...(options.topics === undefined ? {} : { topics: options.topics }),
     ...(options.stream === undefined ? {} : { stream: options.stream }),
     ...(options.messages === undefined ? {} : { messages: options.messages }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
@@ -151,6 +172,8 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
     ...(options.startNewSession === undefined ? {} : { startNewSession: options.startNewSession }),
+    ...(options.knownTopicNames === undefined ? {} : { knownTopicNames: options.knownTopicNames }),
+    ...(options.onChatObserved === undefined ? {} : { onChatObserved: options.onChatObserved }),
     ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}

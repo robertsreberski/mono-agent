@@ -1,9 +1,11 @@
 import { parseProviderUsageSnapshot } from "@mono-agent/agent-contracts/provider-usage";
+import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
   AgentSkillRegistry,
   AgentSummary,
+  RestartOperation,
   AskAnswer,
   AskSnapshot,
   AskSubmissionResult,
@@ -380,7 +382,62 @@ export interface BootstrapScope {
   readonly scope?: "chats";
 }
 
+const recordOf = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const safeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+function validUsageSlice(value: unknown): value is WebUsageSlice {
+  const slice = recordOf(value);
+  if (slice === null || (slice.costUsd !== undefined && !safeNumber(slice.costUsd))
+    || (slice.tokensPartial !== undefined && slice.tokensPartial !== true)
+    || (slice.costPartial !== undefined && slice.costPartial !== true)) return false;
+  if (slice.tokens === undefined) return true;
+  const tokens = recordOf(slice.tokens);
+  return tokens !== null && ["input", "cacheRead", "cacheWrite", "output"].every((key) => Number.isSafeInteger(tokens[key]) && Number(tokens[key]) >= 0);
+}
+export function parseThreadUsage(value: unknown): WebThreadUsage {
+  const usage = recordOf(value);
+  if (usage === null || !validUsageSlice(usage.total)
+    || (usage.settledAssistantTurns !== undefined
+      && (!Number.isSafeInteger(usage.settledAssistantTurns) || Number(usage.settledAssistantTurns) < 0))
+    || typeof usage.computedAt !== "string" || Number.isNaN(Date.parse(usage.computedAt))
+    || !Array.isArray(usage.byModel) || !usage.byModel.every((row: unknown) => {
+      const model = recordOf(row);
+      return validUsageSlice(row) && model !== null && (model.model === undefined || typeof model.model === "string");
+    }) || (usage.subagents !== undefined && (!validUsageSlice(usage.subagents)
+      || !Number.isSafeInteger(recordOf(usage.subagents)?.runs) || Number(recordOf(usage.subagents)?.runs) < 1
+      || (recordOf(usage.subagents)?.runsWithTokens !== undefined
+        && (!Number.isSafeInteger(recordOf(usage.subagents)?.runsWithTokens)
+          || Number(recordOf(usage.subagents)?.runsWithTokens) < 0
+          || Number(recordOf(usage.subagents)?.runsWithTokens) > Number(recordOf(usage.subagents)?.runs)))))) {
+    throw new Error("Invalid conversation usage response.");
+  }
+  return usage as unknown as WebThreadUsage;
+}
+
 export const api = {
+  threadUsage: async (threadId: string, signal?: AbortSignal): Promise<WebThreadUsage> => {
+    const response = await request<{ usage: unknown }>(`/api/v1/threads/${encodeURIComponent(threadId)}/usage`, { signal });
+    return parseThreadUsage(response.usage);
+  },
+  wakeSchedule: (threadId: string, signal?: AbortSignal) =>
+    request<{ schedule: import("../../src/contracts.js").WebWakeSchedule | null }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, { signal }),
+  saveWakeSchedule: (threadId: string, definition: import("../../src/contracts.js").WebWakeScheduleDefinition, expectedRevision?: number) =>
+    request<{ schedule: import("../../src/contracts.js").WebWakeSchedule }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, {
+      method: expectedRevision === undefined ? "POST" : "PUT",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ ...definition, ...(expectedRevision === undefined ? {} : { expectedRevision }) }),
+    }),
+  setWakeState: (threadId: string, expectedRevision: number, state: "active" | "paused") =>
+    request<{ schedule: import("../../src/contracts.js").WebWakeSchedule }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, {
+      method: "PATCH", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ expectedRevision, state }),
+    }),
+  deleteWakeSchedule: async (threadId: string, expectedRevision: number): Promise<void> => {
+    await send(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, {
+      method: "DELETE", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ expectedRevision }),
+    });
+  },
   bootstrap: (signal?: AbortSignal, scope?: BootstrapScope) => {
     const query = new URLSearchParams();
     if (scope?.sourceId !== undefined) query.set("sourceId", scope.sourceId);
@@ -394,6 +451,11 @@ export const api = {
     );
   },
 
+  /** Promptless manual compaction of one idle conversation; returns counts only. */
+  compactThread: (threadId: string) => request<import("@mono-agent/agent-contracts").AgentManualCompactionResult>(
+    `/api/v1/threads/${encodeURIComponent(threadId)}/compact`,
+    { method: "POST", body: JSON.stringify({}) },
+  ),
   /**
    * One whole conversation, with the validator the response carried.
    *
@@ -567,7 +629,7 @@ export const api = {
    */
   createThread: async (
     sourceId: string,
-    runConfig: { readonly model?: string | null; readonly effort?: string | null } = {},
+    runConfig: { readonly model?: string | null; readonly effort?: string | null; readonly context1M?: boolean | null } = {},
     signal?: AbortSignal,
     projectId?: string,
   ) => {
@@ -694,6 +756,33 @@ export const api = {
     },
   ),
 
+  requestAgentRestart: (sourceId: string, signal?: AbortSignal) => request<RestartOperation>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/restart`,
+    { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ),
+
+  restartFromProposal: (
+    threadId: string, messageId: string, partId: string, signal?: AbortSignal,
+  ) => request<RestartOperation>(
+    `/api/v1/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}`
+      + `/parts/${encodeURIComponent(partId)}/restart`,
+    { method: "POST", body: "{}", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ),
+
+  restartStatus: (sourceId: string, operationId: string, signal?: AbortSignal) => request<RestartOperation>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/restart/${encodeURIComponent(operationId)}`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ),
+
+  latestAgentRestart: (sourceId: string, signal?: AbortSignal) => request<{ readonly operation: RestartOperation | null }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/restart`,
+    { headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }) },
+  ).then((result) => result.operation),
+
   patchAgent: async (sourceId: string, pinned: boolean) => {
     const result = await request<{ agent: AgentSummary }>(
       `/api/v1/agents/${encodeURIComponent(sourceId)}`,
@@ -704,7 +793,7 @@ export const api = {
 
   setAgentRunDefaults: async (
     sourceId: string,
-    input: { readonly model: string | null; readonly effort: string | null },
+    input: { readonly model: string | null; readonly effort: string | null; readonly context1M?: boolean | null },
   ) => {
     const result = await request<{ agent: AgentSummary }>(
       `/api/v1/agents/${encodeURIComponent(sourceId)}/run-defaults`,
@@ -880,6 +969,7 @@ export const api = {
       archived?: boolean;
       model?: string | null;
       effort?: string | null;
+      context1M?: boolean | null;
       tagIds?: readonly string[];
       projectId?: string | null;
       ifRunConfigUnset?: boolean;

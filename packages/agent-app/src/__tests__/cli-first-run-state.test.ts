@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   passwordAnswers: [] as unknown[],
   runInitWizard: vi.fn(),
   runSetupRepairWizard: vi.fn(),
-  runTui: vi.fn(),
   resolveInstanceTarget: vi.fn(),
   runAllRouteReadinessProbe: vi.fn(),
   sandboxRuntimeStatus: vi.fn(),
@@ -118,11 +117,6 @@ vi.mock("../background.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../tui-command.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../tui-command.js")>();
-  return { ...actual, runTui: mocks.runTui };
-});
-
 vi.mock("../provider-setup.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../provider-setup.js")>();
   return {
@@ -216,8 +210,6 @@ beforeEach(async () => {
   mocks.logError.mockReset();
   mocks.runInitWizard.mockReset();
   mocks.runSetupRepairWizard.mockReset();
-  mocks.runTui.mockReset();
-  mocks.runTui.mockResolvedValue(0);
   mocks.runAllRouteReadinessProbe.mockReset();
   mocks.sandboxRuntimeStatus.mockReset();
   mocks.setupManagedSrt.mockReset();
@@ -296,7 +288,6 @@ describe("guided init state transitions", () => {
       args: { configPath: join(process.cwd(), "mono-agent.config.json") },
     }));
     expect(mocks.resolveInstanceTarget.mock.calls[0]?.[0]?.args).not.toHaveProperty("envFile");
-    expect(mocks.runTui).not.toHaveBeenCalled();
     const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(output).toContain("Agent ready");
     expect(output).toContain("Chat in the browser");
@@ -307,6 +298,7 @@ describe("guided init state transitions", () => {
     expect(output).toContain("mono-agent restart --config");
     expect(output).toContain("no login");
     expect(output).not.toContain("mono-agent tui");
+    expect(output).not.toContain("observability");
     expect(output).not.toContain("this computer only");
     await expect(access(join(process.cwd(), ".env"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -332,7 +324,6 @@ describe("guided init state transitions", () => {
     expect(await readFile(envPath, "utf8")).toBe("MONO_AGENT_TELEGRAM_BOT_TOKEN=operator-value\n");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
     expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
-    expect(mocks.runTui).not.toHaveBeenCalled();
     expect(mocks.ensureBackgroundReady).toHaveBeenCalledOnce();
     const backgroundResolution = mocks.resolveInstanceTarget.mock.calls[0]?.[0] as {
       readonly env: Readonly<Record<string, string | undefined>>;
@@ -341,14 +332,18 @@ describe("guided init state transitions", () => {
     expect(backgroundResolution.env).not.toHaveProperty("MONO_AGENT_PI_AUTH_PATH");
   });
 
-  it("resolves an explicit env file before ordinary TUI dispatch", async () => {
-    await expect(runCli(["tui", "--env-file", ".env.operator"])).resolves.toBe(0);
+  it("retires TUI before loading an explicit env file", async () => {
+    await writeFile(join(process.cwd(), ".env.operator"), "RETIRE_TUI_SHOULD_NOT_LOAD=fixture\n", "utf8");
+    delete process.env.RETIRE_TUI_SHOULD_NOT_LOAD;
 
-    expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
-      configPath: join(process.cwd(), "mono-agent.config.json"),
-      cwd: process.cwd(),
-      env: expect.any(Object),
-    }));
+    await expect(runCli(["tui", "--env-file", ".env.operator"])).resolves.toBe(2);
+
+    expect(process.env.RETIRE_TUI_SHOULD_NOT_LOAD).toBeUndefined();
+    const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(diagnostic).toContain("`tui` was removed");
+    expect(diagnostic).toContain("mono-agent web");
+    expect(diagnostic).toContain("mono-agent runs list|show");
+    expect(diagnostic).toContain("mono-agent config");
   });
 
   it("preserves committed files when background readiness fails", async () => {
@@ -364,7 +359,6 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(1);
 
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
-    expect(mocks.runTui).not.toHaveBeenCalled();
     const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(diagnostic).toContain("files were preserved");
     expect(diagnostic).toContain("background agent is not ready");
@@ -384,7 +378,6 @@ describe("guided init state transitions", () => {
 
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
     expect(mocks.ensureBackgroundReady).not.toHaveBeenCalled();
-    expect(mocks.runTui).not.toHaveBeenCalled();
     const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(diagnostic).toContain("trace registry resolution failed");
     expect(diagnostic).toContain("validated agent files were preserved");
@@ -409,7 +402,6 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(0);
 
     expect(mocks.ensureBackgroundReady).not.toHaveBeenCalled();
-    expect(mocks.runTui).not.toHaveBeenCalled();
     const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(output).toContain("Guided init does not start the Linux systemd user service automatically");
     expect(output).toContain("Terminal 1:");
@@ -651,6 +643,29 @@ describe("guided init state transitions", () => {
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("reselects OpenAI API-key persistence during authentication recovery instead of repeating an environment/store conflict", async () => {
+    const authPath = join(process.cwd(), "auth.json");
+    await writeFile(join(process.cwd(), ".env"), `MONO_AGENT_PI_AUTH_PATH=${authPath}\n`, { mode: 0o600 });
+    await writeFile(authPath, JSON.stringify({ openai: { type: "api_key", key: "existing-fake" } }), { mode: 0o600 });
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers", answers: defaultAnswers({ model: "openai:gpt-5.5" }),
+      moduleSecrets: {}, providerSetupSecrets: {}, providerEnvironmentSecrets: {},
+      piAuthMethods: { openai: "api-key" }, piApiKeyPersistenceByProvider: { openai: "environment" },
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe.mockResolvedValue({ ok: false, kind: "provider_failed", message: "Authentication failed." });
+    mocks.selectAnswers.push("auth", "api-key", "secure-store", "cancel");
+    mocks.passwordAnswers.push("replacement-fake");
+    mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
+      plan.actions.map((action) => ({ action, status: "failed", detail: "fixture failure" })));
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+    expect(mocks.selectCalls.map((call) => call.message)).toContainEqual(expect.stringContaining("OPENAI_API_KEY"));
+    expect(mocks.executeProviderSetupPlan).toHaveBeenCalledOnce();
+    expect((mocks.executeProviderSetupPlan.mock.calls[0]?.[0] as { actions: Array<{ persistence?: string }> }).actions[0]?.persistence).toBe("secure-store");
+    expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({ openai: { type: "api_key", key: "existing-fake" } });
+  });
+
   it("retries provider setup instead of the live probe while the credential is still missing", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
@@ -855,6 +870,7 @@ describe("guided init state transitions", () => {
       persistence: "environment",
     });
     expect(setupApiKeys?.["pi-api-key:opencode-go"]).toBe("environment-only-secret");
+    expect(JSON.parse(await readFile(join(process.cwd(), "mono-agent.config.json"), "utf8")).providers.piAuthPath).toBe(authPath);
     const persisted = await readFile(envPath, "utf8");
     expect(persisted).toContain("OPENCODE_API_KEY='environment-only-secret'");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
@@ -1385,6 +1401,44 @@ describe("guided init state transitions", () => {
       initialStep: 5,
     }));
     expect(mocks.runAllRouteReadinessProbe).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a retired observability repair step", async () => {
+    const answers = defaultAnswers();
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers,
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      credentialStates: { codex: "credential_detected" },
+      piApiKeyPersistenceByProvider: {},
+      runProviderSetup: false,
+    });
+    mocks.validateMonoAgentFolder.mockResolvedValue({
+      ...readyReport(),
+      ok: false,
+      sections: [
+        ...readyReport().sections,
+        {
+          id: "observability",
+          label: "Retired exporter",
+          status: "waiting" as const,
+          details: ["Remove the retired exporter configuration."],
+        },
+      ],
+    });
+    mocks.runSetupRepairWizard.mockResolvedValue({ status: "cancelled" });
+    mocks.selectAnswers.push("edit", "cancel");
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+
+    const recovery = mocks.selectCalls.find((call) =>
+      call.message === "Configuration preflight did not pass. What would you like to do?");
+    expect((recovery?.options as Array<{ label: string }>)[0]?.label).toBe("Edit setup choices");
+    const repairInput = mocks.runSetupRepairWizard.mock.calls[0]?.[0];
+    expect(repairInput).toEqual(expect.objectContaining({ answers }));
+    expect(repairInput).not.toHaveProperty("initialStep");
   });
 
   it("labels post-route staged recovery as final readiness validation", async () => {

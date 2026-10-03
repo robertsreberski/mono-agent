@@ -21,7 +21,7 @@ mono-agent presets show <id>                 # generated config + .env.example +
 mono-agent validate --preset <id>            # completeness report against the preset's promises
 ```
 
-The wizard first asks whether to start from a preset or go fully custom, then prompts for public name and Role, searchable model/fallback routes and per-model effort, the optional-capabilities gate (channels, memory, observability — default **No** for the custom journey; a seeded preset opens it at Yes), and the tool/access and sandbox/SRT choices before a concrete creation review. Before any real or potentially billed model call, it stages the complete selected-capability configuration against the effective files init will create or preserve; only a `waiting` credential that the live route can prove is deferred. Configuration failures name the capability and open the existing seeded answers at the implicated section when unambiguous, rather than offering unrelated authentication/model recovery. Once configuration passes, the wizard runs one strict no-tool call per selected route (90 seconds cloud, 240 seconds local each). Escape/Ctrl-C interrupts safely before the next route, then offers resume/restart/edit/cancel; unchanged verified routes can resume, while changing any route or effort invalidates the route-plan proofs and credential changes do the same. Any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
+The wizard first asks whether to start from a preset or go fully custom, then prompts for public name and Role, searchable model/fallback routes and per-model effort, the optional-capabilities gate (channels and memory — default **No** for the custom journey; a seeded preset opens it at Yes), and the tool/access and sandbox/SRT choices before a concrete creation review. Before any real or potentially billed model call, it stages the complete selected-capability configuration against the effective files init will create or preserve; only a `waiting` credential that the live route can prove is deferred. Configuration failures name the capability and open the existing seeded answers at the implicated section when unambiguous, rather than offering unrelated authentication/model recovery. Once configuration passes, the wizard runs one strict no-tool call per selected route (90 seconds cloud, 240 seconds local each). Escape/Ctrl-C interrupts safely before the next route, then offers resume/restart/edit/cancel; unchanged verified routes can resume, while changing any route or effort invalidates the route-plan proofs and credential changes do the same. Any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
 
 ## Presets
 
@@ -32,15 +32,10 @@ Each preset maps to a copy-paste [playbook](/playbooks/) that walks the same set
 | `starter` | Webhook loopback, no credentials, no memory — the lowest-friction smoke agent. | low | [Webhook automation](/playbooks/webhook-automation-sync-async/) |
 | `telegram-assistant` | A Telegram bot with daily-log capture + semantic recall (BuJo memory). | medium | [Telegram personal assistant](/playbooks/telegram-personal-assistant-bujo/) |
 | `slack-bot` | A Socket-Mode Slack bot scoped to a channel allowlist, with the send tool. | medium | [Slack team bot](/playbooks/slack-team-bot-mcp-tools/) |
-| `local-private` | Runs entirely on a local Ollama provider with journal memory — no remote calls. Light 8B default for a fast first turn. | low | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
+| `local-private` | Uses a local Ollama model and local journal-memory embeddings. Network-capable tools remain governed separately. Light 8B default for a fast first turn. | low | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
 | `code-sandbox` | Native `srt` sandbox with workspace-only filesystem and code tools; fails closed without `srt`. | medium | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 
 Risk levels reflect blast radius, not difficulty: `low` presets expose nothing beyond loopback and need at most a model key; `medium` presets talk to external services, hold channel credentials, or run shell/file tools you should read before running.
-
-Supermemory is no longer a core preset. Install the exact matching
-`@mono-agent/memory-supermemory` plugin, then use its bundled
-`mono-agent-supermemory` skill or the [Telegram + Supermemory
-playbook](/playbooks/telegram-supermemory-memory/) to apply the explicit config.
 
 ## Capability modules
 
@@ -57,9 +52,7 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | `memory:lite` | SQLite full-text recall, zero external dependencies. | — |
 | `memory:journal` | Semantic recall via a guided Ollama or LM Studio embeddings service. | — |
 | `memory:bujo` | Daily-log capture plus semantic recall via guided Ollama or LM Studio embeddings; capture LLM remains explicit. | — |
-| `memory:supermemory` | External Supermemory instance for server-side extraction + recall. | — |
 | `sandbox` | Native `srt` sandbox: workspace-only FS, localhost network, fails closed. | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash` |
-| `observability:phoenix` | Best-effort Phoenix OTLP export, sensitive data excluded. | — |
 
 ### The tools step and the no-tools guardrail
 
@@ -136,9 +129,9 @@ table is now static documentation — the mapping no longer exists in code):
 | `local-ollama-private` | `local-private` |
 | `sandboxed-code-agent` | `code-sandbox` |
 
-`personal-telegram-supermemory` was retired from core because its backend is now an explicitly installed plugin; use the plugin skill/playbook. The `local-lmstudio-private` recipe was also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the runtime engine); reach LM Studio via `mono-agent init --model lmstudio:<id>` or the wizard's "Other…" model choice, then choose LM Studio explicitly when Journal/BuJo asks for its embeddings service.
+`personal-telegram-supermemory` and its first-party backend are fully retired; see the [Supermemory retirement checklist](/reference/framework-simplification-migration/#retired-first-party-supermemory-support). The `local-lmstudio-private` recipe was also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the runtime engine); reach LM Studio via `mono-agent init --model lmstudio:<id>` or the wizard's "Other…" model choice, then choose LM Studio explicitly when Journal/BuJo asks for its embeddings service.
 
-The fully-retired blueprints — `full-safe`, `full-local-power`, `openai-api-gateway`, `cron-digest`, `a2a-provider`, and `phoenix-observed` — never had a replacement preset. Each is now either a single wizard choice (enable the `channel:openai-api`, `channel:cron`, `channel:a2a`, or `observability:phoenix` module) or a hand-assembled config the [composer skill](/context/skills/) builds from the capability modules and [playbooks](/playbooks/).
+The fully retired blueprints — `full-safe`, `full-local-power`, `openai-api-gateway`, `cron-digest`, `a2a-provider`, and `phoenix-observed` — never had replacement presets. The supported channel shapes are single wizard choices (`channel:openai-api`, `channel:cron`, or `channel:a2a`) or hand-assembled configs from the [composer skill](/context/skills/) and [playbooks](/playbooks/). The `phoenix-observed` shape ended with the first-party exporter retirement.
 
 `mono-agent setup` remains a separate alias of `mono-agent init`; it has no
 scheduled removal.

@@ -11,7 +11,6 @@ import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import {
   loadAppCoreConfig,
   resolveAppArtifactDir,
-  resolveAppObservabilityExporters,
   resolveAppTraceGlobalDiscovery,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
@@ -21,7 +20,7 @@ import {
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
-import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
+import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
@@ -31,7 +30,6 @@ import {
   sandboxStatusFromState,
 } from "./app-controller-utils.js";
 import type {
-  ExporterStatus,
   SandboxStatus,
   SessionTraceMetadata,
   TraceabilityStatus,
@@ -49,6 +47,7 @@ export interface TraceabilityControllerPort {
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
@@ -61,7 +60,6 @@ export interface TraceabilityControllerPort {
   stopped: boolean;
   staleRunsReconciled: boolean;
   traceabilityStatusValue: TraceabilityStatus;
-  exporterStatusValue: ExporterStatus;
   sandboxStatusValue: SandboxStatus;
   memoryHealthValue: TraceSourceMemoryHealth;
   memoryHealthRefreshDue: boolean;
@@ -73,7 +71,6 @@ export interface TraceabilityControllerPort {
   } | undefined;
   selectedSkillsValue: readonly string[] | undefined;
   sessionMetadataValue: SessionTraceMetadata | undefined;
-  resolvedExporter: ResolvedExporter | undefined;
   traceSource: TraceSourceHandle | undefined;
   globalTraceSource: TraceSourceHandle | undefined;
   traceRefreshInFlight: Promise<void> | undefined;
@@ -112,7 +109,8 @@ export async function startTraceability(controller: TraceabilityControllerPort, 
   }
   let artifactDirForRetention: string | undefined;
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     await controller.refreshSelectedSkillsSnapshot(reason);
     await controller.refreshMemoryHealthSnapshot(reason);
     const [registryDir, artifactDir, sourceId, label, heartbeatMs, globalDiscovery] = await Promise.all([
@@ -178,7 +176,8 @@ export async function startTraceability(controller: TraceabilityControllerPort, 
 
 export async function refreshSandboxStatus(controller: TraceabilityControllerPort, reason: string): Promise<SandboxStatus> {
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     const coreConfig = await loadAppCoreConfig(input);
     const sandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true
       ? undefined
@@ -227,59 +226,6 @@ export async function reconcileStaleRunsOnce(controller: TraceabilityControllerP
   } catch (error) {
     controller.logger?.warn?.("Stale-run reconciliation failed.", { reason: reasonOf(error) });
   }
-}
-
-export async function startExporters(controller: TraceabilityControllerPort, reason: string): Promise<ExporterStatus> {
-  if (controller.stopped) {
-    return controller.exporterStatusValue;
-  }
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
-  let exporters: readonly ResolvedExporter[];
-  try {
-    exporters = await resolveAppObservabilityExporters(input);
-  } catch (error) {
-    controller.resolvedExporter = undefined;
-    controller.exporterStatusValue = { kind: "failed", reason: reasonOf(error) };
-    controller.logger?.error?.("Observability exporter config is invalid.", { reason: reasonOf(error) });
-    return controller.exporterStatusValue;
-  }
-
-  const exporter = exporters[0];
-  if (exporter === undefined) {
-    controller.resolvedExporter = undefined;
-    controller.exporterStatusValue = { kind: "disabled", reason: "No observability exporter configured." };
-    return controller.exporterStatusValue;
-  }
-
-  controller.resolvedExporter = exporter;
-  controller.exporterStatusValue = {
-    kind: "configured",
-    endpoint: exporter.endpoint,
-    includeSensitiveData: exporter.includeSensitiveData ?? false,
-  };
-  controller.logger?.info?.("Observability exporter configured.", {
-    reason,
-    endpoint: exporter.endpoint,
-    includeSensitiveData: exporter.includeSensitiveData ?? false,
-  });
-  return controller.exporterStatusValue;
-}
-
-export function recordExporterWarning(controller: TraceabilityControllerPort, warning: { phase: string; message: string }): void {
-  const current = controller.exporterStatusValue;
-  if (current.kind !== "configured") {
-    return;
-  }
-  const message = `${warning.phase}: ${warning.message}`;
-  // The "fail" phase fires only when export fails on the run-failure path;
-  // surface it as lastError so operators can tell it apart from a transient
-  // best-effort warning. The run outcome is unchanged either way.
-  controller.exporterStatusValue =
-    warning.phase === "fail" ? { ...current, lastError: message } : { ...current, lastWarning: message };
-  controller.logger?.warn?.("Observability export warning.", { phase: warning.phase, message: warning.message });
-  // Persist to the trace-source manifest so the detached `mono-agent status`
-  // (which reads the manifest, not this live object) can surface it too.
-  void controller.refreshTraceSource("exporter-warning").catch(() => undefined);
 }
 
 export function refreshTraceSource(controller: TraceabilityControllerPort, reason: string): Promise<void> {
@@ -362,7 +308,8 @@ export async function observabilityContext(controller: TraceabilityControllerPor
   readonly sourceLabel?: string;
   readonly configPath?: string;
 }> {
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
   const [sourceId, sourceLabel] = await Promise.all([
     resolveAppTraceSourceId(input, controller.traceDefaults, controller.configPath),
     resolveAppTraceSourceLabel(input, controller.traceDefaults),
@@ -384,7 +331,7 @@ export function reportMemoryRecallStatus(
     return false;
   }
   controller.logger?.info?.("Read-only MemoryRecall tool enabled.", {
-    provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
+    provider: settings.embeddings?.provider ?? "fts-only",
   });
   return true;
 }
@@ -422,7 +369,8 @@ export async function stopTraceSource(controller: TraceabilityControllerPort, re
 
 export async function refreshSelectedSkillsSnapshot(controller: TraceabilityControllerPort, reason: string): Promise<void> {
   try {
-    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+    const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+      ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     controller.rememberSelectedSkills(await loadAppCoreConfig(input));
   } catch (error) {
     controller.selectedSkillsValue = undefined;
@@ -513,24 +461,6 @@ export function traceMetadata(controller: TraceabilityControllerPort, reason: st
         }
       : {}),
     ...(controller.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: controller.backgroundSnapshot }),
-    ...(controller.exporterStatusValue.kind === "configured"
-      ? {
-          observability: {
-            // Persist only the endpoint + warning/error strings (never headers
-            // or secrets) so the detached `status` reader can surface exporter
-            // state. JSONL artifacts always remain local.
-            endpoint: controller.exporterStatusValue.endpoint,
-            includeSensitiveData: controller.exporterStatusValue.includeSensitiveData,
-            jsonlArtifactsLocal: true,
-            ...(controller.exporterStatusValue.lastWarning === undefined
-              ? {}
-              : { lastWarning: controller.exporterStatusValue.lastWarning }),
-            ...(controller.exporterStatusValue.lastError === undefined
-              ? {}
-              : { lastError: controller.exporterStatusValue.lastError }),
-          },
-        }
-      : {}),
     sandbox: {
       configured: controller.sandboxStatusValue.configured,
       configuredMode: controller.sandboxStatusValue.configuredMode,

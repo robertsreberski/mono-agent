@@ -5,9 +5,8 @@ import type {
   MemoryCompletedTurn,
   MemoryCompletedTurnResult,
   MemoryStore,
-  MemoryWriteResult,
 } from "@mono-agent/agent-contracts";
-import type { JournalBrowseInput, JournalBrowseSnapshot, RecallHit } from "../store/index.js";
+import type { JournalBrowseInput, JournalBrowseSnapshot, RecallHit, RecallOutcome } from "../store/index.js";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../store/index.js";
 
 import {
@@ -23,7 +22,12 @@ import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-looku
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
-import { replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
+import {
+  applyCaptureGraphDelta,
+  clearCaptureGraphBaseline,
+  establishCaptureGraphBaseline,
+  replaceDbCanonicalGraphProjectionWithParity,
+} from "./graph.js";
 import {
   assertCanonicalGraphRepairBaseParity,
   auditCanonicalIndexHealth,
@@ -35,11 +39,11 @@ import {
   readReplayProjectionStrict,
   replayProjectionDbSnapshot,
 } from "./replay-projection.js";
-import { createIdFactory } from "./ids.js";
 import { repairLegacyCaptureClockDriftAtStartup } from "./capture-clock-repair.js";
 import type { LlmComplete } from "./llm.js";
-import type { EmbeddingProvider } from "../search/index.js";
-import { captureTurn, captureTurnStrict } from "./capture.js";
+import { adoptEmbeddingIndexIdentity, type EmbeddingProvider } from "../search/index.js";
+import { captureTurnStrict } from "./capture.js";
+import { discardCapturePlan, listRetainedCapturePlanKeys } from "./capture-plan-cache.js";
 import {
   findRetainedCaptureIntent,
   listRetainedCaptureIntentKeys,
@@ -52,6 +56,8 @@ import {
 } from "./capture-intake.js";
 import { composeRecallBlock } from "./recall.js";
 import { recoverDurableMutationState, withSerializedBujoMutation } from "./mutation-lock.js";
+import { rememberWithDetails, type RememberDetails } from "./remember-details.js";
+import { assertNoShadowedLegacyDailyFile } from "./remember-layout.js";
 import {
   migrate as migrateFn,
   type MigrateResult,
@@ -59,7 +65,6 @@ import {
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
 import { writeFutureLog } from "./projections.js";
 import {
-  assertCanonicalDailySourcePath,
   listCanonicalFileNames,
   readCanonicalFileSnapshot,
 } from "./path-safety.js";
@@ -87,8 +92,6 @@ import {
 const MAX_RECALL_QUERY_CHARS = 4_000;
 const JOURNAL_QUEUE_MAX_ITEMS = 256;
 const JOURNAL_QUEUE_MAX_BYTES = 2 * 1024 * 1024;
-const CAPTURE_QUEUE_MAX_ITEMS = 32;
-const CAPTURE_QUEUE_MAX_BYTES = 1024 * 1024;
 const JOURNAL_RETRY_DELAY_MS = 1_000;
 const JOURNAL_RETRY_MAX_DELAY_MS = 30_000;
 const DEFAULT_BACKGROUND_DRAIN_TIMEOUT_MS = 10_000;
@@ -98,11 +101,6 @@ const JOURNAL_WRITE_CHAINS = new Map<string, Promise<void>>();
 
 interface IndexJob extends QueueJob {
   readonly record: MemoryRecord;
-}
-
-interface CaptureJob extends QueueJob {
-  readonly conversationId: string;
-  readonly text: string;
 }
 
 interface AdmittedOperation {
@@ -150,7 +148,6 @@ export interface BujoQueueSnapshot {
     readonly recoveryRefillQueries: number;
     readonly nextRetryAt?: string;
   };
-  readonly capture?: BackgroundQueueSnapshot;
   /** Metadata-only durable completed-turn intake state. */
   readonly intake?: CompletedTurnIntakeSnapshot;
   readonly shutdown: {
@@ -168,13 +165,12 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly readOnly: boolean;
   private readonly maxBytes: number;
   private readonly clock: () => Date;
-  private readonly nextId: () => string;
   private readonly llm?: LlmComplete;
+  private readonly captureSettings?: BujoOptions["capture"];
   private readonly _tier!: BujoTier;
   private readonly logger: BujoLogger;
   private readonly backgroundDrainTimeoutMs: number;
   private indexQueue?: BoundedBatchQueue<IndexJob>;
-  private captureQueue?: BoundedBatchQueue<CaptureJob>;
   private completedTurnIntake?: CompletedTurnIntakeManager;
   private journalRecoveryPaused = false;
   private journalRecoveryFiles: string[] = [];
@@ -191,7 +187,6 @@ export class BujoMemoryStore implements MemoryStore {
   private closing = false;
   private closed = false;
   private closePromise: Promise<void> | undefined;
-  private activeCaptureController: AbortController | undefined;
   private activeIndexController: AbortController | undefined;
   private readonly admittedOperations = new Set<AdmittedOperation>();
   private shutdownDiscarded = 0;
@@ -216,6 +211,19 @@ export class BujoMemoryStore implements MemoryStore {
     let tier = options.tier ?? derivedTier;
     // Pure validation precedes every filesystem/lease side effect.
     assertTierPrerequisites(tier, options);
+    if (options.capture !== undefined && (tier !== "bujo" || options.readOnly === true)) {
+      throw new Error("memory-bujo: capture settings require a writable bujo tier.");
+    }
+    if (options.capture?.focus !== undefined && (
+      options.capture.focus !== options.capture.focus.trim()
+      || options.capture.focus.length === 0 || Buffer.byteLength(options.capture.focus, "utf8") > 2048
+      || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(options.capture.focus.replaceAll("\n", ""))
+      || /(?:^|\n)(?:END )?OPERATOR CAPTURE FOCUS\b/iu.test(options.capture.focus)
+    )) throw new Error("memory-bujo: capture focus must be bounded safe text.");
+    if (options.capture?.only !== undefined && (
+      options.capture.only.length > 3 || new Set(options.capture.only).size !== options.capture.only.length
+      || options.capture.only.some((kind) => kind !== "fact" && kind !== "preference" && kind !== "lesson")
+    )) throw new Error("memory-bujo: capture only must be a unique subset of fact, preference, lesson.");
     if (options.allowFtsFallback === true && (
       options.readOnly !== true
       || options.embeddings !== undefined
@@ -241,9 +249,12 @@ export class BujoMemoryStore implements MemoryStore {
     this.root = writerLease?.root ?? canonicalMemoryRoot(options.root, true);
     this.maxBytes = options.maxBytes ?? 8_000;
     this.clock = options.clock ?? (() => new Date());
-    this.nextId = createIdFactory({ clock: this.clock });
     this.logger = options.logger ?? { warn: () => {} };
     if (options.llm !== undefined) this.llm = this.instrumentLlm(options.llm);
+    this.captureSettings = options.capture === undefined ? undefined : {
+      ...(options.capture.focus === undefined ? {} : { focus: options.capture.focus }),
+      ...(options.capture.only === undefined ? {} : { only: [...options.capture.only] }),
+    };
     let opened: MemoryDb | undefined;
     try {
       if (!this.readOnly) cleanupReplayProjectionTemporaryArtifacts(this.root);
@@ -256,9 +267,14 @@ export class BujoMemoryStore implements MemoryStore {
       if (!this.readOnly) {
         this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
       }
+      // An index built before instruction presets keeps its historical
+      // prefixes until a deliberate rebuild adopts the model preset.
+      let embeddings = options.embeddings === undefined
+        ? undefined
+        : adoptEmbeddingIndexIdentity(options.embeddings, managed?.active.embeddingModel);
       if (!this.readOnly && managed !== undefined && (
         managed.active.tier !== this._tier
-        || managed.active.embeddingModel !== options.embeddings?.id
+        || managed.active.embeddingModel !== embeddings?.id
         || managed.active.dimension !== options.dim
       )) {
         throw new Error(
@@ -271,18 +287,36 @@ export class BujoMemoryStore implements MemoryStore {
       const dbPathState = captureSafeSqlitePathState(this.root, dbPath, "memory database");
       opened = openMemoryDb({
         path: dbPath,
-        ...(options.embeddings !== undefined && { embeddings: this.instrumentEmbeddings(options.embeddings) }),
+        ...(embeddings !== undefined && { embeddings: this.instrumentEmbeddings(embeddings) }),
         ...(options.dim !== undefined && { dim: options.dim }),
         ...(this.readOnly ? { readOnly: true } : {}),
         clock: this.clock,
       });
       assertSafeSqlitePathState(this.root, dbPath, dbPathState, "memory database");
+      // A manifest-free legacy memory.db has no managed identity; adopt the
+      // legacy identity only when every stored vector carries exactly it.
+      // Mixed or missing identities are left for assertEmbeddingIdentity.
+      if (managed === undefined && embeddings?.legacyId !== undefined) {
+        const stored = opened.storedVectorEmbeddingModels();
+        if (stored.length === 1 && stored[0] === embeddings.legacyId) {
+          embeddings = adoptEmbeddingIndexIdentity(embeddings, embeddings.legacyId);
+          opened.close();
+          opened = openMemoryDb({
+            path: dbPath,
+            embeddings: this.instrumentEmbeddings(embeddings),
+            ...(options.dim !== undefined && { dim: options.dim }),
+            ...(this.readOnly ? { readOnly: true } : {}),
+            clock: this.clock,
+          });
+          assertSafeSqlitePathState(this.root, dbPath, dbPathState, "memory database");
+        }
+      }
       this.db = opened;
       if (this.readOnly && managed !== undefined && options.allowFtsFallback !== true) {
         const metadata = opened.indexMetadata();
         if (metadata === undefined
           || metadata.tier !== this._tier
-          || metadata.embeddingModel !== options.embeddings?.id
+          || metadata.embeddingModel !== embeddings?.id
           || metadata.dimension !== options.dim) {
           throw new Error(
             `memory-bujo: managed read-only generation requires tier=${metadata?.tier ?? "unknown"}, `
@@ -354,6 +388,7 @@ export class BujoMemoryStore implements MemoryStore {
             opened,
             assertCanonicalGraphRepairBaseParity,
           );
+          establishCaptureGraphBaseline(opened);
         } else {
           const replay = replayProjectionDbSnapshot(opened);
           if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
@@ -394,17 +429,60 @@ export class BujoMemoryStore implements MemoryStore {
       }
       recallQuery = trimmed.slice(0, MAX_RECALL_QUERY_CHARS);
     }
+    const observedAt = this.clock();
+    const asOf = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
     return await this.runAdmittedOperation(async (abortSignal) => await composeRecallBlock(
       this.db,
       recallQuery,
-      { topK: 8, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal },
+      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf, now: observedAt.toISOString() },
     ));
+  }
+
+  /** Optional read-only labelled recall; canonical daily lines remain the authority. */
+  labelsForEntity(entityId: string, asOfDate?: string) {
+    this.assertOpen("labelsForEntity");
+    return this.db.labelsForEntity(entityId, asOfDate);
+  }
+
+  guidanceForScope(scope: string) {
+    this.assertOpen("guidanceForScope");
+    return this.db.guidanceForScope(scope);
+  }
+
+  labelsForMemories(memoryIds: readonly string[]) {
+    this.assertOpen("labelsForMemories");
+    return this.db.labelsForMemories(memoryIds);
+  }
+
+  findMemoryEntitiesByNames(names: readonly string[]) {
+    this.assertOpen("findMemoryEntitiesByNames");
+    return this.db.findEntitiesByNames(names);
+  }
+
+  listLabels(filters: Parameters<MemoryDb["listLabels"]>[0] = {}, limit = 200) {
+    this.assertOpen("listLabels");
+    return this.db.listLabels(filters, limit);
   }
 
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
     this.assertOpen("recall");
     return await this.runAdmittedOperation(async (abortSignal) => await this.db.recall(query, {
+      ...(options.topK !== undefined && { topK: options.topK }),
+      ...(this.readOnly
+        ? { trackAccess: false }
+        : options.trackAccess === undefined ? {} : { trackAccess: options.trackAccess }),
+      abortSignal,
+    }));
+  }
+
+  /** Explicitly status-bearing local recall; strict `recall()` remains unchanged. */
+  async recallWithOutcome(
+    query: string,
+    options: { topK?: number; trackAccess?: boolean } = {},
+  ): Promise<RecallOutcome> {
+    this.assertOpen("recallWithOutcome");
+    return await this.runAdmittedOperation(async (abortSignal) => await this.db.recallWithOutcome(query, {
       ...(options.topK !== undefined && { topK: options.topK }),
       ...(this.readOnly
         ? { trackAccess: false }
@@ -447,6 +525,17 @@ export class BujoMemoryStore implements MemoryStore {
    */
   supportsRemember(): boolean {
     return !this.readOnly;
+  }
+
+  supportsRememberDetails(): boolean {
+    return !this.readOnly && this._tier === "bujo";
+  }
+
+  async rememberDetails(conversationId: string, text: string, details: RememberDetails): Promise<MemoryRememberResult> {
+    if (!this.supportsRememberDetails()) throw new Error("memory-bujo: Remember details require writable BuJo memory.");
+    return await this.runAdmittedMutation("rememberDetails", async (signal) =>
+      await rememberWithDetails(this.root, this.db, this.clock, conversationId, text,
+        { ...details, abortSignal: signal }), details.abortSignal);
   }
 
   /** Deterministically expand already-fetched direct hits for explicit MemoryRecall only. */
@@ -496,21 +585,10 @@ export class BujoMemoryStore implements MemoryStore {
     this.db.recordAccess(ids);
   }
 
-  async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
-    const run = async (abortSignal: AbortSignal): Promise<MemoryWriteResult> =>
-      await this.appendHostSummaryAccepted(conversationId, summary, abortSignal);
-    // BuJo's compact host audit is the always-on loss boundary, not curated
-    // canonical/index state. It must remain off the provider-backed mutation
-    // queue so a slow capture cannot delay successful-turn persistence.
-    return this._tier === "bujo"
-      ? await this.runAdmittedWrite("appendHostSummary", run)
-      : await this.runAdmittedMutation("appendHostSummary", run);
-  }
-
   /**
    * Durably store one explicitly remembered fact.
    *
-   * Unlike `appendHostSummary`, this lands in the curated `daily/` source on
+   * Unlike completed-turn summaries, this lands in the curated `daily/` source on
    * EVERY tier and indexes in the same critical section, so a successful return
    * means the fact is genuinely recallable rather than queued for later
    * curation. It is deterministic and takes no LLM.
@@ -571,6 +649,9 @@ export class BujoMemoryStore implements MemoryStore {
           // reporting "already remembered" would be a success the agent cannot
           // read back. Explicit forget is deliberate, so re-storing the same
           // text must not silently resurrect it either.
+          if (indexed?.supersededBy !== undefined) {
+            throw new Error("memory-bujo: this exact text was superseded; record the new state with its date and source.");
+          }
           if (indexed !== undefined && (indexed.status === "dropped" || indexed.status === "invalidated")) {
             throw new Error(
               `memory-bujo: "${stored}" was explicitly forgotten (${indexed.status}) and is not re-storable; `
@@ -659,11 +740,15 @@ export class BujoMemoryStore implements MemoryStore {
               if (outcome.inserted || !this.db.hasVector(record.id)) this.enqueueIndex(record);
             } else if (this._tier === "bujo") {
               this.db.commitPreparedUpserts([record], [preparedVector]);
+              // Remember bypasses the capture outbox. Keep legacy name matches
+              // exact before a later capture relies on the startup graph base.
+              applyCaptureGraphDelta(this.root, this.db, [record.id], [], []);
             } else {
               // Lite is FTS-only and has no vector to commit.
               this.db.upsertLexical(record);
             }
           } catch (error) {
+            if (this._tier === "bujo") clearCaptureGraphBaseline(this.db);
             // The canonical fact is durable whether this invocation appended it
             // or recovered it. State, not per-call byte delta, determines what
             // callers may truthfully report after projection fails.
@@ -789,6 +874,7 @@ export class BujoMemoryStore implements MemoryStore {
     intakeId: string,
     admittedAt: string,
     abortSignal: AbortSignal,
+    isFinalAttempt: boolean,
   ): Promise<"captured" | "summary_only"> {
     return await withSerializedBujoMutation({
       root: this.root,
@@ -817,98 +903,22 @@ export class BujoMemoryStore implements MemoryStore {
         now: () => new Date(admittedAt),
         abortSignal,
         captureRetentionKey: intakeId,
+        isFinalCaptureAttempt: isFinalAttempt,
+        conversationId: turn.conversationId,
+        ...(this.captureSettings === undefined ? {} : { captureSettings: this.captureSettings }),
+        ...(turn.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: turn.captureSpeakerKind }),
+        ...(turn.captureEvidence === undefined ? {} : { captureEvidence: turn.captureEvidence }),
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       });
       return "captured";
     });
   }
 
-  /** Run a direct write that was admitted before close() stopped new mutation. */
-  private async appendHostSummaryAccepted(
-    conversationId: string,
-    summary: string,
-    abortSignal: AbortSignal,
-  ): Promise<MemoryWriteResult> {
-    abortSignal.throwIfAborted();
-    const now = this.clock();
-    const text = summary.trim().replace(/\s+/gu, " ");
-    const hash = normalizedContentHash(text);
-    const bullet: Bullet = {
-      id: this._tier === "journal" ? `J-${hash}` : this.nextId(),
-      type: "note",
-      status: "open",
-      // Collapse whitespace/newlines to a single line: a bullet is one markdown line, and
-      // serializeBullet rejects newlines. The harness emits multi-line summaries; P2's distiller
-      // will split these into multiple atomic memories — for P1 we store one normalized line.
-      text,
-      salience: 0.5,
-      isInsight: false,
-      createdAt: now.toISOString(),
-      refs: [`sha256:${hash}`],
-    };
-    if (this._tier === "bujo") {
-      abortSignal.throwIfAborted();
-      const path = auditFilePath(this.root, now);
-      appendAuditBullet(this.root, bullet, now);
-      return {
-        conversationId,
-        source: path,
-        bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8"),
-      };
-    }
-    const path = dailyFilePath(this.root, now);
-    const record: MemoryRecord = {
-      id: bullet.id,
-      type: bullet.type,
-      status: bullet.status,
-      text: bullet.text,
-      salience: bullet.salience,
-      isInsight: bullet.isInsight,
-      createdAt: bullet.createdAt,
-      accessCount: 0,
-      tags: [],
-      source: { session: conversationId, file: relative(this.root, path) },
-    };
-    if (this._tier === "journal") {
-      // Recovery is deliberately off the successful-turn path. Both new writes
-      // and legacy backfill converge on J-<content-hash>, so whichever runs first
-      // reserves the same canonical representation without waiting for history.
-      return await serializeJournalWrite(this.root, abortSignal, async () => await withJournalWriteLockRetry(
-        this.root,
-        this.db.busyTimeoutMs(),
-        abortSignal,
-        () => {
-          abortSignal.throwIfAborted();
-          const reserved = this.db.contentHashRecord(hash);
-          if (reserved !== undefined) {
-            const existing = this.db.get(reserved.memoryId);
-            if (existing !== undefined && !this.db.hasVector(existing.id)) this.enqueueIndex(existing);
-            return { conversationId, source: path, bytesWritten: 0 };
-          }
-          appendBullet(this.root, bullet, now);
-          const outcome = this.db.insertJournalLexical(record, hash);
-          if (outcome.inserted) this.enqueueIndex(record);
-          return {
-            conversationId,
-            source: path,
-            bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8"),
-          };
-        },
-      ));
-    }
-
-    abortSignal.throwIfAborted();
-    appendBullet(this.root, bullet, now);
-    this.db.upsertLexical(record);
-    // bytesWritten reflects the bullet line actually appended to the daily file, not the raw summary.
-    return { conversationId, source: path, bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8") };
-  }
-
   /**
    * Run the monthly BuJo migration ritual: review aging open memories and apply LLM decisions
    * (promote / reschedule / cluster / forget). Also writes future-log.md.
    *
-   * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
+   * Returns `undefined` when no `llm` was configured.
    */
   async migrate(): Promise<MigrateResult | undefined> {
     return await this.runAdmittedMutation("migrate", async (abortSignal) => {
@@ -926,35 +936,13 @@ export class BujoMemoryStore implements MemoryStore {
     });
   }
 
-  /**
-   * Legacy opt-in best-effort capture for direct compatibility callers. The bundled harness uses
-   * `persistCompletedTurn` for this store and never invokes this method. Allocate its queue only on
-   * the first explicit call so an ordinary BuJo store does not carry a dormant background queue.
-   * Captures run one-at-a-time; failures are logged without breaking the caller or the process.
-   */
-  scheduleCapture(conversationId: string, text: string): void {
-    this.assertWritable("scheduleCapture");
-    if (this._tier !== "bujo" || this.llm === undefined) return;
-    this.initializeCaptureQueue();
-    const outcome = this.captureQueue!.enqueue({
-      key: `${conversationId}:${normalizedContentHash(text)}`,
-      bytes: Buffer.byteLength(text, "utf8"),
-      conversationId,
-      text,
-    });
-    if (outcome === "dropped") {
-      this.safeWarn("bujo capture queue is full; the compact raw host audit was preserved, but this turn was not curated.");
-    }
-  }
-
-  /** Await all captures queued before this call (graceful shutdown / one-shot exit). */
+  /** Drain completed-turn projection and Journal indexing (graceful shutdown / one-shot exit). */
   async flush(): Promise<void> {
     await this.journalRecoveryPromise;
     // Intake may enqueue Journal vectors, so its durable projection must run
     // before the index queue's drain barrier.
     await this.completedTurnIntake?.flush();
     await this.indexQueue?.flush();
-    await this.captureQueue?.flush();
     if (!this.closing) this.publishRuntimeSnapshotImmediately("running");
   }
 
@@ -973,7 +961,6 @@ export class BujoMemoryStore implements MemoryStore {
           ...(this.nextJournalRetryAt === undefined ? {} : { nextRetryAt: this.nextJournalRetryAt.toISOString() }),
         },
       }),
-      ...(this.captureQueue === undefined ? {} : { capture: this.captureQueue.snapshot() }),
       ...(this.completedTurnIntake === undefined ? {} : { intake: this.completedTurnIntake.snapshot() }),
       shutdown: {
         drainTimeoutMs: this.backgroundDrainTimeoutMs,
@@ -981,51 +968,6 @@ export class BujoMemoryStore implements MemoryStore {
         timedOut: this.shutdownTimedOut,
       },
     };
-  }
-
-  /**
-   * Explicit legacy capture primitive for direct callers. It distills the turn text into atomic
-   * candidate memories, reconciles them against the existing index, and extracts graph entities.
-   * The bundled harness does not call this path; its `persistCompletedTurn` boundary drives strict,
-   * idempotent capture instead. Returns `undefined` when no `llm` was configured.
-   */
-  async capture(
-    conversationId: string,
-    text: string,
-    abortSignal?: AbortSignal,
-  ): Promise<{ actions: number; entities: number } | undefined> {
-    return await this.runAdmittedMutation(
-      "capture",
-      async (shutdownSignal) => await this.captureAccepted(conversationId, text, shutdownSignal),
-      abortSignal,
-    );
-  }
-
-  /** Run work that was admitted before shutdown stopped the capture queue. */
-  private async captureAccepted(
-    conversationId: string,
-    text: string,
-    abortSignal?: AbortSignal,
-  ): Promise<{ actions: number; entities: number } | undefined> {
-    if (this.llm === undefined) return undefined;
-    return await withSerializedBujoMutation({
-      root: this.root,
-      db: this.db,
-      tier: this._tier,
-      ...(abortSignal === undefined ? {} : { abortSignal }),
-      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
-    }, async () => {
-      const res = await captureTurn(text, {
-        db: this.db,
-        root: this.root,
-        llm: this.llm!,
-        nextId: this.nextId,
-        now: this.clock,
-        ...(abortSignal === undefined ? {} : { abortSignal }),
-        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
-      });
-      return { actions: res.actions.length, entities: res.entities };
-    });
   }
 
   /** Refresh derived projections and report duplicates without changing memory state. */
@@ -1052,11 +994,7 @@ export class BujoMemoryStore implements MemoryStore {
   private async performClose(): Promise<void> {
     this.disableRuntimeTimers();
     if (this.journalRetryTimer !== undefined) clearTimeout(this.journalRetryTimer);
-    // Scheduled/direct BuJo curation does not feed completed-turn admission,
-    // so preserve the synchronous close boundary for this queue. Journal's
-    // index queue intentionally remains open until intake has projected every
-    // already-admitted turn.
-    this.captureQueue?.stopAccepting();
+    // Journal indexing stays open until intake projects all admitted turns.
     let primary: unknown;
     try {
       const drained = await waitForDrain(
@@ -1066,13 +1004,10 @@ export class BujoMemoryStore implements MemoryStore {
       if (!drained) {
         this.shutdownTimedOut = true;
         this.indexQueue?.stopAccepting();
-        this.captureQueue?.stopAccepting();
         this.shutdownDiscarded += this.indexQueue?.discardQueued() ?? 0;
-        this.shutdownDiscarded += this.captureQueue?.discardQueued() ?? 0;
         const timeoutReason = new Error("memory operation drain deadline exceeded");
         for (const operation of this.admittedOperations) operation.controller.abort(timeoutReason);
         this.activeIndexController?.abort(new Error("memory background drain deadline exceeded"));
-        this.activeCaptureController?.abort(new Error("memory background drain deadline exceeded"));
         this.completedTurnIntake?.abortForShutdown(true);
         this.safeWarn(
           `memory operation/background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending work was abandoned before further canonical or SQLite access while durable source remains.`,
@@ -1083,7 +1018,6 @@ export class BujoMemoryStore implements MemoryStore {
     } finally {
       const cleanupErrors: unknown[] = [];
       this.indexQueue?.stopAccepting();
-      this.captureQueue?.stopAccepting();
       if (!this.shutdownTimedOut) this.completedTurnIntake?.finishShutdown();
       this.publishRuntimeSnapshot("closed");
       this.runtimeSnapshotEnabled = false;
@@ -1107,7 +1041,6 @@ export class BujoMemoryStore implements MemoryStore {
     this.completedTurnIntake?.stopAccepting();
     await this.flush();
     this.indexQueue?.stopAccepting();
-    this.captureQueue?.stopAccepting();
   }
 
   private initializeJournalIndexing(): void {
@@ -1148,28 +1081,6 @@ export class BujoMemoryStore implements MemoryStore {
     this.initializeJournalRecoveryCursor();
   }
 
-  private initializeCaptureQueue(): void {
-    if (this.captureQueue !== undefined) return;
-    this.captureQueue = new BoundedBatchQueue<CaptureJob>({
-      maxItems: CAPTURE_QUEUE_MAX_ITEMS,
-      maxBytes: CAPTURE_QUEUE_MAX_BYTES,
-      batchSize: 1,
-      process: async (jobs) => {
-        for (const job of jobs) {
-          const controller = new AbortController();
-          this.activeCaptureController = controller;
-          try {
-            await this.captureAccepted(job.conversationId, job.text, controller.signal);
-          } finally {
-            if (this.activeCaptureController === controller) this.activeCaptureController = undefined;
-          }
-        }
-      },
-      onError: (error) => this.safeWarn(`bujo capture failed: ${reasonOf(error)}`),
-      onChange: () => this.scheduleRuntimeSnapshot(),
-    });
-  }
-
   private initializeCompletedTurnIntake(): void {
     this.completedTurnIntake = new CompletedTurnIntakeManager({
       root: this.root,
@@ -1177,22 +1088,27 @@ export class BujoMemoryStore implements MemoryStore {
       writeSummary: async (turn, id, admittedAt, signal) => {
         await this.appendCompletedTurnSummary(turn, id, admittedAt, signal);
       },
-      capture: async (turn, id, admittedAt, signal) => await this.captureCompletedTurn(
+      capture: async (turn, id, admittedAt, signal, isFinalAttempt) => await this.captureCompletedTurn(
         turn,
         id,
         admittedAt,
         signal,
+        isFinalAttempt,
       ),
       afterResolved: async (id) => await withSerializedBujoMutation({
         root: this.root,
         db: this.db,
         tier: this._tier,
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
-      }, async () => { removeRetainedCaptureIntent(this.root, id); }),
-      cleanupResolved: (ids) => {
+      }, async () => { removeRetainedCaptureIntent(this.root, id); discardCapturePlan(this.root, id); }),
+      cleanupResolved: (ids, activeIds) => {
         const resolved = new Set(ids);
+        const active = new Set(activeIds);
         for (const key of listRetainedCaptureIntentKeys(this.root)) {
           if (resolved.has(key)) removeRetainedCaptureIntent(this.root, key);
+        }
+        for (const key of listRetainedCapturePlanKeys(this.root)) {
+          if (resolved.has(key) || !active.has(key)) discardCapturePlan(this.root, key);
         }
       },
       onChange: (urgency) => {
@@ -1495,31 +1411,6 @@ function reasonOf(error: unknown): string {
 function withCleanupErrors(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
   if (cleanup.length === 0) return primary;
   return new AggregateError(primary === undefined ? cleanup : [primary, ...cleanup], message);
-}
-
-/**
- * Guard the one layout where appending to `daily/<date>.md` would hide data.
- *
- * Rebuild treats a canonical `daily/<date>.md` as authoritative for its date and
- * skips a root-level `<date>.md` with the same name. In a store that still keeps
- * that date only at the root, creating the modern file would therefore drop the
- * legacy file's facts from the next rebuilt index.
- */
-function assertNoShadowedLegacyDailyFile(root: string, when: Date): void {
-  const day = when.toISOString().slice(0, 10);
-  const legacy = readCanonicalFileSnapshot(root, `${day}.md`, { allowMissing: true });
-  if (legacy === undefined) return;
-  const modern = readCanonicalFileSnapshot(root, `daily/${day}.md`, { allowMissing: true });
-  if (modern !== undefined) return;
-  const legacyBody = legacy.content.trim();
-  // A migration can leave an empty placeholder (or just its canonical date
-  // heading) behind. There is no fact for a new modern file to hide in that
-  // case, so refusing the write would be a false data-safety failure.
-  if (legacyBody.length === 0 || legacyBody === `# ${day}`) return;
-  throw new Error(
-    `memory-bujo: ${day}.md still uses the root-level legacy layout; remembering a fact would create `
-    + `daily/${day}.md and hide it from the next rebuild. Migrate that file into daily/ first.`,
-  );
 }
 
 async function serializeJournalWrite<T>(

@@ -4,13 +4,12 @@
     "model": "openai-codex:gpt-5.5",
     "fallbacks": [
       {
-        "model": "opencode-go:kimi-k2.6",
-        "effort": "high"
+        "model": "opencode-go:kimi-k3",
+        "effort": "max"
       }
     ],
     "maxTurns": 0,
     "effort": "high",
-    "permissionMode": "bypassPermissions",
     "workspace": ".",
     "session": {
       "mode": "continuous",
@@ -46,7 +45,7 @@
     },
     "llm": {
       "provider": "agent-host",
-      "model": "opencode-go:kimi-k2.6",
+      "model": "opencode-go:kimi-k3",
       "timeoutMs": 360000
     },
     "recallTool": {
@@ -113,16 +112,6 @@
     "sourceLabel": "Local Agent Alpha",
     "heartbeatMs": 10000,
     "staleAfterMs": 30000
-  },
-  "observability": {
-    "exporters": [
-      {
-        "type": "phoenix",
-        "endpoint": "http://127.0.0.1:6006/v1/traces",
-        "projectName": "local-agent-alpha",
-        "includeSensitiveData": true
-      }
-    ]
   },
   "webhook": {
     "enabled": true,

@@ -57,6 +57,34 @@ admission. Direct chats and slash commands are unchanged. The bot must receive
 group updates (for example, by being a group administrator); the adapter owns
 the local trigger filter. `telegram.stripMentionText` defaults to `true`.
 
+Forum topics are separate conversations. A message in a topic runs as
+`telegram:<chat>:<topic>`, and every reply, typing action, activity message,
+AskUser question, status line, generated file, and process-job card goes back to
+that topic (`message_thread_id`). The General topic, private chats, and
+non-forum groups keep `telegram:<chat>`. Only `is_topic_message` marks a topic,
+so ordinary reply threads in non-forum supergroups stay in the chat
+conversation, and the implicit reply Telegram attaches to a topic's opening
+message is dropped before reply-context rendering and mention matching. The
+JSON-only `telegram.topics` list overrides the trigger rule per topic
+(`{ chatId, topicId, groupMode: "inherit" | "any" | "mention" | "listen" }`);
+entries must name allowlisted chats and never widen the allowlist. Topic names
+learned from the topic's service messages and implicit root replies appear in
+the model-visible surface as `Chat › Topic`; the topic id stays host-owned. An
+explicit rename always beats the stale creation name later messages quote
+(`mergeTelegramTopicName`). A host can hydrate names it persisted
+(`knownTopicNames`) and observe every allowlisted message before trigger
+filtering with `onChatObserved` (`TelegramChatObservation`: chat title, forum
+flag, topic id, name evidence, closed/reopened); the hook is never awaited and
+its failures are logged. A proactive post Telegram answers with "thread not
+found" returns `code: "telegram_topic_gone"` (`isTelegramTopicGoneError`).
+JSON-only `telegram.projects.enabled` is read here and acted on by the
+mono-agent app ([Forum topics as projects](../../docs/channels/telegram.md#forum-topics-as-projects)).
+`groupMode: "listen"` triggers like `mention` and passes the unaddressed
+messages since the bot's last turn (newest 30, in memory) to the next triggered
+turn as `precedingMessages`. Proactive `notify`,
+`presentAsk`, `postStatus`, and `updateProcessJob` accept either a bare chat id
+(the main conversation) or `{ chatId, messageThreadId }`.
+
 ### Programmatic use
 
 Install the package directly only when composing a custom host:
@@ -113,14 +141,32 @@ The canonical shared constants are `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` and
 `DEFAULT_ATTACHMENT_MAX_BYTES` and `DEFAULT_ATTACHMENT_MIME_ALLOWLIST` names are
 Telegram compatibility aliases with the same values.
 
+### Native rich-message input
+
+Telegram native rich messages are projected to readable request text, including
+headings, nested formatting and visible link targets, lists and checkboxes,
+tables, details, quotations, captions and credits, and mathematical expressions.
+The same projection supplies direct and forwarded message bodies, album text,
+native reply quotations, and `groupMode: "listen"` background context. Ordinary
+`text` and `caption` values keep precedence when Telegram supplies them.
+
+Projection follows Telegram's 32,768-code-point, 500-block and 16-level rich
+message bounds and additionally stops after 8,192 rich-text nodes. Bounded input
+ends with an explicit truncation marker. Unknown fields and embedded media data
+are not serialized: a rich media block contributes only its visible caption and
+credit. The adapter does not fetch media referenced only inside
+`rich_message.blocks`; ordinary top-level Telegram attachments keep the download
+behavior described above.
+
 ### Native reply context
 
 An inbound Telegram native reply carries its referenced message in the update,
 so the adapter prepends a bounded, model-visible quotation to the current user
 text. This also works for a proactive or otherwise artificial bot message that
 was never recorded in agent history. Telegram's sender-selected `quote.text`
-wins when present; otherwise the adapter uses the replied-to text, caption, or a
-safe attachment summary. It never downloads media from the quoted message.
+wins when present; otherwise the adapter uses the replied-to text, caption,
+projected native rich-message body, or a safe attachment summary. It never
+downloads media from the quoted message.
 
 The envelope labels the quotation as untrusted context, includes a sanitized
 author and valid timestamp when available, and caps the quoted body at 4,096
@@ -150,10 +196,12 @@ not the transcript, after provider context is lost.
 
 ### Final answer and transient tool activity
 
-Inbound turns do not stream answer tokens by default. Telegram first shows the
-`typing…` action; if tools run, one cumulative, secret-safe activity message is
-edited in place. Once the response is ready, Telegram posts it as a new message
-and deletes the activity message. Adjacent duplicates collapse as `(×N)`.
+Inbound turns do not stream answer tokens by default. Telegram continuously
+refreshes the native `typing…` action while the turn is active, including after
+tool-ledger sends or edits that would otherwise clear it. If tools run, one
+cumulative, secret-safe activity message is edited in place. Once the response
+is ready, Telegram stops the action, posts it as a new message, and deletes the
+activity message. Adjacent duplicates collapse as `(×N)`.
 A subagent stays expanded while it runs; at its first terminal event, Telegram
 removes all of that subagent's child tool lines while retaining its total call
 count and duration. The compact row may include one secret-redacted `Result` or
@@ -246,13 +294,15 @@ answer to that same tool call, while slash commands remain commands. Separately,
 non-blocking `TelegramSendMessage.reply_options` buttons start a new user turn
 when tapped.
 
-After an answer is recorded, Telegram removes the buttons and edits the question
-message with the original labels for resolved selections. One answer is shown
-inline; multiple answers are attributed by question header in recorded order.
-Unknown question and option IDs are omitted. Multi-answer custom-only entries use
-the placeholder `custom answer`, while Telegram never echoes the custom reply
-text; a single custom-only or otherwise unresolved answer keeps the generic
-`Answer recorded.` confirmation.
+After a button answer is recorded, Telegram removes the buttons and edits the
+question message with the original labels for resolved selections. After a
+custom text answer, it settles the old card and posts any follow-up question as
+a new message below the person's reply, preserving the chat's chronology. One
+answer is shown inline; multiple answers are attributed by question header in
+recorded order. Unknown question and option IDs are omitted. Multi-answer
+custom-only entries use the placeholder `custom answer`, while Telegram never
+echoes the custom reply text; a single custom-only or otherwise unresolved
+answer keeps the generic `Answer recorded.` confirmation.
 ### Generated reply files
 
 When the host returns an authorized reply-file part, the adapter reads its
@@ -265,7 +315,7 @@ are deduplicated by file integrity plus chat/reply target.
 
 This path is separate from model-invoked `TelegramSendFile`: reply files use the
 shared response-part contract and host authorization. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ## Architecture
 
@@ -284,7 +334,12 @@ The request lifecycle is:
    responder request. `transcription.ts` optionally enriches supported audio.
 4. The host responder returns normal stream events. `message-stream.ts` renders
    Telegram-safe final-only delivery, retries, activity, and cleanup; the
-   Markdown translator runs only at this transport boundary.
+   Markdown translator runs only at this transport boundary. The built-in client
+   sends final answers as Telegram Rich Markdown, so GFM tables, headings, lists,
+   bold, italics, links, and code use Telegram's native rich-message renderer.
+   Custom clients that omit the rich methods—and a built-in client whose Bot API
+   endpoint rejects rich content—use the MarkdownV2 compatibility path, where
+   unsupported tables become aligned monospaced code blocks.
 5. Host-owned process-job projections bypass the responder and use the
    adapter-local monotonic lifecycle-message path.
 6. `stop()` ends polling and waits for the runner to settle.
@@ -296,9 +351,12 @@ The request lifecycle is:
 | [`config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/config.ts) | Config/env loading, validation, redaction, quiet hours, and feature settings. |
 | [`start.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/start.ts) | Recommended programmatic composition root. |
 | [`bot.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/bot.ts) | Polling lifecycle, authorization, commands, callbacks, queues, and notification. |
+| [`conversation.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/conversation.ts) | Chat and forum-topic conversation ids, topic detection, and implicit topic-reply removal. |
 | [`adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/adapter.ts) | Request normalization, attachment metadata, download limits, and responder types. |
 | [`grammy-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/grammy-client.ts) | grammY-backed Bot API and file-transfer boundary. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/message-stream.ts) | Telegram delivery, retry classification, transient activity, and finalization. |
+| [`log-redaction.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/log-redaction.ts) | Bot token patterns and diagnostic labels for the bounded shared log sanitizer in `agent-contracts`. |
+| [`reply-files.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/reply-files.ts) | Native document delivery and destination-bound deduplication, using shared artifact metadata and byte-count verification. |
 | [`transcription.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/transcription.ts) | Optional OpenAI-compatible audio transcription. |
 | [`ask-user.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/ask-user.ts) | Bounded callback encoding for structured `AskUser` buttons. |
 | [`reply-options.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/reply-options.ts) | Callback protocol for non-blocking `TelegramSendMessage.reply_options`. |
@@ -371,17 +429,23 @@ TelegramBotApi
 TelegramBotController
 TelegramChat
 TelegramChatId
+TelegramChatObservation
 TelegramCommandConfig
+TelegramConversationTarget
 TelegramDeleteMessageParams
 TelegramDeleteWebhookParams
 TelegramDeliveryError
+TelegramDestination
 TelegramDocument
 TelegramDocumentAttachment
 TelegramEditMessageTextParams
+TelegramEditRichMessageParams
 TelegramFileDownloader
 TelegramFileReference
 TelegramGetUpdatesParams
 TelegramGroupTriggerMode
+TelegramInputRichMessage
+TelegramKnownTopicName
 TelegramMessage
 TelegramMessageEntity
 TelegramMessageSender
@@ -391,6 +455,7 @@ TelegramMessageStreamOptions
 TelegramPhotoAttachment
 TelegramPhotoAttachmentSize
 TelegramPhotoSize
+TelegramProjectsConfig
 TelegramQuietHours
 TelegramReactionsConfig
 TelegramRequestMetadata
@@ -402,9 +467,14 @@ TelegramSendDocumentParams
 TelegramSendMessageParams
 TelegramSendOutcome
 TelegramSendPhotoParams
+TelegramSendRichMessageParams
 TelegramSendToolsConfig
 TelegramSentMessage
 TelegramTextQuote
+TelegramTopicConfig
+TelegramTopicNameRecord
+TelegramTopicNameSource
+TelegramTopicTriggerMode
 TelegramTranscriber
 TelegramTranscriptionConfig
 TelegramUpdate
@@ -424,13 +494,19 @@ createTelegramMessageSender
 decodeAgentAttachmentText
 downloadTelegramAttachments
 isTelegramReplyCallbackData
+isTelegramTopicGoneError
 isWithinQuietHours
 loadTelegramAdapterConfig
+mergeTelegramTopicName
 parseTelegramAskUserCallbackData
+parseTelegramConversationId
 redactTelegramAdapterConfig
 renderTelegramMarkdown
 startTelegramAdapter
 telegramAskUserCallbackData
+telegramChatObservationFromMessage
+telegramConversationId
+telegramMessageThreadId
 telegramReplyCallbackData
 ```
 
@@ -449,11 +525,11 @@ It does not build prompts, run models, store memory, serve UI, manage provider c
 
 ## Related Documentation
 
-- [Telegram channel guide](https://mono-agent-docs.vercel.app/channels/telegram/)
-- [Telegram personal-assistant playbook](https://mono-agent-docs.vercel.app/playbooks/telegram-personal-assistant-bujo/)
-- [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
-- [Custom channel adapters](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
+- [Telegram channel guide](https://docs.mono-agent.dev/channels/telegram/)
+- [Telegram personal-assistant playbook](https://docs.mono-agent.dev/playbooks/telegram-personal-assistant-bujo/)
+- [Delivery and send tools](https://docs.mono-agent.dev/channels/delivery-and-send-tools/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
+- [Custom channel adapters](https://docs.mono-agent.dev/programmatic/custom-channels/)
 
 ## Verification
 

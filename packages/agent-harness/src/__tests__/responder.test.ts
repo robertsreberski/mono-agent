@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createChannelUserCancelReason,
@@ -28,6 +28,83 @@ function baseRequest(conversationId = "c1") {
 }
 
 describe("createAgentResponder", () => {
+  it("rejects manual compaction during an active or queued turn and fences concurrent clicks", async () => {
+    let finishTurn!: () => void;
+    let finishCompact!: () => void;
+    const turnGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const compactGate = new Promise<void>((resolve) => { finishCompact = resolve; });
+    const seen: string[] = [];
+    const responder = createAgentResponder({
+      rollover: "daily", rolloverTimezone: "UTC", now: () => new Date("2026-09-08T10:00:00.000Z"),
+      harness: {
+        run: async (request) => { await turnGate; return okResponse(request.conversationId); },
+        compactConversation: async (id) => {
+          seen.push(id);
+          await compactGate;
+          return { status: "skipped", trigger: "manual", operationId: "c1" };
+        },
+      },
+    });
+    const turn = responder.respond(baseRequest("web:one"), noopStream());
+    const queued = responder.respond(baseRequest("web:one"), noopStream());
+    await expect(responder.compactConversation!("web:one")).rejects.toMatchObject({ failureKind: "compaction_busy" });
+    finishTurn();
+    await Promise.all([turn, queued]);
+    const pending = responder.compactConversation!("web:one");
+    await expect(responder.compactConversation!("web:one")).rejects.toMatchObject({ failureKind: "compaction_busy" });
+    finishCompact();
+    await expect(pending).resolves.toMatchObject({ status: "skipped" });
+    expect(seen).toEqual(["web:one#2026-09-08"]);
+  });
+  it("holds a turn that arrives during manual compaction until the compaction settles", async () => {
+    let finishCompact!: () => void;
+    const compactGate = new Promise<void>((resolve) => { finishCompact = resolve; });
+    const order: string[] = [];
+    const responder = createAgentResponder({
+      harness: {
+        run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
+        compactConversation: async (_id, compactionOptions) => {
+          order.push(`compact:start:${compactionOptions?.model ?? "default"}`);
+          await compactGate;
+          order.push("compact:end");
+          return { status: "succeeded", trigger: "manual", operationId: "c1" };
+        },
+      },
+    });
+    const compaction = responder.compactConversation!("web:one", { model: "anthropic:claude-opus-4-8" });
+    const turn = responder.respond(baseRequest("web:one"), noopStream());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8"]);
+    finishCompact();
+    await Promise.all([compaction, turn]);
+    expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8", "compact:end", "turn"]);
+  });
+  it("passes a disconnect signal through the responder and queues the next turn until abort cleanup", async () => {
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    let seen: AbortSignal | undefined;
+    const order: string[] = [];
+    const responder = createAgentResponder({ harness: {
+      run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
+      compactConversation: async (_id, _options, signal) => {
+        seen = signal;
+        order.push("compact");
+        await cleanup;
+        throw new Error("cancelled");
+      },
+    } });
+    const controller = new AbortController();
+    const compaction = responder.compactConversation!("web:one", undefined, controller.signal).catch(() => undefined);
+    await vi.waitFor(() => expect(seen).toBe(controller.signal));
+    controller.abort();
+    const turn = responder.respond(baseRequest("web:one"), noopStream());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(["compact"]);
+    release();
+    await Promise.all([compaction, turn]);
+    expect(order).toEqual(["compact", "turn"]);
+  });
+
   it("positively exposes context import and serializes it onto the responder bucket", async () => {
     const calls: Array<[string, string, string]> = [];
     const responder = createAgentResponder({
@@ -1071,7 +1148,8 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
   });
 
   it("flags the lifecycle bookends so renderers need not parse the id format", () => {
-    const subagent = { id: "call-1", name: "researcher", callIndex: 1 };
+    const subagent = { id: "call-1", name: "researcher", callIndex: 1,
+      usage: { input: 12, output: 2, cacheRead: 3, cacheWrite: 1 } };
     const bookends = (["agent_started", "agent_completed"] as const).map((phase) =>
       streamEventFromRuntimeEvent({
         type: "subagent_activity",
@@ -1488,7 +1566,7 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     }, { toolNames });
   };
 
-  it.each(["Exec", "Bash", "Agent", "AgentSend"])("lifts an exact %s background-start outcome into a canonical receipt", (name) => {
+  it.each(["Exec", "Bash", "Agent", "AgentManage"])("lifts an exact %s background-start outcome into a canonical receipt", (name) => {
     expect(completedBackgroundTool(name, backgroundOutcome())).toEqual({
       type: "tool_call_completed",
       id: "background-1",
@@ -1503,6 +1581,21 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
         maxRuntimeMs: 60_000,
       },
     });
+  });
+
+  it.each(["Exec", "Bash"])("links queued %s outcome metadata to the canonical start receipt", (name) => {
+    const outcome = backgroundOutcome({ state: "queued", started_at: null,
+      queue_position: 2, queue_deadline_at: "2026-09-08T10:05:00.000Z" });
+    expect(completedBackgroundTool(name, outcome)).toEqual({
+      type: "tool_call_completed", id: "background-1", name,
+      content: "Background process job started.",
+      structuredContent: { schema: "mono-agent.process-job-start-receipt.v1",
+        jobId: "job-1", tool: name, state: "queued", startedAt: null, maxRuntimeMs: 60_000 },
+    });
+    for (const invalid of [
+      { queue_position: 0 }, { queue_position: 1.5 }, { queue_deadline_at: "2026-09-08" },
+      { state: "running" },
+    ]) expect(completedBackgroundTool(name, { ...outcome, ...invalid })).not.toHaveProperty("structuredContent");
   });
 
   it("accepts only Bash's exact legacy-timeout extension and omits it from the receipt", () => {

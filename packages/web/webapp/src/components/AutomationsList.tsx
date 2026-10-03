@@ -13,6 +13,7 @@ const RUN_STATUS: Readonly<Record<CronRunStatus, string>> = {
   failed: "Failed",
   cancelled: "Cancelled",
   skipped_overlap: "Skipped overlap",
+  skipped_gate: "Skipped gate",
   dropped: "Dropped",
 };
 

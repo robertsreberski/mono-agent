@@ -11,6 +11,7 @@ import { auditBujoMemoryHealth } from "../audit.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
+import { encodeMemoryLabel, labelsOf, type MemoryLabel } from "../labels.js";
 import { migrate } from "../migrate.js";
 import { assertCanonicalGraphRepairBaseParity, safeRebuildMemoryIndex } from "../rebuild.js";
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
@@ -75,7 +76,7 @@ async function seed(
   root: string,
   id: string,
   text: string,
-  opts: { type?: Bullet["type"]; salience?: number; isInsight?: boolean } = {},
+  opts: { type?: Bullet["type"]; salience?: number; isInsight?: boolean; labels?: readonly MemoryLabel[] } = {}, 
 ): Promise<void> {
   const type = opts.type ?? "note";
   const bullet: Bullet = {
@@ -86,7 +87,7 @@ async function seed(
     salience: opts.salience ?? 0.5,
     isInsight: opts.isInsight ?? false,
     createdAt: FIXED.toISOString(),
-    refs: [],
+    refs: (opts.labels ?? []).map(encodeMemoryLabel),
   };
   appendBullet(root, bullet, FIXED);
   const record: MemoryRecord = {
@@ -102,6 +103,7 @@ async function seed(
     source: { file: relative(root, dailyFilePath(root, FIXED)) },
   };
   await db.upsert(record);
+  db.replaceMemoryLabels(id, labelsOf(bullet));
 }
 
 function makeDeps(
@@ -126,6 +128,164 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("looks up state neighbours for project entities without querying person-only labels", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "PROJECT-OLD", "Project Maple is paused.");
+    db.upsertEntity({ id: "project:maple", name: "Maple", type: "project", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "PROJECT-OLD", entityId: "project:maple", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const actions = await reconcileBatch([{ type: "note", text: "Project Maple resumed.", salience: 0.8,
+      isInsight: false, entityIds: ["project:maple"] }], makeDeps(db, root, { id: "project-state",
+      complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "supersede",
+        targetId: "PROJECT-OLD", text: "Project Maple resumed." }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntity":"project:maple"');
+    expect(actions[0]?.kind).toBe("supersede");
+  });
+  it("matches an entity's labelled property by key even without an overlapping topic phrase", async () => {
+    const root = newRoot(); const db = openDb(root);
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    await seed(db, root, "COLOR-OLD", "Morgan's favorite color is blue.", { labels: [label] });
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "COLOR-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan likes green.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"], labels: [{ ...label,
+        value: { type: "text", text: "green" } }] }], makeDeps(db, root, { id: "label-key",
+      complete: async (prompt) => { offered = prompt; return JSON.stringify([{ index: 0, action: "supersede",
+        targetId: "COLOR-OLD", text: "Morgan likes green." }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntity":"person:morgan"');
+    expect(actions[0]?.kind).toBe("supersede");
+  });
+  it("selects same-entity neighbours by graph association, not by a word-list topic matcher", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "ROLE-OLD", "Morgan's partner Cedar moved.");
+    await seed(db, root, "OTHER-OLD", "Morgan admires Maple.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    for (const id of ["ROLE-OLD", "OTHER-OLD"]) {
+      db.associateMemory({ memoryId: id, entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    }
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    await reconcileBatch([{ type: "note", text: "Morgan's child Maple visited.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "role-topic",
+      complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "add" }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).not.toContain("relationship");
+    expect(offered).toContain('"id":"ROLE-OLD"');
+    expect(offered).toContain('"id":"OTHER-OLD"');
+    expect(offered.match(/"sameEntity":"person:morgan"/gu)).toHaveLength(2);
+  });
+  it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "OLD", "Morgan lives in Maple Town.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilar = async () => [];
+    let prompt = "";
+    const actions = await reconcile([{ type: "note", text: "Morgan moved to Cedar City.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "malformed",
+      complete: async (input) => { prompt = input; return "not JSON"; },
+    }, { canonicalGraphRepairGuard: () => {} }));
+    expect(prompt).toContain("sameEntity=person:morgan (no vector score)");
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("OLD")?.status).toBe("open");
+  });
+  it("offers a bounded same-entity state neighbour even when vectors disagree", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    // Newest same-entity lines are offered first (no vector score); ties by id.
+    await seed(db, root, "A-OTHER-3", "Morgan paints.");
+    await seed(db, root, "A-OTHER-2", "Morgan reads maps.");
+    await seed(db, root, "A-OTHER", "Morgan works at Cedar Company.");
+    await seed(db, root, "HOME-OLD", "Morgan lives in Maple Town.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    for (const memoryId of ["HOME-OLD", "A-OTHER", "A-OTHER-2", "A-OTHER-3"]) {
+      db.associateMemory({ memoryId, entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    }
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const result = await reconcileBatch([{ type: "note", text: "Morgan moved to Cedar City.",
+      salience: 0.8, isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, {
+      id: "state", complete: async (input) => { offered = input; return JSON.stringify([
+        { index: 0, action: "supersede", targetId: "HOME-OLD", text: "Morgan lives in Cedar City." },
+      ]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain("HOME-OLD");
+    expect(offered).toContain('"sameEntity":"person:morgan"');
+    expect(offered).not.toContain('"distance":0.49');
+    // At most three same-entity lines are offered.
+    expect(offered.match(/"sameEntity":"person:morgan"/gu)).toHaveLength(3);
+    expect(result[0]?.kind).toBe("supersede");
+    expect(db.get("HOME-OLD")?.status).toBe("open"); // deferred capture owns the commit
+  });
+  it("clears labels on changed UPDATE and keeps only history on SUPERSEDE", async () => {
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
+      value: { type: "text", text: "Morgan" }, attribution: "user-stated" };
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPD1", "Morgan prefers concise technical reports", { labels: [label] });
+    const changed = "Morgan prefers concise technical status reports";
+    const update = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"${changed}"}`]]);
+    await reconcile([{ type: "note", text: "Morgan prefers concise status reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, update));
+    expect(db.labelsForEntity("person:morgan")).toEqual([]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === "UPD1")?.refs).toEqual([]);
+    const replaced: MemoryLabel = { ...label, value: { type: "text", text: "M" } };
+    const replacementUpdate = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"Morgan prefers concise weekly status reports"}`]]);
+    await reconcile([{ type: "note", text: "Morgan prefers weekly status reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, replacementUpdate,
+      { labelsForAction: () => [replaced] }));
+    expect(db.labelsForEntity("person:morgan").map((hit) => hit.label)).toEqual([replaced]);
+
+    await seed(db, root, "OLD1", "Morgan prefers monthly concise status reports", { labels: [label] });
+    const newText = "Morgan prefers monthly detailed status reports";
+    const supersede = fakeLlm([["CLASSIFY", `{"action":"supersede","targetId":"OLD1","text":"${newText}"}`]]);
+    const actions = await reconcile([{ type: "note", text: "Morgan prefers monthly detailed reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, supersede));
+    const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(replacementId).not.toBe("");
+    expect(db.labelsForEntity("person:morgan").map((hit) => [hit.memoryId, hit.active])).toEqual([
+      ["OLD1", false], ["UPD1", true],
+    ]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs).toEqual([]);
+  });
+  it("retains unchanged UPDATE labels and falls back to ADD for labelled preference supersession", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const label: MemoryLabel = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
+    const text = "Morgan prefers concise technical reports";
+    await seed(db, root, "OLD1", text, { labels: [label] });
+    await reconcile([{ type: "note", text, salience: 0.7, isInsight: false }], makeDeps(db, root,
+      fakeLlm([["CLASSIFY", `{"action":"update","targetId":"OLD1","text":"${text}"}`]])));
+    expect(db.guidanceForScope("agent").map((hit) => hit.label)).toEqual([label]);
+    const actions = await reconcile([{ type: "note", text: "Morgan prefers detailed reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root,
+      fakeLlm([["CLASSIFY", '{"action":"supersede","targetId":"OLD1","text":"Morgan prefers detailed technical reports"}']]),
+      { labelsForAction: () => [] }));
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.guidanceForScope("agent").map((hit) => [hit.memoryId, hit.label, hit.active]))
+      .toEqual([["OLD1", label, true]]);
+  });
+
+  it("adds a candidate rather than merging an over-bound UPDATE into an old line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const oldText = "Morgan cataloged fictional notes.";
+    await seed(db, root, "OLD1", oldText);
+    const merged = `${oldText} ${"The archive includes detailed fictional catalog entries. ".repeat(4)}`.trim();
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan cataloged new fictional notes.",
+      salience: 0.7, isInsight: false }], makeDeps(db, root,
+      { id: "fictional-merge", complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "OLD1", text: merged }]) },
+      { strictModelOutput: true }));
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("OLD1")?.text).toBe(oldText);
+  });
+
   it("case 1 — novel candidate (no similar) → ADD", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -236,6 +396,60 @@ describe("reconcile", () => {
     expect(parsed.bullets).toHaveLength(1);
   });
 
+  it("gives batch reconciliation attribution and correction-preservation rules", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "TARGET", "Avery reported the database was harbor_arch");
+    db.findSimilarMany = async () => [[{ record: db.get("TARGET")!, distance: 0.1 }]];
+    let seen = "";
+    const llm = {
+      id: "recording-llm",
+      complete: async (prompt: string) => {
+        seen = prompt;
+        return '[{"index":0,"action":"noop","targetId":"TARGET"}]';
+      },
+    };
+
+    const actions = await reconcileBatch([{
+      type: "note",
+      text: "Avery corrected the erroneous harbor_arch report to harbor_archive",
+      salience: 0.8,
+      isInsight: false,
+    }], makeDeps(db, root, llm));
+
+    expect(actions).toEqual([{ kind: "noop", id: "TARGET" }]);
+    expect(seen).toContain("speaker attribution, stated scope, evidence limits");
+    expect(seen).toContain("correction-versus-state-change qualification");
+    expect(seen).toContain("attributed or unchecked claim into an unqualified fact");
+    expect(seen).toContain("explicit user report or preference may remain useful");
+  });
+
+  it.each([
+    ["en", "The user finished Starfall Tactics last year."],
+    ["pl", "Użytkownik ukończył Starfall Tactics w zeszłym roku."],
+    ["es", "El usuario terminó Starfall Tactics el año pasado."],
+  ])("lets a user-sourced correction supersede a recorded assistant inference (%s)", async (_lang, correction) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "GUESS", "The assistant recommended resuming Starfall Tactics because it was unfinished.");
+    db.findSimilarMany = async () => [[{ record: db.get("GUESS")!, distance: 0.3 }]];
+    let seen = "";
+    const llm = { id: "recording-llm", complete: async (prompt: string) => {
+      seen = prompt;
+      return JSON.stringify([{ index: 0, action: "supersede", targetId: "GUESS", text: correction }]);
+    } };
+
+    const actions = await reconcileBatch([{ type: "event", text: correction, salience: 0.8, isInsight: false, source: "user" }],
+      makeDeps(db, root, llm));
+
+    expect(seen).toContain("The User's own word wins");
+    expect(seen).toContain("the premise it rests on");
+    expect(seen).toContain("other details about the same subject are add");
+    expect(seen).toContain('"source":"user"');
+    expect(actions[0]?.kind).toBe("supersede");
+    expect(db.get("GUESS")?.status).toBe("invalidated");
+  });
+
   it("case 3 — contradicting candidate + LLM says supersede → old invalidated, new added", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -340,6 +554,33 @@ describe("reconcile", () => {
     expect(existsSync(dailyFilePath(root, admittedAt))).toBe(false);
   });
 
+  it("never rewrites a task line in place: an update against a task adds a note and leaves the task untouched", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "TASK1", "morgan prefers opt in memory capture", { type: "task" });
+    const before = parseDailyFile(dailyContent(root)).bullets.find((b) => b.id === "TASK1");
+
+    const llm = fakeLlm([["CLASSIFY", '{"action":"update","targetId":"TASK1","text":"morgan prefers opt in memory capture with manual review"}']]);
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "morgan prefers opt in memory capture and manual review",
+      salience: 0.6,
+      isInsight: false,
+    };
+    // A zero thread cutoff: only the explicit task link may create a thread.
+    const actions = await reconcile([candidate], makeDeps(db, root, llm, { threadThreshold: 0 }));
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.kind).toBe("add");
+    const addedId = actions[0]?.kind === "add" ? actions[0].id : "";
+    expect(db.edges(addedId).filter((edge) => edge.kind === "thread").map(({ dst }) => dst)).toEqual(["TASK1"]);
+    const parsed = parseDailyFile(dailyContent(root)).bullets;
+    expect(parsed.find((b) => b.id === "TASK1")).toEqual(before);
+    expect(db.get("TASK1")).toMatchObject({ type: "task", status: "open", text: "morgan prefers opt in memory capture" });
+    const added = parsed.find((b) => b.id !== "TASK1");
+    expect(added).toMatchObject({ type: "note", text: candidate.text });
+  });
+
   it("case 4 — refinement candidate + LLM says update → target text merged, count unchanged", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -370,7 +611,7 @@ describe("reconcile", () => {
     expect(parsed.bullets.find((b) => b.id === "UPD1")?.text).toBe(merged);
   });
 
-  it("keeps the public legacy reconcile path at 280 well-formed Unicode code points", async () => {
+  it("bounds the public legacy reconcile path at 160 well-formed Unicode code points", async () => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "LEGACY", "Existing legacy reconciliation memory");
@@ -381,7 +622,6 @@ describe("reconcile", () => {
       salience: 0.8,
       isInsight: false,
     };
-    const expected = `${"a".repeat(279)}🧠`;
     const escapedBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠`;
     const reply = JSON.stringify({
       action: "update",
@@ -395,14 +635,11 @@ describe("reconcile", () => {
       makeDeps(db, root, fakeLlm([["CLASSIFY", reply]])),
     );
 
-    expect(actions).toEqual([{ kind: "update", id: "LEGACY" }]);
-    expect(db.get("LEGACY")?.text).toBe(expected);
-    expect(Array.from(db.get("LEGACY")?.text ?? "")).toHaveLength(280);
-    expect(db.get("LEGACY")?.text).toMatch(/🧠$/u);
-    expect(db.get("LEGACY")?.text).not.toContain("�");
-    expect(db.get("LEGACY")?.text).not.toMatch(/\p{Cs}/u);
-    expect(parseDailyFile(dailyContent(root)).bullets.find((bullet) => bullet.id === "LEGACY")?.text)
-      .toBe(expected);
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("LEGACY")?.text).toBe("Existing legacy reconciliation memory");
+    const added = actions[0]?.kind === "add" ? db.get(actions[0].id) : undefined;
+    expect(added?.text).toBe(candidate.text);
+    expect(added?.text).not.toMatch(/\p{Cs}/u);
   });
 
   it("case 5 — durable replay stops on pre-existing canonical/index divergence", async () => {
@@ -588,6 +825,110 @@ describe("reconcile", () => {
 });
 
 describe("reconcileBatch", () => {
+  it("keeps a supported fact label when a newer dated UPDATE supersedes its old line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const old = "Morgan likes blue as of 2026-07-12.";
+    const next = "Morgan likes blue as of 2026-07-15.";
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    await seed(db, root, "OLD-BLUE", old, { labels: [label] });
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-BLUE")!, distance: 0.1 }]];
+    const actions = await reconcileBatch([{ type: "note", text: next, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "dated", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "OLD-BLUE", text: next },
+      ]) }, { nextId: () => "NEW-BLUE", labelsForAction: () => [] }));
+    expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-BLUE", newId: "NEW-BLUE" }]);
+    expect(db.listLabels({ entityId: "person:morgan" }).hits.filter((hit) => hit.active && hit.memoryId === "NEW-BLUE")
+      .map((hit) => hit.label)).toEqual([label]);
+    db.close();
+  });
+
+  it("keeps merged context when a partial negation is an UPDATE, not a supersession", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "OLD-NOTE", "Morgan prefers blue and concise notes.");
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-NOTE")!, distance: 0.1 }]];
+    const merged = "Morgan no longer prefers blue but still prefers concise notes.";
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan no longer prefers blue.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "partial", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "OLD-NOTE", text: merged },
+      ]) }));
+    expect(actions).toEqual([{ kind: "update", id: "OLD-NOTE" }]);
+    expect(db.get("OLD-NOTE")?.text).toBe(merged);
+    db.close();
+  });
+  it.each([
+    "Biscuit weighed 10 kg on 2026-07-14.", "Biscuit ważył 10 kg w dniu 2026-07-14.", "Biscuit pesaba 10 kg el 2026-07-14.",
+  ])("converts a later-dated UPDATE to dated supersession preserving the original as history: %s", async (text) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "OLD-AGE", "Biscuit weighed 9 kg on 2026-06-01.");
+    const oldSource = dailyContent(root);
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-AGE")!, distance: 0.1 }]];
+    const candidate: CandidateMemory = { type: "note", text, salience: 0.8, isInsight: false };
+    const llm: ReconcileDeps["llm"] = { id: "snapshot", complete: async () => JSON.stringify([
+      { index: 0, action: "update", targetId: "OLD-AGE", text },
+    ]) };
+    const nextDay = new Date("2026-07-15T12:00:00.000Z");
+    const actions = await reconcileBatch([candidate], makeDeps(db, root, llm, {
+      now: () => nextDay,
+      nextId: () => "AGE-NEW",
+      strictModelOutput: true,
+    }));
+    expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-AGE", newId: "AGE-NEW" }]);
+    expect(dailyContent(root)).not.toBe(oldSource);
+    expect(db.get("OLD-AGE")?.status).toBe("invalidated");
+    expect(db.get("OLD-AGE")?.text).toBe("Biscuit weighed 9 kg on 2026-06-01.");
+    expect(db.get("AGE-NEW")?.createdAt).toBe(nextDay.toISOString());
+    expect(readFileSync(dailyFilePath(root, nextDay), "utf8")).toContain(text);
+  });
+  it("supersedes instead of rewriting an undated line when the UPDATE candidate carries a date", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UNDATED", "Biscuit weighs 9 kg.");
+    db.findSimilarMany = async () => [[{ record: db.get("UNDATED")!, distance: 0.1 }]];
+    for (const [text, expected] of [
+      ["Biscuit waży 10 kg od 2026-07-14.", "supersede"],
+    ] as const) {
+      const actions = await reconcileBatch([{ type: "note", text, salience: 0.8, isInsight: false }], makeDeps(db, root,
+        { id: "undated", complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "UNDATED", text }]) },
+        { nextId: () => "DATED-NEW", strictModelOutput: true }));
+      expect(actions[0]?.kind).toBe(expected);
+    }
+    expect(db.get("UNDATED")?.text).toBe("Biscuit weighs 9 kg.");
+    expect(db.get("UNDATED")?.status).toBe("invalidated");
+    expect(db.get("DATED-NEW")?.text).toBe("Biscuit waży 10 kg od 2026-07-14.");
+    // An undated refinement of an undated line stays an in-place update.
+    await seed(db, root, "PLAIN", "Morgan keeps maps.");
+    db.findSimilarMany = async () => [[{ record: db.get("PLAIN")!, distance: 0.1 }]];
+    const update = await reconcileBatch([{ type: "note", text: "Morgan keeps old maps.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "plain", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "PLAIN", text: "Morgan keeps old maps." }]) }, { strictModelOutput: true }));
+    expect(update).toEqual([{ kind: "update", id: "PLAIN" }]);
+  });
+  it("plans the same run-derived supersession identity on a deferred snapshot retry", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "AGE-OLD", "Biscuit weighed 9 kg on 2026-06-01.");
+    db.findSimilarMany = async () => [[{ record: db.get("AGE-OLD")!, distance: 0.1 }]];
+    const candidate: CandidateMemory = { type: "note", text: "Biscuit weighed 10 kg on 2026-07-14.", salience: 0.8, isInsight: false };
+    const llm: ReconcileDeps["llm"] = { id: "stable", complete: async () => JSON.stringify([
+      { index: 0, action: "update", targetId: "AGE-OLD", text: candidate.text },
+    ]) };
+    const intents: string[] = [];
+    const deps = makeDeps(db, root, llm, {
+      strictModelOutput: true, deferBatchCommit: true, nextId: () => "AGE-RUN-00",
+      beforeBatchCommit: (actions) => { intents.push(JSON.stringify(actions)); },
+    });
+    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "supersede", oldId: "AGE-OLD", newId: "AGE-RUN-00" }]);
+    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "supersede", oldId: "AGE-OLD", newId: "AGE-RUN-00" }]);
+    expect(intents).toHaveLength(2);
+    expect(intents[0]).toBe(intents[1]);
+    expect(db.get("AGE-OLD")?.text).toBe("Biscuit weighed 9 kg on 2026-06-01.");
+    expect(db.get("AGE-RUN-00")).toBeUndefined();
+  });
+
   it("publishes ADD/UPDATE/SUPERSEDE/NOOP together and commits prepared rows once", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -842,22 +1183,16 @@ describe("reconcileBatch", () => {
   });
 
   it.each(["update", "supersede"] as const)(
-    "fails every colliding %s decision closed before canonical or index mutation",
+    "degrades competing %s decisions to a separate add",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
       await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
-      const before = dailyContent(root);
       const candidates: CandidateMemory[] = [
         { type: "note", text: "Morgan prefers blue-green deployments with review", salience: 0.7, isInsight: false },
         { type: "note", text: "Morgan prefers blue-green deployments with canaries", salience: 0.8, isInsight: false },
       ];
       db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
-      let persistencePreflights = 0;
-      db.prepareUpsertVectors = async (records) => {
-        persistencePreflights += records.length;
-        return records.map(() => undefined);
-      };
       const reply = JSON.stringify(candidates.map((candidate, index) => ({
         index,
         action,
@@ -867,37 +1202,26 @@ describe("reconcileBatch", () => {
 
       const actions = await reconcileBatch(
         candidates,
-        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]),
+          { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions).toEqual([undefined, undefined]);
-      expect(persistencePreflights).toBe(0);
-      expect(db.count()).toBe(1);
-      expect(db.get("ONE")).toMatchObject({
-        text: "Morgan prefers blue-green deployments",
-        status: "open",
-      });
-      expect(dailyContent(root)).toBe(before);
+      expect(actions.map((item) => item?.kind)).toEqual([action, "add"]);
+      expect(db.count()).toBe(action === "supersede" ? 3 : 2);
     },
   );
 
   it.each(["update", "supersede"] as const)(
-    "fails a mixed %s/noop collision closed before canonical or index mutation",
+    "drops the losing noop when %s wins the target",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
       await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
-      const before = dailyContent(root);
       const candidates: CandidateMemory[] = [
         { type: "note", text: "Morgan prefers reviewed blue-green deployments", salience: 0.7, isInsight: false },
         { type: "note", text: "Morgan prefers canary blue-green deployments", salience: 0.8, isInsight: false },
       ];
       db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
-      let persistencePreflights = 0;
-      db.prepareUpsertVectors = async (records) => {
-        persistencePreflights += records.length;
-        return records.map(() => undefined);
-      };
       const reply = JSON.stringify([
         { index: 0, action, targetId: "ONE", text: candidates[0]!.text },
         { index: 1, action: "noop", targetId: "ONE" },
@@ -905,16 +1229,12 @@ describe("reconcileBatch", () => {
 
       const actions = await reconcileBatch(
         candidates,
-        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]),
+          { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions).toEqual([undefined, undefined]);
-      expect(persistencePreflights).toBe(0);
-      expect(db.get("ONE")).toMatchObject({
-        text: "Morgan prefers blue-green deployments",
-        status: "open",
-      });
-      expect(dailyContent(root)).toBe(before);
+      expect(actions.map((item) => item?.kind)).toEqual([action, undefined]);
+      expect(db.count()).toBe(action === "supersede" ? 2 : 1);
     },
   );
 
@@ -987,19 +1307,21 @@ describe("reconcileBatch", () => {
 
     const actions = await reconcileBatch(
       candidates,
-      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]), {
+        nextId: (() => { let index = 0; return () => `MERGE-${index++}`; })(),
+      }),
     );
 
-    expect(actions[0]).toEqual({ kind: "update", id: "UPDATE" });
+    expect(actions[0]?.kind).toBe("add");
     expect(actions[1]?.kind).toBe("supersede");
-    expect(db.get("UPDATE")?.text).not.toMatch(/[\n\r]|<!--mem/u);
-    expect(db.get("UPDATE")?.text.length).toBeLessThanOrEqual(280);
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers blue green deployments");
+    expect(db.get(actions[0]?.kind === "add" ? actions[0].id : "")?.text).toBe(candidates[0]?.text);
     const replacementId = actions[1]?.kind === "supersede" ? actions[1].newId : "";
     expect(db.get(replacementId)?.text).toBe(candidates[1]?.text);
     expect(db.get("OLD")?.status).toBe("invalidated");
   });
 
-  it("keeps the lenient reconciliation path at 280 complete Unicode code points", async () => {
+  it("bounds the lenient reconciliation path at 160 complete Unicode code points", async () => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "EXACT", "Existing exact-boundary memory");
@@ -1012,7 +1334,7 @@ describe("reconcileBatch", () => {
       [{ record: db.get("EXACT")!, distance: 0.1 }],
       [{ record: db.get("OVER")!, distance: 0.1 }],
     ];
-    const exactBoundary = `${"a".repeat(279)}🧠`;
+    const exactBoundary = "a".repeat(160);
     const escapedOverBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠tail`;
     const reply = JSON.stringify([
       { index: 0, action: "update", targetId: "EXACT", text: exactBoundary },
@@ -1027,13 +1349,11 @@ describe("reconcileBatch", () => {
 
     expect(actions).toEqual([
       { kind: "update", id: "EXACT" },
-      { kind: "update", id: "OVER" },
+      expect.objectContaining({ kind: "add" }),
     ]);
     expect(db.get("EXACT")?.text).toBe(exactBoundary);
-    expect(db.get("OVER")?.text).toBe(exactBoundary);
-    expect(Array.from(db.get("OVER")?.text ?? "")).toHaveLength(280);
-    expect(db.get("OVER")?.text).not.toContain("�");
-    expect(db.get("OVER")?.text).not.toMatch(/\p{Cs}/u);
+    expect(db.get("OVER")?.text).toBe("Existing over-boundary memory");
+    expect(db.get(actions[1]?.kind === "add" ? actions[1].id : "")?.text).toBe(candidates[1]?.text);
   });
 
   it("allows an explicit valid add decision for a close candidate", async () => {
@@ -1245,5 +1565,156 @@ describe("reconcileBatch", () => {
     )).resolves.toEqual([{ kind: "update", id: "WAIT-ABORT" }]);
     expect(searches).toBe(2);
     expect(db.get("WAIT-ABORT")?.text).toBe("third serialized update");
+  });
+});
+
+describe("scoped preference and history contracts", () => {
+  it.each([
+    {
+      name: "one actor's preferences in different project scopes",
+      id: "VELIN-PREFERENCE",
+      existing: "Avery prefers terse status updates for the Velin launch.",
+      candidate: "Avery prefers detailed status updates for the Nimbus launch.",
+    },
+    {
+      name: "same display name with distinct role scopes",
+      id: "DESIGN-ALEX",
+      existing: "Alex from design prefers concise release notes.",
+      candidate: "Alex from operations prefers detailed runbooks.",
+    },
+  ])("keeps $name separate when the reconciliation plan selects ADD", async ({ id, existing, candidate }) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, id, existing);
+    db.findSimilarMany = async () => [[{ record: db.get(id)!, distance: 0.1 }]];
+    let prompt = "";
+    const llm: ReconcileDeps["llm"] = {
+      id: "scope-add-plan",
+      complete: async (value) => {
+        prompt = value;
+        return '[{"index":0,"action":"add"}]';
+      },
+    };
+
+    const actions = await reconcileBatch(
+      [{ type: "note", text: candidate, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm, { strictModelOutput: true }),
+    );
+
+    expect(actions).toEqual([{ kind: "add", id: expect.any(String) }]);
+    const addedId = actions[0]?.kind === "add" ? actions[0].id : "";
+    expect(db.count()).toBe(2);
+    expect(db.get(id)).toMatchObject({ status: "open", text: existing });
+    expect(db.get(addedId)).toMatchObject({ status: "open", text: candidate });
+    expect(prompt).toContain(existing);
+    expect(prompt).toContain(candidate);
+    expect(prompt).toContain("speaker attribution, stated scope, evidence limits");
+    expect(parseDailyFile(dailyContent(root)).bullets.map((bullet) => bullet.text))
+      .toEqual(expect.arrayContaining([existing, candidate]));
+  });
+
+  it("treats UPDATE as an in-place refinement rather than a historical state transition", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const before = "Morgan prefers brief Velin summaries.";
+    const merged = "Morgan prefers concise Velin summaries with bullet headings.";
+    await seed(db, root, "PREFERENCE", before);
+    db.findSimilarMany = async () => [[{ record: db.get("PREFERENCE")!, distance: 0.1 }]];
+    const llm: ReconcileDeps["llm"] = {
+      id: "scope-update-plan",
+      complete: async () => JSON.stringify([{
+        index: 0,
+        action: "update",
+        targetId: "PREFERENCE",
+        text: merged,
+      }]),
+    };
+
+    const actions = await reconcileBatch(
+      [{ type: "note", text: "Morgan also wants bullet headings in Velin summaries.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm, { strictModelOutput: true }),
+    );
+
+    expect(actions).toEqual([{ kind: "update", id: "PREFERENCE" }]);
+    expect(db.count()).toBe(1);
+    expect(db.get("PREFERENCE")).toMatchObject({
+      status: "open",
+      text: merged,
+      createdAt: FIXED.toISOString(),
+    });
+    expect(db.get("PREFERENCE")).not.toHaveProperty("validTo");
+    expect(db.get("PREFERENCE")).not.toHaveProperty("supersededBy");
+    expect(parseDailyFile(dailyContent(root)).bullets).toEqual([
+      expect.objectContaining({ id: "PREFERENCE", status: "open", text: merged }),
+    ]);
+  });
+
+  it("uses SUPERSEDE for a preference change and retains bounded historical lifecycle", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const changedAt = new Date("2026-07-01T09:30:00.000Z");
+    const oldText = "Morgan prefers concise status summaries for the Velin launch.";
+    const newText = "Morgan now prefers detailed status summaries for the Velin launch.";
+    await seed(db, root, "OLD-PREFERENCE", oldText);
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-PREFERENCE")!, distance: 0.1 }]];
+    const llm: ReconcileDeps["llm"] = {
+      id: "scope-supersede-plan",
+      complete: async () => JSON.stringify([{
+        index: 0,
+        action: "supersede",
+        targetId: "OLD-PREFERENCE",
+        text: newText,
+      }]),
+    };
+
+    const actions = await reconcileBatch(
+      [{ type: "note", text: newText, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm, {
+        strictModelOutput: true,
+        now: () => changedAt,
+        nextId: createIdFactory({ clock: () => changedAt, random: () => 0 }),
+      }),
+    );
+
+    const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(actions).toEqual([{
+      kind: "supersede",
+      oldId: "OLD-PREFERENCE",
+      newId: replacementId,
+    }]);
+    expect(db.get("OLD-PREFERENCE")).toMatchObject({
+      status: "invalidated",
+      supersededBy: replacementId,
+      supersededAt: changedAt.toISOString(),
+      validTo: changedAt.toISOString(),
+    });
+    expect(db.get(replacementId)).toMatchObject({
+      status: "open",
+      text: newText,
+      createdAt: changedAt.toISOString(),
+      source: { file: "daily/2026-07-01.md" },
+    });
+
+    const current = await db.recall("Morgan Velin status summaries", { topK: 5, now: changedAt });
+    expect(current.map((hit) => hit.record.id)).toContain(replacementId);
+    expect(current.map((hit) => hit.record.id)).not.toContain("OLD-PREFERENCE");
+    const withHistory = await db.recall("Morgan Velin status summaries", {
+      topK: 5,
+      includeInvalid: true,
+      now: changedAt,
+    });
+    expect(withHistory.map((hit) => hit.record.id))
+      .toEqual(expect.arrayContaining(["OLD-PREFERENCE", replacementId]));
+
+    const journal = db.browseJournal({
+      fromInclusive: "2026-06-01T00:00:00.000Z",
+      toExclusive: "2026-08-01T00:00:00.000Z",
+      maxEntries: 10,
+      maxBytes: 16_384,
+    });
+    expect(journal.records.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: "OLD-PREFERENCE", status: "invalidated" },
+      { id: replacementId, status: "open" },
+    ]);
   });
 });

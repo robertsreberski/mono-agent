@@ -1,3 +1,4 @@
+import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
@@ -10,7 +11,6 @@ import {
   acquireToolHistoryWriter,
   createDurableHistoryStore,
   createToolPolicy,
-  loadToolPolicyFromJsonFileSync,
   renderSkillIndexSection,
   ToolHistoryReader,
   toolHistoryLogicalConversationId,
@@ -23,35 +23,34 @@ import type {
   AgentHarnessRuntimeOptionsInput,
   AgentHarnessToolHistoryOptions,
   ConversationHistoryStore,
+  LiveInputMailbox,
   SkillIndexSummary,
   ToolHistoryWriterHandle,
 } from "@mono-agent/agent-harness";
-import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
-import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
+import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/agent-contracts";
+import { processJobWakeContextForRequest } from "./process-jobs-context.js";
+import { isProviderAuthFailureText } from "@mono-agent/agent-runtime/ai/failure.js";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
-import { resolveSupermemoryContainer } from "@mono-agent/config";
+import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { LlmComplete } from "@mono-agent/memory/bujo";
-import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
+import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
+import { createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
-  PhoenixExporterConfig,
-  RunExportContext,
-  RunExporter,
   RunRecorder,
   RunSummary,
   RuntimeResultLike,
 } from "@mono-agent/observability";
-import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import {
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
   createSrtSandboxEngine,
   describeMonoRuntimeSupport,
   modelReferenceKey,
+  monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
@@ -75,6 +74,7 @@ import {
   type AgentRootOwnership,
 } from "./agent-root-coordinator.js";
 import type { ChannelId } from "./channels.js";
+import { textFromMemoryRuntimeResult } from "./memory-llm-result.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import {
   createMemoryJournalRuntimeExtension,
@@ -82,6 +82,8 @@ import {
   isMemoryJournalToolAllowed,
 } from "./memory-journal.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
+import { createPeerAgentRuntimeExtension } from "./peer-agent.js";
+import { verifyPeerOperatorHandoff } from "./peer-provenance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   isSharedRecallStore,
@@ -107,8 +109,6 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
-import { createMonitorsRuntimeExtension, monitorsAvailableForRequest } from "./monitors-runtime.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
@@ -127,7 +127,6 @@ import {
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
-import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 
@@ -168,6 +167,8 @@ type AgentHarnessSessionOptionsWithEvents = NonNullable<AgentHarnessOptions["ses
 };
 
 export interface ConfiguredAgentHarnessOptions {
+  /** Managed workers resolve optional exporters only from their immutable app closure. */
+  readonly preferAppPluginInstall?: boolean;
   readonly config: MonoAgentConfig;
   /**
    * Canonical agent-root authority and plugin-resolution folder. Configured
@@ -198,6 +199,7 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  readonly runtimeOptionsForManualCompaction?: AgentHarnessOptions["runtimeOptionsForManualCompaction"];
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
   /** Best-effort diagnostic when the chronological MemoryJournal endpoint cannot start. */
@@ -206,6 +208,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly onMemoryRememberUnavailable?: (error: unknown) => void;
   /** Best-effort host diagnostic for post-provider memory write failures. */
   readonly onMemoryWarning?: (message: string) => void;
+  /** Startup diagnostic when the optional desktop driver is unavailable. */
+  readonly onComputerUseWarning?: (message: string) => void;
   /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
   readonly onToolHistoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
@@ -218,19 +222,14 @@ export interface ConfiguredAgentHarnessOptions {
    */
   readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
   /**
-   * Exporter-context fields the factory input cannot supply. Surfaced on the
-   * exported root span so Phoenix traces map back to the running host and its
-   * local artifacts.
+   * App-owned trace-source identity and config-path context retained for local
+   * recording callers and host correlation.
    */
   readonly observabilityContext?: {
     readonly sourceId?: string;
     readonly sourceLabel?: string;
     readonly configPath?: string;
   };
-  /** Best-effort exporter warnings (timeouts, transport failures). */
-  readonly exporterWarn?: (warning: { phase: string; message: string }) => void;
-  /** Injection seam (tests); defaults to createPhoenixRunExporter. */
-  readonly exporterFactory?: (config: PhoenixExporterConfig) => RunExporter;
 }
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
@@ -248,7 +247,7 @@ type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Promise<v
 interface ConfiguredAgentInternalHooks {
   /**
    * App-owned hook invoked after the local JSONL running/terminal summary is
-   * committed. Invocation runs before best-effort exporter work; a returned
+   * committed. A returned
    * promise is not awaited and all hook failures are ignored.
    */
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
@@ -279,36 +278,24 @@ interface ConfiguredAgentInternalHooks {
     readonly settings: ProcessJobsSettings;
     readonly stateDir?: string;
   };
-  /** Live monitor-controller injection for this channel. */
-  readonly monitors?: {
-    readonly service: MonitorsServiceHandle | undefined;
-    readonly channelId: ChannelId | undefined;
-    readonly conversationScheme?: string | undefined;
-    readonly routesOnlyPiNative?: (metadata: Record<string, unknown> | undefined) => boolean;
-  };
 }
 
 /**
- * Inputs the recorder composition needs that are stable across a run: the
- * artifact directory, the configured exporters, and the per-host export
- * context. Shared by the channel-run `recorderFactory` and the memory LLM so
- * both produce identical JSONL artifacts + Phoenix spans.
+ * Inputs local recording needs that are stable across a run. Shared by the
+ * channel-run `recorderFactory` and the memory LLM so both produce identical
+ * JSONL artifacts. The app-owned observability context remains available to
+ * callers for trace-source identity and config-path correlation.
  */
 interface RecorderCompositionDeps {
   readonly artifactDir: string;
-  readonly exporters: readonly PhoenixExporterConfig[];
   readonly observabilityContext?: ConfiguredAgentHarnessOptions["observabilityContext"];
-  readonly exporterWarn?: ConfiguredAgentHarnessOptions["exporterWarn"];
-  readonly exporterFactory?: ConfiguredAgentHarnessOptions["exporterFactory"];
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
 }
 
 /**
  * Build a recorder for one run. The JSONL recorder is always built first and is
- * returned unchanged when neither an artifact hook nor exporter is configured.
- * The optional artifact hook wraps only its commit boundary. When an exporter is
- * present the result is wrapped again so export is best-effort and additive —
- * exporter failures only surface as warnings and never change the run outcome.
+ * returned unchanged when no artifact hook is configured. The optional artifact
+ * hook wraps only its commit boundary.
  */
 function composeRunRecorder(
   deps: RecorderCompositionDeps,
@@ -337,44 +324,12 @@ function composeRunRecorder(
     ...(args.source === undefined ? {} : { source: args.source }),
     ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
   }), deps.onRunArtifactCommitted, args);
-  const exporterCfg = deps.exporters[0];
-  if (exporterCfg === undefined) {
-    return jsonl;
-  }
-  const exporter = (deps.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
-  const context: RunExportContext = {
-    runId: args.runId,
-    conversationId: args.conversationId,
-    ...(deps.observabilityContext?.sourceId === undefined
-      ? {}
-      : { sourceId: deps.observabilityContext.sourceId }),
-    ...(deps.observabilityContext?.sourceLabel === undefined
-      ? {}
-      : { sourceLabel: deps.observabilityContext.sourceLabel }),
-    ...(deps.observabilityContext?.configPath === undefined
-      ? {}
-      : { configPath: deps.observabilityContext.configPath }),
-    artifactDir: deps.artifactDir,
-    includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
-    contentPatternRedaction: exporterCfg.contentPatternRedaction ?? false,
-    ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
-    ...(args.runKind === undefined ? {} : { runKind: args.runKind }),
-    ...(args.memoryOperation === undefined ? {} : { memoryOperation: args.memoryOperation }),
-  };
-  const composite = createCompositeRunRecorder({
-    recorder: jsonl,
-    exporter,
-    context,
-    timeoutMs: exporterCfg.timeoutMs ?? 5000,
-    ...(deps.exporterWarn === undefined ? {} : { onWarning: deps.exporterWarn }),
-  });
-  return composite;
+  return jsonl;
 }
 
 /**
- * Notify the app at the exact local-artifact boundary. This wrapper sits inside
- * the exporter composite, so slow exporter start/finish
- * work cannot leave artifact-derived caches stale after JSONL has committed.
+ * Notify the app at the exact local-artifact boundary so artifact-derived caches
+ * update after JSONL has committed.
  */
 function withArtifactCommitHook(
   recorder: RunRecorder,
@@ -389,7 +344,7 @@ function withArtifactCommitHook(
     try {
       // The cache invalidation used by the app is synchronous. Promise.resolve
       // also contains an async implementation without delaying
-      // the JSONL/export pipeline or leaking an unhandled rejection.
+      // the JSONL pipeline or leaking an unhandled rejection.
       void Promise.resolve(onCommitted({
         phase,
         runId: args.runId,
@@ -441,14 +396,11 @@ function withArtifactCommitHook(
 }
 
 /** Collect the recorder-composition deps from the host config + harness options. */
-function recorderCompositionDeps(
+async function recorderCompositionDeps(
   config: MonoAgentConfig,
-  options: Pick<
-    ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory"
-  >,
+  options: Pick<ConfiguredAgentHarnessOptions, "observabilityContext">,
   internalHooks: ConfiguredAgentInternalHooks = {},
-): RecorderCompositionDeps {
+): Promise<RecorderCompositionDeps> {
   const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
   const observabilityContext = options.observabilityContext === undefined && sourceLabel === undefined
     ? undefined
@@ -458,12 +410,7 @@ function recorderCompositionDeps(
       };
   return {
     artifactDir: config.artifacts.dir,
-    exporters: config.observability?.exporters ?? [],
-    ...(observabilityContext === undefined
-      ? {}
-      : { observabilityContext }),
-    ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
-    ...(options.exporterFactory === undefined ? {} : { exporterFactory: options.exporterFactory }),
+    ...(observabilityContext === undefined ? {} : { observabilityContext }),
     ...(internalHooks.onRunArtifactCommitted === undefined
       ? {}
       : { onRunArtifactCommitted: internalHooks.onRunArtifactCommitted }),
@@ -500,6 +447,7 @@ function createConfiguredAgentRuntimeBase(
   options: ConfiguredAgentRuntimeOptions | undefined,
   suppressSandboxEngine = false,
 ): MonoRuntimeLike {
+  assertNoRetiredMonoAgentConfig(config);
   const fallback = fallbackChainForConfig(config, options);
   const sandboxEngine = suppressSandboxEngine
     ? undefined
@@ -654,7 +602,7 @@ function selectMcpServers(
   for (const name of names) {
     if (!Object.hasOwn(available, name)) {
       throw new Error(
-        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath.`,
+        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath or tools.computerUse.`,
       );
     }
     selected[name] = available[name];
@@ -665,7 +613,7 @@ function selectMcpServers(
 /** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
 const SUBAGENT_HARD_DENY = [
   "Agent",
-  "AgentSend",
+  "AgentManage",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",
@@ -700,7 +648,10 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 
 interface SubagentRunRequest {
   readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
+  /** Host mailbox for parent steering of this detached turn; used only if this route supports live input. */
+  readonly liveInput?: LiveInputMailbox;
   readonly detached?: true;
+  readonly turnToken?: string;
   readonly deadlineAt?: number;
   readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
@@ -806,7 +757,7 @@ export function buildSubagentsOptions(
   // and a policy that only blocks one of them is not a policy.
   const skillsDeniedGlobally = isReadSkillDenied(config.tools.disallowedTools);
 
-  const run = async (request: SubagentRunRequest): Promise<RuntimeResult> => {
+  const run = async (request: SubagentRunRequest): Promise<RuntimeResult & { subagentContinuity?: { turnToken: string; state: "retained" | "unknown" | "lost" } }> => {
     // A profile model must go through `runtimeForModel`: the router overrides
     // `options.model` per chain entry, so handing a different model to the
     // shared router is silently ignored and the child would run on the chain
@@ -856,18 +807,33 @@ export function buildSubagentsOptions(
         }
         subagentQuestion = structuredClone(question);
       } } : undefined;
-    // Snapshot the command ceiling after child setup/queueing. The owning job
-    // signal remains authoritative as its remaining runtime decreases.
-    const commandTimeoutMs = request.detached === true && Number.isFinite(request.deadlineAt)
-      ? Math.max(1, Math.min(Math.floor(request.deadlineAt! - Date.now()), subagents.commandTimeoutMs ?? 1_800_000))
-      : undefined;
+    // Snapshot the command ceiling after child setup/queueing. Detached jobs
+    // retain their job deadline; foreground children reserve settlement time
+    // inside their own timer. Either abort signal can stop a command sooner.
+    const remainingMs = Number.isFinite(request.deadlineAt) ? Math.floor(request.deadlineAt! - Date.now()) : undefined;
+    const settlementMarginMs = remainingMs === undefined || request.detached === true
+      ? 0 : Math.min(15_000, Math.max(1, Math.floor(remainingMs / 10)));
+    const commandTimeoutMs = remainingMs === undefined ? undefined
+      : Math.max(1, Math.min(remainingMs - settlementMarginMs, subagents.commandTimeoutMs ?? 1_800_000));
     const childCapabilityOptions = {
-      toolExposure: { askParent: askParentExposed, persistentSubagents: false, monitors: false },
+      toolExposure: { askParent: askParentExposed, persistentSubagents: false, },
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
       ...(askParentController === undefined ? {} : { askParentController }),
     };
+    const recovery = request.instance && request.turnToken && runtime.recoverSession
+      ? { runId: request.turnToken, revision: 0 } : undefined;
+    // Mirrors the harness's main-conversation gate: an unsupported route must
+    // say so through the mailbox, so a parent steer reports unsupported instead
+    // of waiting on a loop that can never read it.
+    let steeringSupported = false;
+    if (request.liveInput !== undefined) {
+      try { steeringSupported = monoRuntimeSupportsLiveInput(); } catch { steeringSupported = false; }
+      if (!steeringSupported) request.liveInput.markUnsupported();
+    }
     const result = await runtime.run(`${childSystemPrompt}\n\n${HOST_TURN_CONTEXT_GUIDANCE}`, {
+      ...(request.liveInput !== undefined && steeringSupported ? { liveInput: request.liveInput } : {}),
       ...childCapabilityOptions,
+      ...(recovery ? { sessionRecovery: recovery } : {}),
       ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
       ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
@@ -880,6 +846,7 @@ export function buildSubagentsOptions(
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
       }),
       model: childModel,
+      ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
       messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],
       maxTurns: request.maxTurns,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
@@ -920,15 +887,27 @@ export function buildSubagentsOptions(
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
     } as unknown as RuntimeRunOptions);
+    // Only the selected runtime can certify its durable tail. A matching id alone
+    // is not recovery evidence; router fallback intentionally drops the receipt.
+    let retained = false;
+    const receipt = result.providerSessionRecovery;
+    if (recovery && receipt && receipt.runId === recovery.runId && receipt.revision === 0
+      && receipt.providerSessionId === request.instance!.sessionId
+      && result.providerSessionId === request.instance!.sessionId
+      && receipt.modelKey === modelReferenceKey(childModel) && typeof receipt.tipId === "string" && receipt.tipId.length > 0) {
+      try { retained = await runtime.recoverSession!(receipt, { appliedInputIds: [] }); } catch { /* Fail closed. */ }
+    }
+    const continuity = request.turnToken ? { subagentContinuity: { turnToken: request.turnToken,
+      state: result.failureKind === "session_continuity_lost" ? "lost" as const : retained ? "retained" as const : "unknown" as const } } : {};
     // Router retries/backups deliberately withhold session ids. Do not promise
     // retained child context for an answer that was produced outside this epoch.
     if (request.instance && !result.error && !result.failureKind && !result.cancelled
       && result.providerSessionId !== request.instance.sessionId) {
-      return { ...result, failureKind: "session_continuity_lost",
+      return { ...result, ...continuity, ...(request.turnToken ? { subagentContinuity: { turnToken: request.turnToken, state: "lost" as const } } : {}), failureKind: "session_continuity_lost",
         error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
     }
     return subagentQuestion && !result.error && !result.failureKind && !result.cancelled
-      ? { ...result, subagentQuestion } : result;
+      ? { ...result, ...continuity, subagentQuestion } : { ...result, ...continuity };
   };
 
   return {
@@ -1064,11 +1043,8 @@ function configuredRoutesOnlyPiNative(
 }
 
 /**
- * Memory backends load lazily: the SQLite/BuJo stack (better-sqlite3,
- * sqlite-vec) and the Supermemory REST client are imported only when
- * `config.memory` selects them, so a memory-less or supermemory-only agent
- * never pays for the other backend. This is what makes the configured
- * composition functions async.
+ * The SQLite/BuJo stack (better-sqlite3, sqlite-vec) loads lazily only when
+ * memory is configured. This keeps memory-less composition lightweight.
  */
 type MemoryBujoModule = typeof import("@mono-agent/memory/bujo");
 type MemorySearchModule = typeof import("@mono-agent/memory/search");
@@ -1093,6 +1069,8 @@ async function createConfiguredAgentHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentHarness> {
   const config = options.config;
+  assertNoRetiredMonoAgentConfig(config);
+  const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;
   let ownershipTransferred = false;
@@ -1181,7 +1159,12 @@ async function createConfiguredAgentHarnessInternal(
   // fallback-free runtime when no `memoryRuntime` is injected.
   const configuredMemory = options.memory ?? (await createConfiguredMemoryInternal(
     config,
-    { cwd: agentRoot },
+    {
+      cwd: agentRoot,
+      ...(options.preferAppPluginInstall === undefined
+        ? {}
+        : { preferAppPluginInstall: options.preferAppPluginInstall }),
+    },
     processJobsProtectionPosture,
   ));
   const memory = configuredMemoryForHarness(config, configuredMemory);
@@ -1252,6 +1235,10 @@ async function createConfiguredAgentHarnessInternal(
             || processJobsRegistry.roots.some((root) => root.canonicalPath !== service.settings.stateDir)) return "unavailable";
           return await service.checkSubagentOwnerIndex(conversationId, known);
         },
+        salvageSession: async (id, root) => {
+          if (!runtime.salvageDurableSession) throw new Error("Runtime cannot salvage durable sessions.");
+          return runtime.salvageDurableSession(id, root);
+        },
         retireSession: async (id, root) => {
           if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
           await runtime.retireDurableSession(id, root);
@@ -1260,13 +1247,34 @@ async function createConfiguredAgentHarnessInternal(
     : undefined;
   if (instanceRegistry && internalHooks.processJobs?.service?.bindManagedSubagents) {
     internalHooks.processJobs.service.bindManagedSubagents({ root: subagentInstancesRoot(config),
+      salvage: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).salvageReleased(identity),
       verify: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => await (await instanceRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
     });
   }
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
+  const peerAgent = createPeerAgentRuntimeExtension({
+    config, service: internalHooks.processJobs?.service,
+    channelId: internalHooks.processJobs?.channelId,
+    conversationScheme: internalHooks.processJobs?.conversationScheme,
+  });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
+    ({ request }) => {
+      const admitted = () => {
+        const wake = processJobWakeContextForRequest(request);
+        return !isSilentTurnAlreadyVisible(request)
+          && ((wake.kind === "resolved" && wake.context.pendingQuestion !== true)
+            || isNativeNotifyRequest(request));
+      };
+      return admitted() && (request.attachments?.length ?? 0) === 0
+        ? { runtimeOptions: { finishSilentlyController: {
+            eligible: () => !request.abortSignal.aborted && admitted()
+              && (request.attachments?.length ?? 0) === 0,
+          } } }
+        : {};
+    },
+    peerAgent,
     memoryRecall,
     memoryJournal,
     memoryRemember,
@@ -1296,20 +1304,9 @@ async function createConfiguredAgentHarnessInternal(
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
-  const monitoredRuntimeOptionsForRequest = createMonitorsRuntimeExtension({
-    next: processJobsRuntimeOptionsForRequest,
-    service: internalHooks.monitors?.service,
-    coreConfig: config,
-    channelId: internalHooks.monitors?.channelId ?? internalHooks.processJobs?.channelId,
-    conversationScheme: internalHooks.monitors?.conversationScheme
-      ?? internalHooks.processJobs?.conversationScheme,
-    routesOnlyPiNative: internalHooks.monitors?.routesOnlyPiNative
-      ?? internalHooks.processJobs?.routesOnlyPiNative
-      ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
-  });
   const toolOutputArtifactRoot = resolvePath(config.artifacts.dir, "tool-output");
   const runtimeOptionsForRequest = createToolOutputArtifactsRuntimeExtension(
-    monitoredRuntimeOptionsForRequest,
+    processJobsRuntimeOptionsForRequest,
     toolOutputArtifactRoot,
   );
   const subagents = buildSubagentsOptions(config, {
@@ -1430,8 +1427,17 @@ async function createConfiguredAgentHarnessInternal(
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),
+    ...(options.runtimeOptionsForManualCompaction === undefined
+      ? {}
+      : { runtimeOptionsForManualCompaction: options.runtimeOptionsForManualCompaction }),
     // Same predicate the process-jobs extension uses, so the session block only
     // describes backgrounding on turns whose Exec/Bash actually offer it.
+    verifiedPeerCallerFor: async ({ request }) => {
+      if (request.metadata?.source !== "acp" || request.metadata.peerHandoff === undefined) return undefined;
+      const verified = await verifyPeerOperatorHandoff(config.artifacts.dir, request.metadata.peerHandoff,
+        request.conversationId, request.userMessage, config.traceability.sourceId);
+      return verified?.caller;
+    },
     backgroundSubagentsAvailable: (input) => backgroundSubagentsAvailableForRequest(input, {
       service: internalHooks.processJobs?.service,
       coreConfig: config,
@@ -1446,17 +1452,6 @@ async function createConfiguredAgentHarnessInternal(
       channelId: internalHooks.processJobs?.channelId,
       conversationScheme: internalHooks.processJobs?.conversationScheme,
       routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
-        ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
-    }),
-    // Same predicate the monitors extension uses, for the same reason.
-    monitorsAvailable: (input) => monitorsAvailableForRequest(input, {
-      service: internalHooks.monitors?.service,
-      coreConfig: config,
-      channelId: internalHooks.monitors?.channelId ?? internalHooks.processJobs?.channelId,
-      conversationScheme: internalHooks.monitors?.conversationScheme
-        ?? internalHooks.processJobs?.conversationScheme,
-      routesOnlyPiNative: internalHooks.monitors?.routesOnlyPiNative
-        ?? internalHooks.processJobs?.routesOnlyPiNative
         ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
     }),
     ...(config.tools.mcpRequestContextServers === undefined
@@ -1481,6 +1476,11 @@ async function createConfiguredAgentHarnessInternal(
     ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
+    ...(config.memory?.capture?.cron === undefined ? {} : { memoryCaptureCron: config.memory.capture.cron }),
+    ...(config.memory?.capture?.webhook === undefined ? {} : { memoryCaptureWebhook: config.memory.capture.webhook }),
+    memoryRememberEnabled: memoryRemember !== undefined,
+    memoryRememberDetails: memoryRemember !== undefined && memory instanceof MemoryRetrievalService
+      && memory.supportsRememberDetails(),
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore,
     toolHistory,
@@ -1488,10 +1488,10 @@ async function createConfiguredAgentHarnessInternal(
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
     attachmentsDir: artifactDerivedRoots.attachments,
-    toolPolicy: createToolPolicy(toolPolicyInput(config)),
+    toolPolicy: createToolPolicy(toolPolicyInput(config, options.onComputerUseWarning ?? console.warn)),
     ...(harnessSandboxPolicy === undefined ? {} : { sandboxPolicy: harnessSandboxPolicy }),
     recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail, isolated }) =>
-      composeRunRecorder(recorderCompositionDeps(config, options, internalHooks), {
+      composeRunRecorder(recording, {
         runId,
         conversationId,
         runKind: "channel",
@@ -1516,6 +1516,22 @@ async function createConfiguredAgentHarnessInternal(
   }
 }
 
+// Deliberately inventory the explicit forwarding boundary. Adding even an
+// optional harness capability must force a review of this wrapper.
+const ownedHarnessKeys = {
+  compactConversation: true,
+  liveInputOwnership: true,
+  run: true,
+  offerLiveInput: true,
+  submit: true,
+  cancel: true,
+  resetConversation: true,
+  appendVerbatimTurn: true,
+  importContext: true,
+  dispose: true,
+} satisfies Record<keyof AgentHarness, true>;
+void ownedHarnessKeys;
+
 function harnessWithAgentRootOwnership(
   harness: AgentHarness,
   ownership: AgentRootOwnership,
@@ -1523,6 +1539,9 @@ function harnessWithAgentRootOwnership(
   let disposePromise: Promise<void> | undefined;
   return {
     ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
+    ...(harness.compactConversation === undefined
+      ? {}
+      : { compactConversation: harness.compactConversation.bind(harness) }),
     run: harness.run.bind(harness),
     ...(harness.submit === undefined ? {} : { submit: harness.submit.bind(harness) }),
     ...(harness.offerLiveInput === undefined
@@ -1883,7 +1902,7 @@ function configuredMemoryForHarness(
   }
   return new MemoryRetrievalService(memory, {
     maxBytes: config.memory.maxBytes,
-    source: (config.memory.backend ?? "bujo") === "supermemory" ? "supermemory" : "memory-bujo",
+    source: "memory-bujo",
   });
 }
 
@@ -1947,7 +1966,7 @@ interface ConfiguredMemoryDependencies {
   /** Optional app-owned recording context for memory LLM calls. */
   readonly observability?: Pick<
     ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory"
+    "observabilityContext"
   >;
 }
 
@@ -1972,35 +1991,15 @@ async function createConfiguredMemoryInternal(
   deps: ConfiguredMemoryDependencies,
   protectionPosture?: ProcessJobsProtectionPosture,
 ): Promise<MemoryStore | undefined> {
+  assertNoRetiredMonoAgentConfig(config);
   if (config.memory === undefined) {
     return undefined;
   }
-  const backend = config.memory.backend ?? "bujo";
-  if (backend === "supermemory") {
-    const sm = config.memory.supermemory;
-    if (sm === undefined) {
-      // Defensive: the loader already rejects this combination.
-      throw new Error("memory.backend 'supermemory' requires a memory.supermemory block.");
-    }
-    const { createSupermemoryStore } = await loadSupermemoryPlugin({
-      ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
-      ...(deps.preferAppPluginInstall === undefined
-        ? {}
-        : { preferAppInstall: deps.preferAppPluginInstall }),
-    });
-    // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
-    // capture both go over the REST client; Supermemory extracts/consolidates server-side.
-    return createSupermemoryStore({
-      baseUrl: sm.baseUrl,
-      container: resolveSupermemoryContainer(config),
-      ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-      ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-      ...(config.memory.maxBytes === undefined ? {} : { maxBytes: config.memory.maxBytes }),
-      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
-    });
-  }
   const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
   const bujo = await loadMemoryBujoModule();
+  if (config.memory.capture !== undefined && (mode !== "bujo" || config.memory.writeMode !== "capture")) {
+    throw new Error("memory.capture requires BuJo mode and capture writeMode.");
+  }
 
   if (mode === "lite") {
     if (embeddingsConfig !== undefined || llmConfig !== undefined || config.memory.consolidation !== undefined) {
@@ -2021,7 +2020,13 @@ async function createConfiguredMemoryInternal(
   // a sustained outage stops blocking recall entirely. The harness degrades
   // recall to empty (with a memory_degraded warning) when this errors.
   const search = await loadMemorySearchModule();
-  if (embeddingsConfig?.apiKeyEnv !== undefined && embeddingsConfig.apiKey === undefined) {
+  // The loader carries only the credential name; the value is resolved here at
+  // use. A declared name stays authoritative (an inline literal never stands in
+  // for it), matching the loader's former behavior.
+  const embeddingsApiKey = embeddingsConfig?.apiKeyEnv !== undefined
+    ? normalizeOptionalString(process.env[embeddingsConfig.apiKeyEnv])
+    : embeddingsConfig?.apiKey;
+  if (embeddingsConfig?.apiKeyEnv !== undefined && embeddingsApiKey === undefined) {
     throw new Error(
       `memory.embeddings.apiKeyEnv ${embeddingsConfig.apiKeyEnv} is declared but has no resolved value; ` +
       `set ${embeddingsConfig.apiKeyEnv} before starting managed memory.`,
@@ -2033,8 +2038,9 @@ async function createConfiguredMemoryInternal(
         provider: embeddingsConfig?.provider ?? "ollama",
         model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
         ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
-        ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
+        ...(embeddingsApiKey !== undefined && { apiKey: embeddingsApiKey }),
         timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
+        ...(embeddingsConfig?.instructions === undefined ? {} : { instructions: embeddingsConfig.instructions }),
       }),
       {
         ...(embeddingsConfig?.circuitBreaker?.failureThreshold !== undefined && {
@@ -2077,7 +2083,13 @@ async function createConfiguredMemoryInternal(
   const recording =
     deps.observability === undefined
       ? undefined
-      : recorderCompositionDeps(config, deps.observability);
+      : await recorderCompositionDeps(config, {
+          ...deps.observability,
+          ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
+          ...(deps.preferAppPluginInstall === undefined
+            ? {}
+            : { preferAppPluginInstall: deps.preferAppPluginInstall }),
+        });
   const llm = configuredMemoryLlm(
     bujo,
     config,
@@ -2090,13 +2102,32 @@ async function createConfiguredMemoryInternal(
   if (llm === undefined) {
     throw new Error("memory.mode 'bujo' could not construct the required memory.llm.");
   }
+  const reconcileModel = config.memory.capture?.reconcileModel;
+  const classifier = reconcileModel === undefined ? undefined : configuredMemoryLlm(
+    bujo, config,
+    { provider: "agent-host", model: reconcileModel,
+      ...(llmConfig.provider === "agent-host" && llmConfig.trace !== undefined ? { trace: llmConfig.trace } : {}),
+      ...(llmConfig.provider === "agent-host" && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}),
+    },
+    deps.memoryRuntime, recording, deps.cwd ?? process.cwd(), protectionPosture,
+  );
+  if (reconcileModel !== undefined && classifier === undefined) throw new Error("memory.capture.reconcileModel could not construct a classifier LLM.");
+  const captureLlm = classifier === undefined ? llm : {
+    id: llm.id,
+    complete(prompt: string, options?: Parameters<typeof llm.complete>[1]) {
+      return (options?.label === "capture:reconcile-batch" || options?.label === "capture:reconcile"
+        ? classifier : llm).complete(prompt, options);
+    },
+  };
+  const { focus, only } = config.memory.capture ?? {};
   return bujo.createBujoMemoryStore({
     root,
     tier: "bujo",
     embeddings,
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
-    llm,
+    llm: captureLlm,
+    ...(config.memory.capture === undefined ? {} : { capture: { ...(focus === undefined ? {} : { focus }), ...(only === undefined ? {} : { only }) } }),
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
 }
@@ -2115,6 +2146,53 @@ function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof
       ? {}
       : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
   };
+}
+
+/** An operator-only, fallback-free memory LLM; does not start or write an agent store. */
+export async function createConfiguredCurationLlm(
+  config: MonoAgentConfig,
+  modelOverride: string | undefined,
+  memoryRuntime?: MonoRuntimeLike,
+): Promise<LlmComplete> {
+  const bujo = await import("@mono-agent/memory/bujo");
+  const configured = config.memory?.llm;
+  if (configured === undefined && modelOverride === undefined) throw new Error("memory-curate: memory.llm is not configured");
+  const llmConfig = modelOverride === undefined ? configured! : {
+    provider: modelOverride.startsWith("ollama:") ? "ollama" as const : "agent-host" as const,
+    model: modelOverride.startsWith("ollama:") ? modelOverride.slice(7) : modelOverride,
+    ...(modelOverride.startsWith("ollama:") && configured?.provider === "ollama" && configured.endpoint !== undefined
+      ? { endpoint: configured.endpoint } : {}),
+  };
+  // Do not route operator-only completion through configuredMemoryLlm: that
+  // path deliberately takes a root lease for in-process memory maintenance.
+  // Curation has no tools, MCP or process jobs; it reads only the prompt passed
+  // by the CLI. Protected-root tool sandboxing is unnecessary for a tool-less
+  // completion, so it must not acquire a live agent's exclusive root lease.
+  // Keeping the runtime private also lets us dispose its sessions
+  // after each completion so the CLI does not retain provider handles.
+  if (llmConfig.provider === "ollama") {
+    return bujo.createOllamaLlm({ model: llmConfig.model,
+      ...(llmConfig.endpoint === undefined ? {} : { endpoint: llmConfig.endpoint }) });
+  }
+  const model = parseMonoRuntimeModelReference(llmConfig.model);
+  const runtime = memoryRuntime ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
+  const llm = createAgentHostMemoryLlm({ runtime, model, cwd: config.runtime.workspace,
+    runtimeOptions: mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(model, config.providers?.local), configRuntimeFlags(config)),
+    ...("timeoutMs" in llmConfig && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}) });
+  return { ...llm, async complete(prompt, options) {
+    try { return await llm.complete(prompt, options); }
+    catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code === "provider_auth" || error instanceof Error && isProviderAuthFailureText(error.message)) {
+        throw Object.assign(new Error("memory-curate: provider authentication failed", { cause: error }),
+          { code: "provider_auth" });
+      }
+      throw error;
+    }
+    // Session cleanup is best-effort: a close failure cannot replace the model
+    // result or conceal the operator's real authentication/transport failure.
+    finally { await runtime.disposeAllSessions?.().catch(() => undefined); }
+  } };
 }
 
 function configuredMemoryLlm(
@@ -2329,7 +2407,7 @@ function createAgentHostMemoryLlm(options: {
   readonly timeoutMs?: number;
   /**
    * When set, each `complete()` is recorded as one run through the shared
-   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:extract")
+   * local JSONL pipeline. The per-call `label` (e.g. "capture:extract")
    * selects the run's conversation id and id slug. Omitted → bare, unrecorded run.
    */
   readonly recording?: {
@@ -2340,7 +2418,7 @@ function createAgentHostMemoryLlm(options: {
   const timeoutMs = options.timeoutMs ?? 60_000;
   return {
     id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string, opts?: { readonly label?: string; readonly abortSignal?: AbortSignal }): Promise<string> {
+    async complete(prompt: string, opts?: LlmCompleteOptions): Promise<string> {
       const ctrl = new AbortController();
       const abort = (): void => ctrl.abort(opts?.abortSignal?.reason);
       if (opts?.abortSignal?.aborted === true) abort();
@@ -2379,10 +2457,14 @@ function createAgentHostMemoryLlm(options: {
             messages: [{ role: "user", content: prompt }],
             abortSignal: ctrl.signal,
             cwd: options.cwd,
-            maxTurns: 1,
+            // StructuredOutput is a tool call that requires a follow-up finalization
+            // turn in Pi-native. One turn rejects a successful tool submission as
+            // "max turns reached" before its structured result can be returned.
+            maxTurns: opts?.outputSchema === undefined ? 1 : 3,
             allowedTools: [],
             disallowedTools: [],
             mcpServers: {},
+            ...(opts?.outputSchema === undefined ? {} : { outputSchema: opts.outputSchema }),
             ...(recorder === undefined ? {} : { onEvent: (event) => { recorder.onEvent(event); } }),
           } satisfies RuntimeRunOptions);
         } catch (error) {
@@ -2397,7 +2479,12 @@ function createAgentHostMemoryLlm(options: {
         // Record with the real outcome BEFORE textFromMemoryRuntimeResult, which throws
         // on failureKind/error; recorder.finish() classifies failed/succeeded/cancelled itself.
         await safeRecorderCall(() => recorder?.finish(result));
-        return textFromMemoryRuntimeResult(result, { timedOut, timeoutMs });
+        return textFromMemoryRuntimeResult(result, {
+          timedOut,
+          timeoutMs,
+          structuredOutputRequested: opts?.outputSchema !== undefined,
+          ...(opts?.structuredResultKey === undefined ? {} : { structuredResultKey: opts.structuredResultKey }),
+        });
       } finally {
         clearTimeout(timer);
         opts?.abortSignal?.removeEventListener("abort", abort);
@@ -2452,25 +2539,6 @@ function memoryOperationFromLabel(label: string | undefined): string | undefined
   return op.length > 0 ? op : undefined;
 }
 
-function textFromMemoryRuntimeResult(
-  result: RuntimeResult,
-  opts?: { readonly timedOut?: boolean; readonly timeoutMs?: number },
-): string {
-  if (result.cancelled === true) {
-    if (opts?.timedOut === true) {
-      throw new Error(`agent-host memory LLM timed out after ${opts.timeoutMs ?? "?"}ms (provider too slow or unavailable).`);
-    }
-    throw new Error("agent-host memory LLM run was cancelled.");
-  }
-  if (typeof result.failureKind === "string" && result.failureKind.length > 0) {
-    throw new Error(`agent-host memory LLM failed (${result.failureKind}): ${result.error ?? "unknown error"}`);
-  }
-  if (typeof result.error === "string" && result.error.length > 0) {
-    throw new Error(`agent-host memory LLM failed: ${result.error}`);
-  }
-  return typeof result.text === "string" ? result.text : "";
-}
-
 function referenceOf(model: RuntimeModelReference): string {
   return modelReferenceKey(model);
 }
@@ -2522,69 +2590,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
-  if (config.tools.mcpConfigPath === undefined) {
-    return {
-      allowedTools: config.tools.allowedTools,
-      disallowedTools: config.tools.disallowedTools,
-    };
-  }
-  // SDK runtimes only consume inline mcpServers, so the referenced mcp.json is
-  // resolved here; the path is still forwarded for CLI runtimes that take it.
-  const filePolicy = loadToolPolicyFromJsonFileSync(config.tools.mcpConfigPath);
-  return {
-    allowedTools: config.tools.allowedTools,
-    disallowedTools: config.tools.disallowedTools,
-    mcpConfigPath: config.tools.mcpConfigPath,
-    ...(filePolicy.mcpServers === undefined ? {} : { mcpServers: filePolicy.mcpServers }),
-  };
-}
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  const { permissionMode, compaction } = config.runtime;
+  const { compaction } = config.runtime;
   // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
   // runtime (pi-native) derives reasoning from `effort` and does not consume an
   // explicit summary level, and the codex/claude CLIs emit summaries
   // unconditionally — so the former `piReasoningSummary` runtime option was dead
   // plumbing and the `runtime.reasoningSummary` config field was removed.
   const piNative = config.providers?.piNative;
-  // MCP call timeouts ride the runtime's `settings` bag (the same channel the
-  // agent loop reads via resolveAgentCompactionPolicy) — only when configured, so
-  // the runtime defaults (120s inactivity / 45 min total) stay authoritative.
+  // Typed MCP limits override runtime defaults only when explicitly configured.
   const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
   const webSearchConfig = config.tools.web?.search;
   const webFetchConfig = config.tools.web?.fetch;
-  const settings = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
+  const toolLimits = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
     ? undefined
     : {
-        ...(mcpCallTimeoutMs === undefined ? {} : { agent_mcp_call_timeout_ms: mcpCallTimeoutMs }),
+        ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
         ...(mcpCallMaxTotalTimeoutMs === undefined
           ? {}
-          : { agent_mcp_call_max_total_timeout_ms: mcpCallMaxTotalTimeoutMs }),
+          : { mcpCallMaxTotalTimeoutMs }),
       };
   if (
-    permissionMode === undefined
-    && piNative?.transport === undefined
+    piNative?.transport === undefined
     && piNative?.cacheRetention === undefined
     && piNative?.promptCacheDiagnostics === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
     && compaction === undefined
-    && settings === undefined
+    && config.runtime.context1MModels === undefined
+    && toolLimits === undefined
     && webSearchConfig === undefined
     && webFetchConfig === undefined
   ) {
     return undefined;
   }
   return {
-    ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
     ...(piNative?.cacheRetention === undefined ? {} : { cacheRetention: piNative.cacheRetention }),
     ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),
-    ...(settings === undefined ? {} : { settings }),
+    ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
+    ...(toolLimits === undefined ? {} : { toolLimits }),
     ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
     ...(webFetchConfig === undefined ? {} : { webFetchConfig }),
     ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),

@@ -14,7 +14,6 @@ import {
 } from "../../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
-import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { createPiHarnessAdapter } from "./harness-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -69,7 +68,7 @@ export async function buildTurnTools(runState, {
   // router projects configureTools before each attempt, never mid-run.
   const runCtx = options.sandbox || persistArtifact
     ? {
-      ...(options.toolContext ?? readToolRuntime()),
+      ...options.toolContext,
       ...(options.sandbox ? { sandbox: options.sandbox } : {}),
       ...(persistArtifact ? { persistArtifact } : {}),
     }
@@ -135,10 +134,11 @@ export async function buildTurnTools(runState, {
       processJobsController: options.processJobs,
       ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
       processJobsAvailability: options.processJobsAvailability,
-      monitorsController: options.monitors,
       toolExecutionMode,
       subagents: options.subagents,
       askParentController: options.askParentController,
+      finishSilentlyController: options.finishSilentlyController,
+      silentTurnState: runState.silentTurn,
       toolExposure: options.toolExposure,
       // The child inherits the parent's route and workspace unless its profile
       // pins a model; the tool closure reads these to build each child request.
@@ -189,6 +189,7 @@ export async function buildTurnTools(runState, {
       sandboxEngine,
       ctx: runCtx,
       mcpApps: options.mcpApps,
+      onRichOutput: () => { runState.silentTurn.visibleContent = true; },
       runId: runCtx?.runId,
     }));
   // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
@@ -280,6 +281,7 @@ export async function buildTurnHarness(runState, {
   systemPrompt,
   outputSchema,
   tools,
+  toolExecutionMode,
   transport,
   maxRetries,
   maxRetryDelayMs,
@@ -293,6 +295,8 @@ export async function buildTurnHarness(runState, {
     thinkingLevel,
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
+    toolExecutionMode,
+    silentTurnState: runState.silentTurn,
     streamOptions: { transport, maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },

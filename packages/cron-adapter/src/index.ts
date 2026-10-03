@@ -1,5 +1,10 @@
 export {
   CronAdapterError,
+  DEFAULT_CRON_PREFLIGHT_TIMEOUT_MS,
+  MAX_CRON_PREFLIGHT_INPUT_BYTES,
+  MAX_CRON_PREFLIGHT_REASON_BYTES,
+  MAX_CRON_PREFLIGHT_TIMEOUT_MS,
+  boundCronPreflightText,
   startCronAdapter,
 } from "./scheduler.js";
 export type {
@@ -14,6 +19,10 @@ export type {
   CronJobResult,
   CronOverflowPolicy,
   CronOverlapMode,
+  CronPreflightErrorCode,
+  CronPreflightOutcome,
+  CronPreflightRecord,
+  CronPreflightRecordOutcome,
   CronRequestMetadata,
   CronRunTrigger,
 } from "./scheduler.js";

@@ -36,6 +36,8 @@ import {
 } from "@mono-agent/web";
 
 import { agentAppPackageVersion } from "./package-version.js";
+import { bridgeStartupExitCode } from "./peer-acp-startup.js";
+import { consumePeerGeneration, PeerSessionExhaustedError, prunePeerGenerationLedger, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
 import {
   createAcpSessionAuthorization,
   loadAcpSessionAuthorization,
@@ -70,6 +72,8 @@ export interface RunAcpBridgeOptions {
   readonly sourceId: string;
   readonly requireToolEnvironment?: boolean;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Test-only cap seam; CLI always uses the 1024-generation production limit. */
+  readonly peerGenerationLimit?: number;
   /** Test seams; the CLI uses the process stdio streams. */
   readonly input?: Readable;
   readonly output?: Writable;
@@ -114,7 +118,9 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
     await resolveTarget(AbortSignal.timeout(5_000));
   } catch (error) {
     stderr.write(`mono-agent ACP bridge: ${errorMessage(error)}\n`);
-    return 1;
+    const code = error instanceof RequestError
+      ? (error.data as { code?: unknown } | undefined)?.code : codedErrorCode(error);
+    return bridgeStartupExitCode(code);
   }
 
   const activeTurns = new Map<string, ActiveTurn>();
@@ -177,6 +183,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   app.onRequest(methods.agent.session.prompt, async (context) => {
     return await runPrompt(context, {
       sourceId: options.sourceId,
+      peerGenerationLimit: options.peerGenerationLimit,
       env,
       resolveTarget,
       activeTurns,
@@ -206,6 +213,7 @@ async function runPrompt(
   context: AgentRequestContext<PromptRequest>,
   options: {
     readonly sourceId: string;
+    readonly peerGenerationLimit?: number | undefined;
     readonly env: Readonly<Record<string, string | undefined>>;
     readonly resolveTarget: (signal?: AbortSignal) => Promise<BridgeTarget>;
     readonly activeTurns: Map<string, ActiveTurn>;
@@ -227,6 +235,25 @@ async function runPrompt(
   }
   const target = await requestTarget(options.resolveTarget, context.signal);
   await requireSessionAuthorization(target, params.sessionId, options.sourceId);
+  const offeredPeer = params._meta?.["mono-agent.peer"];
+  const verifiedPeer = offeredPeer === undefined ? undefined
+    : await verifyPeerHandoff(target.artifactDir, offeredPeer, params.sessionId, text, options.sourceId);
+  if (offeredPeer !== undefined && verifiedPeer === undefined) {
+    throw bridgeError("invalid_peer_handoff", "Peer provenance handoff is invalid or not bound to this prompt.");
+  }
+  let operatorPeer: Awaited<ReturnType<typeof stampPeerOperatorHandoff>> | undefined;
+  if (verifiedPeer !== undefined) {
+    try {
+      if (!await consumePeerGeneration(target.artifactDir, verifiedPeer, options.peerGenerationLimit)) {
+        throw bridgeError("peer_handoff_replayed", "This peer turn generation was already consumed.");
+      }
+      operatorPeer = await stampPeerOperatorHandoff(target.artifactDir, verifiedPeer);
+    } catch (error) {
+      if (error instanceof RequestError) throw error;
+      if (error instanceof PeerSessionExhaustedError) throw bridgeError("peer_session_exhausted", "Peer ACP session reached its generation limit; the next explicit send must start a new session.");
+      throw bridgeError("peer_handoff_persistence_failed", "Peer turn generation could not be persisted before dispatch.");
+    }
+  }
   const controller = new AbortController();
   const signal = controller.signal;
   const active: ActiveTurn = { controller, client: target.client };
@@ -234,6 +261,7 @@ async function runPrompt(
   let publishedText = "";
   let interactionStopReason: "refusal" | "cancelled" | undefined;
   const toolNames = new Map<string, string>();
+  const liveContext: { window?: number | undefined } = {};
   const messageId = `mono-agent:${String(context.requestId)}`;
   const cancelOperator = (): void => {
     if (isAcpRequestCancellation(context.signal.reason)) {
@@ -278,7 +306,7 @@ async function runPrompt(
       conversationId: params.sessionId,
       text,
       attachments: [],
-      metadata: {},
+      metadata: operatorPeer === undefined ? {} : { peerHandoff: operatorPeer },
       client: "acp",
       ...(target.info.supportsToolEnvironment === true
         ? { toolEnvironment: requestToolEnvironment(options.env) }
@@ -301,7 +329,7 @@ async function runPrompt(
           return;
         }
         if (frame.kind === "event") {
-          await publishEvent(context, params.sessionId, frame.event, target.info, toolNames);
+          await publishEvent(context, params.sessionId, frame.event, target.info, toolNames, liveContext);
           if (
             frame.event.type === "tool_call_started"
             && frame.event.name.toLowerCase() === "askuser"
@@ -587,7 +615,12 @@ async function publishEvent(
   event: AgentStreamEvent,
   info: OperatorInfo,
   toolNames: Map<string, string>,
+  liveContext: { window?: number | undefined },
 ): Promise<void> {
+  if (event.type === "runtime_telemetry" && event.kind === "context_usage") {
+    liveContext.window = event.data?.context1M === true && typeof event.data.contextWindow === "number" && event.data.contextWindow > 0
+      ? event.data.contextWindow : undefined;
+  }
   if (event.type === "assistant_thought") {
     await notifyUpdate(context, sessionId, {
       sessionUpdate: "agent_thought_chunk",
@@ -646,7 +679,7 @@ async function publishEvent(
   await notifyUpdate(context, sessionId, {
     sessionUpdate: "usage_update",
     used: totalTokens,
-    size: Math.max(totalTokens, contextWindow ?? 1),
+    size: Math.max(totalTokens, liveContext.window ?? contextWindow ?? 1),
     ...(event.cumulativeUsd === undefined
       ? {}
       : { cost: { amount: event.cumulativeUsd, currency: "USD" } }),
@@ -804,6 +837,8 @@ async function requireSessionAuthorization(
     );
   }
   if (record === undefined) {
+    // Reset authorization invalidates every old peer proof for this session.
+    await prunePeerGenerationLedger(target.artifactDir, sessionId).catch(() => undefined);
     throw RequestError.invalidParams(
       { code: "unknown_session_id" },
       "The ACP session is not authorized for this mono-agent source.",
@@ -847,14 +882,6 @@ function toolKind(name: string): ToolKind {
   if (normalized.includes("fetch") || normalized.includes("browser")) return "fetch";
   if (normalized === "agent" || normalized === "askuser") return "think";
   return "other";
-}
-
-function toolNameFromEvent(event: AgentStreamEvent, toolNames: Map<string, string>): string | undefined {
-  if (event.type !== "tool_call_started" && event.type !== "tool_call_progress" && event.type !== "tool_call_completed") {
-    return undefined;
-  }
-  if (event.name !== undefined) toolNames.set(event.id, event.name);
-  return event.name ?? toolNames.get(event.id);
 }
 
 function boundedToolContent(value: unknown): string {

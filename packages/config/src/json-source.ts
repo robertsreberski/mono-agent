@@ -6,13 +6,22 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
 import type { PiTransport } from "@mono-agent/runtime-adapter";
 
-import { MonoAgentConfigError, RETIRED_CONFIG_FIELDS } from "./config.js";
-import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
+import { assertNoRetiredMonoAgentConfig, MonoAgentConfigError } from "./config.js";
+import type { MemoryBackend, MemoryEmbeddingsInstructions, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
+
+/** An opt-in model declaration; effort remains a sibling runtime setting. */
+export type MonoAgentModelSelectionJson = string | { readonly model: string; readonly context1M?: boolean };
+
+/** Read a model reference without flattening the caller-owned JSON object. */
+export function modelReferenceFromConfigJson(value: MonoAgentModelSelectionJson | undefined): string | undefined {
+  return typeof value === "string" ? value : value?.model;
+}
 
 /** JSON form of one canonical runtime fallback route. */
 export type MonoAgentRuntimeFallbackJson = {
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: boolean;
   /** Total attempts on this route including the first, 1-10. Omitted = single shot. */
   readonly attempts?: number;
 };
@@ -39,18 +48,12 @@ export type MonoAgentMemoryEmbeddingsJson = {
   readonly apiKeyEnv?: string;
   readonly dim?: number;
   readonly timeoutMs?: number;
+  readonly instructions?: MemoryEmbeddingsInstructions;
   readonly circuitBreaker?: MonoAgentMemoryEmbeddingsCircuitBreakerJson;
 };
 
-/** JSON-serialisable shape for the Supermemory external-backend block. */
-export type MonoAgentMemorySupermemoryJson = {
-  readonly baseUrl?: string;
-  readonly apiKey?: string;
-  readonly apiKeyEnv?: string;
-  readonly container?: string;
-  readonly timeoutMs?: number;
-  readonly exposeMcpServer?: boolean;
-};
+/** @deprecated Compatibility tombstone. Only an exact empty object is accepted. */
+export type MonoAgentMemorySupermemoryJson = Readonly<Record<string, never>>;
 
 /** JSON-serialisable shape for memory consolidation config. */
 export type MonoAgentMemoryConsolidationJson = {
@@ -85,7 +88,7 @@ export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
 type MonoAgentPiNativeProviderJson = {
   readonly transport?: PiTransport;
   readonly promptCacheDiagnostics?: boolean;
-  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  /** Anthropic Messages cache retention. Config loading defaults to long; short opts out. */
   readonly cacheRetention?: "short" | "long";
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
@@ -111,16 +114,6 @@ export type MonoAgentMemoryLlmJson = {
   readonly timeoutMs?: number;
 };
 
-/** JSON-serialisable shape for a single observability exporter block. */
-export type MonoAgentObservabilityExporterJson = {
-  readonly type?: string;
-  readonly endpoint?: string;
-  readonly headers?: { readonly [k: string]: string };
-  readonly includeSensitiveData?: boolean;
-  readonly contentPatternRedaction?: boolean;
-  readonly timeoutMs?: number;
-};
-
 /**
  * Serializable shape of MonoAgentConfig persisted as `mono-agent.config.json`.
  *
@@ -135,7 +128,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly name?: string;
   };
   readonly runtime?: {
-    readonly model?: string;
+    readonly model?: MonoAgentModelSelectionJson;
     readonly fallbacks?: readonly MonoAgentRuntimeFallbackJson[];
     readonly retry?: {
       readonly primaryAttempts?: number;
@@ -143,7 +136,6 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly maxBackoffMs?: number;
     };
     readonly effort?: string;
-    readonly permissionMode?: string;
     readonly maxTurns?: number;
     readonly compaction?: {
       readonly enabled?: boolean;
@@ -164,6 +156,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly isolateProactive?: boolean;
     };
   };
+  readonly peers?: Readonly<Record<string, { readonly sourceId: string }>>;
   readonly subagents?: {
   readonly instances?: {
     /** Default true when subagents are enabled. */
@@ -178,7 +171,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly maxTurns?: number;
   };
 
-    readonly models?: readonly (string | { readonly name?: string; readonly model: string })[];
+    readonly models?: readonly (string | { readonly name?: string; readonly model: string; readonly context1M?: boolean })[];
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;
     readonly maxPerTurn?: number;
@@ -200,7 +193,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly description?: string;
       readonly prompt?: string;
       readonly promptPath?: string;
-      readonly model?: string;
+      readonly model?: MonoAgentModelSelectionJson;
       readonly effort?: string;
       readonly allowedTools?: readonly string[];
       readonly disallowedTools?: readonly string[];
@@ -227,6 +220,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly path?: string;
     readonly maxBytes?: number;
     readonly writeMode?: MemoryWriteMode;
+    readonly capture?: { readonly focus?: string; readonly only?: readonly string[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
     readonly supermemory?: MonoAgentMemorySupermemoryJson;
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
@@ -245,6 +239,11 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly readableRoots?: readonly string[];
       readonly writableRoots?: readonly string[];
     };
+    /** Opt-in local desktop control via the separately installed cua-driver. */
+    readonly computerUse?: {
+      readonly backend: "cua-driver";
+      readonly command?: string;
+    };
     readonly mcpConfigPath?: string;
     readonly mcpRequestContextServers?: readonly string[];
     readonly continuationServers?: readonly string[];
@@ -253,11 +252,16 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly web?: {
       readonly coordination?: "process" | "host";
       readonly search?: {
-        readonly backend?: string;
+        readonly backend?: string | readonly string[];
+        readonly parallel?: { readonly apiKeyEnv?: string };
         readonly maxRequestsPerRun?: number;
         /** Compatibility alias for tools.web.search.searxng.endpoint. */
         readonly endpoint?: string;
         readonly searxng?: {
+          readonly endpoint?: string;
+        };
+        /** @deprecated Endpoint tombstone; presence is rejected before layering. */
+        readonly hound?: {
           readonly endpoint?: string;
         };
         readonly ollama?: {
@@ -270,6 +274,12 @@ export interface MonoAgentConfigJson extends SettingsJson {
         };
       };
       readonly fetch?: {
+        readonly provider?: string | readonly string[];
+        readonly parallel?: { readonly apiKeyEnv?: string };
+        /** @deprecated Endpoint tombstone; presence is rejected before layering. */
+        readonly hound?: {
+          readonly endpoint?: string;
+        };
         readonly render?: string;
         readonly browserCommand?: string;
       };
@@ -289,6 +299,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   };
   readonly artifacts?: {
     readonly dir?: string;
+    readonly replyFiles?: { readonly maxStorageBytes?: number | "unlimited"; readonly maxFileBytes?: number };
     readonly retention?: MonoAgentArtifactRetentionJson;
     readonly memoryRetention?: MonoAgentArtifactRetentionJson;
   };
@@ -300,8 +311,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly staleAfterMs?: number;
     readonly globalDiscovery?: boolean;
   };
+  /** Removed exporter compatibility: only an absent/empty object or empty array is accepted on read. */
   readonly observability?: {
-    readonly exporters?: readonly MonoAgentObservabilityExporterJson[];
+    readonly exporters?: readonly never[];
   };
   readonly providers?: MonoAgentProvidersJson;
 }
@@ -314,6 +326,8 @@ export interface ReadMonoAgentConfigJsonResult {
   readonly path: string;
   /** True when the file did not exist on disk. */
   readonly missing: boolean;
+  /** Duplicate object-key paths in the original JSON source. */
+  readonly duplicateKeyPaths: readonly string[];
 }
 
 /**
@@ -338,27 +352,12 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
  * Reject removed JSON fields before a host's generic unknown-key validation.
  *
  * Reports every retired key present, not just the first: migrating by hand is one edit
- * pass, and a config carrying all four retired keys used to surface them one re-run at a
+ * pass, and a config carrying multiple retired keys used to surface them one re-run at a
  * time. `path` stays the first match so existing single-key consumers are unchanged;
  * `paths` carries the full set.
  */
 export function assertNoRetiredMonoAgentConfigJson(json: object): void {
-  const retired = RETIRED_CONFIG_FIELDS.filter((field) => hasOwnJsonPath(json, field.path));
-  if (retired.length === 0) return;
-  throw new MonoAgentConfigError("invalid_json", retired.map((field) => field.message).join(" "), {
-    path: retired[0]!.path,
-    paths: retired.map((field) => field.path),
-  });
-}
-
-function hasOwnJsonPath(json: object, path: string): boolean {
-  let current: unknown = json;
-  for (const segment of path.split(".")) {
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
-    if (!Object.prototype.hasOwnProperty.call(current, segment)) return false;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return true;
+  assertNoRetiredMonoAgentConfig(json);
 }
 
 /**

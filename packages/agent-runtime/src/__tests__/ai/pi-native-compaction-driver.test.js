@@ -421,7 +421,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       harness,
       runtime: { model: { id: "m" } },
       resolved: { reference: "faux:m" },
-      settings: {},
+      compaction: {},
     });
     expect(policy.contextWindow).toBe(100_000);
     expect(policy.enabled).toBe(true);
@@ -433,7 +433,7 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       harness: {},
       runtime: { model: { id: "m", contextWindow: 40_000 } },
       resolved: {},
-      settings: {},
+      compaction: {},
     });
     expect(policy.contextWindow).toBe(40_000);
   });
@@ -443,12 +443,12 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
       harness: { getModel: () => ({ id: "override-only", contextWindow: 128_000 }) },
       runtime: { model: { id: "override-only", contextWindow: 128_000 } },
       resolved: { reference: "faux:override-only" },
-      settings: {},
+      compaction: {},
       contextWindowOverride: 272_000,
     });
     expect(policy).toMatchObject({
       contextWindow: 272_000,
-      triggerTokens: 190_400,
+      triggerTokens: 244_800,
       keepRecentTokens: 20_000,
       summaryMaxTokens: 10_880,
       compactionMinSavingsTokens: 20_000,
@@ -472,7 +472,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const runState = freshRunState(fakeSession(), { policy: policy({ enabled: false }) });
     const harness = { waitForIdle: vi.fn(), compact: vi.fn() };
     await runProactiveCompaction(runState, {
-      harness, systemPrompt: "s", options: { settings: {} }, tools: [],
+      harness, systemPrompt: "s", options: { compaction: {} }, tools: [],
       promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
@@ -487,7 +487,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const harness = { waitForIdle: vi.fn(), compact: vi.fn(async () => ({ tokensBefore: 1 })) };
     await runProactiveCompaction(runState, {
       harness, systemPrompt: "s",
-      options: { settings: { agent_compaction_fixed_overhead_enabled: false } },
+      options: { compaction: { fixedOverheadEnabled: false } },
       tools: [], promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
@@ -504,7 +504,7 @@ describe("runProactiveCompaction — trigger math", () => {
     const runState = freshRunState(fixture.session, { policy: policy() });
     await runProactiveCompaction(runState, {
       harness: fixture.harness, systemPrompt: "s",
-      options: { settings: {} }, // fixed overhead ON
+      options: { compaction: {} }, // fixed overhead ON
       tools: [{ name: "Bash", description: "x".repeat(4000), parameters: {} }],
       promptText: "hi", promptImages: [], reference: "faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
@@ -613,7 +613,7 @@ describe("runReactiveCompaction — overflow recovery", () => {
       harness: fixture.harness,
       runtime: { model: { id: "m", contextWindow: 128_000 } },
       resolved: { reference },
-      settings: {},
+      compaction: {},
       contextWindowOverride: 200_000,
     });
     expect(nextPolicy.contextWindow).toBe(Math.floor(failedEstimate * 0.90));
@@ -690,5 +690,28 @@ describe("terminal compaction accounting", () => {
     expect(fixture.persistedCount()).toBe(mode === "success" ? 1 : 0);
     if (mode !== "success") expect(fixture.messages).toEqual(original);
     expect(fixture.handlerCount()).toBe(0);
+  });
+});
+
+describe("1M overflow ceiling across toggles", () => {
+  it("keeps learned provider limits authoritative through ON/OFF/ON and global corrections", async () => {
+    const fixture = hookHarness();
+    const reference = "openai-codex:gpt-6.1-sol";
+    let declared = 1_000_000;
+    const base = fixture.harness.getModel();
+    fixture.harness.getModel = () => ({ ...base, contextWindow: declared });
+    const runState = freshRunState(fixture.session, { policy: { enabled: true, keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 } });
+    await runReactiveCompaction(runState, {
+      harness: fixture.harness, runtime: { model: { ...base, contextWindow: declared } }, resolved: { reference }, options: {},
+      promptText: "synthetic question", promptImages: [], reference, onEvent: () => {}, runtimeWarnings: [],
+      state: { stopReason: "error", lastAssistant: { errorMessage: "maximum context length is 200000 tokens" } }, runError: null,
+      captureState: async () => ({ stopReason: "endTurn", lastAssistant: null }),
+    });
+    for (declared of [1_000_000, 272_000, 1_000_000]) {
+      for (const correction of [undefined, 100_000, 1_200_000]) {
+        const policy = resolveLiveCompactionPolicy({ harness: fixture.harness, runtime: {}, resolved: { reference }, contextWindowOverride: correction });
+        expect(policy.contextWindow).toBe(correction === 100_000 ? 100_000 : 200_000);
+      }
+    }
   });
 });

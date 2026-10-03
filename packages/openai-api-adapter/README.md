@@ -271,10 +271,10 @@ It does not build prompts, run models, persist conversations, implement the Resp
 
 ## Related Documentation
 
-- [OpenAI-compatible API channel guide](https://mono-agent-docs.vercel.app/channels/openai-api/)
-- [Open WebUI integration playbook](https://mono-agent-docs.vercel.app/playbooks/openai-endpoint-open-webui/)
-- [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
-- [Tool policy](https://mono-agent-docs.vercel.app/tools/policy/)
+- [OpenAI-compatible API channel guide](https://docs.mono-agent.dev/channels/openai-api/)
+- [Open WebUI integration playbook](https://docs.mono-agent.dev/playbooks/openai-endpoint-open-webui/)
+- [Sessions and concurrency](https://docs.mono-agent.dev/runtime/sessions-concurrency/)
+- [Tool policy](https://docs.mono-agent.dev/tools/policy/)
 
 ## Verification
 

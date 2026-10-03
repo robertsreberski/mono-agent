@@ -2,7 +2,7 @@
 
 > A prose, per-domain version of this reference (runtime, channels, memory, …)
 > lives on the published docs site:
-> <https://mono-agent-docs.vercel.app/config/>. This annotated JSON
+> <https://docs.mono-agent.dev/config/>. This annotated JSON
 > stays the offline canonical shape.
 
 One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one (env > JSON > defaults), so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
@@ -42,12 +42,11 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
                                            // Narrowed per model for display; still accepted at turn time.
                                            // A model advertising no ultra rung simply does not offer it in pickers.
-                                           // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions
+                                           // Message text never changes effort.
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true
-      "triggerRatio": 0.70,                // default 0.70; adaptive safety headroom also applies
+      "triggerRatio": 0.90,                // default 0.90; capped by safety headroom (10% of W, 16k-48k tokens)
       // Omit these three to derive model-window-aware defaults.
       "keepRecentTokens": 12800,
       "summaryMaxTokens": 5120,
@@ -75,7 +74,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
-      // "cacheRetention": "long",       // opt-in Anthropic 1h; supported model, 2× input write / 0.1× read, no guaranteed hit
+      // "cacheRetention": "short",      // opt out of default Anthropic 1h; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
@@ -108,19 +107,18 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "skillMaxBytes": 48000                 // per-skill byte cap (256-1,000,000)
   },
 
-  // Memory strategy. Omit the section for no memory. The built-in "bujo"
-  // backend owns the three local tiers below; "supermemory" selects the
-  // separately installed, lockstep @mono-agent/memory-supermemory plugin.
+  // Memory strategy. Omit the section for no memory. The "bujo" backend owns
+  // the three local tiers below.
   // Three tiers over one substrate (@mono-agent/memory store + bujo subpaths):
   //   lite    — FTS keyword recall + rapid-log; no external deps.
   //   journal — + hybrid recall (BM25+vector) + static, non-decaying salience; needs embeddings.
   //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
   //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
   "memory": {
-    "backend": "bujo",                    // bujo (default) | supermemory
+    "backend": "bujo",                    // default and only supported config backend
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
-    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier or external backend)
+    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier only)
     "maxBytes": 64000,
     "embeddings": {                        // required for journal and bujo
       "provider": "ollama",                // ollama | lmstudio | openai; exclusive, no fallback
@@ -139,19 +137,13 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
       // For agent-host, use: "model": "openai-codex:gpt-5.6-sol"; omit endpoint.
       // agent-host also accepts "trace" (default true) and "timeoutMs" (default 60000).
     },
+    // Optional BuJo capture filters (only with writeMode: capture):
+    // "capture": { "focus": "Keep durable coding preferences; skip CI status.", "only": ["preference", "lesson"] },
+    // focus guides extraction (≤2048 UTF-8 bytes); only keeps host-accepted labels of those kinds.
+    // Unset leaves capture unchanged; neither setting filters explicit Remember writes.
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" }, // default: every two hours
-    // For backend: "supermemory", omit path/mode/embeddings/llm/consolidation
-    // and configure the external service instead. Keep API keys in env.
-    // "supermemory": {
-    //   "baseUrl": "http://127.0.0.1:6767",
-    //   Inline "apiKey" remains schema-compatible; source configs use apiKeyEnv.
-    //   "apiKeyEnv": "SUPERMEMORY_API_KEY",
-    //   "container": "my-agent",
-    //   "timeoutMs": 10000,
-    //   "exposeMcpServer": false
-    // }
   },
 
   // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
@@ -161,7 +153,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng | ollama | codex | keyless
+        "backend": ["parallel", "ollama"],                 // auto | searxng | ollama | codex | keyless
         "codex": { "model": "gpt-5.6-luna" },
         "searxng": { "endpoint": "http://127.0.0.1:8088" }, // optional unauthenticated loopback HTTP
         "ollama": { "baseUrl": "http://127.0.0.1:11434" }   // used only when backend is ollama
@@ -187,7 +179,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "maxConcurrent": 4,                   // cap 32
     "maxActivePerConversation": 2,        // cap 8
     "maxQueued": 8,                       // cap 64
-    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h
+    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h; use > 14415000 for full four-hour detached child turns
     "maxQueueAgeMs": 300000,              // 5 min; cap 1 h
     "maxOutputBytes": 1048576,            // 1 MiB; cap 8 MiB
     "previewChars": 2000,                 // cap 8000
@@ -199,13 +191,13 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     }
   },
 
-  // Monitor watches reuse processJobs state and require processJobs.enabled.
-  // Tool policy defaults: wake_on batch, dedupe none, min_wake_interval_ms 0.
-  // Exit-only rejects nondefault dedupe/interval; terminal wakes always bypass both.
-  "monitors": {
-    "enabled": false,
-    "maxWakeIntervalMs": 300000,           // host interval ceiling; cap 300000
-    "maxChainDepth": 4                    // host-owned; cap 64
+  // Optional native child delegation. Both timeout fields accept 1000–14400000 ms.
+  // Detached children stop at min(child timeout, remaining job time less 10%/15s
+  // settlement reserve); the process-job hard deadline stays authoritative.
+  "subagents": {
+    "enabled": true,
+    "timeoutMs": 14400000,
+    "definitions": [{ "name": "researcher", "description": "Research", "prompt": "Read and summarize evidence.", "timeoutMs": 14400000 }]
   },
 
   // Human-in-the-loop bridge: structured blocking AskUser plus
@@ -249,18 +241,9 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "heartbeatMs": 10000,
     "staleAfterMs": 30000,
     // Also mirror this agent's manifest into the global ~/.mono-agent/trace-sources
-    // registry so `mono-agent tui` discovers it from any directory. Default true;
+    // registry so machine-wide operator clients discover it. Default true;
     // set false to keep the agent visible only via its own registryDir.
     "globalDiscovery": true
-  },
-
-  // Optional trace viewer: add a best-effort, terminal-batched Phoenix (OTLP)
-  // exporter. Omit it to keep only bounded local terminal JSONL snapshots; a
-  // pre-terminal crash can lose buffered events.
-  "observability": {
-    "exporters": [
-      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "contentPatternRedaction": false }
-    ]
   },
 
   // ----- Channels: one section per channel; all independent. Most channels are
@@ -328,7 +311,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
     "allowedChatIds": ["123456789"],       // or "allowAllChats": true
     "allowAllChats": false,
-    "groupMode": "mention",               // mention | any; any is backward-compatible default
+    "groupMode": "mention",               // mention | listen | any; any is backward-compatible default
     "stripMentionText": true               // strips the bot's native @mention before the turn
   },
 
@@ -460,11 +443,11 @@ mono-agent restart      # apply config edits (config is JSON-first; restart to r
 mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
 ```
 
-A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the local traceability source and artifact location plus one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
 
 For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a canonical `<provider>:<model>` runtime reference such as `openai-codex:gpt-5.6-sol`. Every route is Pi-native, so there is no SDK-versus-CLI distinction and no reference family is singled out for rejection: any reference the runtime accepts is valid here, including `openai-codex:*`. `endpoint` is Ollama-only and invalid for `agent-host`; `agent-host` additionally accepts `trace` (record each `complete()` as a `mem-*` run; default `true`) and `timeoutMs` (per-`complete()` abort, default 60000, range 1000-600000). The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`, `MONO_AGENT_MEMORY_LLM_TRACE`, and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`. `memory.llm.executionMode` and `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` were retired in 0.21.0 and now fail config load — delete them, never emit them. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 
-For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI and assistant-ui web console chat over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out). Edit `mono-agent.config.json` or `IDENTITY.md`, validate, and restart to apply configuration changes. `mono-agent web` is an always-on service namespace; a fresh install binds `127.0.0.1:5050`, `--host <addr>` widens explicitly, and it has no app login. On macOS, `--share-tailnet` publishes an owned Tailscale route (existing owned routes are re-verified on restart); an installed service keeps its published bind. On `web start`, `restart`, or `run`, `--theme` selects the shell and `--name <label>` replaces the hostname-derived PWA, browser-tab, and rail label; `--name -` restores the hostname default; managed starts persist both selections. Capable agents expose stable read-only cron channels there. Their quiet headers show only cadence and agent-authored next run (viewer-local absolute time), or disabled/removed/unavailable state. Retained web proxy and operator API run-now/runtime enable controls require `tui.apiKey` and explicit `cron.operatorActions.enabled`; every mutation still requires confirmation, is agent-audited, and does not rewrite job config. The former read-only recorder command, package, and relay were removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
+For operator views, run `mono-agent web run --loopback` from any directory once the agent is started; it discovers running agents via the trace-source registry and chats over the default-on compatibility-named `tui` stream endpoint (`"tui": {"enabled": false}` opts out). Use `mono-agent runs list|show` for bounded recorded-run diagnostics and `mono-agent config` for resolved configuration. Edit `mono-agent.config.json` or `IDENTITY.md`, validate, and restart to apply configuration changes. `mono-agent web` is an always-on service namespace; a fresh install binds `127.0.0.1:5050`, `--host <addr>` widens explicitly, and it has no app login. On macOS, `--share-tailnet` publishes an owned Tailscale route (existing owned routes are re-verified on restart); an installed service keeps its published bind. On `web start`, `restart`, or `run`, `--theme` selects the shell and `--name <label>` replaces the hostname-derived PWA, browser-tab, and rail label; `--name -` restores the hostname default; managed starts persist both selections. Capable agents expose stable read-only cron channels there. Their quiet headers show only cadence and agent-authored next run (viewer-local absolute time), or disabled/removed/unavailable state. Retained web proxy and operator API run-now/runtime enable controls require `tui.apiKey` and explicit `cron.operatorActions.enabled`; every mutation still requires confirmation, is agent-audited, and does not rewrite job config. The former read-only recorder and terminal-renderer surfaces were removed; use `mono-agent runs list|show` for bounded offline diagnostics or `mono-agent web` for live operation.
 
 ## Programmatic Escape Hatch
 
@@ -482,10 +465,17 @@ const app = await startMonoAgentApp({
 
 For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/agent-app` (`createConfiguredAgentResponder` — also takes `memory`, `historyStore`, `runtimeOptions`, `runtimeOptionsForRequest`). For multi-agent orchestration, add `@mono-agent/agent-orchestrator` (`createCollaboratorToolRuntimeExtension`) — see `references/package-map.md`. Channel message texts and stream tuning (welcome/help/error texts, edit debounce) are channel-driver overrides, not config keys.
 
-Anthropic cache retention is optional (`providers.piNative.cacheRetention`:
-short/long). `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON; either explicit value
-overrides Pi's ambient `PI_CACHE_RETENTION`. Unset forwards nothing. Default-off
-assumes no ambient Pi long retention. One-hour writes cost 2× normal input,
-reads 0.1×; short writes 1.25×. Model support is required, with no guaranteed hit.
+Anthropic cache retention defaults to long (`providers.piNative.cacheRetention`:
+short/long); short is the opt-out. `MONO_AGENT_PI_CACHE_RETENTION` wins over JSON,
+then long. Both the default and explicit values override Pi's ambient
+`PI_CACHE_RETENTION`. One-hour writes cost 2× normal input, reads 0.1×; short
+writes 1.25×. Model support is required, with no guaranteed hit.
 First verify stable tool definitions and admission; separately authorize any
 retention spending experiment using the prompt-cache measurement gates.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

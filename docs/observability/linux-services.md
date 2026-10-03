@@ -57,6 +57,10 @@ A machine without systemd or a usable user bus can still use
 `mono-agent web` and `mono-agent web status` fall back to the foreground-state
 view when the user manager is unavailable.
 
+Linux currently has no scheduled maintenance helper equivalent to macOS's
+hourly launchd controller or busy-aware log rotation. Explicit systemd
+start/restart/stop and supervised restart behavior remain synchronous.
+
 ## Web console
 
 ```bash
@@ -88,7 +92,7 @@ provide the copied-runtime integrity proofs or managed configuration authority
 of the macOS backend. Fleet verification must not treat these as managed
 LaunchAgents. Linux `restart --clear-sessions`, automatic guided-init startup,
 remain outside this first operator-commands PR.
-After guided initialization, use `mono-agent start` and ordinary `mono-agent tui`.
+After guided initialization, use `mono-agent start`, then open the browser console with `mono-agent web run --loopback`.
 
 Existing hand-written services are not adopted or stopped automatically. Stop
 and disable the exact old service before installing a Mono-owned replacement;

@@ -4,6 +4,8 @@
  * the harness (no embedding/network at construction); the direct-store tests inject
  * a fake embeddings provider so no Ollama call is made.
  */
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,17 +13,14 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
+import type { MemoryCompletedTurn, MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
-import type {
-  PhoenixExporterConfig,
-  RunExportContext,
-  RunExporter,
-  RunSummary,
-} from "@mono-agent/observability";
+import { createBujoMemoryStore, inspectCompletedTurnIntake } from "@mono-agent/memory/bujo";
+import type { RunSummary } from "@mono-agent/observability";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
+import { createConfiguredCurationLlm } from "../configured-agent.js";
 
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 vi.mock("../account-home.js", () => ({
@@ -76,11 +75,12 @@ describe("createConfiguredMemory — bujo mode", () => {
     })).rejects.toThrow(/requires memory\.embeddings and memory\.llm/i);
   });
 
-  it("BujoMemoryStore.appendHostSummary writes into <root>/daily/ (proves bujo, not markdown)", async () => {
+  it("BujoMemoryStore completed-turn admission writes a durable daily summary", async () => {
     const dir = await tempDir();
     const memoryRoot = join(dir, "bujo-memory");
     const store = createBujoMemoryStore({ root: memoryRoot, embeddings: fakeEmbeddings, dim: 768 });
-    await store.appendHostSummary("conv-1", "A summary of this turn.");
+    await store.persistCompletedTurn({ runId: "summary-run", conversationId: "conv-1", summary: "A summary of this turn." });
+    await store.flush();
     await store.close();
 
     const files = await readdir(join(memoryRoot, "daily"));
@@ -88,28 +88,28 @@ describe("createConfiguredMemory — bujo mode", () => {
     expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}\.md$/u);
   });
 
-  it("BujoMemoryStore exposes load, appendHostSummary, and capture (full contract)", async () => {
+  it("BujoMemoryStore exposes load and completed-turn admission", async () => {
     const dir = await tempDir();
 
     const bujoStore = createBujoMemoryStore({ root: join(dir, "bujo-memory"), embeddings: fakeEmbeddings, dim: 768 });
 
     expect(typeof bujoStore.load).toBe("function");
-    expect(typeof bujoStore.appendHostSummary).toBe("function");
-    expect(typeof bujoStore.capture).toBe("function");
+    expect(typeof bujoStore.persistCompletedTurn).toBe("function");
+    expect(bujoStore).not.toHaveProperty("capture");
     await bujoStore.close();
   });
 
-  it("lite-tier BujoMemoryStore (no embeddings) exposes the same contract, capture returns undefined", async () => {
+  it("lite-tier BujoMemoryStore admits summaries without invoking a capture LLM", async () => {
     const dir = await tempDir();
 
     // lite tier: no embeddings — FTS only
     const liteStore = createBujoMemoryStore({ root: join(dir, "lite-memory") });
 
     expect(typeof liteStore.load).toBe("function");
-    expect(typeof liteStore.appendHostSummary).toBe("function");
-    // capture with no LLM returns undefined (not throws)
-    const result = await liteStore.capture("conv-1", "summary text");
-    expect(result).toBeUndefined();
+    expect(typeof liteStore.persistCompletedTurn).toBe("function");
+    const result = await completeTurn(liteStore, "summary text");
+    expect(result.admissionStatus).toBe("admitted");
+    expect(liteStore.queueSnapshot().intake).toMatchObject({ pending: 0, resolved: 1 });
     await liteStore.close();
   });
 
@@ -150,16 +150,15 @@ describe("createConfiguredMemory — bujo mode", () => {
       { memoryRuntime: runtime },
     );
 
-    const result = await (store as unknown as { capture(conversationId: string, text: string): Promise<unknown> })
-      .capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    const result = await completeTurn(store as unknown as WritableMemoryStore, "Morgan prefers agent-host memory LLM calls.");
 
-    expect(result).toEqual({ actions: 0, entities: 0 });
+    expect(result.admissionStatus).toBe("admitted");
     expect(runtime.calls).toHaveLength(1);
     for (const call of runtime.calls) {
       expect(call.systemPrompt).toMatch(/private memory maintenance LLM/u);
       expect(call.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
       expect(call.options.cwd).toBe(dir);
-      expect(call.options.maxTurns).toBe(1);
+      expect(call.options.maxTurns).toBe(3);
       expect(call.options.allowedTools).toEqual([]);
       expect(call.options.disallowedTools).toEqual([]);
       expect(call.options.mcpServers).toEqual({});
@@ -167,9 +166,246 @@ describe("createConfiguredMemory — bujo mode", () => {
     await (store as unknown as { close(): Promise<void> }).close();
   });
 
+  it("keeps operator calls tool-less and disposes sessions with a reentrant in-process lease", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    const { acquireAgentRootOwnership } = await import("../agent-root-coordinator.js");
+    const held = await acquireAgentRootOwnership(dir);
+    let disposed = 0;
+    const operatorRuntime = { ...runtime, disposeAllSessions: async () => { disposed++; throw new Error("fictional cleanup failure"); } };
+    try {
+      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", operatorRuntime);
+      await llm.complete("Return an empty fictional proposal list.", { label: "curate:propose" });
+      expect(runtime.calls).toHaveLength(1);
+      expect(runtime.calls[0]!.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
+      expect(runtime.calls[0]!.options.allowedTools).toEqual([]);
+      expect(runtime.calls[0]!.options.mcpServers).toEqual({});
+      expect(runtime.calls[0]!.options.maxTurns).toBe(1);
+      expect(disposed).toBe(1);
+    } finally { held.release(); }
+  });
+
+  it("disposes operator runtime sessions after a failed model completion", async () => {
+    const dir = await tempDir();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    let disposed = 0;
+    const llm = await createConfiguredCurationLlm(config, undefined, {
+      run: async () => { throw new Error("fictional transport failure"); },
+      disposeAllSessions: async () => { disposed++; throw new Error("fictional cleanup failure"); },
+    });
+    await expect(llm.complete("Keep a fictional note.")).rejects.toThrow("fictional transport failure");
+    expect(disposed).toBe(1);
+  });
+
+  it("classifies operator credential failures using the runtime's failure kind and auth detector", async () => {
+    const dir = await tempDir();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    for (const result of [
+      { failureKind: "provider_auth", error: "Opaque provider error" },
+      { error: "No API key for provider: fictional" },
+      { error: "OAuth token refresh failed" },
+    ]) {
+      const llm = await createConfiguredCurationLlm(config, undefined, {
+        run: async () => ({ text: "", ...result }),
+        disposeAllSessions: async () => { throw new Error("fictional cleanup failure"); },
+      });
+      await expect(llm.complete("Keep a fictional note.")).rejects.toMatchObject({ code: "provider_auth" });
+    }
+  });
+
+  it("allows curation while another process owns the agent root", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from ${JSON.stringify(new URL("../../dist/agent-root-coordinator.js", import.meta.url).href)};
+      const lease = await acquireAgentRootOwnership(${JSON.stringify(dir)}, { homeDir: ${JSON.stringify(coordinatorHome.path)} });
+      process.stdout.write('ready\\n');
+      process.stdin.once('data', async () => { await releaseAgentRootOwnershipWhenIdle(lease); process.exit(0); });
+    `], { stdio: ["pipe", "pipe", "pipe"] });
+    try {
+      await Promise.race([once(child.stdout!, "data"), once(child, "exit").then(() => { throw new Error("lease holder exited early"); })]);
+      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", runtime);
+      await llm.complete("Keep a fictional note.");
+      expect(runtime.calls).toHaveLength(1);
+      expect(runtime.calls[0]!.options.allowedTools).toEqual([]);
+      expect(runtime.calls[0]!.options.mcpServers).toEqual({});
+      expect(runtime.calls[0]!.options.maxTurns).toBe(1);
+    } finally {
+      child.stdin?.end("release");
+      if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+      if (child.exitCode === null) child.kill();
+    }
+  }, 15_000);
+
+  it("forwards strict capture schema to the runtime and consumes only structuredResult", async () => {
+    const dir = await tempDir();
+    const memoryRoot = join(dir, "structured-memory");
+    const calls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return {
+          text: "this free-form fallback must not be consumed",
+          structuredResult: { memories: [], entities: [], relations: [] },
+        };
+      },
+    };
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot,
+        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        capture: { focus: "Keep durable fictional coding preferences.", only: ["preference", "lesson"] },
+      }),
+      { memoryRuntime: runtime },
+    ) as unknown as {
+      persistCompletedTurn(input: {
+        runId: string;
+        conversationId: string;
+        summary: string;
+        captureText: string;
+      }): Promise<unknown>;
+      flush(): Promise<void>;
+      close(): Promise<void>;
+    };
+
+    await store.persistCompletedTurn({
+      runId: "structured-capture",
+      conversationId: "conv-structured",
+      summary: "Host summary.",
+      captureText: "User: Morgan keeps schema-guided memory.\nAssistant: Understood.",
+    });
+    await store.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.messages[0]?.content)).toContain("OPERATOR CAPTURE FOCUS");
+    expect(String(calls[0]?.messages[0]?.content)).toContain("Keep durable fictional coding preferences.");
+    expect(calls[0]?.outputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["memories", "entities", "relations"],
+    });
+    expect(calls[0]?.maxTurns).toBe(3);
+    expect(calls[0]?.allowedTools).toEqual([]);
+    expect(calls[0]?.mcpServers).toEqual({});
+    expect(inspectCompletedTurnIntake(memoryRoot).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await store.close();
+  });
+
+  it.each([undefined, "openai-codex:gpt-5.6-terra"])("routes only reconciliation to optional model %s (unset preserves default)", async (reconcileModel) => {
+    const dir = await tempDir();
+    const memoryRoot = join(dir, "structured-reconcile-memory");
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    const calls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        const prompt = String(options.messages[0]?.content ?? "");
+        if (prompt.startsWith("Extract one bounded")) {
+          return {
+            structuredResult: {
+              memories: [{
+                type: "note",
+                text: "The assistant reported Morgan prefers weekly status reports on Friday.",
+                source: "assistant",
+                salience: 0.8,
+                isInsight: false,
+                entityIds: [],
+              }],
+              entities: [],
+              relations: [],
+            },
+          };
+        }
+        if (prompt.startsWith("Review memory lines")) {
+          return { structuredResult: { decisions: [{ index: 0, decision: "keep" }] } };
+        }
+        const targetId = /"existing":\[\{"id":"([^"]+)"/u.exec(prompt)?.[1];
+        expect(targetId).toBeDefined();
+        return { structuredResult: { decisions: [{ index: 0, action: "noop", targetId }] } };
+      },
+    };
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot,
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          dim: 4,
+        },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        ...(reconcileModel === undefined ? {} : { capture: { reconcileModel } }),
+      }),
+      { memoryRuntime: runtime },
+    ) as unknown as {
+      remember(conversationId: string, text: string): Promise<unknown>;
+      persistCompletedTurn(input: {
+        runId: string;
+        conversationId: string;
+        summary: string;
+        captureText: string;
+      }): Promise<unknown>;
+      flush(): Promise<void>;
+      browseJournal(input: {
+        fromInclusive: string;
+        toExclusive: string;
+        maxEntries: number;
+        maxBytes: number;
+      }): Promise<{ records: readonly { text: string }[] }>;
+      close(): Promise<void>;
+    };
+
+    const fact = "Nadia prefers weekly status reports on Friday before 15:00 Europe/London.";
+    await store.remember("conv-structured-reconcile", fact);
+    await store.persistCompletedTurn({
+      runId: "structured-reconcile",
+      conversationId: "conv-structured-reconcile",
+      summary: `User: ${fact}`,
+      captureText: `User: ${fact}`,
+    });
+    await store.flush();
+
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.model)).toEqual([
+      expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }),
+      expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }),
+      expect.objectContaining({ provider: "openai-codex", model: reconcileModel === undefined ? "gpt-5.5" : "gpt-5.6-terra" }),
+    ]);
+    expect(calls[2]?.outputSchema).toMatchObject({
+      type: "object",
+      required: ["decisions"],
+      properties: { decisions: { type: "array", minItems: 1, maxItems: 1 } },
+    });
+    expect(calls[2]?.maxTurns).toBe(3);
+    const snapshot = await store.browseJournal({
+      fromInclusive: "2000-01-01T00:00:00.000Z",
+      toExclusive: "2100-01-01T00:00:00.000Z",
+      maxEntries: 10,
+      maxBytes: 10_000,
+    });
+    expect(snapshot.records.map((record) => record.text)).toEqual([fact]);
+    expect(inspectCompletedTurnIntake(memoryRoot).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await store.close();
+  });
+
   it("uses LM Studio embeddings at runtime without involving the BuJo chat LLM provider", async () => {
     const dir = await tempDir();
-    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
       return new Response(JSON.stringify({
         data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
@@ -230,6 +466,46 @@ describe("createConfiguredMemory — bujo mode", () => {
       { memoryRuntime: createRecordingRuntime() },
     )).rejects.toThrow(/LM_STUDIO_API_KEY.*no resolved value/iu);
   });
+
+  it("resolves a declared embedding apiKeyEnv at managed-memory startup", async () => {
+    // Without resolve-at-use the loader carries only the name, so startup
+    // throws "no resolved value" even with the variable set.
+    const dir = await tempDir();
+    vi.stubEnv("MANAGED_TEST_API_KEY", "env-resolved-secret");
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "resolved-memory"),
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          apiKeyEnv: "MANAGED_TEST_API_KEY",
+          dim: 4,
+        },
+        llm: {
+          provider: "agent-host",
+          model: "openai-codex:gpt-5.5",
+        },
+      }),
+      { memoryRuntime: createRecordingRuntime() },
+    );
+
+    await (store as unknown as { load(conversationId: string, query: string): Promise<unknown> })
+      .load("conv-1", "remember the provider");
+
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["authorization"]).toBe("Bearer env-resolved-secret");
+    await (store as unknown as { close(): Promise<void> }).close();
+  });
 });
 
 describe("createConfiguredMemory — memory LLM tracing", () => {
@@ -243,9 +519,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    await completeTurn(store, "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
     expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
@@ -265,9 +541,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    await completeTurn(store, "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
     expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
@@ -278,66 +554,39 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     expect(extract?.sourceDetail).toBe("extract");
   });
 
-  it("exports memory runs through the configured exporter", async () => {
+  it("retains a durable retry after the memory LLM timeout aborts its provider call", async () => {
     const dir = await tempDir();
-    const spy = createSpyExporter();
+    const runtime = createAbortAwareRuntime();
     const store = await createConfiguredMemory(
       bujoConfig({
         dir,
         identityPath: join(dir, "IDENTITY.md"),
         memoryRoot: join(dir, "m"),
-        llm: agentHostLlm,
-        observabilityExporters: [{ type: "phoenix" }],
+        llm: { ...agentHostLlm, timeoutMs: 20 },
       }),
-      {
-        memoryRuntime: createRecordingRuntime(),
-        observability: { observabilityContext: { sourceId: "s1" }, exporterFactory: () => spy.exporter },
-      },
-    ) as unknown as CapturableStore;
-
-    await store.capture("conv-1", "some text");
-    await store.close();
-
-    expect(spy.finished).toHaveLength(1);
-    expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:extract");
-    // Every memory run is tagged as a "memory" kind, and the extract run carries
-    // its operation — these drive the Phoenix span kind + memory.operation attribute.
-    expect(spy.contexts.every((c) => c.runKind === "memory")).toBe(true);
-    const extract = spy.contexts.find((c) => c.conversationId === "memory:capture:extract");
-    expect(extract?.memoryOperation).toBe("extract");
-  });
-
-  it("reports a memory LLM timeout distinctly from a cancellation (provider too slow/unavailable)", async () => {
-    // Regression for the audit's dominant memory symptom: a dead/slow provider tripped the memory
-    // LLM's 60s timeout, which the runtime reports as `cancelled`. The error must now say "timed out"
-    // (with a provider hint) rather than the misleading "run was cancelled".
-    vi.useFakeTimers();
+      { memoryRuntime: runtime },
+    ) as unknown as WritableMemoryStore;
     try {
-      const dir = await tempDir();
-      const store = await createConfiguredMemory(
-        bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-        { memoryRuntime: createAbortAwareRuntime() },
-      ) as unknown as CapturableStore;
-
-      const expectation = expect(store.capture("conv-1", "text")).rejects.toThrow(
-        /timed out after 60000ms \(provider too slow or unavailable\)/u,
-      );
-      await vi.advanceTimersByTimeAsync(60_000);
-      await expectation;
-      await store.close();
+      await completeTurn(store, "text");
+      expect(runtime.calls).toHaveLength(1);
+      expect(runtime.calls[0]?.options.abortSignal?.aborted).toBe(true);
+      expect(store.queueSnapshot().intake).toMatchObject({ pending: 1, retrying: 0, due: 0 });
+      expect(inspectCompletedTurnIntake(join(dir, "m")).items).toMatchObject([{ state: "pending", attempt: 1, due: false }]);
     } finally {
-      vi.useRealTimers();
+      await store.close();
     }
   });
 
-  it("records a failed run AND rethrows when the memory LLM fails", async () => {
+  it("records a failed memory LLM run and retains its admitted turn for retry", async () => {
     const dir = await tempDir();
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createFailingRuntime(), observability: { observabilityContext: { sourceId: "s1" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await expect(store.capture("conv-1", "text")).rejects.toThrow();
+    await expect(completeTurn(store, "text")).resolves.toMatchObject({ admissionStatus: "admitted" });
+    expect(store.queueSnapshot().intake).toMatchObject({ pending: 1, retrying: 0, due: 0 });
+    expect(inspectCompletedTurnIntake(join(dir, "m")).items).toMatchObject([{ state: "pending", attempt: 1, due: false }]);
     await store.close();
 
     const summaries = await readSummaries(join(dir, "artifacts", "memory"));
@@ -351,9 +600,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: runtime },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "text");
+    await completeTurn(store, "text");
     await store.close();
 
     expect(runtime.calls).toHaveLength(1);
@@ -374,9 +623,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
         llm: { ...agentHostLlm, trace: false },
       }),
       { memoryRuntime: runtime, observability: { observabilityContext: { sourceId: "s1" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "text");
+    await completeTurn(store, "text");
     await store.close();
 
     for (const call of runtime.calls) {
@@ -386,10 +635,23 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
   });
 });
 
-type CapturableStore = {
-  capture(conversationId: string, text: string): Promise<unknown>;
+type WritableMemoryStore = {
+  persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+  flush(): Promise<void>;
+  queueSnapshot(): { readonly intake?: { readonly pending: number; readonly retrying: number; readonly resolved: number } };
   close(): Promise<void>;
 };
+
+async function completeTurn(store: WritableMemoryStore, text: string): Promise<MemoryCompletedTurnResult> {
+  const result = await store.persistCompletedTurn({
+    runId: "completed-turn-fixture",
+    conversationId: "conv-1",
+    summary: text,
+    captureText: text,
+  });
+  await store.flush();
+  return result;
+}
 
 async function readSummaries(artifactsDir: string): Promise<RunSummary[]> {
   let files: string[];
@@ -407,29 +669,13 @@ async function readSummaries(artifactsDir: string): Promise<RunSummary[]> {
   return summaries;
 }
 
-function createSpyExporter(): {
-  exporter: RunExporter;
-  finished: RunSummary[];
-  contexts: RunExportContext[];
-} {
-  const finished: RunSummary[] = [];
-  const contexts: RunExportContext[] = [];
-  const exporter: RunExporter = {
-    finish(summary: RunSummary, context: RunExportContext) {
-      finished.push(summary);
-      contexts.push(context);
-    },
-  };
-  return { exporter, finished, contexts };
-}
-
 function bujoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryRoot: string;
   readonly embeddings?: NonNullable<MonoAgentConfig["memory"]>["embeddings"];
   readonly llm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
-  readonly observabilityExporters?: readonly PhoenixExporterConfig[];
+  readonly capture?: NonNullable<MonoAgentConfig["memory"]>["capture"];
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -442,8 +688,9 @@ function bujoConfig(input: {
     memory: {
       mode: "bujo",
       path: input.memoryRoot,
-      writeMode: "disabled",
+      writeMode: input.capture === undefined ? "disabled" : "capture",
       maxBytes: 8_000,
+      ...(input.capture === undefined ? {} : { capture: input.capture }),
       embeddings: input.embeddings ?? { provider: "ollama", model: "nomic-embed-text:v1.5" },
       ...(input.llm === undefined ? {} : { llm: input.llm }),
     },
@@ -454,9 +701,6 @@ function bujoConfig(input: {
       memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false },
     },
     traceability: { registryDir: join(input.dir, "trace-sources") },
-    ...(input.observabilityExporters === undefined
-      ? {}
-      : { observability: { exporters: input.observabilityExporters } }),
   };
 }
 

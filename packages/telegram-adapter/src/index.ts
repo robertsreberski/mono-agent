@@ -6,9 +6,11 @@ export type {
   TelegramDeleteMessageParams,
   TelegramDocument,
   TelegramEditMessageTextParams,
+  TelegramEditRichMessageParams,
   TelegramAudio,
   TelegramFileReference,
   TelegramGetUpdatesParams,
+  TelegramInputRichMessage,
   TelegramMessage,
   TelegramMessageEntity,
   TelegramMessageSender,
@@ -18,6 +20,7 @@ export type {
   TelegramSendDocumentParams,
   TelegramSendMessageParams,
   TelegramSendPhotoParams,
+  TelegramSendRichMessageParams,
   TelegramSentMessage,
   TelegramUpdate,
   TelegramUser,
@@ -26,7 +29,23 @@ export type {
   TelegramVoice,
 } from "./types.js";
 
-export { TelegramApiError } from "./telegram-error.js";
+export {
+  mergeTelegramTopicName,
+  parseTelegramConversationId,
+  telegramChatObservationFromMessage,
+  telegramConversationId,
+  telegramMessageThreadId,
+} from "./conversation.js";
+export type {
+  TelegramChatObservation,
+  TelegramConversationTarget,
+  TelegramDestination,
+  TelegramKnownTopicName,
+  TelegramTopicNameRecord,
+  TelegramTopicNameSource,
+} from "./conversation.js";
+
+export { isTelegramTopicGoneError, TelegramApiError } from "./telegram-error.js";
 export type {
   TelegramApiErrorDetails,
   TelegramApiErrorKind,
@@ -139,6 +158,9 @@ export type {
   TelegramCommandConfig,
   TelegramGroupTriggerMode,
   TelegramQuietHours,
+  TelegramProjectsConfig,
   TelegramReactionsConfig,
+  TelegramTopicConfig,
+  TelegramTopicTriggerMode,
   TelegramSendToolsConfig,
 } from "./config.js";

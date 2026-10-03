@@ -7,6 +7,11 @@ sidebar:
 
 The cron channel fires scheduled prompts at the agent's responder on a timezone-aware five-field schedule. Jobs run on an **in-app scheduler** — no system `cron`, `crontab`, or `launchd` is involved, so the agent just needs to be running. Jobs can be declared inline in config and/or as one `*.md` file per job in a folder; the two sources merge. Coverage: `config`.
 
+In BuJo capture mode, `memory.capture.cron: false` skips automatic capture for
+host-identified cron turns, including run-now. If Remember is enabled, the host
+provides manual-write guidance in that turn's session context. Other turns retain
+their configured capture behavior; see [capture and recall](/memory/capture-and-recall/).
+
 ## What a cron job is
 
 Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a scheduled message to reach the user, prefer native cron notification with `notify: true`: the agent writes the final answer once, and the app delivers it to Telegram, Slack, or a new web-console conversation after the run succeeds.
@@ -15,7 +20,7 @@ Each tick invokes the responder with the job's `prompt` text, exactly as if a me
 
 Set `notify: true` on a job to deliver its successful, non-empty final answer to Telegram, Slack, or the web console. The agent's **final answer is posted verbatim** — no second LLM turn — and recorded into history, so a user's reply resumes with it in context. A top-level Slack post is recorded against the thread it opens rather than the channel, so replies under two different posts continue two separate conversations; every other destination records against itself. The operator just writes the prompt; on a notify turn the harness auto-injects guidance telling the agent that its final reply is delivered as-is and how to stay silent.
 
-**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, `slack:C123:1718.99` for a Slack thread, or the exact value `web:new`). For cron, `web:new` appends every firing of the same job to one durable, assistant-only channel at `/agents/<sourceId>/cron/<jobId>`; it does not mint a thread per run. The channel remains as a historical tombstone if the job later disappears from config. `web:new` is explicit-only and never participates in destination inference. If `notifyConversationId` is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Artifact-derived candidates are cached for 30 seconds after each scan completes. An artifact committed under a Telegram/Slack conversation id invalidates the cache immediately; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Delivery is best-effort: a failed notification does not change the cron job result. Web delivery makes one attempt against the running local console and has no retry queue or outbox.
+**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `telegram:-1001234567890:12` for a Telegram forum topic, `slack:C123`, `slack:C123:1718.99` for a Slack thread, or the exact value `web:new`). A Telegram topic destination posts into that topic and records into the topic's own history; its chat must still be allowlisted. For cron, `web:new` appends every firing of the same job to one durable, assistant-only channel at `/agents/<sourceId>/cron/<jobId>`; it does not mint a thread per run. The channel remains as a historical tombstone if the job later disappears from config. `web:new` is explicit-only and never participates in destination inference. If `notifyConversationId` is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Artifact-derived candidates are cached for 30 seconds after each scan completes. An artifact committed under a Telegram/Slack conversation id invalidates the cache immediately; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Delivery is best-effort: a failed notification does not change the cron job result. Web delivery makes one attempt against the running local console and has no retry queue or outbox.
 
 **Rich reply outcome.** Cron notification is verbatim text-only. Attachments and
 MCP Apps are not forwarded through the later notification hook and are never
@@ -27,14 +32,14 @@ notification is enabled or disabled. It does not claim that notification was
 disabled, and the later notification attempt does not log the outcomes again.
 At most 20 records are emitted; an off-contract overflow becomes one explicit
 counted aggregate, and no path, URL, capability, integrity id, producer message,
-or payload byte is copied into it. Restarted operator/TUI/web reads project the
+or payload byte is copied into it. Restarted operator/web reads project the
 same durable outcomes without changing the stored answer text.
 
 **Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).
 
 **Failover attribution.** A notification whose run did not execute on the configured primary model carries one appended line naming the route that actually answered (see [Fallback & failover](/runtime/fallback/#who-sees-a-failover)). It is the only text the framework ever adds to an otherwise verbatim payload, and it appears only when a genuine route change happened.
 
-**Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is sent. Replying with the sentinel alone is the contract; a model that narrates first and ends with the marker is still treated as silent, and the run logs a warning so the off-contract answer stays visible. Suppression wins over attribution: a silent tick stays silent even when the run failed over.
+**Staying silent.** On a `notify: true` run, the agent can call `FinishSilently({})` alone, without answer narration or attachments. This ends the turn with a host-recorded silent disposition; no notification is sent. If the tool is unavailable, reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). An empty final answer is an `empty_response` failure, not a way to finish silently. Replying with the sentinel alone is the contract; a model that narrates first and ends with the marker is still treated as silent, and the run logs a warning so the off-contract answer stays visible. Suppression wins over attribution: a silent tick stays silent even when the run failed over.
 
 The web console omits successful silent runs from its conversation feed, message
 counts, previews and search. Their compact run history remains retained separately;
@@ -151,7 +156,7 @@ notify: true
 notifyConversationId: telegram:42
 notifyFailureCooldownHours: 6
 ---
-Summarize yesterday's unread items. Your final answer is delivered verbatim; reply NOTHING_TO_REPORT if there is nothing new.
+Summarize yesterday's unread items. Your final answer is delivered verbatim; call FinishSilently({}) alone if there is nothing new; otherwise fall back to NOTHING_TO_REPORT if the tool is unavailable.
 ```
 
 :::caution
@@ -169,6 +174,29 @@ The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow`
 :::note
 Pick an `expression` whose interval comfortably exceeds the job's typical runtime. The web channel records an overlapping firing as `skipped_overlap`; it never pretends that the firing ran.
 :::
+
+## Preflight gates: skip work, not ticks
+
+A job may declare a deterministic `preflight` argv that is evaluated before the model responder. The gate answers whether this firing has work:
+
+```json
+{"run": false, "reason": "no new items"}
+{"run": true, "input": "3 new PRs: #951 #952 #953", "reason": "optional"}
+```
+
+- `{"run": false}` ends the firing as `skipped_gate`: no model turn, no conversation turn, no notification, and no failure-notice cooldown movement. The job slot is released immediately, so the next tick fires normally.
+- `{"run": true}` runs the job as usual. When `input` is present it is appended to the job prompt inside one `<preflight-input>` block, and the request metadata records `cron.preflight = { outcome, inputBytes }`. The block is operator-owned data — nothing in the runtime interprets it — so a prompt that depends on it should say what to do when the block is absent.
+- Unknown keys are ignored; `run` must be a boolean, and `input`/`reason` must be strings when present.
+
+The gate is an explicit argv and is never split from a shell string. Folder jobs declare it as one single-line JSON array in frontmatter (`preflight: ["node", "scripts/check-queue.mjs"]`); inline jobs use `cron.jobs[].preflight`, and the single-job environment form is `MONO_AGENT_CRON_PREFLIGHT_JSON`. `preflightTimeoutMs` (or `MONO_AGENT_CRON_PREFLIGHT_TIMEOUT_MS`) bounds one evaluation: a positive integer in milliseconds, default `5000`, capped at `60000`. Malformed declarations are startup config errors, so a typo can never silently disable a gate.
+
+The gate runs in the agent root with the inherited environment plus `MONO_AGENT_CRON_JOB_ID`, `MONO_AGENT_CRON_RUN_ID`, `MONO_AGENT_CRON_SCHEDULED_AT`, and `MONO_AGENT_CRON_TRIGGER`, so it can dedupe or read external state. It must be side-effect-free with respect to the job: it reports what it sees, and never advances the job's own state.
+
+**Fail-open is absolute.** A non-zero exit, a signal, a missing executable, a timeout, stdout over its cap, or a malformed verdict runs the job with its plain prompt and records a stable error code (`exit_nonzero`, `signal`, `spawn_failed`, `timeout`, `invalid_json`, `invalid_verdict`, `output_overflow`; `callback_timeout` when the adapter's own race timer wins) — never a silent stop. Stderr is diagnostic only: it is kept truncated to its cap and never changes the verdict. The durable record carries codes and a bounded reason only: raw gate stdout, stderr, argv, and environment values are never persisted, and a failed gate's stderr may appear once in the log, truncated to 1 KiB at `warn`.
+
+The gate holds the job's overlap slot while it evaluates, so a tick that lands during the gate is an ordinary `skipped_overlap` blocked by the gating firing. The run watchdog (`maxRunMs`) starts only when the responder starts, so a slow gate never consumes the run budget. A `run: false` verdict cannot suppress a manual **Run now**: the gate still runs, its `input` is still used, and the firing is recorded as `overridden`. Stopping the app or replacing the firing during the gate cancels the firing without inventing a start time.
+
+Every attempted gate is recorded per firing — verdicts, timeouts, cancellations, and manual overrides alike — in the owner-private control store. The console shows a gate skip as `skipped_gate` with the gate's bounded reason, never as a failure.
 
 ## Web console and operator APIs
 

@@ -8,7 +8,7 @@ export const DEFAULT_MODEL = "openai-codex:gpt-5.6-terra";
 export const MODEL_INPUT: ModuleInput = {
   id: "model",
   label: "Model",
-  description: "Primary runtime model reference in <provider>:<model> form, e.g. openai-codex:gpt-5.6-terra, anthropic:claude-sonnet-4-6, opencode-go:kimi-k2.6.",
+  description: "Primary runtime model reference in <provider>:<model> form, e.g. openai-codex:gpt-5.6-terra, anthropic:claude-sonnet-4-6, opencode-go:kimi-k3.",
   default: DEFAULT_MODEL,
 };
 
@@ -30,7 +30,7 @@ export interface BaseConfigContext {
  * memory / channel / sandbox / observability blocks.
  */
 export function baseConfig(
-  ctx: BaseConfigContext,
+  _ctx: BaseConfigContext,
   agentName: string,
   model: string,
   fallbacks: readonly MonoAgentRuntimeFallbackJson[],

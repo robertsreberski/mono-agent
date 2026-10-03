@@ -2,7 +2,6 @@
 // Internal command implementation; `cli.ts` remains the stable public/bin facade.
 import { basename, resolve } from "node:path";
 import process from "node:process";
-import { runBackfill } from "./backfill.js";
 import {
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
@@ -12,7 +11,7 @@ import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 export { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
-import { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
+import { monoAgentVersion, renderHelp, renderHelpTopic, renderMemorySubcommandHelp } from "./cli-help.js";
 export { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
 import { runInstallSkill } from "./cli-install-skill-command.js";
 import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
@@ -54,6 +53,7 @@ export type {
   PrintAppStatusOptions,
 } from "./cli-background-command.js";
 import { runRunsCommand } from "./cli-runs-command.js";
+import { isRunInspectionInvocation, writeRunInspectionUsageFailure } from "./run-inspection.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
@@ -90,6 +90,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   try {
     args = parseCliArgs(argv);
   } catch (error) {
+    if (isRunInspectionInvocation(argv)) {
+      writeRunInspectionUsageFailure(argv.includes("--json"));
+      return 2;
+    }
     if (argv[0] === "memory" && argv.includes("adopt-replay")) {
       const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
       writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");
@@ -99,6 +103,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       const { writeMemoryForgetFailure } = await import("./memory-command.js");
       const operationIndex = argv.indexOf("forget") + 1;
       writeMemoryForgetFailure(argv.includes("--json"), argv[operationIndex] ?? "unknown", "forget_usage");
+      return 2;
+    }
+    if (argv[0] === "memory" && argv.includes("--json")) {
+      process.stdout.write(`${JSON.stringify({ operation: "memory", status: "failed", code: "memory_usage", reason: "Invalid memory command arguments." })}\n`);
       return 2;
     }
     process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
@@ -187,6 +195,16 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  // The retired renderer topic must remain side-effect free. Keep this after the
+  // managed-maintenance authorization guards, but before dotenv/config loading.
+  if (args.command === "help" && args.positionals[0] === "tui") {
+    const result = renderHelpTopic("tui");
+    if (result.ok) {
+      process.stdout.write(result.text);
+      return 0;
+    }
+  }
+
   const invocationCwd = process.cwd();
   // Capture the exported shell before dotenv loading. Guided init retains only
   // worker-operational values and reports shell/background credential drift;
@@ -217,6 +235,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   switch (args.command) {
     case "help": {
       const topic = args.positionals[0];
+      if (topic === "memory" && args.positionals.length > 1) {
+        const usage = renderMemorySubcommandHelp(args.positionals.slice(1));
+        if (usage !== undefined) { process.stdout.write(usage); return 0; }
+        process.stderr.write(ui.errorLine("Unknown memory help topic."));
+        return 2;
+      }
       if (topic === undefined) {
         process.stdout.write(renderHelp());
         return 0;
@@ -261,18 +285,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case "status":
     case "logs":
       return await runBackgroundCommand(args, args.command);
-    case "tui": {
-      // Lazy import: the operator console (and pi-tui) load only on demand.
-      const { runTui } = await import("./tui-command.js");
-      return await runTui({
-        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
-        cwd: process.cwd(),
-        env: process.env,
-        ...(args.agent === undefined ? {} : { agent: args.agent }),
-        ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
-        ...(args.local === true ? { local: true } : {}),
-      });
-    }
     case "web": {
       // Lazy import: assistant-ui and the persistent web store load only on demand.
       const { runWebCommand } = await import("./web-command.js");
@@ -329,27 +341,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.json === true ? { json: true } : {}),
       });
     }
-    case "monitors": {
-      const { runMonitorsCommand } = await import("./monitors-command.js");
-      return await runMonitorsCommand({
-        cwd: process.cwd(),
-        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
-        env: process.env,
-        positionals: args.positionals,
-        ...(args.agent === undefined ? {} : { agent: args.agent }),
-        ...(args.json === true ? { json: true } : {}),
-      });
-    }
-    case "backfill":
-      return await runBackfill({
-        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-        ...(args.run === undefined ? {} : { run: args.run }),
-        all: args.all,
-        ...(args.since === undefined ? {} : { since: args.since }),
-        ...(args.until === undefined ? {} : { until: args.until }),
-        dryRun: args.dryRun,
-        includeMemory: args.includeMemory,
-      });
     case "runs":
       return await runRunsCommand(args);
     case "memory": {
@@ -362,10 +353,28 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         positionals: args.positionals,
         json: args.json === true,
         strict: args.strict === true,
+        ...(args.labelKind === undefined ? {} : { labelKind: args.labelKind }),
+        ...(args.labelAbout === undefined ? {} : { labelAbout: args.labelAbout }),
+        ...(args.labelScope === undefined ? {} : { labelScope: args.labelScope }),
+        ...(args.propose === undefined ? {} : { propose: args.propose }),
         ...(args.limit === undefined ? {} : { limit: args.limit }),
         ...(args.idsFile === undefined ? {} : { idsFile: args.idsFile }),
         ...(args.reason === undefined ? {} : { reason: args.reason }),
         ...(args.planPath === undefined ? {} : { planPath: args.planPath }),
+        ...(args.curateSelect === undefined ? {} : { curateSelect: args.curateSelect }),
+        ...(args.curateAccept === undefined ? {} : { curateAccept: args.curateAccept }),
+        ...(args.curateReject === undefined ? {} : { curateReject: args.curateReject }),
+        ...(args.curateMerges === undefined ? {} : { curateMerges: args.curateMerges }),
+        ...(args.curateMergeFile === undefined ? {} : { curateMergeFile: args.curateMergeFile }),
+        ...(args.allowCrossType === undefined ? {} : { allowCrossType: args.allowCrossType }),
+        ...(args.ownerBackfill === undefined ? {} : { ownerBackfill: args.ownerBackfill }),
+        ...(args.linkPeople === undefined ? {} : { linkPeople: args.linkPeople }),
+        ...(args.tasksToNotes === undefined ? {} : { tasksToNotes: args.tasksToNotes }),
+        ...(args.tasksBefore === undefined ? {} : { tasksBefore: args.tasksBefore }),
+        ...(args.captureOnly === undefined ? {} : { captureOnly: args.captureOnly }),
+        ...(args.duplicates === undefined ? {} : { duplicates: args.duplicates }),
+        ...(args.model === undefined ? {} : { model: args.model }),
+        dryRun: args.dryRun,
         ...(args.backupPath === undefined ? {} : { backupPath: args.backupPath }),
         ...(args.bundlePath === undefined ? {} : { bundlePath: args.bundlePath }),
         ...(args.includeExtras === undefined ? {} : { includeExtras: args.includeExtras }),
@@ -425,6 +434,7 @@ if (isDirectCliInvocation) {
     .then((code) => {
       if (code !== 0) {
         process.exitCode = code;
+        // The accepted restart armed its shutdown-wide deadline before app.stop().
       }
     })
     .catch((error: unknown) => {

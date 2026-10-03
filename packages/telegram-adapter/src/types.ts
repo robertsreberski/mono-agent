@@ -1,3 +1,5 @@
+import type { RichMessage } from "grammy/types";
+
 export type TelegramChatId = number | string;
 
 export interface TelegramUser {
@@ -16,6 +18,8 @@ export interface TelegramChat {
   username?: string;
   first_name?: string;
   last_name?: string;
+  /** True for a supergroup with forum topics enabled. */
+  is_forum?: boolean;
 }
 
 /** The Bot API message-entity fields used for native @mention matching. */
@@ -38,6 +42,13 @@ export interface TelegramTextQuote {
 
 export interface TelegramMessage {
   message_id: number;
+  /**
+   * Reply-thread or forum-topic id. Only a topic when {@link is_topic_message}
+   * is true; non-forum supergroups also set it for ordinary reply threads.
+   */
+  message_thread_id?: number;
+  /** True when the message was sent to a forum topic (never the General topic). */
+  is_topic_message?: boolean;
   date?: number;
   chat: TelegramChat;
   from?: TelegramUser;
@@ -45,8 +56,18 @@ export interface TelegramMessage {
   entities?: TelegramMessageEntity[];
   caption?: string;
   caption_entities?: TelegramMessageEntity[];
+  /** Native inbound blocks or the outbound Markdown shape returned by custom senders. */
+  rich_message?: RichMessage | TelegramInputRichMessage;
   reply_to_message?: TelegramMessage;
   quote?: TelegramTextQuote;
+  /** Present on the service message that opens a forum topic. */
+  forum_topic_created?: { name?: string; [key: string]: unknown };
+  /** Present on the service message that renames (or re-icons) a forum topic. */
+  forum_topic_edited?: { name?: string; [key: string]: unknown };
+  /** Present on the service message that closes a forum topic. */
+  forum_topic_closed?: Record<string, unknown>;
+  /** Present on the service message that reopens a forum topic. */
+  forum_topic_reopened?: Record<string, unknown>;
   /** Set on each message of a multi-photo/video album; shared across the group. */
   media_group_id?: string;
   animation?: unknown;
@@ -130,8 +151,29 @@ export interface TelegramInlineKeyboardMarkup {
   inline_keyboard: TelegramInlineKeyboardButton[][];
 }
 
+export interface TelegramInputRichMessage {
+  /** Telegram Rich Markdown (GitHub-Flavored Markdown where supported). */
+  markdown: string;
+}
+
+export interface TelegramSendRichMessageParams {
+  chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
+  rich_message: TelegramInputRichMessage;
+  reply_to_message_id?: number;
+  /** Deliver even if the referenced reply parent was deleted before this send. */
+  allow_sending_without_reply?: boolean;
+  /** Send silently — message arrives without a push notification sound. */
+  disable_notification?: boolean;
+  /** Inline keyboard to attach below the message. */
+  reply_markup?: TelegramInlineKeyboardMarkup;
+}
+
 export interface TelegramSendMessageParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   text: string;
   parse_mode?: string;
   reply_to_message_id?: number;
@@ -146,12 +188,16 @@ export interface TelegramSendMessageParams {
 
 export interface TelegramSendChatActionParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   /** Telegram chat action, e.g. "typing". */
   action: string;
 }
 
 export interface TelegramSendDocumentParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   /**
    * Raw file bytes to upload, OR a string passed through to the server
    * untouched: a file_id, an HTTP URL, or a `file://` URI (accepted by a
@@ -168,6 +214,8 @@ export interface TelegramSendDocumentParams {
 
 export interface TelegramSendPhotoParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   /** Raw image bytes to upload. */
   photo: Uint8Array;
   filename?: string;
@@ -201,6 +249,15 @@ export interface TelegramEditMessageTextParams {
   reply_markup?: TelegramInlineKeyboardMarkup;
 }
 
+export interface TelegramEditRichMessageParams {
+  chat_id?: TelegramChatId;
+  message_id?: number;
+  inline_message_id?: string;
+  rich_message: TelegramInputRichMessage;
+  /** Inline keyboard to keep (or replace) on the edited message. */
+  reply_markup?: TelegramInlineKeyboardMarkup;
+}
+
 export interface TelegramDeleteMessageParams {
   chat_id: TelegramChatId;
   message_id: number;
@@ -219,16 +276,26 @@ export interface TelegramDeleteWebhookParams {
 
 /**
  * The minimal Telegram surface the streaming delivery layer needs: sending a
- * message and editing it in place. Update polling lives in the grammY runner, so
- * the delivery layer depends only on these two calls.
+ * message and editing it in place, with optional native rich-message methods.
+ * Update polling lives in the grammY runner, so delivery stays client-agnostic.
  */
 export interface TelegramMessageSender {
   sendMessage(
     params: TelegramSendMessageParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage>;
+  /** Optional for custom clients; built-in clients use Telegram native rich Markdown. */
+  sendRichMessage?(
+    params: TelegramSendRichMessageParams,
+    options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage>;
   editMessageText(
     params: TelegramEditMessageTextParams,
+    options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage | true>;
+  /** Optional for custom clients; built-in clients edit final answers as rich messages. */
+  editRichMessage?(
+    params: TelegramEditRichMessageParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage | true>;
   /** Optional for custom clients; built-in clients use it to clear transient status. */

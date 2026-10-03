@@ -2,16 +2,17 @@ import type { JsonEnvFieldSpec, SettingsJsonValue } from "@mono-agent/agent-cont
 import { DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } from "@mono-agent/agent-contracts";
 import {
   ALLOW_ALL_TOOLS,
-  CONFIG_ENV_KEYS,
+  CORE_CONFIG_FIELD_IDS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
   MEMORY_EMBEDDINGS_PROVIDERS,
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
   MonoAgentConfigError,
 } from "@mono-agent/config";
-import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
+import type { MonoAgentConfigJson } from "@mono-agent/config";
 import {
   PI_TRANSPORTS,
   SANDBOX_FALLBACKS,
@@ -28,10 +29,10 @@ import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/webhook-adapter";
 export const MONO_AGENT_CONFIG_SCHEMA_URL =
   "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/agent-app/schema/mono-agent.config.schema.json";
 
-const CORE_FIELDS: readonly ConfigReferenceField[] = Object.entries(CONFIG_ENV_KEYS).map(([jsonPath, env]) =>
+const CORE_FIELDS: readonly ConfigReferenceField[] = Object.keys(CORE_CONFIG_FIELD_IDS).map((jsonPath) =>
   referenceField({
     jsonPath,
-    env,
+    env: "--",
     type: inferType(jsonPath),
     defaultLabel: defaultLabelFor(jsonPath),
     defaultValue: defaultValueFor(jsonPath),
@@ -66,6 +67,11 @@ const CHANNEL_FIELDS: readonly ConfigReferenceField[] = CHANNEL_FIELD_GROUPS.fla
 
 const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
+    jsonPath: "peers", env: "--", type: "object", defaultLabel: "none", defaultValue: {},
+    example: { finance: { sourceId: "finance-ai" } },
+    description: "Named local ACP peers for PeerAgent. Each sourceId must resolve to a running compatible mono-agent. Names and source IDs must be unique; this does not grant the peer owner approval.",
+  },
+  {
     jsonPath: "processJobs.enabled", env: "--", type: "boolean",
     defaultLabel: "false", defaultValue: false, example: true,
     description: "Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows).",
@@ -88,12 +94,12 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "processJobs.maxActivePerConversation", env: "--", type: "integer",
     defaultLabel: "2", defaultValue: 2, example: 2,
-    description: "Maximum non-terminal process jobs admitted from one conversation (compiled cap 8).",
+    description: "Maximum simultaneously running or starting jobs per conversation (compiled cap 8); waiting jobs use the global queue. Nested child launches may borrow their running ancestor's conversation slot.",
   },
   {
     jsonPath: "processJobs.maxQueued", env: "--", type: "integer",
     defaultLabel: "8", defaultValue: 8, example: 8,
-    description: "Maximum queued process jobs after running capacity is full (compiled cap 64).",
+    description: "Maximum waiting process jobs globally, including jobs waiting on a conversation slot (compiled cap 64).",
   },
   {
     jsonPath: "processJobs.maxRuntimeMs", env: "--", type: "integer",
@@ -136,78 +142,8 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Aggregate retained terminal output artifact budget (compiled cap 1 GiB).",
   },
   {
-    jsonPath: "monitors.enabled", env: "--", type: "boolean",
-    defaultLabel: "false", defaultValue: false, example: true,
-    description: "Opt in to the Pi-native Monitor/MonitorStop tools. Monitors are a streaming class of the process-job substrate and additionally require processJobs.enabled; wake delivery supports Telegram, Slack, and existing web conversations.",
-  },
-  {
-    jsonPath: "monitors.maxActive", env: "--", type: "integer",
-    defaultLabel: "8", defaultValue: 8, example: 8,
-    description: "Maximum simultaneously running monitors across every conversation, counted independently of processJobs.maxConcurrent (compiled cap 32).",
-  },
-  {
-    jsonPath: "monitors.maxActivePerConversation", env: "--", type: "integer",
-    defaultLabel: "2", defaultValue: 2, example: 3,
-    description: "Maximum simultaneously running monitors for one conversation (compiled cap 8).",
-  },
-  {
-    jsonPath: "monitors.maxRuntimeMs", env: "--", type: "integer",
-    defaultLabel: "3600000", defaultValue: 3_600_000, example: 3_600_000,
-    description: "Ceiling for a timed monitor; Monitor.timeout_ms may lower it, never raise it (compiled cap 1 hour).",
-  },
-  {
-    jsonPath: "monitors.persistentMaxRuntimeMs", env: "--", type: "integer",
-    defaultLabel: "86400000", defaultValue: 86_400_000, example: 43_200_000,
-    description: "Ceiling for a persistent monitor, which ignores timeout_ms (compiled cap 24 hours).",
-  },
-  {
-    jsonPath: "monitors.coalesceMs", env: "--", type: "integer",
-    defaultLabel: "200", defaultValue: 200, example: 200,
-    description: "Window over which stdout lines are batched into one event wake (compiled cap 5000).",
-  },
-  {
-    jsonPath: "monitors.maxWakeIntervalMs", env: "--", type: "integer",
-    defaultLabel: "300000", defaultValue: 300_000, example: 60_000,
-    description: "Ceiling for Monitor.min_wake_interval_ms; the receipt reports the clamped effective interval (compiled cap 300000).",
-  },
-  {
-    jsonPath: "monitors.maxBatchLines", env: "--", type: "integer",
-    defaultLabel: "200", defaultValue: 200, example: 200,
-    description: "Maximum lines carried by one event batch; older lines are dropped and counted (compiled cap 2000).",
-  },
-  {
-    jsonPath: "monitors.maxBatchBytes", env: "--", type: "integer",
-    defaultLabel: "65536", defaultValue: 65_536, example: 65_536,
-    description: "Maximum bytes carried by one event batch; older lines are dropped and counted (compiled cap 1 MiB).",
-  },
-  {
-    jsonPath: "monitors.maxLineBytes", env: "--", type: "integer",
-    defaultLabel: "4096", defaultValue: 4_096, example: 4_096,
-    description: "Per-event line clamp applied after redaction (compiled cap 64 KiB).",
-  },
-  {
-    jsonPath: "monitors.maxChainDepth", env: "--", type: "integer",
-    defaultLabel: "4", defaultValue: 4, example: 4,
-    description: "Maximum host-owned monitor wake chain depth (compiled cap 64).",
-  },
-  {
-    jsonPath: "monitors.rateLimit.windowMs", env: "--", type: "integer",
-    defaultLabel: "1000", defaultValue: 1_000, example: 1_000,
-    description: "Length of one rate-limit accounting window (compiled cap 60000).",
-  },
-  {
-    jsonPath: "monitors.rateLimit.maxLinesPerWindow", env: "--", type: "integer",
-    defaultLabel: "200", defaultValue: 200, example: 200,
-    description: "Lines per window above which a window counts as over budget (compiled cap 20000).",
-  },
-  {
-    jsonPath: "monitors.rateLimit.sustainedWindows", env: "--", type: "integer",
-    defaultLabel: "5", defaultValue: 5, example: 5,
-    description: "Consecutive over-budget windows that stop a monitor with rate_limited and one terminal wake (compiled cap 60).",
-  },
-  {
     jsonPath: "interaction.bridge.host",
-    env: "MONO_AGENT_INTERACTION_BRIDGE_HOST",
+    env: "--",
     type: "string",
     defaultLabel: "127.0.0.1",
     defaultValue: "127.0.0.1",
@@ -216,7 +152,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.bridge.port",
-    env: "MONO_AGENT_INTERACTION_BRIDGE_PORT",
+    env: "--",
     type: "integer",
     defaultLabel: "0",
     defaultValue: 0,
@@ -225,7 +161,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.askUser.timeoutMs",
-    env: "MONO_AGENT_ASK_USER_TIMEOUT_MS",
+    env: "--",
     type: "integer",
     defaultLabel: "600000",
     defaultValue: 600_000,
@@ -235,7 +171,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   },
   {
     jsonPath: "interaction.progress.enabled",
-    env: "MONO_AGENT_PROGRESS_ENABLED",
+    env: "--",
     type: "boolean",
     defaultLabel: "true",
     defaultValue: true,
@@ -444,6 +380,15 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Telegram command definitions handled by the Telegram adapter.",
   },
   {
+    jsonPath: "telegram.topics",
+    env: "--",
+    type: "array",
+    defaultLabel: "[]",
+    defaultValue: [],
+    example: [{ chatId: "-1001234567890", topicId: 12, groupMode: "any" }],
+    description: "Per-forum-topic trigger overrides for allowlisted chats: `groupMode` is `inherit` (default), `any`, `mention`, or `listen`. The General topic follows `telegram.groupMode`; entries never widen the chat allowlist.",
+  },
+  {
     jsonPath: "telegram.reactions",
     env: "MONO_AGENT_TELEGRAM_REACTIONS",
     type: "object",
@@ -456,7 +401,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     env: "--",
     type: "object",
     defaultLabel: "unset",
-    example: { timezone: "Europe/Amsterdam", start: "22:00", end: "07:00" },
+    example: { timezone: "UTC", start: "22:00", end: "07:00" },
     description: "Quiet-hours rules for Telegram notifications.",
   },
   {
@@ -465,7 +410,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     type: "string",
     defaultLabel: "unset",
     example: "producing-conversation",
-    description: "Bind Telegram send tools to the chat that produced the current run.",
+    description: "Bind Telegram send tools to the chat, or forum topic, that produced the current run.",
   },
   {
     jsonPath: "telegram.sendTools.pathScope",
@@ -474,6 +419,15 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "unset",
     example: "run-output",
     description: "Confine Telegram path uploads to the current run output directory.",
+  },
+  {
+    jsonPath: "telegram.projects.enabled",
+    env: "--",
+    type: "boolean",
+    defaultLabel: "false",
+    defaultValue: false,
+    example: true,
+    description: "Mirror each forum topic the bot sees (and a forum's General conversation) one way into a web-console project, record observations under `.mono-agent/telegram-topics-v1/`, inject the project's shared context into every turn there, and add `projectId` to the Telegram send tools. Needs a running web console (`mono-agent web run`); project tools on Telegram turns stay gated by `tools.allowedTools`.",
   },
 ];
 
@@ -489,7 +443,7 @@ export interface ConfigReferenceField {
   readonly nullable?: boolean;
 }
 
-export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "object" | "array";
+export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "string | string[]" | "string | object" | "integer | unlimited" | "object" | "array";
 
 interface JsonSchema {
   readonly [key: string]: unknown;
@@ -517,7 +471,14 @@ export function monoAgentConfigWithSchema(config: MonoAgentConfigJson): MonoAgen
 }
 
 export function allConfigReferenceFields(): readonly ConfigReferenceField[] {
-  return [...CORE_FIELDS, ...APP_FIELDS, ...CHANNEL_FIELDS];
+  return [...CORE_FIELDS, ...APP_FIELDS, ...CHANNEL_FIELDS, {
+    jsonPath: "monitors",
+    env: "--",
+    type: "object",
+    defaultLabel: "unset",
+    example: {},
+    description: "Deprecated compatibility object. The whole object, including unknown nested keys, is accepted and ignored. Use background process jobs for finite work.",
+  }];
 }
 
 export function buildMonoAgentConfigSchema(): JsonSchema {
@@ -529,10 +490,17 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   setRequired(root, ["context"], ["identityPath"]);
   setMemoryTierSchema(root);
   setProcessJobsSchema(root);
-  setMonitorsSchema(root);
   setContinuationSchema(root);
   setStructuredAppSchemas(root);
   setRemovedConfigSchemas(root);
+  setSchemaPath(root, ["tools", "computerUse"], {
+    type: "object", additionalProperties: false, required: ["backend"],
+    properties: {
+      backend: { type: "string", enum: ["cua-driver"] },
+      command: { type: "string", minLength: 1, pattern: "^[^\\u0000-\\u001f\\u007f]+$" },
+    },
+    description: "Opt-in desktop control via a separately installed cua-driver. Permission modes/manifests are operator-owned, not configured here.",
+  });
   setSchemaPath(root, ["channels", "plugins"], {
     type: "array",
     description: "External channel plugins loaded by package name.",
@@ -548,6 +516,15 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
       },
     },
   });
+  root.peers = {
+    type: "object",
+    description: "Named local mono-agent ACP targets; only running compatible sources can be called.",
+    propertyNames: { pattern: "^[a-z][a-z0-9-]{0,39}$" },
+    additionalProperties: {
+      type: "object", additionalProperties: false, required: ["sourceId"],
+      properties: { sourceId: { type: "string", pattern: "^(?!.*\\.\\.)[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$" } },
+    },
+  };
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: MONO_AGENT_CONFIG_SCHEMA_URL,
@@ -591,59 +568,7 @@ function setProcessJobsSchema(root: Record<string, JsonSchema>): void {
   };
 }
 
-function setMonitorsSchema(root: Record<string, JsonSchema>): void {
-  root.monitors = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      enabled: { type: "boolean", default: false },
-      maxActive: { type: "integer", minimum: 1, maximum: 32, default: 8 },
-      maxActivePerConversation: { type: "integer", minimum: 1, maximum: 8, default: 2 },
-      maxRuntimeMs: { type: "integer", minimum: 1, maximum: 3_600_000, default: 3_600_000 },
-      persistentMaxRuntimeMs: { type: "integer", minimum: 1, maximum: 86_400_000, default: 86_400_000 },
-      coalesceMs: { type: "integer", minimum: 1, maximum: 5_000, default: 200 },
-      maxBatchLines: { type: "integer", minimum: 1, maximum: 2_000, default: 200 },
-      maxBatchBytes: { type: "integer", minimum: 1, maximum: 1_048_576, default: 65_536 },
-      maxLineBytes: { type: "integer", minimum: 1, maximum: 65_536, default: 4_096 },
-      maxWakeIntervalMs: { type: "integer", minimum: 1, maximum: 300_000, default: 300_000 },
-      maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
-      rateLimit: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          windowMs: { type: "integer", minimum: 1, maximum: 60_000, default: 1_000 },
-          maxLinesPerWindow: { type: "integer", minimum: 1, maximum: 20_000, default: 200 },
-          sustainedWindows: { type: "integer", minimum: 1, maximum: 60, default: 5 },
-        },
-      },
-    },
-  };
-}
-
-/**
- * Complex app-owned config is modeled here instead of left as an open object.
- * This keeps editor completion, generated docs, and the runtime unknown-key
- * check on the same schema. Only plugin-owned payloads and explicitly
- * extensible capability/pricing/header maps remain open.
- */
 function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
-  setSchemaPath(root, ["observability", "exporters"], {
-    type: "array",
-    maxItems: 1,
-    items: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        type: { const: "phoenix" },
-        endpoint: { type: "string" },
-        headers: { type: "object", additionalProperties: { type: "string", minLength: 1 } },
-        includeSensitiveData: { type: "boolean" },
-        contentPatternRedaction: { type: "boolean" },
-        timeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
-        projectName: { type: "string", minLength: 1 },
-      },
-    },
-  });
   setSchemaPath(root, ["providers", "local"], {
     type: "array",
     items: providerEntrySchema(true),
@@ -689,6 +614,19 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
         command: { type: "string", pattern: "^[a-z0-9_]{1,32}$" },
         description: { type: "string", minLength: 1, maxLength: 256 },
         prompt: { type: "string", minLength: 1 },
+      },
+    },
+  });
+  setSchemaPath(root, ["telegram", "topics"], {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["chatId", "topicId"],
+      properties: {
+        chatId: { oneOf: [{ type: "string", pattern: "^-?(0|[1-9][0-9]*)$" }, { type: "integer" }] },
+        topicId: { type: "integer", minimum: 1 },
+        groupMode: { enum: ["inherit", "any", "mention", "listen"] },
       },
     },
   });
@@ -770,6 +708,8 @@ function cronJobSchema(): JsonSchema {
       notifyFailureCooldownHours: { type: "integer", minimum: 1 },
       model: { type: "string", minLength: 1 },
       effort: { type: "string", minLength: 1 },
+      preflight: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+      preflightTimeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
     },
   };
 }
@@ -811,6 +751,27 @@ function slackActionSchema(idKey: "callbackId" | "actionId", requireLabel: boole
 }
 
 function setRemovedConfigSchemas(root: Record<string, JsonSchema>): void {
+  root.observability = {
+    type: "object",
+    deprecated: true,
+    additionalProperties: false,
+    description: "First-party Phoenix/OTLP export was removed. Only this inert empty compatibility shape is accepted.",
+    properties: {
+      exporters: { type: "array", maxItems: 0 },
+    },
+  };
+  root.monitors = {
+    type: "object",
+    deprecated: true,
+    description: "Deprecated and ignored. Monitors were removed; use background process jobs for finite work.",
+  };
+  setSchemaPath(root, ["memory", "supermemory"], {
+    type: "object",
+    deprecated: true,
+    additionalProperties: false,
+    properties: {},
+    description: "Retired Supermemory configuration. Only an inert empty object is accepted; remove this key.",
+  });
   for (const key of ["reflection", "migration"] as const) {
     setSchemaPath(root, ["memory", key], {
       type: "object",
@@ -964,6 +925,10 @@ function setMemoryTierSchema(root: Record<string, JsonSchema>): void {
         },
       },
     }),
+    {
+      if: propertyPresentSchema("capture"),
+      then: { properties: { mode: { const: "bujo" }, writeMode: { const: "capture" } }, required: ["mode", "writeMode"] },
+    },
     {
       if: {
         properties: {
@@ -1147,7 +1112,27 @@ function isSchemaObject(value: unknown): value is JsonSchema & { properties: Rec
   return isPlainObject(value) && isPlainObject(value.properties);
 }
 
+function modelSelectionSchema(): JsonSchema {
+  return { type: ["string", "object"], anyOf: [
+    { type: "string", minLength: 1 },
+    { type: "object", additionalProperties: false, required: ["model"], properties: {
+      model: { type: "string", minLength: 1 }, context1M: { type: "boolean", description: "Opt in to 1,000,000 tokens for eligible built-in GPT models; absent is off." },
+    } },
+  ] };
+}
+
 export function schemaForField(field: ConfigReferenceField): JsonSchema {
+  if (field.jsonPath === "runtime.model") return { ...modelSelectionSchema(), description: field.description, examples: [field.example] };
+  if (field.jsonPath === "artifacts.replyFiles.maxStorageBytes") return {
+    description: field.description,
+    examples: [field.example],
+    default: 2_147_483_648,
+    anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { const: "unlimited" }],
+  };
+  if (field.jsonPath === "artifacts.replyFiles.maxFileBytes") return {
+    type: "integer", minimum: 1, maximum: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+    default: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES, description: field.description, examples: [field.example],
+  };
   const schema: Record<string, unknown> = {
     description: field.description,
     examples: [field.example],
@@ -1161,6 +1146,9 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
       break;
     case "boolean":
       schema.type = "boolean";
+      break;
+    case "string | string[]":
+      schema.type = ["string", "array"];
       break;
     case "string[]":
       schema.type = "array";
@@ -1185,8 +1173,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
           } },
           maxConcurrent: { type: "integer", minimum: 1, maximum: 10 },
           maxPerTurn: { type: "integer", minimum: 1, maximum: 200 },
-          timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
-          maxTurns: { type: "integer", minimum: 1, maximum: 200 },
+          timeoutMs: { type: "integer", minimum: 1_000, maximum: 14_400_000 },
+          maxTurns: { type: "integer", minimum: 1, maximum: 400 },
           models: {
             type: "array",
             items: { anyOf: [
@@ -1194,6 +1182,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
               { type: "object", additionalProperties: false, required: ["model"], properties: {
                 name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,39}$" },
                 model: { type: "string", minLength: 1 },
+                context1M: { type: "boolean" },
               } },
             ] },
           },
@@ -1208,13 +1197,13 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
                 description: { type: "string", minLength: 1 },
                 prompt: { type: "string", minLength: 1 },
                 promptPath: { type: "string", minLength: 1 },
-                model: { type: "string", minLength: 1 },
+                model: modelSelectionSchema(),
                 effort: { type: "string", enum: EFFORT_LEVELS },
                 allowedTools: { type: "array", items: { type: "string", minLength: 1 } },
                 disallowedTools: { type: "array", items: { type: "string", minLength: 1 } },
                 mcpServers: { type: "array", items: { type: "string", minLength: 1 } },
-                maxTurns: { type: "integer", minimum: 1, maximum: 200 },
-                timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
+                maxTurns: { type: "integer", minimum: 1, maximum: 400 },
+                timeoutMs: { type: "integer", minimum: 1_000, maximum: 14_400_000 },
               },
             },
           },
@@ -1254,8 +1243,19 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = MEMORY_MODES;
   } else if (field.jsonPath === "memory.writeMode") {
     schema.enum = MEMORY_WRITE_MODES;
+  } else if (field.jsonPath === "memory.capture.focus") {
+    schema.minLength = 1;
+    schema.maxLength = 2048;
+  } else if (field.jsonPath === "memory.capture.reconcileModel") {
+    schema.minLength = 1;
+  } else if (field.jsonPath === "memory.capture.only") {
+    schema.maxItems = 3;
+    schema.uniqueItems = true;
+    schema.items = { type: "string", enum: ["fact", "preference", "lesson"] };
   } else if (field.jsonPath === "memory.embeddings.provider") {
     schema.enum = MEMORY_EMBEDDINGS_PROVIDERS;
+  } else if (field.jsonPath === "memory.embeddings.instructions") {
+    schema.enum = MEMORY_EMBEDDINGS_INSTRUCTIONS;
   } else if (field.jsonPath === "memory.llm.provider") {
     schema.enum = MEMORY_LLM_PROVIDERS;
   } else if (field.jsonPath === "sandbox.mode") {
@@ -1272,12 +1272,14 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = PI_TRANSPORTS;
   } else if (field.jsonPath === "tools.web.coordination") {
     schema.enum = ["process", "host"];
-  } else if (field.jsonPath === "tools.web.search.backend") {
-    schema.enum = ["auto", "searxng", "ollama", "codex", "keyless"];
+  } else if (field.jsonPath === "tools.web.search.backend" || field.jsonPath === "tools.web.fetch.provider") {
+    const names = field.jsonPath === "tools.web.search.backend"
+      ? ["searxng", "ollama", "codex", "keyless", "duckduckgo", "startpage", "parallel", "local"] : ["local", "parallel"];
+    schema.anyOf = [{ type: "string", enum: names }, { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", enum: names } }];
   } else if (field.jsonPath === "tools.web.fetch.render") {
     schema.enum = ["never", "auto"];
   } else if (field.jsonPath === "telegram.groupMode") {
-    schema.enum = ["any", "mention"];
+    schema.enum = ["any", "mention", "listen"];
   } else if (field.jsonPath === "telegram.sendTools.scope") {
     schema.enum = ["producing-conversation"];
   } else if (field.jsonPath === "telegram.sendTools.pathScope") {
@@ -1292,12 +1294,18 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     "runtime.retry.primaryAttempts": { minimum: 1, maximum: 10 },
     "runtime.retry.backoffMs": { minimum: 0, maximum: 60_000 },
     "runtime.retry.maxBackoffMs": { minimum: 0, maximum: 300_000 },
+    "cron.preflightTimeoutMs": { minimum: 1, maximum: 60_000 },
     "tools.web.search.maxRequestsPerRun": { minimum: 1, maximum: 20 },
   };
   const bounds = numericBounds[field.jsonPath];
   if (bounds !== undefined) {
     schema.minimum = bounds.minimum;
     schema.maximum = bounds.maximum;
+  }
+  if (field.jsonPath === "cron.preflight") {
+    schema.type = "array";
+    schema.minItems = 1;
+    schema.items = { type: "string", minLength: 1 };
   }
   if (field.jsonPath === "tools.mcpRequestContextServers") {
     schema.uniqueItems = true;
@@ -1314,6 +1322,7 @@ function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
       required: ["model"],
       properties: {
         model: { type: "string", minLength: 1 },
+        context1M: { type: "boolean" },
         effort: { type: "string", enum: EFFORT_LEVELS },
         attempts: { type: "integer", minimum: 1, maximum: 10 },
       },
@@ -1337,6 +1346,8 @@ function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
         notifyFailureCooldownHours: { type: "integer" },
         model: { type: "string" },
         effort: { type: "string" },
+        preflight: { type: "array", items: { type: "string" } },
+        preflightTimeoutMs: { type: "integer" },
       },
     };
   }
@@ -1376,6 +1387,9 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "runtime.model") return "string | object";
+  if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
+  if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
   if (id === "runtime.fallbacks") {
     return "array";
   }
@@ -1399,22 +1413,21 @@ function inferType(id: string): ConfigReferenceType {
   ].includes(id)) {
     return "integer";
   }
+  if (id === "memory.capture.cron" || id === "memory.capture.webhook") return "boolean";
   if (id === "providers.piNative.promptCacheDiagnostics") return "boolean";
   if (id === "runtime.compaction.fixedOverheadEnabled") {
     return "boolean";
   }
   if (id === "tools.web.search.maxRequestsPerRun") return "integer";
+  if (id === "cron.preflight" || id === "memory.capture.only") return "string[]";
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
-  if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("trustPublicUrl") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace") || id.endsWith("exposeMcpServer")) {
+  if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("trustPublicUrl") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace")) {
     return "boolean";
   }
   if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
     return "integer";
-  }
-  if (id === "observability.exporters") {
-    return "array";
   }
   return "string";
 }
@@ -1458,7 +1471,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.retry.backoffMs": 1_000,
     "runtime.retry.maxBackoffMs": 15_000,
     "runtime.compaction.enabled": true,
-    "runtime.compaction.triggerRatio": 0.70,
+    "runtime.compaction.triggerRatio": 0.90,
     "runtime.compaction.fixedOverheadEnabled": true,
     "runtime.workspace": ".",
     "runtime.session.mode": "continuous",
@@ -1473,9 +1486,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.mode": "lite",
     "memory.maxBytes": 64_000,
     "memory.writeMode": "disabled",
-    "memory.supermemory.timeoutMs": 10_000,
-    "memory.supermemory.exposeMcpServer": false,
     "memory.embeddings.timeoutMs": 10_000,
+    "memory.embeddings.instructions": "auto",
     "memory.embeddings.circuitBreaker.failureThreshold": 3,
     "memory.embeddings.circuitBreaker.cooldownMs": 30_000,
     "memory.llm.trace": true,
@@ -1490,7 +1502,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
     "tools.web.coordination": "process",
-    "tools.web.search.backend": "auto",
+    "tools.web.search.backend": ["parallel", "ollama"],
+    "tools.web.fetch.provider": "local",
     "tools.web.search.maxRequestsPerRun": 4,
     "tools.web.search.ollama.baseUrl": "http://127.0.0.1:11434",
     "tools.web.search.ollama.trustPublicUrl": false,
@@ -1501,6 +1514,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "sandbox.fallback": "fail-closed",
     "sandbox.unsafeAllowHostProcess": false,
     "artifacts.dir": ".mono-agent/artifacts",
+    "artifacts.replyFiles.maxStorageBytes": 2_147_483_648,
+    "artifacts.replyFiles.maxFileBytes": DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
     "artifacts.retention.maxAgeDays": 365,
     "artifacts.retention.maxCount": 50_000,
     "artifacts.retention.dryRun": false,
@@ -1512,6 +1527,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "traceability.staleAfterMs": 30_000,
     "traceability.globalDiscovery": true,
     "providers.piNative.promptCacheDiagnostics": false,
+    "providers.piNative.cacheRetention": "long",
     "providers.piNative.piMaxRetries": 2,
     "providers.piNative.maxRetryDelayMs": 60_000,
     "providers.piNative.transport": "auto",
@@ -1536,6 +1552,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "cron.timezone": "UTC",
     "cron.notify": false,
     "cron.notifyFailureCooldownHours": 6,
+    "cron.preflightTimeoutMs": 5_000,
     "openaiApi.enabled": false,
     "openaiApi.host": "127.0.0.1",
     "openaiApi.port": 0,
@@ -1555,9 +1572,10 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
+    "artifacts.replyFiles.maxStorageBytes": "unlimited",
     "providers.piNative.cacheRetention": "long",
     "agent.name": "Research Partner",
-    "runtime.model": "openai-codex:gpt-5.6-terra",
+    "runtime.model": { model: "openai-codex:gpt-6.1-sol", context1M: true },
     "runtime.fallbacks": [
       { model: "openai-codex:gpt-5.6-sol" },
       { model: "anthropic:claude-sonnet-4-6", effort: "high" },
@@ -1578,8 +1596,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "runtime.retry.backoffMs": 2_000,
     "runtime.retry.maxBackoffMs": 30_000,
     "runtime.effort": "medium",
-    "runtime.permissionMode": "default",
-    "runtime.compaction.triggerRatio": 0.70,
+    "runtime.compaction.triggerRatio": 0.90,
     "runtime.compaction.keepRecentTokens": 12_800,
     "runtime.compaction.summaryMaxTokens": 5_120,
     "runtime.compaction.minSavingsTokens": 12_800,
@@ -1591,9 +1608,16 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.embeddings.model": "nomic-embed-text:v1.5",
     "memory.llm.provider": "agent-host",
     "memory.llm.model": "openai-codex:gpt-5.6-terra",
+    "memory.capture.cron": false,
+    "memory.capture.webhook": false,
+    "memory.capture.focus": "Keep durable coding preferences and verified lessons; skip PR and CI status.",
+    "memory.capture.only": ["preference", "lesson"],
+    "memory.capture.reconcileModel": "openai-codex:gpt-6-sol",
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
+    "tools.computerUse.backend": "cua-driver",
+    "tools.computerUse.command": "/opt/tools/cua-driver",
     "tools.mcpRequestContextServers": ["transcribe"],
     "tools.filesystem.readableRoots": ["/srv/shared/reference"],
     "tools.filesystem.writableRoots": ["/srv/shared/output"],
@@ -1622,6 +1646,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.threadContext.includeBotMessages": true,
     "webhook.apiKey": "set-via-MONO_AGENT_WEBHOOK_API_KEY",
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
+    "cron.preflight": ["node", "scripts/check-queue.mjs"],
     "tui.requestToolEnvironment.allowedKeys": ["MULTICA_TOKEN", "MULTICA_TASK_ID"],
   };
   if (examples[id] !== undefined) {
@@ -1646,12 +1671,20 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
-  if (id === "providers.piNative.cacheRetention") return "Optional Anthropic Messages cache retention (short or long). Unset preserves Pi defaults/environment. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
+  if (id === "memory.capture.cron") return "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
+  if (id === "memory.capture.webhook") return "Set false to skip automatic capture and raw audit for host-identified webhook turns; other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
+  if (id === "memory.capture.focus") return "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.";
+  if (id === "memory.capture.only") return "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.";
+  if (id === "memory.capture.reconcileModel") return "Optional validated agent-host runtime model reference for the capture reconciliation classifier only. Unset uses memory.llm for extraction, review and reconciliation. Requires mode bujo and writeMode capture; failures do not fall back to the capture model.";
+  if (id === "providers.piNative.cacheRetention") return "Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
+  if (id === "artifacts.replyFiles.maxStorageBytes") return "Aggregate reply-file and MCP App content budget in bytes (default 2 GiB), or 'unlimited' to disable quota rejection. MCP App audit keeps a separate 1 MiB reserve when enabled; retention still applies.";
+  if (id === "artifacts.replyFiles.maxFileBytes") return "Maximum bytes per published reply file (default and maximum 20 MiB); larger values cannot be delivered safely by all channels.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
+  if (id === "runtime.model") return "Canonical provider:model string, or {model, context1M?}. The optional boolean declares a 1,000,000-token window for eligible built-in openai/openai-codex GPT chat models inferred from Pi’s 272,000-token catalog window and long-input pricing tier; not an entitlement guarantee. Absent is off. Effort stays in runtime.effort.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
   if (id === "providers") {
-    return "Provider-id map that widens or narrows the selectable Pi model catalog; MONO_AGENT_PROVIDERS_JSON projects the whole object because provider ids are dynamic.";
+    return "Provider-id map that widens or narrows the selectable Pi model catalog.";
   }
   if (id === "tui.requestToolEnvironment.allowedKeys") {
     return "Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected.";
@@ -1667,6 +1700,12 @@ function descriptionFor(id: string): string {
   }
   if (id === "cron.operatorActions.enabled") {
     return "Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources.";
+  }
+  if (id === "cron.preflight") {
+    return "Explicit argv evaluated before the model responder. `{\"run\":false}` ends the firing as skipped_gate with no model turn; `{\"run\":true,\"input\":\"…\"}` runs the job with the input appended to its prompt. Any failure (non-zero exit, signal, timeout, malformed verdict) fails open with the plain prompt. Never a shell line.";
+  }
+  if (id === "cron.preflightTimeoutMs") {
+    return "Wall-clock bound for one preflight evaluation before it is killed and fails open. Positive integer milliseconds, default 5000, capped at 60000; separate from maxRunMs.";
   }
   if (id === "slack.stripMentionText") {
     return "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.";
@@ -1694,14 +1733,14 @@ function descriptionFor(id: string): string {
     return slackThreadContextDescriptions[id]!;
   }
   if (id === "telegram.groupMode") {
-    return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.";
+    return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages; `listen` triggers like `mention` but gives the next turn the unaddressed messages since the bot last answered as untrusted background context. Direct chats and commands are unaffected.";
   }
   if (id === "telegram.stripMentionText") {
     return "Removes matching native @mentions from responder text in `mention` mode; replies without a mention are unchanged.";
   }
   const compactionDescriptions: Record<string, string> = {
     "runtime.compaction.enabled": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
-    "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom.",
+    "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom (10% of the window, 16,000-48,000 tokens).",
     "runtime.compaction.keepRecentTokens": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
     "runtime.compaction.summaryMaxTokens": "Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens.",
     "runtime.compaction.minSavingsTokens": "Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction.",
@@ -1713,6 +1752,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "memory.embeddings.provider") {
     return "Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai.";
+  }
+  if (id === "memory.embeddings.instructions") {
+    return "Query/document instruction preset: auto (per model when an index is built; an existing index keeps its prefixes), search, none, query, or qwen3. Changing it requires the stopped-agent memory rebuild.";
   }
   if (id === "memory.embeddings.endpoint") {
     return "Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234.";
@@ -1739,7 +1781,7 @@ function descriptionFor(id: string): string {
     return "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.";
   }
   if (id === "subagents") {
-    return "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentSend in the same session. Disabling instances preserves stateless Agent. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for detached persistent children, clamped to their process job's remaining runtime; interactive turns and foreground children keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.";
+    return "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentManage: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentManage resumes or closes it. Persistent children automatically receive AskParent unless global/profile policy denies it; it durably saves a question and returns successful awaiting_reply. Answer through ordinary AgentManage in the same session. Disabling instances preserves stateless Agent. subagents.timeoutMs and definitions[].timeoutMs accept 1000–14400000 ms (up to four hours); a detached child's actual timer is clamped to remaining process-job runtime less a settlement margin (10% for short jobs, at most 15 s), and the hard job deadline still wins. Full four-hour child turns require processJobs.maxRuntimeMs above four hours. commandTimeoutMs (positive integer milliseconds, default 1800000) is the foreground Bash/Exec ceiling for all children: detached children clamp it to their process job's remaining runtime, and foreground children clamp it to their remaining turn time minus a settlement reserve (10% for short turns, at most 15 s). Child timers and parent aborts still stop commands sooner; interactive parent turns keep the 120 s default. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Agent and read-only calls can overlap even when stateful tools are offered, but an invoked stateful, MCP, or unknown call is an exclusive FIFO barrier. Background jobs and detached children release admission on their started receipt.";
   }
   if (id === "runtime.retry.primaryAttempts") {
     return "Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable.";
@@ -1751,33 +1793,42 @@ function descriptionFor(id: string): string {
     return "Ceiling for the doubling same-model retry delay.";
   }
   if (id === "runtime.effort") {
-    return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Ranking above max only prevents keyword downgrade.";
+    return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Message text never changes effort.";
+  }
+  if (id === "tools.computerUse.backend") {
+    return 'Opt into local desktop control using "cua-driver" (only backend). Absent means disabled; MCP tools bypass built-in allow/deny policy. See Computer use for safety and permission boundaries.';
+  }
+  if (id === "tools.computerUse.command") {
+    return "Optional executable name or path. Relative paths resolve against the config workspace. Otherwise resolve PATH, then platform installation locations; doctor reports the selected path.";
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
   }
   if (id === "tools.web.coordination") return "Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination.";
   if (id === "tools.web.search.backend") {
-    return "WebSearch backend: auto uses explicitly configured Ollama, configured local SearXNG, ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict.";
+    return "WebSearch provider name (strict) or non-empty ordered chain. Default [parallel, ollama] uses anonymous Parallel then local Ollama. Keyless engines are opt-in. auto was removed; the config error prints the previous explicit order.";
   }
   if (id === "tools.web.search.maxRequestsPerRun") {
-    return "Hard ceiling from 1 to 20 on actual provider search requests in one logical runtime run; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Default 4.";
+    return "Hard ceiling from 1 to 20 on answered provider searches in one logical runtime run, including empty answers; failures are refunded. Cache hits, coalesced followers, cooldown skips, and quota skips consume no request. A separate dispatch ceiling is four times this limit. Default 4.";
   }
   if (id === "tools.web.search.searxng.endpoint") {
     return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";
   }
   if (id === "tools.web.search.ollama.baseUrl") {
-    return "Ollama origin. Defaults to local http://127.0.0.1:11434 in strict Ollama mode. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.";
+    return "Ollama origin. Defaults to local http://127.0.0.1:11434 when Ollama is selected, including in a chain. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.";
   }
   if (id === "tools.web.search.ollama.trustPublicUrl") {
     return "Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin.";
   }
   if (id === "tools.web.search.endpoint") {
-    return "Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block.";
+    return "Compatibility alias for tools.web.search.searxng.endpoint. Existing configurations remain valid; new configurations should use the provider-specific block.";
   }
   if (id === "tools.web.search.codex.model") {
     return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";
   }
+  if (id === "tools.web.fetch.provider") return "WebFetch provider name or ordered chain: local (default), parallel. Parallel cannot serve raw format, custom headers, or browser rendering. Local is built-in HTTP static acquisition/extraction; it enforces sandbox network policy but performs no robots.txt preflight. It supports raw format and allowed headers; browser rendering follows tools.web.fetch.render.";
+
+  if (id === "tools.web.search.parallel.apiKeyEnv" || id === "tools.web.fetch.parallel.apiKeyEnv") return "Optional credential environment-variable name for Parallel MCP. Omit for anonymous access; the value is read at call time and never stored in config.";
   if (id === "tools.web.fetch.render") {
     return "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.";
   }

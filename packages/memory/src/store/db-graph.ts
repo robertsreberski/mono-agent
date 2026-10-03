@@ -387,6 +387,20 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM entities`).get() as { n: number }).n;
   }
 
+  /** Bounded exact folded-name lookup; no per-turn graph inventory scan. */
+  findEntitiesByNames(names: readonly string[]): EntityRecord[] {
+    if (names.length === 0) return [];
+    if (names.length > 48 || names.some((name) => name.length > 160 || name.length === 0)) {
+      throw new Error("memory-store: entity name lookup exceeds bounds.");
+    }
+    const placeholders = names.map(() => "?").join(", ");
+    const rows = this.db.prepare(`SELECT * FROM entities WHERE id LIKE 'person:%'
+      AND mono_agent_fold_entity_name(name) IN (${placeholders}) ORDER BY id LIMIT 9`)
+      .all(...names) as Record<string, unknown>[];
+    // Nine matches may hide ambiguous identities beyond the cap; abstain.
+    return rows.length === 9 ? [] : rows.map((row) => this.entityFromRow(row));
+  }
+
   /** A bounded entity page ordered deterministically by name and id, for index projections. */
   listEntities(limit = 50, offset = 0): EntityRecord[] {
     const rows = this.db.prepare(
@@ -479,6 +493,17 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     if (this.getEntity(record.entityId) === undefined) {
       throw new Error(`memory-store: cannot associate unknown entity "${record.entityId}".`);
     }
+  }
+
+  /** A bounded recent neighbourhood for capture state reconciliation. Only
+   * canonical graph associations count; orphaned or invalidated rows do not. */
+  memoriesForEntity(entityId: string, limit = 24): MemoryRecord[] {
+    const ids = this.db.prepare(
+      `SELECT m.id FROM memory_entities me JOIN memories m ON m.id = me.memory_id
+       WHERE me.entity_id = ? AND m.status = 'open'
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+    ).all(entityId, Math.min(Math.max(1, limit), 24)) as Array<{ id: string }>;
+    return ids.flatMap(({ id }) => { const record = this.get(id); return record === undefined ? [] : [record]; });
   }
 
   associationsForMemory(memoryId: string): MemoryEntityAssociation[] {
@@ -603,6 +628,44 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
       return true;
     });
     return tx();
+  }
+
+  /** Atomically mirror only graph records and memory-derived rows affected by a capture intent. */
+  applyCanonicalGraphDelta(
+    expectedMemories: readonly CanonicalGraphMemoryRecord[],
+    projection: CanonicalGraphReplacement,
+  ): void {
+    const normalized = validateCanonicalGraphReplacement(expectedMemories, projection);
+    this.db.transaction(() => {
+      for (const expected of normalized.memories) {
+        const current = this.db.prepare(
+          `SELECT status, text, created_at FROM memories WHERE id = ?`,
+        ).get(expected.id) as { status: string; text: string; created_at: string } | undefined;
+        if (current === undefined || current.status !== expected.status
+          || current.text !== expected.text || current.created_at !== expected.createdAt) {
+          throw new Error("memory-store: canonical graph delta lost memory compare-and-swap.");
+        }
+      }
+      for (const entity of normalized.entities) this.mirrorCanonicalEntity(entity);
+      for (const relation of normalized.relations) this.mirrorCanonicalRelation(relation);
+      const deleteAssociations = this.db.prepare(`DELETE FROM memory_entities WHERE memory_id = ?`);
+      const deleteSupports = this.db.prepare(`DELETE FROM edges WHERE src = ? AND kind IN ('supports','about')`);
+      const setCollection = this.db.prepare(`UPDATE memories SET collection = ? WHERE id = ?`);
+      for (const memory of normalized.memories) {
+        deleteAssociations.run(memory.id);
+        deleteSupports.run(memory.id);
+        if (setCollection.run(null, memory.id).changes !== 1) {
+          throw new Error("memory-store: canonical graph delta lost memory endpoint.");
+        }
+      }
+      for (const association of normalized.associations) this.mirrorCanonicalAssociation(association);
+      for (const support of normalized.supports) {
+        this.addEdge(support.memoryId, support.entityId, "supports", support.weight, support.createdAt);
+        if (setCollection.run(support.collection, support.memoryId).changes !== 1) {
+          throw new Error("memory-store: canonical graph delta lost support endpoint.");
+        }
+      }
+    })();
   }
 
   /** Provider-free graph inventory and derivation inputs from one SQLite read transaction. */

@@ -60,6 +60,18 @@ describe("createThreadPersistence", () => {
     await deleteDatabase();
   });
 
+  it("does not write a transient manual compaction hint to device cache", async () => {
+    const active = thread("alpha-thread", "alpha", { compaction: {
+      status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z",
+    } });
+    const writer = createThreadPersistence();
+    await writer.save({ entries: [entry(active.id, { thread: active })], snapshot: snapshot(),
+      bucket: { key: "alpha\0active", threads: [active], nextCursor: null } });
+    const restored = await createThreadPersistence().hydrate();
+    expect(restored?.threads[0]?.thread.compaction).toBeUndefined();
+    expect(restored?.buckets[0]?.threads[0]?.compaction).toBeUndefined();
+  });
+
   it("takes over a database a previous build wrote at version 1", async () => {
     // The upgrade is the one path no other case exercises: every other test
     // starts from an empty database and creates version 2 outright. A phone
@@ -143,6 +155,56 @@ describe("createThreadPersistence", () => {
     // Nothing about any of that disabled the device store.
     expect(debug).not.toHaveBeenCalled();
     debug.mockRestore();
+  });
+
+  it("round-trips marker rows and ignores legacy sidecars while discarding their validator", async () => {
+    const marker = { ...message("marker", [{ type: "conversation-marker", kind: "resumed", at: "2026-09-16T10:00:00Z", previousMessageAt: "2026-09-16T08:00:00Z", idleMs: 7_200_000 }]), role: "system" as const, seq: 0 };
+    const store = createThreadPersistence();
+    await store.save({ entries: [entry("alpha-thread", { messages: [marker], etag: "old-validator" })] });
+    expect((await store.hydrate())?.threads[0]?.messages).toEqual([marker]);
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(PERSISTENCE_DB_NAME, PERSISTENCE_DB_VERSION);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction("threads", "readwrite");
+        const table = tx.objectStore("threads");
+        const get = table.get("alpha-thread");
+        get.onsuccess = () => table.put({ ...get.result, projectTransitions: [{ obsolete: true }], modelTransitions: [] });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      open.onerror = () => reject(open.error);
+    });
+    const held = (await createThreadPersistence().hydrate())?.threads[0];
+    expect(held?.messages).toEqual([marker]);
+    expect(held).not.toHaveProperty("projectTransitions");
+    expect(held).not.toHaveProperty("modelTransitions");
+    expect(held).not.toHaveProperty("etag");
+    store.close();
+  });
+
+  it("hides future marker kinds on device hydration without discarding the conversation", async () => {
+    const store = createThreadPersistence();
+    await store.save({ entries: [entry("alpha-thread", { messages: [message("answer", [{ type: "text", text: "Ready" }])], etag: "old" })] });
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(PERSISTENCE_DB_NAME, PERSISTENCE_DB_VERSION);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction("threads", "readwrite");
+        const table = tx.objectStore("threads");
+        const get = table.get("alpha-thread");
+        get.onsuccess = () => table.put({ ...get.result, messages: [{ ...get.result.messages[0], parts: [
+          ...get.result.messages[0].parts, { type: "conversation-marker", kind: "future", at: "2026-01-15T10:00:00Z" },
+        ] }] });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      open.onerror = () => reject(open.error);
+    });
+    const held = (await createThreadPersistence().hydrate())?.threads[0];
+    expect(held?.messages[0]?.parts).toEqual([{ type: "text", text: "Ready" }]);
+    expect(held).not.toHaveProperty("etag");
+    store.close();
   });
 
   it("hands back the conversations it was given, with their cursors and validators", async () => {

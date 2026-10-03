@@ -131,6 +131,38 @@ describe("ProjectPage", () => {
     expect(store().openProjectById).toHaveBeenCalledWith("web");
   });
 
+  it("names a mirrored Telegram topic without offering its history", () => {
+    const external = { id: "ext-1", channel: "telegram" as const, label: "Trips › Flights", state: "open" as const, projectId: "web", lastSeenAt: "2026-09-28T09:00:00.000Z" };
+    render(<ProjectPage project={{ ...web, external }} />);
+    const row = screen.getByRole("group", { name: "Telegram topic Trips › Flights" });
+    expect(row).toHaveTextContent("Trips › Flights");
+    expect(row).toHaveTextContent("Telegram · history not viewable here");
+    expect(row.querySelector("button, a")).toBeNull();
+    expect(row).not.toHaveTextContent("Telegram topic gone");
+  });
+
+  it("shows closed and gone Telegram topics honestly", () => {
+    const external = { id: "ext-1", channel: "telegram" as const, label: "Trips › Flights", state: "gone" as const, projectId: "web", lastSeenAt: "2026-09-28T09:00:00.000Z" };
+    const { rerender } = render(<ProjectPage project={{ ...web, external }} />);
+    expect(screen.getByText("Telegram topic gone")).toBeVisible();
+    rerender(<ProjectPage project={{ ...web, external: { ...external, state: "closed" } }} />);
+    expect(screen.getByText("Closed in Telegram")).toBeVisible();
+  });
+
+  it("counts the Telegram topic as a conversation and never claims the project is empty", () => {
+    storeMock.current = createStore({ projectMembers: [] });
+    const external = { id: "ext-1", channel: "telegram" as const, label: "Trips › Flights", state: "open" as const, projectId: "web", lastSeenAt: "2026-09-28T09:00:00.000Z" };
+    render(<ProjectPage project={{ ...web, conversationCount: 0, runningCount: 0, monthUsd: undefined, external }} />);
+    expect(screen.getByText("1 conversation · 0 running")).toBeVisible();
+    expect(screen.queryByText("No conversations yet")).toBeNull();
+    expect(screen.getByRole("group", { name: "Telegram topic Trips › Flights" })).toBeVisible();
+  });
+
+  it("renders no Telegram row for an ordinary project", () => {
+    render(<ProjectPage project={web} />);
+    expect(screen.queryByRole("group", { name: /Telegram topic/u })).toBeNull();
+  });
+
   it("says loading and empty instead of claiming either", () => {
     storeMock.current = createStore({ projectMembers: [], projectMembersLoading: true });
     render(<ProjectPage project={web} />);

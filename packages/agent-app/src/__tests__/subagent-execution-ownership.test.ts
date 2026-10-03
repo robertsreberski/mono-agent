@@ -53,6 +53,17 @@ describe("durable subagent ownership predicate", () => {
 });
 
 describe("strict bounded ownership schema", () => {
+  it("loads old dispositions and restricts timeout certificates to retained settled timeouts", () => {
+    const value = ownership(); value.owner.settlement = "settled"; value.revoked = true;
+    value.disposition = { status: "timeout", reason: "timeout", continuity: "unknown" };
+    expect(isSubagentExecutionOwnership(value)).toBe(true);
+    value.disposition = { status: "timeout", reason: "timeout", continuity: "retained", certifiedTimeout: true };
+    expect(isSubagentExecutionOwnership(value)).toBe(true);
+    for (const disposition of [{ ...value.disposition, reason: "failed" }, { ...value.disposition, continuity: "unknown" },
+      { ...value.disposition, status: "cancelled" }, { ...value.disposition, certifiedTimeout: false }]) {
+      expect(isSubagentExecutionOwnership({ ...value, disposition })).toBe(false);
+    }
+  });
   it("accepts pre-launch, active and released identities without raw command contents", () => {
     const value = ownership(); expect(isSubagentExecutionOwnership(value)).toBe(true);
     value.command = { ...command(), state: "preparing", pid: null, pgid: null, incarnation: null };
@@ -84,4 +95,22 @@ describe("strict bounded ownership schema", () => {
   ])("rejects unsafe process identities before signaling: %j", (patch) => {
     expect(isSubagentOwnedCommand({ ...command(), ...patch })).toBe(false);
   });
+});
+
+
+it("validates intentional stop certificates without weakening ownership or publication holds", () => {
+  const value = ownership(); value.parentStopRequested = true;
+  expect(isSubagentExecutionOwnership(value)).toBe(true);
+  expect(isSubagentExecutionOwnership({ ...value, parentStopRequested: false })).toBe(false);
+  value.disposition = { status: "cancelled", reason: "cancelled", continuity: "retained", resumeAfterStop: true };
+  expect(isSubagentExecutionOwnership(value)).toBe(false); // still running
+  value.owner.settlement = "settled"; value.revoked = true;
+  expect(isSubagentExecutionOwnership(value)).toBe(true);
+  expect(isSubagentExecutionOwnership({ ...value, parentStopRequested: undefined })).toBe(false);
+  expect(isSubagentExecutionOwnership({ ...value, disposition: { ...value.disposition, continuity: "unknown" } })).toBe(false);
+  expect(isSubagentExecutionOwnership({ ...value, disposition: { ...value.disposition, status: "timeout" } })).toBe(false);
+  value.command = { ...command(), state: "cleanup_unknown" }; value.seenCalls = [value.command.callKey];
+  expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(true);
+  value.command.state = "released";
+  expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(true); // pending publication
 });

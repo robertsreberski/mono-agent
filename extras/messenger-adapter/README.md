@@ -288,10 +288,10 @@ memory, or an operator UI.
 
 ## Related Documentation
 
-- [Messenger channel guide](https://mono-agent-docs.vercel.app/channels/messenger/)
-- [Channels overview](https://mono-agent-docs.vercel.app/channels/)
-- [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
-- [Write your own channel adapter](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
+- [Messenger channel guide](https://docs.mono-agent.dev/channels/messenger/)
+- [Channels overview](https://docs.mono-agent.dev/channels/)
+- [Delivery and send tools](https://docs.mono-agent.dev/channels/delivery-and-send-tools/)
+- [Write your own channel adapter](https://docs.mono-agent.dev/programmatic/custom-channels/)
 
 ## Verification
 

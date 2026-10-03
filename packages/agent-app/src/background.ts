@@ -1,7 +1,14 @@
+import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
+import {
+  clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
+  readLaunchdMaintenanceActivityStatus, MaintenanceDeferred, logPermissionRepairNeeded,
+  type MaintenanceActivityRequest, type MaintenanceReason,
+} from "./launchd-maintenance-activity.js";
+import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, open, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
@@ -9,16 +16,15 @@ import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import {
-  describeSensitiveDataExportWarning,
-  phoenixAppBaseUrl,
+  resolveAppTraceGlobalDiscovery,
   resolveAppTraceRegistryDir,
   resolveAppTraceStaleAfterMs,
+  resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
-  bootout,
   bootstrap,
   buildLaunchdMaintenancePlistXml,
   buildPlistXml,
@@ -74,6 +80,7 @@ import {
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
 import { removeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
+import { clearLaunchdSnapshotRefusal, readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "./launchd-snapshot-refusal.js";
 import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
 import type { OwnerPrivateLock } from "./owner-private-lock.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
@@ -153,6 +160,14 @@ export interface InstanceTarget {
   readonly configPath: string;
   readonly label: string;
   readonly registryDir: string;
+  /**
+   * Machine-wide registry that holds the worker's best-effort manifest mirror
+   * when `registryDir` differs from it. A relative `traceability.registryDir`
+   * is resolved against the caller's cwd, so a control command run outside the
+   * agent folder finds the worker only through this mirror. Read by
+   * `status` only; lifecycle commands never act on mirror entries.
+   */
+  readonly mirrorRegistryDir?: string;
   readonly staleAfterMs: number;
   readonly paths: LaunchdPaths;
   readonly nodePath: string;
@@ -218,16 +233,19 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     canonicalBackgroundConfigPath(lexicalCwd, input.args.configPath),
   ]);
   const configInput = { env: input.env, cwd, configPath };
-  const [registryDir, staleAfterMs] = await Promise.all([
+  const [registryDir, staleAfterMs, globalDiscovery] = await Promise.all([
     resolveAppTraceRegistryDir(configInput),
     resolveAppTraceStaleAfterMs(configInput),
+    resolveAppTraceGlobalDiscovery(configInput),
   ]);
+  const globalRegistryDir = resolveGlobalTraceRegistryDir(input.env);
   const label = deriveLaunchdLabel(configPath);
   return {
     cwd,
     configPath,
     label,
     registryDir,
+    ...(globalDiscovery && resolve(registryDir) !== globalRegistryDir ? { mirrorRegistryDir: globalRegistryDir } : {}),
     staleAfterMs,
     paths: launchdPathsFor(label),
     nodePath: process.execPath,
@@ -272,6 +290,11 @@ export async function canonicalBackgroundConfigPath(
 }
 
 export interface BackgroundDeps {
+  readonly maintenanceNotNeeded?: () => Promise<void>;
+  readonly maintenanceCompleted?: () => Promise<void>;
+  readonly clearMaintenanceDeferral?: (target: BackgroundLifecycleTarget) => Promise<void>;
+  readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
+  readonly allowUnattendedStop?: (target: BackgroundLifecycleTarget, request: MaintenanceActivityRequest) => Promise<boolean>;
   readonly runner: LaunchctlRunner;
   readonly getuid: () => number;
   readonly currentPid: () => number;
@@ -335,6 +358,8 @@ export interface BackgroundDeps {
   ) => Promise<(() => Promise<void>) | undefined>;
   /** Hold KeepAlive respawns until the replacement runtime and plist are committed. */
   readonly acquireRuntimePublicationBarrier?: (target: BackgroundLifecycleTarget) => Promise<OwnerPrivateLock | undefined>;
+  readonly resolveApprovedSnapshot?: (binding: ApprovedBackgroundSnapshotBinding) => BackgroundSnapshot;
+  readonly invalidateApprovedSnapshots?: (target: BackgroundLifecycleTarget) => Promise<void>;
   readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
@@ -343,7 +368,9 @@ export interface BackgroundDeps {
 }
 
 export function defaultBackgroundDeps(): BackgroundDeps {
-  return {
+  const deps: BackgroundDeps = {
+    clearMaintenanceDeferral,
+    allowUnattendedStop: async (target, request) => allowUnattendedMaintenanceStop(target, deps, request),
     runner: makeLaunchctlRunner(),
     getuid: () => process.getuid?.() ?? 0,
     currentPid: () => process.pid,
@@ -391,6 +418,8 @@ export function defaultBackgroundDeps(): BackgroundDeps {
       env: target.configurationEnvironment,
     }),
     acquireLifecycleLock: acquireFilesystemLifecycleLock,
+    resolveApprovedSnapshot: resolveApprovedBackgroundSnapshot,
+    invalidateApprovedSnapshots: (target) => invalidateApprovedBackgroundSnapshots({ label: target.label, managedRoot: dirname(target.paths.logDir) }),
     acquireRuntimePublicationBarrier: (target) => acquireManagedRuntimePublicationBarrier({
       label: target.label,
       managedRoot: dirname(target.paths.logDir),
@@ -404,6 +433,7 @@ export function defaultBackgroundDeps(): BackgroundDeps {
         child.on("close", (code) => resolvePromise(code ?? 0));
       }),
   };
+  return deps;
 }
 
 export interface ReadyPollOptions extends PollOptions {
@@ -426,7 +456,7 @@ export type BackgroundLaunchResult =
   | {
       readonly ok: false;
       readonly action: "start" | "restart";
-      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "shared-contention" | "launchctl" | "readiness" | "timeout";
+      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "deferred-busy" | "shared-contention" | "launchctl" | "readiness" | "timeout";
     };
 
 export async function startBackground(
@@ -508,17 +538,24 @@ async function maintainLaunchdControllerWithLifecycleLease(
       ? undefined
       : sources.find((candidate) => candidate.pid === worker.pid);
     const durableSnapshotStillMatches = await snapshotStillMatches(target, deps);
-    const workerHealthy = worker.loaded
+    const workerReady = worker.loaded
       && worker.pid !== undefined
       && deps.isAlive(worker.pid)
       && source !== undefined
-      && isReady(source)
-      && snapshotMetadataMatches(source, target.expectedSnapshot)
-      && durableSnapshotStillMatches;
+      && isReady(source);
+    const snapshotMatches = source !== undefined
+      && snapshotMetadataMatches(source, target.expectedSnapshot) && durableSnapshotStillMatches;
+    const workerHealthy = workerReady && snapshotMatches;
     const definitionMatches = worker.definition !== undefined
-      && managedWorkerDefinitionMatchesTarget(worker.definition, target);
+      && managedWorkerDefinitionMatchesTarget(worker.definition, target, deps);
     const runtimeMatches = loadedIdentity !== undefined
       && sameManagedRuntimeIdentity(loadedIdentity, desiredIdentity);
+    const recoveryReasons: MaintenanceReason[] = [
+      ...(!snapshotMatches ? ["snapshot-drift" as const] : []),
+      ...(!definitionMatches ? ["definition-drift" as const] : []),
+      ...(loadedIdentity === undefined ? ["runtime-unverified" as const] : []),
+      ...(options.sourceAvailable && !runtimeMatches ? ["runtime-upgrade" as const] : []),
+    ];
     const needsRecovery = !workerHealthy
       || !definitionMatches
       || loadedIdentity === undefined
@@ -543,9 +580,10 @@ async function maintainLaunchdControllerWithLifecycleLease(
           preserveMaintenanceService: true,
           preserveDefinitionsOnFailure: true,
           sharedLockMode: "automatic",
+          unattendedMaintenance: { reasons: recoveryReasons },
         },
       );
-      resultCode = recovered.ok || recovered.reason === "shared-contention" ? 0 : 1;
+      resultCode = recovered.ok || recovered.reason === "shared-contention" || recovered.reason === "deferred-busy" ? 0 : 1;
     }
   } catch (error) {
     reportMaintenanceFailure(target, deps, "reconcile the managed worker", error);
@@ -554,7 +592,7 @@ async function maintainLaunchdControllerWithLifecycleLease(
   return maintainLogsOnly
     ? await maintainLaunchdLogsWithLifecycleLockOperation(
         target,
-        deps,
+        unattendedLogDeps(target, deps),
         options.controlPoll ?? DEFAULT_CONTROL_POLL,
         async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
       )
@@ -564,7 +602,16 @@ async function maintainLaunchdControllerWithLifecycleLease(
 function managedWorkerDefinitionMatchesTarget(
   definition: LaunchdManagedWorkerDefinition,
   target: InstanceTarget,
+  deps: BackgroundDeps,
 ): boolean {
+  let effective: string;
+  try {
+    effective = deps.resolveApprovedSnapshot === undefined ? definition.expectedBackgroundSnapshot
+      : encodeBackgroundSnapshot(deps.resolveApprovedSnapshot({
+        label: target.label, managedRoot: dirname(target.paths.logDir), configPath: definition.configPath,
+        encodedSnapshot: definition.expectedBackgroundSnapshot, launchProof: definition.expectedManagedRuntimeLaunch,
+      }));
+  } catch { return false; }
   return target.expectedSnapshot !== undefined
     && definition.plistPath === target.paths.plistPath
     && definition.nodePath === target.nodePath
@@ -573,7 +620,7 @@ function managedWorkerDefinitionMatchesTarget(
     && definition.envFile === target.envFile
     && definition.stdoutPath === target.paths.stdoutPath
     && definition.stderrPath === target.paths.stderrPath
-    && definition.expectedBackgroundSnapshot === encodeBackgroundSnapshot(target.expectedSnapshot)
+    && effective === encodeBackgroundSnapshot(target.expectedSnapshot)
     && sameStringRecord(definition.environment, target.environment);
 }
 
@@ -618,6 +665,7 @@ export async function forceRestartBackground(
     const controlPoll = poll ?? DEFAULT_CONTROL_POLL;
     const stopCode = await stopBackgroundUnlocked(target, deps, controlPoll);
     if (stopCode !== 0) return stopCode;
+    await deps.invalidateApprovedSnapshots?.(target);
     await whileStopped();
     return (await ensureBackgroundReadyUnlocked(
       target,
@@ -647,7 +695,7 @@ export async function maintainLaunchdLogs(
 ): Promise<number> {
   return await maintainLaunchdLogsOperation(
     target,
-    deps,
+    unattendedLogDeps(target, deps),
     poll,
     async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
   );
@@ -727,7 +775,22 @@ async function ensureBackgroundReadyUnlocked(
   );
 }
 
+function unattendedLogDeps(target: BackgroundLifecycleTarget, deps: BackgroundDeps): BackgroundDeps {
+  const { clearMaintenanceDeferral, allowUnattendedStop } = deps;
+  return {
+    ...deps,
+    ...(clearMaintenanceDeferral === undefined ? {} : {
+      maintenanceNotNeeded: () => clearMaintenanceDeferral(target),
+      maintenanceCompleted: () => clearMaintenanceDeferral(target),
+    }),
+    ...(allowUnattendedStop === undefined ? {} : {
+      unattendedLogStop: (request: MaintenanceActivityRequest) => allowUnattendedStop(target, request),
+    }),
+  };
+}
+
 interface BackgroundReadyInternalOptions {
+  readonly unattendedMaintenance?: MaintenanceActivityRequest;
   /** Recovery helpers cannot boot out and wait for their own launchd process. */
   readonly preserveMaintenanceService?: boolean;
   /** Scheduled recovery keeps both definitions so the calendar schedule can retry. */
@@ -848,6 +911,9 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
   let prepared = false;
   deps.stdout(ui.hint("Replacing the managed worker…"));
   try {
+    const priorInspection = options.unattendedMaintenance === undefined ? undefined : await deps.inspectLaunchdLogs(launchTarget.paths);
+    if (priorInspection !== undefined && !priorInspection.canMaintain) throw new Error("Unsafe launchd log inventory before unattended replacement.");
+    const permissionRepair = priorInspection !== undefined && logPermissionRepairNeeded(priorInspection);
     await prepareLaunchdDirectories(launchTarget, deps);
     let interruptedMaintenance = await deps.readLaunchdLogMaintenanceIntent(launchTarget.paths);
     if (interruptedMaintenance?.phase === "stopping" || interruptedMaintenance?.phase === "restoring") {
@@ -858,6 +924,24 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
         );
       }
     }
+    const checkUnattendedActivity = async (): Promise<void> => {
+      if (options.unattendedMaintenance !== undefined && deps.allowUnattendedStop !== undefined) {
+        const inspection = await deps.inspectLaunchdLogs(launchTarget.paths);
+        if (!inspection.canMaintain) throw new Error("Unsafe launchd log inventory before unattended replacement.");
+        // Runtime preparation can outlast startup. The override belongs to the
+        // current launchd PID's readiness NOW, not the reconciliation-entry trace.
+        const current = await launchdServiceInfo(deps.runner, launchTarget.label, uid);
+        const currentSource = (await findInstances(launchTarget, deps)).find((source) => source.pid === current.pid);
+        const readyNow = current.loaded && current.pid !== undefined && deps.isAlive(current.pid)
+          && currentSource !== undefined && isReady(currentSource);
+        const override = interruptedMaintenance !== undefined || inspection.pendingTransaction
+          ? "transaction-recovery" as const
+          : permissionRepair || logPermissionRepairNeeded(inspection) ? "permission-repair" as const
+          : !readyNow ? "worker-unready" as const : undefined;
+        if (!await deps.allowUnattendedStop(launchTarget, { reasons: options.unattendedMaintenance.reasons, inspection,
+          ...(override === undefined ? {} : { override }) })) throw new MaintenanceDeferred();
+      }
+    };
     outcome = await bootstrapOrRestart(launchTarget, deps, uid, controlPoll, async () => {
       const stoppedIntent = interruptedMaintenance;
       if (stoppedIntent?.phase === "stopped") {
@@ -882,14 +966,16 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       // Once journal recovery finishes under the stopped-writer proof, cancel
       // its old restore authority before replacing either plist.
       await deps.clearLaunchdLogMaintenanceIntent(launchTarget.paths, interruptedMaintenance);
+      await deps.invalidateApprovedSnapshots?.(launchTarget);
       await writePlists(launchTarget, deps);
       sinceMs = deps.now();
       prepared = true;
       // The replacement plist now contains the finalized-runtime proof. Let
       // launchd respawn only after the stopped-window commit is complete.
       await releaseBarrier();
-    }, { preserveMaintenanceService: options.preserveMaintenanceService === true });
+    }, { preserveMaintenanceService: options.preserveMaintenanceService === true, checkUnattendedActivity });
   } catch (error) {
+    if (error instanceof MaintenanceDeferred) return { ok: false, action: "start", reason: "deferred-busy" };
     reportLifecycleException(
       launchTarget,
       deps,
@@ -937,6 +1023,13 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
     const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll, options);
     reportReadinessCleanup(launchTarget, deps, stopped, options);
     return { ok: false, action, reason: "timeout" };
+  }
+  // Successful explicit start/restart also satisfies an older helper episode.
+  // Stop deliberately leaves it; no completion is claimed until readiness proof.
+  try { await deps.clearMaintenanceDeferral?.(launchTarget); }
+  catch (error) {
+    reportLifecycleException(launchTarget, deps, "acknowledge completed maintenance", error);
+    return { ok: false, action, reason: "preparation" };
   }
   const completedAction = outcome.restarted ? "restarted" as const : "started" as const;
   printInstanceInfo(ready, launchTarget, deps, completedAction);
@@ -1124,13 +1217,6 @@ async function readExactFileHandle(handle: FileHandle, size: number, description
   return contents;
 }
 
-function assertOwnerDirectory(details: Stats, path: string, description: string): void {
-  if (!details.isDirectory() || details.isSymbolicLink()) {
-    throw new Error(`${description} ${path} must be a real directory.`);
-  }
-  assertCurrentUserOwns(details, path, description);
-}
-
 function assertOwnerRegularFile(details: Stats, path: string, description: string): void {
   if (!details.isFile() || details.isSymbolicLink()) {
     throw new Error(`${description} ${path} must be a regular non-symbolic-link file.`);
@@ -1177,7 +1263,7 @@ async function bootstrapOrRestart(
   poll: PollOptions,
   beforeMainBootout: () => Promise<void>,
   whileStopped: (mainStopProven: boolean) => Promise<void>,
-  options: { readonly preserveMaintenanceService?: boolean } = {},
+  options: { readonly preserveMaintenanceService?: boolean; readonly checkUnattendedActivity?: () => Promise<void> } = {},
 ): Promise<LaunchOutcome> {
   const maintenance = maintenancePathsForTarget(target);
   const [service, maintenanceService] = await Promise.all([
@@ -1215,6 +1301,8 @@ async function bootstrapOrRestart(
         .filter((source) => source.health !== "stopped")
         .map((source) => source.pid),
     ]);
+    // Outside unloadLaunchdService: a deferral is not a failed bootout.
+    await options.checkUnattendedActivity?.();
     const mainStopped = await unloadLaunchdService(
       target.label,
       service,
@@ -1359,7 +1447,9 @@ export async function stopBackground(
     return 1;
   }
   try {
-    return await stopBackgroundUnlocked(target, deps, poll);
+    const code = await stopBackgroundUnlocked(target, deps, poll);
+    if (code === 0) await deps.invalidateApprovedSnapshots?.(target);
+    return code;
   } finally {
     await release().catch((error: unknown) => {
       deps.stderr(ui.errorLine(
@@ -1500,6 +1590,7 @@ async function stopBackgroundWithSharedLogLock(
     }
     await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
     await deps.removeLaunchdLogMonitorStatus?.(target);
+    await clearLaunchdSnapshotRefusal(target.label, target.paths);
   } catch (error) {
     deps.stderr(ui.errorLine(`Failed to clear pending launchd-log state for ${target.label}.`));
     deps.stderr(ui.style.dim(error instanceof Error ? error.message : String(error)) + "\n");
@@ -1531,15 +1622,16 @@ export async function statusBackground(
   deps: BackgroundDeps,
   options: StatusBackgroundOptions = {},
 ): Promise<number> {
-  const [result, service] = await Promise.all([
-    deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs }),
+  const [classified, service] = await Promise.all([
+    classifyStatusSources(target, deps),
     launchdServiceInfo(deps.runner, target.label, deps.getuid()),
   ]);
-  const classified = await Promise.all(result.sources.map(async (source) => ({
-    source,
-    matches: await matchesConfig(source, target.configPath),
-  })));
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
+  // Status is diagnostic: unsafe or unreadable refusal state is reported, never fatal.
+  const snapshotRefused = await readLaunchdSnapshotRefusal(target.label, target.paths).catch((error: unknown) => {
+    deps.stderr(ui.errorLine(`Could not read the managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`));
+    return false;
+  });
   const recorded = service.pid === undefined
     ? matchingSources[0]
     : matchingSources.find((source) => source.pid === service.pid) ?? matchingSources[0];
@@ -1555,11 +1647,16 @@ export async function statusBackground(
     .filter((entry) => !entry.matches && entry.source.health !== "stopped")
     .map((entry) => entry.source);
 
+  const maintenanceActivity = await readLaunchdMaintenanceActivityStatus(target.label, target.paths).catch(() => "unavailable" as const);
+  const logMonitor = await readLaunchdLogMonitorStatus(target.label, target.paths).catch(() => "unavailable" as const);
   if (options.json === true) {
     const instance = current === undefined ? null : await assembleInstanceStatus(current, target, deps);
     deps.stdout(`${JSON.stringify({
       ok: active,
       instance,
+      maintenanceActivity: maintenanceActivity ?? null,
+      logMonitor: logMonitor ?? null,
+      ...(snapshotRefused ? { startupFailure: { reason: "snapshot-refused", message: SNAPSHOT_REFUSAL_MESSAGE } } : {}),
       others: others.map(assembleOtherInstanceStatus),
     })}\n`);
     return active ? 0 : 1;
@@ -1572,6 +1669,10 @@ export async function statusBackground(
     writeInstanceDetail(current, target, deps);
     await writeRunsHealthDetail(current, deps);
   }
+
+  if (maintenanceActivity !== undefined) deps.stdout((maintenanceActivity === "unavailable" ? "Maintenance: owner-private status is unavailable or unsafe." : describeMaintenanceActivity(maintenanceActivity)) + "\n");
+  if (logMonitor !== undefined) deps.stdout(logMonitor === "unavailable" ? "Log monitor: owner-private status is unavailable or unsafe.\n" : `Log monitor: ${logMonitor.lastOutcome}; wakes=${logMonitor.wakeCount}\n`);
+  if (snapshotRefused) deps.stdout(ui.errorLine(SNAPSHOT_REFUSAL_MESSAGE));
 
   if (others.length > 0) {
     deps.stdout("\n" + ui.rule("Other mono-agent instances"));
@@ -1624,7 +1725,6 @@ async function assembleInstanceStatus(
   deps: BackgroundDeps,
 ): Promise<Record<string, unknown>> {
   const metadata = source.metadata ?? {};
-  const observability = metadata.observability;
   const processJobs = metadata.processJobs;
   const sandbox = metadata.sandbox;
   const session = metadata.session;
@@ -1642,7 +1742,6 @@ async function assembleInstanceStatus(
     ...(source.artifactDir === undefined ? {} : { artifactDir: source.artifactDir }),
     ...(source.transports === undefined ? {} : { transports: source.transports }),
     logs: { stdout: target.paths.stdoutPath, stderr: target.paths.stderrPath },
-    ...(isPlainRecord(observability) ? { observability } : {}),
     ...(isPlainRecord(processJobs) ? { processJobs } : {}),
     ...(isPlainRecord(sandbox) ? { sandbox } : {}),
     ...(isPlainRecord(session) ? { session } : {}),
@@ -1767,6 +1866,27 @@ export function printInstanceInfo(
   deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n\n`);
   writeInstanceDetail(source, target, deps);
   deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
+}
+
+/**
+ * Status only (read-only): every source in the target's registry, classified
+ * against its config, plus every entry for the same config in the global
+ * mirror. Duplicates are kept; status picks the one whose pid is the launchd
+ * service pid. Lifecycle commands keep using {@link findInstances}.
+ */
+async function classifyStatusSources(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+): Promise<readonly { readonly source: TraceSourceListItem; readonly matches: boolean }[]> {
+  const classify = async (registryDir: string) => await Promise.all(
+    (await deps.listTraceSources({ registryDir, staleAfterMs: target.staleAfterMs })).sources.map(async (source) => ({
+      source,
+      matches: await matchesConfig(source, target.configPath),
+    })),
+  );
+  const local = await classify(target.registryDir);
+  if (target.mirrorRegistryDir === undefined) return local;
+  return [...local, ...(await classify(target.mirrorRegistryDir)).filter((entry) => entry.matches)];
 }
 
 async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Promise<readonly TraceSourceListItem[]> {
@@ -1915,11 +2035,6 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
       2,
     ),
   );
-  const observability = describeObservabilityMetadata(source);
-  if (observability !== undefined) {
-    deps.stdout(ui.rule("observability"));
-    deps.stdout(`  ${observability}\n`);
-  }
   const processJobsProtectionLines = describeProcessJobsProtectionMetadata(source);
   if (processJobsProtectionLines.length > 0) {
     deps.stdout(ui.rule("process jobs protection"));
@@ -2019,40 +2134,6 @@ function channelRecords(source: TraceSourceListItem): readonly Record<string, un
 function startedAtMs(source: TraceSourceListItem): number {
   const parsed = Date.parse(source.startedAt);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-/**
- * Format the persisted observability exporter metadata for the detached
- * `status` reader. Reads defensively (the worker persists only endpoint +
- * warning/error strings, never headers/secrets) and always notes that JSONL
- * artifacts remain local.
- */
-function describeObservabilityMetadata(source: TraceSourceListItem): string | undefined {
-  const observability = source.metadata?.observability;
-  if (observability === null || typeof observability !== "object") {
-    return undefined;
-  }
-  const record = observability as Record<string, unknown>;
-  const endpoint = record.endpoint;
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    return undefined;
-  }
-  const parts = [`phoenix ${endpoint}`];
-  const appUrl = phoenixAppBaseUrl(endpoint);
-  if (appUrl !== undefined) {
-    parts.push(`app ${appUrl}`);
-  }
-  if (record.includeSensitiveData === true) {
-    parts.push(ui.style.yellow(describeSensitiveDataExportWarning(endpoint)));
-  }
-  if (typeof record.lastWarning === "string" && record.lastWarning.length > 0) {
-    parts.push(`last warning: ${record.lastWarning}`);
-  }
-  if (typeof record.lastError === "string" && record.lastError.length > 0) {
-    parts.push(`last error: ${record.lastError}`);
-  }
-  parts.push("JSONL artifacts remain local");
-  return parts.join("; ");
 }
 
 function describeSandboxMetadata(source: TraceSourceListItem): string[] {

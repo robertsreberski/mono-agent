@@ -12,7 +12,7 @@ import type {
 
 export const MONO_AGENT_DOCS_CHUNK_URI_PREFIX = "mono-agent-docs://chunk/";
 
-const DOCS_ORIGIN = "https://mono-agent-docs.vercel.app";
+const DOCS_ORIGIN = "https://docs.mono-agent.dev";
 const SEARCH_MARKDOWN_LIMIT = 3_000;
 const READ_MARKDOWN_LIMIT = 10_000;
 const FENCE_BALANCE_RESERVE = 200;

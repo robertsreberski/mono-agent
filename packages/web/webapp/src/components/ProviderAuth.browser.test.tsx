@@ -22,13 +22,19 @@ const apiMock = vi.hoisted(() => ({
   beginProviderAuthCheck: vi.fn(),
   providerAuthCheck: vi.fn(),
   cancelProviderAuthCheck: vi.fn(),
+  latestAgentRestart: vi.fn(),
+  requestAgentRestart: vi.fn(),
+  restartStatus: vi.fn(),
 }));
 
 vi.mock("../console-store", () => ({ useConsoleStore: () => storeMock }));
-vi.mock("../api", () => ({ api: apiMock }));
+vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), api: apiMock }));
 vi.mock("./assistant-ui/ModelSelector", () => ({ ModelSelector: () => null }));
 
-import { AgentSettingsDialog } from "./AgentSettingsDialog";
+import { AgentSettingsScreen } from "./agent-settings/AgentSettingsScreen";
+function SettingsHarness({ open }: { readonly open: boolean; readonly onClose?: () => void; readonly dialogRef?: ReturnType<typeof createRef<HTMLElement>> }) {
+  return open ? <AgentSettingsScreen layout={window.matchMedia("(max-width: 900px)").matches ? "stacked" : "split"} section="providers" onClose={() => undefined} onNotice={() => undefined} /> : null;
+}
 
 const providers = [
   { providerId: "fixture-pass", label: "Fixture pass", model: "fixture-pass:cheap" },
@@ -38,6 +44,7 @@ const providers = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  apiMock.latestAgentRestart.mockResolvedValue(null);
   storeMock.selectedAgent = agent("alpha", {
     label: "Alpha",
     supportsProviderAuth: true,
@@ -74,7 +81,7 @@ beforeEach(() => {
 });
 
 function expectCompactProviderActions() {
-  const buttons = document.querySelectorAll(".provider-auth-section .secondary-button, .provider-auth-section .primary-button");
+  const buttons = document.querySelectorAll(".settings-screen .settings-button.is-compact");
   expect(buttons.length).toBeGreaterThan(0);
   for (const button of buttons) {
     expect(getComputedStyle(button).fontSize).toBe("10px");
@@ -95,11 +102,11 @@ describe("provider authentication controls in Chromium", () => {
     const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
     begin.mockReturnValueOnce(pending.promise);
     const props = { onClose: () => undefined, dialogRef: createRef<HTMLElement>() };
-    const view = render(<AgentSettingsDialog open {...props} />);
-    const name = kind === "auth" ? "Re-authenticate" : "Check access";
+    const view = render(<SettingsHarness open {...props} />);
+    const name = kind === "auth" ? /^Re-authenticate/u : "Check access";
     await userEvent.click((await screen.findAllByRole("button", { name }))[0]!);
-    view.rerender(<AgentSettingsDialog open={false} {...props} />);
-    view.rerender(<AgentSettingsDialog open {...props} />);
+    view.rerender(<SettingsHarness open={false} {...props} />);
+    view.rerender(<SettingsHarness open {...props} />);
     expect(await screen.findAllByText("Not verified")).toHaveLength(3);
     await act(async () => pending.resolve(kind === "auth" ? {
       schema: "mono-agent.provider-auth-session.v1", id: "late-closed-auth", providerId: "fixture-pass",
@@ -118,17 +125,17 @@ describe("provider authentication controls in Chromium", () => {
   });
 
   it("keeps recovery compact and neutral while one explicit faux batch reports distinct outcomes", async () => {
-    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 
     expect(await screen.findAllByText("Not verified")).toHaveLength(3);
     expect(screen.queryByText("OK")).not.toBeInTheDocument();
-    const recovery = screen.getAllByRole("button", { name: "Re-authenticate" });
+    const recovery = screen.getAllByRole("button", { name: /^Re-authenticate/u });
     expect(recovery).toHaveLength(3);
-    expect(recovery.every((button) => button.classList.contains("provider-auth-neutral-button"))).toBe(true);
+    expect(recovery.every((button) => button.classList.contains("is-ghost"))).toBe(true);
     expect(recovery.every((button) => button.getBoundingClientRect().height >= 28)).toBe(true);
 
     const run = screen.getByRole("button", { name: "Check access" });
-    expect(run.classList.contains("provider-auth-neutral-button")).toBe(true);
+    expect(run.classList.contains("is-compact")).toBe(true);
     expectCompactProviderActions();
     await userEvent.click(run);
 
@@ -176,14 +183,14 @@ describe("provider authentication controls in Chromium", () => {
         ? { ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", state: "pending", progress: "NEW FLOW ACTIVE" }
         : { ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", state: "succeeded", progress: "NEW FLOW COMPLETE" };
     });
-    const rendered = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    const rendered = render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Re-authenticate" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Re-authenticate/u }));
     await userEvent.click(screen.getByRole("button", { name: "OAuth paste-back" }));
     expect(await screen.findByText("OLD FLOW ACTIVE")).toBeVisible();
-    const restart = screen.getByRole("button", { name: "Re-authenticate" });
+    const restart = screen.getByRole("button", { name: /^Re-authenticate/u });
     expectCompactProviderActions();
-    expect(restart.classList.contains("provider-auth-neutral-button")).toBe(true);
+    expect(restart.classList.contains("is-ghost")).toBe(true);
 
     await userEvent.click(restart);
     expect(screen.getByRole("button", { name: "OAuth paste-back" })).toBeVisible();
@@ -218,7 +225,7 @@ describe("provider authentication controls in Chromium", () => {
     apiMock.providerAuthCheck.mockRejectedValue(Object.assign(new Error("expired"), {
       status: 404, code: "provider_auth_not_found",
     }));
-    const rendered = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    const rendered = render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Check access" }));
     expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();

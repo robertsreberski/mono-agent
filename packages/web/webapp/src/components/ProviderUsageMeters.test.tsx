@@ -1,17 +1,25 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
-import type { AgentSummary, ProviderUsageSnapshot } from "../types";
+import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 const mocks = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
 vi.mock("../api", () => ({ api: mocks }));
-import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
+import { formatUsageFetchedAt, ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
 const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "opencode-go", label: "OpenCode Go", plan: "Go", fetchedAt: "2026-09-14T12:00:00Z", stale: false, windows: [{ kind: "session", label: "Session", usedPercent: 0, periodMs: 18000000, resetsAt: "2026-09-14T13:00:00Z" }] }] };
 function Loader({ selected }: { selected: AgentSummary }) {
   const { snapshot: usage, refresh, refreshing, feedback } = useProviderUsage(selected);
-  return <><button onClick={() => void refresh()} disabled={refreshing}>Refresh</button><p role="status">{feedback}</p>{usage?.providers.map((item) => <ProviderUsageMeters key={item.providerId} usage={item} />)}</>;
+  return <><button onClick={() => void refresh()} disabled={refreshing}>Refresh</button><p role="status" title={feedback?.fetchedAt}>{feedback?.text}</p>{usage?.providers.map((item) => <ProviderUsageMeters key={item.providerId} usage={item} />)}</>;
 }
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); });
 describe("usage rows and lifecycle", () => {
+  it("formats the refresh time compactly: time today, short date otherwise", () => {
+    const now = new Date(2026, 8, 30, 9, 30).getTime();
+    const today = new Date(2026, 8, 30, 9, 6).getTime();
+    const earlier = new Date(2026, 8, 28, 22, 15).getTime();
+    expect(formatUsageFetchedAt(today, now)).toBe(new Date(today).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
+    expect(formatUsageFetchedAt(today, now)).not.toContain("2026");
+    expect(formatUsageFetchedAt(earlier, now)).toBe(new Date(earlier).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  });
   it("omits absent credentials without placeholders and renders fixed errors with last-good", () => {
     const view = render(<ProviderUsageMeters />);
     expect(view.container.textContent).toBe("");
@@ -46,7 +54,7 @@ describe("usage rows and lifecycle", () => {
     const next = { ...snapshot, providers: [{ ...snapshot.providers[0]!, fetchedAt: "2026-09-14T12:01:00Z", windows: [{ ...snapshot.providers[0]!.windows[0]!, usedPercent: 54 }] }] };
     await act(async () => finish(next));
     expect(screen.getByRole("progressbar")).toHaveAttribute("value", "54");
-    expect(screen.getByText(/Usage refreshed. Last fetched/)).toHaveTextContent(new Date(next.providers[0]!.fetchedAt).toLocaleString());
+    expect(screen.getByText(/^Updated /)).toHaveAttribute("title", new Date(next.providers[0]!.fetchedAt).toISOString());
     mocks.refreshProviderUsage.mockRejectedValueOnce(new Error("RAW_SECRET"));
     fireEvent.click(screen.getByRole("button"));
     await screen.findByText(/Usage refresh failed/);
@@ -71,7 +79,7 @@ describe("usage rows and lifecycle", () => {
     expect(signal.aborted).toBe(true);
     await act(async () => finish(snapshot));
     expect(screen.queryByRole("progressbar")).toBeNull();
-    expect(screen.queryByText(/Usage refreshed/)).toBeNull();
+    expect(screen.queryByText(/^Updated /)).toBeNull();
   });
   it("does not let an older automatic response overwrite a newer manual result", async () => {
     let automatic!: (value: ProviderUsageSnapshot) => void;
@@ -90,7 +98,7 @@ describe("usage rows and lifecycle", () => {
     await screen.findByRole("progressbar");
     fireEvent.click(screen.getByRole("button"));
     await screen.findByText(/Some usage could not be refreshed/);
-    expect(screen.queryByText(/Usage refreshed/)).toBeNull();
+    expect(screen.queryByText(/^Updated /)).toBeNull();
     expect(screen.getByRole("progressbar")).toHaveAttribute("value", "0");
   });
   it("polls at five minutes, updates countdown, and stops on unmount", async () => {
@@ -105,5 +113,107 @@ describe("usage rows and lifecycle", () => {
     view.unmount();
     await vi.advanceTimersByTimeAsync(600_000);
     expect(mocks.providerUsage).toHaveBeenCalledTimes(2);
+  });
+});
+const weekMs = 604800000;
+const weekReset = "2026-09-26T08:10:22.000Z";
+function codexUsage(usedPercent: number, stale = false): ProviderUsage {
+  return { providerId: "openai-codex", label: "Codex", plan: "Pro 20x", fetchedAt: "2026-09-22T09:35:00.000Z", stale,
+    windows: [{ kind: "weekly", label: "Weekly", usedPercent, periodMs: weekMs, resetsAt: weekReset }] };
+}
+describe("burn-pace projection lines", () => {
+  it("renders healthy windows with a tick, chip and unused note instead of a warning", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    // 25 % at half the window: pace 0.5, on track, half the quota unused.
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(25), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.queryByText(/empty/)).toBeNull();
+    expect(screen.getByText(/50% unused/)).toHaveClass("provider-usage-projection", "is-unused");
+    expect(screen.getByText("0.5×")).toHaveClass("provider-usage-pace", "is-steady");
+    // Used 25 % against 50 % elapsed: a soft headroom tail covers the unclaimed quarter.
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveStyle({ left: "50%" });
+    expect(view.container.querySelector(".provider-usage-tick")).not.toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 25 %, 50 % of the window elapsed, pace 0.5x");
+  });
+  it("shows the unused note at exactly 5 % and hides it below", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(47.5), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.getByText(/5% unused/)).toBeInTheDocument();
+    view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(48), fetchedAt: "2026-09-22T20:10:22.000Z" }} />);
+    expect(screen.queryByText(/% unused/)).toBeNull();
+    // The tick and chip still render: the trajectory is a fact even without a note.
+    expect(view.container.querySelector(".provider-usage-tick")).not.toBeNull();
+    expect(screen.getByText("1.0×")).toBeInTheDocument();
+  });
+  it("marks ahead and unsustainable tiers with distinct classes and accessible names", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={codexUsage(55)} />);
+    const ahead = screen.getByText(/empty/);
+    expect(ahead).toHaveClass("provider-usage-projection", "is-ahead");
+    expect(ahead.textContent).toMatch(/empty .+ early/);
+    expect(ahead.getAttribute("title")).toMatch(/Projected to run out .* at current pace 1\.26x/);
+    // A window is never both ahead and under: the run-out excludes the unused note.
+    expect(screen.queryByText(/% unused/)).toBeNull();
+    expect(screen.getByText("1.3×")).toHaveClass("provider-usage-pace", "is-ahead");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 55 %, 44 % of the window elapsed, pace 1.3x, projected to run out before reset (ahead)");
+    view.rerender(<ProviderUsageMeters usage={codexUsage(96)} />);
+    const exhausted = screen.getByText(/empty/);
+    expect(exhausted).toHaveClass("provider-usage-projection", "is-unsustainable");
+    expect(exhausted.textContent).toMatch(/empty .+ early/);
+    expect(screen.getByText("2.2×")).toHaveClass("provider-usage-pace", "is-unsustainable");
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/projected to run out before reset \(unsustainable\)/);
+    expect(exhausted).not.toHaveClass("is-ahead");
+  });
+  it("suppresses the chip and both lines at low confidence while keeping the tick", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
+    // 8 % elapsed with 50 % burned: 10x pace, but too early to say so.
+    const view = render(<ProviderUsageMeters usage={codexUsage(50, false)} />);
+    view.rerender(<ProviderUsageMeters usage={{ ...codexUsage(50, false), fetchedAt: "2026-09-19T16:34:22.000Z" }} />);
+    expect(screen.queryByText(/empty/)).toBeNull();
+    expect(screen.queryByText(/% unused/)).toBeNull();
+    expect(view.container.querySelector(".provider-usage-pace")).toBeNull();
+    // Over pace but too early to say so: the cap sits behind the fill, no alarm colour.
+    expect(view.container.querySelector(".provider-usage-tick")).toHaveClass("is-passed");
+    expect(screen.getByRole("progressbar").getAttribute("aria-label")).toMatch(/pace 10\.0x/);
+  });
+  it("keeps the anchored projection unchanged on stale snapshots as wall-clock advances", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    render(<ProviderUsageMeters usage={codexUsage(96, true)} />);
+    expect(screen.getByText("Last known usage")).toBeInTheDocument();
+    const line = screen.getByText(/empty/).textContent;
+    // Same measurement, later wall-clock: the anchor does not move, so the lead stays put.
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByText(/empty/).textContent).toBe(line);
+  });
+});
+
+describe("compact plan meters", () => {
+  it("keeps the accessible projection and puts countdown, pace and headroom in one detail row", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(25, true), fetchedAt: "2026-09-22T20:10:22.000Z" }} density="compact" />);
+    const detail = view.container.querySelector(".context-display-plan-detail")!;
+    expect(detail).toHaveTextContent("Resets 3d 20h");
+    expect(detail).toHaveTextContent("0.5×");
+    expect(detail).toHaveTextContent("50% unused");
+    expect(screen.queryByText("Last known usage")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 25 %, 50 % of the window elapsed, pace 0.5x");
+    expect(view.container.querySelector(".context-display-plan-bar .provider-usage-tick")).toHaveStyle({ left: "50%" });
+    view.rerender(<ProviderUsageMeters usage={codexUsage(55)} density="compact" />);
+    expect(screen.getByText(/empty/)).toHaveClass("is-ahead");
+    view.rerender(<ProviderUsageMeters usage={codexUsage(96)} density="compact" />);
+    expect(screen.getByText(/empty/)).toHaveClass("is-unsustainable");
+  });
+  it("shows only the reset at low confidence and no row without a reset", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
+    const view = render(<ProviderUsageMeters density="compact" usage={{ ...codexUsage(50), fetchedAt: "2026-09-19T16:34:22.000Z" }} />);
+    expect(view.container.querySelector(".context-display-plan-detail")).toHaveTextContent("Resets ");
+    expect(view.container.querySelector(".context-display-plan-detail")).not.toHaveTextContent("×");
+    view.rerender(<ProviderUsageMeters density="compact" usage={{ ...codexUsage(50), windows: [{ kind: "weekly", label: "Weekly", usedPercent: 50, periodMs: weekMs }] }} />);
+    expect(view.container.querySelector(".context-display-plan-detail")).toBeNull();
   });
 });

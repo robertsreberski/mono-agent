@@ -157,7 +157,7 @@ with the primary's attribution id.
 
 The runtime result includes `failoverHistory`. An
 exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,
-failure kinds/subkinds. Run summaries and Phoenix failover
+failure kinds/subkinds. Run summaries and local failover
 attributes preserve normalized failover details; the events JSONL preserves the
 per-attempt `provider_retry_started`, `provider_failover_started`, and
 `provider_failover_completed` events. There is no separate per-route safety
@@ -178,8 +178,8 @@ evidence rather than comparing their own model-selector state.
 ⚠️ Failed over: openai-codex:gpt-5.6-sol → opencode-go:kimi-k2.7-code (overloaded)
 ```
 
-Chat channels (Slack, Telegram) render these alongside tool activity; the TUI shows
-them as inline warning notices. Both respect the channel's activity-hint setting, so
+Chat channels (Slack, Telegram) render these alongside tool activity; the web
+console shows them as inline warning notices. Both respect the channel's activity-hint setting, so
 a channel with hints turned off shows neither.
 
 **On the answer**, a run that did not execute on its configured route appends one

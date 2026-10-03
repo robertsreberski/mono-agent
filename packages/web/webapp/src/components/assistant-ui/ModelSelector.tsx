@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { Command } from "cmdk";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../Icon";
 import type { AgentProvider } from "../../types";
 import {
@@ -20,6 +20,8 @@ export type ModelSelectorProps = {
   readonly models: readonly ModelSelectorOption[];
   readonly value: string;
   readonly effort: string;
+  readonly context1M?: boolean | null;
+  readonly onContext1MChange?: (enabled: boolean) => void;
   readonly onValueChange: (value: string) => void;
   readonly onEffortChange: (effort: string) => void;
   readonly disabled?: boolean;
@@ -52,6 +54,52 @@ export type ModelSelectorProps = {
 const commandValue = (model: ModelSelectorOption) =>
   model.id === "" ? "model::automatic" : `model:${model.id}`;
 
+/** Overflow cues follow geometry, including resize and catalog changes. */
+function useHorizontalOverflow() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
+  const attach = useCallback((node: HTMLDivElement | null) => {
+    ref.current = node;
+    setElement(node);
+  }, []);
+  useEffect(() => {
+    if (!element) return;
+    const update = () => {
+      const remaining = element.scrollWidth - element.clientWidth - element.scrollLeft;
+      element.dataset.overflowStart = String(element.scrollLeft > 1);
+      element.dataset.overflowEnd = String(remaining > 1);
+    };
+    const wheel = (event: WheelEvent) => {
+      // Leave native horizontal gestures alone, and never trap a wheel at an edge.
+      if (event.deltaX !== 0 || event.deltaY === 0 || event.ctrlKey || event.shiftKey) return;
+      const limit = element.scrollWidth - element.clientWidth;
+      if (limit <= 1 || (event.deltaY < 0 ? element.scrollLeft <= 0 : element.scrollLeft >= limit - 1)) return;
+      const unit = event.deltaMode === 1 ? 20 : event.deltaMode === 2 ? element.clientWidth : 1;
+      element.scrollLeft += event.deltaY * unit;
+      event.preventDefault();
+      update();
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    for (const child of element.children) observer.observe(child);
+    const mutation = new MutationObserver(() => {
+      for (const child of element.children) observer.observe(child);
+      update();
+    });
+    mutation.observe(element, { childList: true });
+    element.addEventListener("scroll", update);
+    element.addEventListener("wheel", wheel, { passive: false });
+    update();
+    return () => {
+      observer.disconnect();
+      mutation.disconnect();
+      element.removeEventListener("scroll", update);
+      element.removeEventListener("wheel", wheel);
+    };
+  }, [element]);
+  return { ref, attach };
+}
+
 /**
  * Controlled model and reasoning-effort picker adapted from assistant-ui's
  * Base UI model-selector registry component. The data-slot names intentionally
@@ -78,14 +126,20 @@ export function ModelSelector({
   onProviderRequest,
   providerStatus,
   agentProviders,
+  context1M,
+  onContext1MChange,
   showModelChangeHint = false,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [searchHeight, setSearchHeight] = useState(0);
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const { ref: effortRef, attach: attachEffort } = useHorizontalOverflow();
+  const { attach: attachProviders } = useHorizontalOverflow();
   const keyboardOpenRef = useRef(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = useCallback(
@@ -95,7 +149,7 @@ export function ModelSelector({
     },
     [controlledOpen, onOpenChange],
   );
-  const selectedModel = useMemo(() => {
+  const selectedModel = useMemo<ModelSelectorOption | undefined>(() => {
     const exact = models.find((model) => model.id === value);
     if (exact) return exact;
     // A controlled nonblank value is still the truth even if a lazy catalog
@@ -108,7 +162,16 @@ export function ModelSelector({
     // metadata is unavailable. Show it in the trigger without adding it to the
     // selectable effort ladder below.
     ?? (effort !== "" ? { id: effort, name: effortName(effort) } : undefined);
+  const hasEffort = (selectedModel?.efforts.length ?? 0) > 0;
+  const hasContextChoice = selectedModel?.supportsContext1M === true && onContext1MChange !== undefined;
+  const contextEnabled = context1M ?? selectedModel?.context1M ?? false;
+  const standardWindow = selectedModel?.standardContextWindow;
+  const standardLabel = standardWindow !== undefined && Number.isFinite(standardWindow) && standardWindow > 0
+    ? new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(standardWindow)
+    : "Standard";
   const selectedCommandValue = selectedModel ? commandValue(selectedModel) : undefined;
+  // The automatic row already explains inheritance; avoid a second default badge.
+  const showAgentDefaultBadge = !models.some((model) => model.id === "");
 
   useEffect(() => {
     if (disabled) {
@@ -118,10 +181,24 @@ export function ModelSelector({
     if (!open) {
       keyboardOpenRef.current = false;
       setQuery("");
+      setSearchHeight(0);
       setActiveProvider(null);
       return;
     }
   }, [disabled, open, setOpen]);
+
+  useEffect(() => {
+    // Filtering should start at the first match, not the old catalog offset.
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [query, activeProvider]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      effortRef.current?.querySelector("[data-checked]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, activeEffort?.id, selectedModel?.id]);
 
   const closeSelector = () => {
     setOpen(false);
@@ -209,6 +286,7 @@ export function ModelSelector({
           align={align}
           side={side}
           sideOffset={6}
+          collisionPadding={12}
         >
           <Popover.Popup
             ref={popupRef}
@@ -218,6 +296,7 @@ export function ModelSelector({
             }
             data-slot="model-selector-content"
             className="model-selector__content"
+            style={{ "--model-selector-search-height": `${searchHeight}px` } as CSSProperties}
             aria-label="Model and reasoning effort"
           >
             <Command
@@ -238,7 +317,11 @@ export function ModelSelector({
                   data-slot="model-selector-search"
                   className="model-selector__search"
                   value={query}
-                  onValueChange={setQuery}
+                  onValueChange={(nextQuery) => {
+                    if (query.length === 0 && nextQuery.length > 0) setSearchHeight(popupRef.current?.getBoundingClientRect().height ?? 0);
+                    if (nextQuery.length === 0) setSearchHeight(0);
+                    setQuery(nextQuery);
+                  }}
                   placeholder="Search models…"
                   aria-label="Search models"
                 />
@@ -258,6 +341,7 @@ export function ModelSelector({
                   }}
                 >
                   <RadioGroup
+                    ref={attachProviders}
                     className="model-selector__provider-options"
                     value={activeProvider ?? ""}
                     onValueChange={(nextProvider) => {
@@ -266,6 +350,7 @@ export function ModelSelector({
                       if (provider !== null) onProviderRequest?.(provider);
                     }}
                     aria-label="Filter by provider"
+                    onFocusCapture={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}
                   >
                     <Radio.Root
                       data-slot="model-selector-provider-option"
@@ -289,6 +374,7 @@ export function ModelSelector({
               )}
 
               <Command.List
+                ref={listRef}
                 data-slot="model-selector-list"
                 className="model-selector__list"
               >
@@ -326,7 +412,7 @@ export function ModelSelector({
                             </span>
                           )}
                         </span>
-                        {model.id !== "" && model.id === agentDefaultId && (
+                        {showAgentDefaultBadge && model.id !== "" && model.id === agentDefaultId && (
                           <span className="model-selector__item-default">agent default</span>
                         )}
                         {selected && (
@@ -373,7 +459,7 @@ export function ModelSelector({
                               </span>
                             )}
                           </span>
-                          {model.id !== "" && model.id === agentDefaultId && (
+                          {showAgentDefaultBadge && model.id !== "" && model.id === agentDefaultId && (
                             <span className="model-selector__item-default">agent default</span>
                           )}
                           {selected && (
@@ -397,39 +483,48 @@ export function ModelSelector({
                 )}
               </Command.List>
 
-              {(selectedModel?.efforts.length ?? 0) > 0 && (
-                <div
-                  data-slot="model-selector-effort"
-                  className="model-selector__effort"
-                  onKeyDown={(event) => {
-                    if (event.key === "Home" || event.key === "End") {
-                      event.stopPropagation();
-                    }
-                    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-                      searchRef.current?.focus();
-                    }
-                  }}
-                >
-                  <span className="model-selector__effort-label">Thinking</span>
-                  <RadioGroup
-                    className="model-selector__effort-options"
-                    value={activeEffort?.id ?? ""}
-                    onValueChange={(nextEffort) => onEffortChange(nextEffort)}
-                    aria-label="Reasoning effort"
-                  >
-                    {selectedModel?.efforts.map((option) => (
-                      <Radio.Root
-                        key={`${option.id}:${option.name}`}
-                        data-slot="model-selector-effort-option"
-                        className="model-selector__effort-option"
-                        value={option.id}
-                      >
-                        {option.name}
-                      </Radio.Root>
-                    ))}
-                  </RadioGroup>
+              <div className="model-selector__options-panel" data-visible={hasEffort || hasContextChoice}
+                aria-hidden={!hasEffort && !hasContextChoice} inert={!hasEffort && !hasContextChoice}>
+                <div className="model-selector__options-panel-inner">
+                  <div data-slot="model-selector-effort" className="model-selector__effort"
+                    onKeyDown={(event) => {
+                      if (event.key === "Home" || event.key === "End") event.stopPropagation();
+                      if (event.key === "ArrowUp" || event.key === "ArrowDown") searchRef.current?.focus();
+                    }}>
+                    {hasEffort && <>
+                      <span className="model-selector__effort-label">Thinking</span>
+                      <RadioGroup ref={attachEffort} className="model-selector__effort-options" value={activeEffort?.id ?? ""}
+                        onValueChange={(nextEffort) => onEffortChange(nextEffort)} aria-label="Reasoning effort" disabled={disabled}
+                        onFocusCapture={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
+                        {selectedModel?.efforts.map((option) => (
+                          <Radio.Root key={`${option.id}:${option.name}`} data-slot="model-selector-effort-option"
+                            className="model-selector__effort-option" value={option.id}>{option.name}</Radio.Root>
+                        ))}
+                      </RadioGroup>
+                    </>}
+                    <div className="model-selector__context-window" data-visible={hasContextChoice}
+                      aria-hidden={!hasContextChoice} inert={!hasContextChoice}>
+                      <div className="model-selector__context-window-inner">
+                        <div className="model-selector__context-window-content" data-after-effort={hasEffort}>
+                          <span className="model-selector__effort-label">Context window</span>
+                          <RadioGroup className="model-selector__effort-options" aria-label="Context window"
+                            aria-orientation="horizontal" value={contextEnabled ? "1m" : "standard"}
+                            disabled={disabled || !hasContextChoice}
+                            onKeyDown={(event) => event.stopPropagation()}
+                            onValueChange={(next) => { if (hasContextChoice) onContext1MChange?.(next === "1m"); }}>
+                            <Radio.Root className="model-selector__effort-option" value="standard"
+                              onClick={() => { if (hasContextChoice && !disabled && !contextEnabled) onContext1MChange?.(false); }}>
+                              {standardLabel}
+                            </Radio.Root>
+                            <Radio.Root className="model-selector__effort-option" value="1m"
+                              onClick={() => { if (hasContextChoice && !disabled && contextEnabled) onContext1MChange?.(true); }}>1M</Radio.Root>
+                          </RadioGroup>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              )}
+              </div>
 
               <div className="model-selector__actions">
                 {onReset !== undefined && (

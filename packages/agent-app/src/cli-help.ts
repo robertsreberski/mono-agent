@@ -46,7 +46,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       `with timeouts of ${readinessProbeTimeoutDescription()}.`,
       "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
-      "Pi forwards the configured effort to the selected provider. Ranking above max only prevents keyword downgrade.",
+      "Pi forwards the configured effort to the selected provider. Message text never changes effort.",
       "--auth runs supported Pi provider auth/preflight before writing.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
       "guided secret setup may securely update .env and .gitignore after explicit review.",
@@ -70,13 +70,14 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     group: "Setup",
     short: "auth login <provider>",
     summary: "Log in to a bundled Pi provider.",
-    signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--api-key-stdin] [--config <path>]",
+    signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--auth-method oauth|api-key] [--api-key-stdin] [--config <path>]",
     lines: [
       "Run a supported bundled Pi provider login.",
       "Pi credentials are promoted with owner-only no-clobber checks.",
       "API-key providers prompt securely on a TTY; --api-key-stdin explicitly reads a redirected secret.",
-      "Path precedence: --pi-auth-path, MONO_AGENT_PI_AUTH_PATH, providers.piAuthPath, then Pi's default.",
-      "Supported Pi targets: anthropic, github-copilot, openai-codex, and opencode-go.",
+      "Path precedence: --pi-auth-path, providers.piAuthPath, then Pi's default.",
+      "OpenAI offers Sign in with ChatGPT or an API key; choose --auth-method when headless (--api-key-stdin implies api-key).",
+      "Supported Pi targets: anthropic, github-copilot, openai, openai-codex, and opencode-go.",
     ],
   },
   {
@@ -190,21 +191,6 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Print (and optionally follow) log files on macOS or the user journal on Linux."],
   },
   {
-    command: "tui",
-    group: "Console",
-    short: "tui",
-    summary: "Operator console: live chat, recorded-run replay, config view.",
-    signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
-      "               [--local]",
-    lines: [
-      "Open the operator console from any directory: live chat with structured",
-      "thinking/tool/telemetry insight, recorded-run replay, and config view.",
-      "Discovers running agents via the trace-source registry; one running",
-      "agent connects directly, several open a picker. --local starts an",
-      "ordinary in-process chat for the current agent folder.",
-    ],
-  },
-  {
     command: "web",
     group: "Console",
     short: "web [start|stop|status|...]",
@@ -247,36 +233,24 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     command: "runs",
     group: "Observe",
-    short: "runs [report|audit]",
-    summary: "Read-only reporting over local agent-run artifacts.",
+    short: "runs [report|audit|list|show]",
+    summary: "Read-only reporting and inspection over local agent-run artifacts.",
     json: true,
     signature:
       "mono-agent runs [report|audit] [--artifacts <path> | --consumer <path>]\n" +
       "                [--since <iso>] [--until <iso>] [--by model|channel|failureKind]\n" +
-      "                [--stale-after-ms <n>] [--include-memory] [--json] [--config <path>] [--env-file <path>]",
+      "                [--stale-after-ms <n>] [--include-memory] [--json] [--config <path>] [--env-file <path>]\n" +
+      "mono-agent runs list [--artifacts <path>] [--include-memory] [--json]\n" +
+      "mono-agent runs show <run-id> [--artifacts <path>] [--include-memory] [--json]",
     lines: [
-      "Read-only, offline reporting over local agent-run summary artifacts.",
+      "Read-only, offline reporting over trusted local agent-run artifacts.",
       "report (default): status/failure-kind rates, duration percentiles, and",
       "total/per-run cost, optionally windowed (--since/--until) and grouped (--by).",
       "audit: artifact integrity — parse failures, status/failure-kind histograms,",
       "stale running summaries (never rewritten), and per-failure-kind rates.",
-      "--include-memory adds memory-run artifacts.",
-    ],
-  },
-  {
-    command: "backfill",
-    group: "Observe",
-    short: "backfill",
-    summary: "Export recorded run artifacts to the Phoenix exporter.",
-    signature:
-      "mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]\n" +
-      "                    [--include-memory] [--dry-run] [--config <path>] [--env-file <path>]",
-    lines: [
-      "Export already-recorded agent-run artifacts to the configured Phoenix exporter",
-      "with their historical timestamps. Trace ids are deterministic per run, so",
-      "re-running overwrites rather than duplicating. --dry-run maps and",
-      "serializes without sending. --include-memory adds memory-run artifacts",
-      "for --all; explicit --run can target a memory run directly.",
+      "list returns at most 50 newest summaries; show returns at most 500 first/last",
+      "events. Emitted strings are capped at 32 KiB and credential-shaped content is redacted.",
+      "--include-memory adds memory-run artifacts; show checks agent scope before memory scope.",
     ],
   },
   {
@@ -287,6 +261,14 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     json: true,
     signature:
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
+      "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--limit 1..1000] [--json]\n" +
+      "mono-agent memory lessons --propose [--json]\n" +
+      "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
+      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--link-people] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> --tasks-to-notes [--before <date>] [--capture-only] [--dry-run]\n" +
+      "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
+      "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +
+      "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
       "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +
       "mono-agent memory forget apply --plan <file> | forget restore --backup <dir>\n" +
       "mono-agent memory export --bundle <dir> [--include-extras] [--allow-pending]\n" +
@@ -299,9 +281,25 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "memory block from mono-agent.config.json, not the standalone memory-bujo",
       "env workflow. Human-first output by default; audit --strict --json is a",
       "metadata-only health gate. Intake inspect/retry/resolve never print payload content.",
+      "labels and lessons --propose are read-only with a running agent; proposals",
+      "are source-linked snippets for manual copying, never automatic edits.",
       "adopt-replay is an explicit stopped-agent, SSH-safe BuJo trust-on-first-use",
       "operation. It returns metadata only and requires rebuild before restart.",
       "forget uses an explicit, content-free plan plus a full owner-private backup;",
+      "curate prepare selects at most 8192 lines (120 by default) across recent, repeated, risky, and oldest buckets; --select oldest preserves chronological selection; apply checks only",
+      "accepted source lines against the live store and requires a stopped agent.",
+      "entities --duplicates is read-only: names held by several ids, with association",
+      "counts. --merge adds pre-accepted operator merges (any name; other types only",
+      "with --allow-cross-type); --limit 0 prepares merges without a model pass.",
+      "--owner-backfill proposes person:owner links (associate:owner) only for live",
+      "lines with structured owner fact labels or user-stated agent preference labels.",
+      "Unlabelled prose does not qualify. No model call.",
+      "--link-people (with --limit 0) links note/event lines to each person entity",
+      "whose full proper name they contain, exactly as written (associate:person-name);",
+      "ambiguous names are skipped. Pre-accepted, at most 1024 per pass; prepare again after apply.",
+      "--tasks-to-notes proposes each open task line as a history note (retype:none):",
+      "id, text, date and labels stay; done, dropped and superseded tasks are untouched.",
+      "--before <date> limits it to older tasks (UTC); --capture-only to capture lines. No model call.",
       "apply and restore require the configured agent to be stopped.",
       "export writes a portable canonical bundle and does not require stopping the",
       "agent; import merges one into this store and does require a stopped agent.",
@@ -344,18 +342,6 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent web-control [status|reset] [--json]",
     lines: ["Owner-local operational state only. Reset refuses active request leases; it does not change provider quotas."],
   },
-  {
-    command: "monitors",
-    group: "Maintain",
-    short: "monitors list|get|cancel",
-    summary: "Inspect or cancel live monitors watching a command for a conversation.",
-    json: true,
-    signature: "mono-agent monitors [list|get <monitor-id>|cancel <monitor-id>] [--agent <label|sourceId>] [--json]",
-    lines: [
-      "Discover one running local agent and use its owner-authenticated monitor routes.",
-      "The command refuses remote endpoints and never reveals a monitor's command or event text.",
-    ],
-  },
 ];
 
 const HELP_COMMANDS_BY_KEY = new Map(HELP_COMMANDS.map((entry) => [entry.command, entry]));
@@ -382,7 +368,7 @@ loginctl enable-linger for this user to keep the service alive across logins. Se
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS or Linux with a running systemd user manager; elsewhere use start --foreground.
 Edit mono-agent.config.json and the configured identity document directly, then
-run mono-agent validate and restart the agent before opening ordinary TUI chat.
+run mono-agent validate and restart the agent before opening ordinary web chat.
 
 Init model references use <provider>:<model>, for example
 openai-codex:gpt-5.6-terra or anthropic:claude-sonnet-4-6. The init wizard
@@ -438,6 +424,36 @@ export type HelpTopicResult =
  * (or its alias) prints that command's detail view, a removed command prints its
  * replacement pointer, and anything else is a usage error listing valid topics.
  */
+export function renderMemorySubcommandHelp(positionals: readonly string[]): string | undefined {
+  const [subcommand, ...tail] = positionals;
+  if (subcommand === undefined) return undefined;
+  const operation = tail.find((token) => !token.startsWith("-"));
+  const usages: Readonly<Record<string, string>> = {
+    stats: "stats [--limit N]", today: "today", show: "show <YYYY-MM-DD>",
+    search: "search <query> [--limit N]", top: "top [--limit N]",
+    labels: "labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--limit 1..1000] [--json]",
+    entities: "entities --duplicates [--limit N]", lessons: "lessons --propose",
+    audit: "audit [--strict]", inspect: "inspect [id]", retry: "retry [id]",
+    resolve: "resolve <id> <reason>", rebuild: "rebuild", rollback: "rollback",
+    "adopt-replay": "adopt-replay", export: "export --bundle <dir> [--include-extras] [--allow-pending]",
+  };
+  const nested: Readonly<Record<string, string>> = {
+    "curate prepare": "curate prepare --plan <file> [--limit N] [--model provider:model] [--dry-run]",
+    "curate review": "curate review --plan <file> [--accept category,...] [--reject category,...]",
+    "curate apply": "curate apply --plan <file>", "curate restore": "curate restore --backup <dir>",
+    "forget prepare": "forget prepare --ids-file <file> --reason <slug> --plan <file>",
+    "forget apply": "forget apply --plan <file>", "forget restore": "forget restore --backup <dir>",
+    "import prepare": "import prepare --bundle <dir> --plan <file>",
+    "import apply": "import apply --plan <file>", "import restore": "import restore --backup <dir>",
+  };
+  const parent: Readonly<Record<string, string>> = {
+    curate: "curate prepare|review|apply|restore", forget: "forget prepare|apply|restore",
+    import: "import prepare|apply|restore",
+  };
+  const usage = nested[`${subcommand} ${operation ?? ""}`] ?? usages[subcommand] ?? parent[subcommand];
+  return usage === undefined ? undefined : `Usage: mono-agent memory ${usage} [--config <path>] [--json]\n`;
+}
+
 export function renderHelpTopic(topic: string): HelpTopicResult {
   if (topic === "notes") {
     return { ok: true, text: `${helpBanner()}${ui.style.dim(HELP_NOTES)}` };

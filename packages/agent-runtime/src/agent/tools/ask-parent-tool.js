@@ -7,7 +7,7 @@ export function createAskParentTool(controller = null, exposed = Boolean(control
   let submitted = false;
   return {
     name: "AskParent", label: "AskParent", executionMode: "sequential",
-    description: "Ask your parent agent a question and end this turn. Your parent can reply through AgentSend into this same session. This does not contact the user.",
+    description: "Ask your parent agent a question and end this turn. Your parent can reply through AgentManage into this same session. This does not contact the user.",
     parameters: {
       type: "object", additionalProperties: false, required: ["question"],
       properties: {

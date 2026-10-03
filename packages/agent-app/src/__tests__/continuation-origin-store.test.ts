@@ -543,7 +543,7 @@ describe("continuation origin-context record store", () => {
     await expect(stat(join(stateDir, "continuation-transaction-v3.json"))).rejects.toMatchObject({ code: "ENOENT" });
 
     await rm(legacyRecordsPath);
-    const restarted = await openContinuationStore(stateDir);
+    await openContinuationStore(stateDir);
     expect(await readdir(stateDir)).not.toContain("records-v2");
   });
 

@@ -16,6 +16,7 @@ pnpm-debug.log*
 yarn-error.log*
 mono-agent.config.json
 packages/*/dist/
+packages/web/webapp/storybook-static/
 packages/*/types/
 # memory-bujo SQLite index — disposable, rebuildable from canonical markdown (spec §6.1)
 memory.db
@@ -35,3 +36,4 @@ AGENTS.local.md
 
 # Local synthetic screenshots and verification logs
 /output/
+/tmp/settings-single-page-shots/

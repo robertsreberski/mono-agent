@@ -241,11 +241,21 @@ describe("Chat conversation viewport in Chromium", () => {
     await waitForMessages(container, 20);
     const viewport = getViewport(container);
     await waitForBottom(viewport);
-    const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    // The shelf starts closed: every card is mounted, none is shown.
+    const shelf = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
+    expect(shelf.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".process-job-stack-body")).toHaveAttribute("hidden");
     expect(container.querySelector(".process-job-stack-item:not([hidden]) .is-running")).not.toBeNull();
     expect(container.querySelector(".process-job-stack-item[hidden] .is-complete")).not.toBeNull();
 
+    shelf.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(shelf.getAttribute("aria-expanded")).toBe("true");
+    await waitForFrames(3);
+    expect(Math.abs(gapFromBottom(viewport))).toBeLessThanOrEqual(1);
+
+    const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-history-toggle")!;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
     toggle.focus();
     await userEvent.keyboard("{Enter}");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
@@ -253,17 +263,26 @@ describe("Chat conversation viewport in Chromium", () => {
     await waitForFrames(3);
     expect(Math.abs(gapFromBottom(viewport))).toBeLessThanOrEqual(1);
 
+    // Focus the transcript itself: the open shelf now covers the middle of
+    // this short viewport, and a click there would land on a job row.
     viewport.tabIndex = 0;
-    await userEvent.click(viewport);
+    viewport.focus();
     await userEvent.keyboard("{PageUp}");
     await waitFor(() => expect(gapFromBottom(viewport)).toBeGreaterThan(1));
     await waitForScrollToSettle(viewport);
     const readingTop = viewport.scrollTop;
 
+    // Neither disclosure moves a reader who scrolled up.
     fireEvent.click(toggle);
     await waitForFrames(3);
     expect(viewport.scrollTop).toBe(readingTop);
     fireEvent.click(toggle);
+    await waitForFrames(3);
+    expect(viewport.scrollTop).toBe(readingTop);
+    fireEvent.click(shelf);
+    await waitForFrames(3);
+    expect(viewport.scrollTop).toBe(readingTop);
+    fireEvent.click(shelf);
     await waitForFrames(3);
     expect(viewport.scrollTop).toBe(readingTop);
   });
@@ -305,7 +324,11 @@ describe("Chat conversation viewport in Chromium", () => {
 
     const { container } = render(chatTree(360));
     await waitFor(() => expect(container.querySelector(".process-job-stack")).not.toBeNull());
-    const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
+    const shelf = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
+    shelf.focus();
+    await userEvent.keyboard("{Space}");
+    expect(shelf.getAttribute("aria-expanded")).toBe("true");
+    const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-history-toggle")!;
     toggle.focus();
     await userEvent.keyboard("{Space}");
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
@@ -354,7 +377,7 @@ describe("Chat conversation viewport in Chromium", () => {
     const { container } = render(chatTree());
     await waitFor(() => expect(api.threadJob).toHaveBeenCalledOnce());
     const item = container.querySelector<HTMLElement>(".process-job-stack-item")!;
-    const row = item.querySelector<HTMLElement>(".activity-row.is-job")!;
+    const row = item.querySelector<HTMLElement>(".process-job-card")!;
     expect(item).not.toHaveAttribute("hidden");
 
     await act(async () => { finish(complete); });
@@ -362,7 +385,7 @@ describe("Chat conversation viewport in Chromium", () => {
       requestAnimationFrame(() => {
         try {
           expect(item).toHaveAttribute("hidden");
-          expect(item.querySelector(".activity-row.is-job")).toBe(row);
+          expect(item.querySelector(".process-job-card")).toBe(row);
           expect(row).toHaveClass("is-complete");
           resolve();
         } catch (error) {
@@ -399,8 +422,11 @@ describe("Chat conversation viewport in Chromium", () => {
 
     storeMock.current = chatStore(secondThread, null, true);
     rerender(chatTree());
+    // The viewport follows the runtime adapter's own transcript, which the
+    // external store installs in a passive effect, so the replacement lands on
+    // the commit after the selection changes rather than synchronously with it.
+    await waitFor(() => expect(getViewport(container)).not.toBe(firstViewport));
     const secondViewport = getViewport(container);
-    expect(secondViewport).not.toBe(firstViewport);
     await waitForMessages(container, 0);
     await waitForFrames();
 
@@ -539,5 +565,52 @@ describe("Chat conversation viewport in Chromium", () => {
     await waitForFrames(3);
 
     expect(gapFromBottom(viewport)).toBeGreaterThan(1);
+  });
+});
+
+describe("wake-up schedule from the conversation actions menu", () => {
+  const wakeThread = (id: string) => thread(id, "agent", {
+    title: `Wake ${id}`,
+    wakeSchedule: { state: "active", kind: "weekly", revision: 2, nextFireAt: "2031-05-12T12:30:00.000Z" },
+  });
+  const wakeStore = (selectedThread: ThreadSummary) => ({
+    ...chatStore(selectedThread, chatDetail(selectedThread, messageIds(2))),
+    loadProjects: vi.fn().mockResolvedValue(undefined),
+    setThreadProject: vi.fn().mockResolvedValue(undefined),
+  });
+  const openEditor = async () => {
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Edit wake-up schedule/u }));
+    const dialog = await screen.findByRole("dialog", { name: "Scheduled wake-up" });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    return dialog;
+  };
+
+  it("opens over the whole console and returns focus to the actions trigger", async () => {
+    const first = wakeThread("wake-a");
+    vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule: null });
+    storeMock.current = wakeStore(first);
+    render(chatTree());
+    const menu = await screen.findByRole("button", { name: "Conversation actions" });
+    const dialog = await openEditor();
+    expect(dialog.closest(".chat-header")).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(menu).toHaveFocus());
+  });
+
+  it("closes instead of retargeting when another conversation is selected", async () => {
+    const first = wakeThread("wake-a");
+    const second = wakeThread("wake-b");
+    const read = vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule: null });
+    storeMock.current = wakeStore(first);
+    const { rerender } = render(chatTree());
+    await openEditor();
+    await waitFor(() => expect(read).toHaveBeenCalledWith(first.id));
+    storeMock.current = wakeStore(second);
+    rerender(chatTree());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(read).not.toHaveBeenCalledWith(second.id);
   });
 });

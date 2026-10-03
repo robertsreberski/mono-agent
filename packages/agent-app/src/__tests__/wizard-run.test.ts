@@ -257,7 +257,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all
       true, // accept the one per-route matrix
-      false, // Phoenix
     );
 
     const result = await runInitWizard({ cwd: "/tmp/research-companion" });
@@ -317,9 +316,8 @@ describe("wizard production flow", () => {
     if (result.status !== "answers") return;
     expect(result.answers.channels).toEqual([]);
     expect(result.answers.memory).toBeUndefined();
-    expect(result.answers.observability).toBe(false);
     const gate = promptMock.confirmCalls.find((call) =>
-      call.message === "Add optional capabilities now? (channels, memory, observability)");
+      call.message === "Add optional capabilities now? (channels, memory)");
     expect(gate?.initialValue).toBe(false);
     expect(promptMock.selectCalls.some((call) => call.message === "How will you talk to this agent?")).toBe(false);
     const workspaceNote = promptMock.notes.find((note) => note.title === "Workspace and access")?.message ?? "";
@@ -348,7 +346,7 @@ describe("wizard production flow", () => {
     expect(result.status).toBe("answers");
     if (result.status !== "answers") return;
     const gate = promptMock.confirmCalls.find((call) =>
-      call.message === "Add optional capabilities now? (channels, memory, observability)");
+      call.message === "Add optional capabilities now? (channels, memory)");
     expect(gate?.initialValue).toBe(true);
     expect(result.answers.channels).toEqual([]);
     expect(result.answers.memory).toBeUndefined();
@@ -378,14 +376,11 @@ describe("wizard production flow", () => {
       true, // gate #2: accept from review
       true, // allow all tools (advanced path)
       true, // managed SRT (advanced path)
-      false, // observability (advanced path)
-      ESCAPE, // Escape observability on the way back
-      ESCAPE, // Escape route safety
+      ESCAPE, // Escape route safety on the way back
       ESCAPE, // Escape tools
       false, // gate #3: No must keep the accepted channel, not skip consent
       true, // allow all tools (mandatory re-run)
       true, // managed SRT (mandatory re-run)
-      false, // observability (retained capability)
     );
 
     const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/gate-edit-agent" }));
@@ -395,14 +390,12 @@ describe("wizard production flow", () => {
     expect(result.answers.channels).toEqual(["channel:cron"]);
     expect(result.answers.moduleInputs["channel:cron"]?.cronExpression).toBe("0 8 * * *");
     expect(result.answers.memory).toBeUndefined();
-    expect(result.answers.observability).toBe(false);
     const lastGateIndex = lastCallIndex("confirm:Add optional capabilities");
     expect(promptMock.callOrder.filter((entry) => entry.startsWith("confirm:Add optional capabilities")))
       .toHaveLength(3);
     expect(lastCallIndex("confirm:Allow all tools?")).toBeGreaterThan(lastGateIndex);
     expect(lastCallIndex("confirm:Install and use managed SRT")).toBeGreaterThan(lastGateIndex);
-    expect(lastCallIndex("confirm:Export traces to Phoenix")).toBeGreaterThan(lastGateIndex);
-    expect(lastCallIndex("select:Create ")).toBeGreaterThan(lastCallIndex("confirm:Export traces to Phoenix"));
+    expect(lastCallIndex("select:Create ")).toBeGreaterThan(lastCallIndex("confirm:Install and use managed SRT"));
   });
 
   it("requires tool and sandbox consent when the gate is declined after an accepted Yes", async () => {
@@ -474,7 +467,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all
       true, // high-risk provider-native
-      false, // Phoenix
     );
 
     const result = await runInitWizard({ cwd: "/tmp/claude-helper" });
@@ -572,7 +564,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
-      false, // Phoenix
     );
 
     const result = await runInitWizard({
@@ -610,7 +601,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
-      false, // Phoenix
     );
     promptMock.passwordAnswers.push("review-secret-value");
 
@@ -684,7 +674,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
-      false, // Phoenix
     );
 
     const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/effort-back-agent" }));
@@ -729,7 +718,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
-      false, // Phoenix
     );
 
     const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/fallback-back-agent" }));
@@ -773,7 +761,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
-      false, // Phoenix
     );
 
     const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/review-back-agent" }));
@@ -805,7 +792,6 @@ describe("wizard production flow", () => {
       true, // optional capabilities gate
       true, // allow all tools
       true, // managed SRT
-      false, // Phoenix
     );
     promptMock.passwordAnswers.push(
       ESCAPE,
@@ -925,6 +911,39 @@ describe("wizard production flow", () => {
     expect(promptMock.confirmCalls).toHaveLength(0);
   });
 
+  it("asks for OpenAI's method when authentication is required in repair", async () => {
+    promptMock.selectAnswers.push("oauth", "create");
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/fictional-wizard", answers: defaultAnswers({ name: "Fictional Agent", model: "openai:gpt-5.5" }),
+      runProviderSetup: false, providerSetupSecrets: {}, providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {}, credentialStates: { openai: "auth_required" }, moduleSecrets: {},
+    });
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.piAuthMethods).toEqual({ openai: "oauth" });
+    expect(result.runProviderSetup).toBe(true);
+    expect(promptMock.selectCalls[0]?.message).toMatch(/How should OpenAI authenticate/u);
+    expect(promptMock.notes.some((note) => note.message.includes("Pi login for openai"))).toBe(true);
+  });
+
+  for (const method of ["oauth", "api-key"] as const) {
+    it(`keeps detected OpenAI ${method} credentials without offering a misleading replacement`, async () => {
+      promptMock.selectAnswers.push("create");
+      const result = await runSetupRepairWizard({
+        cwd: "/tmp/fictional-wizard", answers: defaultAnswers({ name: "Fictional Agent", model: "openai:gpt-5.5" }),
+        runProviderSetup: false, providerSetupSecrets: {}, providerEnvironmentSecrets: {},
+        piApiKeyPersistenceByProvider: {}, piAuthMethods: { openai: method },
+        credentialStates: { openai: "credential_detected" }, moduleSecrets: {},
+      });
+      expect(result.status).toBe("answers");
+      if (result.status !== "answers") return;
+      expect(result.piAuthMethods).toEqual({ openai: method });
+      expect(result.runProviderSetup).toBe(false);
+      expect(promptMock.selectCalls.some((call) => String(call.message).includes("How should OpenAI authenticate"))).toBe(false);
+      expect(promptMock.notes.some((note) => note.message.includes("mono-agent auth login openai --auth-method oauth|api-key"))).toBe(true);
+    });
+  }
+
   it("returns Escape from seeded setup repair to recovery without changing state", async () => {
     promptMock.selectAnswers.push(ESCAPE);
     await withTtyStdin(async () => {
@@ -1007,7 +1026,6 @@ describe("wizard production flow", () => {
     );
     promptMock.autocompleteAnswers.push("text-embedding-nomic-embed-text-v1.5");
     promptMock.textAnswers.push("http://localhost:1234", "LM_STUDIO_API_KEY");
-    promptMock.confirmAnswers.push(false); // observability while the existing review flow advances
     const result = await runSetupRepairWizard({
       cwd: "/tmp/agent",
       persistedEnv: { LM_STUDIO_API_KEY: "local-test-secret" },

@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_ENV_KEYS, loadMonoAgentConfig } from "@mono-agent/config";
+import { CORE_CONFIG_FIELD_IDS } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig } from "../../../config/dist/config.js";
 import type { ConfigViewFieldId } from "@mono-agent/config";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { describe, expect, it } from "vitest";
@@ -22,14 +23,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> = {
   "agent.name": "string",
-  "runtime.model": "string",
+  "runtime.model": "string | object",
   "runtime.fallbacks": "array",
   subagents: "object",
   "runtime.retry.primaryAttempts": "integer",
   "runtime.retry.backoffMs": "integer",
   "runtime.retry.maxBackoffMs": "integer",
   "runtime.effort": "string",
-  "runtime.permissionMode": "string",
   "runtime.maxTurns": "integer",
   "runtime.compaction.enabled": "boolean",
   "runtime.compaction.triggerRatio": "number",
@@ -58,12 +58,11 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.path": "string",
   "memory.maxBytes": "integer",
   "memory.writeMode": "string",
-  "memory.supermemory.baseUrl": "string",
-  "memory.supermemory.apiKey": "string",
-  "memory.supermemory.apiKeyEnv": "string",
-  "memory.supermemory.container": "string",
-  "memory.supermemory.timeoutMs": "integer",
-  "memory.supermemory.exposeMcpServer": "boolean",
+  "memory.capture.cron": "boolean",
+  "memory.capture.webhook": "boolean",
+  "memory.capture.focus": "string",
+  "memory.capture.only": "string[]",
+  "memory.capture.reconcileModel": "string",
   "memory.embeddings.provider": "string",
   "memory.embeddings.model": "string",
   "memory.embeddings.endpoint": "string",
@@ -71,6 +70,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.embeddings.apiKeyEnv": "string",
   "memory.embeddings.dim": "integer",
   "memory.embeddings.timeoutMs": "integer",
+  "memory.embeddings.instructions": "string",
   "memory.embeddings.circuitBreaker.failureThreshold": "integer",
   "memory.embeddings.circuitBreaker.cooldownMs": "integer",
   "memory.llm.provider": "string",
@@ -86,13 +86,18 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.disallowedTools": "string[]",
   "tools.filesystem.readableRoots": "string[]",
   "tools.filesystem.writableRoots": "string[]",
+  "tools.computerUse.backend": "string",
+  "tools.computerUse.command": "string",
   "tools.mcpConfigPath": "string",
   "tools.mcpRequestContextServers": "string[]",
   "tools.continuationServers": "string[]",
   "tools.mcpCallTimeoutMs": "integer",
   "tools.mcpCallMaxTotalTimeoutMs": "integer",
   "tools.web.coordination": "string",
-  "tools.web.search.backend": "string",
+  "tools.web.search.backend": "string | string[]",
+  "tools.web.fetch.provider": "string | string[]",
+  "tools.web.search.parallel.apiKeyEnv": "string",
+  "tools.web.fetch.parallel.apiKeyEnv": "string",
   "tools.web.search.maxRequestsPerRun": "integer",
   "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",
@@ -111,6 +116,8 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "sandbox.fallback": "string",
   "sandbox.unsafeAllowHostProcess": "boolean",
   "artifacts.dir": "string",
+  "artifacts.replyFiles.maxStorageBytes": "integer | unlimited",
+  "artifacts.replyFiles.maxFileBytes": "integer",
   "artifacts.retention.maxAgeDays": "integer",
   "artifacts.retention.maxCount": "integer",
   "artifacts.retention.dryRun": "boolean",
@@ -123,7 +130,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "traceability.heartbeatMs": "integer",
   "traceability.staleAfterMs": "integer",
   "traceability.globalDiscovery": "boolean",
-  "observability.exporters": "array",
   providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
@@ -136,6 +142,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
 
 interface SchemaNode {
   readonly type?: string;
+  readonly additionalProperties?: boolean | SchemaNode;
   readonly required?: readonly string[];
   readonly enum?: readonly string[];
   readonly const?: string;
@@ -169,6 +176,45 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
+  it("keeps computer-use schema strict and opt-in", () => {
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    const block = schema.properties!.tools!.properties!.computerUse!;
+    expect(block.required).toEqual(["backend"]);
+    expect(block.additionalProperties).toBe(false);
+    expect(Object.keys(block.properties!)).toEqual(["backend", "command"]);
+    expect(block.properties!.backend!.enum).toEqual(["cua-driver"]);
+    expect(block.default).toBeUndefined();
+  });
+
+  it("accepts the retired monitors block only as deprecated inert configuration", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).monitors).toEqual({
+      type: "object",
+      deprecated: true,
+      description: "Deprecated and ignored. Monitors were removed; use background process jobs for finite work.",
+    });
+    expect(findUnknownAppConfigPaths({ monitors: { enabled: true, legacySetting: "ignored" } })).toEqual([]);
+    expect(allConfigReferenceFields()).toContainEqual(expect.objectContaining({
+      jsonPath: "monitors",
+      type: "object",
+      description: expect.stringContaining("including unknown nested keys, is accepted and ignored"),
+    }));
+  });
+  it("keeps removed observability schema compatibility narrow and unadvertised", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).observability).toEqual({
+      type: "object",
+      deprecated: true,
+      additionalProperties: false,
+      description: "First-party Phoenix/OTLP export was removed. Only this inert empty compatibility shape is accepted.",
+      properties: { exporters: { type: "array", maxItems: 0 } },
+    });
+    expect(allConfigReferenceFields().some((field) => field.jsonPath === "observability.exporters")).toBe(false);
+    expect(findUnknownAppConfigPaths({ observability: {} })).toEqual([]);
+    expect(findUnknownAppConfigPaths({ observability: { exporters: [] } })).toEqual([]);
+    expect(findUnknownAppConfigPaths({ observability: { unknown: [] } })).toEqual(["observability.unknown"]);
+  });
+
   it("describes string and strict named subagent model choices", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).subagents).toMatchObject({
@@ -180,17 +226,6 @@ describe("config reference", () => {
         } },
       ] } } },
     });
-  });
-
-  it("publishes the Monitor wake ceiling and expanded chain cap", () => {
-    const schema = buildMonoAgentConfigSchema();
-    expect((schema.properties as Record<string, unknown>).monitors).toMatchObject({
-      properties: {
-        maxWakeIntervalMs: { type: "integer", minimum: 1, maximum: 300000, default: 300000 },
-        maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
-      },
-    });
-    expect(buildGeneratedConfigReferenceMarkdown()).toContain("monitors.maxWakeIntervalMs");
   });
 
   it("rejects unknown top-level and nested keys from the generated schema", () => {
@@ -263,9 +298,7 @@ describe("config reference", () => {
           models: [{ name: "model", capabilities: { vendor_extension: true } }],
         }],
       },
-      observability: {
-        exporters: [{ type: "phoenix", headers: { "x-vendor-token": "secret" } }],
-      },
+      observability: { exporters: [] },
       memory: { reflection: { removedLegacyShape: true } },
     })).toEqual([]);
 
@@ -285,12 +318,12 @@ describe("config reference", () => {
   });
 
   it("keeps every core field's inferred type aligned with the hand-written fidelity table", () => {
-    const registryIds = Object.keys(CONFIG_ENV_KEYS).sort() as ConfigViewFieldId[];
+    const registryIds = Object.keys(CORE_CONFIG_FIELD_IDS).sort() as ConfigViewFieldId[];
     const expectedIds = Object.keys(EXPECTED_CORE_FIELD_TYPES).sort();
     expect(expectedIds).toEqual(registryIds);
 
     const coreFields = allConfigReferenceFields().filter((field) =>
-      Object.prototype.hasOwnProperty.call(CONFIG_ENV_KEYS, field.jsonPath),
+      Object.prototype.hasOwnProperty.call(CORE_CONFIG_FIELD_IDS, field.jsonPath),
     );
     expect(coreFields).toHaveLength(registryIds.length);
     const fieldsById = new Map(coreFields.map((field) => [field.jsonPath, field]));
@@ -300,9 +333,15 @@ describe("config reference", () => {
       expect(field, `missing config reference field for ${id}`).toBeDefined();
       const expectedType = EXPECTED_CORE_FIELD_TYPES[id];
       expect(field?.type, `${id} inferred ConfigReferenceType`).toBe(expectedType);
-      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toBe(
-        jsonSchemaTypeFor(expectedType),
-      );
+      if (id === "artifacts.replyFiles.maxStorageBytes") {
+        expect(schemaForField(field!).anyOf).toEqual([
+          { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { const: "unlimited" },
+        ]);
+      } else {
+        expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toEqual(
+          jsonSchemaTypeFor(expectedType),
+        );
+      }
     }
   });
 
@@ -317,6 +356,26 @@ describe("config reference", () => {
     expect(schemaNode(schema, "interaction", "askUser", "timeoutMs").type).toEqual(["integer", "null"]);
     expect(schemaNode(schema, "memory", "embeddings", "circuitBreaker", "failureThreshold").type).toBe("integer");
     expect(schemaNode(schema, "cron", "jobs").items?.required).toEqual(["id", "expression", "prompt"]);
+    expect(schemaNode(schema, "cron", "jobs").items?.properties?.preflight).toMatchObject({
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+    });
+    expect(schemaNode(schema, "cron", "jobs").items?.properties?.preflightTimeoutMs).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 60_000,
+    });
+    expect(schemaNode(schema, "cron", "preflight")).toMatchObject({
+      type: "array",
+      minItems: 1,
+      items: { type: "string", minLength: 1 },
+    });
+    expect(schemaNode(schema, "cron", "preflightTimeoutMs")).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 60_000,
+    });
     expect(schemaNode(schema, "webhook", "endpoints").items?.required).toEqual(["path"]);
     expect(schemaNode(schema, "webhook", "endpoints").items?.properties?.maxRunMs).toMatchObject({
       type: "integer",
@@ -338,7 +397,7 @@ describe("config reference", () => {
     });
     expect(schemaNode(schema, "runtime", "compaction", "triggerRatio")).toMatchObject({
       type: "number",
-      default: 0.7,
+      default: 0.9,
       minimum: 0.2,
       maximum: 0.95,
     });
@@ -366,7 +425,14 @@ describe("config reference", () => {
       minimum: 32_000,
       maximum: 10_000_000,
     });
-    expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo", "supermemory"]);
+    expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo"]);
+    expect(schemaNode(schema, "memory", "supermemory")).toEqual({
+      type: "object",
+      deprecated: true,
+      additionalProperties: false,
+      properties: {},
+      description: expect.stringContaining("Only an inert empty object is accepted"),
+    });
     expect(schemaNode(schema, "memory", "mode").enum).toEqual(["lite", "journal", "bujo"]);
     expect(schemaNode(schema, "memory", "writeMode").enum).toEqual(["disabled", "append-host-summary", "capture"]);
     expect(schemaNode(schema, "memory", "embeddings", "provider").enum).toEqual(["ollama", "lmstudio", "openai"]);
@@ -382,7 +448,7 @@ describe("config reference", () => {
     expect(schemaNode(schema, "telegram", "groupMode")).toMatchObject({
       type: "string",
       default: "any",
-      enum: ["any", "mention"],
+      enum: ["any", "mention", "listen"],
     });
     expect(schemaNode(schema, "telegram", "stripMentionText")).toMatchObject({
       type: "boolean",
@@ -591,7 +657,9 @@ function schemaNode(schema: SchemaNode, ...path: readonly string[]): SchemaNode 
   return current;
 }
 
-function jsonSchemaTypeFor(type: ConfigReferenceType): Exclude<ConfigReferenceType, "string[]"> {
+function jsonSchemaTypeFor(type: ConfigReferenceType): string | string[] {
+  if (type === "string | object") return ["string", "object"];
+  if (type === "string | string[]") return ["string", "array"];
   return type === "string[]" ? "array" : type;
 }
 
@@ -619,9 +687,10 @@ function rejectedMemoryProperties(rule: SchemaNode): readonly string[] {
 it.each(["", " ", "\t\n", "\u00a0", "children", "  children  "])("matches instance root schema and loader validation for %j", (root) => {
   const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "subagents", "instances", "root");
   const accepts = root.length >= Number(node.minLength) && new RegExp(String(node.pattern), "u").test(root);
-  const load = () => loadMonoAgentConfig({ cwd: process.cwd(), env: {
-    MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root } }),
+  const load = () => resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: "IDENTITY.md" },
+    subagents: { enabled: true, instances: { root } },
   } });
   if (accepts) expect(load).not.toThrow();
   else expect(load).toThrow(/root/);
@@ -629,11 +698,88 @@ it.each(["", " ", "\t\n", "\u00a0", "children", "  children  "])("matches instan
 });
 
 it("continues to accept AskParent in global and profile deny policy", () => {
-  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
-    MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
-    MONO_AGENT_DISALLOWED_TOOLS: "AskParent",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, definitions: [{ name: "helper", description: "Help", prompt: "Help", disallowedTools: ["AskParent"] }] }),
+  const config = resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: "IDENTITY.md" },
+    tools: { disallowedTools: ["AskParent"] },
+    subagents: { enabled: true, definitions: [{ name: "helper", description: "Help", prompt: "Help", disallowedTools: ["AskParent"] }] },
   } });
   expect(config.tools.disallowedTools).toContain("AskParent");
   expect(config.subagents?.definitions?.[0]?.disallowedTools).toContain("AskParent");
+});
+
+it("keeps the Anthropic retention schema default aligned with config normalization", () => {
+  const config = resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "anthropic:claude-sonnet-4-6" },
+    context: { identityPath: "IDENTITY.md" },
+  } });
+  const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "providers", "piNative", "cacheRetention");
+  expect(node.default).toBe("long");
+  expect(node.default).toBe(config.providers?.piNative?.cacheRetention);
+  expect(node.enum).toEqual(["short", "long"]);
+});
+
+it("accepts four-hour subagent timeouts and rejects one millisecond more", () => {
+  const root = repoRoot();
+  const schema = JSON.parse(readFileSync(join(root, "packages/agent-app/schema/mono-agent.config.schema.json"), "utf8")) as SchemaNode;
+  const subagents = schemaNode(schema, "subagents");
+  expect(subagents.properties?.timeoutMs?.maximum).toBe(14_400_000);
+  expect(subagents.properties?.definitions?.items?.properties?.timeoutMs?.maximum).toBe(14_400_000);
+  const load = (payload: unknown) => resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" }, subagents: payload as never,
+  } });
+  const definition = (timeoutMs: number) => ({ name: "helper", description: "Help", prompt: "Help", timeoutMs });
+  expect(load({ timeoutMs: 14_400_000 }).subagents?.timeoutMs).toBe(14_400_000);
+  expect(() => load({ timeoutMs: 14_400_001 })).toThrow(/timeoutMs must be an integer between 1000 and 14400000/u);
+  expect(load({ definitions: [definition(14_400_000)] }).subagents?.definitions?.[0]?.timeoutMs).toBe(14_400_000);
+  expect(() => load({ definitions: [definition(14_400_001)] })).toThrow(/timeoutMs must be an integer between 1000 and 14400000/u);
+});
+
+it("keeps the subagent maxTurns loader ceilings aligned with the generated schema", () => {
+  const root = repoRoot();
+  const schema = JSON.parse(
+    readFileSync(join(root, "packages/agent-app/schema/mono-agent.config.schema.json"), "utf8"),
+  ) as SchemaNode;
+  const subagents = schemaNode(schema, "subagents");
+  const topMaximum = subagents.properties?.maxTurns?.maximum;
+  const definitionMaximum = subagents.properties?.definitions?.items?.properties?.maxTurns?.maximum;
+  const instancesMaximum = subagents.properties?.instances?.properties?.maxTurns?.maximum;
+  if (typeof topMaximum !== "number") {
+    throw new Error("missing schema maximum for subagents.maxTurns");
+  }
+  if (typeof definitionMaximum !== "number") {
+    throw new Error("missing schema maximum for subagents.definitions[].maxTurns");
+  }
+  if (typeof instancesMaximum !== "number") {
+    throw new Error("missing schema maximum for subagents.instances.maxTurns");
+  }
+
+  const loadSubagents = (payload: unknown) => () => resolveJsonMonoAgentConfig({
+    cwd: process.cwd(),
+    json: {
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      subagents: payload as never,
+    },
+  });
+  const definition = (maxTurns: unknown) => ({
+    name: "helper", description: "Help", prompt: "Help", maxTurns,
+  });
+
+  expect(loadSubagents({ maxTurns: topMaximum })()).toMatchObject({ subagents: { maxTurns: topMaximum } });
+  expect(loadSubagents({ maxTurns: topMaximum + 1 })).toThrow(
+    `maxTurns must be an integer between 1 and ${topMaximum}`,
+  );
+
+  expect(loadSubagents({ definitions: [definition(definitionMaximum)] })())
+    .toMatchObject({ subagents: { definitions: [{ maxTurns: definitionMaximum }] } });
+  expect(loadSubagents({ definitions: [definition(definitionMaximum + 1)] })).toThrow(
+    `maxTurns must be an integer between 1 and ${definitionMaximum}`,
+  );
+
+  expect(loadSubagents({ instances: { maxTurns: instancesMaximum } })())
+    .toMatchObject({ subagents: { instances: { maxTurns: instancesMaximum } } });
+  expect(loadSubagents({ instances: { maxTurns: instancesMaximum + 1 } })).toThrow(
+    `instances.maxTurns must be an integer between 1 and ${instancesMaximum}`,
+  );
 });

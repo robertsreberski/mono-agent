@@ -1,3 +1,4 @@
+import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import {
   MAX_AGENT_NAME_LENGTH,
   type MonoAgentConfigJson,
@@ -47,7 +48,6 @@ export interface WizardAnswers {
   /** Memory module id, or `undefined` for no memory section. */
   readonly memory?: string;
   readonly sandbox: boolean;
-  readonly observability: boolean;
   /** Final tool selection written into `tools.allowedTools`. */
   readonly allowedTools: readonly string[];
   /** Per module id → non-secret input overrides. Secret inputs are stripped by the composer. */
@@ -104,7 +104,7 @@ export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
     }
   };
 
-  add(plan.configJson.runtime?.model);
+  add(modelReferenceFromConfigJson(plan.configJson.runtime?.model));
   for (const fallback of plan.configJson.runtime?.fallbacks ?? []) {
     add(fallback.model);
   }
@@ -140,7 +140,7 @@ const ZERO_TOOLS_WARNING =
 /**
  * The module ids selected by these answers, in composer order: auto-derived
  * providers first (from an `ollama:*`/`lmstudio:*` model), then channels (in
- * answer order), then the memory tier, then sandbox, then observability.
+ * answer order), then the memory tier, then sandbox.
  */
 function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   const ids: string[] = [];
@@ -159,9 +159,6 @@ function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   }
   if (answers.sandbox) {
     ids.push("sandbox");
-  }
-  if (answers.observability) {
-    ids.push("observability:phoenix");
   }
   return ids;
 }
@@ -199,7 +196,7 @@ const MEMORY_RECALL_TOOL = "MemoryRecall";
 /**
  * True when the selected memory tier auto-provisions the read-only `MemoryRecall`
  * tool (its fragment sets `memory.recallTool.enabled`). Derived from the catalog so
- * it never drifts from the memory modules themselves — lite/journal/bujo/supermemory
+ * it never drifts from the memory modules themselves — lite/journal/bujo
  * all do (Lite is FTS-only).
  */
 function memoryProvisionsRecall(memoryId: string | undefined): boolean {
@@ -220,7 +217,7 @@ function memoryProvisionsRecall(memoryId: string | undefined): boolean {
  * The tools this agent auto-provisions regardless of `tools.allowedTools` — the
  * "always on" set the wizard surfaces so the operator understands they are NOT gated
  * by the allow-list choice. Today that is `MemoryRecall` when the memory tier enables
- * recall (lite/journal/bujo/supermemory). `ReadSkill` (skills configured) and MCP-server
+ * recall (lite/journal/bujo). `ReadSkill` (skills configured) and MCP-server
  * tools are also always-on when present, but the basic wizard authors neither, so they
  * never appear here.
  */
@@ -243,7 +240,6 @@ const BASE_ANSWERS: WizardAnswers = {
   // `memory` is intentionally omitted (no memory section) — with
   // exactOptionalPropertyTypes an optional key must be absent, not `undefined`.
   sandbox: false,
-  observability: false,
   allowedTools: [ALLOW_ALL_TOOLS],
   moduleInputs: {},
 };

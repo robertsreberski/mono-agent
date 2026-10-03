@@ -1,5 +1,7 @@
+import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "./suggest-replies.js";
+import { trackResponderActivity, type WorkerActivityTracker } from "./worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
-import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
+import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
 import { resolve } from "node:path";
 
@@ -11,6 +13,8 @@ import type {
   RuntimeModelReference,
   SandboxEngine,
 } from "@mono-agent/runtime-adapter";
+
+import type { BackgroundSnapshot } from "./background-snapshot.js";
 
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -30,6 +34,8 @@ import {
   isSetConversationTitleToolAllowed,
 } from "./conversation-title.js";
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "./runtime-option-extensions.js";
+import { createRestartProposalService, isProposeRestartToolAllowed } from "./restart-proposal.js";
+import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
 import { isRetiredProjectSkillName } from "./project-skills.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
@@ -79,17 +85,18 @@ import {
   resolveProcessJobsProtectionPosture,
   type ProcessJobsProtectionPosture,
 } from "./process-jobs-protection.js";
-import { bindMonitorWakeContextToResponder } from "./monitors-context.js";
-import type { MonitorsServiceHandle } from "./monitors-service.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
 export interface ResponderControllerPort {
+  readonly activityTracker?: WorkerActivityTracker;
+  readonly backgroundSnapshot?: BackgroundSnapshot | undefined;
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
+  readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
   readonly env: Record<string, string | undefined>;
   readonly logger: MonoAgentAppLogger | undefined;
   readonly runtime: MonoRuntimeLike | undefined;
@@ -97,13 +104,14 @@ export interface ResponderControllerPort {
   readonly interactionBridge: InteractionBridgeHandle | undefined;
   readonly continuationService: ContinuationServiceHandle | undefined;
   readonly processJobsService: ProcessJobsServiceHandle | undefined;
-  readonly monitorsService: MonitorsServiceHandle | undefined;
   readonly processJobsStateDir: string | undefined;
   readonly agentRootOwnership: AgentRootOwnership;
   readonly processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   readonly providerAuthObservations?: ProviderAuthObservationTracker;
+  readonly restartAuthority?: TuiRestartAuthority | undefined;
+  readonly restartToolKeyed?: boolean;
   providerUsageFor?(config: MonoAgentConfig): ProviderUsageOperator;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -112,7 +120,6 @@ export interface ResponderControllerPort {
     store: ConfiguredMemory,
   ): MemoryRetrievalService | undefined;
   reportMemoryRecallStatus(coreConfig: MonoAgentConfig, service: MemoryRetrievalService | undefined): boolean;
-  supermemoryMcpRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined;
   adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
     readonly createExtension?: (
       targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
@@ -123,6 +130,7 @@ export interface ResponderControllerPort {
     coreConfig: MonoAgentConfig,
   ): {
     readonly extension: RuntimeOptionsExtension;
+    readonly compactionEndpoint: (model: string, context1M?: boolean) => Promise<Awaited<ReturnType<ReturnType<typeof createRequestModelOverrideRuntimeExtension>>>["runtimeOptions"]>;
     readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
@@ -133,14 +141,13 @@ export interface ResponderControllerPort {
     readonly sourceLabel?: string;
     readonly configPath?: string;
   }>;
-  recordExporterWarning(warning: { readonly phase: string; readonly message: string }): void;
   recordSessionEvent(event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void;
 }
 
 /**
  * The channel whose conversations the reader already owns a session boundary
- * for. `tui` is the gui/operator channel behind both `mono-agent tui` and the
- * web console: each console thread has a permanent conversation id and an
+ * for. `tui` is the compatibility-named gui/operator channel behind the web
+ * console and other maintained operator clients: each console thread has a permanent conversation id and an
  * explicit "new thread" action, so a daily bucket on top of it just severs a
  * live conversation at midnight — the next morning's follow-up woke with no
  * transcript and had to reconstruct it through RunHistory.
@@ -148,9 +155,15 @@ export interface ResponderControllerPort {
 const SELF_BOUNDED_CHANNEL_ID = "tui";
 
 /** @internal deterministic composition contract used by focused tests. */
-export function replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled: boolean): number {
-  return DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES
-    - (mcpAppsEnabled ? DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES : 0);
+export function replyArtifactStorageMaxBytesForMcpApps(
+  mcpAppsEnabled: boolean,
+  maxStorageBytes: number | "unlimited" = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+): number | "unlimited" {
+  if (maxStorageBytes === "unlimited" || !mcpAppsEnabled) return maxStorageBytes;
+  if (maxStorageBytes <= DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES) {
+    throw new RangeError("artifacts.replyFiles.maxStorageBytes must exceed the MCP App audit reserve (1048576 bytes) when MCP Apps are enabled.");
+  }
+  return maxStorageBytes - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES;
 }
 
 /** The rollover policy this channel's responder runs under. */
@@ -159,6 +172,16 @@ export function sessionRolloverForChannel(
   configured: MonoAgentConfig["runtime"]["session"]["rollover"],
 ): MonoAgentConfig["runtime"]["session"]["rollover"] {
   return channelId === SELF_BOUNDED_CHANNEL_ID ? "none" : configured;
+}
+
+/** Whether `telegram.projects.enabled` is set; an unreadable config reads as off. */
+async function telegramProjectsConfigured(configPath: string): Promise<boolean> {
+  try {
+    const projects = readJsonSection((await readSettingsJson(configPath)).json, "telegram").projects;
+    return typeof projects === "object" && projects !== null && (projects as Record<string, unknown>).enabled === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function buildResponder(
@@ -214,14 +237,22 @@ export async function buildResponder(
   const memoryRetrieval = controller.ensureSharedMemoryRetrieval(coreConfig, memoryBackend);
   const memory = memoryRetrieval ?? memoryBackend;
   controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
-  const supermemoryMcp = controller.supermemoryMcpRuntimeOptions(coreConfig);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
+  const suggestedReplies = isSuggestRepliesToolAllowed(coreConfig.tools)
+    ? createSuggestRepliesService({ budget: replyPartBudget }) : undefined;
+  const restartProposals = isProposeRestartToolAllowed(coreConfig.tools)
+    ? createRestartProposalService({
+        authority: controller.restartAuthority,
+        isKeyed: () => controller.restartToolKeyed === true,
+        budget: replyPartBudget,
+      })
+    : undefined;
   const mcpAppsEnabled = runtimeRouteSupportsMcpApps(coreConfig);
   const replyArtifactStorage = replyArtifactStorageBudgetFor(
     coreConfig.artifacts.dir,
-    replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled),
+    replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled, coreConfig.artifacts.replyFiles?.maxStorageBytes),
   );
   const artifactDerivedRoots = agentArtifactDerivedRoots(coreConfig.artifacts.dir);
   const continuationStateDir = (await loadContinuationSettings({
@@ -250,6 +281,7 @@ export async function buildResponder(
     workspace: coreConfig.runtime.workspace,
     privateRoots: replyArtifactPrivateRoots,
     retentionDays: coreConfig.artifacts.retention.maxAgeDays,
+    ...(coreConfig.artifacts.replyFiles === undefined ? {} : { maxFileBytes: coreConfig.artifacts.replyFiles.maxFileBytes }),
     replyPartBudget,
     storageBudget: replyArtifactStorage,
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
@@ -260,6 +292,7 @@ export async function buildResponder(
         retentionDays: coreConfig.artifacts.retention.maxAgeDays,
         replyPartBudget,
         storageBudget: replyArtifactStorage,
+        ...(coreConfig.artifacts.replyFiles === undefined ? {} : { aggregateStorageMaxBytes: coreConfig.artifacts.replyFiles.maxStorageBytes }),
       })
     : undefined;
   const mcpAppsBase = mcpApps?.createExtension;
@@ -306,6 +339,7 @@ export async function buildResponder(
   const observabilityContext = await controller.observabilityContext();
   const consoleProjectsExtension = observabilityContext.sourceId === undefined ? undefined : createConsoleProjectsRuntimeExtension({
     sourceId: observabilityContext.sourceId, policy: coreConfig.tools,
+    channelProjects: await telegramProjectsConfigured(controller.configReadPath),
     onUnavailable: () => { controller.logger?.warn?.("Console project tools could not authenticate the active turn; tools are unavailable."); },
   });
   const conversationTitleExtension = conversationTitleBase;
@@ -316,10 +350,11 @@ export async function buildResponder(
   const usage = controller.providerUsageFor?.(coreConfig);
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
     usage === undefined ? undefined : createProviderUsageRuntimeExtension(usage, coreConfig.tools),
-    supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,
     conversationTitleExtension,
+    restartProposals?.extension,
+    suggestedReplies?.extension,
     consoleProjectsExtension,
     mcpAppsExtension,
     replyArtifactsExtension,
@@ -353,6 +388,7 @@ export async function buildResponder(
       : { rolloverTimezone: coreConfig.runtime.session.rolloverTimezone }),
   });
   const responder = await createConfiguredAgentResponderForApp({
+    preferAppPluginInstall: controller.backgroundSnapshot !== undefined,
     config: coreConfig,
     cwd: controller.cwd,
     // The host's resolved environment is authoritative for credential checks;
@@ -368,6 +404,18 @@ export async function buildResponder(
       ? {}
       : { continuationCapabilityIssuer: controller.continuationService }),
     ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
+    // Resolve only the model endpoint and context policy: the composed turn extension also
+    // allocates tools and request-scoped resources, which compaction must not run.
+    runtimeOptionsForManualCompaction: async (model: string, context1M?: boolean) => {
+      const runtimeOptions = await requestModelOverride.compactionEndpoint(model, context1M);
+      return {
+        context1MModels: runtimeOptions?.context1MModels,
+        customProvider: runtimeOptions?.customProvider,
+        customModel: runtimeOptions?.customModel,
+        modelCapabilities: runtimeOptions?.modelCapabilities,
+        isPrivateProvider: runtimeOptions?.isPrivateProvider,
+      };
+    },
     onMemoryRememberUnavailable: (error) => {
       controller.logger?.warn?.(
         "Remember tool endpoint could not start; durable memory writes are unavailable this run.",
@@ -391,11 +439,11 @@ export async function buildResponder(
     onToolHistoryWarning: (message) => {
       controller.logger?.warn?.(message);
     },
-    // Thread run-identifying context onto exported spans and surface per-run
-    // export warnings to `exporterStatus` (agent-host only builds the exporter
-    // when config.observability.exporters is non-empty).
+    ...(controller.logger?.warn === undefined ? {} : {
+      onComputerUseWarning: (message: string) => { controller.logger?.warn?.(message); },
+    }),
+    // Preserve per-app trace-source identity and config-path correlation.
     observabilityContext,
-    exporterWarn: (warning) => controller.recordExporterWarning(warning),
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
     processJobs: {
@@ -406,14 +454,6 @@ export async function buildResponder(
         ? {}
         : { conversationScheme: processJobConversationScheme }),
       protectionPosture: processJobsProtectionPosture,
-      routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
-    },
-    monitors: {
-      service: controller.monitorsService,
-      channelId,
-      ...(processJobConversationScheme === undefined
-        ? {}
-        : { conversationScheme: processJobConversationScheme }),
       routesOnlyPiNative: requestModelOverride.targetsProcessJobsPiNative,
     },
     // Only the responder's own bucketing changes. RunHistory above keeps the
@@ -433,16 +473,13 @@ export async function buildResponder(
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);
+  const suggestedReplyResponder = suggestedReplies === undefined ? replyResponder : suggestedReplies.wrapResponder(replyResponder);
+  const proposedReplyResponder = restartProposals === undefined ? suggestedReplyResponder : restartProposals.wrapResponder(suggestedReplyResponder);
   const richReplyResponder = postedReplyHistory.wrapResponder(
-    mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
+    mcpApps === undefined ? proposedReplyResponder : mcpApps.wrapResponder(proposedReplyResponder),
   );
-  // Monitor binding wraps the process-job binding: a monitor wake turn must be
-  // able to suppress its own reply, and that decision belongs outside the job
-  // seam it shares a delivery-key carrier with.
-  return bindMonitorWakeContextToResponder(
-    bindProcessJobWakeContextToResponder(richReplyResponder),
-    ...(controller.logger === undefined ? [] : [{ logger: controller.logger }]),
-  );
+  const wakeResponder = bindProcessJobWakeContextToResponder(richReplyResponder);
+  return controller.activityTracker === undefined ? wakeResponder : trackResponderActivity(wakeResponder, controller.activityTracker);
 }
 
 export function requestModelOverrideRuntimeOptions(
@@ -450,11 +487,13 @@ export function requestModelOverrideRuntimeOptions(
   coreConfig: MonoAgentConfig,
 ): {
   readonly extension: RuntimeOptionsExtension;
+  readonly compactionEndpoint: (model: string, context1M?: boolean) => Promise<Awaited<ReturnType<ReturnType<typeof createRequestModelOverrideRuntimeExtension>>>["runtimeOptions"]>;
   readonly targetsProcessJobsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
     baseModel: coreConfig.runtime.model,
+    ...(coreConfig.runtime.context1MModels === undefined ? {} : { context1MModels: coreConfig.runtime.context1MModels }),
     ...(configuredRuntimeFallbackModels(coreConfig.runtime).length === 0
       ? {}
       : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
@@ -467,6 +506,7 @@ export function requestModelOverrideRuntimeOptions(
   const extension = createRequestModelOverrideRuntimeExtension(options);
   return {
     extension: async (input) => extension({ request: input.request }),
+    compactionEndpoint: async (model, context1M) => (await extension({ request: { metadata: { web: { model, ...(context1M === undefined ? {} : { context1M }) } } } })).runtimeOptions,
     targetsProcessJobsPiNative: (metadata) => requestModelOverrideRoutesOnlyPiNative(metadata, options),
   };
 }
@@ -498,36 +538,14 @@ export function buildRuntimeForModel(
   };
 }
 
-export function supermemoryMcpRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
-  const memory = coreConfig.memory;
-  if (memory?.backend !== "supermemory" || memory.supermemory?.exposeMcpServer !== true) {
-    return undefined;
-  }
-  const apiKey = memory.supermemory.apiKey;
-  if (apiKey === undefined) {
-    controller.logger?.warn?.(
-      "memory.supermemory.exposeMcpServer is on but no apiKey is set; the hosted Supermemory MCP server (cloud-only) was not injected.",
-    );
-    return undefined;
-  }
-  controller.logger?.info?.("Supermemory hosted MCP server injected (cloud-only).");
-  const entry = {
-    supermemory: {
-      type: "http",
-      url: "https://mcp.supermemory.ai/mcp",
-      headers: { Authorization: `Bearer ${apiKey}` },
-    },
-  };
-  return async () => ({ runtimeOptions: { mcpServers: entry }, cleanup: async () => {} });
-}
-
 export async function adapterSendToolsRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): Promise<{
   readonly createExtension?: (
     targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
   ) => RuntimeOptionsExtension;
   readonly blockingToolNames: readonly string[];
 }> {
-  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
+  const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
+    ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
   const bridgeEnv = controller.interactionBridge?.env();
   const appOwnedInteraction = controller.interactionBridge === undefined || bridgeEnv === undefined
     ? undefined
@@ -578,6 +596,7 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
       effectiveInteraction,
       runOutputRoot,
       controller.interactionBridge,
+      settings.telegram?.projects === true,
     )(requestInput);
   };
   return { createExtension, blockingToolNames };

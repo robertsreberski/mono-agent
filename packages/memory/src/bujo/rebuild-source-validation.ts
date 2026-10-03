@@ -1,3 +1,11 @@
+import { isRememberedMemoryId } from "./canonical-lookup.js";
+import { isLegacyHostObservation } from "./graph.js";
+
+/** The same BuJo raw-record exclusion used by rebuild and read-only curation. */
+export function isSkippedRawBujoRecord(id: string, text: string): boolean {
+  return !isRememberedMemoryId(id, text) && isLegacyHostObservation(text);
+}
+
 export const CANONICAL_VISIBLE_BULLET = /^- (?:\[[ x><~]\]|◦|–) /u;
 const VALID_BULLET_TYPES = new Set(["task", "event", "note"]);
 const VALID_BULLET_STATUSES = new Set(["open", "done", "scheduled", "migrated", "dropped", "invalidated"]);
@@ -65,6 +73,12 @@ function parseMetadataFields(raw: string, file: string, line: number): Map<strin
     if (separator <= 0) throw new Error(`memory-rebuild: malformed bullet metadata at ${file}:${line}.`);
     const key = pair.slice(0, separator);
     if (fields.has(key)) {
+      // A duplicated labelled refs field is damaged label data, not an unreadable
+      // memory. Keep both refs so read projection can retain the valid ones.
+      if (key === "refs" && (fields.get(key)?.includes("label:") || pair.includes("label:"))) {
+        fields.set(key, `${fields.get(key)},${pair.slice(separator + 1)}`);
+        continue;
+      }
       throw new Error(`memory-rebuild: duplicate bullet metadata key ${key} at ${file}:${line}.`);
     }
     fields.set(key, pair.slice(separator + 1));

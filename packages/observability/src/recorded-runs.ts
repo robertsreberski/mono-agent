@@ -27,7 +27,7 @@ import {
 } from "./artifact-fs.js";
 import { buildEventDescriptors, classifyRecordedRunEvent } from "./event-classify.js";
 import { redactJsonValue } from "./recorder.js";
-import { normalizeFailoverHistory } from "./run-export-mapping.js";
+import { normalizeFailoverHistory } from "./failover-history.js";
 import {
   EVENTS_SUFFIX,
   SUMMARY_SUFFIX,

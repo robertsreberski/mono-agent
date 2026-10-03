@@ -1,18 +1,19 @@
 export {
   assertConfiguredProviderCoverage,
+  assertNoRetiredMonoAgentConfig,
   MAX_AGENT_NAME_LENGTH,
-  loadMonoAgentConfig,
+  MEMORY_LLM_JSON_PATHS,
   MonoAgentConfigError,
   redactMonoAgentConfig,
   resolveConfiguredProviders,
-  resolveSupermemoryContainer,
+  resolveJsonMonoAgentConfig,
   RETIRED_CONFIG_FIELDS,
 } from "./config.js";
 export type {
-  LoadMonoAgentConfigInput,
   MonoAgentConfigErrorCode,
   MonoAgentConfigErrorDetails,
   ProviderCoverageRoute,
+  ResolveJsonMonoAgentConfigInput,
 } from "./config.js";
 export type {
   ArtifactRetentionConfig,
@@ -20,6 +21,7 @@ export type {
   MemoryBackend,
   MemoryEmbeddingsCircuitBreakerConfig,
   MemoryEmbeddingsConfig,
+  MemoryEmbeddingsInstructions,
   MemoryEmbeddingsProvider,
   MemoryAgentHostLlmConfig,
   MemoryLlmConfig,
@@ -27,30 +29,20 @@ export type {
   MemoryMode,
   MemoryOllamaLlmConfig,
   MemoryConsolidationConfig,
-  MemorySupermemoryConfig,
   MemoryWriteMode,
   MonoAgentConfig,
-  ObservabilityExporterConfig,
   PiNativeProviderConfig,
-  PermissionMode,
   RuntimeFallbackConfig,
-  PhoenixExporterConfig,
   RedactedMemoryConfig,
   RedactedMemoryEmbeddingsConfig,
-  RedactedMemorySupermemoryConfig,
   RedactedMonoAgentConfig,
-  RedactedObservabilityConfig,
-  RedactedObservabilityExporterConfig,
-  RedactedPhoenixExporterConfig,
   RedactedLocalProviderDefinition,
   RedactedProviderDefinition,
   ResolvedProviders,
   SessionMode,
 } from "./types.js";
-export {
-  loadMonoAgentConfigWithSources,
-} from "./layered-loader.js";
-export type { LoadMonoAgentConfigWithSourcesInput } from "./layered-loader.js";
+export { loadMonoAgentConfig } from "./layered-loader.js";
+export type { LoadMonoAgentConfigInput } from "./layered-loader.js";
 export {
   readMonoAgentConfigJson,
   writeMonoAgentConfigJson,
@@ -64,30 +56,26 @@ export type {
   MonoAgentMemoryConsolidationJson,
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentMemoryLlmJson,
-  MonoAgentObservabilityExporterJson,
   MonoAgentProvidersJson,
   MonoAgentRuntimeFallbackJson,
+  MonoAgentModelSelectionJson,
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
 export {
-  detectEffortKeyword,
-  EFFORT_KEYWORD_TRIGGERS,
-  effortRank,
-  maxEffortLevel,
-} from "./effort-keywords.js";
-export type { EffortKeywordMatch, EffortKeywordTrigger } from "./effort-keywords.js";
-export {
   ALLOW_ALL_TOOLS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
   MEMORY_EMBEDDINGS_PROVIDERS,
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
-  PERMISSION_MODES,
+  RENAMED_TOOL_NAMES,
+  renamedToolMessage,
+  renamedToolName,
 } from "./enums.js";
-export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
+export { buildMonoAgentConfigView, CORE_CONFIG_FIELD_IDS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {
   BuildMonoAgentConfigViewInput,
   ConfigViewField,
@@ -98,3 +86,5 @@ export type {
   RemovedConfigWarningsInput,
 } from "./config-view.js";
 export type { ProviderDefinition } from "@mono-agent/runtime-adapter";
+
+export { modelReferenceFromConfigJson } from "./json-source.js";

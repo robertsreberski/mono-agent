@@ -7,7 +7,7 @@ sidebar:
 
 This page covers the recommended way to install the `mono-agent` CLI, what the browser console needs, and how to run an unreleased build straight from a clone of the repo.
 
-The shipped command line lives in `@mono-agent/agent-app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`, and the optional terminal console lives in `@mono-agent/tui`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/agent-app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
+The shipped command line lives in `@mono-agent/agent-app`: the config-first host that reads one `mono-agent.config.json` and hosts every channel. The always-on browser console lives in `@mono-agent/web`. For convenience there is an unscoped **`create-mono-agent`** installer that puts the natural `mono-agent` command on your `PATH`; both installer bins delegate to `@mono-agent/agent-app`, and only the `create-mono-agent` name adds the npm-init routing described below. All publish under the `@mono-agent/*` scope on npm.
 
 :::note
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
@@ -23,7 +23,7 @@ The npm packages publish in lockstep, and the latest published release does not 
 | --- | --- | --- |
 | Node.js | `>=24.15.0` | Runtime for the CLI, host, and consoles. This matches the minimum required by the bundled Pi runtime. |
 | pnpm | `>=10.16.0` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
-| Provider sign-in | Provider account, or a local model server | Anthropic, GitHub Copilot, and OpenAI Codex sign in through the Pi runtime's bundled OAuth flow (`mono-agent auth login <provider>`); OpenCode-Go uses `OPENCODE_API_KEY`; Ollama and LM Studio need no account. No external CLI install is required. |
+| Provider sign-in | Provider account, or a local model server | Anthropic, GitHub Copilot, OpenAI Codex, and `openai` with ChatGPT sign in through the Pi runtime's bundled OAuth flow (`mono-agent auth login <provider>`); OpenCode-Go uses `OPENCODE_API_KEY`; Ollama and LM Studio need no account. No external CLI install is required. |
 
 The default `openai-codex:gpt-5.6-terra` runtime signs in through the bundled Pi OAuth flow rather than a separate Codex CLI. `mono-agent auth login openai-codex` prints an auth URL to open in a browser, waits for the localhost callback, and accepts a pasted redirect URL / authorization code on remote or headless machines:
 
@@ -49,7 +49,7 @@ npm i -g create-mono-agent
 
 `create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin. The persistent `mono-agent` name forwards arguments unchanged to `@mono-agent/agent-app` (installed alongside it). The installer name treats a bare invocation or any invocation whose first argument is a flag as `init`, except that singleton `--help`/`-h` prints the `init` help topic and singleton `--version`/`-v` prints the shared `mono-agent <version>` identity. Explicit subcommands pass through.
 
-Prefer the scoped host directly? It also puts `mono-agent` on your `PATH` and additionally installs the `mono-agent-memory-recall` helper bin used by the memory recall tool:
+Prefer the scoped host directly? It also puts `mono-agent` on your `PATH`; the memory recall tool is provided directly by the host:
 
 ```bash
 npm i -g @mono-agent/agent-app
@@ -100,22 +100,6 @@ Two differences matter before you use the managed path:
 
 Where no usable service manager exists, the foreground command above is the supported path. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary.
 
-## The terminal console (optional)
-
-The operator console is built into the CLI. Once an agent is running (`mono-agent start`), open it from **any directory**:
-
-```bash
-mono-agent tui
-```
-
-It discovers running agents on the machine and gives you live chat with structured thinking/tool/telemetry insight, bounded recorded-run replay, and a config view. Use it alongside the browser console, or instead of it on a headless host. The underlying `@mono-agent/tui` package also ships a low-level `mono-agent-tui` bin for custom hosts (`--responder` embedded mode, `--url` direct connect):
-
-```bash
-npm i -g @mono-agent/tui   # only needed for the standalone bin
-```
-
-See [TUI](/observability/tui/) for the console walkthrough.
-
 ## Verify the install
 
 Confirm the CLI resolves and prints its help:
@@ -128,16 +112,16 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 | Command | Purpose |
 | --- | --- |
-| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; name/Role, model routes, an optional-capabilities gate for channels/memory/observability that defaults to No, then tools and sandbox); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
+| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; name/Role, model routes, an optional-capabilities gate for channels/memory that defaults to No, then tools and sandbox); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
 | `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces the removed `recipes` command. |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel as a macOS `launchd` or Linux systemd user service; use `--foreground` where no service manager exists. |
 | `restart` / `stop` / `status` / `logs` | Manage the managed instance (macOS launchd; Linux systemd user service). |
 | `web` | Manage or run the always-on browser console; bare `web` only reports status. |
-| `tui` | Open the terminal operator console and connect to any running agent. |
-| `sessions` (removed) | Removed — use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). |
+| `runs list` / `runs show` | Inspect bounded, redacted local run evidence without loading providers. |
+| `tui` / `sessions` (removed) | Removed — use `mono-agent web run --loopback` for live operation, `runs list` / `runs show` for prior-run diagnostics, and `mono-agent config` for resolved configuration. |
 | `install-skill` | Install the authoring composer and its documentation MCP companion, or maintain managed project skills. |
-| `backfill` | Replay historical runs into observability. |
+| `backfill` (removed) | Fails with pre-upgrade migration guidance; retained artifacts remain available through `runs`. |
 
 ## Next: scaffold your first agent
 
@@ -149,7 +133,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels, memory, observability — default No for a custom start; seeded presets open the gate at Yes) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, enter the exact Role destined for `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then decide whether to add optional capabilities (channels and memory — default No for a custom start; seeded presets open the gate at Yes) and confirm the tool/access and sandbox choices. The review says whether that Role will be written or an existing identity preserved. Escape goes back. A concrete creation review precedes provider/SRT mutations.
 
 Bare `init` behaves differently per platform and input mode, and the docs do not hide it:
 
@@ -157,7 +141,7 @@ Bare `init` behaves differently per platform and input mode, and the docs do not
 - **Linux, interactive**: the wizard still runs and proves the routes, but it does not start the systemd user service for you. It prints the manual start handoff — terminal 1 `mono-agent start` (which requires a usable systemd **user** manager) or `mono-agent start --foreground` without one, then terminal 2 `mono-agent web run --loopback`, because the console needs that agent process to stay alive.
 - **Any flag, `--yes`, or a non-TTY**: init is scaffold-only. It never runs the readiness proof, never starts a process, and never labels the result ready.
 
-Off macOS, edit the preserved scaffold manually, validate, start the service or foreground process, and open the browser console or `mono-agent tui`. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
+Off macOS, edit the preserved scaffold manually, validate, start the service or foreground process, and open the browser console. See [Setup security and managed runtime](/reference/setup-security/) for the closure, environment, single-instance, and snapshot-integrity contracts behind the managed path.
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
@@ -183,7 +167,6 @@ Update global installs with npm:
 
 ```bash
 npm update -g create-mono-agent     # (or @mono-agent/agent-app)
-npm update -g @mono-agent/tui       # only if you installed the standalone TUI bin
 ```
 
 The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/web`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the installer) on the same version. To see what the current npm release actually contains relative to these docs, read [Release status](/reference/release-status/).
@@ -214,7 +197,7 @@ pnpm run build
 
 `pnpm run build` builds every package in dependency order. On supported POSIX/macOS
 hosts it first acquires the ignored exclusive `.mono-agent-build.lock`, removes the prior
-`.mono-agent-build.json`, finalizes the required CLI/TUI executable modes, syncs the completed deploy
+`.mono-agent-build.json`, finalizes the required CLI executable mode, syncs the completed deploy
 outputs, and atomically publishes a canonical
 owner-only marker. The marker records the full source SHA and state, Node version and ABI, completion
 time, a deterministic digest of the actual deploy outputs, and a separate digest of the installed root
@@ -254,12 +237,6 @@ alias mono-agent="node /absolute/path/to/mono-agent/packages/agent-app/dist/cli.
 mono-agent --help
 ```
 
-For the TUI bin from the same clone, alias `mono-agent-tui` to `packages/tui/dist/bin/mono-agent-tui.js`:
-
-```bash
-alias mono-agent-tui="node /absolute/path/to/mono-agent/packages/tui/dist/bin/mono-agent-tui.js"
-```
-
 :::caution
 Rebuild (`pnpm run build`) after pulling new changes — the alias points at compiled output in `dist/`, not the TypeScript sources, so edits are not picked up until you rebuild. Cross-package types and tests resolve against built `dist/`, so a stale build can mask or surface errors that do not match `src`.
 
@@ -267,5 +244,5 @@ A source build is an evaluation path, not a published artifact: other agents tha
 :::
 
 :::tip
-Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` (and `packages/tui`) to put the local bins on your `PATH`. You still rebuild after each change.
+Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` to put the local bin on your `PATH`. You still rebuild after each change.
 :::

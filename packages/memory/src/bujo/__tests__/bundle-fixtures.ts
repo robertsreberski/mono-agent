@@ -6,6 +6,7 @@ import type { EmbeddingProvider } from "../../search/index.js";
 import { openMemoryDb, type MemoryEntityAssociation, type EntityRecord, type MemoryRecord } from "../../store/index.js";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
+import { labelsOf } from "../labels.js";
 import { appendAssociation, appendEntity } from "../graph.js";
 import { safeRebuildMemoryIndex } from "../rebuild.js";
 import { initializeReplayProjection } from "../replay-projection.js";
@@ -91,6 +92,7 @@ export async function createBujoFixture(spec: FixtureSpec): Promise<BujoFixture>
         source: { file: relative(root, dailyFilePath(root, when)) },
       };
       await db?.upsert(record);
+      db?.replaceMemoryLabels(bullet.id, labelsOf(bullet));
     }
     db?.checkpoint();
   } finally {

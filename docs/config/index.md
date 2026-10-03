@@ -1,6 +1,6 @@
 ---
 title: "Configuration"
-description: "Learn how mono-agent loads configuration, applies environment overrides, activates features, and validates an agent."
+description: "Learn how mono-agent loads JSON configuration, applies defaults, activates features, and validates an agent."
 sidebar:
   order: 0
 ---
@@ -30,29 +30,18 @@ A minimal valid config has exactly two fields:
 
 ## How configuration is loaded
 
-For a field that has an environment mapping, precedence is:
+Core configuration has one precedence order:
 
-1. **Passed process environment** — the documented `MONO_AGENT_*` variable wins.
-2. **`mono-agent.config.json`** — the declared value.
-3. **Built-in default** — used when neither of the above is set.
+1. **`mono-agent.config.json`** — the declared value.
+2. **Built-in default** — used when the JSON field is omitted.
 
-Config fields may be JSON-only. Only fields with a documented `MONO_AGENT_*` mapping accept an environment override; the generated reference shows `--` when no mapping exists. For example, `runtime.model` maps to `MONO_AGENT_MODEL`, while `slack.shortcuts` is JSON-only.
+Former core `MONO_AGENT_*` configuration variables are silently ignored. The
+CLI still loads `.env` for credentials named by `apiKeyEnv`-style JSON fields,
+for adapter-owned inputs, and for operational process plumbing. Use
+`--env-file <path>` to choose another dotenv file.
 
-The CLI prepares the environment before it invokes the config loader. It loads `./.env` without replacing variables already exported by the shell, then applies the precedence above. Use `--env-file <path>` to choose another dotenv file. The programmatic `loadMonoAgentConfigWithSources` function does **not** read dotenv files; callers must prepare and pass `env` themselves.
-
-For example, these variables override both JSON values:
-
-```json
-{ "runtime": { "model": "openai-codex:gpt-5.6-terra", "effort": "medium" } }
-```
-
-```bash
-# Overrides both fields above without editing the file
-export MONO_AGENT_MODEL="opencode-go:kimi-k2.6"
-export MONO_AGENT_EFFORT="high"
-```
-
-See [Environment variables](/config/env-vars/) for the full mapping and CLI loading details.
+See [Operational environment variables](/config/env-vars/) for the remaining
+non-core environment contracts.
 
 :::note
 The CLI does not watch the file. Run `mono-agent restart` after an edit. An embedded host can instead call `app.applyConfigChange(reason)` explicitly; see [Programmatic composition](/programmatic/).
@@ -73,7 +62,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `continuations`, `interaction` | Durable asynchronous results, ask-the-user, and progress bridges | [Durable continuations](/tools/durable-continuations/), [Delivery and send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
-| `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
+| `artifacts`, `traceability` | JSONL run artifacts and trace registry | [Observability](/observability/) |
 | `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
 | `webhook`, `openaiApi`, `cron` | Built-in HTTP, OpenAI-compatible, and scheduled channels | [Channels](/channels/) |
 | `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
@@ -98,7 +87,7 @@ The [Feature Registry](/reference/feature-registry/) tags each capability so you
 
 | Type | Meaning |
 | --- | --- |
-| `config` | Declarable in `mono-agent.config.json`; an env override exists only when documented |
+| `config` | Declarable in `mono-agent.config.json` |
 | `cli` | Reached through a `mono-agent` CLI flag/command |
 | `auto` | Always active when the app runs; needs no declaration |
 | `code` | Programmatic escape hatch only — intentional |
@@ -114,7 +103,7 @@ Composition](/programmatic/) and [Live input steering](/programmatic/approval-an
 
 ## Validate before you run
 
-`mono-agent validate` reports the resolved runtime, provider credentials, context, memory, tools, sandbox, observability, secret placement, and channel state. Exit code 0 means the config is structurally valid; a `waiting` section still needs attention and is not an **Agent ready** result. Static validation does not make a model request. See [CLI reference → validate](/observability/cli-reference/#validate) for the liveness and guided-init distinctions.
+`mono-agent validate` reports the resolved runtime, provider credentials, context, memory, tools, sandbox, observability, secret placement, and channel state. Exit code 0 means the config is structurally valid; a `waiting` section still needs attention and is not an **Agent ready** result. Duplicate JSON object keys at any depth are an error-level core finding with their path (for example, `processJobs.maxActivePerConversation`); `doctor` reports the same finding. At runtime the loader warns and continues with JSON's last-value-wins behavior, so correct the duplicate and validate before restarting. Static validation does not make a model request. See [CLI reference → validate](/observability/cli-reference/#validate) for the liveness and guided-init distinctions.
 
 ```bash
 mono-agent validate
@@ -124,13 +113,13 @@ mono-agent start     # traceability + every configured channel
 On `start`, each channel prints its initial state: `running`, `waiting_for_config`, `disabled`, or `failed`. A running transport that later enters self-recovery can report `degraded` until it recovers.
 
 :::note
-The **secret placement** section is advisory and non-fatal: it surfaces a `waiting` warning when a secret-marked field is resolved from the committed `mono-agent.config.json` instead of `.env`, naming the `MONO_AGENT_*` variable to move it to. It covers core secrets (e.g. `memory.embeddings.apiKey`) and every channel credential (`telegram.botToken`, `slack.botToken`/`slack.appToken`, `openaiApi.apiKey`, the A2A plugin bearer tokens). The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`, which additionally shows every channel section field-by-field with the same `[env]`/`[json]`/`[default]` provenance as the core sections. See [Environment Variables](/config/env-vars/) for the variable map.
+The **secret placement** section is advisory and non-fatal for adapter credentials. Prefer `apiKeyEnv`-style references for core credentials; adapter warnings name the package-owned variable for secrets such as (`telegram.botToken`, `slack.botToken`/`slack.appToken`, `openaiApi.apiKey`, the A2A plugin bearer tokens). The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`. Core fields show `[json]` or `[default]`; adapter fields may still show `[env]`.
 :::
 
 ## Related pages
 
 - [Blueprint](/config/blueprint/) — a broad annotated `mono-agent.config.json` example.
 - [Generated Config Reference](/config/reference/) — the generated key table and JSON Schema URL.
-- [Environment Variables](/config/env-vars/) — the complete `MONO_AGENT_*` map.
+- [Operational Environment Variables](/config/env-vars/) — secrets and process plumbing.
 - [Folder Layout](/config/folder-layout/) — files and directories around the config.
 - [Feature Matrix](/reference/feature-matrix/) — canonical capability → config key reference.

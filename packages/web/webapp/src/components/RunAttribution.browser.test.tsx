@@ -93,7 +93,7 @@ const TURN_BY_PREFIX: Record<string, string> = {
 
 const message = (
   id: string,
-  role: "user" | "assistant",
+  role: "user" | "assistant" | "system",
   text: string,
   at: string,
   attribution?: WebMessage["attribution"],
@@ -156,6 +156,11 @@ const detail = (): ThreadDetail => ({
   messages: [
     message("first-user", "user", "Draft the release note for the console.", "2026-09-12T09:00:00.000Z"),
     message("first-assistant", "assistant", FIRST_ANSWER, "2026-09-12T09:00:04.000Z", obedient),
+    { ...message("model-marker", "system", "", "2026-09-12T09:04:40.000Z"), parts: [{ type: "conversation-marker", kind: "model",
+    before: { model: SOL, effort: "high" },
+    after: { model: FABLE, effort: "high" },
+    at: "2026-09-12T09:04:40.000Z",
+  }] },
     message("second-user", "user", "Try that again, with more care about the wording.", "2026-09-12T09:05:00.000Z"),
     message("second-assistant", "assistant", SECOND_ANSWER, "2026-09-12T09:05:06.000Z", fellBack),
     message("third-user", "user", "Trim the last paragraph.", "2026-09-12T09:09:00.000Z"),
@@ -163,15 +168,7 @@ const detail = (): ThreadDetail => ({
   ],
   // The operator switched the conversation from Sol to Fable between turn 1 and
   // turn 2; the transcript rule is where that switch is told.
-  modelTransitions: [{
-    id: 1,
-    afterMessageId: "first-assistant",
-    turnId: "turn-second",
-    before: { model: SOL, effort: "high" },
-    after: { model: FABLE, effort: "high" },
-    createdAt: "2026-09-12T09:04:40.000Z",
-  }],
-  projectTransitions: [],
+
 });
 
 const persistence = createThreadPersistence();

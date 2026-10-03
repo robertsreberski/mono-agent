@@ -11,16 +11,8 @@ On macOS, mono-agent can install the exact pinned SRT runtime into its private u
 
 ## Who this is for
 
-For an optional long-running watch in Telegram, Slack, or an existing web
-conversation, enable `processJobs.enabled` and `monitors.enabled`.
-Use Monitor's `dedupe: "batch"` for repeated redraws and
-`min_wake_interval_ms` to space intermediate wakes. The host ceiling is
-`monitors.maxWakeIntervalMs` (default/cap 300000); the receipt reports the
-effective policy. `wake_on: "exit"` with default dedupe/interval sends only a
-terminal wake with a bounded tail. Keep finite CI work as a terminating
-background process job when only the final result matters. See
-[Monitors](/tools/monitors/) for accounting and bounds. Never automatically
-recreate a cancelled watch.
+For finite work that should finish after the turn returns, enable
+`processJobs.enabled` and use [background process jobs](/tools/background-process-jobs/).
 
 Security team deploying an internal code assistant.
 
@@ -60,7 +52,7 @@ An agent that can read repos and run shell commands or run-scoped JavaScript ins
 }
 ```
 
-The `denyWrite` globs above are the built-in defaults — listed explicitly here to make the secret-protection contract obvious. Relative `readableRoots`/`writableRoots` entries resolve against the workspace. The matching env vars are `MONO_AGENT_SANDBOX_MODE`, `MONO_AGENT_SANDBOX_NETWORK`, `MONO_AGENT_SANDBOX_READABLE_ROOTS`, `MONO_AGENT_SANDBOX_WRITABLE_ROOTS`, `MONO_AGENT_SANDBOX_DENY_WRITE`, and `MONO_AGENT_SANDBOX_FALLBACK`.
+The `denyWrite` globs above are the built-in defaults — listed explicitly here to make the secret-protection contract obvious. Relative `readableRoots`/`writableRoots` entries resolve against the workspace. Configure these values in the JSON `sandbox` block; former core environment variables are ignored.
 
 :::caution
 Keep `fallback` at `fail-closed`. Setting `fallback: "unsafe-host-process"` plus `unsafeAllowHostProcess: true` lets commands run unsandboxed on the host when `srt` is unavailable. When that fallback is active, mono-agent reports `WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.` Never use that fallback for a security-sensitive deployment.

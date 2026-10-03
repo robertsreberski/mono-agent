@@ -18,7 +18,7 @@ import { startPreparedProcess } from "./process-runner.js";
  *   timeoutMs?: number,
  *   maxOutputChars?: number,
  *   launch: (options?: {timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}) => ReturnType<typeof startPreparedProcess>,
- * }) => Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null, maxRuntimeMs?: number}>} start
+ * }) => Promise<{jobId: string, state: "queued"|"starting"|"running", startedAt: string|null, maxRuntimeMs?: number, queuePosition?: number, queueDeadlineAt?: string}>} start
  */
 
 /**
@@ -91,9 +91,11 @@ export async function handOffProcessJob({
       state: result.state,
       started_at: result.startedAt,
       ...(result.maxRuntimeMs === undefined ? {} : { max_runtime_ms: result.maxRuntimeMs }),
+      ...(result.queuePosition === undefined ? {} : { queue_position: result.queuePosition }),
+      ...(result.queueDeadlineAt === undefined ? {} : { queue_deadline_at: result.queueDeadlineAt }),
     };
     return {
-      text: `${wakeOnCompletion === false ? "Background process job started with wake_on_completion=false: its terminal lifecycle card will update, but this conversation will not receive a completion turn. Do not report the work as finished yet." : BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
+      text: `${result.state === "queued" ? "Background process job queued; no child or provider has started. Queue position is a snapshot, not a guarantee. " : "Background process job running. "}${wakeOnCompletion === false ? "Its terminal lifecycle card will update, but this conversation will not receive a completion turn. Do not report the work as finished yet." : BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
       outcome: {
         status: "ok",
         code: "background_started",
@@ -156,7 +158,7 @@ const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
   process_job_invalid: "The process-job request is invalid.",
 });
 
-function publicBackgroundStartFailure(error) {
+export function publicBackgroundStartFailure(error) {
   let code = "process_job_controller_unavailable";
   try {
     if (typeof error === "object" && error !== null && !nodeUtilTypes.isProxy(error)) {
@@ -171,7 +173,27 @@ function publicBackgroundStartFailure(error) {
   } catch {
     // Proxies and revoked proxies are hostile input at this boundary.
   }
-  return { code, message: PUBLIC_BACKGROUND_START_FAILURES[code] };
+  let message = PUBLIC_BACKGROUND_START_FAILURES[code];
+  if (code === "process_job_queue_full" || code === "process_job_capacity") {
+    try {
+      const field = (name) => Object.getOwnPropertyDescriptor(error, name)?.value;
+      const count = field("occupancy");
+      const limit = field("limit");
+      const key = field("limitKey");
+      if (Number.isSafeInteger(count) && count >= 0 && Number.isSafeInteger(limit) && limit > 0
+        && key === (code === "process_job_queue_full" ? "processJobs.maxQueued" : "processJobs.pendingWakeCap")) {
+        message = code === "process_job_queue_full"
+          ? `Global queue full: ${count}/${limit} (processJobs.maxQueued); wait for a job to start or expire, or raise that key within its cap.`
+          : `Pending wakes full: ${count}/${limit} (processJobs.pendingWakeCap); wait for delivery settlement.`;
+        const local = field("conversationOccupancy");
+        const cap = field("conversationLimit");
+        if (code === "process_job_queue_full" && Number.isSafeInteger(local) && local >= 0 && Number.isSafeInteger(cap) && cap > 0) {
+          message += ` Conversation running slots: ${local}/${cap} (processJobs.maxActivePerConversation); wait for a slot or raise that key within its cap.`;
+        }
+      }
+    } catch { /* Never expose an untrusted thrown message. */ }
+  }
+  return { code, message };
 }
 
 function mergedProcessEnvironment(overrides = {}) {
@@ -203,7 +225,11 @@ function validProcessJobStartResult(value) {
   if (value.state !== "queued" && value.state !== "starting" && value.state !== "running") return false;
   if (value.maxRuntimeMs !== undefined
     && (!Number.isSafeInteger(value.maxRuntimeMs) || value.maxRuntimeMs <= 0)) return false;
-  if (value.startedAt === null) return true;
+  if (value.state !== "queued" && (value.queuePosition !== undefined || value.queueDeadlineAt !== undefined)) return false;
+  if (value.queuePosition !== undefined && (!Number.isSafeInteger(value.queuePosition) || value.queuePosition < 1)) return false;
+  if (value.queueDeadlineAt !== undefined && (typeof value.queueDeadlineAt !== "string"
+    || !Number.isFinite(Date.parse(value.queueDeadlineAt)) || new Date(value.queueDeadlineAt).toISOString() !== value.queueDeadlineAt)) return false;
+  if (value.startedAt === null) return value.state === "queued";
   if (typeof value.startedAt !== "string") return false;
   const timestamp = Date.parse(value.startedAt);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value.startedAt;

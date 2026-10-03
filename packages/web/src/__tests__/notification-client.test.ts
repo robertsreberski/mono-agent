@@ -7,7 +7,7 @@ import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import { deliverWebNotification, createWebConsoleToolClient } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
-import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
@@ -31,6 +31,37 @@ async function writeIngressRecord(stateDir: string, overrides: Record<string, un
 }
 
 describe("deliverWebNotification", () => {
+  it("distinguishes a pre-acceptance job validation refusal from other HTTP failures", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir);
+    const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
+    const input = { sourceId: "agent-one", triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey, threadId: "thread-one", processJob,
+      wakePrompt: "Inspect the result." };
+    const refusal = { error: { code: "invalid_notification", message: "processJob must be a strict process-job projection." } };
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl: async () =>
+      Response.json(refusal, { status: 400 }) })).rejects.toMatchObject({ code: "notification_rejected" });
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl: async () =>
+      Response.json(refusal, { status: 409 }) })).rejects.toMatchObject({ code: "notification_delivery_failed" });
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl: async () =>
+      Response.json({ error: { code: "internal_error" } }, { status: 400 }) }))
+      .rejects.toMatchObject({ code: "notification_delivery_failed" });
+  });
+  it("does not strip recovery metadata or retry an older strict ingress rejection", async () => {
+    const base = await temporaryRoot(); cleanup.push(base); const stateDir = join(base, "state"); await writeIngressRecord(stateDir);
+    const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toHaveProperty("wakeRecovery");
+      return Response.json({ error: { code: "invalid_notification", message: "Notification body contains unsupported fields." } }, { status: 400 });
+    });
+    await expect(deliverWebNotification({ sourceId: "agent-one", triggerKind: "job", deliveryKey: processJob.wake.deliveryKey,
+      threadId: "thread-one", processJob, wakePrompt: "Inspect child", wakeRecovery: { version: 1,
+        token: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", notCrossed: [] } }, { stateDir, fetchImpl: fetchImpl as typeof fetch }))
+      .rejects.toMatchObject({ code: "notification_rejected" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
   it("reads the private loopback record and makes exactly one bounded authenticated attempt", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -100,39 +131,7 @@ describe("deliverWebNotification", () => {
     expect(deliveredBody).toEqual(input);
   });
 
-  it("carries a Monitor wake and parses its delivery receipt", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const stateDir = join(base, "state");
-    await writeIngressRecord(stateDir);
-    let deliveredBody: unknown;
-    const fetchImpl = (async (_request, init) => {
-      deliveredBody = JSON.parse(String(init?.body)) as unknown;
-      return Response.json({
-        threadId: "thread-one",
-        duplicate: false,
-        delivery: { delivered: true, disposition: "steered" },
-      }, { status: 201 });
-    }) as typeof fetch;
-    const monitor = fakeMonitor({ conversationId: "web:thread-one", seq: 4 });
-    const input = {
-      sourceId: "agent-one",
-      triggerKind: "monitor" as const,
-      deliveryKey: `monitor:${monitor.monitorId}:4`,
-      threadId: "thread-one",
-      monitor,
-      wakePrompt: "Inspect this fenced event batch.",
-    };
-
-    await expect(deliverWebNotification(input, { stateDir, fetchImpl })).resolves.toEqual({
-      threadId: "thread-one",
-      duplicate: false,
-      delivery: { delivered: true, disposition: "steered" },
-    });
-    expect(deliveredBody).toEqual(input);
-  });
-
-  it("keeps Monitor and job wake delivery under the explicit request deadline", async () => {
+  it("keeps job wake delivery under the explicit request deadline", async () => {
     const responseBody = JSON.stringify({
       threadId: "thread-one",
       duplicate: false,
@@ -173,15 +172,14 @@ describe("deliverWebNotification", () => {
         bodyTimeout: options.bodyTimeout === 0 ? 0 : 100,
       }, handler),
     ));
-    const monitor = fakeMonitor({ conversationId: "web:thread-one", seq: 5 });
     const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
     try {
       await expect(deliverWebNotification({
         sourceId: "agent-one",
-        triggerKind: "monitor",
-        deliveryKey: `monitor:${monitor.monitorId}:5`,
+        triggerKind: "job",
+        deliveryKey: processJob.wake.deliveryKey,
         threadId: "thread-one",
-        monitor,
+        processJob,
         wakePrompt: "Wait for the operator.",
       }, { stateDir, timeoutMs: 4_000 })).resolves.toMatchObject({
         delivery: { delivered: true, disposition: "follow_up" },
@@ -218,14 +216,14 @@ describe("deliverWebNotification", () => {
     await writeIngressRecord(stateDir, {
       url: `http://127.0.0.1:${String(port)}/internal/v1/notifications`,
     });
-    const monitor = fakeMonitor({ conversationId: "web:thread-one", seq: 6 });
+    const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
     try {
       await expect(deliverWebNotification({
         sourceId: "agent-one",
-        triggerKind: "monitor",
-        deliveryKey: `monitor:${monitor.monitorId}:6`,
+        triggerKind: "job",
+        deliveryKey: processJob.wake.deliveryKey,
         threadId: "thread-one",
-        monitor,
+        processJob,
         wakePrompt: "Wait for the operator.",
       }, { stateDir, timeoutMs: 25 })).rejects.toMatchObject({
         code: "notification_ingress_timeout",

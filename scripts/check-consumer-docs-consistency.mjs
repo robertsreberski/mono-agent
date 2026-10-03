@@ -13,10 +13,8 @@ const userDocRoots = [
   "packages/agent-app/README.md",
   "packages/config/README.md",
   "packages/memory/README.md",
-  "extras/memory-supermemory/README.md",
   "packages/observability/README.md",
   "packages/operator-adapter/README.md",
-  "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
 const catalogDemoOnlyReadmes = packageCatalog
@@ -29,11 +27,6 @@ const artifactContractSourcePaths = [
   "packages/operator-adapter/package.json",
   "packages/operator-adapter/src/tui/constants.ts",
   "packages/operator-adapter/src/tui/server.ts",
-  "packages/tui/src/ui/app.ts",
-  "packages/tui/src/ui/components/tool-panel.ts",
-  "packages/tui/src/ui/views/replay-detail.ts",
-  "packages/tui/src/ui/views/replay.ts",
-  "packages/tui/package.json",
   "scripts/package-catalog.mjs",
 ];
 
@@ -208,13 +201,14 @@ const misleadingArtifactDurabilityClaims = [
     pattern: /\bfull[- ]fidelity\s+TUI\s+NDJSON\s+(?:turns?|frames?|stream)\b/iu,
   },
   {
-    label: "guaranteed every-run Phoenix stream",
+    label: "exporter retirement deletes local artifacts",
     pattern:
-      /\bevery\s+run(?:\s+lifecycle)?\s+streams?\s+to\s+(?:a\s+)?\[?Phoenix\b|\bstream\s+every\s+run(?:\s+lifecycle)?\s+to\s+Phoenix\b/iu,
+      /\b(?:removing|retiring|retirement\s+of)\b[^\n.!?]{0,120}\b(?:Phoenix|OTLP|trace exporter)\b[^\n.!?]{0,160}\bdeletes?\b[^\n.!?]{0,80}\blocal\b[^\n.!?]{0,40}\bartifacts?\b/iu,
   },
   {
-    label: "guaranteed every-run Phoenix export",
-    pattern: /\bexported\s+on\s+every\s+run\b/iu,
+    label: "exporter retirement implies network isolation",
+    pattern:
+      /\b(?:without|removing|retiring)\b[^\n.!?]{0,120}\b(?:Phoenix|OTLP|trace exporter)\b[^\n.!?]{0,160}(?:\b(?:application|agent|framework)\s+(?:is|becomes?)\s+(?:network[- ]isolated|fully offline)\b|(?<!does not )\bmakes?\s+(?:the\s+)?(?:application|agent|framework)\s+(?:network[- ]isolated|fully offline)\b|\bmeans?\s+no\s+network(?:\s+access)?\b)/iu,
   },
   {
     label: "always-written JSONL artifacts",
@@ -784,7 +778,7 @@ function usage() {
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, selected package READMEs,",
     "and mono-agent-composer references) for retired pre-v1 surfaces; applies the demo retirement",
     "guards to every catalog package/extras README; and rejects the exact retired demo roots and root commands",
-    "and scans those docs plus TUI source text for absolute artifact/replay claims",
+    "and scans those docs plus operator-adapter source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");

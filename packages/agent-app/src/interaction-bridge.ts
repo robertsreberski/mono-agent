@@ -27,6 +27,7 @@ import type {
  */
 
 export interface InteractionBridgeOptions {
+  readonly onActivityChange?: (count: number) => void;
   readonly host?: string;
   /** TCP port; 0 picks an ephemeral port. Default {@link DEFAULT_INTERACTION_BRIDGE_PORT}. */
   readonly port?: number;
@@ -46,10 +47,30 @@ export interface InteractionBridgeOptions {
   };
 }
 
+/**
+ * `telegram.projects` for the adapter-send child: resolve a project to its
+ * forum topic, and report a topic a send proved gone. Registered by the
+ * running Telegram channel; absent otherwise.
+ */
+export interface TelegramProjectsBridgePort {
+  resolveDestination(projectId: string): Promise<
+    | { readonly ok: true; readonly conversationId: string; readonly label: string }
+    | { readonly ok: false; readonly code: string; readonly message: string }
+  >;
+  reportGone(conversationId: string): Promise<void>;
+}
+
 export interface InteractionBridgeHandle {
   readonly url: string;
   readonly token: string;
+  pendingAskCount(): number;
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
+  /**
+   * Install the Telegram project destination port. The returned function
+   * removes it only while it is still the installed one, so a stopping
+   * channel never removes its successor's port.
+   */
+  registerTelegramProjects(port: TelegramProjectsBridgePort): () => void;
   getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined;
   getAsk(interactionId: string): ChannelAskSnapshot | undefined;
   submitAskAnswers(input: ChannelAskSubmission): Promise<ChannelAskSubmissionResult>;
@@ -89,9 +110,9 @@ export function formatInteractionBridgeUrl(host: string, port?: number): string 
   return `http://${urlHost}${port === undefined ? "" : `:${String(port)}`}`;
 }
 
-/** Resolved `interaction` config block (JSON `interaction` key + env overrides). */
+/** Resolved JSON `interaction` config block. */
 export interface InteractionSettings {
-  /** True when the operator explicitly configured the block (JSON or env). */
+  /** True when the operator explicitly configured the JSON block. */
   readonly configured: boolean;
   readonly host: string;
   readonly port: number;
@@ -100,10 +121,12 @@ export interface InteractionSettings {
 }
 
 /**
- * Load the app-level `interaction` block from `mono-agent.config.json` with env
- * overrides (`MONO_AGENT_INTERACTION_BRIDGE_HOST/PORT`,
- * `MONO_AGENT_ASK_USER_TIMEOUT_MS`, `MONO_AGENT_PROGRESS_ENABLED`). Tolerant of
- * a missing file/block: returns unconfigured defaults.
+ * Load the app-level `interaction` block from `mono-agent.config.json`.
+ *
+ * The `env` member is retained on the host input because this module also owns
+ * a separate parent-to-child runtime protocol. Configuration names found there
+ * are intentionally ignored here; child readers consume only values injected
+ * by the parent when constructing that protocol.
  */
 export async function loadInteractionSettings(input: {
   readonly env: Record<string, string | undefined>;
@@ -125,42 +148,15 @@ export async function loadInteractionSettings(input: {
   const bridge = (block.bridge ?? {}) as Record<string, unknown>;
   const askUser = (block.askUser ?? {}) as Record<string, unknown>;
   const progress = (block.progress ?? {}) as Record<string, unknown>;
-  const envHost = trimmed(input.env.MONO_AGENT_INTERACTION_BRIDGE_HOST);
-  const envPort = integerOf(input.env.MONO_AGENT_INTERACTION_BRIDGE_PORT);
-  const envTimeout = askTimeoutValue(input.env.MONO_AGENT_ASK_USER_TIMEOUT_MS);
-  const envProgress = trimmed(input.env.MONO_AGENT_PROGRESS_ENABLED);
-  const configured =
-    present || envHost !== undefined || envPort !== undefined || envTimeout !== undefined || envProgress !== undefined;
   return {
-    configured,
-    host: envHost ?? (typeof bridge.host === "string" ? bridge.host : "127.0.0.1"),
-    port: envPort ?? integerValue(bridge.port) ?? DEFAULT_INTERACTION_BRIDGE_PORT,
-    askTimeoutMs: envTimeout !== undefined
-      ? envTimeout
-      : askUser.timeoutMs === null
-        ? null
-        : integerValue(askUser.timeoutMs) ?? DEFAULT_ASK_USER_TIMEOUT_MS,
-    progressEnabled: envProgress !== undefined ? envProgress !== "false" : progress.enabled !== false,
+    configured: present,
+    host: typeof bridge.host === "string" ? bridge.host : "127.0.0.1",
+    port: integerValue(bridge.port) ?? DEFAULT_INTERACTION_BRIDGE_PORT,
+    askTimeoutMs: askUser.timeoutMs === null
+      ? null
+      : integerValue(askUser.timeoutMs) ?? DEFAULT_ASK_USER_TIMEOUT_MS,
+    progressEnabled: progress.enabled !== false,
   };
-}
-
-function trimmed(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized === undefined || normalized.length === 0 ? undefined : normalized;
-}
-
-function integerOf(value: string | undefined): number | undefined {
-  const normalized = trimmed(value);
-  if (normalized === undefined || !/^\d+$/u.test(normalized)) {
-    return undefined;
-  }
-  return Number.parseInt(normalized, 10);
-}
-
-function askTimeoutValue(value: string | undefined): number | null | undefined {
-  const normalized = trimmed(value);
-  if (normalized === "none") return null;
-  return integerOf(normalized);
 }
 
 function integerValue(value: unknown): number | undefined {
@@ -263,7 +259,9 @@ function validAdapterDeliveryReceipt(conversationId: string, idempotencyKey: str
     const receipt = /^adapter-send:slack:([^:]+):(\d+(?:\.\d+)?)$/u.exec(idempotencyKey);
     return slack[1] !== undefined && receipt?.[1] === slack[1];
   }
-  const telegram = /^telegram:(-?\d+)$/u.exec(conversationId);
+  // A forum-topic conversation (`telegram:<chat>:<topic>`) is bound by its chat;
+  // Telegram message ids are unique per chat across all of its topics.
+  const telegram = /^telegram:(-?\d+)(?::[1-9]\d*)?$/u.exec(conversationId);
   if (telegram !== null) {
     const receipt = /^adapter-send:telegram:(-?\d+):(\d+)$/u.exec(idempotencyKey);
     return telegram[1] !== undefined && receipt?.[1] === telegram[1];
@@ -288,6 +286,7 @@ export async function startInteractionBridge(
   const interactionJournals = new Map<string, InteractionJournal>();
   const progressCapabilities = new Map<string, ProgressCapabilityBinding>();
   const deliveryHistoryCapabilities = new Map<string, DeliveryHistoryCapabilityBinding>();
+  let telegramProjects: TelegramProjectsBridgePort | undefined;
   let askCounter = 0;
 
   function orderedAnswers(ask: PendingAsk): readonly ChannelAskAnswer[] {
@@ -408,6 +407,7 @@ export async function startInteractionBridge(
       clearTimeout(ask.expiryTimer);
     }
     asksByConversation.delete(ask.conversationId);
+    options.onActivityChange?.(asksByConversation.size);
     if (status === "answered" || status === "expired") {
       appendInteractionJournal(ask, status);
     }
@@ -456,6 +456,7 @@ export async function startInteractionBridge(
       waiters: new Set(),
     };
     asksByConversation.set(conversationId, ask);
+    options.onActivityChange?.(asksByConversation.size);
     asksById.set(interactionId, ask);
     return ask;
   }
@@ -801,6 +802,43 @@ export async function startInteractionBridge(
       await handleDeliveryHistory(request, response, bearer, capability);
       return;
     }
+    if (request.method === "POST" && (url.pathname === "/v1/telegram/project-destination" || url.pathname === "/v1/telegram/topic-gone")) {
+      // The adapter-send run's own delivery capability, scoped to Telegram.
+      const capability = bearer === undefined ? undefined : deliveryHistoryCapabilities.get(bearer);
+      if (bearer === undefined || capability === undefined) {
+        sendJson(response, 401, { error: "missing, invalid, or revoked delivery-history bearer token." });
+        return;
+      }
+      if (!capability.allowedChannels.has("telegram")) {
+        sendJson(response, 403, { error: "delivery capability is not valid for Telegram." });
+        return;
+      }
+      const body = await readJsonBody(request);
+      const port = telegramProjects;
+      if (url.pathname === "/v1/telegram/topic-gone") {
+        const conversationId = stringField(body, "conversationId");
+        if (conversationId === undefined || channelIdOf(conversationId) !== "telegram") {
+          sendJson(response, 400, { error: "conversationId must be a Telegram conversation." });
+          return;
+        }
+        if (port !== undefined) await port.reportGone(conversationId);
+        sendJson(response, 202, { accepted: true });
+        return;
+      }
+      const projectId = stringField(body, "projectId");
+      if (projectId === undefined || projectId.length > 128) {
+        sendJson(response, 400, { error: "projectId is required." });
+        return;
+      }
+      if (port === undefined) {
+        sendJson(response, 503, { error: "project_destinations_unavailable", message: "Telegram project destinations are unavailable." });
+        return;
+      }
+      const resolved = await port.resolveDestination(projectId);
+      if (resolved.ok) sendJson(response, 200, { conversationId: resolved.conversationId, label: resolved.label });
+      else sendJson(response, 409, { error: resolved.code, message: resolved.message });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/v1/progress") {
       const capability = bearer === undefined ? undefined : progressCapabilities.get(bearer);
       if (bearer !== token && capability === undefined) {
@@ -842,8 +880,15 @@ export async function startInteractionBridge(
   const url = formatInteractionBridgeUrl(host, port);
 
   return {
+    pendingAskCount: () => asksByConversation.size,
     url,
     token,
+    registerTelegramProjects(port) {
+      telegramProjects = port;
+      return () => {
+        if (telegramProjects === port) telegramProjects = undefined;
+      };
+    },
     registerSink(channelId, sink) {
       sinks.set(channelId, sink);
     },

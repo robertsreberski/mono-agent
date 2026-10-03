@@ -25,7 +25,7 @@ import {
   type AgentReplyPartDeliveryOutcome,
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
-import type { CronFiringIdentity, CronJobResult, CronRunTrigger } from "@mono-agent/cron-adapter";
+import type { CronFiringIdentity, CronJobResult, CronPreflightRecord, CronRunTrigger } from "@mono-agent/cron-adapter";
 import type {
   CronOperatorRun,
   CronOperatorRunBase,
@@ -158,6 +158,13 @@ export interface CronControlStore {
     readonly requestHash: string;
   }): { readonly enabled: boolean; readonly replayed: boolean };
   markStarted(firing: CronFiringIdentity, startedAt: string): void;
+  /**
+   * Persist one bounded preflight audit record for a firing whose gate was
+   * attempted. Called before the run's terminal result, so the record survives
+   * `recordResult`; the payload is codes and bounded text only, never raw gate
+   * output, argv, or environment values.
+   */
+  recordPreflight(firing: CronFiringIdentity, record: CronPreflightRecord): void;
   appendEvent(firing: CronFiringIdentity, event: AgentStreamEvent): void;
   recordResult(result: CronJobResult): void;
   getRun(runId: string): CronOperatorRunDetail | undefined;
@@ -465,6 +472,14 @@ export async function openCronControlStore(
         WHERE run_id = ? AND status IN ('admitted', 'queued')
       `).run(startedAt, firing.runId);
     },
+    recordPreflight(firing, record) {
+      requireOpen();
+      // Only in-flight rows accept the record; a firing that already settled
+      // (or was reconciled after a restart) keeps its terminal projection.
+      database.prepare(`
+        UPDATE cron_runs SET preflight_json = ? WHERE run_id = ? AND status IN ('admitted', 'running', 'queued')
+      `).run(serializePreflightRecord(record), firing.runId);
+    },
     appendEvent(firing, event) {
       withTransaction(() => {
         const row = database.prepare(`
@@ -503,7 +518,7 @@ export async function openCronControlStore(
         const changed = database.prepare(`
           UPDATE cron_runs SET
             status = ?, started_at = COALESCE(started_at, ?), completed_at = ?, artifact_run_id = ?,
-            text = ?, error = ?, failure_kind = ?, reply_part_outcomes_json = ?,
+            text = ?, error = ?, failure_kind = ?, reply_part_outcomes_json = ?, turn_disposition = ?,
             blocked_by_run_id = ?, blocked_by_trigger = ?, queue_depth = ?
           WHERE run_id = ?
             AND status IN ('admitted', 'running', 'queued')
@@ -516,6 +531,7 @@ export async function openCronControlStore(
           fields.error ?? null,
           fields.failureKind ?? null,
           fields.replyPartOutcomesJson,
+          fields.turnDisposition ?? null,
           fields.blockedByRunId ?? null,
           fields.blockedByTrigger ?? null,
           fields.queueDepth ?? null,
@@ -915,6 +931,8 @@ function createSchema(database: DatabaseSync): void {
       error TEXT,
       failure_kind TEXT,
       reply_part_outcomes_json TEXT,
+      turn_disposition TEXT CHECK (turn_disposition IN ('silent', 'visible')),
+      preflight_json TEXT,
       blocked_by_run_id TEXT,
       blocked_by_trigger TEXT,
       queue_depth INTEGER,
@@ -986,6 +1004,14 @@ function ensureControlSchemaColumns(database: DatabaseSync): void {
     // legacy row receives NULL (the backwards-compatible no-outcomes state).
     database.exec("ALTER TABLE cron_runs ADD COLUMN reply_part_outcomes_json TEXT");
   }
+  if (!runColumns.some((column) => column.name === "turn_disposition")) {
+    database.exec("ALTER TABLE cron_runs ADD COLUMN turn_disposition TEXT CHECK (turn_disposition IN ('silent', 'visible'))");
+  }
+  if (!runColumns.some((column) => column.name === "preflight_json")) {
+    // Same additive repair for the preflight audit record: stores created
+    // before the gate keep working, and their existing rows read as "no gate".
+    database.exec("ALTER TABLE cron_runs ADD COLUMN preflight_json TEXT");
+  }
 }
 
 function reconcileInterruptedRuns(database: DatabaseSync, completedAt: string): void {
@@ -1025,6 +1051,7 @@ interface RunRow {
   readonly error: string | null;
   readonly failure_kind: string | null;
   readonly reply_part_outcomes_json: string | null;
+  readonly turn_disposition: "silent" | "visible" | null;
   readonly blocked_by_run_id: string | null;
   readonly blocked_by_trigger: CronRunTrigger | null;
   readonly queue_depth: number | null;
@@ -1034,7 +1061,7 @@ interface RunRow {
 
 const RUN_SELECT = `SELECT run_id, job_id, scheduled_at, ordered_at, sequence, trigger, status,
   started_at, completed_at, artifact_run_id, text, error, failure_kind,
-  reply_part_outcomes_json, blocked_by_run_id, blocked_by_trigger, queue_depth,
+  reply_part_outcomes_json, turn_disposition, blocked_by_run_id, blocked_by_trigger, queue_depth,
   event_count, events_truncated FROM cron_runs`;
 
 function runRow(database: DatabaseSync, runId: string): RunRow | undefined {
@@ -1157,7 +1184,8 @@ function operatorRunBase<P extends "summary" | "detail">(
   },
 ): CronOperatorRunBase & { readonly projection: P } {
   const truncated: CronOperatorRunTruncatedField[] = [];
-  const text = row.status === "succeeded" && classifyNotifySuppression(row.text ?? undefined) !== "none"
+  const text = row.turn_disposition === null && row.status === "succeeded"
+    && classifyNotifySuppression(row.text ?? undefined) !== "none"
     ? NOTHING_TO_REPORT_SENTINEL
     : boundedRunField(row.text, limits.textBytes, "text", truncated);
   const error = boundedRunField(row.error, limits.errorBytes, "error", truncated);
@@ -1186,6 +1214,7 @@ function operatorRunBase<P extends "summary" | "detail">(
     sequence: row.sequence,
     trigger: row.trigger,
     status: row.status,
+    ...(row.turn_disposition === null ? {} : { turnDisposition: row.turn_disposition }),
     ...(row.started_at === null ? {} : { startedAt: row.started_at }),
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
     ...(artifactRunId === undefined ? {} : { artifactRunId }),
@@ -1236,6 +1265,7 @@ function resultFields(result: CronJobResult): {
   readonly error?: string;
   readonly failureKind?: string;
   readonly replyPartOutcomesJson: string | null;
+  readonly turnDisposition?: "silent" | "visible";
   readonly blockedByRunId?: string;
   readonly blockedByTrigger?: CronRunTrigger;
   readonly queueDepth?: number;
@@ -1249,17 +1279,35 @@ function resultFields(result: CronJobResult): {
       ...(runId === undefined ? {} : { artifactRunId: runId }),
       ...(result.text === undefined ? {} : { text: result.text }),
       replyPartOutcomesJson: serializeStoredReplyPartOutcomes(result.replyPartOutcomes),
+      ...(result.metadata?.turnDisposition === "visible" ? { turnDisposition: "visible" as const }
+        : result.metadata?.turnDisposition === "silent"
+          ? { turnDisposition: !result.text?.trim() && result.replyPartOutcomes === undefined
+              ? "silent" as const : "visible" as const }
+          : {}),
     };
   }
   if (result.kind === "failed" || result.kind === "cancelled") {
     return {
       status: result.kind,
-      startedAt: result.startedAt,
+      // A cancelled firing may never have started (a gate cancelled during
+      // preflight), so `startedAt` is genuinely absent rather than invented.
+      ...(result.startedAt === undefined ? {} : { startedAt: result.startedAt }),
       completedAt: result.completedAt,
       ...(result.runId === undefined ? {} : { artifactRunId: result.runId }),
       error: result.error,
       ...(result.failureKind === undefined ? {} : { failureKind: result.failureKind }),
       replyPartOutcomesJson: serializeStoredReplyPartOutcomes(result.replyPartOutcomes),
+    };
+  }
+  if (result.kind === "skipped" && result.reason === "gate") {
+    return {
+      status: "skipped_gate",
+      completedAt: result.completedAt,
+      // The gate reason is bounded diagnostic text, not a failure: it rides in
+      // the run's error column so the console can render it without inventing a
+      // second field on the operator wire contract.
+      ...(result.gateReason === undefined ? {} : { error: result.gateReason }),
+      replyPartOutcomesJson: null,
     };
   }
   if (result.kind === "skipped") {
@@ -1273,6 +1321,18 @@ function resultFields(result: CronJobResult): {
   }
   if (result.kind === "queued") return { status: "queued", queueDepth: result.queueDepth, replyPartOutcomesJson: null };
   return { status: "dropped", completedAt: result.orderedAt, replyPartOutcomesJson: null };
+}
+
+/** Serialize the gate audit record: codes and bounded text only. */
+function serializePreflightRecord(record: CronPreflightRecord): string {
+  return JSON.stringify({
+    outcome: record.outcome,
+    ...(record.code === undefined ? {} : { code: record.code }),
+    ...(record.reason === undefined ? {} : { reason: record.reason }),
+    ...(record.inputBytes === undefined ? {} : { inputBytes: record.inputBytes }),
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+  });
 }
 
 function serializeStoredReplyPartOutcomes(value: unknown): string | null {
@@ -1365,7 +1425,7 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
   const sourceReplyPartOutcomes = run.replyPartOutcomes;
   const allowed = new Set([
     "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
-    "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
+    "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "turnDisposition", "blockedByRunId",
     "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
   ]);
   if (Object.keys(run).some((key) => !allowed.has(key))
@@ -1376,8 +1436,11 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
     || typeof run.orderedAt !== "string"
     || !Number.isSafeInteger(run.sequence)
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
+    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+      "dropped"]
       .includes(String(run.status))
+    || (run.turnDisposition !== undefined
+      && (run.status !== "succeeded" || (run.turnDisposition !== "silent" && run.turnDisposition !== "visible")))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
     || (sourceReplyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(sourceReplyPartOutcomes))
@@ -1385,7 +1448,7 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
   for (const field of [
-    "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
+    "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "turnDisposition", "blockedByRunId",
   ] as const) {
     if (run[field] !== undefined && typeof run[field] !== "string") {
       throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");

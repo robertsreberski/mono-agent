@@ -2,6 +2,8 @@ import type { Stats } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
+
 import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
 import type { WizardPlan } from "./wizard/answers.js";
 
@@ -9,15 +11,6 @@ const DEFAULT_MANAGED_MEMORY_DIMENSION = 768;
 const FIRST_RUN_EMBEDDING_PROBE_TIMEOUT_MS = 5_000;
 const FIRST_RUN_OPENAI_PROBE_TEXT = "mono-agent managed-memory first-run embedding readiness probe";
 export const FIRST_RUN_MEMORY_INITIALIZING_MARKER = ".first-run-memory-initializing";
-const FIRST_RUN_MANAGED_MEMORY_OVERRIDE_KEYS = [
-  "MONO_AGENT_MEMORY_BACKEND",
-  "MONO_AGENT_MEMORY_MODE",
-  "MONO_AGENT_MEMORY_PATH",
-  "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
-  "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
-  "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
-] as const;
-
 export interface FirstRunManagedMemoryHooks {
   /** Test seam for an external creator winning the absent-root race. */
   readonly beforeRootClaim?: (root: string) => void | Promise<void>;
@@ -35,7 +28,7 @@ export interface InitializeFirstRunManagedMemoryOptions {
   readonly agentRoot: string;
   /** A plan returned by the init wizard composer, not an arbitrary loaded config. */
   readonly plan: WizardPlan;
-  /** Effective init environment; identity-changing memory overrides fail closed. */
+  /** Effective init environment for credentials named by JSON; core overrides are ignored. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly abortSignal?: AbortSignal;
   readonly hooks?: FirstRunManagedMemoryHooks;
@@ -451,7 +444,11 @@ function managedMemoryConfiguration(plan: WizardPlan): {
     model,
     ...(endpoint === undefined || endpoint.length === 0 ? {} : { endpoint }),
     ...(apiKeyEnv === undefined || apiKeyEnv.length === 0 ? {} : { apiKeyEnv }),
-    embeddingId: `${provider}:${model}`,
+    embeddingId: configuredEmbeddingIdentity({
+      provider,
+      model,
+      ...(memory.embeddings?.instructions === undefined ? {} : { instructions: memory.embeddings.instructions }),
+    }),
     dimension,
   };
 }
@@ -515,19 +512,6 @@ async function proveFirstRunEmbeddingSelection(
   }
 }
 
-function assertNoManagedMemoryIdentityOverrides(
-  plan: WizardPlan,
-  env: Readonly<Record<string, string | undefined>> | undefined,
-): void {
-  if (plan.configJson.memory === undefined || env === undefined) return;
-  const override = FIRST_RUN_MANAGED_MEMORY_OVERRIDE_KEYS.find((key) => (env[key] ?? "").trim().length > 0);
-  if (override !== undefined) {
-    throw new Error(
-      `Fresh managed memory init refuses ${override}; put the intended memory identity in the generated config.`,
-    );
-  }
-}
-
 async function resolveFirstRunManagedMemoryTarget(options: {
   readonly agentRoot: string;
   readonly plan: WizardPlan;
@@ -537,7 +521,6 @@ async function resolveFirstRunManagedMemoryTarget(options: {
   readonly agentRoot: string;
   readonly root: string;
 } | undefined> {
-  assertNoManagedMemoryIdentityOverrides(options.plan, options.env);
   const configured = managedMemoryConfiguration(options.plan);
   if (configured === undefined) return undefined;
   const agentRoot = await canonicalAgentRoot(options.agentRoot);

@@ -15,6 +15,10 @@ import type { LlmComplete } from "./llm.js";
 import { parseDailyFile, serializeDailyFile, type DailyFile } from "./grammar.js";
 import {
   appendGraphBatch,
+  applyCaptureGraphDelta,
+  clearCaptureGraphBaseline,
+  establishCaptureGraphBaseline,
+  hasCaptureGraphBaseline,
   readGraph,
   replaceDbCanonicalGraphProjectionWithParity,
   type CanonicalGraphRepairGuard,
@@ -487,6 +491,10 @@ function applyDurableDecision(
   }
   const preflight = preflightDurableDecision(deps.root, deps.db, decision);
   const { replayDelta, dbAfter, expectedDb, canonical, canonicalAfter } = preflight;
+  const restoreBaseline = hasCaptureGraphBaseline(deps.db);
+  // This durable decision can change memory rows independently of capture.
+  // Until its projection and receipt complete, the next capture must use full parity.
+  clearCaptureGraphBaseline(deps.db);
   const preparedReplay = prepareReplayProjectionDelta(deps.root, replayDelta);
   if (preparedReplay.prior.state.kind === "missing") {
     assertReplayDbStateSubsetOfProjection(deps.db, preparedReplay.projection);
@@ -518,6 +526,8 @@ function applyDurableDecision(
       deps.canonicalGraphRepairGuard!,
     );
     assertClusterOutcome(deps.root, deps.db, decision.id, cluster.entity, cluster.association);
+  } else {
+    applyCaptureGraphDelta(deps.root, deps.db, [decision.id], [], []);
   }
   const after = deps.db.get(decision.id);
   if (after === undefined || !sameMemoryRecord(after, expectedDb)) {
@@ -532,6 +542,7 @@ function applyDurableDecision(
   deps.hooks?.afterActionCommitted?.(decision.decisionId);
   assertProjectionContainsDelta(readReplayProjectionStrict(deps.root).projection, replayDelta);
   removePendingDecision(deps.root, file, decision);
+  if (restoreBaseline) establishCaptureGraphBaseline(deps.db);
 }
 
 interface DurableDecisionPreflight {

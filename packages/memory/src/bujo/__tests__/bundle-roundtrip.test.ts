@@ -1,13 +1,23 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { openMemoryDb } from "../../store/index.js";
+
 import { exportMemoryBundle } from "../bundle-export.js";
 import { applyMemoryBundleImport, prepareMemoryBundleImport } from "../bundle-import.js";
+import { captureTurnStrict } from "../capture.js";
+import { normalizedContentHash } from "../daily.js";
+import { applyExplicitMemoryForget } from "../explicit-forget.js";
+import { resolveActiveMemoryDbPath } from "../generations.js";
 import { parseDailyFile } from "../grammar.js";
-import { readCanonicalMergeSnapshot } from "../rebuild.js";
+import {
+  assertCanonicalGraphRepairBaseParity,
+  readCanonicalMergeSnapshot,
+  safeRebuildMemoryIndex,
+} from "../rebuild.js";
 import { readBujoCanonicalSourceFingerprint } from "../replay-projection.js";
 import { createBujoMemoryStore } from "../store.js";
 
@@ -159,6 +169,201 @@ describe("memory bundle round trip", { timeout: 60_000 }, () => {
       await expect(store.load("conversation", "plain note")).resolves.not.toThrow();
     } finally {
       await store.close?.();
+    }
+  });
+
+  it("preserves lifecycle, explicit-memory identity, and graph visibility through import plus rebuild", async () => {
+    const originalId = "LIFE-ORIGINAL";
+    const replacementId = "LIFE-CURRENT";
+    const droppedId = "LIFE-DROPPED";
+    const rememberedText = "Compatibility audit explicitly remembers the amber release channel.";
+    const rememberedHash = normalizedContentHash(rememberedText);
+    const rememberedId = `RM-${rememberedHash}`;
+    const replacedAt = new Date("2026-08-02T09:00:00.000Z");
+    const droppedAt = new Date("2026-08-03T09:00:00.000Z");
+    const source = await createBujoFixture({
+      prefix: "roundtrip-lifecycle-source",
+      bullets: [
+        { id: originalId, text: "Compatibility audit reports Atlas on the blue release channel." },
+        { id: droppedId, text: "Compatibility audit temporarily recorded the obsolete pager code." },
+      ],
+    });
+
+    const sourceStore = createBujoMemoryStore({
+      root: source.root,
+      tier: "bujo",
+      embeddings: source.embeddings,
+      dim: source.dim,
+      llm: fakeLlm([]),
+      clock: () => new Date("2026-08-01T09:00:00.000Z"),
+    });
+    try {
+      expect((await sourceStore.remember("compatibility-audit", rememberedText)).id).toBe(rememberedId);
+    } finally {
+      await sourceStore.close();
+    }
+
+    const sourceDb = openMemoryDb({
+      path: resolveActiveMemoryDbPath(source.root),
+      embeddings: source.embeddings,
+      dim: source.dim,
+    });
+    try {
+      sourceDb.findSimilarMany = async () => [[{
+        record: sourceDb.get(originalId)!,
+        distance: 0.1,
+      }]];
+      let modelCall = 0;
+      const captured = await captureTurnStrict("Morgan changed the Atlas release channel.", {
+        db: sourceDb,
+        root: source.root,
+        llm: {
+          id: "lifecycle-roundtrip-plan",
+          complete: async () => {
+            modelCall += 1;
+            if (modelCall === 1) {
+              return JSON.stringify({
+                entities: [
+                  { id: "person:morgan", name: "Morgan", type: "person" },
+                  { id: "project:atlas", name: "Atlas", type: "project" },
+                ],
+                relations: [{
+                  src: "person:morgan",
+                  dst: "project:atlas",
+                  relation: "maintains",
+                }],
+                memories: [{
+                  type: "note",
+                  text: "Compatibility audit now reports Atlas on the green release channel.",
+                  salience: 0.8,
+                  isInsight: false,
+                  entityIds: ["project:atlas"],
+                }],
+              });
+            }
+            return JSON.stringify([{
+              index: 0,
+              action: "supersede",
+              targetId: originalId,
+              text: "Compatibility audit now reports Atlas on the green release channel.",
+            }]);
+          },
+        },
+        nextId: () => replacementId,
+        now: () => replacedAt,
+        strictModelOutput: true,
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+      });
+      expect(captured).toMatchObject({
+        actions: [{ kind: "supersede", oldId: originalId, newId: replacementId }],
+        entities: 2,
+        relations: 1,
+        associations: 1,
+      });
+      expect(modelCall).toBe(2);
+    } finally {
+      sourceDb.close();
+    }
+
+    await applyExplicitMemoryForget({
+      root: source.root,
+      ids: [droppedId],
+      expectedRootFingerprint: createHash("sha256").update(realpathSync(source.root)).digest("hex"),
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(source.root),
+      planDigest: createHash("sha256").update("plan:lifecycle-roundtrip-forget").digest("hex"),
+      embeddings: source.embeddings,
+      dimension: source.dim,
+      now: () => droppedAt,
+    });
+
+    const destination = await createBujoFixture({ prefix: "roundtrip-lifecycle-empty", bullets: [] });
+    await exportAndImport(source, destination);
+    await safeRebuildMemoryIndex({
+      root: destination.root,
+      tier: "bujo",
+      embeddings: destination.embeddings,
+      dim: destination.dim,
+    });
+
+    const rebuilt = openMemoryDb({
+      path: resolveActiveMemoryDbPath(destination.root),
+      readOnly: true,
+      dim: destination.dim,
+    });
+    try {
+      expect(rebuilt.get(originalId)).toMatchObject({
+        status: "invalidated",
+        supersededBy: replacementId,
+        supersededAt: replacedAt.toISOString(),
+        validTo: replacedAt.toISOString(),
+      });
+      expect(rebuilt.get(replacementId)).toMatchObject({ status: "open" });
+      expect(rebuilt.get(droppedId)).toMatchObject({
+        status: "dropped",
+        validTo: droppedAt.toISOString(),
+      });
+      expect(rebuilt.get(rememberedId)).toMatchObject({ text: rememberedText, status: "open" });
+      expect(rememberedId).toBe(`RM-${normalizedContentHash(rebuilt.get(rememberedId)!.text)}`);
+      expect(rebuilt.allEdges()).toContainEqual(expect.objectContaining({
+        src: originalId,
+        dst: replacementId,
+        kind: "supersedes",
+        createdAt: replacedAt.toISOString(),
+      }));
+
+      const current = await rebuilt.recall("compatibility audit", { topK: 10, trackAccess: false });
+      expect(current.map((hit) => hit.record.id).sort()).toEqual([rememberedId, replacementId].sort());
+      const explicitHistory = await rebuilt.recall("compatibility audit", {
+        topK: 10,
+        includeInvalid: true,
+        trackAccess: false,
+      });
+      expect(explicitHistory.map((hit) => hit.record.id).sort())
+        .toEqual([droppedId, originalId, rememberedId, replacementId].sort());
+      const journal = rebuilt.browseJournal({
+        fromInclusive: "2026-07-01T00:00:00.000Z",
+        toExclusive: "2026-09-01T00:00:00.000Z",
+        maxEntries: 10,
+        maxBytes: 16_384,
+      });
+      expect(journal.records.map(({ id, status }) => ({ id, status })))
+        .toEqual(expect.arrayContaining([
+          { id: originalId, status: "invalidated" },
+          { id: replacementId, status: "open" },
+          { id: rememberedId, status: "open" },
+        ]));
+      expect(journal.records.map(({ id }) => id)).not.toContain(droppedId);
+      expect(rebuilt.relationsFor("person:morgan")).toContainEqual({
+        src: "person:morgan",
+        dst: "project:atlas",
+        relation: "maintains",
+        createdAt: "2026-08-02T09:00:00.000Z",
+      });
+      expect(rebuilt.associationsForMemory(replacementId)).toContainEqual({
+        memoryId: replacementId,
+        entityId: "project:atlas",
+        provenance: "capture",
+        createdAt: "2026-08-02T09:00:00.000Z",
+      });
+    } finally {
+      rebuilt.close();
+    }
+
+    const reopened = createBujoMemoryStore({
+      root: destination.root,
+      tier: "bujo",
+      embeddings: destination.embeddings,
+      dim: destination.dim,
+      llm: fakeLlm([]),
+    });
+    try {
+      await expect(reopened.remember("compatibility-audit", rememberedText)).resolves.toMatchObject({
+        id: rememberedId,
+        duplicate: true,
+        bytesWritten: 0,
+      });
+    } finally {
+      await reopened.close();
     }
   });
 

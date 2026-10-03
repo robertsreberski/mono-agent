@@ -1,11 +1,12 @@
 import { ConversationTags } from "./tag/ConversationTags";
-import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
-import { ThreadPrimitive } from "@assistant-ui/react";
+import { ProjectBadge } from "./project/ProjectIdentity";
+import { ThreadPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
 import { composerDraftKey } from "../composer-draft";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
+import { ManualCompactionMarker } from "./ManualCompactionMarker";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { SelectionToolbar } from "./assistant-ui/Quote";
 import {
@@ -18,7 +19,10 @@ import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
 import { ProcessJobStack } from "./ProcessJobStack";
-import { RenderErrorBoundary } from "./RenderErrorBoundary";
+import { WakeScheduleEditor } from "./WakeScheduleEditor";
+import { WakeScheduleStatus } from "./WakeScheduleStatus";
+import { ConversationErrorFallback, RenderErrorBoundary } from "./RenderErrorBoundary";
+import { conversationRenderContext } from "./render-error-diagnostics";
 import { useRunControls } from "./run-controls";
 
 const runLabel: Record<string, string> = {
@@ -235,7 +239,7 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, compactThreadId, compactBlocked, manualCompacting, threadId, detail, running, contextLoading, selectorModels, model, effort, context1M, setContext1M, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
     showModelChangeHint,
@@ -266,9 +270,16 @@ export function ModelControls() {
     <div className="model-controls" aria-label="Next turn settings">
       {usage && (
         <ContextDisplay
+          key={threadId ?? "context-only"}
+          threadId={threadId}
+          detail={detail}
+          running={running}
+          contextLoading={contextLoading}
+          compactThreadId={compactThreadId}
+          compactBlocked={compactBlocked}
+          manualCompacting={manualCompacting}
           context={usage.context}
-          processed={usage.processed}
-          conversationCost={usage.cost}
+          providerUsage={providerUsage}
         />
       )}
       {hasSettings && (
@@ -279,6 +290,8 @@ export function ModelControls() {
           effort={effort}
           onValueChange={setModel}
           onEffortChange={setEffort}
+          context1M={context1M}
+          onContext1MChange={setContext1M}
           open={settingsOpen}
           onOpenChange={(next) => {
             setSettingsOpen(next);
@@ -342,8 +355,13 @@ function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
 }
 
 function ConversationActions() {
+  // The conversation the schedule editor was opened for. A different selected
+  // conversation closes it rather than silently retargeting the open editor.
+  const [scheduleThreadId, setScheduleThreadId] = useState<string | null>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const {
     selectedThread,
+    selectedAgent,
     archiveThread,
     unarchiveThread,
     deleteThread,
@@ -351,6 +369,10 @@ function ConversationActions() {
     projectsByAgent,
     setThreadProject,
   } = useConsoleStore();
+  const selectedThreadId = selectedThread?.id ?? null;
+  useEffect(() => {
+    if (scheduleThreadId !== null && scheduleThreadId !== selectedThreadId) setScheduleThreadId(null);
+  }, [scheduleThreadId, selectedThreadId]);
   if (selectedThread === null) return null;
   const archived = selectedThread.archivedAt !== null;
   const canDelete = archived
@@ -363,6 +385,7 @@ function ConversationActions() {
     : (projectsByAgent[selectedThread.sourceId] ?? []).find((project) => project.id === memberProjectId)?.name ?? null;
 
   return (
+    <>
     <Menu.Root
       onOpenChange={(open) => {
         // The picker lists this conversation's agent projects; make sure the
@@ -371,6 +394,7 @@ function ConversationActions() {
       }}
     >
       <Menu.Trigger
+        ref={actionsTriggerRef}
         type="button"
         className="icon-button header-more"
         aria-label="Conversation actions"
@@ -427,6 +451,14 @@ function ConversationActions() {
                 <span>Remove from project</span>
               </Menu.Item>
             )}
+            {selectedThread.trigger === undefined && <Menu.Item className="conversation-menu-item is-wake"
+              onClick={() => setScheduleThreadId(selectedThread.id)}>
+              <Icon name="clock" size={16} />
+              <span className="wake-menu-copy">
+                <span>{selectedThread.wakeSchedule === undefined ? "Schedule wake-up" : "Edit wake-up schedule"}</span>
+                <WakeScheduleStatus thread={selectedThread} />
+              </span>
+            </Menu.Item>}
             <Menu.Item
               className="conversation-menu-item"
               onClick={() => {
@@ -459,6 +491,9 @@ function ConversationActions() {
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
+    {scheduleThreadId === selectedThread.id && <WakeScheduleEditor key={selectedThread.id} thread={selectedThread}
+      supportsManualCompaction={selectedAgent?.supportsManualCompaction === true} returnFocusRef={actionsTriggerRef} onClose={() => setScheduleThreadId(null)} />}
+    </>
   );
 }
 
@@ -529,7 +564,10 @@ function EmptyConversation() {
 }
 
 export function Chat({ onBack }: { readonly onBack: () => void }) {
+  const aui = useAui();
   const {
+    detail,
+    loading,
     selectedAgent,
     selectedThread,
     selectedThreadId,
@@ -542,7 +580,13 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
     hasOlderMessages,
     loadOlderMessages,
   } = useConsoleStore();
-  const { viewportRef, contentRef } = useConversationBottomFollow(selectedThreadId);
+  // The external adapter follows console selection in a passive effect. Key
+  // the viewport to that adapter's snapshot, not to the earlier selection:
+  // otherwise new index-bound rows mount on the old transcript and survive
+  // into the shorter target transcript with invalid part indices.
+  const runtimeThreadId = useAuiState((state) =>
+    (state.thread.extras as { selectedThreadId?: string | null } | undefined)?.selectedThreadId ?? null);
+  const { viewportRef, contentRef } = useConversationBottomFollow(runtimeThreadId);
   const runStatus = selectedThread?.runState.status;
   const runNeedsAttention =
     runStatus === "running" ||
@@ -603,24 +647,28 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
       <RenderErrorBoundary
         scope="conversation"
         resetKey={`${selectedAgent?.sourceId ?? "none"}:${selectedThreadId ?? "new"}`}
-        fallback={({ reset }) => (
-          <div className="chat-empty thread-render-error" role="alert">
-            <span className="eyebrow">Conversation unavailable</span>
-            <h2>Something went wrong</h2>
-            <p>
-              This conversation could not be displayed. You can switch conversations or try loading it again.
-            </p>
-            <button type="button" className="primary-button" onClick={reset}>
-              Reload conversation
-            </button>
-          </div>
-        )}
+        getDiagnosticContext={() => {
+          const runtime = aui.thread().getState();
+          const item = aui.threadListItem().getState();
+          return conversationRenderContext({
+            selectedThreadId,
+            detailThreadId: detail?.thread.id ?? null,
+            runtimeAdapterThreadId: (runtime.extras as { selectedThreadId?: string | null } | undefined)?.selectedThreadId ?? null,
+            runtimeThreadId: item?.id ?? null,
+            runtimeRemoteId: item?.remoteId ?? null,
+            loading, detailLoading, selectionLoading, creatingThread,
+            runtimeLoading: runtime.isLoading,
+            messages: detail?.messages ?? [],
+            runtimeMessages: runtime.messages,
+          });
+        }}
+        fallback={(props) => <ConversationErrorFallback {...props} />}
       >
         <AskReconciliationProvider>
           <ThreadPrimitive.Root className="thread-root">
             <SelectionToolbar />
             <ThreadPrimitive.Viewport
-              key={selectedThreadId ?? "no-thread"}
+              key={runtimeThreadId ?? "no-thread"}
               ref={viewportRef}
               className="thread-viewport"
               autoScroll
@@ -636,7 +684,6 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     Load earlier messages
                   </button>
                 )}
-                <StartProjectMarkers />
                 <ThreadPrimitive.Messages
                   components={{
                     UserMessage,
@@ -644,6 +691,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     SystemMessage,
                   }}
                 />
+                <ManualCompactionMarker thread={selectedThread} detail={detail} />
               </div>
               {/* The dock: what the operator acts on lives with the input, not
                   at the end of the transcript. Background jobs are the surface

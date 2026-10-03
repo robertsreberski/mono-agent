@@ -167,22 +167,22 @@ describe("release graph validation", () => {
 
   test("requires exact lockstep ranges in package-local devDependencies", () => {
     const contracts = packageRecord({ name: "@mono-agent/agent-contracts" });
-    const tui = packageRecord({
-      name: "@mono-agent/tui",
+    const web = packageRecord({
+      name: "@mono-agent/web",
       devDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.2" },
     });
 
     try {
       validateRelease({
         tag: "v1.2.3",
-        packages: [contracts, tui],
+        packages: [contracts, web],
         rootPackageJson: rootPackageRecord(),
         silent: true,
       });
       throw new Error("validateRelease did not reject the stale package devDependency");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/tui devDependencies.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2",
+        "@mono-agent/web devDependencies.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2",
       ]);
     }
   });
@@ -331,25 +331,19 @@ describe("release graph validation", () => {
         "@earendil-works/pi-ai": "0.80.8",
       },
     });
-    const tui = packageRecord({
-      name: "@mono-agent/tui",
-      dependencies: { "@earendil-works/pi-tui": "^0.79.1" },
-    });
-
     try {
       validateRelease({
         tag: "v1.2.3",
-        packages: [app, runtime, tui],
+        packages: [app, runtime],
         rootPackageJson: rootPackageRecord(),
         silent: true,
       });
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.85.1 exactly; found ^0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.85.1 exactly; found ~0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.85.1 exactly; found 0.80.8",
-        "@mono-agent/tui dependencies.@earendil-works/pi-tui must pin known-compatible version 0.85.1 exactly; found ^0.79.1",
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.99.2 exactly; found ^0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.99.2 exactly; found ~0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.99.2 exactly; found 0.80.8",
       ]);
     }
   });
@@ -580,16 +574,14 @@ describe("current launch manifest", () => {
 
     expect(publishable).toHaveLength(expectedPublishablePackageCount);
     expect([...publishableNames].sort()).toEqual(expectedPublishablePackageNames);
-    expect(publishableNames).toContain("@mono-agent/tui");
-    expect(publishableNames).toContain("@mono-agent/memory-supermemory");
+    expect(publishableNames).not.toContain("@mono-agent/tui");
     expect(publishableNames).not.toContain(`@mono-agent/${"agent"}-${"host"}`);
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishableNames).not.toContain("@mono-agent/memory-mcp");
-    // operator-console was retired: Phoenix export is exposed from
-    // @mono-agent/observability/otel and config is JSON-first, applied on
-    // `mono-agent restart`.
+    // operator-console and the first-party Phoenix/OTLP extra were retired.
     expect(publishableNames).not.toContain("@mono-agent/operator-console");
+    expect(publishableNames).not.toContain("@mono-agent/observability-phoenix");
     expect(publishableNames).not.toContain(`@mono-agent/${"sandbox"}`);
     expect(publishableNames).not.toContain(`@mono-agent/${"tui"}-${"adapter"}`);
     expect(publishableNames).not.toContain(`@mono-agent/${"live"}-${"adapter"}`);
@@ -598,23 +590,6 @@ describe("current launch manifest", () => {
     expect(publishableNames).toContain("@mono-agent/runtime-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-app");
     expect(publishableNames).toContain("@mono-agent/observability");
-  });
-
-  test("keeps Supermemory publishable but outside the default app dependency closure", () => {
-    const plugin = packageCatalog.find((entry) => entry.name === "@mono-agent/memory-supermemory");
-    expect(plugin).toMatchObject({
-      path: "extras/memory-supermemory",
-      publishable: true,
-      tier: "plugin",
-    });
-
-    const app = JSON.parse(fs.readFileSync(
-      new URL("../../../packages/agent-app/package.json", import.meta.url),
-      "utf8",
-    ));
-    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-      expect(app[section]?.["@mono-agent/memory-supermemory"]).toBeUndefined();
-    }
   });
 
   test("validates the repository for its current release tag", async () => {
@@ -662,17 +637,12 @@ describe("current launch manifest", () => {
     ).replace(/\s+/gu, " ");
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
-    const piTui = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-tui"];
 
-    expect(piCore).toBe("0.85.1");
+    expect(piCore).toBe("0.99.2");
     expect(guidance).toContain(
       `packages/agent-runtime\`: \`@earendil-works/pi-ai\` at \`${piAi}\`; \`pi-agent-core\` at \`${piCore}\``,
     );
-    // pi-tui is no longer held behind the runtime pair; the guidance now has to
-    // carry the interactive-verification caveat instead of the old rationale.
-    expect(guidance).toContain(`packages/tui\`: \`@earendil-works/pi-tui\` at \`${piTui}\``);
-    expect(piTui).toBe(piAi);
-    expect(guidance).toContain("verify the console interactively");
+    expect(guidance).not.toContain("pi-tui");
     expect(migration).toContain(
       `The runtime exact-pins Pi AI and Pi Agent Core at \`${piAi}\``,
     );

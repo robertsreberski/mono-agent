@@ -9,11 +9,15 @@ import type {
   MemoryRecord,
 } from "../store/index.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
+import { labelsOf } from "./labels.js";
 import { findCanonicalMemoryBullet } from "./canonical-lookup.js";
 import { parseDailyFile } from "./grammar.js";
 import {
   appendGraphBatch,
   assertCanonicalGraphBatch,
+  applyCaptureGraphDelta,
+  clearCaptureGraphBaseline,
+  hasCaptureGraphBaseline,
   replaceDbCanonicalGraphProjectionWithParity,
   type CanonicalGraphRepairGuard,
   type GraphBatchInput,
@@ -22,7 +26,6 @@ import {
 import {
   assertCanonicalDailySourcePath,
   listCanonicalFileNames,
-  listCanonicalRootFileNames,
   readCanonicalFileSnapshot,
   removeCanonicalFile,
   writeCanonicalFileAtomic,
@@ -718,19 +721,34 @@ function applyReplay(
     for (const action of intent.actions) {
       if (action.kind === "supersede") db.markSuperseded(action.oldId, action.newId, action.at);
     }
+    for (const action of intent.actions) {
+      if (action.kind === "noop") continue;
+      const state = action.kind === "supersede" ? action.afterNew : action.after;
+      db.replaceMemoryLabels(state.bullet.id, labelsOf(state.bullet));
+    }
     db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
     assertReplayProjectionMatchesDb(db, publishedReplay.projection);
-    // The exact DB projection is part of intent completion. Recomputing the
-    // whole deterministic projection also adds/removes legacy-name matches
-    // affected by this memory or entity change. Any failure leaves the intent
-    // pending so restart retries the idempotent canonical graph.
+    // The exact touched projection is part of completion. Failure leaves the
+    // receipt pending for recovery on the next serialized mutation or startup.
     if (!deferGraphAndRetirement) {
-      replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
-      assertDbReplayOutcome(db, intent.actions, canonical);
+      try {
+        if (hasCaptureGraphBaseline(db)) {
+          applyCaptureGraphDelta(root, db,
+            [...appliedMemoryIds, ...intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId)],
+            canonical.entities.map((entity) => entity.id), canonical.relations);
+        } else {
+          replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+        }
+        assertDbReplayOutcome(db, intent.actions, canonical);
+      } catch (error) {
+        clearCaptureGraphBaseline(db);
+        throw error;
+      }
     }
   }
 
   if (readBujoCanonicalSourceFingerprint(root) !== committedSourceFingerprint) {
+    if (db !== undefined) clearCaptureGraphBaseline(db);
     throw new Error("memory-capture: canonical source changed during replay projection commit.");
   }
 
@@ -766,14 +784,30 @@ function applyReplayPlans(
   }
   assertOrNormalizeCompleteReceiptReplay(db, replay.projection, plans);
   const pendingPlans = plans.filter((plan) => plan.intent.state === "pending");
-  if (pendingPlans.length > 0) {
-    replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
-  }
-  for (const [index, plan] of plans.entries()) {
-    if (plan.intent.state === "complete") continue;
-    assertDbReplayOutcome(db, plan.intent.actions, results[index]!, false);
+  try {
+    if (pendingPlans.length > 0) {
+      if (hasCaptureGraphBaseline(db)) {
+        applyCaptureGraphDelta(
+          root, db,
+          [...results.flatMap((result) => result.appliedMemoryIds),
+            ...pendingPlans.flatMap((plan) => plan.intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId))],
+          results.flatMap((result) => result.entities.map((entity) => entity.id)),
+          results.flatMap((result) => result.relations),
+        );
+      } else {
+        replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+      }
+    }
+    for (const [index, plan] of plans.entries()) {
+      if (plan.intent.state === "complete") continue;
+      assertDbReplayOutcome(db, plan.intent.actions, results[index]!, false);
+    }
+  } catch (error) {
+    clearCaptureGraphBaseline(db);
+    throw error;
   }
   if (readBujoCanonicalSourceFingerprint(root) !== sourceFingerprint) {
+    clearCaptureGraphBaseline(db);
     throw new Error("memory-capture: canonical source changed during replay batch finalization.");
   }
   const completedPlans = plans.map((plan) => (
@@ -1298,7 +1332,7 @@ function applyCanonicalAction(root: string, action: CaptureIntentAction): "appli
     if (after === "exact") return "applied";
     const before = bulletState(root, action.before);
     if (before !== "exact") return "conflict";
-    if (!rewriteBullet(root, action.after.file, action.id, { text: action.after.bullet.text })) return "conflict";
+    if (!rewriteBullet(root, action.after.file, action.id, { text: action.after.bullet.text, refs: action.after.bullet.refs })) return "conflict";
     return bulletState(root, action.after) === "exact" ? "applied" : "conflict";
   }
   if (action.kind === "noop") {
@@ -1588,8 +1622,12 @@ function validateAction(
       throw new Error("memory-capture: invalid update action in outbox intent.");
     }
     assertRecordMatchesBullet(action.record, action.after);
-    if (!bulletsEqual({ ...action.before.bullet, text: action.after.bullet.text }, action.after.bullet)) {
-      throw new Error("memory-capture: update intent changes fields outside its text outcome.");
+    const ordinaryRefs = (refs: readonly string[]): readonly string[] => refs.filter((ref) => !ref.startsWith("label:"));
+    if (!bulletsEqual({ ...action.before.bullet, text: action.after.bullet.text,
+      refs: action.after.bullet.refs }, action.after.bullet)
+      || JSON.stringify(ordinaryRefs(action.before.bullet.refs))
+        !== JSON.stringify(ordinaryRefs(action.after.bullet.refs))) {
+      throw new Error("memory-capture: update intent changes fields outside its text/label outcome.");
     }
     return;
   }

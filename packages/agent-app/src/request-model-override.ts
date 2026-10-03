@@ -1,5 +1,6 @@
-import { detectEffortKeyword, EFFORT_LEVELS, effortRank } from "@mono-agent/config";
+import { EFFORT_LEVELS } from "@mono-agent/config";
 import {
+  supportsPiContext1M,
   assertParsedRuntimeModelReference,
   MODEL_REFERENCE_ECHO_MAX_BYTES,
   MODEL_REFERENCE_REASON_MAX_BYTES,
@@ -29,12 +30,6 @@ import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
  * harness default) rather than failing — a bad dynamic webhook `model` must not
  * 500 the request.
  *
- * The extension ALSO scans every turn's message text for effort trigger
- * phrases ("think"/"extra think"/"ultra think") and escalates the turn's
- * effort — see `applyEffortKeywordEscalation`. This lives here rather than in
- * a sibling extension because siblings compose later-wins in parallel: only
- * this extension knows the metadata effort the keyword must be compared
- * against (escalation-only).
  * Effort-only writes keep the shared session (the harness isolates on MODEL
  * overrides only).
  *
@@ -77,6 +72,7 @@ export interface RequestModelOverrideOptions {
   }[];
   /** Host effort inherited only when the effective route admits it. */
   readonly baseEffort?: string;
+  readonly context1MModels?: Readonly<Record<string, boolean>>;
   /**
    * Configured local providers (`config.providers?.local`). When an override
    * names a model one of these serves, the extension recomputes the provider
@@ -95,6 +91,7 @@ interface RequestModelOverrideInput {
 
 interface RequestModelOverrideResult {
   readonly runtimeOptions: {
+    context1MModels?: Readonly<Record<string, boolean>>;
     model?: RuntimeModelReference;
     /** String pins effort; null explicitly selects the provider default. */
     effort?: string | null;
@@ -178,55 +175,19 @@ export function createRequestModelOverrideRuntimeExtension(
       if (inheritedEffort !== undefined) runtimeOptions.effort = inheritedEffort;
     }
 
-    applyEffortKeywordEscalation(
-      runtimeOptions,
-      input.request.userMessage,
-      options?.baseEffort,
-      logger,
-    );
-
+    const { context1M } = readOverride(input.request.metadata);
+    if (context1M !== undefined && context1M !== null) {
+      const selected = model ?? options?.baseModel;
+      if (typeof context1M === "boolean" && selected !== undefined
+        && supportsPiContext1M(modelReferenceKey(selected))
+        && !localProviders?.some((provider) => provider.id === selected.provider)) {
+        runtimeOptions.context1MModels = { ...options?.context1MModels, [modelReferenceKey(selected)]: context1M };
+      } else {
+        logger?.warn?.("Ignoring invalid or unsupported per-request 1M context override.");
+      }
+    }
     return { runtimeOptions, cleanup: async () => {} };
   };
-}
-
-/**
- * Always-on background escalation: a trigger phrase in the turn's message text
- * ("think" → high, "extra think" → xhigh, "ultra think" → max) RAISES this
- * turn's effort, never lowers it. The baseline is the effort the turn would
- * otherwise run at — an accepted metadata override, else the host default — so
- * a webhook `effort:"max"` survives a bare "think" and an equal-or-lower
- * keyword writes nothing (no spurious `run_config.overridden`). The message
- * text itself is never mutated — trigger words reach the model.
- */
-function applyEffortKeywordEscalation(
-  runtimeOptions: RequestModelOverrideResult["runtimeOptions"],
-  userMessage: string | undefined,
-  baseEffort: string | undefined,
-  logger: RequestModelOverrideLogger | undefined,
-): void {
-  if (typeof userMessage !== "string" || userMessage.length === 0) {
-    return;
-  }
-  const match = detectEffortKeyword(userMessage);
-  if (match === undefined) {
-    return;
-  }
-  const resolvedEffort = runtimeOptions.effort === null
-    ? undefined
-    : runtimeOptions.effort ?? baseEffort;
-  if (effortRank(match.effort) <= effortRank(resolvedEffort)) {
-    return;
-  }
-  runtimeOptions.effort = match.effort;
-  logger?.info?.("Escalating per-turn effort from message keyword.", {
-    // A matched keyword is a slice of the operator's own message. The trigger bounds its
-    // LENGTH (a phrase plus at most one separator); it says nothing about the separator's
-    // CONTENT, which may be a line separator. Same escape-then-clamp helper and same budget
-    // as the warnings above, so no record here can outgrow or outline the others.
-    keyword: echoValue(match.keyword),
-    from: resolvedEffort ?? null,
-    to: match.effort,
-  });
 }
 
 /**
@@ -418,6 +379,7 @@ function applyLocalProviderBlock(
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: unknown;
 } {
   if (!isRecord(metadata)) {
     return {};
@@ -441,6 +403,7 @@ function readOverride(metadata: Record<string, unknown> | undefined): {
   return {
     ...(typeof source.model === "string" ? { model: source.model } : {}),
     ...(typeof source.effort === "string" ? { effort: source.effort } : {}),
+    ...(source.context1M === undefined ? {} : { context1M: source.context1M }),
   };
 }
 

@@ -9,7 +9,6 @@ import {
   getBuiltinModels,
   getBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel, listPiSupplementModels } from "./pi-supplement.js";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./pi-oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers/pi-models.js";
 
@@ -121,30 +120,20 @@ function cloneInteropValue(value) {
 }
 
 /**
- * List defensive snapshots of Pi's built-in models for one provider, plus any
- * mono-agent catalog-supplement rows for that provider (see pi-supplement.js).
- * Upstream rows always win: a supplement id already present upstream is never
- * duplicated. The merged list is snapshot-cloned exactly like before, so
- * callers cannot mutate shared upstream OR supplement state.
+ * List defensive snapshots of Pi's built-in chat models for one provider.
+ * Callers cannot mutate the upstream catalog's shared state.
  *
  * @param {string} providerId
  * @returns {PiBuiltinModelSnapshot[]}
  */
 export function listPiBuiltinModels(providerId) {
-  const models = getBuiltinModels(/** @type {any} */ (providerId));
-  const seen = new Set(models.map((model) => model?.id));
-  const merged = [...models];
-  for (const extra of listPiSupplementModels(providerId)) {
-    if (seen.has(extra.id)) continue;
-    seen.add(extra.id);
-    merged.push(/** @type {*} */ (extra));
-  }
-  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(merged));
+  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(
+    getBuiltinModels(/** @type {any} */ (providerId)),
+  ));
 }
 
 /**
- * Read a defensive snapshot of one Pi built-in model, falling back to the
- * mono-agent catalog supplement on an upstream miss (upstream wins).
+ * Read a defensive snapshot of one Pi built-in chat model.
  *
  * @param {string} providerId
  * @param {string} modelId
@@ -154,7 +143,7 @@ export function getPiBuiltinModel(providerId, modelId) {
   const model = getBuiltinModel(
     /** @type {any} */ (providerId),
     /** @type {any} */ (modelId),
-  ) ?? getPiSupplementModel(providerId, modelId);
+  );
   return model === undefined
     ? undefined
     : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model));
@@ -162,13 +151,13 @@ export function getPiBuiltinModel(providerId, modelId) {
 
 let builtinProviderLabels;
 function builtinProviderLabelMap() {
-  // `getBuiltinProviders()` is the authoritative static catalog set (39 ids),
-  // but it returns bare ids — the human display label lives on the constructed
-  // `Provider.name`, which only `builtinProviders()` exposes. Build the name
-  // lookup once from the constructed providers and gate what we ADVERTISE on
-  // the static id set below, so the dynamic "radius" gateway (present in
-  // `builtinProviders()` but absent from `getBuiltinProviders()`) never enters
-  // the advertised catalog. A throwing construction degrades to id-as-label.
+  // `getBuiltinProviders()` is the authoritative static catalog set (41 ids in
+  // pi-ai 0.87.0), but it returns bare ids — the human display label lives on
+  // the constructed `Provider.name`, which only `builtinProviders()` exposes.
+  // Build the name lookup once from the constructed providers and gate what we
+  // ADVERTISE on the static id set below, so providers without a generated
+  // catalog entry never enter the advertised catalog. A throwing construction
+  // degrades to id-as-label.
   builtinProviderLabels ??= (() => {
     try {
       return new Map(builtinProviders().map((provider) => [provider.id, provider.name]));
@@ -181,8 +170,7 @@ function builtinProviderLabelMap() {
 
 /**
  * List defensive snapshots of Pi's static built-in providers (id + display
- * label). The dynamic "radius" gateway is deliberately excluded: it has no
- * static catalog and must not be advertised as a browsable provider.
+ * label), gated on the generated catalog set above.
  *
  * @returns {PiBuiltinProviderSnapshot[]}
  */
@@ -196,7 +184,7 @@ export function listPiBuiltinProviders() {
 
 /**
  * Describe one static Pi built-in provider by id, or `undefined` for unknown
- * ids (including the dynamic "radius" gateway).
+ * ids (including providers with no generated catalog entry).
  *
  * @param {string} providerId
  * @returns {PiBuiltinProviderSnapshot|undefined}
@@ -210,6 +198,17 @@ export function describePiBuiltinProvider(providerId) {
     id,
     label: builtinProviderLabelMap().get(id) ?? id,
   };
+}
+
+/**
+ * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
+ * App owners supply a stable installation ID when initiating OpenAI OAuth.
+ * The built-in method remains visible to callers choosing their auth type.
+ * @param {string} providerId
+ * @returns {boolean}
+ */
+export function isPiOAuthLoginEnabled(providerId) {
+  return true;
 }
 
 /**
@@ -228,7 +227,7 @@ export function describePiProviderAuth(providerId) {
   }
   if (provider === undefined) return undefined;
   const methods = [];
-  if (provider.auth.oauth !== undefined) {
+  if (isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined) {
     methods.push({
       type: /** @type {const} */ ("oauth"),
       label: provider.auth.oauth.loginLabel ?? provider.auth.oauth.name,
@@ -298,11 +297,15 @@ export async function checkPiProviderAuth(providerId, credential, environment = 
  * @param {string} providerId
  * @param {"oauth"|"api_key"} type
  * @param {PiProviderAuthInteraction} interaction
+ * @param {{getDeviceId?: () => string}} [options]
  * @returns {Promise<*>}
  */
-export async function loginPiProviderAuth(providerId, type, interaction) {
+export async function loginPiProviderAuth(providerId, type, interaction, options) {
   if (type !== "oauth" && type !== "api_key") {
     throw new TypeError("Pi provider auth type must be oauth or api_key");
+  }
+  if (type === "oauth" && providerId === "openai" && typeof options?.getDeviceId !== "function") {
+    throw new TypeError("OpenAI ChatGPT login requires a stable installation device ID callback");
   }
   if (typeof interaction?.prompt !== "function" || typeof interaction?.notify !== "function") {
     throw new TypeError("Pi provider auth interaction requires prompt() and notify()");
@@ -312,7 +315,7 @@ export async function loginPiProviderAuth(providerId, type, interaction) {
     signal: interaction.signal,
     prompt: async (prompt) => await interaction.prompt(prompt),
     notify: (event) => interaction.notify(cloneInteropValue(event)),
-  });
+  }, providerId === "openai" && type === "oauth" ? { getDeviceId: options.getDeviceId } : undefined);
   return cloneInteropValue(credential);
 }
 
@@ -372,9 +375,13 @@ export async function resolvePiOAuthApiKey(providerId, credentials) {
  *
  * @param {string} providerId
  * @param {PiOAuthLoginCallbacks} callbacks
+ * @param {{getDeviceId?: () => string}} [options]
  * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
-export async function loginPiOAuth(providerId, callbacks) {
+export async function loginPiOAuth(providerId, callbacks, options) {
+  if (providerId === "openai" && typeof options?.getDeviceId !== "function") {
+    throw new TypeError("OpenAI ChatGPT login requires a stable installation device ID callback");
+  }
   const oauth = getPiOAuthAuth(providerId);
   if (!oauth || typeof oauth.login !== "function") {
     throw new Error(`Pi OAuth provider is unavailable: ${providerId}`);
@@ -386,6 +393,9 @@ export async function loginPiOAuth(providerId, callbacks) {
   }
   const credentials = await oauth.login(
     toAuthInteraction(/** @type {any} */ ({ ...callbacks })),
+    providerId === "openai" ? { getDeviceId: options.getDeviceId } : undefined,
   );
   return cloneInteropValue(credentials);
 }
+
+export { CONTEXT_1M_TOKENS, supportsPiContext1M } from "./context-1m.js";

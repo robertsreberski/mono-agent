@@ -1,8 +1,9 @@
+import { validWakeFence, validWakeCertificates, type WakeAttemptFence } from "./process-jobs-wake-fence.js";
 import { isSubagentVerificationTarget, isSubagentVerificationObservation, type SubagentVerificationTarget, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import { isSubagentCommandReceipts, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
+import { linkSync, unlinkSync, type Stats } from "node:fs";
 import {
   chmod,
   lstat,
@@ -20,6 +21,9 @@ import {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  isPeerProcessJobQuestion,
+  type PeerProcessJobQuestion,
+  type InternalProcessJobTool,
   type ProcessJobSubagentProgress,
   processJobPublicError,
   type ProcessJobErrorCode,
@@ -69,7 +73,7 @@ export const PROCESS_JOB_ENV_KEYS_CAPS = Object.freeze({
   maxTotalBytes: 8 * 1024,
 });
 const MAX_QUARANTINED_TRANSACTIONS = 10_000;
-const MAX_RECORD_TEMP_ENTRIES = 1;
+const MAX_RECORD_RECOVERY_ENTRIES = 3;
 const RECORD_CAPACITY_ERROR = "Process-job durable record capacity is exceeded.";
 
 export interface ProcessJobOriginRecord {
@@ -88,16 +92,24 @@ export interface DurableProcessJobRecord {
   readonly schemaVersion: typeof PROCESS_JOB_RECORD_SCHEMA;
   generation: string;
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  /**
+   * `"AgentSend"` is legacy history only: the tool was renamed to
+   * `AgentManage` with no alias, so records written before the rename keep the
+   * old name and must still load. New records never emit it.
+   */
+  readonly tool: "Exec" | "Bash" | InternalProcessJobTool;
   readonly kind?: "internal";
   readonly instanceId?: string;
   childStillBusy?: boolean;
   subagentOwnership?: SubagentExecutionOwnership;
+  /** Private admission certificate; never project as a lifecycle card. */
+  rejectedAdmission?: true;
   subagentCommandReceipts?: SubagentCommandReceipts;
   subagentVerification?: SubagentVerificationTarget;
   subagentObservation?: SubagentVerificationObservation;
   subagentProgress?: ProcessJobSubagentProgress;
   subagentQuestion?: { readonly question: string; readonly options?: string[] };
+  peerQuestion?: PeerProcessJobQuestion;
   state: ProcessJobState;
   readonly summary: string;
   readonly agentIncarnation: ProcessIncarnation;
@@ -137,6 +149,8 @@ export interface DurableProcessJobRecord {
     lastAttemptAt: string | null;
     /** Private durable proof that the last adapter result explicitly permitted retry. */
     retrySafe?: boolean;
+    admission?: WakeAttemptFence;
+    notCrossed?: string[];
     /** Optional in pre-integration record v1; omission means zero for older branch records. */
     destinationUnavailableAttempts?: number;
     /** Optional in older record v1; counts durable pre-dispatch busy refusals. */
@@ -376,7 +390,9 @@ export async function openProcessJobStore(
   const manifestPath = join(confined, PROCESS_JOB_MANIFEST_FILE);
   const transactionPath = join(confined, PROCESS_JOB_TRANSACTION_FILE);
   const guardPath = join(confined, PROCESS_JOB_ROLLBACK_GUARD);
+  await recoverRootReplacements(confined);
   await ensureRollbackGuard(guardPath);
+  let directory = await inspectRecordDirectory(recordsDir, maxRecordEntries, options.workCounter);
 
   let manifest = await readManifest(manifestPath);
   if (manifest !== undefined && manifest.records > maxRecordEntries) {
@@ -389,7 +405,6 @@ export async function openProcessJobStore(
     if (!(error instanceof UnreplayableProcessJobTransactionError)) throw error;
     await quarantineUnreplayableTransaction(confined, quarantineDir, transactionPath);
   }
-  let directory = await inspectRecordDirectory(recordsDir, maxRecordEntries, options.workCounter);
   if (transaction !== undefined) {
     if (transaction.write !== null
       && !directory.jobIds.has(transaction.write.jobId)
@@ -723,7 +738,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    ...(record.kind === "internal" ? { tool: record.tool as "Agent" | "AgentSend", kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
+    ...(record.kind === "internal" ? { tool: record.tool as InternalProcessJobTool, kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.tool !== "PeerAgent" && record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.tool !== "PeerAgent" && record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}), ...(record.peerQuestion ? { peerQuestion: record.peerQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {
@@ -856,20 +871,11 @@ async function loadRecords(
   const records = new Map<string, DurableProcessJobRecord>();
   let entriesExamined = 0;
   let recordCount = 0;
-  let tempCount = 0;
   const directory = await opendir(recordsDir);
   for await (const entry of directory) {
     entriesExamined += 1;
-    if (entriesExamined > maxRecordEntries + MAX_RECORD_TEMP_ENTRIES) {
+    if (entriesExamined > maxRecordEntries) {
       throw new Error(RECORD_CAPACITY_ERROR);
-    }
-    if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
-      tempCount += 1;
-      if (!entry.isFile() || tempCount > MAX_RECORD_TEMP_ENTRIES) {
-        throw new Error("Process-job record directory contains unsupported temporary entries.");
-      }
-      await rm(join(recordsDir, entry.name), { force: true });
-      continue;
     }
     if (!entry.isFile() || !entry.name.endsWith(".json")) {
       throw new Error("Process-job record directory contains an unsupported entry.");
@@ -892,29 +898,155 @@ async function inspectRecordDirectory(
   maxRecordEntries: number,
   workCounter: ProcessJobStoreWorkCounter | undefined,
 ): Promise<{ readonly recordCount: number; readonly jobIds: ReadonlySet<string> }> {
-  let recordCount = 0;
-  let tempCount = 0;
   const jobIds = new Set<string>();
+  const recovery = new Map<string, ReplacementResidue>();
+  let recoveryEntries = 0;
+  const validTarget = (name: string) => name.endsWith(".json") && isJobId(name.slice(0, -5));
   const directory = await opendir(recordsDir);
   for await (const entry of directory) {
     if (workCounter !== undefined) {
       workCounter.recordEntriesExaminedAtOpen = (workCounter.recordEntriesExaminedAtOpen ?? 0) + 1;
     }
-    if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
-      tempCount += 1;
-      if (!entry.isFile() || tempCount > MAX_RECORD_TEMP_ENTRIES) {
-        throw new Error("Process-job record directory contains unsupported temporary entries.");
+    if (entry.name.startsWith(".")) {
+      collectReplacementResidue(entry.name, validTarget, recovery);
+      if (++recoveryEntries > MAX_RECORD_RECOVERY_ENTRIES) throw new Error(RECORD_CAPACITY_ERROR);
+    } else {
+      if (!entry.isFile() || !validTarget(entry.name)) {
+        throw new Error("Process-job record directory contains an unsupported entry.");
       }
-      continue;
+      jobIds.add(entry.name.slice(0, -5));
+      if (jobIds.size > maxRecordEntries) throw new Error(RECORD_CAPACITY_ERROR);
     }
-    if (!entry.isFile() || !entry.name.endsWith(".json")) {
-      throw new Error("Process-job record directory contains an unsupported entry.");
-    }
-    recordCount += 1;
-    if (recordCount > maxRecordEntries) throw new Error(RECORD_CAPACITY_ERROR);
-    jobIds.add(entry.name.slice(0, -".json".length));
   }
-  return { recordCount, jobIds };
+  // Claims may be the only pathname of an existing record. Count them before
+  // recovery so an over-capacity store is never partly repaired or replayed.
+  for (const [target, residue] of recovery) {
+    if (residue.previous !== undefined) jobIds.add(target.slice(0, -5));
+  }
+  if (jobIds.size > maxRecordEntries) throw new Error(RECORD_CAPACITY_ERROR);
+  for (const [target, residue] of recovery) await recoverReplacement(recordsDir, target, residue);
+  return { recordCount: jobIds.size, jobIds };
+}
+
+interface ReplacementResidue {
+  temporary?: string;
+  previous?: string;
+  failed?: string;
+}
+
+// These are secureFileReplace's existing default names, not a new disk format.
+const REPLACEMENT_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const REPLACEMENT_TEMP = new RegExp(`^\\.(.+)\\.mono-agent-${REPLACEMENT_UUID}\\.tmp$`, "u");
+const REPLACEMENT_CLAIM = new RegExp(`^\\.(.+)\\.${REPLACEMENT_UUID}\\.mono-agent-(previous|failed)$`, "u");
+
+function collectReplacementResidue(
+  name: string,
+  validTarget: (name: string) => boolean,
+  recovery: Map<string, ReplacementResidue>,
+): void {
+  const temporary = REPLACEMENT_TEMP.exec(name);
+  const claim = REPLACEMENT_CLAIM.exec(name);
+  const target = temporary?.[1] ?? claim?.[1];
+  if (target === undefined || !validTarget(target)) {
+    throw new Error("Process-job directory contains an unsupported replacement entry.");
+  }
+  const phase = temporary !== null ? "temporary" : (claim![2] as "previous" | "failed");
+  const residue = recovery.get(target) ?? {};
+  if (residue[phase] !== undefined) throw new Error("Process-job replacement residue is ambiguous.");
+  residue[phase] = name;
+  recovery.set(target, residue);
+}
+
+async function recoverRootReplacements(stateDir: string): Promise<void> {
+  const targets = new Set([PROCESS_JOB_MANIFEST_FILE, PROCESS_JOB_TRANSACTION_FILE,
+    PROCESS_JOB_ROLLBACK_GUARD, PROCESS_JOB_SECRET_FILE, PROCESS_JOB_HEALTH_FILE]);
+  const recovery = new Map<string, ReplacementResidue>();
+  const directory = await opendir(stateDir);
+  for await (const entry of directory) {
+    // The root also contains the service lease, which this store does not own.
+    if (entry.name.includes(".mono-agent") || entry.name.endsWith(".tmp")) {
+      collectReplacementResidue(entry.name, (target) => targets.has(target), recovery);
+    }
+  }
+  for (const [target, residue] of recovery) await recoverReplacement(stateDir, target, residue);
+}
+
+async function recoverReplacement(directory: string, target: string, residue: ReplacementResidue): Promise<void> {
+  const named = new Map<string, Stats>();
+  for (const name of [target, residue.temporary, residue.previous, residue.failed]) {
+    if (name === undefined) continue;
+    try { named.set(name, await lstat(join(directory, name))); }
+    catch (error) { if (name !== target || !isErrno(error, "ENOENT")) throw error; }
+  }
+  const current = named.get(target);
+  const temporary = residue.temporary === undefined ? undefined : named.get(residue.temporary);
+  const previous = residue.previous === undefined ? undefined : named.get(residue.previous);
+  const failed = residue.failed === undefined ? undefined : named.get(residue.failed);
+  const same = (left: Stats | undefined, right: Stats | undefined) =>
+    left !== undefined && right !== undefined && left.dev === right.dev && left.ino === right.ino;
+  const invalid = () => new Error("Process-job replacement residue cannot prove a safe publication phase.");
+  // Prove every link is in this exact namespace; never normalize foreign hard
+  // links, symlinks, ownership or mode. A temporary may contain a partial write.
+  const prove = async (): Promise<void> => {
+    for (const [name, expected] of named) {
+      const path = join(directory, name);
+      const links = [...named.values()].filter((info) => same(info, expected)).length;
+      const actual = await lstat(path);
+      assertPrivateFile(actual, path, 0o600, links);
+      if (!same(actual, expected) || actual.nlink !== expected.nlink
+        || actual.size !== expected.size || actual.mtimeMs !== expected.mtimeMs
+        || actual.mode !== expected.mode || actual.uid !== expected.uid) throw invalid();
+    }
+    if (!named.has(target)) {
+      try { await lstat(join(directory, target)); throw invalid(); }
+      catch (error) { if (!isErrno(error, "ENOENT")) throw error; }
+    }
+  };
+  const remove = async (name: string | undefined): Promise<void> => {
+    if (name === undefined || !named.has(name)) return;
+    await prove();
+    const removed = named.get(name)!;
+    unlinkSync(join(directory, name));
+    named.delete(name);
+    for (const info of named.values()) if (same(info, removed)) info.nlink -= 1;
+    await syncDirectory(directory);
+  };
+  await prove();
+  if (residue.previous !== undefined && residue.failed !== undefined
+    && residue.previous.slice(0, -"previous".length) !== residue.failed.slice(0, -"failed".length)) throw invalid();
+  if (same(previous, temporary) || same(previous, failed) || same(current, failed)) throw invalid();
+  if (failed !== undefined && temporary !== undefined && !same(failed, temporary)) throw invalid();
+  // Without a target or previous claim, failed may be the sole published value
+  // after rollback lost its already-unlinked claim, not a rejected first write.
+  if (failed !== undefined && current === undefined && previous === undefined) throw invalid();
+  const restoring = same(current, previous);
+  if (current !== undefined && !restoring) {
+    if (failed !== undefined) {
+      // A rollback has already restored a single-link previous value.
+      if (previous !== undefined || current.nlink !== 1) throw invalid();
+    } else if (temporary !== undefined && !same(current, temporary)) {
+      // Staging before claim: the untouched old target is still committed.
+      if (previous !== undefined || current.nlink !== 1 || temporary.nlink !== 1) throw invalid();
+    } else if (previous !== undefined && temporary === undefined) throw invalid();
+  }
+  if (restoring && previous!.nlink !== 2) throw invalid();
+  // Phase table (also restart-safe if recovery itself is killed):
+  // staging only -> keep old/absent; claim without target -> restore previous;
+  // target+temporary exact pair -> keep new, remove claim then temporary;
+  // failed[+temporary] with target/claim -> keep previous, discard failed new;
+  // failed without target/claim -> ambiguous, retain everything and fail closed;
+  // target+previous exact pair -> finish interrupted previous restoration.
+  if (current === undefined && previous !== undefined) {
+    await prove();
+    linkSync(join(directory, residue.previous!), join(directory, target));
+    previous.nlink += 1;
+    named.set(target, { ...previous } as Stats);
+    await syncDirectory(directory);
+  }
+  await remove(residue.previous);
+  await remove(residue.failed);
+  await remove(residue.temporary);
+  await prove();
 }
 
 async function readTransaction(path: string): Promise<ProcessJobTransaction | undefined> {
@@ -1121,8 +1253,8 @@ async function assertPrivateDirectory(path: string): Promise<void> {
   }
 }
 
-function assertPrivateFile(info: Stats, path: string, mode: number): void {
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+function assertPrivateFile(info: Stats, path: string, mode: number, links = 1): void {
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== links) {
     throw new Error(`Process-job durable path is not a single-link regular file: ${path}`);
   }
   if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
@@ -1137,7 +1269,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
-      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "peerQuestion", "subagentProgress", "subagentOwnership", "rejectedAdmission", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1148,16 +1280,21 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || value.schemaVersion !== 1
     || !isUuid(value.generation)
     || !isJobId(value.jobId)
-    || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
+    // "AgentSend" is legacy history: renamed to "AgentManage" with no alias, so
+    // records persisted before the rename must still validate. Never emitted.
+    || (value.kind === "internal" ? !["Agent", "AgentManage", "AgentSend", "PeerAgent"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.rejectedAdmission !== undefined && (value.rejectedAdmission !== true || value.kind !== "internal" || value.subagentOwnership === undefined))
       || (value.subagentVerification !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationTarget(value.subagentVerification)))
       || (value.subagentObservation !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationObservation(value.subagentObservation)))
       || (value.subagentCommandReceipts !== undefined && (value.kind !== "internal" || value.subagentOwnership === undefined || !isSubagentCommandReceipts(value.subagentCommandReceipts)))
     || (value.subagentOwnership !== undefined && !isSubagentExecutionOwnership(value.subagentOwnership))
       || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
-      || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion)) || value.pid !== null || value.pgid !== null
+      || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
+      || (value.peerQuestion !== undefined && (value.tool !== "PeerAgent" || !isPeerProcessJobQuestion(value.peerQuestion)))
+      || value.pid !== null || value.pgid !== null
       || value.processIncarnation !== undefined || value.sandboxSettingsPath !== null
-      : value.subagentOwnership !== undefined || value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
+      : value.subagentOwnership !== undefined || value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined || value.peerQuestion !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)
@@ -1285,10 +1422,21 @@ function isCanonicalProcessJobBase(
   if (!value.startsWith(prefix)) return false;
   const destination = value.slice(prefix.length);
   if (channel === "telegram") {
-    const chatId = Number(destination);
-    return /^-?\d+$/u.test(destination)
+    // `<chat>` or a forum topic `<chat>:<topic>`, both in canonical integer form.
+    const parts = destination.split(":");
+    const rawChat = parts[0] ?? "";
+    const rawTopic = parts[1];
+    const chatId = Number(rawChat);
+    const topicId = rawTopic === undefined ? undefined : Number(rawTopic);
+    return parts.length <= 2
+      && /^-?\d+$/u.test(rawChat)
       && Number.isSafeInteger(chatId)
-      && String(chatId) === destination;
+      && String(chatId) === rawChat
+      && (rawTopic === undefined
+        || (/^[1-9]\d*$/u.test(rawTopic)
+          && topicId !== undefined
+          && Number.isSafeInteger(topicId)
+          && String(topicId) === rawTopic));
   }
   if (channel === "web") return destination !== "new" && /^[^\s:#]+$/u.test(destination);
   if (channel === "slack") {
@@ -1314,6 +1462,8 @@ function validWake(value: unknown): boolean {
   return isRecord(value)
     && hasExactKeys(value, [
       "state", "attempts", "deliveryKey", "lastAttemptAt",
+      ...(Object.prototype.hasOwnProperty.call(value, "admission") ? ["admission"] : []),
+      ...(Object.prototype.hasOwnProperty.call(value, "notCrossed") ? ["notCrossed"] : []),
       ...(Object.prototype.hasOwnProperty.call(value, "retrySafe") ? ["retrySafe"] : []),
       ...(Object.prototype.hasOwnProperty.call(value, "destinationUnavailableAttempts")
         ? ["destinationUnavailableAttempts"]
@@ -1327,6 +1477,8 @@ function validWake(value: unknown): boolean {
     ])
     && (value.state === "pending" || value.state === "delivered" || value.state === "failed"
       || value.state === "unknown" || value.state === "suppressed")
+    && (value.admission === undefined || validWakeFence(value.admission))
+    && (value.notCrossed === undefined || validWakeCertificates(value.notCrossed))
     && nonNegativeInteger(value.attempts)
     && boundedNonEmptyString(value.deliveryKey, 512)
     && nullableIso(value.lastAttemptAt)
@@ -1433,23 +1585,24 @@ async function inspectArtifactDirectoryBytes(
 }
 
 async function artifactDirectoryBytes(path: string): Promise<number> {
+  let entries;
+  try { entries = await readdir(path, { withFileTypes: true }); }
+  catch (error) { if (isErrno(error, "ENOENT")) return 0; throw error; }
+  const recovery = new Map<string, ReplacementResidue>();
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) collectReplacementResidue(entry.name,
+      (target) => target === "stdout.log" || target === "stderr.log", recovery);
+  }
+  for (const [target, residue] of recovery) await recoverReplacement(path, target, residue);
   let total = 0;
-  try {
-    for (const entry of await readdir(path, { withFileTypes: true })) {
-      if (entry.name.startsWith(".") && entry.name.endsWith(".tmp") && entry.isFile() && !entry.isSymbolicLink()) {
-        await rm(join(path, entry.name), { force: true });
-        continue;
-      }
-      if (!entry.isFile() || entry.isSymbolicLink() || (entry.name !== "stdout.log" && entry.name !== "stderr.log")) {
-        throw new Error(`Process-job artifact directory contains an unsupported entry: ${entry.name}`);
-      }
-      const artifactPath = join(path, entry.name);
-      const info = await lstat(artifactPath);
-      assertPrivateFile(info, artifactPath, 0o600);
-      total += info.size;
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    if (!entry.isFile() || entry.isSymbolicLink() || (entry.name !== "stdout.log" && entry.name !== "stderr.log")) {
+      throw new Error(`Process-job artifact directory contains an unsupported entry: ${entry.name}`);
     }
-  } catch (error) {
-    if (!isErrno(error, "ENOENT")) throw error;
+    const artifactPath = join(path, entry.name);
+    const info = await lstat(artifactPath);
+    assertPrivateFile(info, artifactPath, 0o600);
+    total += info.size;
   }
   return total;
 }

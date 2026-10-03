@@ -51,8 +51,13 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-async function summary(name: string, conversationId: string): Promise<void> {
-  await writeFile(join(dir, `${name}.summary.json`), JSON.stringify({
+async function writeConfig(json: unknown): Promise<string> {
+  const configPath = join(dir, "mono-agent.config.json");
+  await writeFile(configPath, JSON.stringify(json));
+  return configPath;
+}
+
+async function summary(name: string, conversationId: string): Promise<void> {  await writeFile(join(dir, `${name}.summary.json`), JSON.stringify({
     runId: name,
     conversationId,
     status: "succeeded",
@@ -68,8 +73,8 @@ describe("seen notify destination cache", () => {
     }
     const controller = {
       cwd: dir,
-      configReadPath: join(dir, "missing-config.json"),
-      env: { MONO_AGENT_ARTIFACT_DIR: dir },
+      configReadPath: await writeConfig({ artifacts: { dir: "./" } }),
+      env: { MONO_AGENT_ARTIFACT_DIR: join(dir, "stale-env-artifacts") },
       running: new Map(),
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
     } as unknown as MonoAgentAppController;
@@ -282,8 +287,8 @@ describe("seen notify destination cache", () => {
     fsProbe.readFailuresRemaining = 1;
     const controller = {
       cwd: dir,
-      configReadPath: join(dir, "missing-config.json"),
-      env: { MONO_AGENT_ARTIFACT_DIR: dir },
+      configReadPath: await writeConfig({ artifacts: { dir: "./" } }),
+      env: { MONO_AGENT_ARTIFACT_DIR: join(dir, "stale-env-artifacts") },
       running: new Map([["telegram", {}]]),
       seenNotifyDestinations: createSeenNotifyDestinationCache(),
     } as unknown as MonoAgentAppController;

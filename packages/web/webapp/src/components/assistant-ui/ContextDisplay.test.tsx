@@ -1,162 +1,256 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { WebThreadUsage } from "../../../../src/contracts.js";
+import { agent } from "../../test/fixtures";
+import type { ProviderUsageSnapshot } from "../../types";
+
+const apiMock = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn(), compactThread: vi.fn(), threadUsage: vi.fn() }));
+vi.mock("../../api", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../api")>()), api: apiMock }));
 import { ContextDisplay } from "./ContextDisplay";
+import { ApiError } from "../../api";
+
+const context = { status: "current" as const, measuredModel: "atlas/standard", usage: { total: 84_210, contextWindow: 200_000 } };
+const typical: WebThreadUsage = { total: { tokens: { input: 12_000, cacheWrite: 100, cacheRead: 5_000, output: 2_000 }, costUsd: 2.24 },
+  byModel: [{ model: "atlas/standard", costUsd: 2.24 }], computedAt: "2026-01-01T00:00:00Z" };
+const mixed: WebThreadUsage = { total: { tokens: { input: 20_000, cacheWrite: 300, cacheRead: 9_000, output: 4_000 }, tokensPartial: true, costUsd: 4.18, costPartial: true },
+  subagents: { runs: 2, costUsd: 1.12, tokensPartial: true },
+  byModel: [{ model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 }], computedAt: "2026-01-01T00:00:00Z" };
+const codexSnapshot: ProviderUsageSnapshot = {
+  schema: "mono-agent.provider-usage.v1",
+  providers: [{ providerId: "openai-codex", label: "Codex", plan: "Pro", fetchedAt: "2026-09-15T12:00:00Z",
+    stale: false, windows: [{ kind: "weekly", label: "Weekly", usedPercent: 42, periodMs: 604_800_000, resetsAt: "2026-09-16T12:00:00Z" }] }],
+};
+const open = async () => {
+  fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
+  return await screen.findByRole("dialog", { name: "Context usage" });
+};
+const plan = { agent: agent("alpha", { supportsProviderUsage: true }), providerId: "openai-codex" };
+afterEach(() => { vi.clearAllMocks(); });
 
 describe("ContextDisplay", () => {
-  it("renders exact current context and last-turn work as separate sections", async () => {
-    const { container } = render(
-      <ContextDisplay
-        className="compact-context"
-        context={{
-          status: "current",
-          usage: {
-            input: 1_000,
-            cachedInput: 200,
-            cacheCreation: 100,
-            output: 50,
-            total: 1_350,
-            contextWindow: 2_700,
-          },
-        }}
-        processed={{ input: 4_000, cachedInput: 8_000, output: 500, reasoning: 250 }}
-        conversationCost={0.0042}
-      />,
-    );
-
-    const trigger = screen.getByRole("button", {
-      name: "Context usage: 1.4k tokens, 50%, $0.0042",
-    });
-    expect(trigger).toHaveClass("context-display-trigger", "compact-context");
-    // The chip is one glanceable number; tokens and cost stay in the popup.
-    expect(trigger).toHaveTextContent("50%");
-    expect(trigger).not.toHaveTextContent("1.4k");
-    expect(trigger).not.toHaveTextContent("$0.0042");
-    fireEvent.click(trigger);
-
-    const popover = await screen.findByRole("dialog", { name: "Context usage" });
-    expect(container).not.toContainElement(popover);
-    const current = within(popover).getByRole("region", { name: "Current context" });
-    expect(within(current).getByText("Cache read").nextElementSibling).toHaveTextContent("200");
-    expect(within(current).getByText("Total").nextElementSibling).toHaveTextContent("1.4k");
-    const processed = within(popover).getByRole("region", { name: "Last turn processed" });
-    expect(within(processed).getByText("Processed total").nextElementSibling).toHaveTextContent("12.5k");
-    expect(within(popover).getByText("Conversation cost").nextElementSibling).toHaveTextContent("$0.0042");
+  it("restores busy badge and dialog from the thread hint after a remount", async () => {
+    const { unmount } = render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" manualCompacting />);
+    const badge = screen.getByRole("button", { name: /Context usage:.*compacting/u });
+    expect(badge).toHaveAttribute("data-busy");
+    expect(badge).toHaveAttribute("data-muted");
+    unmount();
+    render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" manualCompacting />);
+    const popup = await open();
+    expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent("Summarizing earlier turns…");
+    const button = within(popup).getByRole("button", { name: "Compacting…" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(apiMock.compactThread).not.toHaveBeenCalled();
   });
-
-  it("uses the reported total and window for exact post-compaction progress", async () => {
-    render(<ContextDisplay context={{
-      status: "current",
-      usage: { input: 900_000, total: 20_000, contextWindow: 100_000 },
-    }} />);
-
-    const trigger = screen.getByRole("button", { name: "Context usage: 20k tokens, 20%" });
-    fireEvent.click(trigger);
-    const progress = await screen.findByRole("progressbar", { name: "Context window used" });
-    expect(progress).toHaveAttribute("aria-valuenow", "20");
-    expect(progress).toHaveAttribute("aria-valuetext", "20k of 100k tokens (20%)");
+  it("renders ordered named sections, a token table and a cost definition list without old diagnostics", async () => {
+    render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" />);
+    const popup = await open();
+    expect(within(popup).getAllByRole("region").map((node) => node.getAttribute("aria-labelledby") && node.querySelector("h3")?.textContent))
+      .toEqual(["Context window", "Tokens processed", "Estimated cost"]);
+    expect(within(popup).getByRole("row", { name: /Total/ })).toHaveTextContent("12.1k");
+    expect(within(popup).getByRole("columnheader", { name: "Cached" })).toHaveAttribute("title", "Input read from the provider's prompt cache");
+    expect(within(popup).queryByText(/Cache hit ratio|Last turn processed|Measured model|Reasoning/)).not.toBeInTheDocument();
+    expect(within(popup).queryByText("incl. subagents")).not.toBeInTheDocument();
+    expect(within(popup).queryByText("atlas/standard")).not.toBeInTheDocument();
+    expect(within(popup).getByText("Summarizes earlier turns to free space.")).toBeVisible();
   });
-
-  it("labels legacy aggregate telemetry unavailable and never invents a percentage", async () => {
-    render(
-      <ContextDisplay
-        context={{
-          status: "unavailable",
-          reason: "Exact context usage has not been reported for this conversation.",
-        }}
-        processed={{ input: 429_128, cachedInput: 4_970_496, output: 15_773 }}
-        conversationCost={5.104078}
-      />,
-    );
-
-    const trigger = screen.getByRole("button", { name: "Context usage: unavailable, $5.10" });
-    expect(trigger).toHaveTextContent("—");
-    expect(trigger).not.toHaveTextContent("100%");
-    fireEvent.click(trigger);
-    const popover = await screen.findByRole("dialog", { name: "Context usage" });
-    expect(within(popover).getByText("Exact context usage has not been reported for this conversation.")).toBeVisible();
-    expect(within(popover).queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(within(popover).getByText("Processed total").nextElementSibling).toHaveTextContent("5.4M");
+  it("shows aggregate cache hit alongside Tokens processed without implying a lower bound", async () => {
+    const { rerender } = render(<ContextDisplay context={context} totals={typical} />);
+    let popup = await open();
+    let hit = within(popup).getByLabelText("Cache hit 29 percent");
+    expect(hit).toHaveTextContent("29% cache hit");
+    expect(hit).toHaveAttribute("title", "Share of prompt tokens read from the provider's prompt cache across this conversation.");
+    fireEvent.click(screen.getByRole("button", { name: /^Context usage:/u }));
+    rerender(<ContextDisplay context={context} totals={mixed} />);
+    popup = await open();
+    hit = within(popup).getByLabelText("Cache hit 31 percent");
+    expect(hit).toHaveTextContent("31% cache hit");
+    expect(hit).not.toHaveTextContent("≥");
+    expect(hit).toHaveAttribute("title", "Share of prompt tokens read from the provider's prompt cache across this conversation. Based on the token counts that were reported.");
   });
-
-  it("omits unknown and zero-value segments", async () => {
-    render(<ContextDisplay context={{
-      status: "current",
-      usage: { input: 12, cachedInput: 0, output: Number.NaN, total: 12 },
-    }} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Context usage: 12 tokens" }));
-    const current = await screen.findByRole("region", { name: "Current context" });
-    expect(within(current).getByText("Input")).toBeVisible();
-    expect(within(current).queryByText("Cache read")).not.toBeInTheDocument();
-    expect(within(current).queryByText("Output")).not.toBeInTheDocument();
+  it("omits cache hit without prompt tokens and describes tiny positive hits accessibly", async () => {
+    const { rerender } = render(<ContextDisplay context={context} totals={{ ...typical, total: { tokens: {
+      input: 0, cacheWrite: 0, cacheRead: 0, output: 50,
+    } } }} />);
+    let popup = await open();
+    expect(within(popup).queryByText(/cache hit/u)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Context usage:/u }));
+    rerender(<ContextDisplay context={context} totals={{ ...typical, total: { tokens: {
+      input: 999, cacheWrite: 0, cacheRead: 1, output: 50,
+    } } }} />);
+    popup = await open();
+    expect(within(popup).getByLabelText("Cache hit less than 1 percent")).toHaveTextContent("<1% cache hit");
   });
-
-  it("labels an in-flight exact snapshot as updating instead of current", async () => {
-    render(<ContextDisplay context={{
-      status: "updating",
-      usage: { total: 42_000, contextWindow: 100_000, model: "pi:p:m" },
-      measuredModel: "pi:p:m",
-      reason: "The provider measurement is exact, but the current turn is still updating context.",
-    }} />);
-
-    const trigger = screen.getByRole("button", {
-      name: "Context usage: 42k tokens, updating, 42%",
-    });
-    // The word moved into the popup; the chip carries the state as colour.
-    expect(trigger).not.toHaveTextContent("Updating");
-    expect(trigger).toHaveAttribute("data-state", "updating");
-    fireEvent.click(trigger);
-    expect(await screen.findByText("Updating")).toBeVisible();
-    const latest = await screen.findByRole("region", { name: "Latest provider measurement" });
-    expect(within(latest).getByText("Measured model").nextElementSibling).toHaveTextContent("pi:p:m");
-    expect(within(latest).queryByRole("region", { name: "Current context" })).not.toBeInTheDocument();
+  it("uses the full-thread endpoint rather than the loaded message page", async () => {
+    apiMock.threadUsage.mockResolvedValue({ total: { costUsd: 0.9, tokens: { input: 900, cacheWrite: 0, cacheRead: 0, output: 90 } },
+      byModel: [{ model: "atlas/standard", costUsd: 0.9 }], computedAt: typical.computedAt });
+    render(<ContextDisplay threadId="thread-long" detail={null} context={context} />);
+    expect(apiMock.threadUsage).not.toHaveBeenCalled();
+    const popup = await open();
+    await waitFor(() => expect(within(popup).getByRole("row", { name: /Total/ })).toHaveTextContent("900"));
+    expect(within(popup).getByRole("region", { name: "Estimated cost" })).toHaveTextContent("$0.90");
+    expect(apiMock.threadUsage).toHaveBeenCalledWith("thread-long", expect.any(AbortSignal));
   });
-
-  it("uses an updating placeholder before the current turn reports an exact snapshot", async () => {
-    render(<ContextDisplay context={{
-      status: "updating",
-      reason: "The current turn has not reported an exact provider measurement yet.",
-    }} />);
-
-    const trigger = screen.getByRole("button", { name: "Context usage: updating" });
-    expect(trigger).toHaveTextContent("—");
-    expect(trigger).not.toHaveTextContent("%");
-    fireEvent.click(trigger);
-    expect(await screen.findByText("The current turn has not reported an exact provider measurement yet.")).toBeVisible();
+  it("shows lower bounds, subagent report gaps, cost shares, and sorted model rows", async () => {
+    render(<ContextDisplay context={context} totals={mixed} />);
+    const popup = await open();
+    expect(within(popup).getByRole("row", { name: /Total/ })).toHaveTextContent("≥20.3k");
+    expect(within(popup).getByRole("row", { name: /incl. subagents/ })).toHaveTextContent("not reported");
+    expect(within(popup).getByRole("region", { name: /Estimated cost/ })).toHaveTextContent("≥$4.18");
+    expect(within(popup).getAllByText("incl. subagents")).toHaveLength(2);
+    expect(within(popup).getAllByText("$1.12")).toHaveLength(2);
+    expect(within(popup).getByText("$3.06")).toBeVisible();
   });
-
-  it("makes stale model measurements explicit and shows their measured model", async () => {
-    render(<ContextDisplay context={{
-      status: "last_measured",
-      usage: { total: 12_000, contextWindow: 100_000, model: "pi:p:old" },
-      measuredModel: "pi:p:old",
-      reason: "This measurement belongs to pi:p:old; the next turn is set to pi:p:new.",
-    }} />);
-
-    const trigger = screen.getByRole("button", {
-      name: "Context usage: 12k tokens, last measured, 12%",
-    });
-    expect(trigger).toHaveTextContent("12%");
-    expect(trigger).toHaveAttribute("data-state", "last_measured");
-    fireEvent.click(trigger);
-    const last = await screen.findByRole("region", { name: "Last measured" });
-    expect(within(last).getByText("pi:p:old")).toBeVisible();
-    expect(within(last).getByText(/next turn is set to pi:p:new/u)).toBeVisible();
+  it("renders reported, mixed, and missing subagent token samples distinctly", async () => {
+    const tokens = { input: 12, cacheRead: 3, cacheWrite: 1, output: 2 };
+    const { rerender } = render(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 2, runsWithTokens: 2, tokens } }} />);
+    const popup = await open();
+    const row = () => within(popup).getByRole("row", { name: /incl. subagents/ });
+    expect(row()).toHaveTextContent("13");
+    expect(row()).not.toHaveTextContent("≥");
+    rerender(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 3, runsWithTokens: 1, tokens, tokensPartial: true } }} />);
+    expect(row()).toHaveTextContent("≥13");
+    expect(row().querySelector("td")?.title).toBe("At least. 2 of 3 subagent runs didn't report tokens.");
+    rerender(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 3, tokens, tokensPartial: true } }} />);
+    expect(row().querySelector("td")?.title).toContain("Older messages or some subagent runs may lack token reports.");
+    expect(row().querySelector("td")?.title).not.toContain("0 of 3");
+    rerender(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 3, runsWithTokens: 0, tokensPartial: true } }} />);
+    expect(row()).toHaveTextContent("not reported");
   });
-
-  it("suppresses a stale pre-compaction number while awaiting measurement", async () => {
-    render(<ContextDisplay context={{
-      status: "awaiting_measurement",
-      reason: "Context changed during compaction; waiting for the next exact provider measurement.",
-    }} />);
-
-    const trigger = screen.getByRole("button", {
-      name: "Context usage: awaiting provider measurement",
-    });
-    expect(trigger).toHaveTextContent("—");
-    expect(trigger).toHaveAttribute("data-state", "awaiting_measurement");
-    expect(trigger).not.toHaveTextContent("%");
-    fireEvent.click(trigger);
-    expect(await screen.findByText("Awaiting")).toBeVisible();
+  it.each([[79.9, "normal"], [80, "warning"], [94.9, "warning"], [95, "danger"]] as const)("applies unrounded level at %s", (percent, level) => {
+    const trigger = render(<ContextDisplay context={{ status: "current", usage: { total: percent * 1_000, contextWindow: 100_000 } }} />).container.querySelector(".context-display-trigger");
+    expect(trigger).toHaveAttribute("data-level", level);
+  });
+  it("names exact, updating, estimated, old, missing and sub-one-percent context without rounding away meaning", async () => {
+    const { rerender } = render(<ContextDisplay context={context} totals={typical} />);
+    expect(screen.getByRole("button", { name: "Context usage: 84,210 of 200,000 tokens (42%). Estimated cost $2.24." })).toHaveTextContent("42%");
+    rerender(<ContextDisplay context={{ ...context, status: "updating" }} totals={typical} running />);
+    expect(screen.getByRole("button", { name: /84,210 of 200,000 tokens \(42%\), updating/ })).toBeVisible();
+    await open();
+    expect(screen.getByText("Updating")).toBeVisible();
+    rerender(<ContextDisplay context={{ status: "awaiting_measurement", usage: { total: 41_300, contextWindow: 200_000 }, compaction: { running: false }, reason: "Estimated after compaction. Measured exactly on the next turn." }} totals={typical} />);
+    expect(screen.getByRole("button", { name: /about 41,300 of 200,000 tokens \(about 21%\) after compaction/ })).toHaveTextContent("≈21%");
+    expect(screen.getByRole("progressbar", { name: "Context window used" })).toHaveAttribute("aria-valuetext", "About 41,300 of 200,000 tokens, 21%");
+    expect(screen.getByRole("region", { name: "Context window" }).querySelector(".context-display-figure-percent")).toHaveTextContent("≈21%");
+    rerender(<ContextDisplay context={{ ...context, status: "last_measured" }} totals={typical} />);
+    expect(screen.getByRole("button", { name: /last measured 84,210/ })).toBeVisible();
+    rerender(<ContextDisplay context={{ status: "unavailable" }} />);
+    expect(screen.getByRole("button", { name: /context size not reported/ })).toHaveTextContent("—");
+    rerender(<ContextDisplay context={{ status: "current", usage: { total: 1, contextWindow: 100_000 } }} />);
+    expect(screen.getByRole("button", { name: /<1%/ })).toHaveTextContent("<1%");
+  });
+  it("uses explicit loading, names measured tokens with an unknown window, and reads structured note fields", async () => {
+    const { rerender } = render(<ContextDisplay context={{ status: "unavailable", reason: "Load is still in progress." }} contextLoading />);
+    expect(screen.getByRole("button", { name: "Context usage: loading." })).toHaveTextContent("—");
+    const popup = await open();
+    expect(within(popup).getByText("Loading…")).toBeVisible();
+    expect(within(popup).queryByText("No reply in this conversation has reported its context size.")).not.toBeInTheDocument();
+    rerender(<ContextDisplay context={{ status: "current", usage: { total: 84_210 } }} />);
+    expect(screen.getByRole("button", { name: "Context usage: 84,210 tokens; context window size not reported." })).toBeVisible();
+    expect(within(popup).getByText("84.2k")).toBeVisible();
+    rerender(<ContextDisplay context={{ status: "last_measured", usage: { total: 40_000, contextWindow: 100_000, model: "atlas/standard" },
+      nextModel: "grove/fast", reason: "Not used to render text." }} />);
+    expect(within(popup).getByText("Measured on atlas/standard. The next turn uses grove/fast.")).toBeVisible();
+  });
+  it("keeps initial focus away from Compact and makes blocked action focusable and inert", async () => {
+    render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" compactBlocked />);
+    const popup = await open();
+    const button = within(popup).getByRole("button", { name: "Compact" });
+    await waitFor(() => expect(popup).toHaveFocus());
+    expect(button).not.toHaveFocus();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveAttribute("aria-describedby");
+    fireEvent.click(button);
+    expect(apiMock.compactThread).not.toHaveBeenCalled();
+    expect(within(popup).getByText("Available when this turn finishes.")).toBeVisible();
+  });
+  it("announces progress and success in the pre-mounted status region, but not errors", async () => {
+    let finish!: (value: unknown) => void;
+    apiMock.compactThread.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }))
+      .mockRejectedValueOnce(new ApiError("Busy.", 409));
+    render(<ContextDisplay context={context} compactThreadId="one" />);
+    const popup = await open();
+    const footer = popup.querySelector(".context-display-compact") as HTMLElement;
+    const live = within(footer).getByRole("status");
+    expect(live).toHaveTextContent("");
+    const button = within(footer).getByRole("button", { name: "Compact" });
+    fireEvent.click(button);
+    expect(live).toHaveTextContent("Summarizing earlier turns…");
+    await act(async () => finish({ status: "succeeded", operationId: "one", trigger: "manual" }));
+    expect(live).toHaveTextContent("Compacted.");
+    fireEvent.click(button);
+    await waitFor(() => expect(within(footer).getByRole("alert")).toHaveTextContent("Busy."));
+    expect(live).toHaveTextContent("");
+  });
+  it("shows nearly-full emphasis and all compaction outcomes, clearing results on close", async () => {
+    apiMock.compactThread.mockResolvedValueOnce({ status: "succeeded", operationId: "one", trigger: "manual", tokensBefore: 183_400, tokensAfter: 41_300 });
+    apiMock.compactThread.mockResolvedValueOnce({ status: "skipped", operationId: "two", trigger: "manual" });
+    apiMock.compactThread.mockResolvedValueOnce({ status: "skipped", operationId: "three", trigger: "manual", reason: "model_changed" });
+    apiMock.compactThread.mockResolvedValueOnce({ status: "failed", operationId: "four", trigger: "manual" });
+    apiMock.compactThread.mockRejectedValueOnce(new ApiError("Wait for the current turn.", 409));
+    apiMock.compactThread.mockRejectedValueOnce(new TypeError("offline"));
+    render(<ContextDisplay context={{ ...context, usage: { total: 184_000, contextWindow: 200_000 } }} compactThreadId="thread-one" />);
+    const popup = await open();
+    const button = within(popup).getByRole("button", { name: "Compact" });
+    expect(button).toHaveAttribute("data-emphasis");
+    expect(within(popup).getByText("Context is nearly full.")).toBeVisible();
+    for (const expected of ["Compacted · 183.4k → ≈41.3k", "Nothing to compact yet.",
+      "Switch back to atlas/standard to compact this session.", "Compaction failed.",
+      "Wait for the current turn.", "Connection lost — the outcome is unknown. Refresh this conversation."]) {
+      fireEvent.click(button);
+      await waitFor(() => expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent(expected));
+    }
+    fireEvent.keyDown(popup, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument());
+    await open();
+    expect(screen.queryByText("Connection lost — the outcome is unknown. Refresh this conversation.")).not.toBeInTheDocument();
+  });
+  it("shows a reported zero, merges first-turn placeholders, and uses exact success without estimate", async () => {
+    const zero: WebThreadUsage = { total: { costUsd: 0, tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 } }, byModel: [], computedAt: typical.computedAt };
+    const { rerender } = render(<ContextDisplay context={context} totals={zero} compactThreadId="one" />);
+    const popup = await open();
+    expect(within(popup).getByRole("region", { name: "Estimated cost" })).toHaveTextContent("$0.00");
+    rerender(<ContextDisplay context={{ status: "updating" }} totals={{ total: {}, byModel: [], computedAt: typical.computedAt, settledAssistantTurns: 0 }} compactThreadId="one" compactBlocked />);
+    expect(within(popup).getByRole("region", { name: "Tokens & cost" })).toHaveTextContent("Totals appear when the first turn finishes.");
+    expect(within(popup).queryByRole("region", { name: "Estimated cost" })).not.toBeInTheDocument();
+    rerender(<ContextDisplay context={{ status: "unavailable" }} totals={{ total: {}, byModel: [], computedAt: typical.computedAt, settledAssistantTurns: 1 }} />);
+    expect(within(popup).getByRole("region", { name: "Tokens processed" })).toHaveTextContent("No reply in this conversation reported token counts.");
+    expect(within(popup).getByRole("region", { name: "Estimated cost" })).toHaveTextContent("No cost was reported for this conversation.");
+    apiMock.compactThread.mockResolvedValueOnce({ status: "succeeded", operationId: "exact", trigger: "manual", tokensBefore: 100_000, tokensAfter: 20_000, tokenCountsExact: true });
+    rerender(<ContextDisplay context={context} totals={zero} compactThreadId="one" />);
+    fireEvent.click(within(popup).getByRole("button", { name: "Compact" }));
+    await waitFor(() => expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent("Compacted · 100k → 20k"));
+  });
+  it("keeps the plan gate and loads the active provider only on open with compact rows", async () => {
+    let finish!: (value: ProviderUsageSnapshot) => void;
+    apiMock.providerUsage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<ContextDisplay context={context} totals={typical} providerUsage={plan} compactThreadId="thread-one" />);
+    expect(apiMock.providerUsage).not.toHaveBeenCalled();
+    const popup = await open();
+    expect(within(popup).getAllByRole("region").map((region) => region.querySelector("h3")?.textContent)).toEqual([
+      "Context window", "Tokens processed", "Estimated cost", "Codex plan",
+    ]);
+    expect(within(within(popup).getByRole("region", { name: "Codex plan" })).getByRole("status")).toHaveTextContent("Loading usage…");
+    await act(async () => finish(codexSnapshot));
+    const region = within(popup).getByRole("region", { name: "Codex plan" });
+    expect(within(region).getByText("Pro")).toBeVisible();
+    expect(within(region).getByRole("progressbar", { name: /Codex Weekly used/ })).toHaveAttribute("value", "42");
+    expect(within(region).getByText(/Resets |Reset due/)).toBeVisible();
+    expect(within(region).queryByText("Last known usage")).not.toBeInTheDocument();
+  });
+  it("keeps context on stale/error and hides unsupported plan capability", async () => {
+    apiMock.providerUsage.mockResolvedValue({ ...codexSnapshot, providers: [{ ...codexSnapshot.providers[0]!, stale: true,
+      error: { code: "unavailable", message: "Credential rejected." } }] });
+    const { rerender } = render(<ContextDisplay context={context} providerUsage={plan} />);
+    const popup = await open();
+    expect(await within(popup).findByText("Last known")).toBeVisible();
+    expect(within(popup).getByText("Usage unavailable — Credential rejected.")).toBeVisible();
+    expect(within(popup).getByRole("progressbar", { name: "Context window used" })).toBeVisible();
+    rerender(<ContextDisplay context={context} providerUsage={{ agent: agent("alpha"), providerId: "openai-codex" }} />);
+    expect(within(popup).queryByRole("region", { name: "Codex plan" })).not.toBeInTheDocument();
   });
 });

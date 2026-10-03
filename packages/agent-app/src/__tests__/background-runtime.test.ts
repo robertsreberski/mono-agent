@@ -656,7 +656,7 @@ describe("ensureManagedBackgroundRuntime", () => {
   it("materializes and top-level-links config-selected additional packages", async () => {
     const source = await fixturePackage();
     const plugin = await additionalPackageFixture("@mono-agent/a2a-adapter");
-    const supermemory = await additionalPackageFixture("@mono-agent/memory-supermemory");
+    const whatsapp = await additionalPackageFixture("@mono-agent/whatsapp-adapter");
     const homeDir = await homeFixture();
 
     const runtime = await ensureManagedBackgroundRuntime({
@@ -665,30 +665,30 @@ describe("ensureManagedBackgroundRuntime", () => {
       homeDir,
       additionalPackages: [
         { packageName: "@mono-agent/a2a-adapter", packageSource: plugin.root },
-        { packageName: "@mono-agent/memory-supermemory", packageSource: supermemory.root },
+        { packageName: "@mono-agent/whatsapp-adapter", packageSource: whatsapp.root },
       ],
     });
     await rm(source.root, { recursive: true, force: true });
     await rm(plugin.root, { recursive: true, force: true });
-    await rm(supermemory.root, { recursive: true, force: true });
+    await rm(whatsapp.root, { recursive: true, force: true });
 
     const linkedPlugin = join(runtime.installRoot, "node_modules", "@mono-agent", "a2a-adapter");
     const pluginRoot = await realpath(linkedPlugin);
     expect(pluginRoot.startsWith(await realpath(runtime.installRoot))).toBe(true);
     expect(await readFile(join(pluginRoot, "dist", "index.js"), "utf8")).toBe(plugin.contents);
-    const supermemoryRoot = await realpath(join(
+    const whatsappRoot = await realpath(join(
       runtime.installRoot,
       "node_modules",
       "@mono-agent",
-      "memory-supermemory",
+      "whatsapp-adapter",
     ));
-    expect(supermemoryRoot.startsWith(await realpath(runtime.installRoot))).toBe(true);
-    expect(await readFile(join(supermemoryRoot, "dist", "index.js"), "utf8")).toBe(supermemory.contents);
+    expect(whatsappRoot.startsWith(await realpath(runtime.installRoot))).toBe(true);
+    expect(await readFile(join(whatsappRoot, "dist", "index.js"), "utf8")).toBe(whatsapp.contents);
     const lock = JSON.parse(await readFile(join(runtime.installRoot, "package-lock.json"), "utf8")) as {
       packages: Record<string, { link?: boolean }>;
     };
     expect(lock.packages["node_modules/@mono-agent/a2a-adapter"]?.link).toBe(true);
-    expect(lock.packages["node_modules/@mono-agent/memory-supermemory"]?.link).toBe(true);
+    expect(lock.packages["node_modules/@mono-agent/whatsapp-adapter"]?.link).toBe(true);
   });
 
   it("binds config-selected additional package bytes into runtime reuse identity", async () => {

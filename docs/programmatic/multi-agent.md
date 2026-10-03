@@ -124,7 +124,7 @@ A typical local setup runs three roles, each built from `@mono-agent/agent-app`,
 | Researcher | loopback A2A provider | `WebSearch`, `WebFetch` allowed | `multi-agent-researcher` |
 | Worker | loopback A2A provider | `Read`, `Grep`, `Bash` allowed; `Write`/`Edit` disallowed | `multi-agent-worker` |
 
-The orchestrator's `AskCollaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs (and Phoenix spans when an OTLP exporter is configured — see [Phoenix and backfill](/observability/phoenix-and-backfill/)). Distinct [per-role tool policies](/tools/policy/) keep the researcher and worker scoped to their jobs.
+The orchestrator's `AskCollaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs. Distinct [per-role tool policies](/tools/policy/) keep the researcher and worker scoped to their jobs.
 
 Local Ollama collaborators can take longer than the 60s A2A consumer default when running web or workspace tools before synthesis, so host code can set a longer per-collaborator timeout for those responders.
 

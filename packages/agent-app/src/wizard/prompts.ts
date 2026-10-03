@@ -135,12 +135,16 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
 const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   RunHistory: "inspect safe evidence from prior runs in this conversation",
   SessionHistory: "search bounded tool calls and results retained for this session",
+  SuggestReplies: "offer non-blocking quick reply choices in web conversations",
   SetConversationTitle: "maintain semantic titles for writable web conversations",
   ListTags: "list the originating agent's tags",
   CreateTag: "create a named colored conversation tag",
   UpdateTag: "edit a tag name or color",
   DeleteTag: "delete a tag while retaining its conversations",
   MarkConversationRead: "clear a conversation unread dot at its current revision",
+  GetWakeSchedule: "read this conversation's wake-up schedule",
+  SetWakeSchedule: "set this conversation's one-off or weekly wake-up schedule",
+  ClearWakeSchedule: "clear this conversation's wake-up schedule",
   UpdateConversationTags: "add or remove tags immediately for the next turn",
   ListProjects: "list the originating agent's console projects",
   GetProject: "read a console project and its shared context",
@@ -193,15 +197,10 @@ export function channelSelectOptions(options: { readonly readyOnly?: boolean } =
  * Memory options: a leading "None (stateless)" whose empty-string value maps to
  * `memory: undefined`, then every memory module in catalog order.
  */
-export function memorySelectOptions(
-  options: { readonly includeOptionalPlugins?: boolean } = {},
-): WizardSelectOption[] {
+export function memorySelectOptions(): WizardSelectOption[] {
   return [
     { value: "", label: "None (stateless)", hint: "no cross-conversation memory" },
-    ...modulesByKind("memory").filter((module) =>
-      module.wizardSelectable !== false
-      || (options.includeOptionalPlugins === true && module.id === "memory:supermemory")
-    ).map((module) => ({
+    ...modulesByKind("memory").filter((module) => module.wizardSelectable !== false).map((module) => ({
       value: module.id,
       label: module.title,
       hint: module.summary,

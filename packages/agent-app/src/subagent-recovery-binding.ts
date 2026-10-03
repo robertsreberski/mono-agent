@@ -55,6 +55,23 @@ export function checkRecoveryAcknowledgement(binding: SubagentRecoveryBinding | 
   if (prior) throw new SubagentRecoveryError(prior.digest === candidate ? "subagent_recovery_already_consumed" : "subagent_recovery_ack_conflict");
   if (binding.issued?.token !== request.ack || binding.issued.profile !== digest(binding, profile)) throw new SubagentRecoveryError("subagent_recovery_ack_stale");
 }
+/**
+ * Re-key an already consumed acknowledgement onto the profile the same
+ * transaction just rewrote.
+ *
+ * A route change is applied after consumption, because the digest covers
+ * `[systemPrompt, definition]` and mutating the definition first would make
+ * every acknowledged continuation stale. Without this, a duplicate delivery of
+ * the IDENTICAL request would then hash against the new definition and be
+ * reported as `subagent_recovery_ack_conflict` instead of the
+ * `subagent_recovery_already_consumed` replay it actually is. Nothing is
+ * widened: the token and turn stay fixed and a matching token always refuses,
+ * so this only keeps the refusal's reason truthful.
+ */
+export function rebindConsumedAcknowledgement(binding: SubagentRecoveryBinding, request: SubagentRecoveryAcknowledgement, profile: unknown): void {
+  if (binding.consumed?.token !== request.ack) return;
+  binding.consumed = { ...binding.consumed, digest: requestDigest(binding, request, profile) };
+}
 /** Called in the same durable registry transaction as the new reservation/intent. */
 export function consumeRecoveryAcknowledgement(binding: SubagentRecoveryBinding, request: SubagentRecoveryAcknowledgement, profile: unknown, turnToken: string): void {
   checkRecoveryAcknowledgement(binding, request, profile);

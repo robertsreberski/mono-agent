@@ -1,1 +1,1 @@
-export type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+export type { MemoryBlock, MemoryLoadOptions, MemoryStore } from "@mono-agent/agent-contracts";

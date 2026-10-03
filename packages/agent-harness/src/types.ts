@@ -13,6 +13,7 @@ import type {
   AgentSurface,
   AgentToolEnvironment,
   MemoryStore,
+  MemoryCaptureSpeakerKind,
 } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
@@ -44,6 +45,8 @@ export interface ProviderSessionTurnCommitOptions {
 
 export interface ProviderSessionTurnBinding {
   readonly modelKey: string;
+  /** Manual compaction only: reject an existing different binding without retiring it. */
+  readonly skipModelRotation?: boolean;
 }
 
 /** A conversation-exclusive provider turn owned by durable history state. */
@@ -141,6 +144,12 @@ export interface ConversationHistoryStore {
     runId: string,
     binding?: ProviderSessionTurnBinding,
   ): Promise<ConversationHistoryProviderSessionTurn>;
+  /**
+   * Optional read-only view of the provider-session model binding, without
+   * taking the turn lock or marking the session dirty. Manual compaction uses
+   * it to decline a conversation bound to another model instead of rotating it.
+   */
+  readProviderSessionBinding?(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined>;
 }
 
 export interface InMemoryHistoryStoreOptions {
@@ -148,6 +157,8 @@ export interface InMemoryHistoryStoreOptions {
 }
 
 export interface AgentHarnessRequest {
+  /** Host-stamped memory provenance; never inferred from metadata.source. */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;
   readonly userMessage: string;
@@ -197,6 +208,7 @@ export interface AgentHarnessResponse {
     readonly conversationId: string;
     readonly contextSources: readonly string[];
     readonly contextSectionIds: readonly string[];
+    readonly turnDisposition?: "silent" | "visible";
     readonly runtime?: Record<string, unknown>;
     readonly summary?: ExternalRunSummary;
   };
@@ -204,6 +216,11 @@ export interface AgentHarnessResponse {
 }
 
 export interface AgentHarness {
+  compactConversation?(
+    conversationId: string,
+    options?: import("@mono-agent/agent-contracts").AgentManualCompactionOptions,
+    signal?: AbortSignal,
+  ): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult>;
   readonly liveInputOwnership?: { readonly version: 1 };
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Offer user guidance to this conversation's active interactive turn. */
@@ -289,6 +306,8 @@ export interface AgentHarnessSessionOptions {
   readonly idleTimeoutMs: number;
   /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
   readonly terminalRecoverySettlementMs?: number;
+  /** Total continuity wait budget, including republish. Defaults to 30,000 ms; integer 1–2,147,483,647. */
+  readonly turnContinuityPublicationWaitMs?: number;
   /**
    * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
    * — primarily for tests and custom runtimes.
@@ -462,6 +481,13 @@ export interface AgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  /** Model/context policy selection for promptless manual compaction. Must not allocate turn tools. */
+  readonly runtimeOptionsForManualCompaction?: (
+    model: string,
+    context1M?: boolean,
+  ) => Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">> | Promise<Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">>>;
   readonly mcpRequestContext?: AgentHarnessMcpRequestContextOptions;
   readonly continuationContext?: AgentHarnessContinuationContextOptions;
   /**
@@ -475,6 +501,14 @@ export interface AgentHarnessOptions {
   readonly runtimeForModel?: (model: RuntimeModelReference) => MonoRuntimeLike;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
+  /** Disable automatic capture admission for host-identified cron turns only. */
+  readonly memoryCaptureCron?: boolean;
+  /** Disable automatic capture admission for host-identified webhook turns only. */
+  readonly memoryCaptureWebhook?: boolean;
+  /** Host-provisioned Remember capability; never inferred from request content. */
+  readonly memoryRememberEnabled?: boolean;
+  /** Host-provisioned Remember detail support (BuJo). */
+  readonly memoryRememberDetails?: boolean;
   /** Best-effort post-provider persistence warning sink (host log/metric). */
   readonly onMemoryWarning?: (message: string) => void;
   readonly historyStore?: ConversationHistoryStore;
@@ -493,17 +527,10 @@ export interface AgentHarnessOptions {
    * injects the schema — guidance for an absent capability is worse than none.
    */
   readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<import("./harness/session-context.js").SessionContextCapabilities["subagentInstances"]>>;
+  /** App-verified attribution for the Session context; metadata alone is never trusted. */
+  readonly verifiedPeerCallerFor?: (input: { readonly request: AgentHarnessRequest }) => Promise<string | undefined>;
   readonly backgroundSubagentsAvailable?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => boolean;
   readonly backgroundProcessJobsAvailable?: (
-    input: { readonly request: AgentHarnessRequest; readonly runId: string },
-  ) => boolean;
-  /**
-   * Whether this turn will carry the `Monitor`/`MonitorStop` tools. Answered by
-   * the same host predicate that injects the controller, for the same reason:
-   * a session block that offers a watch the model cannot start is worse than
-   * one that says nothing.
-   */
-  readonly monitorsAvailable?: (
     input: { readonly request: AgentHarnessRequest; readonly runId: string },
   ) => boolean;
   /** Best-effort enrichment applied only to the assistant history entry. */
@@ -569,6 +596,14 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * configuration where ordinary action tools must not leak through.
    */
   readonly toolPolicyOverride?: ToolPolicy;
+  /**
+   * Host-owned standing context for this one turn, such as a project's shared
+   * instructions: rewrites only the prompt copy of the user message (after
+   * speaker context, before recalled memory). History, memory recall queries
+   * and memory capture keep the canonical message. Continuation synthesis
+   * applies it to its host-synthesized prompt copy as well.
+   */
+  readonly decorateUserMessage?: (userMessage: string) => string;
   readonly cleanup?: () => void | Promise<void>;
   /**
    * Cleanup that must wait until the runtime call and all of its tool clients

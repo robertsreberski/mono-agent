@@ -1,3 +1,5 @@
+import { supportsPiContext1M } from "../../context-1m.js";
+import { effectiveContextWindow } from "./compaction-driver.js";
 // @ts-check
 // Harness event → runtime-event normalization for the pi-native bridge.
 //
@@ -95,6 +97,12 @@ function toolResultOutcome(result) {
  * @property {number} toolResultsSeen
  * @property {string|null} lastToolName
  * @property {boolean} maxTurnsHit
+ * @property {number} toolExecutionsThisTurn
+ * @property {boolean} toolFailureThisTurn
+ * @property {boolean} structuredOutputCompletedThisTurn
+ * @property {boolean} silentCompletedThisTurn
+ * @property {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, accepted: boolean, completed: boolean}} silentTurn
+ * @property {unknown} structuredResult
  */
 
 /**
@@ -107,15 +115,22 @@ function toolResultOutcome(result) {
  */
 export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness, sdk, model }) {
   return (event) => {
+    if (event.type === "message_start" && event.message?.role === "assistant" && runState.silentTurn?.accepted) {
+      // A continuation after the terminal tool is not the certified completion.
+      runState.silentTurn.accepted = false;
+      runState.silentTurn.completed = false;
+    }
     if (event.type === "message_update") {
       const streamEvent = event.assistantMessageEvent;
       if (streamEvent?.type === "text_delta" && streamEvent.delta) {
         runState.textDeltaIndexes.add(streamContentKey(streamEvent, "text"));
+        if (streamEvent.delta.trim() && runState.silentTurn) runState.silentTurn.visibleContent = true;
         runState.assistantTexts.push(streamEvent.delta);
         onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.delta }] } });
       } else if (streamEvent?.type === "text_end" && streamEvent.content) {
         const key = streamContentKey(streamEvent, "text");
         if (!runState.textDeltaIndexes.has(key)) {
+          if (streamEvent.content.trim() && runState.silentTurn) runState.silentTurn.visibleContent = true;
           runState.assistantTexts.push(streamEvent.content);
           onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.content }] } });
         }
@@ -134,7 +149,10 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const contextUsage = contextUsageFromAssistantMessage(event.message);
       if (contextUsage) {
         const { costUsd, ...contextTokens } = contextUsage;
-        const contextWindow = Number(harness?.getModel?.()?.contextWindow) || 0;
+        const context1M = options.context1MModels?.[model] === true && !options.customProvider && supportsPiContext1M(model);
+        const contextWindow = context1M
+          ? effectiveContextWindow(harness, { model: harness?.getModel?.() }, { reference: model }, options.compaction?.contextWindowOverride)
+          : Number(harness?.getModel?.()?.contextWindow) || 0;
         const measurementId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
           ? event.message.id
           : undefined;
@@ -146,6 +164,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           timestamp: Date.now(),
           ...(measurementId === undefined ? {} : { measurementId }),
           ...(contextWindow > 0 ? { contextWindow } : {}),
+          ...(context1M ? { context1M: true } : {}),
           tokens: contextTokens,
           costUsd,
           providerCostUsd: typeof event.message.usage?.cost?.total === "number" && Number.isFinite(event.message.usage.cost.total) && event.message.usage.cost.total >= 0 ? event.message.usage.cost.total : null,
@@ -171,6 +190,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         });
       }
     } else if (event.type === "tool_execution_start") {
+      runState.toolExecutionsThisTurn += 1;
       if (event.toolName) runState.lastToolName = event.toolName;
       if (event.toolCallId) runState.toolStartTimes.set(event.toolCallId, Date.now());
       const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
@@ -195,6 +215,29 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         partial_result: jsonSerializable(event.partialResult, String(event.partialResult ?? "")),
       });
     } else if (event.type === "tool_execution_end") {
+      if (event.isError) {
+        runState.toolFailureThisTurn = true;
+      }
+      if (event.toolName === "AskParent" && !event.isError && runState.silentTurn) runState.silentTurn.pendingQuestion = true;
+      if (!event.isError && runState.silentTurn
+        && /^(?:AskUser|mcp__[^\s]+__AskUser)$/.test(event.toolName ?? "")) runState.silentTurn.visibleContent = true;
+      if (!event.isError && runState.silentTurn
+        && /^(?:PublishReplyFile|ProposeRestart|SuggestReplies|mcp__[^\s]+__(?:PublishReplyFile|ProposeRestart|SuggestReplies))$/.test(event.toolName ?? "")) {
+        runState.silentTurn.visibleContent = true;
+      }
+      if (event.toolName === "FinishSilently" && !event.isError
+        && event.result?.details?.accepted === true && runState.silentTurn?.accepted === true) {
+        runState.silentCompletedThisTurn = true;
+        runState.silentTurn.completed = true;
+      }
+      if (options.outputSchema !== undefined
+        && options.outputSchema !== null
+        && event.toolName === "StructuredOutput"
+        && !event.isError
+        && runState.structuredResult !== undefined
+        && runState.structuredResult !== null) {
+        runState.structuredOutputCompletedThisTurn = true;
+      }
       const resultContent = toolResultContent(event.result);
       const fileChange = toolResultFileChange(event.result);
       const outcome = toolResultOutcome(event.result);
@@ -244,24 +287,40 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       });
     } else if (event.type === "turn_end") {
       runState.turnCount += 1;
-      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.85.1).
-      // pi's only after-turn stop hook is `shouldStopAfterTurn` on the LOW-LEVEL
-      // `AgentLoopConfig` (dist/types.d.ts) — the config passed to the raw
-      // `agentLoop`. It is NOT surfaced on `AgentHarnessOptions`
-      // (dist/harness/types.d.ts) and `AgentHarness` (dist/harness/agent-harness.d.ts)
-      // exposes no maxTurns / maxSteps / loop-config passthrough. This bridge is
-      // built on AgentHarness (for its session tree, compaction, steering, and
-      // event stream); reaching `shouldStopAfterTurn` would mean abandoning the
-      // harness for the low-level loop and reimplementing all of that. So the
+      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.87.0).
+      // pi 0.87.0 REMOVED `shouldStopAfterTurn` from the low-level
+      // `AgentLoopConfig` (dist/types.d.ts) and replaced it with `finishTurn`
+      // (also on `AgentOptions`, dist/agent.d.ts). Neither hook is surfaced on
+      // `AgentHarnessOptions` (dist/harness/agent-harness.d.ts), and
+      // `AgentHarness` exposes no maxTurns / maxSteps / loop-config
+      // passthrough. This bridge is built on AgentHarness (for its session
+      // tree, compaction, steering, and event stream); reaching `finishTurn`
+      // would mean abandoning the harness for the low-level loop and
+      // reimplementing all of that. So the
       // maxTurns ceiling stays enforced HERE: we count `turn_end`s and abort on
       // the one that crosses the ceiling, but only when the turn ended to run
-      // MORE tools (stopReason "toolUse") — a turn that already produced a final
-      // answer must not be clipped. Delegate to a harness-native option only if
-      // pi lifts shouldStopAfterTurn (or an equivalent) onto AgentHarnessOptions.
+      // MORE tools (stopReason "toolUse"). The sole exception is one successful,
+      // schema-selected StructuredOutput execution: that tool is itself the final
+      // answer and terminates the turn, so aborting it would reclassify success as
+      // max-turn failure. Ordinary, mixed, and failed tool turns keep the ceiling.
+      // Delegate to a harness-native option only if pi lifts `finishTurn`
+      // (or an equivalent) onto AgentHarnessOptions.
+      const completedOnlyTerminalStructuredOutput = runState.toolExecutionsThisTurn === 1
+        && runState.toolFailureThisTurn === false
+        && runState.structuredOutputCompletedThisTurn === true;
+      const completedOnlyTerminalSilence = runState.toolExecutionsThisTurn === 1
+        && runState.toolFailureThisTurn === false
+        && runState.silentCompletedThisTurn === true;
+      runState.toolExecutionsThisTurn = 0;
+      runState.toolFailureThisTurn = false;
+      runState.structuredOutputCompletedThisTurn = false;
+      runState.silentCompletedThisTurn = false;
       if (Number.isFinite(Number(options.maxTurns))
         && Number(options.maxTurns) > 0
         && runState.turnCount >= Number(options.maxTurns)
-        && event.message?.stopReason === "toolUse") {
+        && event.message?.stopReason === "toolUse"
+        && !completedOnlyTerminalStructuredOutput
+        && !completedOnlyTerminalSilence) {
         runState.maxTurnsHit = true;
         void Promise.resolve(harness.abort()).catch(() => {});
       }

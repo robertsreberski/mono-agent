@@ -8,7 +8,7 @@ sidebar:
 The `memory.embeddings` block configures the vector embedding provider used for semantic
 recall. It is a **shared prerequisite** for both the `journal` and `bujo` memory tiers — it
 is not a tier on its own. The `lite` tier needs no embeddings. This page covers the config
-keys, the three providers (Ollama, LM Studio, and OpenAI), the matching `MONO_AGENT_MEMORY_EMBEDDINGS_*`
+keys, the three providers (Ollama, LM Studio, and OpenAI), JSON configuration for those fields
 env vars, and the timeout / circuit-breaker behavior.
 
 For the tier model (lite / journal / bujo) and where this block fits, see
@@ -45,7 +45,8 @@ work inside its bounded background curation queue rather than delaying the chann
 | `endpoint` | string | no | Absolute HTTP(S) service root. It may include a path, but not credentials, a query, or a fragment. Defaults to `http://localhost:11434` (Ollama), `http://localhost:1234` (LM Studio), or `https://api.openai.com/v1` (OpenAI). |
 | `apiKeyEnv` | string | OpenAI; optional LM Studio | Name of the env var holding the API key (preferred). LM Studio is keyless when omitted. |
 | `apiKey` | string | OpenAI; optional LM Studio | Inline key (prefer `apiKeyEnv`; keep secret values out of config). |
-| `dim` | number | yes | Output dimension; must match the model (768 for `nomic-embed-text:v1.5`, 1536 for `text-embedding-3-small`). |
+| `dim` | number | yes | Output dimension; must match the model (768 for `nomic-embed-text:v1.5`, 1024 for `bge-m3`, 1536 for `text-embedding-3-small`). |
+| `instructions` | `"auto"` \| `"search"` \| `"none"` \| `"query"` \| `"qwen3"` | no | Query/document instruction preset (default `auto`). See [Instruction presets](#instruction-presets). |
 
 :::caution
 The `model` and `dim` must agree with the actual model. A mismatched `dim` corrupts the
@@ -56,6 +57,29 @@ declares `apiKeyEnv`, that variable must contain a non-empty value: validation r
 `waiting` and guided readiness does not silently retry keyless when the declared variable
 is missing.
 :::
+
+## Instruction presets
+
+Embedding models are trained with different query/document prefixes. Memory sends the
+preset that matches the model:
+
+| Preset | Query text | Document text | `auto` selects it for |
+| --- | --- | --- | --- |
+| `search` | `search_query: <query>` | `search_document: <text>` | `nomic-embed-text*` and every model not listed below |
+| `none` | `<query>` | `<text>` | `bge-m3` |
+| `query` | `query: <query>` | `<text>` | `snowflake-arctic-embed2`, `snowflake-arctic-embed-{m,l}-v2.0` |
+| `qwen3` | `Instruct: Given a question, retrieve memory notes that answer it` + newline + `Query:<query>` | `<text>` | `qwen3-embedding*` |
+
+The preset is part of the index identity: a non-`search` preset appends
+`#instructions=<preset>` to the provider/model identity, so vectors built with different
+prefixes are never mixed. `search` keeps the historical `provider:model` identity.
+
+Upgrading never forces a rebuild. With the default `auto`, an index built before presets
+existed (managed, or a manifest-free legacy `memory.db` whose vectors all carry the
+legacy identity) keeps serving with its original `search` prefixes; the next deliberate
+`mono-agent memory rebuild` adopts the model's preset. Setting `instructions` explicitly
+is a configuration change like a model change: it requires the stopped-agent rebuild when
+it differs from the active index.
 
 ## Guided Journal/BuJo setup
 
@@ -159,19 +183,7 @@ export OPENAI_API_KEY=sk-...
 The default OpenAI endpoint is `https://api.openai.com/v1`; override `endpoint` to target an
 OpenAI-compatible gateway.
 
-## Environment variables
-
-Every key has a `MONO_AGENT_MEMORY_EMBEDDINGS_*` override. See
-[the environment-variable reference](/config/env-vars/).
-
-| Env var | Config key |
-| --- | --- |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | `memory.embeddings.endpoint` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | `memory.embeddings.apiKeyEnv` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | `memory.embeddings.apiKey` |
+Core embedding settings are configured in JSON; `apiKeyEnv` names the environment variable containing a credential.
 
 The standalone `memory-bujo` CLI that read these `MONO_AGENT_MEMORY_EMBEDDINGS_*` variables
 directly against a memory root has been removed. Config-aware recall now runs from the agent
@@ -202,11 +214,11 @@ cannot stall recall:
 :::note
 The config-first defaults and overrides are:
 
-| Config key | Default | Environment override |
+| Config key | Default | Source |
 | --- | --- | --- |
-| `memory.embeddings.timeoutMs` | `10000` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` |
-| `memory.embeddings.circuitBreaker.failureThreshold` | `3` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` |
-| `memory.embeddings.circuitBreaker.cooldownMs` | `30000` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` |
+| `memory.embeddings.timeoutMs` | `10000` | — |
+| `memory.embeddings.circuitBreaker.failureThreshold` | `3` | — |
+| `memory.embeddings.circuitBreaker.cooldownMs` | `30000` | — |
 
 The low-level `@mono-agent/memory/search` provider constructor retains its own 30-second
 timeout when called directly without `timeoutMs`; the configured app always supplies the
@@ -223,7 +235,9 @@ capability metadata and the real `/api/embed` response. LM Studio checks the typ
 dimension to equal config. OpenAI keeps its credential/config validation and is not offered
 as the guided local-memory choice. See [memory validation and CLI operations](/memory/validation-and-cli/).
 
-Changing the configured provider, model, or dimension changes the managed index identity.
-Stop the agent, edit config, run `mono-agent memory rebuild --json`, validate, then restart;
+Changing the configured provider, model, dimension, or explicit `instructions` changes the
+managed index identity. Switching models is a stopped-agent operation (the agent does not
+re-embed in the background): stop the agent, edit `model`/`dim` (and optionally
+`instructions`), run `mono-agent memory rebuild --json`, validate, then restart;
 never relabel an existing generation by hand. See the safe rebuild procedure in
 [safe index-generation rebuild and rollback](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback).

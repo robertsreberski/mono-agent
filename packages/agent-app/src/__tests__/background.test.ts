@@ -1,3 +1,6 @@
+import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
+import type { WorkerActivityProbe } from "../worker-activity-snapshot.js";
+import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +9,7 @@ import { promisify } from "node:util";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
 import {
@@ -29,12 +33,15 @@ import {
 } from "../background.js";
 import type { BackgroundDeps, InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
+import { invalidateApprovedBackgroundSnapshots, resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot } from "../approved-background-snapshot.js";
 import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { buildLaunchdProgramArguments } from "../launchd.js";
+import { buildLaunchdProgramArguments, deriveLaunchdLabel } from "../launchd.js";
+import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import type { OwnerPrivateLock } from "../owner-private-lock.js";
+import { readLaunchdSnapshotRefusal, clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
 import {
   readLaunchdLogMonitorStatus,
   removeLaunchdLogMonitorStatus,
@@ -425,39 +432,6 @@ describe("background config identity", () => {
 
     expect(environment.PATH).toBe("/usr/bin:/bin");
     expect(Object.values(environment)).not.toContain("/tmp/shadow:/custom/bin");
-  });
-
-  it("uses the effective config environment for env-only managed plugin discovery without putting it in launchd", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-background-env-plugin-"));
-    try {
-      const configPath = join(cwd, "mono-agent.config.json");
-      await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n\nEnvironment plugin test.\n");
-      await writeFile(configPath, `${JSON.stringify({
-        runtime: { model: "openai-codex:gpt-5.5", workspace: "." },
-        context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
-        tools: { allowedTools: [], disallowedTools: [] },
-      }, null, 2)}\n`);
-      const secret = "must-never-enter-the-plist";
-      const target = await resolveInstanceTarget({
-        args: { configPath },
-        cwd,
-        cliPath: "/opt/app/dist/cli.js",
-        env: {
-          PATH: "/usr/bin:/bin",
-          MONO_AGENT_MEMORY_BACKEND: "supermemory",
-          MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:8787",
-          MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: secret,
-        },
-      });
-
-      expect(target.configurationEnvironment.MONO_AGENT_MEMORY_BACKEND).toBe("supermemory");
-      expect(target.environment.MONO_AGENT_MEMORY_BACKEND).toBeUndefined();
-      expect(Object.values(target.environment)).not.toContain(secret);
-      const packages = await defaultBackgroundDeps().resolveManagedRuntimePackages?.(target);
-      expect(packages?.map((entry) => entry.packageName)).toContain("@mono-agent/memory-supermemory");
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
   });
 
   it.skipIf(process.platform === "win32")("canonicalizes symlinked parent aliases without following the final config name", async () => {
@@ -1627,6 +1601,31 @@ describe("LaunchAgent private filesystem boundary", () => {
 });
 
 describe("maintainLaunchdController", () => {
+  it("treats a console-approved effective snapshot as healthy despite unchanged loaded argv", async () => {
+    const target = makeTarget();
+    const anchor = makeSnapshot(target, "original");
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321,
+      maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: anchor }),
+    });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      acquireLifecycleLock: async (_target, options) => options?.purpose === "shared-launchd-logs" ? undefined : async () => undefined,
+    });
+    const resolveApprovedSnapshot = vi.fn((binding) => {
+      expect(binding.encodedSnapshot).toBe(encodeBackgroundSnapshot(anchor));
+      return target.expectedSnapshot!;
+    });
+    const invalidateApprovedSnapshots = vi.fn(async () => undefined);
+    const preflight = vi.fn(async () => 0);
+    expect(await maintainLaunchdController(target, { ...harness.deps, resolveApprovedSnapshot, invalidateApprovedSnapshots }, {
+      sourceAvailable: true, recoveryPreflight: preflight,
+    })).toBe(0);
+    expect(resolveApprovedSnapshot).toHaveBeenCalledTimes(1);
+    expect(invalidateApprovedSnapshots).not.toHaveBeenCalled(); expect(preflight).not.toHaveBeenCalled();
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+  });
+
   it("defers at the per-agent nonblocking lock before any expensive helper work", async () => {
     const target = makeTarget();
     const { runner } = makeRunner({
@@ -2994,6 +2993,95 @@ describe("stopBackground", () => {
 });
 
 describe("statusBackground", () => {
+  it("shows an offline launchd snapshot refusal in text and JSON until approved startup clears it", async () => {
+    const home = await mkdtemp(join(tmpdir(), "snapshot-refusal-status-"));
+    try {
+      const target = makeTarget({ label: deriveLaunchdLabel(makeTarget().configPath), paths: { ...makeTarget().paths, logDir: join(home, "logs") } });
+      const { runner } = makeRunner({ loaded: false });
+      const harness = makeHarness({ runner, list: listReturning(() => []), isAlive: () => false });
+      await recordManagedSnapshotRefusal(target.configPath, target.paths);
+      expect(await readLaunchdSnapshotRefusal(target.label, target.paths)).toBe(true);
+      expect(await statusBackground(target, harness.deps, { json: true })).toBe(1);
+      expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: false, startupFailure: { reason: "snapshot-refused" } });
+      harness.out.length = 0;
+      expect(await statusBackground(target, harness.deps)).toBe(1);
+      expect(harness.out.join("")).toContain("mono-agent restart");
+      await clearLaunchdSnapshotRefusal(target.label, target.paths);
+      expect(await readLaunchdSnapshotRefusal(target.label, target.paths)).toBe(false);
+      harness.out.length = 0;
+      await statusBackground(target, harness.deps, { json: true });
+      expect(JSON.parse(harness.out.join(""))).not.toHaveProperty("startupFailure");
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it.skipIf(process.platform === "win32")("finds the running agent for an absolute --config from another cwd", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-status-elsewhere-"));
+    try {
+      const agent = join(home, "agent");
+      const elsewhere = join(home, "elsewhere");
+      const globalRegistryDir = join(home, "global-trace-sources");
+      await mkdir(agent, { mode: 0o700 });
+      await mkdir(elsewhere, { mode: 0o700 });
+      await writeFile(join(agent, "mono-agent.config.json"),
+        `${JSON.stringify({ traceability: { registryDir: "./.mono-agent/trace-sources" } })}\n`, "utf8");
+      const env = { PATH: "/usr/bin:/bin", MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: globalRegistryDir };
+      const cliPath = "/opt/app/dist/cli.js";
+      const fromAgent = await resolveInstanceTarget({ args: {}, cwd: agent, cliPath, env });
+      const fromElsewhere = await resolveInstanceTarget({ args: { configPath: fromAgent.configPath }, cwd: elsewhere, cliPath, env });
+      expect(fromElsewhere.configPath).toBe(fromAgent.configPath);
+      expect(fromElsewhere.label).toBe(fromAgent.label);
+      // The relative registry resolves against the caller's cwd, not the agent folder.
+      expect(fromElsewhere.registryDir).not.toBe(fromAgent.registryDir);
+      // The worker registers in its folder-local registry and mirrors the manifest globally.
+      for (const registryDir of [fromAgent.registryDir, globalRegistryDir]) {
+        await registerTraceSource({ registryDir, sourceId: "fictional-agent", label: "Fictional Agent",
+          artifactDir: join(agent, ".mono-agent", "artifacts"), pid: 4321, configPath: fromAgent.configPath });
+      }
+      for (const target of [fromAgent, fromElsewhere]) {
+        const { runner } = makeRunner({ loaded: true });
+        const harness = makeHarness({ runner, list: listTraceSources, isAlive: (pid) => pid === 4321 });
+        expect(await statusBackground(target, harness.deps, { json: true })).toBe(0);
+        expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: true, instance: { pid: 4321, health: "running" }, others: [] });
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the mirror entry with the launchd pid over a stale local manifest with the same sourceId", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget({ registryDir: "/elsewhere/.mono-agent/trace-sources", mirrorRegistryDir: "/home/u/.mono-agent/trace-sources" });
+    const stale = makeSource(target, { pid: 1111, sourceId: "fictional-agent", status: "stopped", health: "stopped" });
+    const fresh = makeSource(target, { pid: 4321, sourceId: "fictional-agent" });
+    const harness = makeHarness({
+      runner,
+      isAlive: (pid) => pid === 4321,
+      list: (async (options: { registryDir: string }) => ({ registryDir: options.registryDir,
+        sources: options.registryDir === target.mirrorRegistryDir ? [fresh] : [stale], warnings: [] })) as unknown as BackgroundDeps["listTraceSources"],
+    });
+
+    expect(await statusBackground(target, harness.deps, { json: true })).toBe(0);
+    expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: true, instance: { pid: 4321, health: "running" }, others: [] });
+  });
+
+  it("keeps lifecycle commands off the global mirror", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget({ registryDir: "/elsewhere/.mono-agent/trace-sources", mirrorRegistryDir: "/home/u/.mono-agent/trace-sources" });
+    const listed: string[] = [];
+    const harness = makeHarness({
+      runner,
+      isAlive: () => false,
+      list: (async (options: { registryDir: string }) => {
+        listed.push(options.registryDir);
+        return { registryDir: options.registryDir, sources: [], warnings: [] };
+      }) as unknown as BackgroundDeps["listTraceSources"],
+    });
+
+    expect(await stopBackground(target, harness.deps, POLL)).toBe(0);
+    expect(calls.some((call) => call[0] === "bootout" && call[1]?.endsWith(target.label))).toBe(true);
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed).not.toContain(target.mirrorRegistryDir);
+  });
+
   it("prints this config's instance plus a brief list of others", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();
@@ -3058,7 +3146,6 @@ describe("statusBackground", () => {
         readonly health: string;
         readonly configPath: string;
         readonly logs: { readonly stdout: string; readonly stderr: string };
-        readonly observability?: { readonly endpoint: string };
         readonly processJobs?: { readonly protection: Record<string, unknown> };
         readonly channels?: Record<string, unknown>;
         readonly runsHealth: { readonly totalRuns: number } | null;
@@ -3070,7 +3157,7 @@ describe("statusBackground", () => {
     expect(parsed.instance?.health).toBe("running");
     expect(parsed.instance?.configPath).toBe(target.configPath);
     expect(parsed.instance?.logs.stdout).toBe(target.paths.stdoutPath);
-    expect(parsed.instance?.observability?.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
+    expect(parsed.instance).not.toHaveProperty("observability");
     expect(parsed.instance?.processJobs?.protection).toEqual({
       protection: "unsafe-unprotected",
       retainedRoots: true,
@@ -3166,31 +3253,7 @@ describe("statusBackground", () => {
     }
   });
 
-  it("prints the observability exporter line with the local-artifacts note", async () => {
-    const { runner } = makeRunner({ loaded: true });
-    const target = makeTarget();
-    const current = makeSource(target, {
-      metadata: {
-        reason: "startup-complete",
-        observability: {
-          endpoint: "http://127.0.0.1:6006/v1/traces",
-          includeSensitiveData: false,
-          jsonlArtifactsLocal: true,
-        },
-      },
-    });
-    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
-
-    await statusBackground(target, harness.deps);
-
-    const stdout = harness.out.join("");
-    expect(stdout).toContain("observability");
-    expect(stdout).toContain("http://127.0.0.1:6006/v1/traces");
-    expect(stdout).toContain("JSONL artifacts remain local");
-    expect(stdout).not.toContain("[WARN] includeSensitiveData=true");
-  });
-
-  it("prints a warning from persisted observability metadata when sensitive data export is enabled", async () => {
+  it("ignores retired observability metadata while reporting local runs health", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();
     const endpoint = "http://127.0.0.1:6006/v1/traces";
@@ -3199,8 +3262,52 @@ describe("statusBackground", () => {
         reason: "startup-complete",
         observability: {
           endpoint,
+          includeSensitiveData: false,
+          jsonlArtifactsLocal: true,
+        },
+      },
+    });
+    const listRecordedRuns = vi.fn(async () => ({ totalRuns: 7, runs: [], warnings: [] }));
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [current]),
+      listRecordedRuns,
+    });
+
+    await statusBackground(target, harness.deps);
+
+    expect(listRecordedRuns).toHaveBeenCalledWith({
+      artifactDir: current.artifactDir,
+      maxRuns: 50,
+      scope: "agent",
+    });
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("runs health");
+    expect(stdout).toContain("Recorded runs: 7 total");
+    expect(stdout).not.toContain("observability");
+    expect(stdout).not.toContain(endpoint);
+  });
+
+  it("ignores sensitive legacy exporter metadata while retaining process-job protection warnings", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const endpoint = "http://127.0.0.1:6006/v1/traces";
+    const protectionWarning = "UNSAFE: ProcessJobs state and operator secret are model-accessible.";
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        observability: {
+          endpoint,
           includeSensitiveData: true,
           jsonlArtifactsLocal: true,
+        },
+        processJobs: {
+          protection: {
+            protection: "unsafe-unprotected",
+            retainedRoots: true,
+            unsafeAllowUnprotectedState: true,
+            warning: protectionWarning,
+          },
         },
       },
     });
@@ -3209,12 +3316,10 @@ describe("statusBackground", () => {
     await statusBackground(target, harness.deps);
 
     const stdout = harness.out.join("");
-    expect(stdout).toContain("[WARN] includeSensitiveData=true");
-    expect(stdout).toContain(endpoint);
-    expect(stdout).toContain("user input");
-    expect(stdout).toContain("assistant replies");
-    expect(stdout).toContain("tool args/results");
-    expect(stdout).toContain("system prompt");
+    expect(stdout).toContain("process jobs protection");
+    expect(stdout).toContain(protectionWarning);
+    expect(stdout).not.toContain("includeSensitiveData=true");
+    expect(stdout).not.toContain(endpoint);
   });
 
   it("prints effective sandbox state from persisted metadata", async () => {
@@ -3455,5 +3560,305 @@ describe("tailLogs", () => {
     await tailLogs(target, harness.deps, { follow: false, lines: 200 });
 
     expect(harness.tailCalls[0]).toEqual(["-n", "200", target.paths.stderrPath, target.paths.stdoutPath]);
+  });
+});
+
+function withActivityGate(deps: BackgroundDeps, activity: () => WorkerActivityProbe) {
+  let status: LaunchdMaintenanceActivityStatus | undefined;
+  const complete = vi.fn(async () => {
+    if (status === undefined) return;
+    const { pending: _pending, ...history } = status;
+    status = history;
+  });
+  return {
+    complete,
+    status: () => status,
+    deps: { ...deps, clearMaintenanceDeferral: complete, allowUnattendedStop: (target, request) => allowUnattendedMaintenanceStop(target, {
+      ...deps, probe: async () => activity(), readStatus: async () => status,
+      writeStatus: async (_target, value) => { status = value; },
+    }, request) } satisfies BackgroundDeps,
+  };
+}
+
+describe("unattended maintenance activity protection", () => {
+  it.each(["turns", "jobs", "asks"] as const)("busy %s prevents log intent/bootout; idle retries rotate", async (source) => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const beginIntent = vi.fn(async () => undefined);
+    const harness = makeHarness({ runner, list: listReturning(() => []), beginLaunchdLogMaintenanceIntent: beginIntent,
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true, perAgentFileReasons: ["oversize"] }) });
+    let busy = true;
+    const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: 0, jobs: 0, asks: 0, [source]: busy ? 1 : 0 } }));
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(beginIntent).not.toHaveBeenCalled();
+    expect(calls.some((call) => call[0] === "bootout")).toBe(false);
+    expect(harness.rotations).toEqual([]);
+    busy = false;
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(beginIntent).toHaveBeenCalledOnce();
+    expect(harness.rotations).toHaveLength(1);
+    expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
+  });
+
+  it.each(["snapshot", "runtime", "definition"] as const)("healthy busy worker defers %s drift without disguising it as unready recovery", async (drift) => {
+    const target = makeTarget(); const prior = makeSnapshot(target, "prior");
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { ...(drift === "snapshot" ? { snapshot: prior } : {}) }) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { ...(drift === "snapshot" ? { metadata: { backgroundSnapshot: prior } } : {}) })]),
+      ...(drift === "runtime" ? { inspectManagedRuntimeSourceIdentity: async () => ({ packageVersion: "0.9.0", cliSha256: "b".repeat(64) }) } : {}),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    // Definition drift: change desired environment while retaining a ready trace.
+    const desired = drift === "definition" ? { ...target, environment: { ...target.environment, PATH: "/usr/bin:/bin:/fictional" } } : target;
+    expect(await maintainLaunchdController(desired, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL }), harness.err.join(" ")).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(gate.status()?.lastDecision?.reasons).toContain(drift === "runtime" ? "runtime-upgrade" : drift === "snapshot" ? "snapshot-drift" : "definition-drift");
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+    expect(harness.written).toEqual([]);
+  });
+
+  it("a live but unready worker recovers immediately even with unknown activity", async () => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid, list: listReturning(() =>
+      calls.some((call) => call[0] === "bootstrap") ? [makeSource(target, { pid: 5432 })] : [makeSource(target, { health: "stopped" })]) });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "unknown" }));
+    expect(await maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL })).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome, JSON.stringify({ calls, err: harness.err })).toBe("override-worker-unready");
+    expect(calls.some((call) => call[0] === "bootout")).toBe(true);
+  });
+
+  it.each(["size", "permissions", "intent"] as const)("%s forces/overrides busy log maintenance with a recorded reason", async (mode) => {
+    const target = makeTarget(); const { runner } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const empty = emptyLogInspection();
+    const harness = makeHarness({ runner, list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true,
+        ...(mode === "size" ? { stdout: { ...empty.stdout, activeBytes: 2 * LAUNCHD_LOG_MAX_BYTES } } : {}),
+        ...(mode === "permissions" ? { stderr: { ...empty.stderr, files: [{ generation: 0, state: "repairable", bytes: 0 }] } } : {}),
+        ...(mode === "intent" ? { pendingMaintenance: true } : {}) }),
+      ...(mode === "intent" ? { readLaunchdLogMaintenanceIntent: async () => ({ version: 1 as const, phase: "stopping" as const, label: target.label, plistFingerprint: "plist-identity" }) } : {}),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(harness.rotations).toHaveLength(1);
+    expect(gate.status()?.lastDecision?.outcome).toBe(mode === "size" ? "forced-size" : mode === "permissions" ? "override-permission-repair" : "override-transaction-recovery");
+  });
+
+  it("explicit stop/restart never consult the unattended gate", async () => {
+    const target = makeTarget(); const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432 });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target, { pid: calls.some((c) => c[0] === "bootstrap") ? 5432 : 4321 })]) });
+    const gate = vi.fn(async () => false); const deps = { ...harness.deps, allowUnattendedStop: gate };
+    expect(await restartBackground(target, deps, POLL), harness.err.join(" ")).toBe(0);
+    expect(await stopBackground(target, deps, POLL)).toBe(0);
+    expect(gate).not.toHaveBeenCalled();
+  });
+});
+
+describe("maintenance review regressions", () => {
+  it("rechecks readiness when an initially unready worker becomes ready and busy during runtime preparation", async () => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target) });
+    let ready = false; let beginInstall!: () => void; let finishInstall!: () => void;
+    const began = new Promise<void>((resolve) => { beginInstall = resolve; });
+    const finish = new Promise<void>((resolve) => { finishInstall = resolve; });
+    const runtime = makeHarness({ runner, list: listReturning(() => []) }).deps.ensureManagedRuntime;
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { health: ready ? "running" : "stopped" })]),
+      ensureManagedRuntime: async (input) => { beginInstall(); await finish; return await runtime(input); },
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    const attempt = maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL });
+    await began; ready = true; finishInstall();
+    expect(await attempt).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(calls.some((call) => call[0] === "bootout")).toBe(false);
+    expect(gate.complete).not.toHaveBeenCalled();
+  });
+
+  it("a forced ceiling followed by failed bootout forces again next pass with the same episode", async () => {
+    const target = makeTarget();
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321, bootoutKeepsLoaded: true,
+      maintenanceLoaded: true, maintenancePid: process.pid, mainPrintOutput: managedLaunchctlPrint(target) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target)]),
+      inspectManagedRuntimeSourceIdentity: async () => ({ packageVersion: "0.9.0", cliSha256: "b".repeat(64) }),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    const attempt = () => maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL });
+    expect(await attempt()).toBe(0);
+    const firstDeferredAt = gate.status()?.pending?.firstDeferredAt;
+    await harness.deps.sleep(MAINTENANCE_MAX_DEFERRAL_MS);
+    expect(await attempt()).toBe(1); expect(gate.status()?.lastDecision?.outcome).toBe("forced-ceiling");
+    expect(gate.status()?.pending).toMatchObject({ firstDeferredAt, count: 2 });
+    expect(await attempt()).toBe(1); expect(gate.status()?.lastDecision?.outcome).toBe("forced-ceiling");
+    expect(gate.status()?.pending).toMatchObject({ firstDeferredAt, count: 3 });
+    expect(gate.complete).not.toHaveBeenCalled();
+  });
+
+  it.each(["start", "restart"] as const)("explicit stop preserves the episode; successful explicit %s clears only pending state", async (command) => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432 });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target, {
+      pid: calls.some((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath) ? 5432 : 4321,
+      // After the simulated ceiling elapsed, the replacement needs a fresh startup timestamp.
+      startedAt: new Date(harness.deps.now()).toISOString(),
+    })]) });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    await gate.deps.allowUnattendedStop!(target, { reasons: ["runtime-upgrade"] });
+    await harness.deps.sleep(MAINTENANCE_MAX_DEFERRAL_MS);
+    await gate.deps.allowUnattendedStop!(target, { reasons: ["runtime-upgrade"] });
+    const before = gate.status(); expect(before?.lastForced?.outcome).toBe("forced-ceiling");
+    expect(await stopBackground(target, gate.deps, POLL)).toBe(0);
+    expect(gate.status()).toEqual(before); expect(gate.complete).not.toHaveBeenCalled();
+    expect(await (command === "start" ? startBackground : restartBackground)(target, gate.deps, POLL), harness.err.join(" ")).toBe(0);
+    expect(gate.status()?.pending).toBeUndefined();
+    expect(gate.status()?.lastDecision).toEqual(before?.lastDecision);
+    expect(gate.status()?.lastForced).toEqual(before?.lastForced);
+    expect(gate.complete).toHaveBeenCalledOnce();
+  });
+});
+
+it("acknowledges a deferred log episode only after successful rotation/restoration, not merely an idle decision", async () => {
+  const target = makeTarget(); const { runner } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+  let entered!: () => void; let release!: () => void; let busy = true;
+  const rotating = new Promise<void>((resolve) => { entered = resolve; });
+  const finish = new Promise<void>((resolve) => { release = resolve; });
+  const harness = makeHarness({ runner, list: listReturning(() => []),
+    inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+    rotateStoppedLaunchdLogs: async () => { entered(); await finish; },
+  });
+  const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: busy ? 1 : 0, jobs: 0, asks: 0 } }));
+  expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+  const firstDeferredAt = gate.status()?.pending?.firstDeferredAt;
+  busy = false;
+  const attempt = maintainLaunchdLogs(target, gate.deps, POLL);
+  try {
+    await rotating;
+    expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
+    expect(gate.status()?.pending?.firstDeferredAt).toBe(firstDeferredAt);
+    expect(gate.complete).not.toHaveBeenCalled();
+  } finally { release(); }
+  expect(await attempt).toBe(0);
+  expect(gate.status()?.pending).toBeUndefined(); expect(gate.complete).toHaveBeenCalledOnce();
+});
+
+describe("terminal approval invalidation", () => {
+  it.each(["start", "restart", "stop"])("invalidates label approvals only after stopping under lifecycle ownership for %s", async (command) => {
+    const target = makeTarget(); const { runner } = makeRunner({ loaded: false });
+    let locked = false;
+    const harness = makeHarness({ runner, list: listReturning(() => []),
+      acquireLifecycleLock: async (_target, options) => {
+        if (options?.purpose === "shared-launchd-logs") return async () => undefined;
+        locked = true; return async () => { locked = false; };
+      },
+    });
+    const invalidateApprovedSnapshots = vi.fn(async () => { expect(locked).toBe(true); expect(runner.isLoaded(target.label)).toBe(false); });
+    const deps = { ...harness.deps, invalidateApprovedSnapshots };
+    await (command === "start" ? startBackground : command === "restart" ? restartBackground : stopBackground)(target, deps, POLL);
+    expect(invalidateApprovedSnapshots).toHaveBeenCalled(); expect(locked).toBe(false);
+  });
+});
+
+describe("approval invalidation commit points and recovery", () => {
+  async function approvedFixture() {
+    const managedRoot = await mkdtemp(join(tmpdir(), "approval-lifecycle-"));
+    const base = makeTarget();
+    const target = makeTarget({ paths: { ...base.paths, logDir: join(managedRoot, "logs") } });
+    const anchor = makeSnapshot(target, "original-argv");
+    const binding = { managedRoot, label: target.label, configPath: target.configPath,
+      encodedSnapshot: encodeBackgroundSnapshot(anchor), launchProof: "runtime-proof" };
+    const staged = await stageApprovedBackgroundSnapshot(binding, target.expectedSnapshot!);
+    staged.publish(); await staged.dispose();
+    return { managedRoot, target, binding, anchor };
+  }
+  const revoke: NonNullable<BackgroundDeps["invalidateApprovedSnapshots"]> = (target) =>
+    invalidateApprovedBackgroundSnapshots({ managedRoot: resolve(target.paths.logDir, ".."), label: target.label });
+
+  it.each(["runtime", "snapshot", "barrier", "shared-logs", "ownership", "stop-failed"])("preserves console approval when terminal restart fails early at %s", async (failure) => {
+    const { managedRoot, target, binding } = await approvedFixture();
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321,
+      mainPrintOutput: managedLaunchctlPrint(target),
+      ...(failure === "stop-failed" ? { bootoutCode: 1, bootoutKeepsLoaded: true } : {}),
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target,
+      failure === "ownership" ? { pid: 9876 } : {})]),
+      ...(failure === "ownership" ? { isAlive: (pid: number) => pid === 4321 || pid === 9876 } : {}),
+      ...(failure === "runtime" ? { ensureManagedRuntime: async () => { throw new Error("fixture install failure"); } } : {}),
+      ...(failure === "snapshot" ? { captureSnapshot: async () => makeSnapshot(target, "unapproved-edit") } : {}),
+      ...(failure === "barrier" ? { acquireRuntimePublicationBarrier: async () => undefined } : {}),
+      ...(failure === "shared-logs" ? { acquireLifecycleLock: async (_target, options) =>
+        options?.purpose === "shared-launchd-logs" ? undefined : async () => undefined } : {}),
+    });
+    try {
+      expect(await restartBackground(target, { ...harness.deps, invalidateApprovedSnapshots: revoke }, POLL)).toBe(1);
+      expect(runner.isAlive(4321)).toBe(true);
+      expect(resolveApprovedBackgroundSnapshot(binding)).toEqual(target.expectedSnapshot);
+    } finally { await rm(managedRoot, { recursive: true, force: true }); }
+  });
+
+  it.each(["stop", "force-restart"])("preserves console approval when %s fails to stop", async (command) => {
+    const { managedRoot, target, binding } = await approvedFixture();
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321, bootoutCode: 1, bootoutKeepsLoaded: true });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]) });
+    const whileStopped = vi.fn(async () => undefined);
+    try {
+      const deps = { ...harness.deps, invalidateApprovedSnapshots: revoke };
+      expect(await (command === "stop" ? stopBackground(target, deps, POLL) : forceRestartBackground(target, deps, whileStopped, POLL))).toBe(1);
+      expect(whileStopped).not.toHaveBeenCalled(); expect(runner.isAlive(4321)).toBe(true);
+      expect(resolveApprovedBackgroundSnapshot(binding)).toEqual(target.expectedSnapshot);
+    } finally { await rm(managedRoot, { recursive: true, force: true }); }
+  });
+
+  it.each(["restart", "maintenance"])("clears approval on successful unchanged-input %s replacement", async (command) => {
+    const { managedRoot, target, binding, anchor } = await approvedFixture();
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 4321,
+      maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: anchor }),
+    });
+    const harness = makeHarness({ runner, currentPid: () => process.pid, list: listReturning(() => [makeSource(target)]) });
+    try {
+      const deps = { ...harness.deps, invalidateApprovedSnapshots: revoke };
+      const code = command === "restart" ? await restartBackground(target, deps, POLL)
+        : await maintainLaunchdController(target, deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL });
+      expect(code, harness.err.join(" ")).toBe(0); expect(runner.isLoaded(target.label)).toBe(true);
+      expect(resolveApprovedBackgroundSnapshot(binding)).toEqual(anchor);
+    } finally { await rm(managedRoot, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ["restart", "mode"], ["restart", "symlink"],
+    ["maintenance", "mode"], ["maintenance", "symlink"],
+  ] as const)("recovers %s with a %s approval store without stranding the worker", async (command, corruption) => {
+    const { managedRoot, target, binding, anchor } = await approvedFixture();
+    const store = join(managedRoot, "approved-startup");
+    const outside = join(managedRoot, "outside");
+    if (corruption === "mode") await chmod(store, 0o755);
+    else {
+      await rename(store, outside);
+      await symlink(outside, store);
+    }
+    expect(() => resolveApprovedBackgroundSnapshot(binding)).toThrow();
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321,
+      maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: anchor }),
+    });
+    const harness = makeHarness({ runner, currentPid: () => process.pid, list: listReturning(() => [makeSource(target)]) });
+    try {
+      const deps = { ...harness.deps, invalidateApprovedSnapshots: revoke,
+        resolveApprovedSnapshot: resolveApprovedBackgroundSnapshot };
+      const code = command === "restart" ? await restartBackground(target, deps, POLL)
+        : await maintainLaunchdController(target, deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL });
+      expect(code, harness.err.join(" ")).toBe(0); expect(runner.isLoaded(target.label)).toBe(true);
+      expect(resolveApprovedBackgroundSnapshot(binding)).toEqual(anchor);
+      expect((await lstat(store)).mode & 0o777).toBe(0o700);
+      if (corruption === "symlink") {
+        expect((await lstat(outside)).isDirectory()).toBe(true);
+        expect(await readdir(join(outside, target.label))).toHaveLength(1);
+      }
+    } finally { await rm(managedRoot, { recursive: true, force: true }); }
   });
 });

@@ -149,6 +149,27 @@ describe("migrate", () => {
     expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
   });
 
+  it("forgets a line with a malformed label without losing another damaged line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "EXPLICIT-A", "Morgan prefers brief project notes.");
+    await seedAging(db, root, "EXPLICIT-B", "Morgan keeps weekly project notes.");
+    const path = dailyFilePath(root, SIXTY_DAYS_AGO);
+    writeFileSync(path, readFileSync(path, "utf8").replaceAll("refs=", "refs=label:v1:bad,"));
+    const fingerprint = readBujoCanonicalSourceFingerprint(root);
+    const result = await forgetExplicitMemories({ root, db, ids: ["EXPLICIT-A"], now: () => NOW,
+      expectedSourceFingerprint: fingerprint });
+    expect(result.forgotten).toBe(1);
+    const contents = readFileSync(path, "utf8");
+    expect(parseDailyFile(contents).bullets.find((item) => item.id === "EXPLICIT-A")?.status).toBe("dropped");
+    expect(parseDailyFile(contents).bullets.find((item) => item.id === "EXPLICIT-A")?.refs).toEqual([]);
+    expect(parseDailyFile(contents).bullets.find((item) => item.id === "EXPLICIT-B")?.refs)
+      .toContain("label:v1:bad");
+    expect(auditCanonicalGraphParity(root, db).issues).toEqual([
+      { code: "canonical-read-failed", file: relative(root, path), line: 5 },
+    ]);
+  });
+
   it("rejects unknown, terminal, duplicate, and stale explicit forget plans before provider work", async () => {
     const root = newRoot();
     const db = openDb(root);

@@ -27,7 +27,10 @@ export class NoopRunRecorder implements RunRecorder {
 
   async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
     this.terminalPromise ??= Promise.resolve(
-      this.summary(result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded", result.failureKind ?? undefined, result),
+      this.summary(result.cancelled === true ? "cancelled"
+        : (typeof result.failureKind === "string" && result.failureKind.trim().length > 0)
+          || (typeof result.error === "string" && result.error.trim().length > 0)
+          ? "failed" : "succeeded", result.failureKind ?? undefined, result),
     );
     return await this.terminalPromise;
   }

@@ -21,6 +21,12 @@ function readRepoFile(path: string): string {
   return readFileSync(join(repoRoot(), path), "utf8");
 }
 
+it("documents the current JSON-only configuration loader in the root README", () => {
+  const readme = readRepoFile("README.md");
+  expect(readme).toContain('import { loadMonoAgentConfig } from "@mono-agent/config"');
+  expect(readme).not.toMatch(/loadMonoAgentConfigWithSources|resolveProjectedMonoAgentConfig|CONFIG_ENV_KEYS/u);
+});
+
 function section(page: string, heading: string): string {
   const marker = `## ${heading}`;
   const start = page.indexOf(marker);
@@ -321,7 +327,6 @@ describe("mono-agent-composer reference parity", () => {
       '"maxConcurrentRuns"',
       '"maxPendingRuns"',
       '"backend": "bujo"',
-      '"supermemory"',
       '"interaction"',
       '"endpoints"',
       '"model"',
@@ -336,9 +341,9 @@ describe("mono-agent-composer reference parity", () => {
     }
   });
 
-  it("maps the optional memory backend and browser surface to their owning packages", () => {
-    expect(packageMap).toContain("@mono-agent/memory-supermemory");
-    expect(packageMap).toContain('memory.backend: "supermemory"');
+  it("maps current browser surfaces without a retired memory package", () => {
+    expect(packageMap).not.toContain("@mono-agent/memory-supermemory");
+    expect(packageMap).not.toContain('memory.backend: "supermemory"');
     expect(packageMap).toContain("@mono-agent/web");
     expect(packageMap).not.toContain("@mono-agent/session-web");
     expect(packageMap).not.toContain("mono-agent sessions");

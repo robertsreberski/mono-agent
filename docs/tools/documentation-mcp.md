@@ -152,7 +152,7 @@ every internal documentation link. At query time the server combines local
 semantic similarity with exact-token BM25 ranking through reciprocal-rank fusion,
 deduplicates by section, expands ranked hits around their source positions, and
 limits one source file from crowding out the rest. Exact identifiers such as
-`channels.plugins[]`, `MONO_AGENT_MCP_CONFIG_PATH`, and package names therefore
+`channels.plugins[]`, `tools.mcpConfigPath`, and package names therefore
 remain searchable alongside natural-language questions.
 
 No website crawl, provider API, model download, filesystem write, or telemetry is

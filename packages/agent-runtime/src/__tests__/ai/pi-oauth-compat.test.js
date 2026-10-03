@@ -8,7 +8,6 @@ vi.mock("@earendil-works/pi-ai/providers/all", () => ({
 
 const {
   getPiOAuthAuth,
-  getPiOAuthProviderIds,
   resetPiProviderIndexForTests,
   resolveOAuthApiKey,
   toAuthInteraction,
@@ -40,19 +39,6 @@ beforeEach(() => {
   resetPiProviderIndexForTests();
 });
 
-describe("getPiOAuthProviderIds", () => {
-  it("lists only providers that actually support OAuth", () => {
-    expect(getPiOAuthProviderIds()).toEqual(["anthropic", "openai-codex"]);
-  });
-
-  it("indexes the catalog once because it sits on the per-request credential path", () => {
-    getPiOAuthProviderIds();
-    getPiOAuthAuth("anthropic");
-    getPiOAuthAuth("openai-codex");
-
-    expect(piMocks.builtinProviders).toHaveBeenCalledOnce();
-  });
-});
 
 describe("getPiOAuthAuth", () => {
   it("returns undefined for unknown, api-key-only, and empty provider ids", () => {

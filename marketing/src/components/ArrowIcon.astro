@@ -1,0 +1,21 @@
+---
+interface Props {
+  direction?: "external" | "down";
+  class?: string;
+}
+
+const { direction = "external", class: className = "" } = Astro.props;
+const path = direction === "down"
+  ? "M8 2.75v10.5m-4-4 4 4 4-4"
+  : "M4.5 11.5 11.5 4.5m-5.75 0h5.75v5.75";
+---
+<svg
+  class:list={["arrow-icon", className]}
+  viewBox="0 0 16 16"
+  width="16"
+  height="16"
+  aria-hidden="true"
+  focusable="false"
+>
+  <path d={path} />
+</svg>

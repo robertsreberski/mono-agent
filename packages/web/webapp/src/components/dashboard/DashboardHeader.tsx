@@ -1,6 +1,7 @@
 import { ThreadListPrimitive } from "@assistant-ui/react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
+import { useSettingsDraft } from "../../settings-drafts";
 import { NotificationBell } from "../../notifications";
 
 /**
@@ -11,7 +12,7 @@ import { NotificationBell } from "../../notifications";
  * The command palette keeps its shortcut (⌘K) and has no button here; the
  * connection state is announced, not drawn.
  */
-export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => void }) {
+export function DashboardHeader({ onNavigate, settingsOpen = false }: { readonly onNavigate?: () => void; readonly settingsOpen?: boolean }) {
   const {
     bootstrap,
     connection,
@@ -20,6 +21,9 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
     selectionError,
     selectionLoading,
   } = useConsoleStore();
+  const draft = useSettingsDraft(selectedAgent?.sourceId ?? "");
+  const saved = selectedAgent?.runSettings.override;
+  const hasDraft = draft !== null && (draft.model !== (saved?.model ?? "") || draft.effort !== (saved?.effort ?? ""));
   const consoleName = bootstrap?.console.displayName ?? "mono-agent";
 
   return (
@@ -40,6 +44,7 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
           className="agent-settings-button"
           aria-label="Agent settings"
           title="Agent settings"
+          aria-expanded={settingsOpen}
           disabled={!selectedAgent}
           // The dialog is not a destination: it opens over the screen the
           // operator is on, and closing it leaves them there. Navigating first
@@ -48,6 +53,7 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
           onClick={() => { window.dispatchEvent(new CustomEvent("mono-agent:agent-settings")); }}
         >
           <Icon name="settings" size={16} />
+          {hasDraft && <span className="settings-dot" aria-hidden="true" />}
         </button>
         <ThreadListPrimitive.New
           className="new-thread-button"

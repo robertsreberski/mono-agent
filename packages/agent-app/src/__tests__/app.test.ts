@@ -29,8 +29,6 @@ import { MonoAgentAppController } from "../app-controller.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
-import { SET_CONVERSATION_TITLE_MCP_SERVER_NAME } from "../conversation-title.js";
-import { RUN_HISTORY_MCP_SERVER_NAME } from "../run-history.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -39,6 +37,10 @@ import {
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { startContinuationService } from "../continuation-service.js";
 import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
+
+const builtMemoryHealthWorkerUrl = new URL("../../dist/memory-health-worker.js", import.meta.url);
+const malformedMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-malformed.mjs", import.meta.url);
+const oneAttemptMemoryHealthWorkerUrl = new URL("./fixtures/memory-health-worker-one-attempt.mjs", import.meta.url);
 
 let dir: string;
 
@@ -239,6 +241,33 @@ describe("startMonoAgentApp", () => {
     } finally {
       await app.stop();
     }
+  });
+
+  it("passes internal private runtime paths through startup to channel core config", async () => {
+    const configPath = await writeConfig(baseConfig());
+    const privateRuntimePaths = {
+      identityPath: join(dir, "private-identity.md"),
+      soulPath: join(dir, "private-soul.md"),
+      mcpConfigPath: join(dir, "private-mcp.json"),
+    };
+    await writeFile(privateRuntimePaths.identityPath, "Private identity");
+    await writeFile(privateRuntimePaths.soulPath, "Private soul");
+    await writeFile(privateRuntimePaths.mcpConfigPath, JSON.stringify({ mcpServers: {} }));
+    const observed: { identityPath: string; soulPath?: string; mcpConfigPath?: string }[] = [];
+    const driver: ChannelDriver = {
+      id: "private-proof" as never, label: "Private proof",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async ({ coreConfig }) => {
+        observed.push({ identityPath: coreConfig.context.identityPath,
+          ...(coreConfig.context.soulPath === undefined ? {} : { soulPath: coreConfig.context.soulPath }),
+          ...(coreConfig.tools.mcpConfigPath === undefined ? {} : { mcpConfigPath: coreConfig.tools.mcpConfigPath }) });
+        return { summary: {}, stop: async () => {} };
+      },
+    };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, configPath, drivers: [driver], privateRuntimePaths });
+    try { expect(observed).toEqual([privateRuntimePaths]); }
+    finally { await app.stop(); }
   });
 
   it("publishes only the supplied secret-free background snapshot in trace metadata", async () => {
@@ -523,27 +552,6 @@ describe("startMonoAgentApp", () => {
 
     await app.stop();
     expect(webhookStop).toHaveBeenCalledTimes(1);
-  });
-
-  it("reports a configured exporter status when observability.exporters is set", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      observability: {
-        exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false }],
-      },
-    });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    expect(app.exporterStatus.kind).toBe("configured");
-    if (app.exporterStatus.kind === "configured") {
-      expect(app.exporterStatus.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
-      expect(app.exporterStatus.includeSensitiveData).toBe(false);
-    }
-    await app.stop();
   });
 
   it("applies artifact retention once on startup", async () => {
@@ -833,10 +841,10 @@ describe("startMonoAgentApp", () => {
         heartbeatMs: 250,
       },
       memory: {
-        backend: "supermemory",
+        backend: "bujo",
         mode: "lite",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "periodic-agent" },
+        path: "./memory",
+        writeMode: "disabled",
       },
     });
 
@@ -844,9 +852,9 @@ describe("startMonoAgentApp", () => {
     controller.refreshMemoryHealthOnTimer();
     await vi.waitFor(async () => {
       const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
-      expect(sources[0]?.memoryHealth).toMatchObject({ backend: "supermemory", status: "unknown" });
+      expect(sources[0]?.memoryHealth).toMatchObject({ backend: "bujo" });
     }, { timeout: 2_000, interval: 50 });
-    expect(app.memoryHealth).toMatchObject({ backend: "supermemory", status: "unknown" });
+    expect(app.memoryHealth).toMatchObject({ backend: "bujo" });
 
     expect(controller.memoryHealthRefreshTimer).toBeDefined();
     const stopping = app.stop();
@@ -980,7 +988,13 @@ describe("startMonoAgentApp", () => {
     };
     const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
 
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [driver],
+      runtime,
+      memoryHealthWorkerUrl: builtMemoryHealthWorkerUrl,
+    });
     try {
       const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
       expect(sources[0]?.memoryHealth).toMatchObject({
@@ -1234,16 +1248,36 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("requests one stability attempt for periodic built-in auditing", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      memory: { mode: "lite", path: "./memory", writeMode: "append-host-summary" },
+    });
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [],
+      memoryHealthWorkerUrl: oneAttemptMemoryHealthWorkerUrl,
+    });
+    try {
+      expect(app.memoryHealth).toMatchObject({ backend: "bujo", mode: "lite", status: "healthy" });
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("publishes a closed health_check_failed issue when built-in auditing throws", async () => {
     await writeConfig({
       ...baseConfig(),
       memory: { mode: "lite", path: "./memory", writeMode: "append-host-summary" },
     });
-    const privateSentinel = "private audit failure /private/sentinel";
-    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
-      throw new Error(privateSentinel);
+    const privateSentinel = "/secret";
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [],
+      memoryHealthWorkerUrl: malformedMemoryHealthWorkerUrl,
     });
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
     try {
       expect(app.memoryHealth).toMatchObject({
         backend: "bujo",
@@ -1256,7 +1290,6 @@ describe("startMonoAgentApp", () => {
       expect(JSON.stringify(sources[0])).not.toContain(privateSentinel);
     } finally {
       await app.stop();
-      auditSpy.mockRestore();
     }
   });
 
@@ -1462,80 +1495,6 @@ describe("startMonoAgentApp", () => {
     expect(injected.sandboxEngineFor(coreConfig)).toBe(unavailableSandboxEngine);
   });
 
-  it("routes export warnings to lastWarning/lastError and persists them to the trace-source manifest", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
-    });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    const seam = app as unknown as {
-      recordExporterWarning(w: { phase: string; message: string }): void;
-      refreshTraceSource(reason: string): Promise<void>;
-    };
-    // Spy that calls through: lets us assert the auto-trigger AND deterministically
-    // await the otherwise fire-and-forget manifest writes (no polling, no races).
-    const refreshSpy = vi.spyOn(seam, "refreshTraceSource");
-    const flush = async (): Promise<void> => {
-      await Promise.all(refreshSpy.mock.results.map((r) => Promise.resolve(r.value).catch(() => undefined)));
-    };
-
-    // Serialize the two warnings so the stale snapshot of the first write cannot
-    // land after the second; in production at most one warning fires per run.
-    seam.recordExporterWarning({ phase: "finish", message: "export boom" });
-    await flush();
-    seam.recordExporterWarning({ phase: "fail", message: "fail boom" });
-    await flush();
-
-    // recordExporterWarning must route by phase and persist via refreshTraceSource.
-    expect(refreshSpy).toHaveBeenCalledWith("exporter-warning");
-    expect(app.exporterStatus.kind).toBe("configured");
-    if (app.exporterStatus.kind === "configured") {
-      expect(app.exporterStatus.lastWarning).toContain("export boom");
-      expect(app.exporterStatus.lastError).toContain("fail boom");
-    }
-
-    // The detached `mono-agent status` reads the manifest, not this live object,
-    // so the warning/error must reach the persisted trace-source metadata.
-    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
-    const meta = sources[0]?.metadata?.observability as { lastWarning?: string; lastError?: string } | undefined;
-    expect(meta?.lastWarning).toContain("export boom");
-    expect(meta?.lastError).toContain("fail boom");
-
-    await app.stop();
-  });
-
-  it("reports a disabled exporter status when no exporter is configured", async () => {
-    await writeConfig({ ...baseConfig() });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    expect(app.exporterStatus.kind).toBe("disabled");
-    await app.stop();
-  });
-
-  it("reports a failed exporter status for an invalid exporter config", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      observability: { exporters: [{ type: "not-a-thing" }] },
-    });
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-    });
-
-    expect(app.exporterStatus.kind).toBe("failed");
-    await app.stop();
-  });
-
   it("reports waiting_for_config for every channel when the core config is incomplete", async () => {
     await writeConfig({
       // No runtime.model: core config cannot load.
@@ -1551,7 +1510,7 @@ describe("startMonoAgentApp", () => {
     const webhookStatus = app.channelStatus("webhook");
     expect(webhookStatus.kind).toBe("waiting_for_config");
     if (webhookStatus.kind === "waiting_for_config") {
-      expect(webhookStatus.reason).toContain("MONO_AGENT_MODEL");
+      expect(webhookStatus.reason).toContain("runtime.model");
     }
     await app.stop();
   });
@@ -2900,7 +2859,7 @@ describe("startMonoAgentApp", () => {
     const order: string[] = [];
     const fakeStore = {
       load: async () => undefined,
-      appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+      persistCompletedTurn: async (turn: { runId: string; conversationId: string }) => ({ id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "s", bytesWritten: 1, admissionStatus: "admitted" }),
       flush: async () => { order.push("flush"); },
       close: async () => { order.push("close"); },
     };
@@ -2928,7 +2887,7 @@ describe("startMonoAgentApp", () => {
     (app as unknown as { __setSharedMemoryForTest(store: unknown): void })
       .__setSharedMemoryForTest({
         load: async () => undefined,
-        appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+        persistCompletedTurn: async (turn: { runId: string; conversationId: string }) => ({ id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "s", bytesWritten: 1, admissionStatus: "admitted" }),
         flush: async () => { order.push("flush"); },
       });
 
@@ -2940,7 +2899,7 @@ describe("startMonoAgentApp", () => {
     await writeConfig(baseConfig());
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
     const coreConfig = {
-      runtime: { model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" }, executionMode: "sdk", maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" }, maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
       context: { identityPath: join(dir, "IDENTITY.md"), selectedSkills: [] },
       memory: { mode: "lite", path: join(dir, "mem"), writeMode: "disabled", maxBytes: 8_000 },
       tools: { allowedTools: [], disallowedTools: [] },

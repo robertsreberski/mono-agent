@@ -51,6 +51,8 @@ describe("process-jobs kernel bridge", () => {
     expectTypeOf<KernelStartRequest>().toExtend<ProcessJobStartRequest>();
     expectTypeOf<ProcessJobStartResult>().toExtend<KernelStartResult>();
     expectTypeOf<KernelStartResult>().toExtend<ProcessJobStartResult>();
+    expectTypeOf<ProcessJobStartResult["queuePosition"]>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<ProcessJobStartResult["queueDeadlineAt"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<ProcessJobStartResult["state"]>()
       .toEqualTypeOf<Extract<ProcessJobState, "queued" | "starting" | "running">>();
     expectTypeOf<RuntimeRunOptions["processJobs"]>()

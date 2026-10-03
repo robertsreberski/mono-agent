@@ -1,19 +1,38 @@
 import { useEffect, useRef, useState } from "react";
+import { formatProviderUsageLead, projectProviderUsageWindow } from "@mono-agent/agent-contracts/provider-usage";
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
+
+/** A short status line for a manual refresh; `fetchedAt` backs the full timestamp in its title. */
+export interface ProviderUsageFeedback {
+  readonly text: string;
+  readonly tone: "pending" | "done" | "warning";
+  readonly fetchedAt?: string;
+}
+
+/** Time only for today, otherwise a short date: the full instant stays in the title. */
+export function formatUsageFetchedAt(fetchedAt: number, now = Date.now()): string {
+  const at = new Date(fetchedAt);
+  return at.toDateString() === new Date(now).toDateString()
+    ? at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : at.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 
 /** Isolated from auth status/login: slow or failed quota reads never hide auth controls. */
 export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   const [snapshot, setSnapshot] = useState<ProviderUsageSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<ProviderUsageFeedback | null>(null);
   const owner = useRef<{ scope: string; refresh: () => Promise<void> } | null>(null);
   const scope = `${agent.sourceId}:${agent.generation ?? "unknown"}:${authRevision ?? ""}`;
   useEffect(() => {
     setSnapshot(null);
     setRefreshing(false);
     setFeedback(null);
-    if (agent.supportsProviderUsage !== true || agent.status === "offline") return;
+    const canLoad = agent.supportsProviderUsage === true && agent.status !== "offline";
+    setLoading(canLoad);
+    if (!canLoad) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sequence = 0;
@@ -26,7 +45,7 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
       if (manual) {
         manualFlight = true;
         setRefreshing(true);
-        setFeedback("Refreshing usage…");
+        setFeedback({ text: "Refreshing usage…", tone: "pending" });
       }
       if (timer !== undefined) clearTimeout(timer);
       const request = ++sequence;
@@ -39,12 +58,12 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
         setSnapshot(next);
         if (manual) {
           if (next.providers.some((item) => item.stale || item.error) || missing) {
-            setFeedback("Some usage could not be refreshed. Last known meters are retained where available.");
+            setFeedback({ text: "Some usage could not be refreshed · last known shown", tone: "warning" });
           } else if (next.providers.length === 0) {
-            setFeedback("No subscription usage is available.");
+            setFeedback({ text: "No subscription usage available", tone: "done" });
           } else {
             const oldest = Math.min(...next.providers.map((item) => Date.parse(item.fetchedAt)));
-            setFeedback(`Usage refreshed. Last fetched ${new Date(oldest).toLocaleString()}.`);
+            setFeedback({ text: `Updated ${formatUsageFetchedAt(oldest)}`, tone: "done", fetchedAt: new Date(oldest).toISOString() });
           }
         }
         // A stale automatic response started a coalesced refresh; read it once soon.
@@ -55,9 +74,10 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
         setSnapshot((previous) => previous === null ? null : ({ ...previous, providers: previous.providers.map((provider) => ({
           ...provider, stale: true, error: { code: "unavailable", message: "Provider usage is unavailable." },
         })) }));
-        if (manual) setFeedback("Usage refresh failed. Last known meters are retained where available.");
+        if (manual) setFeedback({ text: "Usage refresh failed · last known shown", tone: "warning" });
       } finally {
         if (!controller.signal.aborted && request === sequence) {
+          if (!manual) setLoading(false);
           if (manual) { manualFlight = false; setRefreshing(false); }
           timer = setTimeout(() => { void load(); }, delay);
         }
@@ -73,6 +93,7 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   }, [scope, agent.status, agent.supportsProviderUsage]);
   return {
     snapshot,
+    loading,
     refreshing,
     feedback,
     refresh: () => agent.supportsProviderUsageRefresh === true && agent.status !== "offline" && owner.current?.scope === scope
@@ -80,15 +101,16 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   };
 }
 
-function countdown(reset: string, now: number): string {
-  const minutes = Math.max(0, Math.ceil((Date.parse(reset) - now) / 60_000));
-  if (minutes === 0) return "Reset due";
-  if (minutes >= 1440) return `Resets in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
-  if (minutes >= 60) return `Resets in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  return `Resets in ${minutes}m`;
+function countdown(reset: string, now: number, compact = false): string {
+  const diffMs = Date.parse(reset) - now;
+  if (Math.max(0, Math.ceil(diffMs / 60_000)) === 0) return "Reset due";
+  return `Resets ${compact ? "" : "in "}${formatProviderUsageLead(diffMs)}`;
 }
+// How early the window runs out is the decision, so it rides on the countdown
+// line as one fragment. The absolute instant stays in the title.
+const earlyLine = (leadMs: number): string => `empty ${formatProviderUsageLead(leadMs)} early`;
 /** The plan chip is rendered inline by the provider heading; this shows only the meters. */
-export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
+export function ProviderUsageMeters({ usage, density = "default" }: { readonly usage?: ProviderUsage; readonly density?: "default" | "compact" }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!usage) return;
@@ -96,15 +118,61 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
     return () => clearInterval(timer);
   }, [usage]);
   if (!usage) return null;
-  return <div className="provider-usage" aria-label={`${usage.label} subscription usage`}>
-    {usage.stale && <div className="provider-usage-meta">
+  return <div className={density === "compact" ? "context-display-plan-windows" : "provider-usage"} aria-label={`${usage.label} subscription usage`}>
+    {usage.stale && density === "default" && <div className="provider-usage-meta">
       <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>
     </div>}
-    {usage.windows.map((window) => <div className="provider-usage-window" key={window.kind}>
-      <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%</span></div>
-      <progress aria-label={`${usage.label} ${window.label} used`} max={100} value={window.usedPercent} />
-      {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now)}</time>}
-    </div>)}
-    {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}
+    {usage.windows.map((window) => {
+      // One shared derivation, anchored at the measurement: a window is never both ahead and under.
+      const projection = projectProviderUsageWindow(window, usage.fetchedAt);
+      const alert = projection !== undefined && projection.exhaustsAt !== undefined && projection.leadMs !== undefined
+        && (projection.severity === "ahead" || projection.severity === "unsustainable") ? projection : undefined;
+      const unused = alert === undefined && projection?.projectedUnusedPercent !== undefined && projection.projectedUnusedPercent >= 5
+        ? Math.round(projection.projectedUnusedPercent) : undefined;
+      const chip = projection !== undefined && projection.confidence === "normal"
+        ? { text: `${projection.pace.toFixed(1)}×`, tier: projection.severity === "ok" ? "is-steady" : `is-${projection.severity}` } : undefined;
+      // Where an on-track window would be, drawn in the meter's own palette: a
+      // small rounded cap in the accent family, not a foreign line across the bar.
+      const expected = projection === undefined ? undefined : Math.min(100, Math.max(0, projection.elapsedFraction * 100));
+      const name = projection === undefined ? `${usage.label} ${window.label} used`
+        : `${usage.label} ${window.label} used, ${window.usedPercent} %, ${Math.round(projection.elapsedFraction * 100)} % of the window elapsed, pace ${projection.pace.toFixed(1)}x`
+          + (alert === undefined ? "" : `, projected to run out before reset (${alert.severity})`);
+      if (density === "compact") return <div className="context-display-plan-window" key={window.kind}>
+        <span className="context-display-plan-label">{window.label}</span>
+        <span className="context-display-plan-bar">
+          <progress aria-label={name} max={100} value={window.usedPercent} />
+          {expected !== undefined && <span className={`provider-usage-tick${window.usedPercent > expected ? " is-passed" : ""}`}
+            aria-hidden="true" style={{ left: `${expected}%` }} />}
+        </span>
+        <span className="context-display-plan-percent">{window.usedPercent}%</span>
+        {window.resetsAt && <div className="context-display-plan-detail">
+          <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now, true)}</time>
+          {chip !== undefined && <span className={chip.tier}> · {chip.text}</span>}
+          {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
+            ? <span className={`is-${alert.severity}`}
+              title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}> · {earlyLine(alert.leadMs)}</span>
+            : unused !== undefined
+              ? <span className="is-unused" title={`At this pace about ${unused} % of the window is left unused at reset`}> · {unused}% unused</span> : null}
+        </div>}
+      </div>;
+      return <div className="provider-usage-window" key={window.kind}>
+        <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%{chip !== undefined && <> <span className={`provider-usage-pace ${chip.tier}`}>{chip.text}</span></>}</span></div>
+        <span className="provider-usage-bar">
+          <progress aria-label={name} max={100} value={window.usedPercent} />
+          {expected !== undefined && <span className={`provider-usage-tick${window.usedPercent > expected ? " is-passed" : ""}`}
+            aria-hidden="true" style={{ left: `${expected}%` }} />}
+        </span>
+        {window.resetsAt && <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>
+          {countdown(window.resetsAt, now)}
+          {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
+            ? <span className={`provider-usage-projection is-${alert.severity}`}
+              title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}> · {earlyLine(alert.leadMs)}</span>
+            : unused !== undefined
+              ? <span className="provider-usage-projection is-unused"
+                title={`At this pace about ${unused} % of the window is left unused at reset`}> · {unused}% unused</span> : null}
+        </time>}
+      </div>;
+    })}
+    {usage.error && <p className={density === "compact" ? "context-display-plan-error" : "provider-usage-error"} role="status">Usage unavailable — {usage.error.message}</p>}
   </div>;
 }

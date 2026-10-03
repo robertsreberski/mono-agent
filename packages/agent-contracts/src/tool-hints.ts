@@ -19,7 +19,7 @@ type ProviderStatusStreamEvent = Extract<AgentStreamEvent, { type: "provider_sta
 const BUILTIN_HINTS: Readonly<Record<string, string>> = {
   agent: "Delegating to a subagent…",
   askparent: "Asking parent…",
-  agentsend: "Continuing a subagent…",
+  agentmanage: "Continuing a subagent…",
   websearch: "Searching the web…",
   webfetch: "Reading a page…",
   bash: "Running a command…",
@@ -154,7 +154,7 @@ const MEMORY_JOURNAL_NAMES = new Set(["memoryjournal"]);
  * that follows, not a leaf action, so renderers group the child tool calls
  * underneath it.
  */
-const SUBAGENT_LAUNCH_NAMES = new Set(["agent", "agentsend", "task", "subagent", "dispatchagent"]);
+const SUBAGENT_LAUNCH_NAMES = new Set(["agent", "agentmanage", "task", "subagent", "dispatchagent"]);
 
 /**
  * Separator the runtime puts between a subagent's profile name and the tool it
@@ -247,7 +247,7 @@ export function formatToolActivityLine(
   const rawName = splitSubagentToolName(typeof toolName === "string" ? toolName.trim() : "").tool;
   const leaf = toolNameLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
-  const spec = normalized === "agentsend" && typeof toolArguments === "object" && toolArguments !== null
+  const spec = normalized === "agentmanage" && typeof toolArguments === "object" && toolArguments !== null
     && "close" in toolArguments && toolArguments.close === true
     ? { ...activitySpec(normalized, leaf), action: "🤖 Closing agent", actionWithoutPreview: "🤖 Closing a subagent" }
     : activitySpec(normalized, leaf);
@@ -372,7 +372,7 @@ export function formatProviderStatusLine(event: ProviderStatusStreamEvent): stri
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   if (normalized === "askparent") return { action: "❓ Asking parent:", previewFields: ["question"] };
-  if (normalized === "agentsend") return {
+  if (normalized === "agentmanage") return {
     action: "🤖 Continuing agent", actionWithoutPreview: "🤖 Continuing a subagent", previewFields: ["id"], quotePreview: true,
   };
   if (SUBAGENT_LAUNCH_NAMES.has(normalized)) {

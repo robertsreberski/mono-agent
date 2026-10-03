@@ -1,4 +1,3 @@
-import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MemoryMode, MonoAgentConfig } from "@mono-agent/config";
 
 /** Circuit-breaker tuning carried into the recall child. Mirrors `config.memory.embeddings.circuitBreaker`. */
@@ -19,20 +18,10 @@ export interface MemoryRecallEmbeddings {
   readonly dim?: number;
   /** Per-call embeddings timeout in ms; mirrors the host default when unset. */
   readonly timeoutMs?: number;
+  /** Embedding instruction preset; absent means per-model `auto`. */
+  readonly instructions?: "auto" | "search" | "none" | "query" | "qwen3";
   /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
   readonly circuitBreaker?: MemoryRecallEmbeddingsCircuitBreaker;
-}
-
-/**
- * Supermemory params the recall child needs to build its REST client. The key is the resolved value:
- * unlike the embeddings path, recall forwards it because the stdio child does not inherit the
- * parent environment under every runtime.
- */
-export interface MemoryRecallSupermemory {
-  readonly baseUrl: string;
-  readonly container: string;
-  readonly apiKey?: string;
-  readonly timeoutMs?: number;
 }
 
 /** bujo recall: a memory root (+ optional embeddings for semantic ranking). */
@@ -52,13 +41,7 @@ export interface MemoryRecallBujoSettings {
   readonly ftsOnlyFallback?: true;
 }
 
-/** supermemory recall: search the external instance over REST. */
-export interface MemoryRecallSupermemorySettings {
-  readonly supermemory: MemoryRecallSupermemory;
-}
-
-/** Recall settings discriminated structurally by the presence of `supermemory`. */
-export type MemoryRecallSettings = MemoryRecallBujoSettings | MemoryRecallSupermemorySettings;
+export type MemoryRecallSettings = MemoryRecallBujoSettings;
 
 export interface ResolveMemoryRecallSettingsOptions {
   /** Ignore only the live MCP-tool availability gate for explicit operator preview/maintenance. */
@@ -80,22 +63,6 @@ export function resolveMemoryRecallSettings(
   if (!options.ignoreRecallToolGate && memory.recallTool?.enabled === false) {
     return undefined;
   }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const sm = memory.supermemory;
-    if (sm === undefined) {
-      // Defensive: the loader already rejects backend "supermemory" without a block.
-      return undefined;
-    }
-    return {
-      supermemory: {
-        baseUrl: sm.baseUrl,
-        container: resolveSupermemoryContainer(config),
-        // The loader already resolved apiKeyEnv to apiKey; the child needs the value.
-        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-      },
-    };
-  }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
     return { root: memory.path, tier: memory.mode };
@@ -113,6 +80,7 @@ export function resolveMemoryRecallSettings(
       ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
       ...(embeddings.dim === undefined ? {} : { dim: embeddings.dim }),
       ...(embeddings.timeoutMs === undefined ? {} : { timeoutMs: embeddings.timeoutMs }),
+      ...(embeddings.instructions === undefined ? {} : { instructions: embeddings.instructions }),
       ...(embeddings.circuitBreaker === undefined ? {} : { circuitBreaker: embeddings.circuitBreaker }),
     },
   };

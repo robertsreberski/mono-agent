@@ -1,5 +1,6 @@
-import { MessageModelMarkers } from "./ModelMarkers";
-import { MessageProjectMarkers } from "./project/ProjectIdentity";
+import { ModelMarkers } from "./ModelMarkers";
+import { isConversationMarker } from "../conversation-markers";
+import { ProjectMarkers } from "./project/ProjectIdentity";
 import { isSilentCronData } from "../cron-visibility";
 import {
   ActionBarPrimitive,
@@ -8,6 +9,7 @@ import {
   type EmptyMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
+  useAui,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import {
@@ -26,13 +28,14 @@ import { api } from "../api";
 import { useConsoleStore } from "../console-store";
 import { currentDataMode, useDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
+import { formatTokenCount } from "../usage";
 import type {
   AskAnswer,
   AskSnapshot,
   CronReplyContextPart as CronReplyContextValue,
-  MonitorProjection,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
+  RestartProposalPart as RestartProposalValue,
 } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
@@ -54,6 +57,7 @@ import {
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
+import { shortDateTime } from "./time";
 import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
@@ -63,6 +67,7 @@ import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
 import { RunAttribution } from "./RunAttribution";
 import { ProcessJobActivityEventPart } from "./ProcessJob";
+import { RestartAgentCard } from "./RestartAgentCard";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -844,12 +849,6 @@ type CompactionDisplayStatus = "running" | "succeeded" | "skipped" | "failed" | 
 const finiteCount = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
-const compactTokenCount = (tokens: number): string => {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
-  return String(Math.round(tokens));
-};
-
 const compactionPayload = (value: unknown): Record<string, unknown> => {
   let current = value;
   let best: Record<string, unknown> = {};
@@ -864,53 +863,58 @@ const compactionPayload = (value: unknown): Record<string, unknown> => {
   return best;
 };
 
-function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartProps) {
-  const payload = compactionPayload(data);
+function ScheduledWakePart({ data }: DataMessagePartProps) {
+  const message = typeof data.message === "string" ? data.message : "";
+  return <section className="scheduled-wake-item" aria-label="Scheduled wake-up">
+    <strong>Scheduled wake-up</strong>
+    <time dateTime={String(data.scheduledAt)}>{shortDateTime(String(data.scheduledAt))}</time>
+    {message && <p>{message}</p>}
+  </section>;
+}
+
+function ContextCompactionPart({ data }: DataMessagePartProps) {
+  // A part followed by more prose is complete even while the whole turn runs.
+  // Compaction remains running until the message itself settles.
+  const isMessageRunning = useAuiState((state) => state.message.status?.type === "running");
+  return <ContextCompactionDisplay payload={compactionPayload(data)} isMessageRunning={isMessageRunning} />;
+}
+
+function ContextCompactionDisplay({ payload, isMessageRunning = false }: { readonly payload: Record<string, unknown>; readonly isMessageRunning?: boolean }) {
   const reported = ["running", "succeeded", "skipped", "failed"].includes(String(payload.status))
     ? payload.status as Exclude<CompactionDisplayStatus, "interrupted">
     : "failed";
-  const status: CompactionDisplayStatus = reported === "running" && messageStatus.type !== "running"
+  const status: CompactionDisplayStatus = reported === "running" && !isMessageRunning
     ? "interrupted"
     : reported;
   const label = {
     running: "Compacting context…",
     succeeded: "Context compacted",
     skipped: "Context compaction skipped",
-    failed: "Context compaction failed",
+    failed: payload.reason === "outcome_unknown" ? "Context compaction outcome unknown" : "Context compaction failed",
     interrupted: "Context compaction interrupted",
   }[status];
-  const trigger = typeof payload.trigger === "string" ? payload.trigger : undefined;
-  const triggerLabel = trigger === "overflow"
-    ? "after overflow"
-    : trigger === "proactive"
-      ? "proactive"
-      : trigger === "manual"
-        ? "manual"
-        : undefined;
+  const triggerLabel = payload.trigger === "manual" ? "manual" : "automatic";
   const before = finiteCount(payload.tokensBefore);
   const after = finiteCount(payload.tokensAfter);
-  const approximate = payload.tokenCountsExact !== true;
-  const formatMeasuredCount = (tokens: number) => `${approximate ? "~" : ""}${compactTokenCount(tokens)}`;
-  const counts = before !== undefined && after !== undefined
-    ? `${formatMeasuredCount(before)} → ${formatMeasuredCount(after)} tokens`
-    : before !== undefined
-      ? `${formatMeasuredCount(before)} tokens before`
-      : after !== undefined
-        ? `${formatMeasuredCount(after)} tokens after`
-        : undefined;
+  const count = (tokens: number) => `${payload.tokenCountsExact === true ? "" : "≈"}${formatTokenCount(tokens)}`;
+  const counts = status === "succeeded" && before !== undefined && after !== undefined
+    ? `${formatTokenCount(before)} → ${count(after)} tokens`
+    : status === "succeeded" && before !== undefined ? `${count(before)} tokens before`
+      : status === "succeeded" && after !== undefined ? `${count(after)} tokens after` : undefined;
+  const detail = status === "succeeded" ? undefined
+    : payload.reason === "model_changed" ? "Model changed."
+      : payload.reason === "nothing_to_compact" ? "Nothing to compact yet."
+        : payload.reason === "outcome_unknown" ? "Response lost; it may have completed." : undefined;
 
-  return (
-    <div
-      className={`context-compaction-row is-${status}`}
-      role="status"
-      aria-label={[label.replace("…", ""), triggerLabel, counts].filter(Boolean).join(", ")}
-    >
-      <span className="context-compaction-status" aria-hidden="true" />
+  return <div className={`context-compaction-row is-${status}`} role="note"
+    aria-label={[label, counts, detail, triggerLabel].filter(Boolean).join(" · ")}>
+    <span className="context-compaction-content">
       <span className="context-compaction-label">{label}</span>
-      {triggerLabel !== undefined && <span className="context-compaction-trigger">{triggerLabel}</span>}
-      {counts !== undefined && <span className="context-compaction-counts">{counts}</span>}
-    </div>
-  );
+      {counts !== undefined && <span className="context-compaction-counts"> · {counts}</span>}
+      {detail !== undefined && <span className="context-compaction-detail"> · {detail}</span>}
+      <span className="context-compaction-trigger"> · {triggerLabel}</span>
+    </span>
+  </div>;
 }
 
 export function CronRunPart({ data }: DataMessagePartProps) {
@@ -947,6 +951,7 @@ export function CronRunPart({ data }: DataMessagePartProps) {
     || status === "failed"
     || status === "cancelled"
     || status === "skipped_overlap"
+    || status === "skipped_gate"
     || status === "dropped";
   const replyState = sourceId !== undefined && jobId !== undefined
     ? cronReplyState(sourceId, jobId, runId)
@@ -1194,76 +1199,6 @@ function InlineSteerPart({ data }: DataMessagePartProps) {
   );
 }
 
-const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
-
-const monitorActivityStatus = (monitors: readonly MonitorProjection[]): ActivityStatus => {
-  if (monitors.some((monitor) => monitor.state === "starting" || monitor.state === "running")) return "running";
-  return monitors.some((monitor) => monitor.lastError !== null) ? "failed" : "complete";
-};
-
-/** One compact row for every Monitor wake applied to this assistant run. */
-function MonitorActivityPart({ data }: DataMessagePartProps) {
-  const payload = asRecord(data);
-  const entries = Array.isArray(payload.monitors)
-    ? payload.monitors.flatMap((raw) => {
-        const entry = asRecord(raw);
-        const projection = asRecord(entry.projection) as unknown as MonitorProjection;
-        const deliveryKeys = Array.isArray(entry.deliveryKeys)
-          ? entry.deliveryKeys.filter((key): key is string => typeof key === "string")
-          : [];
-        return (projection.schema === "mono-agent.monitor-projection.v1" || projection.schema === "mono-agent.monitor-projection.v2")
-          ? [{ projection, updateCount: deliveryKeys.length }]
-          : [];
-      })
-    : [];
-  const legacyUpdateCount = typeof payload.legacyUpdateCount === "number"
-    && Number.isSafeInteger(payload.legacyUpdateCount)
-    && payload.legacyUpdateCount > 0
-    ? payload.legacyUpdateCount
-    : 0;
-  const updateCount = entries.reduce((total, entry) => total + entry.updateCount, 0) + legacyUpdateCount;
-  if (updateCount === 0) return null;
-  const projections = entries.map((entry) => entry.projection);
-  const summary = projections.length === 1
-    ? projections[0]?.description || monitorStateLabel(projections[0]?.state ?? "updated")
-    : projections.length > 1 ? `${String(projections.length)} monitors` : "Historical monitor activity";
-  return (
-    <ActivityRow
-      status={monitorActivityStatus(projections)}
-      label={updateCount === 1 ? "Monitor update" : `Monitor updates ×${String(updateCount)}`}
-      summary={summary}
-    >
-      {entries.length === 0 ? (
-        <p className="monitor-activity-legacy">Details were not retained for these earlier Monitor updates.</p>
-      ) : (
-        <div className="activity-steps">
-          {entries.map(({ projection, updateCount: count }) => (
-            <ActivityStep
-              key={projection.monitorId}
-              toolName={projection.description || "Monitor"}
-              summary={`${String(count)} ${count === 1 ? "update" : "updates"} · ${monitorStateLabel(projection.state)}`}
-              failed={projection.lastError === null ? undefined : monitorStateLabel(projection.lastError.code)}
-            >
-              <dl className="monitor-activity-facts">
-                <div><dt>State</dt><dd>{monitorStateLabel(projection.state)}</dd></div>
-                <div><dt>Observed</dt><dd>{projection.counters.linesObserved}</dd></div>
-                <div><dt>Delivered</dt><dd>{projection.counters.linesDelivered}</dd></div>
-                <div><dt>Dropped</dt><dd>{projection.counters.droppedLines}</dd></div>
-                <div><dt>Suppressed lines</dt><dd>{projection.counters.linesSuppressed ?? 0}</dd></div>
-                <div><dt>Suppressed batches</dt><dd>{projection.counters.batchesSuppressed ?? 0}</dd></div>
-                <div><dt>Follow-up wakes</dt><dd>{projection.counters.followUpWakes ?? 0}</dd></div>
-                <div><dt>Steered wakes</dt><dd>{projection.counters.steeredWakes ?? 0}</dd></div>
-                <div><dt>Unknown disposition wakes</dt><dd>{projection.counters.unknownDispositionWakes ?? projection.counters.batchesDelivered}</dd></div>
-              </dl>
-              <p>Counts reflect the host snapshot when this update was dispatched.</p>
-            </ActivityStep>
-          ))}
-        </div>
-      )}
-    </ActivityRow>
-  );
-}
-
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -1328,8 +1263,8 @@ function ToolClusterPart({ data }: DataMessagePartProps) {
 }
 
 // Runtime/provider telemetry remains attached to the message so the context
-// display can summarize it. Compaction alone is promoted into Activity; other
-// transport diagnostics remain out of the transcript UI.
+// display can summarize it. Compaction alone becomes an inline transcript
+// divider; other transport diagnostics remain out of the transcript UI.
 function ErrorPart({ data }: DataMessagePartProps) {
   const payload = data as { code?: unknown; message?: unknown };
   return (
@@ -1338,6 +1273,60 @@ function ErrorPart({ data }: DataMessagePartProps) {
       <span>{String(payload.message ?? "The agent run failed.")}</span>
     </div>
   );
+}
+
+function ReplyOptionsPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const aui = useAui();
+  const messageId = useAuiState((state) => state.message.id);
+  const threadId = useAuiState((state) => state.message.metadata.custom?.threadId);
+  const { selectedThreadId } = useConsoleStore();
+  const selectionChanged = selectedThreadId !== undefined && selectedThreadId !== threadId;
+  const settled = useAuiState((state) => state.message.status?.type === "complete");
+  const running = useAuiState((state) => state.thread.isRunning);
+  const laterUser = useAuiState((state) => {
+    const index = state.thread.messages.findIndex((message) => message.id === messageId);
+    return index < 0 || state.thread.messages.slice(index + 1).some((message) => message.role === "user");
+  });
+  const clicked = useRef(false);
+  const [sent, setSent] = useState(false);
+  const options = Array.isArray(payload.options) ? payload.options.filter((option): option is string => typeof option === "string") : [];
+  const disabled = !settled || running || laterUser || sent || selectionChanged;
+  return <div className="reply-options" role="group" aria-label="Suggested replies">
+    {options.map((label) => <button key={label} type="button" disabled={disabled} onClick={() => {
+      if (disabled || clicked.current) return;
+      clicked.current = true;
+      setSent(true);
+      aui.thread().append({ role: "user", content: [{ type: "text", text: label }] });
+    }}>{label}</button>)}
+  </div>;
+}
+
+function RestartProposalPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const state = asRecord(payload.restartable);
+  const messageId = useAuiState((value) => value.message.id);
+  const boundThreadId = useAuiState((value) => value.message.metadata.custom?.threadId);
+  const { selectedThread, selectedAgent, activeThreads } = useConsoleStore();
+  const threadId = typeof boundThreadId === "string" ? boundThreadId : selectedThread?.id ?? "";
+  const sourceId = selectedThread?.id === threadId ? selectedThread.sourceId : "";
+  const partId = typeof payload.id === "string" ? payload.id : "";
+  const reason = typeof payload.reason === "string" ? payload.reason : undefined;
+  const allowed = ["available", "stale", "offline", "unsupported", "in_progress", "used"];
+  const restartable: NonNullable<RestartProposalValue["restartable"]> = {
+    state: typeof state.state === "string" && allowed.includes(state.state)
+      && sourceId.length > 0 && partId.length > 0 ? state.state as NonNullable<RestartProposalValue["restartable"]>["state"]
+      : "unsupported",
+    ...(typeof state.reason === "string" ? { reason: state.reason } : {}),
+    ...(typeof state.operationId === "string" ? { operationId: state.operationId } : {}),
+  };
+  return <RestartAgentCard
+    sourceId={sourceId}
+    agentLabel={selectedAgent?.sourceId === sourceId ? selectedAgent.label : "agent"}
+    {...(reason === undefined ? {} : { reason })}
+    proposal={{ threadId, messageId, partId, restartable }}
+    approximateRunningCount={activeThreads?.runningCounts[sourceId] ?? 0}
+  />;
 }
 
 const parts = {
@@ -1357,9 +1346,11 @@ const parts = {
       error: ErrorPart,
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
+      "restart-proposal": RestartProposalPart,
+      "reply-options": ReplyOptionsPart,
       "reply-failure": ReplyFailurePart,
-      "monitor-activity": MonitorActivityPart,
       "process-job-event": ProcessJobActivityEventPart,
+      "scheduled-wake": ScheduledWakePart,
     },
   },
 } as const;
@@ -1483,9 +1474,11 @@ function AssistantParts() {
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
+            if (part.name === "reply-options") return <ReplyOptionsPart {...part} />;
+            if (part.name === "restart-proposal") return <RestartProposalPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
-            if (part.name === "monitor-activity") return <MonitorActivityPart {...part} />;
             if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;
+            if (part.name === "scheduled-wake") return <ScheduledWakePart {...part} />;
             return part.dataRendererUI;
           case "indicator":
             return <RunningText status={{ type: "running" }} />;
@@ -1514,20 +1507,11 @@ export function UserMessage() {
       <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }
 
 export function AssistantMessage() {
-  const markerOnly = useAuiState((state) => state.message.content.length === 0
-    && state.message.metadata.custom?.runStatus === "complete"
-    && ((Array.isArray(state.message.metadata.custom?.projectTransitions)
-      && state.message.metadata.custom.projectTransitions.length > 0)
-      || (Array.isArray(state.message.metadata.custom?.modelTransitions)
-        && state.message.metadata.custom.modelTransitions.length > 0)));
-  if (markerOnly) return <><MessageProjectMarkers /><MessageModelMarkers /></>;
   return (
     <>
     <MessagePrimitive.Root className="message message-assistant">
@@ -1541,20 +1525,47 @@ export function AssistantMessage() {
         </div>
       </MessageGallery>
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }
 
+/** Reuse the settled telemetry divider while older conversations await no backfill. */
+export function CompactionMarkerRow({ marker }: { readonly marker: Extract<import("../types").ConversationMarkerPart, { kind: "compaction" }> }) {
+  return <ContextCompactionDisplay payload={marker} />;
+}
+
 export function SystemMessage() {
+  const marker = useAuiState((state) => {
+    const part = state.message.metadata.custom?.conversationMarker as { data?: unknown } | undefined;
+    return isConversationMarker(part?.data) ? part.data : undefined;
+  });
+  if (marker?.kind === "compaction") return <CompactionMarkerRow marker={marker} />;
+  if (marker?.kind === "model") return <ModelMarkers transitions={[marker]} />;
+  if (marker?.kind === "project") return <ProjectMarkers transitions={[marker]} />;
+  if (marker?.kind === "resumed") {
+    // A rule has to survive a phone width, so it stays short: no seconds, no
+    // idle duration (the agent still gets that in its own context), and the
+    // year only when the conversation resumed in a different one.
+    const at = new Date(marker.at);
+    const label = `Resumed ${at.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      ...(at.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+    })}`;
+    return <div className="model-transition" role="note" aria-label={label} title={label}>
+      <span className="model-transition-label">
+        <Icon name="spark" size={11} />
+        <span>{label}</span>
+      </span>
+    </div>;
+  }
   return (
     <>
     <MessagePrimitive.Root className="message message-system">
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
-    <MessageProjectMarkers />
-    <MessageModelMarkers />
     </>
   );
 }

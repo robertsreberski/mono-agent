@@ -1,0 +1,184 @@
+import type { Preview } from "@storybook/react-vite";
+import { useEffect } from "react";
+import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
+import { NotificationsProvider } from "../src/notifications";
+import css from "../src/styles.css?raw";
+import "../src/styles.css";
+
+// Storybook-only forced appearances: replay the real token declarations with a
+// more specific selector. The shipped app keeps its OS-driven media query.
+const source = new CSSStyleSheet();
+source.replaceSync(css);
+const themeRule = (rule: CSSRule): rule is CSSStyleRule =>
+  rule instanceof CSSStyleRule && /^:root(?:\[data-console-theme="[^"]+"\])?$/.test(rule.selectorText);
+const collect = (rules: CSSRuleList, mode: string) =>
+  Array.from(rules).filter(themeRule).map((rule) =>
+    `${rule.selectorText.replace(":root", `:root[data-storybook-scheme="${mode}"]`)} { ${rule.style.cssText} }`,
+  ).join("\n");
+const dark = Array.from(source.cssRules).find((rule) =>
+  rule instanceof CSSMediaRule && rule.conditionText.includes("prefers-color-scheme: dark"),
+);
+const style = document.createElement("style");
+style.textContent = `${collect(source.cssRules, "light")}\n${dark instanceof CSSMediaRule ? collect(dark.cssRules, "dark") : ""}\n:root[data-storybook-scheme="light"] { color-scheme: light; }\n:root[data-storybook-scheme="dark"] { color-scheme: dark; }`;
+document.head.append(style);
+
+// Refuse all console API requests in previews. Storybook's own static assets
+// still load normally; a new component effect cannot contact a live console.
+const originalFetch = window.fetch.bind(window);
+window.fetch = (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const pathname = new URL(url, location.href).pathname;
+  if (pathname === "/api/v1/agents/atlas/cron/jobs/garden-daily/run" && init?.method === "POST") {
+    return Promise.resolve(Response.json({ kind: "confirmation_required", confirmation: { token: "fictional-confirmation", expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), message: "Run the fictional garden schedule now?" } }, { status: 428 }));
+  }
+  if (pathname === "/api/v1/agents/atlas/cron/config-view" && (!init?.method || init.method === "GET")) {
+    return Promise.resolve(Response.json({ configView: { label: "Example garden schedule", fields: [{ id: "schedule", label: "Schedule", value: "0 9 * * *", source: "example", redacted: false }, { id: "target", label: "Destination", value: "[redacted]", source: "example", redacted: true }] } }));
+  }
+  const compact = /^\/api\/v1\/threads\/garden-compact-(result|error|skipped|model|failed|pending|lost)\/compact$/.exec(pathname);
+  if (compact && init?.method === "POST") {
+    const kind = compact[1];
+    if (kind === "pending") return new Promise((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    if (kind === "lost") return Promise.reject(new TypeError("Example connection lost."));
+    if (kind === "error") return Promise.resolve(Response.json({ error: { message: "Example compaction was unavailable.", code: "unavailable" } }, { status: 503 }));
+    return Promise.resolve(Response.json(kind === "result"
+      ? { status: "succeeded", trigger: "manual", operationId: "fictional-operation", tokensBefore: 183400, tokensAfter: 41300, tokenCountsExact: false }
+      : { status: kind === "model" || kind === "skipped" ? "skipped" : "failed", trigger: "manual", operationId: "fictional-operation", ...(kind === "model" ? { reason: "model_changed" } : {}) }));
+  }
+  const usage = /^\/api\/v1\/threads\/garden-usage-(typical|mixed|pending)\/usage$/.exec(pathname);
+  if (usage && (!init?.method || init.method === "GET")) {
+    if (usage[1] === "pending") return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    const mixed = usage[1] === "mixed";
+    return Promise.resolve(Response.json({ usage: {
+      total: { tokens: mixed ? { input: 22000, cacheRead: 76000, cacheWrite: 2000, output: 22000 }
+        : { input: 16000, cacheRead: 82000, cacheWrite: 2000, output: 11000 },
+        costUsd: mixed ? 4.18 : 2.24, ...(mixed ? { tokensPartial: true } : {}) },
+      ...(mixed ? { subagents: { runs: 3, costUsd: 1.12, tokensPartial: true } } : {}),
+      byModel: mixed ? [{ model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 }]
+        : [{ model: "atlas/standard", costUsd: 2.24 }],
+      computedAt: "2026-09-19T12:00:00Z", settledAssistantTurns: mixed ? 5 : 1,
+    } }));
+  }
+  if (/^\/api\/v1\/agents\/atlas-story-usage(?:-loading|-stale|-error)?\/provider-usage$/.test(pathname) && (!init?.method || init.method === "GET")) {
+    if (pathname.includes("-loading/")) {
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    }
+    const hour = 60 * 60 * 1000;
+    const fetchedAt = new Date(Date.now() - hour).toISOString();
+    const window = (kind: "session" | "weekly" | "model", label: "Session" | "Weekly" | "Fable", usedPercent: number, periodMs: number, remainingMs: number) =>
+      ({ kind, label, usedPercent, periodMs, resetsAt: new Date(Date.parse(fetchedAt) + remainingMs).toISOString() });
+    const stale = pathname.includes("-stale/");
+    const error = pathname.includes("-error/");
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "anthropic", label: "Claude", fetchedAt, stale,
+      windows: error ? [] : [window("session", "Session", 12, 5 * hour, 4 * hour), window("weekly", "Weekly", 52, 7 * 24 * hour, 5 * 24 * hour), window("model", "Fable", 92, 30 * 24 * hour, 20 * 24 * hour)],
+      ...(stale || error ? { error: { code: "auth_failed", message: "Credential rejected; re-login to this provider." } } : {}),
+    }] }));
+  }
+  const auth = /^\/api\/v1\/agents\/(atlas-story-auth-(missing|verified))\/provider-auth$/.exec(pathname);
+  if (auth && (!init?.method || init.method === "GET")) {
+    const verified = auth[2] === "verified";
+    return Promise.resolve(new Response(JSON.stringify({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-01-15T10:00:00Z",
+      providers: [{ providerId: "atlas", label: "Atlas Cloud", usages: [{ kind: "primary", model: "atlas/standard", label: "Interactive" }],
+        state: verified ? "present" : "missing", verification: verified ? "verified_by_account_request" : "not_verified",
+        credentialType: verified ? "oauth" : undefined, source: verified ? "stored" : undefined,
+        methods: [{ authType: "oauth", strategy: "device_code", label: "Sign in with Atlas", recommended: true }],
+      }],
+    }), { headers: { "Content-Type": "application/json" } }));
+  }
+  if (/^\/api\/v1\/agents\/atlas-story-auth-(missing|verified)\/restart$/.test(pathname) && (!init?.method || init.method === "GET")) {
+    return Promise.resolve(new Response(JSON.stringify({ operation: null }), { headers: { "Content-Type": "application/json" } }));
+  }
+  // These interactive section states go through the real owners, with only the
+  // HTTP boundary simulated. No fixture request may reach a running console.
+  const settingsFlow = /^\/api\/v1\/agents\/atlas-story-settings-(checks-running|checks-complete|device-code|prompt)\/provider-auth\/(checks|sessions)(?:\/story-flow)?$/.exec(pathname);
+  if (settingsFlow) {
+    const variant = settingsFlow[1];
+    const timestamp = new Date().toISOString();
+    if (settingsFlow[2] === "checks") return Promise.resolve(Response.json({ schema: "mono-agent.provider-auth-check.v1", id: "story-flow", state: variant === "checks-complete" ? "completed" : "running", createdAt: timestamp, updatedAt: timestamp, expiresAt: new Date(Date.now() + 600_000).toISOString(), results: [{ providerId: "anthropic", label: "Claude", state: variant === "checks-complete" ? "passed" : "running", model: "atlas/standard", selectionBasis: "catalog_pricing", checkedAt: timestamp, code: "example", message: "Example check." }] }));
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-auth-session.v1", id: "story-flow", providerId: "anthropic", authType: "oauth", strategy: variant === "device-code" ? "device_code" : "paste_back", state: "pending", createdAt: timestamp, updatedAt: timestamp, expiresAt: new Date(Date.now() + 600_000).toISOString(), progress: "Waiting for example sign-in", ...(variant === "device-code" ? { deviceCode: { verificationUri: "https://example.com/device", userCode: "EXAMPLE-CODE", expiresAt: new Date(Date.now() + 600_000).toISOString() } } : { prompt: { id: "example-prompt", type: "manual_code", message: "Paste the example redirect URL" } }) }));
+  }
+  const settings = /^\/api\/v1\/agents\/atlas-story-settings-(base|dense|stress|offline|unsaved|confirm|progress|success|override|draft-use|saving|save-error|loading|read-error|failure|not-confirmed|unsupported|unpinned|usage-only|no-usage|needs-action|usage-stale|provider-unsupported|provider-loading|checks-running|checks-complete|device-code|prompt|pin-pending|pin-failed|no-recent|restart-loading|confirm-no-running|idle)\/(provider-auth|provider-usage|restart(?:\/story-op)?)$/.exec(pathname);
+  if (settings) {
+    const operation = { id: "story-op", sourceId: `atlas-story-settings-${settings[1]}`, stage: settings[1] === "progress" ? "restarting" : "back_online", ...(settings[1] === "progress" ? {} : { outcome: "success" }), requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (settings[2] === "restart" && init?.method === "POST") return Promise.resolve(Response.json(operation));
+    if (settings[2] === "restart/story-op") return Promise.resolve(Response.json(operation));
+    if (settings[2] === "restart") {
+      if (settings[1] === "restart-loading") return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      if (settings[1] === "read-error") return Promise.resolve(Response.json({ error: { message: "Example status unavailable" } }, { status: 503 }));
+      const retained = settings[1] === "failure" ? { ...operation, stage: "back_online", outcome: "failure", reason: "Example process did not restart." }
+        : settings[1] === "not-confirmed" ? { ...operation, stage: "back_online", outcome: "not_confirmed", reason: "No ready process appeared." } : null;
+      return Promise.resolve(Response.json({ operation: settings[1] === "progress" ? operation : retained }));
+    }
+    if (init?.method && init.method !== "GET") return Promise.reject(new Error("Mutation disabled in Storybook"));
+    if (settings[2] === "provider-auth" && settings[1] === "provider-loading") return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    if (settings[2] === "provider-auth") return Promise.resolve(Response.json({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: [
+      { providerId: "anthropic", label: "Claude", state: settings[1] === "needs-action" ? "missing" : "present", verification: settings[1] === "needs-action" ? "not_verified" : "verified_by_live_request", source: "stored", methods: [{ authType: "oauth", strategy: settings[1] === "prompt" ? "paste_back" : "device_code", label: "Sign in", recommended: true }] },
+      { providerId: "openai-codex", label: settings[1] === "stress" ? "Grove Research Cloud Extended Example Provider" : "Codex", state: "missing", verification: "not_verified", methods: [{ authType: "oauth", strategy: "paste_back", label: "Sign in", recommended: true }] },
+      { providerId: "opencode-go", label: "OpenCode Go", state: settings[1] === "needs-action" ? "missing" : "present", verification: settings[1] === "needs-action" ? "not_verified" : "verified_by_account_request", source: "stored", methods: [{ authType: "api_key", strategy: "manual", label: "Sign in", recommended: true }] },
+    ] }));
+    const fetchedAt = new Date(Date.now() - 7_200_000).toISOString();
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: ["anthropic", "openai-codex", "opencode-go"].map((providerId, index) => ({ providerId, label: ["Claude", "Codex", "OpenCode Go"][index], ...(index === 0 ? {} : { plan: index === 1 && settings[1] === "stress" ? "Premium Shared Workspace" : ["", "Pro", "Go"][index] }), fetchedAt, stale: index === 1, ...(index === 1 && settings[1] === "usage-stale" ? { error: { code: "auth_failed", message: "Credential rejected; re-login to this provider." } } : {}), windows: index === 1
+      ? [{ kind: "weekly", label: "Weekly", usedPercent: 48, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 300_000_000).toISOString() }]
+      : [{ kind: "session", label: "Session", usedPercent: 22 + index * 19, periodMs: 18_000_000, resetsAt: new Date(Date.now() + 2_000_000).toISOString() },
+        { kind: "weekly", label: "Weekly", usedPercent: 30 + index * 17, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 300_000_000).toISOString() },
+        { kind: index === 0 ? "model" : "monthly", label: index === 0 ? "Fable" : "Monthly", usedPercent: 42 + index * 15, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 360_000_000).toISOString() }], })) }));
+  }
+  // This read-only fixture lets schedule editor examples show their actual
+  // create/edit/paused controls; no mutation ever contacts a console.
+  const match = /^\/api\/v1\/threads\/(garden-planner|garden-active|garden-paused)\/wake-schedule$/.exec(pathname);
+  if (match && (!init?.method || init.method === "GET")) {
+    const id = match[1]!;
+    const schedule = id === "garden-planner" ? null : {
+      scheduleId: `example-${id}`, threadId: id, sourceId: "atlas",
+      definition: id === "garden-paused"
+        ? { kind: "weekly", timezone: "UTC", days: [1, 3], times: ["09:00"], message: "Check the fictional garden" }
+        : { kind: "once", timezone: "UTC", localAt: "2026-10-15T09:00", message: "Review the garden plan" },
+      state: id === "garden-paused" ? "paused" : "active", revision: 1,
+      nextFireAt: id === "garden-paused" ? null : "2026-10-15T09:00:00Z",
+      lastOutcome: null, createdAt: "2026-01-15T10:00:00Z",
+    };
+    return Promise.resolve(new Response(JSON.stringify({ schedule }), { headers: { "Content-Type": "application/json" } }));
+  }
+  if (pathname.startsWith("/api/")) {
+    return Promise.reject(new Error("Console API is disabled in Storybook"));
+  }
+  return originalFetch(input, init);
+};
+
+const preview: Preview = {
+  globalTypes: {
+    theme: { description: "Console palette", toolbar: { icon: "paintbrush", items: ["evergreen", "ocean", "plum", "terracotta"] } },
+    scheme: { description: "Appearance", toolbar: { icon: "circlehollow", items: ["light", "dark"] } },
+  },
+  initialGlobals: { theme: "evergreen", scheme: "light", viewport: { value: "desktop" } },
+  parameters: {
+    layout: "padded",
+    viewport: { options: {
+      phone: { name: "Phone (360px)", styles: { width: "360px", height: "780px" } },
+      mobile: { name: "Mobile (560px)", styles: { width: "560px", height: "800px" } },
+      tablet: { name: "Tablet (900px)", styles: { width: "900px", height: "800px" } },
+      tablet901: { name: "Tablet (901px)", styles: { width: "901px", height: "800px" } },
+      tablet1060: { name: "Tablet (1060px)", styles: { width: "1060px", height: "800px" } },
+      tablet1101: { name: "Tablet (1101px)", styles: { width: "1101px", height: "800px" } },
+      desktop: { name: "Desktop (1200px)", styles: { width: "1200px", height: "850px" } },
+    } },
+  },
+  decorators: [(Story, context) => {
+    // Set before children paint, then undo on unmount. Never modify product CSS.
+    const theme = String(context.globals.theme ?? "evergreen");
+    const scheme = String(context.globals.scheme ?? "light");
+    document.documentElement.dataset.consoleTheme = theme;
+    document.documentElement.dataset.storybookScheme = scheme;
+    useEffect(() => () => {
+      delete document.documentElement.dataset.consoleTheme;
+      delete document.documentElement.dataset.storybookScheme;
+    }, []);
+    const runtime = useLocalRuntime({ run: async () => ({ content: [{ type: "text", text: "Example only" }] }) });
+    return <AssistantRuntimeProvider runtime={runtime}><NotificationsProvider>{context.parameters.layout === "fullscreen"
+      ? <Story />
+      : <div style={{ background: "var(--app-bg)", color: "var(--text)", minHeight: "85vh", padding: 24 }}><Story /></div>
+    }</NotificationsProvider></AssistantRuntimeProvider>;
+  }],
+};
+
+export default preview;

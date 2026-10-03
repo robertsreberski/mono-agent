@@ -1,4 +1,7 @@
 node_modules/
 src/
+.storybook/
+storybook-static/
+*.stories.*
 coverage/
 *.tsbuildinfo

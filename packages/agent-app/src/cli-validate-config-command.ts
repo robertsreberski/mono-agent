@@ -416,7 +416,7 @@ async function assembleResolvedConfigView(
   }
   let config;
   try {
-    config = await loadAppCoreConfig({ env, cwd, configPath });
+    config = await loadAppCoreConfig({ env, cwd, configPath }, { warnOnDeprecatedConfig: args.json !== true });
   } catch (error) {
     if (isAppCoreConfigError(error)) {
       return { ok: false, missing: jsonResult.missing, message: error.message };
@@ -427,13 +427,12 @@ async function assembleResolvedConfigView(
   const sections = buildMonoAgentConfigView({
     redacted: redactMonoAgentConfig(config),
     json: jsonResult.json,
-    env,
   });
   const drivers = await resolveChannelDrivers({ env, cwd, configPath });
   const channels = await collectChannelConfigViews(drivers, { env, cwd, configPath });
   const warnings = [
     ...findJsonSecretConfigWarnings([...sections, ...channels]),
-    ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
+    ...findRemovedConfigWarnings({ json: jsonResult.json }),
   ];
   const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false, drivers });
   const channelStatus = report.sections.filter((section) => section.id.startsWith("channel:"));

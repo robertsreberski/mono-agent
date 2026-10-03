@@ -118,13 +118,6 @@ export function isReadSkillCompatibleName(name: unknown): name is string {
   return typeof name === 'string' && READ_SKILL_COMPATIBLE_NAME.test(name);
 }
 
-export function renderSkillIndex(
-  entries: readonly SkillIndexEntry[],
-  skillDisclosure?: 'index' | 'full',
-): string {
-  return renderSkillIndexEntries(buildSkillIndex(entries), skillDisclosure);
-}
-
 /**
  * Takes `SkillIndexSummary` rather than `SkillIndexEntry` because rendering only
  * ever reads `name` and `description`. Widening the parameter is what lets a

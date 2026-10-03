@@ -27,7 +27,6 @@ import {
   providerSetupActionCommandLine,
   type ProviderCredentialState,
 } from "../provider-setup.js";
-import { isSupermemoryPluginInstalled } from "../supermemory-plugin.js";
 import {
   alwaysOnTools,
   composeWizardPlan,
@@ -79,6 +78,7 @@ export type WizardOutcome =
       readonly providerSetupSecrets: Readonly<Record<string, string>>;
       readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
       readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+      readonly piAuthMethods: Readonly<Record<string, "oauth" | "api-key">>;
       readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
       /** Required selected module secrets, kept in memory until secure init persists them. */
       readonly moduleSecrets: Readonly<Record<string, string>>;
@@ -102,6 +102,7 @@ export interface SetupRepairRunContext extends WizardRunContext {
   readonly providerSetupSecrets: Readonly<Record<string, string>>;
   readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
   readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+  readonly piAuthMethods?: Readonly<Record<string, "oauth" | "api-key">>;
   readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
   readonly moduleSecrets: Readonly<Record<string, string>>;
 }
@@ -121,12 +122,11 @@ interface DraftAnswers {
   channels: string[];
   memory: string | undefined;
   sandbox: boolean;
-  observability: boolean;
   allowedTools: string[];
   moduleInputs: Record<string, Record<string, string>>;
   /**
    * Browser-first gate intent (not part of {@link WizardAnswers}). True while the
-   * optional channels/memory/observability steps belong to the current path: a
+   * optional channels/memory steps belong to the current path: a
    * preset/seed that already selects them, an accepted gate, an accepted
    * advanced review edit, or a setup-repair session.
    */
@@ -140,12 +140,12 @@ interface DraftAnswers {
   advancedEverAccepted: boolean;
 }
 
-/** Advanced review-edit targets: channels, memory, capability details, observability. */
-const ADVANCED_EDIT_STEPS: ReadonlySet<number> = new Set([3, 4, 5, 8]);
+/** Advanced review-edit targets: channels, memory, and capability details. */
+const ADVANCED_EDIT_STEPS: ReadonlySet<number> = new Set([3, 4, 5]);
 
 /** True when the draft currently carries any optional-capability selection. */
 function hasAdvancedAnswers(draft: DraftAnswers): boolean {
-  return draft.channels.length > 0 || draft.memory !== undefined || draft.observability;
+  return draft.channels.length > 0 || draft.memory !== undefined;
 }
 
 /**
@@ -162,9 +162,7 @@ function clearAdvancedAnswers(draft: DraftAnswers): boolean {
     delete draft.moduleInputs[draft.memory];
     draft.memory = undefined;
   }
-  const hadObservability = draft.observability;
-  draft.observability = false;
-  return hadChannels || hadMemory || hadObservability;
+  return hadChannels || hadMemory;
 }
 
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Exec", "Write", "Edit", "NodeRepl"]);
@@ -281,6 +279,7 @@ interface CollectedAnswers {
   readonly providerSetupSecrets: Readonly<Record<string, string>>;
   readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
   readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+  readonly piAuthMethods: Readonly<Record<string, "oauth" | "api-key">>;
   readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
   readonly moduleSecrets: Readonly<Record<string, string>>;
 }
@@ -309,6 +308,7 @@ export async function runInitWizard(ctx: WizardRunContext): Promise<WizardOutcom
       providerSetupSecrets: result.providerSetupSecrets,
       providerEnvironmentSecrets: result.providerEnvironmentSecrets,
       piApiKeyPersistenceByProvider: result.piApiKeyPersistenceByProvider,
+      piAuthMethods: result.piAuthMethods,
       credentialStates: result.credentialStates,
       moduleSecrets: result.moduleSecrets,
     };
@@ -343,6 +343,7 @@ export async function runSetupRepairWizard(ctx: SetupRepairRunContext): Promise<
       providerSetupSecrets: result.providerSetupSecrets,
       providerEnvironmentSecrets: result.providerEnvironmentSecrets,
       piApiKeyPersistenceByProvider: result.piApiKeyPersistenceByProvider,
+      piAuthMethods: result.piAuthMethods,
       credentialStates: result.credentialStates,
       moduleSecrets: result.moduleSecrets,
     };
@@ -395,7 +396,7 @@ async function collectAnswers(ctx: WizardRunContext): Promise<CollectedAnswers> 
 /**
  * The full custom flow: name/Role → model → optional-capabilities gate (when
  * declined: tools → sandbox → review; when accepted additionally: channels →
- * memory → per-module inputs → observability) → summary.
+ * memory → per-module inputs) → summary.
  */
 async function collectCustom(ctx: WizardRunContext): Promise<CollectedAnswers> {
   return await collectInteractiveFromSeed(ctx, defaultAnswers({
@@ -463,7 +464,7 @@ async function promptManualPiModelRef(): Promise<string> {
       validate: (v) => {
         const value = (v ?? "").trim();
         if (value.length === 0) {
-          return "Enter a supported Pi provider id (anthropic, github-copilot, openai-codex, opencode-go, ollama, or lmstudio)";
+          return "Enter a supported Pi provider id (anthropic, github-copilot, openai, openai-codex, opencode-go, ollama, or lmstudio)";
         }
         if (value.includes(":")) return "Provider id cannot contain ':'.";
         return guidedPiProviderProblem(value);
@@ -476,7 +477,7 @@ async function promptManualPiModelRef(): Promise<string> {
       placeholder: provider === "openai-codex" ? "gpt-5.6-terra" : "llama3.1:8b",
       validate: (v) =>
         (v ?? "").trim().length === 0
-          ? "Enter the provider-specific model id (e.g. gpt-5.6-terra, gpt-5.6-sol, kimi-k2.6, llama3.1:8b)"
+          ? "Enter the provider-specific model id (e.g. gpt-5.6-terra, gpt-5.6-sol, kimi-k3, llama3.1:8b)"
           : undefined,
     })
   ).trim();
@@ -606,7 +607,7 @@ function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): bool
     case 7:
       return safetyPolicyHasInteractivePrompt(draft);
     case 8:
-      return draft.advancedRequested;
+      return false;
     default:
       return false;
   }
@@ -699,11 +700,11 @@ async function collectInteractiveFromSeed(
           break;
         }
         case 2: {
-          // Browser-first gate: channels/memory/observability are opt-in. The
+          // Browser-first gate: channels/memory are opt-in. The
           // gate defaults to Yes only when the seed (preset) or an already
           // accepted edit selected them.
           const addOptional = await confirm({
-            message: "Add optional capabilities now? (channels, memory, observability)",
+            message: "Add optional capabilities now? (channels, memory)",
             initialValue: draft.advancedRequested,
           });
           if (addOptional) {
@@ -713,16 +714,15 @@ async function collectInteractiveFromSeed(
           } else {
             // Declining keeps an already accepted selection, but it must never
             // skip mandatory consent: route through tools (6) and safety (7)
-            // before review. Observability (8) still runs when retained
-            // capabilities are part of this run, so escaping back to this gate
-            // cannot bypass the tool framing, the sandbox choice, or the
+            // before review, so escaping back to this gate cannot bypass the
+            // tool framing, the sandbox choice, or the
             // default-No high-risk confirmation (review finding F1).
             const retained = draft.advancedEverAccepted && hasAdvancedAnswers(draft);
             if (retained) {
               p.log.info("Keeping the optional capabilities you already selected.");
             } else if (clearAdvancedAnswers(draft)) {
               p.log.info(
-                "Skipped optional capabilities for now — you can add channels, memory, or observability later " +
+                "Skipped optional capabilities for now — you can add channels or memory later " +
                 "in mono-agent.config.json.",
               );
             }
@@ -754,11 +754,7 @@ async function collectInteractiveFromSeed(
           const previousMemory = draft.memory;
           const memory = await select({
             message: "Should the agent remember across conversations?",
-            options: memorySelectOptions({
-              includeOptionalPlugins:
-                draft.memory === "memory:supermemory"
-                || isSupermemoryPluginInstalled({ cwd: ctx.cwd }),
-            }),
+            options: memorySelectOptions(),
             initialValue: draft.memory ?? "",
           });
           draft.memory = memory === "" ? undefined : memory;
@@ -801,17 +797,12 @@ async function collectInteractiveFromSeed(
             returnToReviewAfterStep = undefined;
             step = finalStep;
           } else {
-            // Observability is an optional capability; the default path goes
-            // straight to review.
-            step = draft.advancedRequested ? 8 : finalStep;
+            step = finalStep;
           }
           break;
         }
         case 8:
-          draft.observability = await confirm({
-            message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
-            initialValue: draft.observability,
-          });
+          // Compatibility index retained for setup-repair callers from older flows.
           advanceAfter(8);
           break;
         case 9: {
@@ -1344,6 +1335,7 @@ type CreationReviewResult =
         readonly providerSetupSecrets: Readonly<Record<string, string>>;
         readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
         readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+        readonly piAuthMethods: Readonly<Record<string, "oauth" | "api-key">>;
       };
     }
   | { readonly status: "edit"; readonly step: number };
@@ -1366,10 +1358,25 @@ async function confirmSummary(
   const preserveProviderSetup = options !== undefined
     && existingSetupModelRefs !== undefined
     && sameOrderedValues(setupModelRefs, existingSetupModelRefs);
-  const preliminarySetupPlan = providerSetupPlan(plan, ctx, draft.credentialStates);
+  const usesOpenAI = setupModelRefs.some((model) => model.startsWith("openai:"));
+  const needsOpenAIAuth = usesOpenAI && draft.credentialStates.openai !== "credential_detected";
+  const piAuthMethods: Record<string, "oauth" | "api-key"> = needsOpenAIAuth
+    ? { openai: preserveProviderSetup && options?.existing.piAuthMethods?.openai !== undefined
+      ? options.existing.piAuthMethods.openai
+      : await select({
+        message: "How should OpenAI authenticate? One credential per provider; a successful login replaces the previous method.",
+        options: [
+          { value: "oauth", label: "Sign in with ChatGPT" },
+          { value: "api-key", label: "OpenAI API key" },
+        ],
+      }) }
+    : { ...options?.existing.piAuthMethods };
+  const keepPreviousSetup = preserveProviderSetup
+    && (!needsOpenAIAuth || options?.existing.piAuthMethods?.openai === piAuthMethods.openai);
+  const preliminarySetupPlan = providerSetupPlan(plan, ctx, draft.credentialStates, {}, piAuthMethods);
   // Resolve destinations before the final review; collect masked values only
   // after the operator chooses Create.
-  const piApiKeyPersistenceByProvider = preserveProviderSetup
+  const piApiKeyPersistenceByProvider = keepPreviousSetup
     ? { ...options.existing.piApiKeyPersistenceByProvider }
     : await selectPiApiKeyPersistence(
         preliminarySetupPlan,
@@ -1380,7 +1387,11 @@ async function confirmSummary(
     ctx,
     draft.credentialStates,
     piApiKeyPersistenceByProvider,
+    piAuthMethods,
   );
+  if (usesOpenAI && !needsOpenAIAuth) {
+    p.note("Existing OpenAI credential detected; it will be kept. To switch methods later, run mono-agent auth login openai --auth-method oauth|api-key.", "OpenAI authentication");
+  }
 
   if (setupModelRefs.some((model) => /^(?:ollama|lmstudio):/u.test(model))) {
     p.note(
@@ -1489,7 +1500,7 @@ async function confirmSummary(
     message: `Create “${draft.name}”?`,
     options: creationReviewOptions({
       setupRequired:
-        (preserveProviderSetup
+        (keepPreviousSetup
           ? options.existing.runProviderSetup
           : setupPlan.actions.length > 0) || draft.sandbox,
     }),
@@ -1511,10 +1522,9 @@ async function confirmSummary(
                 { value: "4", label: "Memory" },
                 { value: "5", label: "Capability details" },
               ]
-            : [{ value: "2", label: "Add optional capabilities (channels, memory, observability)" }]),
+            : [{ value: "2", label: "Add optional capabilities (channels, memory)" }]),
           { value: "6", label: "Tools" },
           { value: "7", label: "Route safety and sandbox" },
-          ...(draft.advancedRequested ? [{ value: "8", label: "Observability" }] : []),
           { value: "9", label: "Return to review" },
         ],
         initialValue: "1",
@@ -1528,7 +1538,7 @@ async function confirmSummary(
       throw error;
     }
   }
-  if (preserveProviderSetup) {
+  if (keepPreviousSetup) {
     return {
       status: "create",
       providerSetup: {
@@ -1536,18 +1546,22 @@ async function confirmSummary(
         providerSetupSecrets: { ...options.existing.providerSetupSecrets },
         providerEnvironmentSecrets: { ...options.existing.providerEnvironmentSecrets },
         piApiKeyPersistenceByProvider: { ...options.existing.piApiKeyPersistenceByProvider },
+        piAuthMethods: { ...options.existing.piAuthMethods },
       },
     };
   }
   let providerSetup;
   try {
-    providerSetup = await collectProviderSetup(
-      setupPlan,
-      setupPlan.actions.length > 0,
-      piApiKeyPersistenceByProvider,
-      options?.existing.providerSetupSecrets,
-      options?.existing.providerEnvironmentSecrets,
-    );
+    providerSetup = {
+      ...await collectProviderSetup(
+        setupPlan,
+        setupPlan.actions.length > 0,
+        piApiKeyPersistenceByProvider,
+        options?.existing.providerSetupSecrets,
+        options?.existing.providerEnvironmentSecrets,
+      ),
+      piAuthMethods,
+    };
   } catch (error) {
     if (error instanceof WizardBack) {
       if (options !== undefined) throw error;
@@ -1585,40 +1599,6 @@ async function composePlanForCwd(answers: WizardAnswers, cwd: string): Promise<W
   });
 }
 
-/** Offer auth/preflight for every runtime and hidden memory model dependency. */
-async function promptProviderSetup(
-  plan: WizardPlan,
-  ctx: { readonly cwd: string; readonly piAuthPath?: string },
-  credentialStates: Readonly<Record<string, ProviderCredentialState>> = {},
-): Promise<{
-  readonly runProviderSetup: boolean;
-  readonly providerSetupSecrets: Readonly<Record<string, string>>;
-  readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
-  readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
-}> {
-  const modelRefs = referencedSetupModelRefs(plan);
-  p.note(modelRefs.join("\n"), "Models and services to verify");
-  const preliminarySetupPlan = providerSetupPlan(plan, ctx, credentialStates);
-  if (preliminarySetupPlan.actions.length === 0) {
-    return { runProviderSetup: false, providerSetupSecrets: {}, providerEnvironmentSecrets: {}, piApiKeyPersistenceByProvider: {} };
-  }
-  const piApiKeyPersistenceByProvider = await selectPiApiKeyPersistence(preliminarySetupPlan);
-  const setupPlan = providerSetupPlan(plan, ctx, credentialStates, piApiKeyPersistenceByProvider);
-  p.note(
-    setupPlan.actions
-      .map(providerSetupActionReviewLine)
-      .join("\n"),
-    "Provider setup",
-  );
-  const runProviderSetup = await confirm({
-    message: setupPlan.actions.some((action) => action.id.startsWith("pi-login:"))
-      ? "Run provider auth/preflight now? (detected credentials are reused and verified by live readiness; Pi OAuth may update the auth store)"
-      : "Run provider auth/preflight now? (detected credentials are reused and verified by live readiness)",
-    initialValue: false,
-  });
-  return collectProviderSetup(setupPlan, runProviderSetup, piApiKeyPersistenceByProvider);
-}
-
 type PlannedProviderSetup = ReturnType<typeof planProviderSetup>;
 
 function providerSetupPlan(
@@ -1626,6 +1606,7 @@ function providerSetupPlan(
   ctx: { readonly cwd: string; readonly piAuthPath?: string },
   credentialStates: Readonly<Record<string, ProviderCredentialState>> = {},
   piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">> = {},
+  piAuthMethods: Readonly<Record<string, "oauth" | "api-key">> = {},
 ): PlannedProviderSetup {
   const modelRefs = referencedSetupModelRefs(plan);
   const configuredPiAuthPath = typeof plan.configJson.providers?.piAuthPath === "string"
@@ -1637,6 +1618,7 @@ function providerSetupPlan(
     cwd: ctx.cwd,
     credentialStates,
     piApiKeyPersistenceByProvider,
+    piAuthMethods,
     ...(piAuthPath === undefined ? {} : { piAuthPath }),
   });
 }
@@ -1712,12 +1694,6 @@ async function selectPiApiKeyPersistence(
   return selected;
 }
 
-function providerSetupActionReviewLine(action: PlannedProviderSetup["actions"][number]): string {
-  if (isProviderSetupPiApiKeyAction(action) && action.persistence === "environment") {
-    return `${action.label}: read ${action.envVar} from the durable agent environment; Pi auth.json remains unchanged (cwd: ${action.cwd})`;
-  }
-  return `${action.label}: ${providerSetupActionCommandLine(action)} (cwd: ${action.cwd})`;
-}
 
 /** Seed a mutable draft from immutable answers (defaults or a preset). */
 function draftFrom(answers: WizardAnswers): DraftAnswers {
@@ -1741,14 +1717,12 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
     channels: [...answers.channels],
     memory: answers.memory,
     sandbox: answers.sandbox,
-    observability: answers.observability,
     allowedTools: [...answers.allowedTools],
     moduleInputs,
     // A preset/seed that already selects optional capabilities opens the gate
     // at Yes; the operator can still decline it while nothing was accepted.
     advancedRequested: answers.channels.length > 0
-      || answers.memory !== undefined
-      || answers.observability,
+      || answers.memory !== undefined,
     advancedEverAccepted: false,
   };
 }
@@ -1771,7 +1745,6 @@ function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
     channels: [...draft.channels],
     ...(draft.memory === undefined ? {} : { memory: draft.memory }),
     sandbox: draft.sandbox,
-    observability: draft.observability,
     allowedTools: [...draft.allowedTools],
     moduleInputs: draft.moduleInputs,
   };

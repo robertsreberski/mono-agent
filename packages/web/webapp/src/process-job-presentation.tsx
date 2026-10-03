@@ -13,7 +13,7 @@ import {
   TERMINAL_PROCESS_JOB_STATES,
 } from "./components/ProcessJob";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
-import type { MessagePart, ProcessJobProjection, WebMessage } from "./types";
+import type { MessagePart, ProcessJobProjection, ToolCallStatus, WebMessage } from "./types";
 
 export type ProcessJobPartValue = Extract<MessagePart, { type: "process-job" }>;
 
@@ -27,12 +27,111 @@ export interface ProcessJobPresentation {
   readonly jobs: readonly ProcessJobPresentationEntry[];
   readonly eventsByMessageId: ReadonlyMap<string, readonly ProcessJobActivityEvent[]>;
   readonly jobsById: ReadonlyMap<string, ProcessJobProjection>;
+  /** The parent's calls to its detached children, in transcript order. */
+  readonly parentCalls: readonly ProcessJobParentCall[];
 }
+
+/**
+ * The kind of child a job or a parent call belongs to. A subagent instance id
+ * (Agent/AgentManage) and a peer name (PeerAgent) live in different
+ * namespaces, so the shelf never groups across families.
+ */
+export type ProcessJobAgentFamily = "agent" | "peer";
+
+const isPeerAgentToolName = (name: string): boolean => name === "PeerAgent" || name.endsWith("__PeerAgent");
+
+export const processJobAgentFamily = (tool: string): ProcessJobAgentFamily | undefined =>
+  isSubagentProcessJobTool(tool) ? "agent" : isPeerAgentToolName(tool) ? "peer" : undefined;
+
+/**
+ * What one parent call said to (or did to) a detached child.
+ *
+ * `brief` is an Agent prompt; `message` an AgentManage message or a PeerAgent
+ * send; `steer`, `stop` and `close` are AgentManage controls; `answer` and
+ * `decline` answer a peer's question.
+ */
+export type ProcessJobParentAction = "brief" | "message" | "steer" | "stop" | "close" | "answer" | "decline";
+
+/**
+ * One call from the parent agent to a detached child, read from the loaded
+ * transcript. Everything here is text the transcript already carries, in the
+ * shape the server already shaped it; the job projection never holds prompts.
+ */
+export interface ProcessJobParentCall {
+  readonly messageId: string;
+  readonly toolCallId: string;
+  /** The tool the parent called, without any MCP server prefix. */
+  readonly tool: string;
+  readonly family: ProcessJobAgentFamily;
+  /**
+   * The subagent instance id or peer name the call addressed. A launch whose
+   * arguments do not name it (a generated instance id) is joined through the
+   * job it started instead.
+   */
+  readonly instanceId?: string;
+  /** The peer thread a PeerAgent call addressed. */
+  readonly thread?: string;
+  readonly action: ProcessJobParentAction;
+  /** The model-authored text: prompt, message, steer or a peer answer. */
+  readonly text?: string;
+  /** The server sent only the head of the call's arguments. */
+  readonly argsTruncated?: boolean;
+  /** Character length of the untruncated arguments, when truncated. */
+  readonly argsBytes?: number;
+  /**
+   * The detached job this call started. Set only from a host receipt that is
+   * the ONLY claim on that job in the loaded transcript: the canonical start
+   * receipt for Agent/AgentManage, or PeerAgent's exact started JSON in a
+   * detached mode. Tool result text is otherwise never trusted to link a job.
+   */
+  readonly launchedJobId?: string;
+  /** The job a steer or stop reached, from its validated receipt. */
+  readonly targetJobId?: string;
+  /** A steer's or stop's validated receipt status; unknown values are dropped. */
+  readonly outcome?: ProcessJobControlOutcome;
+  /** A message that also asks to close the instance once its turn succeeds. */
+  readonly closes?: boolean;
+  /** The host's own result confirms the instance closed. */
+  readonly closed?: boolean;
+  /** Ran inside the parent's turn: no detached job can follow it. */
+  readonly foreground?: boolean;
+  /** A foreground call that completed and returned a result. */
+  readonly answered?: boolean;
+  /** The parent's own call: running, answered, or failed. */
+  readonly status: ToolCallStatus;
+  /** When the parent message holding the call started (an ordering hint only). */
+  readonly at: string;
+}
+
+/** Receipt statuses the AgentManage steer and stop tools define. */
+export type ProcessJobControlOutcome =
+  | "applied" | "pending" | "not_applied" | "unsupported"
+  | "stopped" | "stop_requested" | "already_idle";
+
+const STEER_OUTCOMES: ReadonlySet<string> = new Set(["applied", "pending", "not_applied", "unsupported"]);
+const STOP_OUTCOMES: ReadonlySet<string> = new Set(["stopped", "stop_requested", "already_idle"]);
+
+/**
+ * Tool a process-job receipt or activity row can name.
+ *
+ * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
+ * no alias, and retained transcripts still carry the old name on their stored
+ * receipts and activity rows. Accepted on these read paths so old job cards
+ * keep rendering identically; never emitted for new work.
+ */
+export type ProcessJobToolName = "Exec" | "Bash" | "Agent" | "AgentManage" | "AgentSend" | "PeerAgent";
+
+/** Accepted process-job tool names, including the legacy `AgentSend` history value. */
+export const PROCESS_JOB_TOOL_NAMES: readonly ProcessJobToolName[] = ["Exec", "Bash", "Agent", "AgentManage", "AgentSend", "PeerAgent"];
+
+/** Whether a stored or live process-job row belongs to a subagent tool (legacy name included). */
+export const isSubagentProcessJobTool = (tool: string): boolean =>
+  tool === "Agent" || tool === "AgentManage" || tool === "AgentSend";
 
 export interface ProcessJobStartReceipt {
   readonly schema: "mono-agent.process-job-start-receipt.v1";
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  readonly tool: ProcessJobToolName;
   readonly state: "queued" | "starting" | "running";
   readonly startedAt: string | null;
   readonly maxRuntimeMs?: number;
@@ -43,7 +142,7 @@ export interface ProcessJobActivityEvent {
   readonly id: string;
   readonly toolCallId: string;
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  readonly tool: ProcessJobToolName;
   readonly summary: string;
   readonly phase: "started" | "terminal";
   readonly state: ProcessJobProjection["state"];
@@ -115,7 +214,7 @@ export const parseProcessJobStartReceipt = (
       || keys.some((key) => !allowed.includes(key))
       || keys.length !== required.length + (Object.prototype.hasOwnProperty.call(value, "maxRuntimeMs") ? 1 : 0)
       || value.schema !== "mono-agent.process-job-start-receipt.v1"
-      || !["Exec", "Bash", "Agent", "AgentSend"].includes(String(value.tool))
+      || !PROCESS_JOB_TOOL_NAMES.includes(String(value.tool) as ProcessJobToolName)
       || value.tool !== containingTool
       || typeof value.jobId !== "string"
       || value.jobId.trim().length === 0
@@ -128,6 +227,263 @@ export const parseProcessJobStartReceipt = (
   } catch {
     return undefined;
   }
+};
+
+const INSTANCE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/u;
+/** The host mints peer job ids with `randomUUID`. */
+const JOB_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const nonEmptyText = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 ? value : undefined;
+
+/** A tool result's text: a string, or its text content blocks joined. */
+const resultText = (result: unknown): string | undefined =>
+  typeof result === "string" ? result
+    : Array.isArray(result) ? result.map((block) => isPlainRecord(block) && typeof block.text === "string" ? block.text : "").join("")
+      : isPlainRecord(result) && typeof result.text === "string" ? result.text : undefined;
+
+/**
+ * The JSON record a host control receipt is, when the WHOLE result is one.
+ * Anything else (prose, a trailing line, a quoted receipt) is no receipt.
+ */
+const wholeResultRecord = (result: unknown): Record<string, unknown> | undefined => {
+  const text = resultText(result)?.trim();
+  if (text === undefined || !text.startsWith("{") || !text.endsWith("}")) return undefined;
+  try {
+    const value = JSON.parse(text) as unknown;
+    return isPlainRecord(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const hasExactKeys = (record: Record<string, unknown>, keys: readonly string[]): boolean => {
+  const actual = Object.keys(record);
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(record, key));
+};
+
+/**
+ * PeerAgent's started receipt, `{peer, thread, jobId, state: "started"}` and
+ * nothing else, for exactly the addressed peer and thread. Only a DETACHED
+ * send or answer returns it; in the foreground the result is the peer's own
+ * reply, which may be any text, so it is never read as a receipt.
+ */
+const peerStartedJobId = (result: unknown, peer: string, thread: string | undefined): string | undefined => {
+  const record = wholeResultRecord(result);
+  if (record === undefined || thread === undefined || !hasExactKeys(record, ["peer", "thread", "jobId", "state"])) return undefined;
+  return record.state === "started" && record.peer === peer && record.thread === thread
+    && typeof record.jobId === "string" && JOB_UUID.test(record.jobId) ? record.jobId : undefined;
+};
+
+/** A steer or stop receipt for exactly this instance, with a status its tool defines. */
+const controlReceipt = (
+  result: unknown,
+  instanceId: string,
+  outcomes: ReadonlySet<string>,
+): { readonly outcome?: ProcessJobControlOutcome; readonly targetJobId?: string } => {
+  const record = wholeResultRecord(result);
+  if (record === undefined || record.instanceId !== instanceId) return {};
+  return {
+    ...(typeof record.status === "string" && outcomes.has(record.status) ? { outcome: record.status as ProcessJobControlOutcome } : {}),
+    ...(typeof record.jobId === "string" && record.jobId.length > 0 ? { targetJobId: record.jobId } : {}),
+  };
+};
+
+/**
+ * The host's result header says this instance is closed: a close-only call
+ * answers exactly `<subagent: NAME · instance ID · turn N · closed>`, and a
+ * foreground turn that closed after it opens its result with the same header.
+ */
+const confirmsClosed = (result: unknown, instanceId: string, exact: boolean): boolean => {
+  const text = resultText(result)?.trim();
+  if (text === undefined) return false;
+  const header = new RegExp(`^<subagent: [^<>\\n]+ · instance ${instanceId} · turn \\d+ · closed${exact ? ">$" : "(?: · [^<>\\n]*)?>"}`, "u");
+  return header.test(text);
+};
+
+/** A peer answer as readable lines: `field: value`, one per answered field. */
+const peerAnswerText = (answers: unknown): string | undefined => {
+  if (!isPlainRecord(answers)) return undefined;
+  const lines = Object.entries(answers).flatMap(([key, value]) => {
+    const text = Array.isArray(value) ? value.filter((item) => typeof item === "string").join(", ")
+      : typeof value === "string" ? value : "";
+    return text.length > 0 ? [`${key}: ${text}`] : [];
+  });
+  return lines.length > 0 ? lines.join("\n") : undefined;
+};
+
+type ToolCallValue = Extract<MessagePart, { type: "tool-call" }>;
+
+/**
+ * Every call the parent made to its detached children, in transcript order:
+ * Agent/AgentManage launches and PeerAgent sends and answers confirmed to have
+ * detached (each paired with the job it started only through a host receipt
+ * that is the one claim on that job), foreground continuations, and controls
+ * addressed by instance id or peer.
+ *
+ * Read-only presentation data: nothing here is fetched or stored, and only the
+ * prompt, message, steer and answer texts are read from the arguments. Result
+ * text is read only where it is the host's own receipt or header.
+ */
+export const collectProcessJobParentCalls = (
+  messages: readonly WebMessage[],
+  threadId: string,
+): readonly ProcessJobParentCall[] => {
+  const inThread = messages.filter((message) => message.role === "assistant" && message.threadId === threadId);
+  const parts = inThread.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "tool-call" || part.type === "subagent" ? [{ message, part }] : []));
+
+  // How each PeerAgent call ran, as far as the transcript CONFIRMS it.
+  // - A send states its own mode (`background: true` detaches it). A thread's
+  //   mode is set only by a send that completed: detached when its result is
+  //   the host's exact started receipt, foreground otherwise. A failed,
+  //   running or unconfirmed send never sets or overwrites it.
+  // - An answer or decline runs in the mode of the relay its thread's last
+  //   confirmed send opened. With no such send loaded its mode is unknown: it
+  //   pairs no job and makes no claim about how it ended.
+  // Only a detached call's result is host text; a foreground result is the
+  // peer's own reply, which may look like anything, so it is never read.
+  const threadModes = new Map<string, "detached" | "foreground">();
+  const peerModes = new Map<ToolCallValue, "detached" | "foreground">();
+  const peerJobByCall = new Map<ToolCallValue, string>();
+  for (const { part } of parts) {
+    if (part.type !== "tool-call" || !isPeerAgentToolName(part.toolName)) continue;
+    const args = isPlainRecord(part.args) ? part.args : undefined;
+    const peer = nonEmptyText(args?.peer);
+    const thread = nonEmptyText(args?.thread);
+    if (peer === undefined || thread === undefined) continue;
+    const key = `${peer}\0${thread}`;
+    if (args?.action === "send") {
+      if (args.background === true) {
+        peerModes.set(part, "detached");
+        const jobId = part.status === "complete" ? peerStartedJobId(part.result, peer, thread) : undefined;
+        if (jobId === undefined) continue;
+        peerJobByCall.set(part, jobId);
+        threadModes.set(key, "detached");
+      } else {
+        peerModes.set(part, "foreground");
+        if (part.status === "complete") threadModes.set(key, "foreground");
+      }
+    } else if (args?.action === "answer" || args?.action === "decline") {
+      const mode = threadModes.get(key);
+      if (mode === undefined) continue;
+      peerModes.set(part, mode);
+      if (mode !== "detached" || part.status !== "complete") continue;
+      const jobId = peerStartedJobId(part.result, peer, thread);
+      if (jobId !== undefined) peerJobByCall.set(part, jobId);
+    }
+  }
+
+  // Every claim on a job id, from either receipt kind. A job claimed twice is
+  // paired with neither: the rows stay, the turn is placed by time.
+  const claims = new Map<string, number>();
+  const claim = (jobId: string) => claims.set(jobId, (claims.get(jobId) ?? 0) + 1);
+  for (const { part } of parts) {
+    if (part.type !== "tool-call") continue;
+    if (isSubagentProcessJobTool(part.toolName)) {
+      const receipt = parseProcessJobStartReceipt(part.structuredResult, part.toolName);
+      if (receipt !== undefined) claim(receipt.jobId);
+    }
+  }
+  for (const jobId of peerJobByCall.values()) claim(jobId);
+  const unique = (jobId: string | undefined) =>
+    jobId !== undefined && claims.get(jobId) === 1 ? { launchedJobId: jobId } : {};
+
+  const calls: ProcessJobParentCall[] = [];
+  for (const { message, part } of parts) {
+    const args = isPlainRecord(part.args) ? part.args : undefined;
+    const id = typeof args?.id === "string" && INSTANCE_ID.test(args.id) ? args.id : undefined;
+    const answered = part.status === "complete" && nonEmptyText(resultText(part.result)) !== undefined;
+    const base = {
+      messageId: message.id,
+      toolCallId: part.toolCallId,
+      status: part.status,
+      at: message.createdAt,
+      ...(part.argsTruncated === true ? { argsTruncated: true } : {}),
+      ...(part.argsBytes === undefined ? {} : { argsBytes: part.argsBytes }),
+    };
+    const foregroundTurn = { foreground: true, ...(answered ? { answered: true } : {}) };
+
+    // A foreground delegation streams its child's calls, so the store keeps
+    // it as a subagent part without its tool name; its arguments say which.
+    if (part.type === "subagent") {
+      if (id === undefined) continue;
+      const message_ = nonEmptyText(args?.message);
+      const prompt = nonEmptyText(args?.prompt);
+      if (message_ !== undefined && prompt === undefined) {
+        calls.push({ ...base, ...foregroundTurn, tool: "AgentManage", family: "agent", instanceId: id, action: "message", text: message_,
+          ...(args?.close === true ? { closes: true } : {}),
+          ...(args?.close === true && part.status === "complete" && confirmsClosed(part.result, id, false) ? { closed: true } : {}) });
+      } else if (prompt !== undefined && args?.persist === true) {
+        calls.push({ ...base, ...foregroundTurn, tool: "Agent", family: "agent", instanceId: id, action: "brief", text: prompt });
+      }
+      continue;
+    }
+
+    if (isSubagentProcessJobTool(part.toolName)) {
+      const receipt = parseProcessJobStartReceipt(part.structuredResult, part.toolName);
+      const brief = part.toolName === "Agent";
+      const text = nonEmptyText(brief ? args?.prompt : args?.message)
+        ?? (typeof part.args === "string" ? nonEmptyText(part.args) : undefined);
+      if (receipt !== undefined) {
+        // Without an addressed id, an unpaired launch has no group to show in.
+        if (id === undefined && claims.get(receipt.jobId) !== 1) continue;
+        calls.push({ ...base, tool: part.toolName, family: "agent", action: brief ? "brief" : "message",
+          ...unique(receipt.jobId),
+          ...(id === undefined ? {} : { instanceId: id }),
+          ...(text === undefined ? {} : { text }),
+          ...(!brief && args?.close === true ? { closes: true } : {}) });
+        continue;
+      }
+      if (id === undefined) continue;
+      // A call asked to detach but brought back no receipt started nothing.
+      const turnInConversation = args?.background === true ? {} : foregroundTurn;
+      if (brief) {
+        // Only a persistent child named by the call can be placed.
+        if (text !== undefined && args?.persist === true) {
+          calls.push({ ...base, ...turnInConversation, tool: "Agent", family: "agent", instanceId: id, action: "brief", text });
+        }
+        continue;
+      }
+      const steer = nonEmptyText(args?.steer);
+      if (steer !== undefined) {
+        calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "steer", text: steer,
+          ...controlReceipt(part.result, id, STEER_OUTCOMES) });
+      } else if (args?.stop === true) {
+        calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "stop",
+          ...controlReceipt(part.result, id, STOP_OUTCOMES) });
+      } else if (text !== undefined) {
+        calls.push({ ...base, ...turnInConversation, tool: part.toolName, family: "agent", instanceId: id, action: "message", text,
+          ...(args?.close === true ? { closes: true } : {}),
+          ...(args?.close === true && args.background !== true && part.status === "complete" && confirmsClosed(part.result, id, false) ? { closed: true } : {}) });
+      } else if (args?.close === true) {
+        calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "close",
+          ...(part.status === "complete" && confirmsClosed(part.result, id, true) ? { closed: true } : {}) });
+      }
+      continue;
+    }
+
+    if (isPeerAgentToolName(part.toolName)) {
+      const peer = nonEmptyText(args?.peer);
+      if (peer === undefined) continue;
+      const thread = nonEmptyText(args?.thread);
+      const started = unique(peerJobByCall.get(part));
+      // Only a call confirmed to run in the conversation says how it ended there.
+      const inConversation = peerModes.get(part) === "foreground" ? foregroundTurn : {};
+      const peerCall = { ...base, tool: "PeerAgent", family: "peer" as const, instanceId: peer, ...(thread === undefined ? {} : { thread }) };
+      if (args?.action === "send") {
+        const text = nonEmptyText(args.message);
+        calls.push({ ...peerCall, ...inConversation, action: "message", ...(text === undefined ? {} : { text }), ...started });
+      } else if (args?.action === "answer") {
+        const text = peerAnswerText(args.answers);
+        calls.push({ ...peerCall, ...inConversation, action: "answer", ...(text === undefined ? {} : { text }), ...started });
+      } else if (args?.action === "decline") {
+        calls.push({ ...peerCall, ...inConversation, action: "decline", ...started });
+      } else if (args?.action === "stop") {
+        calls.push({ ...peerCall, action: "stop" });
+      }
+    }
+  }
+  return calls;
 };
 
 export const isContextCompactionPart = (
@@ -178,17 +534,20 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
     case "process-job":
       return false;
     case "process-job-wake":
+    case "scheduled-wake":
       return true;
     case "steer":
       return true;
+    case "conversation-marker":
     case "cron-reply-context":
       return true;
     case "tool-call":
     case "subagent":
-    case "monitor-activity":
     case "error":
     case "attachment":
     case "mcp_app":
+    case "reply_options":
+    case "restart_proposal":
     case "failure":
       return true;
   }
@@ -282,8 +641,7 @@ export const orderLiveInputsAfterTheirTurn = (
 
 /**
  * Split the currently loaded conversation into assistant-ui messages and one
- * stable chronological set of background jobs. Monitor shaping deliberately
- * runs before this function so a job remains a boundary between Monitor wakes.
+ * stable chronological set of background jobs.
  */
 export const projectProcessJobPresentation = (
   messages: readonly WebMessage[],
@@ -432,6 +790,9 @@ export const projectProcessJobPresentation = (
     jobs,
     eventsByMessageId,
     jobsById: new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
+    parentCalls: options.threadId === undefined || options.threadId === null
+      ? []
+      : collectProcessJobParentCalls(shaped, options.threadId),
   };
 };
 
@@ -439,19 +800,29 @@ interface ProcessJobPresentationContextValue {
   readonly threadId: string | null;
   readonly messages: readonly WebMessage[];
   readonly jobs: readonly ProcessJobPresentationEntry[];
+  /** The parent's calls to its detached children; they head each agent group's timeline rows. */
+  readonly parentCalls: readonly ProcessJobParentCall[];
   readonly historyIsBounded: boolean;
   readonly historyOpen: boolean;
   readonly setHistoryOpen: (open: boolean) => void;
+  /** Whether the jobs shelf is open for this thread; closed until the operator opens it. */
+  readonly shelfOpen: boolean;
+  readonly setShelfOpen: (open: boolean) => void;
 }
 
 const EMPTY_PRESENTATION: ProcessJobPresentationContextValue = {
   threadId: null,
   messages: [],
   jobs: [],
+  parentCalls: [],
   historyIsBounded: false,
   historyOpen: false,
   setHistoryOpen: () => undefined,
+  shelfOpen: false,
+  setShelfOpen: () => undefined,
 };
+
+const NO_PARENT_CALLS: readonly ProcessJobParentCall[] = [];
 
 const ProcessJobPresentationContext = createContext<ProcessJobPresentationContextValue>(EMPTY_PRESENTATION);
 
@@ -460,19 +831,26 @@ export function ProcessJobPresentationProvider({
   threadId,
   messages,
   jobs,
+  parentCalls = NO_PARENT_CALLS,
   historyIsBounded,
 }: Pick<ProcessJobPresentation, "messages" | "jobs"> & {
   readonly children: ReactNode;
   readonly threadId: string | null;
   readonly historyIsBounded: boolean;
+  readonly parentCalls?: readonly ProcessJobParentCall[];
 }) {
-  // This provider sits above Chat's thread-keyed viewport. Only this disclosure
-  // preference survives A -> B -> A; every card and poller still remounts with
-  // the selected viewport and therefore keeps thread/job lifecycle isolation.
+  // This provider sits above Chat's thread-keyed viewport. Only these two
+  // disclosure preferences (the shelf and its history) survive A -> B -> A;
+  // every card and poller still remounts with the selected viewport and
+  // therefore keeps thread/job lifecycle isolation.
   const [disclosures, setDisclosures] = useState<ReadonlyMap<string, boolean>>(
     () => new Map(),
   );
+  const [shelves, setShelves] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(),
+  );
   const historyOpen = threadId === null ? false : disclosures.get(threadId) ?? false;
+  const shelfOpen = threadId === null ? false : shelves.get(threadId) ?? false;
 
   const setHistoryOpen = useCallback((open: boolean) => {
     if (threadId === null) return;
@@ -483,14 +861,26 @@ export function ProcessJobPresentationProvider({
     });
   }, [threadId]);
 
+  const setShelfOpen = useCallback((open: boolean) => {
+    if (threadId === null) return;
+    setShelves((current) => {
+      const next = new Map(current);
+      next.set(threadId, open);
+      return next;
+    });
+  }, [threadId]);
+
   const value = useMemo<ProcessJobPresentationContextValue>(() => ({
     threadId,
     messages,
     jobs,
+    parentCalls,
     historyIsBounded,
     historyOpen,
     setHistoryOpen,
-  }), [historyIsBounded, historyOpen, jobs, messages, setHistoryOpen, threadId]);
+    shelfOpen,
+    setShelfOpen,
+  }), [historyIsBounded, historyOpen, jobs, messages, parentCalls, setHistoryOpen, setShelfOpen, shelfOpen, threadId]);
 
   return (
     <ProcessJobPresentationContext.Provider value={value}>

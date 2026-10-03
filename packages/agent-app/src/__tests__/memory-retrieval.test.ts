@@ -1,14 +1,17 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { MemoryCompletedTurn, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
+import { createBujoMemoryStore, extractCapturePlanStrict, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
+import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
 
+import { memoryGuidanceScopes } from "../memory-guidance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   MemoryRetrievalService,
@@ -16,7 +19,7 @@ import {
   type SharedRecallStore,
 } from "../memory-retrieval.js";
 
-function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore & { readonly queries: string[]; readonly accesses: string[][] } {
+function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boolean } = {}): SharedRecallStore & { readonly queries: string[]; readonly accesses: string[][] } {
   const queries: string[] = [];
   const accesses: string[][] = [];
   return {
@@ -29,10 +32,25 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       if (query.includes("unrelated")) {
         return [{ score: 0.05, record: { id: "low", text: "low confidence neighbour" } }];
       }
+      if (query.includes("a-team")) {
+        // Scope "-team" only matches "A-team" if the leading article is wrongly stripped.
+        return [{ score: 1.005, record: { id: "prefix", text: "Mira selected cobalt as the color for -team." } }];
+      }
+      if (query.includes("velin")) {
+        const hits = [
+          { score: 1.005, record: { id: "scoped", text: "Mira selected cobalt as the color for the Velin launch." } },
+          { score: 0.751, record: { id: "adjacent", text: "Mira's office is in Quillmere." } },
+        ];
+        // A contradictory record that score order alone would have hidden.
+        if (options.disputed === true) {
+          hits.push({ score: 0.7, record: { id: "conflict", text: "Mira selected teal as the color for the Velin launch." } });
+        }
+        return hits;
+      }
       if (query.includes("launch color")) {
         return [
           { score: 1.005, record: { id: "answer", text: "Morgan selected cobalt as the launch color." } },
-          { score: 0.751, record: { id: "adjacent", text: "Morgan's office is in Amsterdam." } },
+          { score: 0.751, record: { id: "adjacent", text: "Morgan's office is in Quillmere." } },
           { score: 0.708, record: { id: "other", text: "The launch date is 2026-08-14." } },
         ];
       }
@@ -48,14 +66,49 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       }));
     },
     recordAccess(ids) { accesses.push([...ids]); },
-    async appendHostSummary(conversationId): Promise<MemoryWriteResult> {
-      return { conversationId, source: "fake", bytesWritten: 0 };
-    },
     async close() {},
   };
 }
 
 describe("MemoryRetrievalService", () => {
+  it("uses capture-identical reserved hashes for colon and hash-shaped conversation ids", async () => {
+    for (const conversationId of ["web:fictional-thread", `h_${"a".repeat(64)}`]) {
+      const sentence = "The assistant should keep concise fictional notes.";
+      const plan = await extractCapturePlanStrict(`User: ${sentence}`, {
+        id: "fictional-scope", complete: async () => JSON.stringify({ memories: [{ type: "note", text: sentence,
+          salience: 0.8, isInsight: false, entityIds: [], source: "user",
+          labels: [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }] }],
+        entities: [], relations: [] }),
+      }, undefined, [], { observedAt: "2026-07-12T09:00:00.000Z", captureSpeakerKind: "human-turn",
+        conversationId, captureEvidence: { userText: sentence, toolOutcomes: [] } });
+      const scope = plan.candidates[0]?.labels?.[0];
+      expect(scope?.kind).toBe("preference");
+      if (scope?.kind !== "preference") throw new Error("fictional preference missing");
+      expect(memoryGuidanceScopes(conversationId)).toContain(scope.scope);
+      expect(scope.scope).toMatch(/^conversation:h_[a-f0-9]{64}$/u);
+      expect(scope.scope).not.toBe(`conversation:${conversationId}`);
+    }
+  });
+  it("scopes explicit labelled guidance to the host-bound original turn", async () => {
+    const senderToken = "a".repeat(32);
+    const store = Object.assign(fakeStore(), {
+      labelsForEntity: () => [],
+      guidanceForScope: (scope: string) => scope === `user:${senderToken}` ? [{
+        memoryId: "guidance", ordinal: 0, status: "open", text: "Keep reports concise.", active: true,
+        conflict: false, createdAt: "2026-09-06T00:00:00.000Z",
+        label: { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
+      }] : [],
+    });
+    const service = new MemoryRetrievalService(store);
+    await service.load("conv", "Morgan launch color", { turnId: "turn", senderToken, hostDate: "2026-09-24" });
+    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" },
+      [{ score: 0.8, record: { id: "guidance", text: "Keep reports concise." } }])?.preferencesAndLessons)
+      .toMatchObject([{ scope: `user:${senderToken}` }]);
+    service.releaseTurn("turn");
+    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" },
+      [{ score: 0.8, record: { id: "guidance", text: "Keep reports concise." } }])?.preferencesAndLessons)
+      .toBeUndefined();
+  });
   it("forwards chronological browse only when the local store affirms the capability", async () => {
     const absent = new MemoryRetrievalService(fakeStore());
     expect(absent.supportsJournalBrowse()).toBe(false);
@@ -119,22 +172,23 @@ describe("MemoryRetrievalService", () => {
     });
     expect(admissions).toEqual([turn]);
 
-    const legacyService = new MemoryRetrievalService(fakeStore());
-    expect(legacyService.persistCompletedTurn).toBeUndefined();
+    const readOnlyService = new MemoryRetrievalService(fakeStore());
+    expect(readOnlyService.persistCompletedTurn).toBeUndefined();
   });
 
   it("shares one normalized backend lookup between automatic and tool recall in a turn", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
 
-    const block = await service.load("conversation", "  What deployment color\ndid Morgan select?  ", { turnId: "turn-1" });
+    const block = await service.load("conversation", "  What deployment color\ndid Morgan select?  ", { turnId: "turn-1", ownerTurn: true });
     const hits = await service.recallForTurn("turn-1", "what deployment color did morgan select?", { topK: 8 });
     await service.recallForTurn("turn-1", "different query", { topK: 8 });
 
     expect(block).toBeDefined();
-    expect(block?.content.match(/deployment color/gu)).toHaveLength(5);
-    expect(block?.content).toContain("- [x] Morgan selected cobalt-0 as the deployment color. *");
-    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(8_000);
+    expect(block?.content.match(/deployment color/gu)).toHaveLength(3);
+    expect(block?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)");
+    expect(block?.content).toContain("- Morgan selected cobalt-0 as the deployment color. * (current; done; task/plan recorded)");
+    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(1_500);
     expect(hits).toHaveLength(8);
     expect(store.queries).toEqual(["what deployment color did morgan select?", "different query"]);
     expect(store.accesses.flat()).toEqual([
@@ -142,12 +196,135 @@ describe("MemoryRetrievalService", () => {
     ]);
   });
 
+  it("keeps the automatic lookup available as the deliberate original query without broadening ordinary recall", async () => {
+    const store = fakeStore();
+    store.recall = async (query) => {
+      store.queries.push(query);
+      if (query === "what areas might jordan explore?") {
+        return [
+          { score: 0.99, record: { id: "original-fact", text: "Jordan completed a certification in coastal ecology." } },
+          { score: 0.82, record: { id: "other-owner", text: "Riley completed a certification in systems design." } },
+        ];
+      }
+      return [{ score: 0.97, record: { id: "rephrased-neighbour", text: "Jordan likes structured project plans." } }];
+    };
+    const service = new MemoryRetrievalService(store);
+    const originalQuery = "What areas might Jordan explore?";
+
+    // This open-ended question is intentionally outside the finite automatic
+    // evidence grammar even though its raw lookup contains durable evidence.
+    await expect(service.load("conversation", originalQuery, { turnId: "turn-original" }))
+      .resolves.toBeUndefined();
+    expect(store.accesses).toEqual([]);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-original" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const tools = await client.listTools();
+      expect(tools.tools[0]?.description).toMatch(/original.*automatic lookup question/iu);
+      expect(tools.tools[0]?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          query: expect.any(Object),
+          useOriginalQuery: expect.any(Object),
+          limit: expect.any(Object),
+        },
+      });
+
+      const rephrased = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "Jordan career preferences" },
+      });
+      expect(rephrased.structuredContent).toEqual({
+        hits: [{ id: "rephrased-neighbour", score: 0.97, text: "Jordan likes structured project plans." }],
+      });
+
+      const original = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true, limit: 1 },
+      });
+      expect(original.structuredContent).toMatchObject({
+        queryMode: "original",
+        effectiveQuery: originalQuery,
+        hits: expect.arrayContaining([expect.objectContaining({ id: "original-fact" })]),
+      });
+      expect(original.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining(originalQuery) }),
+      ]));
+      expect(store.queries).toEqual([
+        "what areas might jordan explore?",
+        "jordan career preferences",
+      ]);
+      expect(store.accesses).toEqual([
+        ["rephrased-neighbour"],
+        ["original-fact"],
+      ]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
+  it("renders first-party report evidence verbatim and shares its turn-scoped lookup with explicit recall", async () => {
+    const store = fakeStore();
+    store.recall = async (query) => {
+      store.queries.push(query);
+      return [{
+        score: 0.99,
+        record: {
+          id: "attributed-port",
+          text: "Avery reports that their service port is 8443.",
+          type: "note" as const,
+          status: "open" as const,
+          isInsight: false,
+        },
+      }];
+    };
+    const service = new MemoryRetrievalService(store);
+    const query = "What is Avery's current service port for Maple?";
+
+    const block = await service.load("private:conversation-a", query, { turnId: "turn-attributed", ownerTurn: true });
+    const hits = await service.recallForTurn("turn-attributed", query.toLowerCase());
+
+    expect(block?.content).toContain("Avery reports that their service port is 8443.");
+    expect(block?.content).not.toContain("Avery's service port is 8443.");
+    expect(hits.map((hit) => hit.record.text)).toEqual(["Avery reports that their service port is 8443."]);
+    expect(store.queries).toEqual([query.toLowerCase()]);
+    expect(store.accesses).toEqual([["attributed-port"]]);
+  });
+
+  it("suppresses short owner inputs in two scripts without disabling explicit recall or longer queries", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    for (const [index, query] of ["  Go  ", "  行こう  "].entries()) {
+      const turnId = `short-${index}`;
+      expect(await service.load("web:maple", query, { turnId, ownerTurn: true })).toBeUndefined();
+      expect(await service.recallOriginalOutcomeForTurn(turnId))
+        .toMatchObject({ available: true, query: query.trim() });
+    }
+    expect(store.queries).toEqual(["go", "行こう"]);
+    expect(store.accesses).toEqual([]);
+    for (const [index, query] of ["\u2003abcdefghijklmnop\u2003", "😀".repeat(16), "e\u0301".repeat(16)].entries()) {
+      expect((await service.load("web:maple", query, { turnId: `boundary-${index}`, ownerTurn: true }))?.content ?? "")
+        .not.toContain("## Memory (possibly relevant");
+    }
+    for (const [index, query] of ["abcdefghijklmnopq", "😀".repeat(17)].entries()) {
+      expect((await service.load("web:maple", query, { turnId: `above-${index}`, ownerTurn: true }))?.content)
+        .toContain("## Memory (possibly relevant");
+    }
+    const long = "What launch color did Morgan select for Maple project?";
+    expect((await service.load("web:maple", long, { turnId: "long", ownerTurn: true }))?.content)
+      .toContain("Morgan selected cobalt as the launch color.");
+  });
+
   it("abstains from automatic injection below the confidence floor", async () => {
     const service = new MemoryRetrievalService(fakeStore());
     await expect(service.load("conversation", "unrelated topic", { turnId: "turn-2" })).resolves.toBeUndefined();
   });
 
-  it("bypasses automatic durable lookup for the exact last-message question but keeps qualified history searchable", async () => {
+  it("does not impose an English-only last-message gate on automatic lookup", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
 
@@ -156,21 +333,185 @@ describe("MemoryRetrievalService", () => {
       "What did you send in the last message?",
       { turnId: "turn-current-history" },
     )).resolves.toBeUndefined();
-    expect(store.queries).toEqual([]);
+    expect(store.queries).toEqual(["what did you send in the last message?"]);
 
     await service.load(
       "telegram:123",
       "What did Alice send in her last message?",
       { turnId: "turn-current-history" },
     );
-    expect(store.queries).toEqual(["what did alice send in her last message?"]);
+    expect(store.queries).toEqual(["what did you send in the last message?", "what did alice send in her last message?"]);
   });
 
-  it("drops high-similarity adjacent results outside the top-relative confidence band", async () => {
+  it("keeps original-query selection turn-local and replaces or clears it on every repeated load", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    await service.load("conversation", "First durable question", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-other"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
+
+    await service.load("conversation", "What did Alice send in her last message?", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
+      .resolves.toMatchObject({
+        available: true,
+        query: "What did Alice send in her last message?",
+      });
+
+    await service.load("conversation", "What did you send in the last message?", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
+      .resolves.toMatchObject({ available: true, query: "What did you send in the last message?" });
+
+    await service.load("conversation", "   ", { turnId: "turn-repeat" });
+    await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
+      .resolves.toMatchObject({ available: false, reason: "empty" });
+
+    expect(store.queries).toEqual([
+      "first durable question",
+      "what did alice send in her last message?",
+      "what did you send in the last message?",
+    ]);
+  });
+
+  it("does not invent an original question from the conversation fallback", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    await service.load("conversation-seed", undefined, { turnId: "turn-no-question" });
+
+    await expect(service.recallOriginalOutcomeForTurn("turn-no-question"))
+      .resolves.toMatchObject({ available: false, reason: "empty" });
+    expect(store.queries).toEqual(["conversation-seed"]);
+  });
+
+  it("drops results outside the window below the strongest line", async () => {
     const service = new MemoryRetrievalService(fakeStore());
-    const block = await service.load("conversation", "What launch color did Morgan select?", { turnId: "turn-calibrated" });
+    const block = await service.load("conversation", "What launch color did Morgan select?", { turnId: "turn-calibrated", ownerTurn: true });
     expect(block?.content).toContain("selected cobalt as the launch color");
     expect(block?.content).not.toContain("office");
+  });
+
+  it("injects a scope-qualified choice answer and reuses the same backend lookup for the tool", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    const query = "What color did Mira select for the Velin launch?";
+
+    const block = await service.load("conversation", query, { turnId: "turn-velin", ownerTurn: true });
+    const hits = await service.recallForTurn("turn-velin", "what color did mira select for the velin launch?", { topK: 8 });
+
+    expect(block?.content).toContain("Mira selected cobalt as the color for the Velin launch.");
+    expect(block?.content).not.toContain("Quillmere");
+    expect(hits).toHaveLength(2);
+    expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
+  });
+
+  it("abstains when the stored scope only shares an article-like prefix with the asked one", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    // The record's scope is "-team", not the asked "A-team".
+    await expect(service.load(
+      "conversation",
+      "What color did Mira select for A-team?",
+      { turnId: "turn-a-team" },
+    )).resolves.toBeUndefined();
+    expect(store.accesses.flat()).toEqual([]);
+  });
+
+  it("abstains from automatic injection when a disputed scoped choice is in reach, leaving the tool usable", async () => {
+    const store = fakeStore({ disputed: true });
+    const service = new MemoryRetrievalService(store);
+    const query = "What color did Mira select for the Velin launch?";
+
+    await expect(service.load("conversation", query, { turnId: "turn-disputed" })).resolves.toBeUndefined();
+    // Abstaining automatically must not mark any record as served.
+    expect(store.accesses.flat()).toEqual([]);
+
+    // The explicit tool still sees the records and can present both to the model.
+    const hits = await service.recallForTurn("turn-disputed", "what color did mira select for the velin launch?", { topK: 8 });
+    expect(hits.map((hit) => hit.record.id)).toContain("conflict");
+    // Still one shared backend lookup; abstention paid for no extra retrieval.
+    expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
+  });
+
+  it("uses the host's local day for date-only values and its instant for offset event timestamps", async () => {
+    const store = fakeStore();
+    store.recall = async () => [
+      { score: 0.94, record: { id: "day", text: "Maple club met on the local day.",
+        type: "event", status: "open", validTo: "2026-09-24" } },
+      { score: 0.93, record: { id: "instant", text: "Maple hosted an offset meeting.",
+        type: "event", status: "open", dueAt: "2026-09-24T23:30:00-05:00" } },
+    ];
+    const memory = new MemoryRetrievalService(store);
+    const block = await memory.load("conversation", "Which Maple club meetings are scheduled on the local day?", { turnId: "local-date", ownerTurn: true,
+      hostDate: "2026-09-25", hostLocalDate: "2026-09-24", hostInstant: "2026-09-25T03:00:00Z" });
+    expect(block?.content).toContain("local day. (current)");
+    expect(block?.content).toContain("offset meeting. (current)");
+    const later = await memory.load("conversation", "Which Maple club meetings are scheduled on the local day?", { turnId: "later", ownerTurn: true,
+      hostDate: "2026-09-25", hostLocalDate: "2026-09-25", hostInstant: "2026-09-25T05:00:00Z" });
+    expect(later?.content).toContain("ended 2026-09-24");
+    expect(later?.content).toContain("ended 2026-09-24T23:30:00-05:00");
+  });
+
+  it("shows the strongest lines within the window; a distant conflict is left to explicit recall", async () => {
+    const query = "When is the Project Atlas production migration scheduled?";
+    const target = {
+      score: 0.99,
+      record: {
+        id: "atlas-schedule",
+        text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 CET.",
+      },
+    };
+    const distractors = [
+      { score: 0.98, record: { id: "owner", text: "Priya owns the Project Atlas database cutover." } },
+      { score: 0.97, record: { id: "downtime", text: "The approved downtime budget for Project Atlas is 30 minutes." } },
+      { score: 0.96, record: { id: "other-project", text: "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 CET." } },
+    ];
+
+    const cleanStore = fakeStore();
+    cleanStore.recall = async (backendQuery) => {
+      cleanStore.queries.push(backendQuery);
+      return [target, ...distractors];
+    };
+    const cleanService = new MemoryRetrievalService(cleanStore);
+    const block = await cleanService.load("conversation", query, { turnId: "turn-scheduled", ownerTurn: true });
+    expect(block?.content).toContain(target.record.text);
+    // Nearby lines are shown too (at most three); the model judges them.
+    expect(block?.content).toContain("owns");
+    expect(block?.content).toContain("downtime");
+    expect(block?.content).not.toContain("Boreal");
+
+    const conflict = {
+      score: 0.1,
+      record: {
+        id: "atlas-late-conflict",
+        text: "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 CET.",
+      },
+    };
+    const lateFillers = Array.from({ length: 48 }, (_, index) => ({
+      score: 0.95 - index * 0.01,
+      record: { id: `adjacent-${index}`, text: `Unrelated archive record ${index}.` },
+    }));
+    const disputedStore = fakeStore();
+    disputedStore.recall = async (backendQuery) => {
+      disputedStore.queries.push(backendQuery);
+      return [target, ...lateFillers, conflict];
+    };
+    const disputedService = new MemoryRetrievalService(disputedStore);
+
+    const disputed = await disputedService.load("conversation", query, { turnId: "turn-scheduled-conflict", ownerTurn: true });
+    expect(disputed?.content).toContain(target.record.text);
+    expect(disputed?.content).not.toContain("21 November");
+    const explicitHits = await disputedService.recallForTurn(
+      "turn-scheduled-conflict",
+      query,
+      { topK: 50, trackAccess: false },
+    );
+    expect(explicitHits).toHaveLength(50);
+    expect(explicitHits.map((hit) => hit.record.id)).toContain("atlas-schedule");
+    expect(explicitHits.map((hit) => hit.record.id)).toContain("atlas-late-conflict");
+    expect(disputedStore.queries).toEqual([query.toLowerCase()]);
+    expect(disputedStore.accesses.flat()).not.toContain("atlas-late-conflict");
   });
 
   it("normalizes Unicode, case, and whitespace deterministically", () => {
@@ -235,18 +576,212 @@ describe("MemoryRetrievalService", () => {
     }
   });
 
-  it("drops the query cache when the logical turn is released", async () => {
+  it("never injects lexical-only evidence, whatever the budget, and records no access", async () => {
+    for (const maxBytes of [1, 200, 8_000]) {
+      const store = fakeStore();
+      store.recallWithOutcome = async (query) => {
+        store.queries.push(query);
+        return {
+          hits: [{ score: 1.005, record: { id: "first", text: "Morgan selected cobalt as the deployment color." } }],
+          retrievalMode: "lexical_only" as const,
+          degradation: { code: "embedding_unavailable" as const },
+        };
+      };
+      const service = new MemoryRetrievalService(store, { maxBytes });
+      await expect(service.load("conversation", "What deployment color did Morgan select?",
+        { turnId: `turn-degraded-${maxBytes}`, ownerTurn: true }))
+        .rejects.toThrow("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
+      expect(store.accesses).toEqual([]);
+    }
+  });
+
+  it("never injects from a lexical-only store without a degradation code (e.g. Lite)", async () => {
+    const store = fakeStore();
+    store.recallWithOutcome = async (query) => {
+      store.queries.push(query);
+      return {
+        hits: [{ score: 0.95, record: { id: "lite", text: "Morgan selected cobalt as the deployment color." } }],
+        retrievalMode: "lexical_only" as const,
+      };
+    };
+    const service = new MemoryRetrievalService(store);
+    await expect(service.load("conversation", "What deployment color did Morgan select?",
+      { turnId: "turn-lite", ownerTurn: true })).resolves.toBeUndefined();
+    expect(store.accesses).toEqual([]);
+  });
+
+  it("gives non-owner turns no automatic block and skips an uncached lookup", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    await expect(service.load("group:chess-club", "What launch color did Morgan select?", { turnId: "turn-group" }))
+      .resolves.toBeUndefined();
+    expect(store.accesses).toEqual([]);
+    await expect(service.load("group:chess-club", "What launch color did Morgan select?")).resolves.toBeUndefined();
+    expect(store.queries).toEqual(["what launch color did morgan select?"]);
+  });
+
+  it("drops the query cache and original selection when the logical turn is released", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
     await service.load("conversation", "deploy pipeline", { turnId: "turn-release" });
     service.releaseTurn("turn-release");
+    await expect(service.recallOriginalOutcomeForTurn("turn-release"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
     await service.recallForTurn("turn-release", "deploy pipeline");
     expect(store.queries).toEqual(["deploy pipeline", "deploy pipeline"]);
+  });
+
+  it("does not resurrect or serve an original lookup that settles after release", async () => {
+    let settle!: (hits: readonly { score: number; record: { id: string; text: string } }[]) => void;
+    const store = fakeStore();
+    store.recall = async (query) => {
+      store.queries.push(query);
+      return await new Promise((resolve) => { settle = resolve; });
+    };
+    const service = new MemoryRetrievalService(store);
+    const pending = service.load("conversation", "What areas might Jordan explore?", { turnId: "turn-late" });
+    await Promise.resolve();
+
+    service.releaseTurn("turn-late");
+    settle([{ score: 0.99, record: { id: "late", text: "Jordan completed a certification in coastal ecology." } }]);
+    await pending;
+
+    await expect(service.recallOriginalOutcomeForTurn("turn-late"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
+    service.recordAccessIdsForTurn("turn-late", ["late"]);
+    expect(store.accesses).toEqual([]);
+    expect((service as unknown as { turns: Map<string, unknown> }).turns.size).toBe(0);
+  });
+
+  it("marks a failed automatic lookup unavailable without replaying it", async () => {
+    const store = fakeStore({ fail: true });
+    const service = new MemoryRetrievalService(store);
+
+    await expect(service.load("conversation", "durable question", { turnId: "turn-failed-original" }))
+      .rejects.toThrow("embedding endpoint offline");
+    await expect(service.recallOriginalOutcomeForTurn("turn-failed-original"))
+      .resolves.toMatchObject({ available: false, reason: "lookup_failed" });
+    expect(store.queries).toEqual(["durable question"]);
   });
 });
 
 describe("shared MemoryRecall MCP", () => {
-  it("does not query the configured backend for the exact Telegram last-message question", async () => {
+  it("shares one degraded lookup across automatic and explicit recall while preserving status through graph expansion", async () => {
+    const store = fakeStore();
+    let outcomeCalls = 0;
+    let expansionCalls = 0;
+    store.recallWithOutcome = async (query) => {
+      outcomeCalls += 1;
+      store.queries.push(query);
+      return {
+        hits: [{ score: 1.005, record: { id: "answer", text: "Morgan selected cobalt as the launch color." } }],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    store.expandGraph = (_query, direct) => {
+      expansionCalls += 1;
+      return direct;
+    };
+    const service = new MemoryRetrievalService(store, { maxBytes: 120 });
+    const query = "What launch color did Morgan select?";
+    await expect(service.recallForTurn("turn-degraded", query)).rejects.toThrow(
+      "Memory recall is degraded; use status-bearing recall to inspect lexical-only results.",
+    );
+    expect(store.accesses).toEqual([]);
+    await expect(service.recallOutcomeForTurn("turn-degraded", query, { trackAccess: false })).resolves.toMatchObject({
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+      hits: [expect.objectContaining({ record: expect.objectContaining({ id: "answer" }) })],
+    });
+    expect(store.accesses).toEqual([]);
+
+    await expect(service.load("conversation", query, { turnId: "turn-degraded", ownerTurn: true }))
+      .rejects.toThrow(/semantic memory retrieval is unavailable/iu);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-degraded" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true, limit: 5 },
+      });
+      expect(result.structuredContent).toMatchObject({
+        queryMode: "original",
+        effectiveQuery: query,
+        degraded: true,
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+        hits: [expect.objectContaining({ id: "answer" })],
+      });
+      expect(result.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining("showing lexical-only matches") }),
+      ]));
+      expect(outcomeCalls).toBe(1);
+      expect(expansionCalls).toBe(1);
+      expect(store.accesses).toEqual([["answer"]]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
+  it("keeps zero-hit degradation visible and redacts a recognized provider error across outcome and MCP", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-redaction-"));
+    const privateDetail = "PRIVATE_PROVIDER_SENTINEL_do_not_surface";
+    let providerCalls = 0;
+    const store = createBujoMemoryStore({
+      root,
+      tier: "journal",
+      dim: 4,
+      embeddings: {
+        id: "recognized-error-redaction:4",
+        async embed() {
+          providerCalls += 1;
+          throw new MemorySearchError("embedding_request_failed", privateDetail, {
+            providerDetail: privateDetail,
+          });
+        },
+      },
+    });
+    const service = new MemoryRetrievalService(store);
+    const query = "What launch color did Morgan select?";
+    await expect(service.load("conversation", query, { turnId: "turn-degraded-empty" })).rejects.toThrow(
+      "Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.",
+    );
+    const outcome = await service.recallOutcomeForTurn("turn-degraded-empty", query, { trackAccess: false });
+    expect(outcome).toMatchObject({
+      hits: [],
+      retrievalMode: "lexical_only",
+      degradation: { code: "embedding_unavailable" },
+    });
+    expect(JSON.stringify(outcome)).not.toContain(privateDetail);
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-degraded-empty" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query } });
+      expect(result.structuredContent).toMatchObject({
+        hits: [],
+        degraded: true,
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      });
+      expect(JSON.stringify(result)).not.toContain(privateDetail);
+      expect(providerCalls).toBe(1);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+      await store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("routes explicitly requested last-message searches like any language", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
     const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-last-message" });
@@ -258,8 +793,48 @@ describe("shared MemoryRecall MCP", () => {
         name: "MemoryRecall",
         arguments: { query: "What did you send in the last message?" },
       });
-      expect(result.structuredContent).toMatchObject({ hits: [], conversationRelative: true });
-      expect(store.queries).toEqual([]);
+      expect(result.structuredContent).toMatchObject({ hits: expect.any(Array) });
+      expect(store.queries).toEqual(["what did you send in the last message?"]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
+  it("rejects ambiguous original-mode input and retains the original search", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    await service.load(
+      "conversation",
+      "What did you send in the last message?",
+      { turnId: "turn-original-guard" },
+    );
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-original-guard" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const ambiguous = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "different query", useOriginalQuery: true },
+      });
+      expect(ambiguous.isError).toBe(true);
+      const missing = await client.callTool({ name: "MemoryRecall", arguments: {} });
+      expect(missing.isError).toBe(true);
+      const falseWithoutQuery = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: false },
+      });
+      expect(falseWithoutQuery.isError).toBe(true);
+      expect(store.queries).toEqual(["what did you send in the last message?"]);
+
+      const unavailable = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true },
+      });
+      expect(unavailable.isError).not.toBe(true);
+      expect(unavailable.structuredContent).toMatchObject({ queryMode: "original", hits: expect.any(Array) });
+      expect(store.queries).toEqual(["what did you send in the last message?"]);
     } finally {
       await client.close().catch(() => undefined);
       await extension.cleanup();
@@ -325,14 +900,20 @@ describe("shared MemoryRecall MCP", () => {
     const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-      const result = await client.callTool({ name: "MemoryRecall", arguments: { query, limit: 5 } });
+      const result = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { useOriginalQuery: true, limit: 5 },
+      });
       expect(result.structuredContent).toMatchObject({
+        queryMode: "original",
+        effectiveQuery: query,
         hits: expect.arrayContaining([expect.objectContaining({ id: "graph-target" })]),
       });
       const servedIds = (result.structuredContent as { hits: Array<{ id: string }> }).hits.map((hit) => hit.id);
       expect(store.queries).toEqual(["who manages taylor?"]);
       expect(expansionCalls).toBe(1);
-      expect(store.accesses).toEqual([servedIds]);
+      // Explicit-only coverage reranking can reorder the already accessed set.
+      expect(store.accesses.map((ids) => [...ids].sort())).toEqual([[...servedIds].sort()]);
       expect(servedIds).not.toContain("distractor-7");
     } finally {
       await client.close().catch(() => undefined);
@@ -357,6 +938,61 @@ describe("shared MemoryRecall MCP", () => {
     } finally {
       await client.close().catch(() => undefined);
       await extension.cleanup();
+    }
+  });
+
+  it("reopens a legacy BuJo source without mutating it and still accepts a new capture", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-legacy-original-query-"));
+    const oldDay = new Date("2026-09-03T10:00:00.000Z");
+    const newDay = new Date("2026-09-04T10:00:00.000Z");
+    const dailyPath = join(root, "daily", "2026-09-03.md");
+    const legacyPath = join(root, "2026-09-03.md");
+    let store = createBujoMemoryStore({ root, tier: "lite", clock: () => oldDay });
+    try {
+      await store.remember("legacy-conversation", "Jordan's durable workspace label is harbor.");
+      await store.close();
+      await rename(dailyPath, legacyPath);
+      await safeRebuildMemoryIndex({ root, tier: "lite" });
+      const legacyBefore = await readFile(legacyPath);
+
+      store = createBujoMemoryStore({ root, tier: "lite", clock: () => newDay });
+      const service = new MemoryRetrievalService(store);
+      const query = "What is Jordan's durable workspace label?";
+      await service.load("legacy-conversation", query, { turnId: "turn-legacy" });
+      const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-legacy" });
+      const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+      const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+        const result = await client.callTool({
+          name: "MemoryRecall",
+          arguments: { useOriginalQuery: true },
+        });
+        expect(result.structuredContent).toMatchObject({
+          queryMode: "original",
+          hits: expect.arrayContaining([
+            expect.objectContaining({ text: "Jordan's durable workspace label is harbor." }),
+          ]),
+        });
+      } finally {
+        await client.close().catch(() => undefined);
+        await extension.cleanup();
+      }
+
+      expect(await readFile(legacyPath)).toEqual(legacyBefore);
+      await service.remember("legacy-conversation", "Jordan's durable review cadence is weekly.");
+      await expect(store.recall("durable review cadence weekly", { topK: 8, trackAccess: false }))
+        .resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({ record: expect.objectContaining({ text: "Jordan's durable review cadence is weekly." }) }),
+        ]));
+      await expect(store.recall("durable workspace label harbor", { topK: 8, trackAccess: false }))
+        .resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({ record: expect.objectContaining({ text: "Jordan's durable workspace label is harbor." }) }),
+        ]));
+      expect(await readFile(legacyPath)).toEqual(legacyBefore);
+    } finally {
+      await store.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -432,6 +1068,54 @@ describe("shared MemoryRecall MCP", () => {
     }
   });
 
+  it("continues the provider turn and warns when a tiny budget cannot carry degraded evidence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-retrieval-degraded-"));
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const store = fakeStore();
+    store.recallWithOutcome = async (query) => {
+      store.queries.push(query);
+      return {
+        hits: [{ score: 1, record: { id: "tiny-budget-hit", text: "Morgan selected cobalt as the launch color." } }],
+        retrievalMode: "lexical_only",
+        degradation: { code: "embedding_unavailable" },
+      };
+    };
+    const events: Array<Record<string, unknown>> = [];
+    try {
+      const service = new MemoryRetrievalService(store, { maxBytes: 1 });
+      const harness = createAgentHarness({
+        identityPath,
+        model: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          reference: "openai-codex:gpt-5.5",
+        },
+        runtime: {
+          async run() { return { text: "provider still ran" }; },
+        },
+        memory: service,
+      });
+
+      const response = await harness.run({
+        conversationId: "turn-degraded-empty",
+        userMessage: "What launch color did Morgan select?",
+        abortSignal: new AbortController().signal,
+        onEvent: (event) => events.push(event as Record<string, unknown>),
+      });
+
+      expect(response.text).toBe("provider still ran");
+      expect(response.failure).toBeUndefined();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "runtime_warning",
+        warning_kind: "memory_degraded",
+      }));
+      expect(store.accesses).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("releases the shared turn cache before admitting another run after an abort-ignoring provider", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-retrieval-abort-"));
     const identityPath = join(dir, "IDENTITY.md");
@@ -495,6 +1179,53 @@ describe("shared MemoryRecall MCP", () => {
 });
 
 describe("MemoryRetrievalService.remember cache coherence", () => {
+  it("invalidates recall on a durable partial error and on a duplicate replacement retry", async () => {
+    let calls = 0;
+    let fail = true;
+    const store = {
+      async load() { return undefined; },
+      async recall() { calls += 1; return []; },
+      supportsRemember: () => true, supportsRememberDetails: () => true,
+      async remember() { throw new Error("wrong path"); },
+      async rememberDetails() {
+        if (fail) throw Object.assign(new Error("projection unfinished"), { rememberIntentWritten: true });
+        return { id: "new", source: "daily/x.md", text: "Morgan's report was resolved.",
+          duplicate: true, supersededId: "old" };
+      }, async close() {},
+    };
+    const service = new MemoryRetrievalService(store as never, {});
+    await service.load("conv-1", "Morgan report", { turnId: "turn-1" });
+    expect(calls).toBe(1);
+    await expect(service.rememberDetails("conv-1", "Morgan's report was resolved.", { supersedes: "old" }))
+      .rejects.toThrow(/projection unfinished/u);
+    await service.recallForTurn("turn-1", "Morgan report");
+    expect(calls).toBe(2);
+    fail = false;
+    await service.rememberDetails("conv-1", "Morgan's report was resolved.", { supersedes: "old" });
+    await service.recallForTurn("turn-1", "Morgan report");
+    expect(calls).toBe(3);
+  });
+
+  it("invalidates recalled results after a successful enhanced replacement", async () => {
+    let current = "Morgan's report is pending.";
+    const store = {
+      async load() { return undefined; },
+      async recall() { return [{ score: 1, record: { id: current.includes("complete") ? "new" : "old", text: current } }]; },
+      supportsRemember: () => true,
+      supportsRememberDetails: () => true,
+      async remember() { throw new Error("wrong path"); },
+      async rememberDetails(_conversationId: string, text: string) {
+        current = text;
+        return { id: "new", source: "daily/x.md", text, duplicate: false, supersededId: "old" };
+      },
+      async close() {},
+    };
+    const service = new MemoryRetrievalService(store as never, {});
+    await service.load("conv-1", "Morgan report", { turnId: "turn-1" });
+    expect((await service.recallForTurn("turn-1", "Morgan report")).map((hit) => hit.record.id)).toEqual(["old"]);
+    await service.rememberDetails("conv-1", "Morgan's report is complete.", { supersedes: "old" });
+    expect((await service.recallForTurn("turn-1", "Morgan report")).map((hit) => hit.record.id)).toEqual(["new"]);
+  });
   it("drops the per-turn recall cache so a stored fact is visible in the same run", async () => {
     // Recall memoizes per turn. Without invalidation a query answered before the
     // write keeps returning its stale empty result, contradicting the
@@ -502,7 +1233,6 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     const hits: { readonly score: number; readonly record: { id: string; text: string } }[] = [];
     const store = {
       async load() { return undefined; },
-      async appendHostSummary() { return { conversationId: "c", source: "s", bytesWritten: 0 }; },
       async recall() { return [...hits]; },
       supportsRemember: () => true,
       async remember(_conversationId: string, text: string) {
@@ -513,11 +1243,14 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     };
     const service = new MemoryRetrievalService(store as never, {});
 
+    await service.load("conv-1", "What merge style does Robert prefer?", { turnId: "turn-1" });
     expect(await service.recallForTurn("turn-1", "squash merges")).toHaveLength(0);
     await service.remember("conv-1", "Robert prefers squash merges.");
     const after = await service.recallForTurn("turn-1", "squash merges");
 
     expect(after.map((hit) => hit.record.text)).toContain("Robert prefers squash merges.");
+    await expect(service.recallOriginalOutcomeForTurn("turn-1"))
+      .resolves.toMatchObject({ available: false, reason: "not_loaded" });
   });
 
   it("keeps the cache when the fact was already stored", async () => {
@@ -526,7 +1259,6 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     let recallCalls = 0;
     const store = {
       async load() { return undefined; },
-      async appendHostSummary() { return { conversationId: "c", source: "s", bytesWritten: 0 }; },
       async recall() { recallCalls += 1; return []; },
       supportsRemember: () => true,
       async remember(_conversationId: string, text: string) {
@@ -536,11 +1268,13 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     };
     const service = new MemoryRetrievalService(store as never, {});
 
-    await service.recallForTurn("turn-1", "squash merges");
+    await service.load("conv-1", "squash merges", { turnId: "turn-1" });
     expect(recallCalls).toBe(1);
     await service.remember("conv-1", "Robert prefers squash merges.");
     await service.recallForTurn("turn-1", "squash merges");
 
     expect(recallCalls).toBe(1);
+    await expect(service.recallOriginalOutcomeForTurn("turn-1"))
+      .resolves.toMatchObject({ available: true, query: "squash merges" });
   });
 });

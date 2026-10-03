@@ -9,7 +9,6 @@ import { migrations } from "./schema.js";
 import { enforceOwnerOnlySqliteFamily } from "./sqlite-family-mode.js";
 import { loadVec, toBlob } from "./vec.js";
 import {
-  DEFAULT_DECAY_GAMMA,
   DEFAULT_RRF_K,
   DEFAULT_VEC_DIM,
   DEFAULT_WEIGHTS,
@@ -23,24 +22,42 @@ import {
   type MemoryRecord,
   type RecallHit,
   type RecallOptions,
+  type RecallOutcome,
   type RecallWeights,
   type SimilarHit,
 } from "./types.js";
+import { anchorBoost, queryAnchors } from "./anchors.js";
 import { lexicalEvidence, relevanceTokens } from "./db-relation-evidence.js";
 import { isCanonicalDailySourcePath } from "./journal-source.js";
-import type { EmbeddingProvider } from "../search/index.js";
+import {
+  embeddingPrefixesForIdentity,
+  MemorySearchError,
+  type EmbeddingPrefixes,
+  type EmbeddingProvider,
+  type MemorySearchErrorCode,
+} from "../search/index.js";
 
 const MIN_SEMANTIC_SIMILARITY = 0.5;
 const VECTOR_CANDIDATE_SCAN_CAP = 4_096;
+const LEXICAL_FALLBACK_EMBEDDING_CODES = new Set<MemorySearchErrorCode>([
+  "embedding_request_failed",
+  "embedding_circuit_open",
+  "embedding_response_invalid",
+]);
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
+
+function isEligibleEmbeddingFallback(error: unknown): error is MemorySearchError {
+  return error instanceof MemorySearchError && LEXICAL_FALLBACK_EMBEDDING_CODES.has(error.code);
+}
 
 export class MemoryDbCore {
   protected readonly db: Database;
   protected readonly embeddings: EmbeddingProvider | undefined;
+  /** Query/document prefixes selected by the embedding identity. */
+  protected readonly prefixes: EmbeddingPrefixes;
   protected readonly dim: number;
   protected readonly k: number;
   protected readonly weights: RecallWeights;
-  protected readonly decayGamma: number;
   protected readonly clock: () => Date;
 
   constructor(options: MemoryDbOptions) {
@@ -62,6 +79,8 @@ export class MemoryDbCore {
     // SQLITE_BUSY. open.test.ts pins this
     // invariant — if an upgrade ever drops the default, the test fails and we set it explicitly here.
     loadVec(this.db);
+    this.db.function("mono_agent_fold_entity_name", { deterministic: true }, (name: string) =>
+      name.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und"));
     this.db.function(
       "mono_agent_is_canonical_daily_source",
       { deterministic: true },
@@ -74,10 +93,10 @@ export class MemoryDbCore {
       enforceOwnerOnlySqliteFamily(options.path);
     }
     this.embeddings = options.embeddings;
+    this.prefixes = embeddingPrefixesForIdentity(options.embeddings?.id ?? "");
     this.dim = vecDim;
     this.k = options.k ?? DEFAULT_RRF_K;
     this.weights = { ...DEFAULT_WEIGHTS, ...options.weights };
-    this.decayGamma = options.decayGamma ?? DEFAULT_DECAY_GAMMA;
     this.clock = options.clock ?? (() => new Date());
   }
 
@@ -180,7 +199,7 @@ export class MemoryDbCore {
       if (this.embeddings === undefined) {
         vectors = batch.map(() => undefined);
       } else {
-        const embedded = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+        const embedded = await this.embeddings.embed(batch.map((record) => `${this.prefixes.document}${record.text}`));
         embeddingCalls += 1;
         if (embedded.length !== batch.length) {
           throw new Error(
@@ -207,7 +226,17 @@ export class MemoryDbCore {
   ): Promise<readonly (readonly number[] | undefined)[]> {
     if (this.embeddings === undefined) return records.map(() => undefined);
     if (records.length === 0) return [];
-    const vectors = await this.embeddings.embed(records.map((record) => `search_document: ${record.text}`));
+    // Large explicit plans (curate, forget) prepare hundreds of records at once;
+    // one provider request per bounded batch keeps local runners within limits.
+    const vectors: (readonly number[])[] = [];
+    for (let offset = 0; offset < records.length; offset += DEFAULT_EMBEDDING_BATCH_SIZE) {
+      const batch = records.slice(offset, offset + DEFAULT_EMBEDDING_BATCH_SIZE);
+      const embedded = await this.embeddings.embed(batch.map((record) => `${this.prefixes.document}${record.text}`));
+      if (embedded.length !== batch.length) {
+        throw new Error(`memory-store: embedding provider returned ${embedded.length} vectors for ${batch.length} records.`);
+      }
+      vectors.push(...embedded);
+    }
     if (vectors.length !== records.length) {
       throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${records.length} records.`);
     }
@@ -264,7 +293,7 @@ export class MemoryDbCore {
     let embeddingCalls = 0;
     for (let offset = 0; offset < records.length; offset += batchSize) {
       const batch = records.slice(offset, offset + batchSize);
-      const vectors = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+      const vectors = await this.embeddings.embed(batch.map((record) => `${this.prefixes.document}${record.text}`));
       options.abortSignal?.throwIfAborted();
       embeddingCalls += 1;
       if (vectors.length !== batch.length) {
@@ -552,22 +581,66 @@ export class MemoryDbCore {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as { n: number }).n;
   }
   async recall(query: string, options: RecallOptions = {}): Promise<RecallHit[]> {
+    const outcome = await this.recallInternal(query, options, false);
+    return [...outcome.hits];
+  }
+
+  /**
+   * Opt-in local outage behavior. A narrowly identified embedding-provider
+   * failure may retain already-computed lexical candidates with explicit status;
+   * strict `recall()` callers continue to receive the original failure.
+   */
+  async recallWithOutcome(query: string, options: RecallOptions = {}): Promise<RecallOutcome> {
+    return await this.recallInternal(query, options, true);
+  }
+
+  private async recallInternal(
+    query: string,
+    options: RecallOptions,
+    allowLexicalFallback: boolean,
+  ): Promise<RecallOutcome> {
     options.abortSignal?.throwIfAborted();
     const topK = options.topK ?? 8;
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
     const now = options.now ?? this.clock();
 
     const ftsIds = this.keywordCandidates(query, candidates, options.includeInvalid === true, now);
-    const vecCandidates = this.embeddings !== undefined
-      ? await this.vectorCandidates(query, candidates, options.includeInvalid === true, now, options.abortSignal)
-      : [];
+    let vecCandidates: Array<{ id: string; similarity: number }> = [];
+    let queryVector: readonly number[] | undefined;
+    let degraded = false;
+    if (this.embeddings !== undefined) {
+      try {
+        ({ candidates: vecCandidates, queryVector } = await this.vectorCandidates(
+          query,
+          candidates,
+          options.includeInvalid === true,
+          now,
+          options.abortSignal,
+        ));
+      } catch (error) {
+        // Caller/shutdown cancellation always wins, including a race with a
+        // provider failure. Do not perform fallback SQLite work after abort.
+        options.abortSignal?.throwIfAborted();
+        if (!allowLexicalFallback || !isEligibleEmbeddingFallback(error)) throw error;
+        degraded = true;
+      }
+    }
     options.abortSignal?.throwIfAborted();
     const vecIds = vecCandidates.map((candidate) => candidate.id);
     const vectorSimilarity = new Map(vecCandidates.map((candidate) => [candidate.id, candidate.similarity]));
     const retrieverCount = Number(vecIds.length > 0) + Number(ftsIds.length > 0);
-    // When embeddings are absent, fuse only the FTS list (RRF of one list still re-ranks correctly).
+    // With absent/unavailable embeddings, fuse only the FTS list. RRF and
+    // evidence scoring therefore use one real retriever and no semantic score.
     const fused = rrfFuse([vecIds, ftsIds], this.k);
-    if (fused.length === 0) return [];
+    const retrievalMode = this.embeddings === undefined || degraded ? "lexical_only" : "hybrid";
+    const degradation = degraded ? { code: "embedding_unavailable" as const } : undefined;
+    if (fused.length === 0) {
+      return {
+        hits: [],
+        retrievalMode,
+        ...(degradation === undefined ? {} : { degradation }),
+      };
+    }
 
     const byId = new Map(fused.map((f) => [f.id, f.rrfScore]));
     const placeholders = fused.map(() => "?").join(",");
@@ -577,14 +650,34 @@ export class MemoryDbCore {
 
     const scored: RecallHit[] = [];
     const queryTokens = relevanceTokens(query);
+    // Embedding-first: every candidate with a stored vector is scored by its
+    // real cosine similarity, including candidates found only by FTS.
+    if (queryVector !== undefined) {
+      for (const [id, similarity] of this.candidateSimilarities(
+        queryVector,
+        fused.map((f) => f.id).filter((id) => !vectorSimilarity.has(id)),
+      )) vectorSimilarity.set(id, similarity);
+    }
+    const anchors = queryVector === undefined
+      ? new Set<string>()
+      : queryAnchors(query, this.anchorEntityNames(fused.map((f) => f.id)));
     for (const row of rows) {
       const record = this.fromRow(row);
       if (!options.includeInvalid && (record.status === "invalidated" || record.status === "dropped")) continue;
       if (!options.includeInvalid && record.validTo !== undefined && new Date(record.validTo) < now) continue;
-      const lexical = lexicalEvidence(queryTokens, record.text);
-      const semanticSimilarity = vectorSimilarity.get(record.id) ?? 0;
-      const semantic = semanticSimilarity >= MIN_SEMANTIC_SIMILARITY ? semanticSimilarity : 0;
-      const evidence = Math.min(1, Math.max(lexical, semantic) + (lexical > 0 && semantic > 0 ? 0.05 : 0));
+      const semanticSimilarity = vectorSimilarity.get(record.id);
+      let evidence: number;
+      if (semanticSimilarity === undefined) {
+        // Lexical-only recall, or a row still waiting for its vector: keep the
+        // historical lexical evidence so FTS-only behaviour is unchanged.
+        const lexical = lexicalEvidence(queryTokens, record.text);
+        evidence = Math.min(1, lexical);
+      } else {
+        // Semantic similarity is the signal; only exact names, numbers and
+        // dates add a bounded bonus (names less). Shared generic words add nothing.
+        const semantic = semanticSimilarity >= MIN_SEMANTIC_SIMILARITY ? semanticSimilarity : 0;
+        evidence = Math.min(1, semantic + anchorBoost(anchors, record.text));
+      }
       // Normalize the small RRF value into a bounded rank hint. It may break ties,
       // but cannot make a no-evidence vector neighbour look relevant.
       const fusedRank = Math.min(1, ((byId.get(record.id) ?? 0) * (this.k + 1)) / retrieverCount);
@@ -596,18 +689,29 @@ export class MemoryDbCore {
           isInsight: record.isInsight,
         },
         this.weights,
-        this.decayGamma,
-        now,
       );
       scored.push({ record, score });
     }
     scored.sort((a, b) => b.score - a.score || (a.record.id < b.record.id ? -1 : a.record.id > b.record.id ? 1 : 0));
     const top = scored.slice(0, topK);
-    if (options.trackAccess === false) {
-      return top;
-    }
-    this.bumpAccess(top.map((h) => h.record.id), now);
-    return top.map((h) => ({ ...h, record: { ...h.record, accessCount: h.record.accessCount + 1, lastAccessedAt: now.toISOString() } }));
+    const hits = options.trackAccess === false
+      ? top
+      : (() => {
+          this.bumpAccess(top.map((h) => h.record.id), now);
+          return top.map((h) => ({
+            ...h,
+            record: {
+              ...h.record,
+              accessCount: h.record.accessCount + 1,
+              lastAccessedAt: now.toISOString(),
+            },
+          }));
+        })();
+    return {
+      hits,
+      retrievalMode,
+      ...(degradation === undefined ? {} : { degradation }),
+    };
   }
 
   protected async vectorCandidates(
@@ -616,12 +720,15 @@ export class MemoryDbCore {
     includeInvalid = false,
     now = this.clock(),
     abortSignal?: AbortSignal,
-  ): Promise<Array<{ id: string; similarity: number }>> {
+  ): Promise<{
+    readonly candidates: Array<{ id: string; similarity: number }>;
+    readonly queryVector?: readonly number[];
+  }> {
     abortSignal?.throwIfAborted();
-    if (this.embeddings === undefined) return [];
-    const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
+    if (this.embeddings === undefined) return { candidates: [] };
+    const [vector] = await this.embeddings.embed([`${this.prefixes.query}${query}`]);
     abortSignal?.throwIfAborted();
-    if (vector === undefined) return [];
+    if (vector === undefined) return { candidates: [] };
     this.assertVectorDim(vector, "recall");
     const validity = includeInvalid
       ? ""
@@ -646,8 +753,34 @@ export class MemoryDbCore {
       if (rows.length >= limit || scan >= maxScan) break;
       scan = Math.min(maxScan, scan * 2);
     } while (scan > 0);
-    return rows.slice(0, limit)
-      .map((row) => ({ id: row.id, similarity: Math.max(-1, Math.min(1, 1 - row.distance)) }));
+    return {
+      queryVector: vector,
+      candidates: rows.slice(0, limit)
+        .map((row) => ({ id: row.id, similarity: Math.max(-1, Math.min(1, 1 - row.distance)) })),
+    };
+  }
+
+  /** Cosine similarity for already-fused candidates that have a stored vector. */
+  /** Names (and id slugs) of the entities associated with candidate records. */
+  private anchorEntityNames(ids: readonly string[]): string[] {
+    if (ids.length === 0) return [];
+    const rows = this.db.prepare(
+      `SELECT DISTINCT e.id AS id, e.name AS name FROM memory_entities me JOIN entities e ON e.id = me.entity_id
+       WHERE me.memory_id IN (${ids.map(() => "?").join(",")})`,
+    ).all(...ids) as Array<{ id: string; name: string }>;
+    return rows.flatMap((row) => [row.name, row.id.slice(row.id.indexOf(":") + 1).replaceAll("-", " ")]);
+  }
+
+  private candidateSimilarities(vector: readonly number[], ids: readonly string[]): Map<string, number> {
+    const out = new Map<string, number>();
+    if (ids.length === 0) return out;
+    const rows = this.db.prepare(
+      `SELECT m.id AS id, vec_distance_cosine(v.embedding, ?) AS distance
+       FROM memories m JOIN memories_vec v ON v.rowid = m.seq
+       WHERE m.id IN (${ids.map(() => "?").join(",")})`,
+    ).all(toBlob(vector), ...ids) as Array<{ id: string; distance: number }>;
+    for (const row of rows) out.set(row.id, Math.max(-1, Math.min(1, 1 - row.distance)));
+    return out;
   }
 
   protected keywordCandidates(query: string, limit: number, includeInvalid = false, now = this.clock()): string[] {
@@ -685,7 +818,7 @@ export class MemoryDbCore {
   ): Promise<SimilarHit[][]> {
     options.abortSignal?.throwIfAborted();
     if (this.embeddings === undefined || texts.length === 0) return texts.map(() => []);
-    const vectors = await this.embeddings.embed(texts.map((text) => `search_document: ${text}`));
+    const vectors = await this.embeddings.embed(texts.map((text) => `${this.prefixes.document}${text}`));
     options.abortSignal?.throwIfAborted();
     if (vectors.length !== texts.length) {
       throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${texts.length} similarity queries.`);
@@ -724,7 +857,7 @@ export class MemoryDbCore {
       this.db.exec(
         `DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges;
          DELETE FROM memory_entities; DELETE FROM entities; DELETE FROM entity_relations;
-         DELETE FROM content_hashes; DELETE FROM index_metadata;`,
+         DELETE FROM memory_labels; DELETE FROM content_hashes; DELETE FROM index_metadata;`,
       );
     });
     tx();

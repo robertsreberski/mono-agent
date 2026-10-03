@@ -28,16 +28,13 @@ channel-driver, process-job projection, provider-auth projection, and memory con
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
-Monitor projections use v2 policy and suppression/delivery counters.
-`parseMonitorProjection` also accepts historical v1 projections, supplying
-compatible policy defaults and classifying historical delivered batches as
-unknown wake dispositions. New v2 records are validated strictly.
-
 ## Install / Usage
 
 Process-job projections distinguish terminal wake outcomes: `delivered`,
 `failed`, `unknown` (receipt uncertainty, never auto-replayed), and
-`suppressed` (explicit completion optout or exact sentinel-only reply).
+`suppressed` (explicit completion optout, a host-certified silent turn disposition,
+or exact sentinel-only reply). `AgentResponseMetadata.turnDisposition` is optional;
+when absent, consumers retain the legacy text classifier.
 Older projection fields remain compatible; chain depths accept up to 64.
 
 ```bash
@@ -66,7 +63,7 @@ Managed `tool_call_started` and `tool_call_completed` events may carry
 `SessionToolHistoryEventMetadata`. It is the host writer's acknowledgement for
 that exact block—stable record/sequence when already known, persisted, deferred,
 or failed status, terminal state, truncation byte counts, opaque artifact
-availability, and an untrusted marker. Web/TUI clients render this metadata
+availability, and an untrusted marker. Web/operator clients render this metadata
 directly; they do not re-derive canonical history from run artifacts or their
 own stores. `deferred` means foreground confirmation elapsed while the accepted
 write continued toward bounded run-finalization reconciliation; it is not a
@@ -86,14 +83,22 @@ turn. The immediate result says whether the active run accepted ownership; the
 settlement later reports `applied`, `requeue`, or `discarded`, so the adapter can
 preserve its ordinary queue position across provider and end-of-turn races.
 
-`AgentResponse.parts` carries adapter-neutral attachment, MCP App, and per-part
-failure references. `MAX_AGENT_REPLY_PARTS` is the shared producer/wire ceiling
+`AgentResponse.parts` carries adapter-neutral attachment, MCP App, restart
+proposal, and per-part failure references. `MAX_AGENT_REPLY_PARTS` is the shared producer/wire ceiling
 of 20, and `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` is 20 MiB. Streams that cannot
 represent a part default to concise human fallback; machine and verbatim
 adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
 Artifact/app bytes and HTML remain behind responder authorization methods rather
-than entering stream frames. See
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+than entering stream frames. A `restart_proposal` contains only a per-reply id
+and optional bounded display reason, not any restart authority, endpoint or
+target; the web service binds its real source/process on ingestion. Unsupported
+channels report a safe outcome or inert human warning, never a clickable link.
+A `reply_options` part carries only a per-reply id and 2–8 distinct canonical
+single-line labels. `isAgentReplyOptions` validates the bounded labels without
+coercion at delivery and persistence boundaries. Web choices are non-blocking;
+non-web human fallback is a fixed warning, and machine outcomes never copy labels.
+
+See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 Machine destinations project unsupported parts through the shared
 `AgentReplyPartDeliveryOutcome` contract. `sanitizeReplyPartDeliveryOutcomes()`
@@ -116,7 +121,8 @@ The ordinary record shape is:
 }
 ```
 
-`partType` is `attachment`, `mcp_app`, `failure`, or `unknown`; `status` is the
+`partType` is `attachment`, `mcp_app`, `restart_proposal`, `reply_options`, `failure`, or
+`unknown`; `status` is the
 terminal literal `failed`; and `code` is one of the closed
 `AgentReplyPartFailure.code` values. Only the final overflow record adds
 `affectedPartCount`, uses `partType: "unknown"` and
@@ -125,14 +131,18 @@ The arrays embedded directly in adapter responses are additive unversioned
 fields. A2A and cron's private durable SQLite copy wrap the same array as
 `{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Exact adapter field and
 projection names are documented in
-[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/#machine-delivery-outcome-wire-contract).
+[Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/#machine-delivery-outcome-wire-contract).
 Cron detail projections retain all 20 records. Compact cron summaries retain
 the first eight in stable part order so a maximum 100-run page remains below
 the operator response ceiling.
 
+`AgentManualCompactionOptions.context1M` is an optional boolean selection.
+Omission preserves the host's configured policy; false is explicit. This additive
+field does not introduce a new capability or change conversation history.
+
 ## Architecture
 
-`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
+`provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Dependency-free burn-projection helpers (`projectProviderUsageWindow`, `projectProviderUsage`) derive constant-rate pace, run-out and ok/ahead/unsustainable severity from fields already present, anchored at the measurement. A projected run-out carries `leadMs`, the millisecond gap to its reset, with the shared `formatProviderUsageLead()` compact shape (`3d 2h` / `5h 20m` / `12m`). Windows under 1x pace at normal confidence instead carry `projectedUnusedPercent`, the share of the window expected to go unused. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
 
 ### Data flow
 
@@ -176,9 +186,11 @@ Primary modules:
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
-| Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
+| Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers (including optional bounded subagent token counts), and the owner-authorized operator interface. |
 | Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/login/check parsers, including closed check state/code/message projections, plus the host-owned operator interfaces and stable operation errors. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
+| Channel log safety | `log-redaction.ts` | Bounded descriptor-safe redaction with channel-specific credentials and sinks. |
+| Reply artifact validation | `reply-artifacts.ts` | Shared attachment metadata checks and exact bounded byte collection. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
 `isDeliverableConversation` only checks a conversation scheme against the ids a
@@ -230,8 +242,9 @@ editing in place and never changes final-answer delivery.
 | Buffer or harden streamed output | `BufferedMessageStream`, `ResilientMessageStream` |
 | Format safe applied-steering activity | `formatLiveInputActivityLine` |
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
+| Carry a display-only restart suggestion | `AgentReplyRestartProposalPart`, `sanitizeRestartProposalReason` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
-| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
+| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `normalizeProcessJobSubagentUsage`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
 | Exchange provider-auth state without exposing credentials | `ProviderAuthStatusSnapshot`, `ProviderAuthSessionSnapshot`, `ProviderAuthCheckSessionSnapshot`, `parseProviderAuthStatusSnapshot`, `parseProviderAuthSessionSnapshot`, `parseProviderAuthCheckSessionSnapshot`, `ProviderAuthOperator` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
@@ -271,6 +284,8 @@ AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason
+AgentManualCompactionOptions
+AgentManualCompactionResult
 AgentMcpAppHostRequest
 AgentMcpAppLoadRequest
 AgentMcpAppResource
@@ -283,10 +298,12 @@ AgentReplyArtifactReference
 AgentReplyArtifactStream
 AgentReplyAttachmentPart
 AgentReplyMcpAppPart
+AgentReplyOptionsPart
 AgentReplyPart
 AgentReplyPartDeliveryOutcome
 AgentReplyPartDeliveryType
 AgentReplyPartFailure
+AgentReplyRestartProposalPart
 AgentReplyTarget
 AgentRequestBase
 AgentRequestMetadata
@@ -351,9 +368,12 @@ EnvEncodeKind
 HostWakeDeliveryResult
 HostWakeDisposition
 InboundHttpHeaders
+InternalProcessJobTool
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
+LogRedactor
+LogRedactorOptions
 MAX_AGENT_REPLY_PARTS
 MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES
 MAX_CRON_OPERATOR_CURSOR_BYTES
@@ -380,7 +400,6 @@ MAX_INFO_BODY_BYTES
 MAX_INFO_PROVIDER_ID_BYTES
 MAX_INFO_PROVIDER_ITEMS
 MAX_INFO_PROVIDER_LABEL_BYTES
-MAX_MONITOR_OUTSTANDING_LIFECYCLES
 MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES
 MAX_PROVIDER_AUTH_BODY_BYTES
 MAX_PROVIDER_AUTH_INPUT_BYTES
@@ -393,27 +412,15 @@ MAX_PROVIDER_AUTH_USAGES
 MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
-MONITOR_ERROR_CODES
-MONITOR_PUBLIC_ERROR_MESSAGES
-MONITOR_STATES
 MemoryBlock
+MemoryCaptureEvidence
+MemoryCaptureSpeakerKind
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
 MemoryCompletedTurnResult
 MemoryLoadOptions
 MemoryStore
-MemoryWriteResult
 MessageRef
-MonitorErrorCode
-MonitorOperator
-MonitorProjection
-MonitorProjectionCounters
-MonitorProjectionError
-MonitorProjectionLimits
-MonitorProjectionOrigin
-MonitorProjectionTimestamps
-MonitorState
-MonitorWakeDeliveryInput
 NOTHING_TO_REPORT_SENTINEL
 NotifyDeliveryContext
 NotifyDeliveryResult
@@ -429,6 +436,8 @@ PROVIDER_USAGE_ERRORS
 PROVIDER_USAGE_IDS
 PROVIDER_USAGE_LABELS
 PROVIDER_USAGE_SCHEMA
+PeerProcessJobQuestion
+PeerQuestionFormField
 ProcessJobErrorCode
 ProcessJobOperator
 ProcessJobProjection
@@ -473,8 +482,10 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
+ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
+ProviderUsageWindowProjection
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -482,9 +493,9 @@ ResilientMessageStream
 ResilientMessageStreamLogger
 ResilientMessageStreamOptions
 RunningChannel
-RunningMonitorChannel
 RunningProcessJobChannel
 SUBAGENT_TOOL_SEPARATOR
+SecretSafeLogSink
 SessionToolHistoryEventMetadata
 SessionToolHistoryTerminalState
 SettingsJson
@@ -497,6 +508,7 @@ ToolActivityLineOptions
 agentAttachmentKindFromMimeType
 appendReplyPartFallback
 assertAgentContinuationOriginContext
+assertMatchingReplyAttachment
 assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
@@ -504,37 +516,44 @@ canonicalizeAgentAttachmentMimeType
 classifyNotifySuppression
 close
 closeServerBounded
+collectExactReplyArtifactBytes
 createChannelUserCancelReason
+createLogRedactor
 decodeAgentAttachmentText
+describePeerQuestionForm
 encodeJsonEnvValue
 fieldSpecMappings
 formatLiveInputActivityLine
 formatProviderStatusLine
+formatProviderUsageLead
 frameFeedingMessageStream
 generateBearerToken
 hostForUrl
+isAgentReplyOptions
 isAgentReplyPartDeliveryOutcomes
 isAgentResponseCancelledError
 isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
-isMonitorErrorCode
-isMonitorState
+isNativeNotifyRequest
+isPeerProcessJobQuestion
 isProcessJobErrorCode
 isProcessJobState
 isProcessJobSubagentProgress
 isProcessJobSubagentRoute
 isProviderUsageId
+isSafePrototypeInstance
+isSilentTurnAlreadyVisible
 isSubagentLaunchToolName
-isTerminalMonitorState
 isTerminalProviderAuthSessionState
 isWildcardHost
 layerJsonOntoEnv
 listen
-monitorPublicError
+markSilentTurnAlreadyVisible
 normalizeHostForBind
 normalizeOptionalString
+normalizeProcessJobSubagentUsage
 normalizeTrailing
 parseAgentStreamFrame
 parseCronOperatorJob
@@ -542,8 +561,6 @@ parseCronOperatorOverview
 parseCronOperatorRunDetail
 parseCronOperatorRunPage
 parseCronOperatorRunSummary
-parseMonitorProjection
-parseMonitorProjections
 parseProcessJobProjection
 parseProcessJobProjections
 parseProviderAuthCheckSessionSnapshot
@@ -553,7 +570,10 @@ parseProviderAuthSessionSnapshot
 parseProviderAuthSessionStartInput
 parseProviderAuthStatusSnapshot
 parseProviderUsageSnapshot
+peerQuestionStateLabel
 processJobPublicError
+projectProviderUsage
+projectProviderUsageWindow
 readAuthorizationBearer
 readBoolean
 readChoice
@@ -562,11 +582,14 @@ readInteger
 readJsonSection
 readRecord
 readRequired
+readSafeDataProperty
 readSettingsJson
 readString
 redactedSecret
+registerNativeNotifyRequest
 sanitizeInboundHttpHeaders
 sanitizeReplyPartDeliveryOutcomes
+sanitizeRestartProposalReason
 serializeAgentStreamFrame
 setToolActivityPathRoots
 splitSubagentToolName
@@ -590,28 +613,44 @@ ProviderUsage
 ProviderUsageErrorCode
 ProviderUsageId
 ProviderUsageOperator
+ProviderUsageProjection
 ProviderUsageSnapshot
 ProviderUsageWindow
+ProviderUsageWindowProjection
+formatProviderUsageLead
 isProviderUsageId
 parseProviderUsageSnapshot
+projectProviderUsage
+projectProviderUsageWindow
 ```
 
 <!-- public-api-inventory:end -->
 
-Persistent Agent/AgentSend can run detached through the app-private in-process
+Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Durable admission reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
+`AgentManage({id, stop:true})` cooperatively stops managed detached work without
+starting a new turn. Only a proven `resumable:true` receipt permits ordinary
+message continuation on the same session or `close:true`; `stop_requested`
+keeps messages/close blocked. Stop neither force-kills nor undoes external effects.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
 
 Process-job projection v1 is a local owner API deployed lockstep with its operator
 clients. New readers continue to accept old external Exec/Bash stored records
 without a `kind` field. Mixed-version network clients are not promised compatibility
-with internal Agent/AgentSend projections, whose discriminant and instance identity
+with internal Agent/AgentManage projections, whose discriminant and instance identity
 are required.
 
 The browser-safe `@mono-agent/agent-contracts/provider-usage` entrypoint exposes
 the same strict parser and usage DTOs without the Node-only root helpers.
+`projectProviderUsageWindow()` and `projectProviderUsage()` share one pure
+burn-pace derivation for the tool and the console meters: constant-rate pace
+(1 = on track), projected run-out with its lead to the reset only when ahead
+of pace, and ok/ahead (above 1x) versus unsustainable (1.5x and above)
+severity, all anchored at the measurement `fetchedAt` — an extrapolation, not
+a forecast. The meter countdown and the lead share the
+`formatProviderUsageLead()` granularity.
 `ProviderUsageOperator.snapshot()` retains its cached-read contract. Optional
 `refresh()` awaits shared account-usage work, bypassing successful freshness but
 not error backoff. Capability-aware hosts expose it separately; snapshot-only
@@ -628,10 +667,10 @@ It does not normalize transport messages, run model providers, build prompts, pe
 
 ## Related Documentation
 
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
-- [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
-- [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
-- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/)
+- [Custom channel drivers](https://docs.mono-agent.dev/programmatic/custom-channels/)
+- [Runtime, tools, and guard boundaries](https://docs.mono-agent.dev/runtime/tools-and-guards/)
+- [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 
 ## Verification

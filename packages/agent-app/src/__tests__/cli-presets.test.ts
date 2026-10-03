@@ -70,12 +70,9 @@ describe("parseCliArgs preset flags & alias normalization", () => {
       await writeFile(configPath, JSON.stringify({ providers: { piAuthPath: "configured/auth.json" } }));
       await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir }))
         .resolves.toBe(resolve(dir, "configured/auth.json"));
-      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir, envPath: "env/auth.json" }))
-        .resolves.toBe(resolve(dir, "env/auth.json"));
       await expect(resolvePiAuthPathForLogin({
         configPath,
         cwd: dir,
-        envPath: "env/auth.json",
         piAuthPath: "~/flag/auth.json",
       })).resolves.toBe(resolve(homedir(), "flag/auth.json"));
 
@@ -106,6 +103,18 @@ describe("parseCliArgs preset flags & alias normalization", () => {
 });
 
 describe("init provider setup gate", () => {
+  it("never starts ChatGPT OAuth implicitly for headless OpenAI init --auth, and explains the next step", async () => {
+    const execute = vi.fn(async () => []);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(await runProviderSetupBeforeInit({
+        modelRefs: ["openai:gpt-5.5"], cwd: "/fictional-agent", auth: true,
+        dryRun: false, forceAuthentication: true, execute,
+      })).toBe("skipped");
+      expect(execute).not.toHaveBeenCalled();
+      expect(stderr.mock.calls.map((call) => String(call[0])).join(" ")).toContain("mono-agent auth login openai --auth-method oauth|api-key");
+    } finally { stderr.mockRestore(); }
+  });
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({

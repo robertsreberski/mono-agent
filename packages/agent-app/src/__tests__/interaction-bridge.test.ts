@@ -2,7 +2,7 @@ import type { ChannelAskSnapshot, ChannelInteractionSink } from "@mono-agent/age
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { loadInteractionSettings, startInteractionBridge, type InteractionBridgeHandle } from "../interaction-bridge.js";
 
@@ -89,7 +89,7 @@ async function pollAsk(handle: InteractionBridgeHandle, interactionId: string): 
 }
 
 describe("structured AskUser interaction bridge", () => {
-  it("loads null or the none env sentinel as an explicit no-expiry setting", async () => {
+  it("loads a JSON no-expiry setting and ignores the stale env sentinel", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-interaction-settings-"));
     try {
       const configPath = join(dir, "mono-agent.config.json");
@@ -322,4 +322,53 @@ describe("structured AskUser interaction bridge", () => {
     now = new Date("2026-08-15T10:00:00.001Z");
     expect(handle.getAsk(interactionId)).toBeUndefined();
   });
+});
+
+describe("Telegram project destinations on the bridge", () => {
+  it("serves only a Telegram-scoped delivery capability and validates gone reports", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0 });
+    const gone: string[] = [];
+    const port = {
+      resolveDestination: async () => ({ ok: true as const, conversationId: "telegram:-1001:77", label: "Trips › Flights" }),
+      reportGone: async (conversationId: string) => { gone.push(conversationId); },
+    };
+    const stale = bridge.registerTelegramProjects({ ...port });
+    bridge.registerTelegramProjects(port);
+    // A stopping predecessor never removes its successor's port.
+    stale();
+    const post = (path: string, token: string | undefined, body: unknown) => fetch(`${bridge.url}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) },
+      body: JSON.stringify(body),
+    });
+    const telegram = bridge.issueDeliveryHistoryCapability({ runId: "run-a", producerConversationId: "telegram:-1001", allowedChannels: ["telegram"] });
+    const slack = bridge.issueDeliveryHistoryCapability({ runId: "run-b", producerConversationId: "slack:C1", allowedChannels: ["slack"] });
+    try {
+      expect((await post("/v1/telegram/project-destination", undefined, { projectId: "p1" })).status).toBe(401);
+      expect((await post("/v1/telegram/project-destination", bridge.token, { projectId: "p1" })).status).toBe(401);
+      expect((await post("/v1/telegram/project-destination", slack.token, { projectId: "p1" })).status).toBe(403);
+      const resolved = await post("/v1/telegram/project-destination", telegram.token, { projectId: "p1" });
+      expect(await resolved.json()).toEqual({ conversationId: "telegram:-1001:77", label: "Trips › Flights" });
+      expect((await post("/v1/telegram/topic-gone", telegram.token, { conversationId: "slack:C1" })).status).toBe(400);
+      expect((await post("/v1/telegram/topic-gone", telegram.token, { conversationId: "telegram:-1001:77" })).status).toBe(202);
+      expect(gone).toEqual(["telegram:-1001:77"]);
+      telegram.release();
+      expect((await post("/v1/telegram/project-destination", telegram.token, { projectId: "p1" })).status).toBe(401);
+    } finally {
+      slack.release();
+      await bridge.stop();
+    }
+  });
+});
+
+it("counts pending AskUser registrations synchronously and releases on cancellation/stop", async () => {
+  const changes: number[] = [];
+  const bridge = await startInteractionBridge({ askTimeoutMs: null, onActivityChange: (count) => changes.push(count) }); handles.push(bridge);
+  bridge.registerSink("web", { presentAsk: async () => undefined, updateAsk: async () => undefined, postStatus: async () => undefined });
+  expect(bridge.pendingAskCount()).toBe(0);
+  const first = await createAsk(bridge, { conversationId: "web:fictional", runId: "run-1", questions: questions() });
+  expect(first.status).toBe(201); expect(bridge.pendingAskCount()).toBe(1); expect(changes).toEqual([1]);
+  bridge.cancelAsks("web:fictional"); expect(bridge.pendingAskCount()).toBe(0); expect(changes).toEqual([1, 0]);
+  await createAsk(bridge, { conversationId: "web:fictional", runId: "run-2", questions: questions() });
+  await bridge.stop(); handles.splice(handles.indexOf(bridge), 1); expect(bridge.pendingAskCount()).toBe(0); expect(changes).toEqual([1, 0, 1, 0]);
 });

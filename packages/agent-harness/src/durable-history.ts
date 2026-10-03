@@ -25,7 +25,7 @@ import type {
   ProviderSessionTurnCommitOptions,
   ProviderSessionTurnBinding,
 } from "./types.js";
-import { assertSessionModelKey, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
+import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { isProcessAlive } from "./history-process-liveness.js";
 
 const LEGACY_STORE_VERSION = 1;
@@ -282,6 +282,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const record = await this.readRecord(normalizedId, rootIdentity);
     const retained = retainHistoryMessages(record.messages, this.maxMessages);
     return retained.map(cloneMessage);
+  }
+
+  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined> {
+    const normalizedId = normalizeConversationId(conversationId);
+    const rootIdentity = await this.ensureRoot();
+    const record = await this.readRecord(normalizedId, rootIdentity);
+    const provider = record.sourceVersion === STORE_VERSION ? record.providerSession : undefined;
+    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0 };
   }
 
   async append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
@@ -631,6 +639,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const releaseRoot = await this.acquireRootTransaction(rootIdentity);
       try {
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
+        // The read-only preflight can race another process. Guard the binding
+        // again under the root transaction before any rotation or retirement.
+        if (binding?.skipModelRotation === true && existingProvider !== undefined
+          && (existingProvider.modelKey === undefined
+            ? (existingProvider.revision ?? 0) > 0
+            : existingProvider.modelKey !== binding.modelKey)) {
+          throw new ProviderSessionModelChangedError();
+        }
         const reusable = (binding === undefined || existingProvider?.modelKey === binding.modelKey)
           && this.maxMessages > 0
           && existingFence === undefined
@@ -1297,7 +1313,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let heldExact = exactFence;
     let ownsExactFence = false;
     let releaseProcess: (() => void) | undefined;
-    let shardLock: CrossProcessLock | undefined;
     let legacyLock: CrossProcessLock | undefined;
     let marker: ActiveMarker | undefined;
     let rootIdentity: DirectoryIdentity | undefined;
@@ -1309,14 +1324,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId));
       rootIdentity = await this.ensureRoot();
       const locksIdentity = await this.ensureLocksRoot();
-      shardLock = await acquireCrossProcessLock(
-        join(this.root, LOCKS_DIRECTORY, conversationShardLockName(conversationKey)),
-        locksIdentity,
-      );
-      // Never unlink old per-conversation lock files: another process may have
-      // the old inode open. Acquiring a legacy lock when it already exists
-      // safely serializes upgraded stores with in-flight/pre-upgrade owners,
-      // while every new conversation uses only the fixed shard table.
+      // Logical/exact owner rows already serialize every physical mutation.
+      // Never hold a shared shard transaction across a provider call: a shard
+      // collision must not block unrelated admission or cancellation publication.
+      // Claim-aware writers (>=0.20.0) share these same rows, including writers
+      // that still hold the redundant physical shard lock. Pre-0.20.0 writers
+      // must be stopped before sharing this root; there is no old-binary fence.
+      // Keep legacy per-conversation inodes in place and honor existing locks.
       legacyLock = await acquireExistingCrossProcessLock(
         join(this.root, LOCKS_DIRECTORY, `${conversationKey}.sqlite`),
         locksIdentity,
@@ -1337,15 +1351,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           try {
             await legacyLock?.release();
           } finally {
+            releaseProcess?.();
             try {
-              await shardLock?.release();
+              if (ownsExactFence) await heldExact?.release();
             } finally {
-              releaseProcess?.();
-              try {
-                if (ownsExactFence) await heldExact?.release();
-              } finally {
-                if (ownsLogicalFence) await heldLogical.release();
-              }
+              if (ownsLogicalFence) await heldLogical.release();
             }
           }
           released = true;
@@ -1363,7 +1373,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         }
       }
       await legacyLock?.release().catch(() => undefined);
-      await shardLock?.release().catch(() => undefined);
       releaseProcess?.();
       try {
         if (ownsExactFence) await heldExact?.release().catch(() => undefined);
@@ -2059,11 +2068,6 @@ function sessionClaimKey(kind: "exact" | "logical", conversationId: string): str
     .update("\0")
     .update(conversationId, "utf8")
     .digest("hex");
-}
-
-function conversationShardLockName(conversationKey: string): string {
-  const shard = Number.parseInt(conversationKey.slice(0, 8), 16) % CONVERSATION_LOCK_SHARDS;
-  return `conversation-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
 }
 
 function logicalSessionShardLockName(logicalConversationKey: string): string {

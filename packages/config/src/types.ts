@@ -5,20 +5,33 @@ import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 import type {
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
   MEMORY_EMBEDDINGS_PROVIDERS,
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
-  PERMISSION_MODES,
 } from "./enums.js";
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "auto" | "searxng" | "ollama" | "codex" | "keyless";
+export type WebSearchBackend = "searxng" | "ollama" | "codex" | "keyless" | "duckduckgo" | "startpage" | "parallel" | "local";
+export type WebFetchProvider = "local" | "parallel";
+export interface ParallelWebConfig {
+  /** Environment variable name only; the credential is read at call time. */
+  readonly apiKeyEnv?: string;
+}
 export type WebFetchRenderMode = "never" | "auto";
 
 export interface SearxngWebSearchConfig {
   /** SearXNG must be unauthenticated loopback HTTP. */
+  readonly endpoint: string;
+}
+
+/** @deprecated Source-compatible tombstone; any endpoint setting is rejected.
+ * Local web search/fetch is built in and needs no service endpoint.
+ */
+export interface LocalWebEndpointConfig {
+  /** @deprecated Remove this setting; no external service is contacted. */
   readonly endpoint: string;
 }
 
@@ -32,39 +45,15 @@ export interface OllamaWebSearchConfig {
   /** Required acknowledgement for non-private custom HTTPS origins. */
   readonly trustPublicUrl: boolean;
 }
-/**
- * Which memory engine backs the store. `"bujo"` (default) is the homegrown
- * SQLite/embeddings engine selected by {@link MemoryMode}. External backends
- * (e.g. `"supermemory"`) implement the same MemoryStore contract; for them
- * `mode`/`embeddings`/`llm` are ignored and a backend-specific block applies.
- * Extensible union: add a backend here and its config block on the memory shape.
- */
+/** Built-in memory engine selector. */
 export type MemoryBackend = (typeof MEMORY_BACKENDS)[number];
-/**
- * Supermemory external backend (https://supermemory.ai). Points at a local OSS
- * binary or the hosted cloud via `baseUrl`. Extraction/consolidation happens
- * server-side, so no `memory.llm` is needed for this backend.
- */
-export interface MemorySupermemoryConfig {
-  /** REST base URL — local OSS binary (e.g. http://127.0.0.1:8080) or hosted cloud. */
-  readonly baseUrl: string;
-  /** Resolved API key value (inline or read from `apiKeyEnv` at load time). Optional for no-auth local. */
-  readonly apiKey?: string;
-  /** Name of the env var the key was read from, kept for redacted display. */
-  readonly apiKeyEnv?: string;
-  /** Namespace/container tag scoping this agent's memories. Defaults to the trace sourceId. */
-  readonly container?: string;
-  /** Per-call HTTP timeout in ms (default 10000). */
-  readonly timeoutMs?: number;
-  /** Also inject Supermemory's official MCP server alongside the in-app recall tool. Default false. */
-  readonly exposeMcpServer?: boolean;
-}
 /** Configuration for bujo-tier lightweight consolidation. */
 export interface MemoryConsolidationConfig {
   readonly enabled?: boolean;
   readonly cron?: string;
 }
 export type MemoryEmbeddingsProvider = (typeof MEMORY_EMBEDDINGS_PROVIDERS)[number];
+export type MemoryEmbeddingsInstructions = (typeof MEMORY_EMBEDDINGS_INSTRUCTIONS)[number];
 /** Circuit-breaker tuning for the embeddings provider used by journal/bujo recall. */
 export interface MemoryEmbeddingsCircuitBreakerConfig {
   /** Consecutive failures before the breaker trips OPEN (default 3). */
@@ -91,6 +80,12 @@ export interface MemoryEmbeddingsConfig {
   readonly dim?: number;
   /** Per-call embeddings timeout in ms (default 10000 in the host). */
   readonly timeoutMs?: number;
+  /**
+   * Query/document instruction preset. Absent means `auto`: an existing index
+   * keeps its prefixes and a rebuild adopts the model's preset. An explicit
+   * preset is part of the index identity and requires the safe rebuild.
+   */
+  readonly instructions?: MemoryEmbeddingsInstructions;
   /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
   readonly circuitBreaker?: MemoryEmbeddingsCircuitBreakerConfig;
 }
@@ -105,7 +100,7 @@ export interface MemoryAgentHostLlmConfig {
   /** Runtime model reference string, parsed by the host when constructing the LLM. */
   readonly model: string;
   /**
-   * Record each memory LLM `complete()` as a run through the same JSONL + Phoenix
+   * Record each memory LLM `complete()` as a run through the same local JSONL
    * pipeline as channel runs (per-ritual labelled, `mem-*` run ids). Defaults to
    * `true`; set `false` to keep memory LLM calls unrecorded.
    */
@@ -118,37 +113,6 @@ export interface MemoryAgentHostLlmConfig {
   readonly timeoutMs?: number;
 }
 export type MemoryLlmConfig = MemoryOllamaLlmConfig | MemoryAgentHostLlmConfig;
-
-/**
- * Phoenix OTLP-HTTP trace exporter config. Best-effort, additive sink: never
- * changes run outcome and never suppresses the local JSONL recorder. Header
- * values are secrets and are redacted by `redactMonoAgentConfig`.
- */
-export interface PhoenixExporterConfig {
-  readonly type: "phoenix";
-  /** OTLP/HTTP traces endpoint; defaults to Phoenix's local `/v1/traces`. */
-  readonly endpoint?: string;
-  /** Extra HTTP headers (e.g. auth) sent on the OTLP POST. Values are secrets. */
-  readonly headers?: Readonly<Record<string, string>>;
-  /** When true, redacted raw payloads are exported; default false (metadata only). */
-  readonly includeSensitiveData?: boolean;
-  /**
-   * Scan retained exported free-text values for a closed set of high-confidence
-   * credential shapes. Default false; object-key redaction remains enabled.
-   */
-  readonly contentPatternRedaction?: boolean;
-  /** Hard cap (ms) on a single export attempt; bounded {1..60000}, default 5000. */
-  readonly timeoutMs?: number;
-  /**
-   * Phoenix project the traces land in (resource attr `openinference.project.name`,
-   * also sent as the `x-project-name` header). Defaults to the run's trace source
-   * label/id, else "default". Not a secret.
-   */
-  readonly projectName?: string;
-}
-
-/** Union of supported observability exporters (future: langfuse/otlp). */
-export type ObservabilityExporterConfig = PhoenixExporterConfig;
 
 export type SessionMode = "continuous" | "per-message";
 
@@ -169,7 +133,6 @@ export type SessionRollover = "none" | "daily";
  */
 export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
-export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /** One canonical fallback route. Omitted effort means provider default. */
 export interface RuntimeFallbackConfig {
@@ -304,6 +267,7 @@ export interface MonoAgentConfig {
     readonly model: RuntimeModelReference;
     /** Canonical fallback routes. Omitted per-route effort uses the provider default. */
     readonly fallbacks?: readonly RuntimeFallbackConfig[];
+    readonly context1MModels?: Readonly<Record<string, boolean>>;
     /**
      * Same-model retry policy. `loadMonoAgentConfig` always materializes it, so
      * loaded configs always carry it. It stays optional because MonoAgentConfig
@@ -313,8 +277,6 @@ export interface MonoAgentConfig {
      */
     readonly retry?: RuntimeRetryConfig;
     readonly effort?: EffortLevel;
-    /** Tool-permission posture forwarded to the runtime (CLI execution modes). */
-    readonly permissionMode?: PermissionMode;
     /** Optional hard cap per run; omitted means unlimited. */
     readonly maxTurns?: number;
     /** Adaptive context compaction policy forwarded directly to the runtime. */
@@ -355,6 +317,8 @@ export interface MonoAgentConfig {
     readonly maxConcurrentRuns?: number;
     readonly maxPendingRuns?: number;
   };
+  /** Configured local ACP peers; names are tool-facing, source IDs resolve at call time. */
+  readonly peers?: Readonly<Record<string, { readonly sourceId: string }>>;
   /** Subagent profiles and caps for the `Agent` tool. */
   readonly subagents?: MonoAgentSubagentsConfig;
   readonly context: {
@@ -374,18 +338,14 @@ export interface MonoAgentConfig {
     readonly skillDisclosure?: SkillDisclosureMode;
   };
   readonly memory?: {
-    /**
-     * Memory engine. `"bujo"` (default) uses the homegrown SQLite engine driven
-     * by `mode`. External backends (e.g. `"supermemory"`) implement the same
-     * MemoryStore contract and ignore `mode`/`embeddings`/`llm`.
-     */
+    /** Memory engine. `"bujo"` is the built-in SQLite engine driven by `mode`. */
     readonly backend?: MemoryBackend;
     readonly mode: MemoryMode;
     readonly path: string;
     readonly maxBytes: number;
     readonly writeMode: MemoryWriteMode;
-    /** Supermemory external backend config; required when `backend` is `"supermemory"`. */
-    readonly supermemory?: MemorySupermemoryConfig;
+    /** Optional capture controls; reconcileModel selects only the classifier's agent-host model. */
+    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
     /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */
@@ -395,15 +355,14 @@ export interface MonoAgentConfig {
      * provides targeted search for every backend; capable local tiers may also
      * provide policy-gated `MemoryJournal` chronology. Derived from this single
      * memory block — no hand-wired MCP entry. Defaults on for every configured
-     * memory tier; explicit false opts out of both explicit read tools without
+     * local tier; explicit false opts out of both explicit read tools without
      * disabling automatic memory context.
      */
     readonly recallTool?: { readonly enabled: boolean };
     /**
      * Agent-callable `Remember` tool that durably stores one explicitly stated
      * fact. Deterministic and append-only; it takes no chat LLM. Defaults on for
-     * the bujo backend (every tier) and off for external backends, which expose
-     * no such write surface. Explicit false opts out.
+     * every local tier; explicit false opts out.
      */
     readonly rememberTool?: { readonly enabled: boolean };
     /** Bujo-tier lightweight consolidation. Scheduler default cadence: every two hours. */
@@ -421,6 +380,11 @@ export interface MonoAgentConfig {
     readonly filesystem?: {
       readonly readableRoots: readonly string[];
       readonly writableRoots: readonly string[];
+    };
+    /** Opt-in local desktop control via the separately installed cua-driver. */
+    readonly computerUse?: {
+      readonly backend: "cua-driver";
+      readonly command?: string;
     };
     readonly mcpConfigPath?: string;
     /**
@@ -442,13 +406,16 @@ export interface MonoAgentConfig {
     readonly web?: {
       readonly coordination?: "process" | "host";
       readonly search: {
-        readonly backend: WebSearchBackend;
-        /** Hard ceiling on actual provider search requests in one logical runtime run. */
+        readonly backend: WebSearchBackend | readonly WebSearchBackend[];
+        /** Hard ceiling on answered provider searches per logical run; failed dispatches are refunded. */
         readonly maxRequestsPerRun: number;
         /** @deprecated Use searxng.endpoint. Accepted for programmatic embedders. */
         readonly endpoint?: string;
         readonly searxng?: SearxngWebSearchConfig;
         readonly ollama?: OllamaWebSearchConfig;
+        readonly parallel?: ParallelWebConfig;
+        /** @deprecated Endpoint settings are rejected: local search is built in. */
+        readonly hound?: LocalWebEndpointConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
           /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
@@ -456,6 +423,10 @@ export interface MonoAgentConfig {
         };
       };
       readonly fetch: {
+        readonly provider?: WebFetchProvider | readonly WebFetchProvider[];
+        readonly parallel?: ParallelWebConfig;
+        /** @deprecated Endpoint settings are rejected: local fetch is built in. */
+        readonly hound?: LocalWebEndpointConfig;
         readonly render: WebFetchRenderMode;
         readonly browserCommand: string;
       };
@@ -464,6 +435,8 @@ export interface MonoAgentConfig {
   readonly sandbox?: SandboxPolicy;
   readonly artifacts: {
     readonly dir: string;
+    /** Resolved by the JSON loader; optional for existing programmatic host composition. */
+    readonly replyFiles?: { readonly maxStorageBytes: number | "unlimited"; readonly maxFileBytes: number };
     readonly retention: ArtifactRetentionConfig;
     /** Retention policy for memory-run artifacts under the memory namespace. */
     readonly memoryRetention: ArtifactRetentionConfig;
@@ -478,17 +451,10 @@ export interface MonoAgentConfig {
      * When this agent's own `registryDir` is not the machine-wide default
      * (e.g. `mono-agent init`'s config-local scaffold), also mirror its
      * heartbeat manifest into the global `~/.mono-agent/trace-sources`
-     * registry so `mono-agent tui` run from anywhere on the machine can find
-     * it. Default true; set false to keep this agent's registration local-only.
+     * registry so machine-wide operator clients can find it. Default true; set
+     * false to keep this agent's registration local-only.
      */
     readonly globalDiscovery?: boolean;
-  };
-  /**
-   * Best-effort observability sinks. Present only when at least one exporter is
-   * configured; the local JSONL recorder always runs regardless.
-   */
-  readonly observability?: {
-    readonly exporters: readonly ObservabilityExporterConfig[];
   };
   readonly providers?: {
     readonly piAuthPath?: string;
@@ -517,7 +483,7 @@ export interface PiNativeProviderConfig {
   readonly transport?: PiTransport;
   /** Emit metadata-only prompt-cache request fingerprints into run artifacts (default false). */
   readonly promptCacheDiagnostics?: boolean;
-  /** Optional Anthropic Messages cache retention. Unset preserves Pi defaults/environment. */
+  /** Anthropic Messages cache retention. Config loading defaults to long; short opts out. */
   readonly cacheRetention?: "short" | "long";
   /** Max retry attempts for the pi provider transport (0-8; default 2). */
   readonly piMaxRetries?: number;
@@ -542,10 +508,6 @@ export type RedactedMemoryEmbeddingsConfig = Omit<MemoryEmbeddingsConfig, "apiKe
   readonly apiKey?: RedactedSecretValue;
 };
 
-export type RedactedMemorySupermemoryConfig = Omit<MemorySupermemoryConfig, "apiKey"> & {
-  readonly apiKey?: RedactedSecretValue;
-};
-
 export type RedactedOllamaWebSearchConfig = Omit<OllamaWebSearchConfig, "apiKey"> & {
   readonly apiKey?: RedactedSecretValue;
 };
@@ -560,22 +522,10 @@ export type RedactedToolsConfig = Omit<MonoAgentConfig["tools"], "web"> & {
 
 export type RedactedMemoryConfig = Omit<
   NonNullable<MonoAgentConfig["memory"]>,
-  "embeddings" | "supermemory"
+  "embeddings"
 > & {
   readonly embeddings?: RedactedMemoryEmbeddingsConfig;
-  readonly supermemory?: RedactedMemorySupermemoryConfig;
 };
-
-export type RedactedPhoenixExporterConfig = Omit<PhoenixExporterConfig, "headers"> & {
-  /** Header VALUES are secrets and replaced with the literal `[redacted]`. */
-  readonly headers?: Readonly<Record<string, "[redacted]">>;
-};
-
-export type RedactedObservabilityExporterConfig = RedactedPhoenixExporterConfig;
-
-export interface RedactedObservabilityConfig {
-  readonly exporters: readonly RedactedObservabilityExporterConfig[];
-}
 
 export interface RedactedMonoAgentConfig {
   readonly agent?: MonoAgentConfig["agent"];
@@ -587,7 +537,6 @@ export interface RedactedMonoAgentConfig {
   readonly sandbox?: MonoAgentConfig["sandbox"];
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];
-  readonly observability?: RedactedObservabilityConfig;
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly entries?: readonly RedactedProviderDefinition[];

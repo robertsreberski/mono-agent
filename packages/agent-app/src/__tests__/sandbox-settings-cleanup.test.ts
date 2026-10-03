@@ -8,7 +8,7 @@ import { expect, it } from "vitest";
 import { cleanupPersistedSandboxSettings } from "../sandbox-settings-cleanup.js";
 
 it("never follows a validly named sandbox directory symlink during persisted cleanup", async () => {
-  const target = await mkdtemp(join(tmpdir(), "monitor-cleanup-target-"));
+  const target = await mkdtemp(join(tmpdir(), "process-cleanup-target-"));
   const alias = join(tmpdir(), `mono-agent-srt-settings-${randomUUID()}`);
   const protectedPath = join(target, "settings.json");
   await chmod(target, 0o700);

@@ -15,7 +15,6 @@ import type {
 } from "./background-log-maintenance.js";
 import {
   buildWebMaintenancePlistXml,
-  launchdServiceInfo,
   launchdWebMaintenanceInfo,
   WEB_LAUNCHD_LABEL,
   WEB_MAINTENANCE_LAUNCHD_LABEL,

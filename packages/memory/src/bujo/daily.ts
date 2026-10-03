@@ -269,7 +269,7 @@ export function rewriteBullet(
   root: string,
   file: string,
   id: string,
-  patch: Partial<Pick<Bullet, "text" | "status" | "salience" | "isInsight" | "dueAt" | "refs">>,
+  patch: Partial<Pick<Bullet, "type" | "text" | "status" | "salience" | "isInsight" | "dueAt" | "refs">>,
 ): boolean {
   assertCanonicalDailySourcePath(file);
   const snapshot = readCanonicalFileSnapshot(root, file);
@@ -302,4 +302,14 @@ export function readBullet(root: string, file: string, id: string): Bullet | und
   const snapshot = readCanonicalFileSnapshot(root, file);
   if (snapshot === undefined) throw new Error(`memory-bujo: canonical source "${file}" is missing.`);
   return parseDailyFile(snapshot.content).bullets.find((bullet) => bullet.id === id);
+}
+
+/** Fail before publishing a mutation if a target ID occurs twice in its source file. */
+export function readUniqueBullet(root: string, file: string, id: string): Bullet | undefined {
+  assertCanonicalDailySourcePath(file);
+  const snapshot = readCanonicalFileSnapshot(root, file);
+  if (snapshot === undefined) throw new Error(`memory-bujo: canonical source "${file}" is missing.`);
+  const matches = parseDailyFile(snapshot.content).bullets.filter((bullet) => bullet.id === id);
+  if (matches.length > 1) throw new Error(`memory-bujo: duplicate target id "${id}" in canonical source "${file}".`);
+  return matches[0];
 }

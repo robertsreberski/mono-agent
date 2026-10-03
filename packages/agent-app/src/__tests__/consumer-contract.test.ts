@@ -63,6 +63,10 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "computer-use",
+          "status": "disabled",
+        },
+        {
           "id": "session-tool-history",
           "status": "ok",
         },
@@ -81,10 +85,6 @@ describe("golden consumer config contracts", () => {
         {
           "id": "sandbox",
           "status": "waiting",
-        },
-        {
-          "id": "observability",
-          "status": "ok",
         },
         {
           "id": "runs",
@@ -159,6 +159,10 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "computer-use",
+          "status": "disabled",
+        },
+        {
           "id": "session-tool-history",
           "status": "ok",
         },
@@ -177,10 +181,6 @@ describe("golden consumer config contracts", () => {
         {
           "id": "sandbox",
           "status": "waiting",
-        },
-        {
-          "id": "observability",
-          "status": "ok",
         },
         {
           "id": "runs",

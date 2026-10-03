@@ -17,7 +17,7 @@ channel adapter
 optional side paths
   -> memory
   -> observability
-  -> operator TUI/web surfaces
+  -> operator endpoint/web surfaces
 ```
 
 The exact workspace graph and package ownership descriptions are generated in [`PACKAGES.md`](./PACKAGES.md). The rules are enforced by `pnpm run check:architecture`.
@@ -31,7 +31,6 @@ flowchart TB
   Host["Config-first app host<br/>mono-agent CLI or custom host"]
 
   subgraph Surfaces["Operator-surface choices"]
-    Tui["@mono-agent/tui<br/>Terminal chat + read-only config"]
     Web["@mono-agent/web<br/>Always-on browser console"]
   end
 
@@ -53,7 +52,6 @@ flowchart TB
 
   subgraph PromptContext["Context layer"]
     Memory["@mono-agent/memory<br/>./store SQLite, ./search embeddings, ./bujo engine"]
-    MemorySupermemory["@mono-agent/memory-supermemory<br/>extra plugin: Supermemory-backed store"]
   end
 
   subgraph AppLayer["App layer"]
@@ -72,7 +70,6 @@ flowchart TB
     PiSdk["Pi providers<br/>&lt;provider&gt;:&lt;model&gt;"]
   end
 
-  Host -. optional .-> Tui
   Host -. optional .-> Web
   Host --> Telegram
   Host -. plugin .-> A2A
@@ -86,8 +83,6 @@ flowchart TB
   Host --> Config
   Host --> AgentApp
 
-  Tui --> Contracts
-  Tui --> Config
   Web --> Contracts
   Web --> Config
   Telegram --> Contracts
@@ -104,13 +99,11 @@ flowchart TB
   AgentApp --> Config
   AgentApp --> Harness
   AgentApp --> Memory
-  AgentApp -. optional backend .-> MemorySupermemory
   AgentApp --> RuntimeAdapter
   AgentApp --> Observability
   Config --> Contracts
   Config --> RuntimeAdapter
   Harness --> Contracts
-  MemorySupermemory --> Contracts
   Harness --> RuntimeAdapter
   Harness --> Observability
 
@@ -140,7 +133,6 @@ Runtime-only composition (not manifest dependency edges)
 
 tui / web ── HTTP operator protocol ──> operator-adapter
 agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter / messenger-adapter
-agent-app ── selected memory backend ──> memory-supermemory
 custom host ── request-scoped extension ──> agent-orchestrator
 authoring harness ── explicit MCP companion ──> docs-mcp
 ```
@@ -167,18 +159,18 @@ Rules for future packages:
 | Transport-specific behavior | The matching `*-adapter` package |
 | Memory persistence, recall, or maintenance | `packages/memory` or an explicitly selected plugin backend |
 | Run artifacts, trace discovery, or exporters | `packages/observability` |
-| Terminal/browser operator experience | `packages/tui`, `packages/web`, or `packages/operator-adapter` |
+| Browser/shared operator experience | `packages/web` or `packages/operator-adapter` |
 
 Choose the lowest rung in [`docs/reference/capability-ladder.md`](./docs/reference/capability-ladder.md). A shared contract change is the last resort, not the default home for reusable-looking code.
 
 ## Agent-app internals
 
-`app-controller.ts` owns lifecycle state and delegates operations. Each `app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `background-log-maintenance.ts`, `doctor-observability.ts`, and `managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
+`app-controller.ts` owns lifecycle state and delegates operations. Each `app-controller-*.ts` module declares the narrow controller port it needs; operation modules must not import the concrete controller. Cross-cutting service logic lives in focused modules such as `background-log-maintenance.ts`, `doctor-runs.ts`, and `managed-web-logs.ts` rather than returning to the CLI/controller entrypoints.
 
 The normal lifecycle is:
 
 1. Strictly load config and resolve channel drivers.
-2. Establish sandbox, traceability, exporters, and continuation services.
+2. Establish sandbox, traceability, local recording, and continuation services.
 3. Start configured channels and their responders.
 4. Publish the completed startup snapshot.
 5. On reload or stop, block new work, stop transports, dispose responders/runtimes, and close shared services with bounded waits.

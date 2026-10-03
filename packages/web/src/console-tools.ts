@@ -1,18 +1,46 @@
-import type { WebTag, WebThread } from "./contracts.js";
+import type { WebExternalConversation, WebExternalConversationChannel, WebProject, WebTag, WebThread } from "./contracts.js";
 import type { WebStore } from "./store.js";
 import { WebConsoleError } from "./errors.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
+import { nextWakeOccurrence, parseWakeDefinition } from "./wake-schedule.js";
 
-export interface ConsoleToolScope {
+/** A live web-console turn: the only scope that existed before channel projects. */
+export interface WebConsoleToolScope {
+  readonly kind?: "web";
   readonly sourceId: string;
   readonly threadId: string;
   readonly turnId: string;
 }
-export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead"] as const;
+/**
+ * A live human turn on another channel (a Telegram message), issued through
+ * the owner-private ingress to the discovered process that owns the turn and
+ * revoked when that turn settles. It never fabricates a web thread or turn.
+ */
+export interface ExternalConsoleToolScope {
+  readonly kind: "external";
+  readonly sourceId: string;
+  readonly channel: WebExternalConversationChannel;
+  /** Host-owned key of the turn's conversation; absent where it cannot be a project (a DM or non-forum group). */
+  readonly key?: string;
+  /** The owning process's own turn identity; receipts are bound to it. */
+  readonly turnKey: string;
+  /** The discovered process generation that asked for this scope. */
+  readonly pid: number;
+}
+export type ConsoleToolScope = WebConsoleToolScope | ExternalConsoleToolScope;
+export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule"] as const;
 export type ConsoleToolName = typeof CONSOLE_TOOL_NAMES[number];
 /** Tools that never change state: no operation receipt is written for them. */
-export const CONSOLE_READ_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>(["ListTags", "ListProjects", "GetProject", "ListConversations", "SearchConversations"]);
+export const CONSOLE_READ_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>(["ListTags", "ListProjects", "GetProject", "ListConversations", "SearchConversations", "GetWakeSchedule"]);
+/**
+ * The project tools a channel turn may use. Tag, read-state and wake-up tools
+ * stay web-only: they act on web threads a channel turn does not own.
+ */
+export const EXTERNAL_CONSOLE_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>([
+  "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject",
+  "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
+]);
 /** Rows one listing or search returns unless the caller asks for fewer; the hard cap matches the console's own search. */
 const CONSOLE_TOOL_PAGE_DEFAULT = 20;
 const CONSOLE_TOOL_PAGE_MAX = 50;
@@ -44,6 +72,23 @@ const pageLimit = (value: unknown): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > CONSOLE_TOOL_PAGE_MAX) return invalid(`limit must be 1-${String(CONSOLE_TOOL_PAGE_MAX)}.`);
   return value;
 };
+/** Project identity for listings: opaque ids and safe labels, never channel routing identities. */
+const projectSummary = ({ id, name, color, archivedAt, conversationCount, external }: WebProject) =>
+  ({ id, name, color, archivedAt, conversationCount, ...(external === undefined ? {} : { external: externalSummary(external) }) });
+const externalSummary = ({ id, channel, label, state }: WebExternalConversation) => ({ id, channel, label, state });
+/** A channel conversation as a ListConversations row: its history lives on the channel, not here. */
+const externalDescriptor = (item: WebExternalConversation, current: boolean) => ({
+  id: item.id, channel: item.channel, title: item.label, projectId: item.projectId, state: item.state,
+  historyAvailable: false, lastSeenAt: item.lastSeenAt, ...(current ? { current: true } : {}),
+});
+const encodeProjectCursor = (project: WebProject): string => Buffer.from(JSON.stringify([project.updatedAt, project.id])).toString("base64url");
+const decodeProjectCursor = (value: unknown): readonly [string, string] => {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(text(value, "cursor", 2048), "base64url").toString("utf8"));
+    if (Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === "string" && typeof parsed[1] === "string") return [parsed[0], parsed[1]];
+  } catch { /* reported below */ }
+  return invalid("Invalid cursor.");
+};
 /** What the model needs to pick or move a conversation: identity, placement and recency, never message bodies. */
 const conversationSummary = (tags: ReadonlyMap<string, WebTag>, { id, title, projectId, tagIds, pendingProject, archivedAt, updatedAt }: WebThread) =>
   ({ id, title, projectId, tags: tagIds.flatMap((tagId) => { const tag = tags.get(tagId); return tag === undefined ? [] : [{ id: tag.id, name: tag.name }]; }), ...(pendingProject === undefined ? {} : { pendingProject }), archived: archivedAt !== null, updatedAt });
@@ -55,12 +100,17 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
     ListTags: [], CreateTag: ["name", "color"], UpdateTag: ["tagId", "name", "color"], DeleteTag: ["tagId"],
     UpdateConversationTags: ["conversationId", "add", "remove"],
     MarkConversationRead: ["conversationId"],
-    ListProjects: [], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
+    GetWakeSchedule: [], SetWakeSchedule: ["expectedRevision", "kind", "timezone", "localAt", "days", "times", "message", "compactFirst"],
+    ClearWakeSchedule: ["expectedRevision"],
+    ListProjects: ["channel", "limit", "cursor"], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
     UpdateProject: ["projectId", "name", "context", "color", "archived"], DeleteProject: ["projectId"],
     ListConversations: ["tagId", "projectId", "archived", "limit", "cursor"], SearchConversations: ["query", "limit"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
   };
   if (!CONSOLE_TOOL_NAMES.includes(operation.tool) || !args || Array.isArray(args) || typeof args !== "object"
     || Object.keys(args).some((key) => !keys[operation.tool].includes(key))) return invalid("Unknown tool or argument.");
+  if (scope.kind === "external" && !EXTERNAL_CONSOLE_TOOL_NAMES.has(operation.tool)) {
+    throw new WebConsoleError("console_tool_unavailable", "This tool is only available in the web console.", 403);
+  }
   const tags: string[] = [], deletedTags: string[] = [];
   const projects: string[] = [], threads: string[] = [], deletedProjects: string[] = [];
   const tag = (value: unknown) => {
@@ -74,10 +124,42 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
     return item;
   };
   const conversation = (value: unknown) => {
-    const item = store.getThread(value === undefined ? scope.threadId : text(value, "conversationId", 128));
+    if (value === undefined && scope.kind === "external") throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const item = store.getThread(value === undefined ? (scope as WebConsoleToolScope).threadId : text(value, "conversationId", 128));
     if (item === undefined || item.sourceId !== scope.sourceId || item.trigger?.kind === "cron") throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     return item;
   };
+  /** The current turn's channel conversation, when it can join a project. */
+  const currentExternal = (): WebExternalConversation | undefined =>
+    scope.kind === "external" && scope.key !== undefined ? store.externalConversationByKey(scope.sourceId, scope.channel, scope.key) : undefined;
+  /** A web thread, or a channel conversation by its opaque id; this turn's own conversation by default. */
+  const member = (value: unknown): { readonly thread: WebThread } | { readonly external: WebExternalConversation } => {
+    if (value === undefined && scope.kind === "external") {
+      const current = currentExternal();
+      if (current === undefined) throw new WebConsoleError("external_conversation_unsupported", "Only a forum topic or a forum's General conversation can join a project.", 409);
+      return { external: current };
+    }
+    if (value !== undefined) {
+      const id = text(value, "conversationId", 128);
+      if (store.getThread(id) === undefined) {
+        const external = store.getExternalConversation(id);
+        if (external === undefined || external.sourceId !== scope.sourceId) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+        return { external };
+      }
+    }
+    return { thread: conversation(value) };
+  };
+  const bindExternal = (item: WebExternalConversation, projectId: string | null) => {
+    if (item.projectId !== null) projects.push(item.projectId);
+    const bound = store.setExternalConversationProject(item.id, projectId);
+    if (projectId !== null) projects.push(projectId);
+    return { conversationId: bound.id, projectId: bound.projectId, disposition: "applied" as const };
+  };
+  const wakeRevision = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) return invalid("expectedRevision must be a positive integer.");
+    return value;
+  };
+  const wakeThread = () => conversation(undefined);
   const membership = (id: string) => {
     const item = store.getThread(id)!;
     return { conversationId: id, projectId: item.projectId, disposition: item.pendingProject === undefined ? "applied" : "pending",
@@ -117,6 +199,28 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       }
       result = { conversationId: current.id, tagIds: store.getThread(current.id)!.tagIds, disposition: "applied" }; break;
     }
+    case "GetWakeSchedule": result = { schedule: store.wakeSchedule(wakeThread().id) }; break;
+    case "SetWakeSchedule": {
+      const current = wakeThread();
+      const { expectedRevision, ...fields } = args;
+      const now = new Date();
+      const definition = parseWakeDefinition(fields, now);
+      if (definition.kind === "once" && nextWakeOccurrence(definition, now)!.getTime() - now.getTime() < 5 * 60_000) {
+        throw new WebConsoleError("wake_lead_time", "localAt: Choose a time at least five minutes from now.", 400);
+      }
+      const existing = store.wakeSchedule(current.id);
+      if ((existing === null) !== (expectedRevision === undefined)) {
+        throw new WebConsoleError("wake_revision_conflict", "Schedule changed; get its current revision and retry.", 409);
+      }
+      const schedule = existing === null ? store.createWakeSchedule(current.id, definition)
+        : store.changeWakeSchedule(current.id, wakeRevision(expectedRevision), { definition });
+      threads.push(current.id); result = { schedule }; break;
+    }
+    case "ClearWakeSchedule": {
+      const current = wakeThread();
+      store.changeWakeSchedule(current.id, wakeRevision(args.expectedRevision), { delete: true });
+      threads.push(current.id); result = { cleared: true }; break;
+    }
     case "MarkConversationRead": {
       const current = conversation(args.conversationId);
       if (current.readRevision !== current.revision) {
@@ -126,13 +230,33 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       result = { conversationId: current.id, readRevision: current.revision }; break;
     }
     case "ListProjects": {
-      const list = store.listProjects(scope.sourceId);
-      result = { projects: list.slice(0, 20).map(({ id, name, color, archivedAt, conversationCount }) => ({ id, name, color, archivedAt, conversationCount })), truncated: list.length > 20 };
+      if (args.channel !== undefined && args.channel !== "telegram") return invalid("channel must be telegram.");
+      const limit = pageLimit(args.limit);
+      let list = store.listProjects(scope.sourceId);
+      if (args.channel !== undefined) list = list.filter((item) => item.external?.channel === args.channel);
+      if (args.cursor !== undefined) {
+        const [updatedAt, id] = decodeProjectCursor(args.cursor);
+        list = list.filter((item) => item.updatedAt < updatedAt || (item.updatedAt === updatedAt && item.id < id));
+      }
+      const page = list.slice(0, limit);
+      result = { projects: page.map(projectSummary), truncated: list.length > limit,
+        ...(list.length > limit ? { cursor: encodeProjectCursor(page.at(-1)!) } : {}) };
       break;
     }
     case "GetProject": result = { project: project(args.projectId) }; break;
     case "CreateProject": {
       if (args.attachCurrentConversation !== undefined && typeof args.attachCurrentConversation !== "boolean") return invalid("attachCurrentConversation must be boolean.");
+      if (scope.kind === "external") {
+        // Resolve the attach target before creating anything, so a refusal
+        // leaves no orphan project behind.
+        const current = args.attachCurrentConversation === true ? member(undefined) : undefined;
+        const created = store.createProject({ sourceId: scope.sourceId, name: text(args.name, "name", 120).trim(),
+          ...(args.context === undefined ? {} : { context: text(args.context, "context", 4000, true) }),
+          ...(args.color === undefined ? {} : { color: parseProjectColor(args.color) }) });
+        projects.push(created.id);
+        result = { projectId: created.id, ...(current !== undefined && "external" in current ? { attachment: bindExternal(current.external, created.id) } : {}) };
+        break;
+      }
       const created = store.createProject({ sourceId: scope.sourceId, name: text(args.name, "name", 120).trim(),
         ...(args.context === undefined ? {} : { context: text(args.context, "context", 4000, true) }),
         ...(args.color === undefined ? {} : { color: parseProjectColor(args.color) }) });
@@ -166,12 +290,21 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       if (args.archived !== undefined && typeof args.archived !== "boolean") return invalid("archived must be boolean.");
       const projectId = args.projectId === undefined ? undefined : project(args.projectId).id;
       const tagId = args.tagId === undefined ? undefined : tag(args.tagId).id;
-      const page = store.listThreadsPage({ sourceId: scope.sourceId, archived: args.archived === true, scope: "chats", limit: pageLimit(args.limit),
+      const limit = pageLimit(args.limit);
+      const page = store.listThreadsPage({ sourceId: scope.sourceId, archived: args.archived === true, scope: "chats", limit,
         ...(tagId === undefined ? {} : { tagId }),
         ...(projectId === undefined ? {} : { projectId }), ...(args.cursor === undefined ? {} : { before: text(args.cursor, "cursor", 2048) }) });
       // One source-scoped lookup serves every summary, regardless of tag count.
       const tagMap = new Map(store.listTags(scope.sourceId).map((tag) => [tag.id, tag]));
-      result = { conversations: page.threads.map((thread) => conversationSummary(tagMap, thread)), ...(page.nextCursor === undefined ? {} : { cursor: page.nextCursor }) };
+      // Channel conversations carry no tags or archive state and have no
+      // pages of their own: they ride on the first unfiltered page only, and
+      // the key is absent when an agent has none.
+      const current = currentExternal();
+      const external = args.cursor !== undefined || args.archived === true || tagId !== undefined ? []
+        : store.listExternalConversations(scope.sourceId, { ...(projectId === undefined ? {} : { projectId }), limit });
+      result = { conversations: page.threads.map((thread) => conversationSummary(tagMap, thread)),
+        ...(external.length === 0 ? {} : { externalConversations: external.map((item) => externalDescriptor(item, item.id === current?.id)) }),
+        ...(page.nextCursor === undefined ? {} : { cursor: page.nextCursor }) };
       break;
     }
     case "SearchConversations": {
@@ -199,7 +332,12 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       result = { conversationId: created.id, projectId: created.projectId }; break;
     }
     case "SetConversationProject": {
-      const current = conversation(args.conversationId);
+      const target = member(args.conversationId);
+      if ("external" in target) {
+        result = bindExternal(target.external, args.projectId === null ? null : project(args.projectId).id);
+        break;
+      }
+      const current = target.thread;
       const destination = args.projectId === null ? null : project(args.projectId).id;
       store.patchThread(current.id, { projectId: destination });
       threads.push(current.id);

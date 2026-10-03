@@ -67,8 +67,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 
 Keep `botToken` out of the file by setting `MONO_AGENT_TELEGRAM_BOT_TOKEN` in
 `.env` instead. The memory LLM provider/model/endpoint can also come from
-`MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, and
-`MONO_AGENT_MEMORY_LLM_ENDPOINT`.
+`memory.llm.provider`, `memory.llm.model`, and `memory.llm.endpoint`.
 
 :::note
 Consolidation runs in-app on the schedule above — no external cron or launchd is needed.

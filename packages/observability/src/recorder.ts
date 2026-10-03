@@ -9,7 +9,7 @@ import {
   writeJsonAtomic,
 } from "./artifact-fs.js";
 import { errorFailureKind, errorToJson, redactJsonValue } from "./redaction.js";
-import { normalizeFailoverHistory } from "./run-export-mapping.js";
+import { normalizeFailoverHistory } from "./failover-history.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
 // System prompts are bounded by their OWN cap, not the per-event `maxStringBytes`
@@ -291,6 +291,10 @@ class JsonlRunRecorder implements RunRecorder {
       runId: this.runId,
       conversationId: this.conversationId,
       status,
+      ...(result.turnDisposition === undefined ? {}
+        : status === "succeeded" && result.turnDisposition === "silent"
+          ? { turnDisposition: "silent" as const, assistantText: "" as const }
+          : { turnDisposition: "visible" as const }),
       ...(failureKind === undefined ? {} : { failureKind: redactArtifactValue(failureKind, this.maxStringBytes) }),
       ...(cancellationReason === undefined ? {} : { cancellationReason }),
       ...(error === undefined ? {} : { error }),

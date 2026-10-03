@@ -79,6 +79,23 @@ describe("applyMessageDelta", () => {
     });
   }
 
+  it("validates marker parts on cache delta replay", () => {
+    const part = { type: "conversation-marker", kind: "resumed", at: "2026-09-16T10:00:00Z", previousMessageAt: "2026-09-16T08:00:00Z", idleMs: 7_200_000 } as const;
+    expect(applyMessageDelta(message("m1", { role: "system" }), delta({ ops: [{ op: "set", index: 0, part }] })).parts).toEqual([part]);
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, idleMs: 1 } }] }))).toBeUndefined();
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part }] }))).toBeDefined();
+  });
+
+  it("retains a scheduled wake marker across cache delta replay and rejects oversized messages", () => {
+    const part = { type: "scheduled-wake", occurrenceId: "sample", scheduledAt: "2027-01-04T09:00:00Z",
+      firedAt: "2027-01-04T09:00:01Z", timezone: "UTC", message: "Review the sample." } as const;
+    const wire = delta({ ops: [{ op: "set", index: 0, part }] });
+    expect(readMessageDelta(wire)).toBeDefined();
+    expect(applyMessageDelta(message("m1"), wire).parts).toEqual([part]);
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, message: "x".repeat(1001) } }] })))
+      .toBeUndefined();
+  });
+
   it("returns a new message carrying the delta's own status, stamp and version", () => {
     const held = message("m1", { status: "running", seq: 4 });
 
@@ -433,6 +450,20 @@ describe("readMessageDelta", () => {
       .toBeUndefined();
     expect(setOp({ type: "something-newer", payload: 1 })).toBeUndefined();
     expect(setOp(null)).toBeUndefined();
+  });
+
+  it("replays a bounded restart proposal set-op without a full thread re-fetch", () => {
+    const proposal = { type: "restart_proposal", id: "proposal-1", reason: "Refresh the agent",
+      restartable: { state: "used", operationId: "web-operation-1", reason: "Already used." } } as const;
+    const incoming = { ...wire, ops: [{ op: "set", index: 0, part: proposal }] };
+    const parsed = readMessageDelta(incoming);
+    expect(parsed).toBeDefined();
+    expect(applyMessageDelta(message("m1"), parsed!).parts).toEqual([proposal]);
+    expect(readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part: { ...proposal, target: "agent-other" } }] }))
+      .toBeUndefined();
+    expect(readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part: {
+      ...proposal, reason: "x".repeat(281),
+    } }] })).toBeUndefined();
   });
 
   it("reads an inline-steer marker and refuses one without operator text", () => {
@@ -1253,6 +1284,37 @@ describe("createThreadCache", () => {
   });
 });
 
+describe("transcript marker paging", () => {
+  it("preserves paged-back markers and server admission order through refresh and restore", () => {
+    const cache = createThreadCache();
+    const user = message("user", { role: "user" });
+    const answer = message("answer");
+    const project = message("project-marker", { role: "system", seq: 0, parts: [{
+      type: "conversation-marker", kind: "project", at: user.createdAt,
+      before: null, after: { id: "p", name: "Project", color: "blue" },
+    }] });
+    const model = message("model-marker", { role: "system", seq: 0, parts: [{
+      type: "conversation-marker", kind: "model", at: user.createdAt,
+      before: { model: "A", effort: "high" }, after: { model: "B", effort: "high" },
+    }] });
+    cache.upsertFull({ ...detail([user, answer]), messagesNextCursor: "older" });
+    cache.prependOlder("alpha-thread", { messages: [project] });
+    // All fixture creation instants tie. The cache must trust the server's
+    // ordering rather than put a system row after its admission's user row.
+    const nextUser = message("next-user", { role: "user" });
+    const nextAnswer = message("next-answer");
+    cache.upsertFull(detail([user, answer, model, nextUser, nextAnswer]));
+    const held = cache.get("alpha-thread")!;
+    expect(held.messages.map((row) => row.id)).toEqual([
+      "project-marker", "user", "answer", "model-marker", "next-user", "next-answer",
+    ]);
+    const restored = createThreadCache();
+    restored.restore(held);
+    expect(restored.get("alpha-thread")?.messages).toEqual(held.messages);
+    expect(restored.get("alpha-thread")?.stale).toBe(true);
+  });
+});
+
 describe("cron revision eviction", () => {
   it("forgets paged history, validators and identities on a newer authoritative cron window", () => {
     const resets: string[] = [];
@@ -1282,4 +1344,14 @@ describe("cron revision eviction", () => {
     expect(cache.upsertFull(detail([message("old")]), { issuedAt })).toBeUndefined();
     expect(cache.get("other")).toBe(other);
   });
+});
+
+it("round-trips bounded quick reply parts through delta replay", () => {
+  const part = { type: "reply_options" as const, id: "choices", options: ["Review draft", "Continue"] };
+  const wire = delta({ ops: [{ op: "set", index: 0, part }] });
+  expect(readMessageDelta(wire)).toBeDefined();
+  expect(applyMessageDelta(message("m1"), wire).parts).toEqual([part]);
+  for (const options of [["one", "one"], ["one"], [" one ", "two"], ["one\ntwo", "three"], ["x".repeat(76), "two"]]) {
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, options } }] }))).toBeUndefined();
+  }
 });

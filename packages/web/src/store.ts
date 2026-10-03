@@ -1,3 +1,4 @@
+import type { ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -6,21 +7,21 @@ import { resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 
-import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
+import { normalizeWakeTerminalReply, hasWakeReplyContent, wakeReplyText } from "./wake-reply.js";
 
 import {
   AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
+  sanitizeRestartProposalReason,
+  isAgentReplyOptions,
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
-  parseMonitorProjection,
   parseProcessJobProjection,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
-  type MonitorProjection,
   type ProcessJobProjection,
   type ProcessJobState,
 } from "@mono-agent/agent-contracts";
@@ -29,11 +30,15 @@ import {
   WEB_ACTIVE_THREAD_LIMIT,
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
-  WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_MAX_TURN_TEXT_CHARACTERS,
+  WEB_MAX_TURN_ATTACHMENT_BYTES,
   type WebAgentProvider,
   type WebAgentRunSettings,
+  type WebModelOption,
   type WebAgentSummary,
+  type WebAgentRestartOperation,
+  type WebAgentRestartStage,
+  type WebAgentRestartOutcome,
   type WebAttachment,
   type WebMessage,
   type WebMessageDelta,
@@ -50,8 +55,7 @@ import {
   type WebMessagePage,
   type WebProject,
   type WebProjectColor,
-  type WebProjectTransition,
-  type WebModelTransition,
+  type WebConversationMarkerPart,
   type WebRouteSelection,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
@@ -64,9 +68,13 @@ import {
   type WebRunSelection,
   type WebRunTransition,
   type WebThread,
+  type WebWakeSchedule,
+  type WebWakeScheduleDefinition,
   type WebJobActivity,
   type WebToolCall,
   type WebThreadDetail,
+  type WebThreadUsage,
+  type WebUsageTokens,
   type WebThreadPage,
   type WebThreadListScope,
   type WebThreadSearchHit,
@@ -75,15 +83,24 @@ import {
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
-import type { WebTag, CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
-import type { ProjectContextSource } from "./project-context.js";
+import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebExternalConversation, WebExternalConversationChannel, WebExternalConversationState } from "./contracts.js";
+import {
+  externalConversationLabel,
+  MAX_EXTERNAL_CONVERSATIONS_PER_SOURCE,
+  type ExternalConversationKind,
+  type ExternalConversationObservation,
+} from "./external-conversations.js";
+import { withProjectContext, formatQuotedTurn, type ProjectContextSource } from "./project-context.js";
+import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
-import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
+import { latestMessageCostUsd, messageUsageRollup, sumMessageCosts, type MessageUsageRollup } from "./message-cost.js";
+import { sumThreadUsage } from "./thread-usage.js";
 import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
+import { nextWakeOccurrence } from "./wake-schedule.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
 
 /** The mutable fields of one conversation. */
@@ -92,6 +109,7 @@ interface ThreadPatch {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly context1M?: boolean | null;
   /** Present (even as `null`) moves or detaches the conversation's project membership. */
   readonly tagIds?: readonly string[];
   readonly projectId?: string | null;
@@ -117,14 +135,46 @@ interface AgentRow {
   ask_by_id: number;
   override_model: string | null;
   override_effort: string | null;
+  override_context_1m: number | null;
   updated_at: string;
 }
 
 export interface CreateStoredThreadInput {
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly context1M?: boolean | null;
   readonly projectId?: string;
 }
+
+interface ExternalConversationRow {
+  id: string;
+  source_id: string;
+  channel: WebExternalConversationChannel;
+  external_key: string;
+  kind: ExternalConversationKind;
+  chat_label: string | null;
+  topic_label: string | null;
+  state: WebExternalConversationState;
+  state_at: string;
+  project_id: string | null;
+  project_auto_named: number;
+  detached_at: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  updated_at: string;
+}
+
+/** A stored channel conversation with its owning agent, for scope checks. */
+export type StoredExternalConversation = WebExternalConversation & { readonly sourceId: string };
+
+/** A channel conversation's current project context, read for one channel turn. */
+export interface ExternalTurnContext {
+  readonly conversation?: StoredExternalConversation;
+  readonly project?: { readonly id: string; readonly name: string; readonly context: string };
+}
+
+/** Receipts for channel-turn tool operations are kept this long. */
+const EXTERNAL_TOOL_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 interface ProjectRow {
   color: WebProjectColor;
@@ -172,6 +222,7 @@ interface ThreadRow {
   message_count: number;
   run_model: string | null;
   run_effort: string | null;
+  run_context_1m: number | null;
 }
 
 interface WebSubmissionRow {
@@ -259,6 +310,7 @@ interface CronReplyOperationRow {
   title: string | null;
   run_model: string | null;
   run_effort: string | null;
+  run_context_1m: number | null;
   canonical_status: "appended" | "duplicate" | null;
   failure_reason: string | null;
   created_at: string;
@@ -291,6 +343,8 @@ export type CronReplyReservationResult =
   | { readonly kind: "tombstoned"; readonly operation: StoredCronReplyOperation };
 
 interface ProcessJobCardRow {
+  state: ProcessJobState;
+  completed_at: string | null;
   source_id: string;
   job_id: string;
   delivery_key: string;
@@ -358,8 +412,6 @@ interface PriorOutcomeRow {
   /** `turns.rowid`, so the candidate read can break a shared start stamp. */
   ordinal: number;
   has_user: number;
-  /** Whether a completed host-owned Monitor delivery claims this turn. */
-  claimed: number;
 }
 
 interface TurnRow {
@@ -371,6 +423,7 @@ interface TurnRow {
   requested_model: string | null;
   requested_effort: string | null;
   effective_effort: string | null;
+  reply_disposition: "silent" | "visible" | null;
   routing_json: string;
   assistant_message_id: string;
   started_at: string;
@@ -378,6 +431,7 @@ interface TurnRow {
   error_code: string | null;
   error_message: string | null;
   cancel_origin: WebCancelOrigin | null;
+  context_1m: number | null;
 }
 
 interface LiveInputRow {
@@ -392,6 +446,7 @@ interface LiveInputRow {
   dispatch_started_at: string | null;
   created_at: string;
   updated_at: string;
+  context_1m: number | null;
 }
 
 export interface StoredAttachment {
@@ -463,19 +518,6 @@ interface PushEventRow {
   created_at: string;
 }
 
-interface PushDeliveryRow {
-  event_id: string;
-  subscription_id: string;
-  status: string;
-  attempts: number;
-  next_attempt_at: string;
-  last_status_code: number | null;
-  last_error_code: string | null;
-  created_at: string;
-  updated_at: string;
-  finished_at: string | null;
-}
-
 export type WebPushEventKind =
   | "response.ready"
   | "input.required"
@@ -532,9 +574,7 @@ export interface ClaimedWebPushDelivery {
 /**
  * The searchable text of one message row, derived in SQL so the index cannot
  * drift from `parts_json`: every write path in this store goes through the
- * triggers below rather than remembering to maintain a second copy. Legacy
- * Monitor history gets an association-verified projection repair at open; its
- * canonical parts remain untouched.
+ * triggers below rather than remembering to maintain a second copy.
  *
  * Only `text` parts are indexed. Reasoning is the agent's working-out and tool
  * payloads are machine JSON; both would drown a search of what was actually
@@ -558,13 +598,7 @@ const messageSearchBody = (source: "new" | "m"): string =>
  * finds accented prose. The write triggers are guarded on `json_valid` because
  * an unindexed message is one missing search hit, while a failed insert would
  * be a lost message.
- */
-const MESSAGE_SEARCH_REINDEX_SQL = `
-        DELETE FROM message_search WHERE rowid = old.rowid;
-        INSERT INTO message_search(rowid, body)
-        SELECT new.rowid, (${messageSearchBody("new")});`;
-
-/**
+ *
  * A streaming answer is rewritten every ~50 ms, and re-extracting a large
  * message's text on each snapshot costs several times the row write itself
  * (measured at ~6x, and ~23 ms per snapshot on the largest real messages). A
@@ -577,25 +611,25 @@ const MESSAGE_SEARCH_REINDEX_SQL = `
  * hole, a process that dies mid-turn.
  */
 const MESSAGE_SEARCH_SCHEMA_SQL = `
+      CREATE TABLE IF NOT EXISTS message_search_writes (message_id TEXT PRIMARY KEY);
       CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
         body,
         tokenize='unicode61 remove_diacritics 2'
       );
       CREATE TRIGGER IF NOT EXISTS message_search_insert
         AFTER INSERT ON messages
-        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
+        WHEN new.status <> 'running' AND json_valid(new.parts_json) BEGIN
         INSERT INTO message_search(rowid, body)
         SELECT new.rowid, (${messageSearchBody("new")});
       END;
       CREATE TRIGGER IF NOT EXISTS message_search_update
-        AFTER UPDATE OF parts_json ON messages
-        WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
-        ${MESSAGE_SEARCH_REINDEX_SQL}
-      END;
-      CREATE TRIGGER IF NOT EXISTS message_search_settle
-        AFTER UPDATE OF status ON messages
-        WHEN json_valid(new.parts_json) AND old.status = 'running' AND new.status <> 'running' BEGIN
-        ${MESSAGE_SEARCH_REINDEX_SQL}
+        AFTER UPDATE OF parts_json, status ON messages
+        WHEN (old.status <> 'running' OR new.status <> 'running')
+          AND NOT EXISTS (SELECT 1 FROM message_search_writes WHERE message_id = new.id) BEGIN
+        DELETE FROM message_search WHERE rowid = old.rowid;
+        INSERT INTO message_search(rowid, body)
+        SELECT new.rowid, (${messageSearchBody("new")})
+        WHERE new.status <> 'running' AND json_valid(new.parts_json);
       END;
       CREATE TRIGGER IF NOT EXISTS message_search_delete
         AFTER DELETE ON messages BEGIN
@@ -700,6 +734,7 @@ export interface BeginStoredTurnInput {
   readonly quote?: WebQuote;
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: boolean;
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
 }
@@ -731,11 +766,6 @@ export type ProcessJobWakeReservation =
   | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
   | { readonly kind: "uncertain" };
 
-export type MonitorWakeReservation =
-  | { readonly kind: "new" }
-  | { readonly kind: "completed"; readonly disposition: "steered" | "follow_up" }
-  | { readonly kind: "uncertain" };
-
 export interface StoredLiveInput {
   readonly id: string;
   readonly threadId: string;
@@ -753,7 +783,11 @@ export interface StoredLiveInput {
  * number, and a delta nobody wrote would be a version that does not exist.
  */
 export interface StoredMessageWrite {
+  /** UTF-8 snapshot size already measured during persistence; never serialize for pacing. */
+  readonly serializedBytes?: number;
   readonly message: WebMessage;
+  /** User steers recovered by an authoritative receipt in this write. */
+  readonly recoveredSteers?: readonly WebMessage[];
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
   /**
@@ -870,7 +904,160 @@ export interface UpsertWebProcessJobCardInput {
   readonly replyParts?: readonly AgentReplyPart[];
 }
 
+export interface StoredRestartProposalBinding {
+  readonly messageId: string;
+  readonly partId: string;
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly generation: string;
+  readonly operationId?: string;
+}
+
+export interface StoredRestartOperation extends WebAgentRestartOperation {
+  readonly generation: string;
+  readonly operationId?: string;
+  /** Transport loss or response parse failure after dispatch is not a refusal. */
+  readonly uncertain: boolean;
+}
+
+interface RestartOperationRow {
+  id: string; source_id: string; generation: string; operation_id: string | null;
+  requested_at: string; deadline: string; stage: WebAgentRestartStage;
+  outcome: WebAgentRestartOutcome | null; reason: string | null;
+  uncertain: number; approximate_running_turns: number;
+}
+
+function storedRestartOperation(row: RestartOperationRow): StoredRestartOperation {
+  return {
+    id: row.id, sourceId: row.source_id, generation: row.generation,
+    ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+    requestedAt: row.requested_at, deadline: row.deadline,
+    stage: row.stage,
+    ...(row.outcome === null ? {} : { outcome: row.outcome }),
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    uncertain: row.uncertain === 1,
+    approximateRunningTurns: row.approximate_running_turns,
+  };
+}
+
+const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
+
 export class WebStore {
+  restartProposalBinding(messageId: string, partId: string): StoredRestartProposalBinding | undefined {
+    const row = this.database.prepare(`SELECT message_id, part_id, thread_id, source_id, generation, operation_id
+      FROM restart_proposal_bindings WHERE message_id = ? AND part_id = ?`).get(messageId, partId) as unknown as {
+        message_id: string; part_id: string; thread_id: string; source_id: string;
+        generation: string; operation_id: string | null;
+      } | undefined;
+    return row === undefined ? undefined : {
+      messageId: row.message_id, partId: row.part_id, threadId: row.thread_id,
+      sourceId: row.source_id, generation: row.generation,
+      ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+    };
+  }
+
+  /** CAS link: the part and web operation must still belong to the same agent. */
+  claimRestartProposalOperation(messageId: string, partId: string, sourceId: string, generation: string, operationId: string): boolean {
+    return this.database.prepare(`UPDATE restart_proposal_bindings SET operation_id = ?
+      WHERE message_id = ? AND part_id = ? AND source_id = ? AND generation = ? AND operation_id IS NULL
+        AND EXISTS (SELECT 1 FROM restart_operations WHERE id = ? AND source_id = ? AND generation = ?)`)
+      .run(operationId, messageId, partId, sourceId, generation, operationId, sourceId, generation).changes === 1;
+  }
+
+  /** Durable before dispatch: an unacknowledged crash must never recover as a success. */
+  createRestartOperation(input: {
+    readonly sourceId: string; readonly generation: string;
+    readonly requestedAt: string; readonly deadline: string;
+    readonly approximateRunningTurns: number;
+  }): { readonly operation: StoredRestartOperation; readonly created: boolean } {
+    const existing = this.activeRestartOperation(input.sourceId);
+    if (existing !== undefined) return { operation: existing, created: false };
+    const id = randomUUID();
+    const changed = this.database.prepare(`INSERT OR IGNORE INTO restart_operations
+      (id, source_id, generation, requested_at, deadline, stage, approximate_running_turns)
+      VALUES (?, ?, ?, ?, ?, 'requesting', ?)`).run(
+      id, input.sourceId, input.generation, input.requestedAt, input.deadline, input.approximateRunningTurns,
+    ).changes;
+    const operation = this.restartOperation(changed === 1 ? id : this.activeRestartOperation(input.sourceId)?.id ?? id);
+    if (operation === undefined) throw new WebConsoleError("restart_unavailable", "Could not retain the restart request.", 500);
+    return { operation, created: changed === 1 };
+  }
+
+  restartOperation(id: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare("SELECT * FROM restart_operations WHERE id = ?").get(id) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
+  latestRestartOperation(sourceId: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare(`SELECT * FROM restart_operations WHERE source_id = ?
+      ORDER BY requested_at DESC, rowid DESC LIMIT 1`).get(sourceId) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
+  activeRestartOperation(sourceId: string): StoredRestartOperation | undefined {
+    const row = this.database.prepare("SELECT * FROM restart_operations WHERE source_id = ? AND outcome IS NULL LIMIT 1")
+      .get(sourceId) as unknown as RestartOperationRow | undefined;
+    return row === undefined ? undefined : storedRestartOperation(row);
+  }
+
+  pendingRestartOperations(): readonly StoredRestartOperation[] {
+    return (this.database.prepare("SELECT * FROM restart_operations WHERE outcome IS NULL").all() as unknown as RestartOperationRow[])
+      .map(storedRestartOperation);
+  }
+
+  updateRestartOperation(id: string, next: {
+    readonly stage?: WebAgentRestartStage; readonly outcome?: WebAgentRestartOutcome;
+    readonly reason?: string; readonly operationId?: string; readonly uncertain?: boolean;
+  }): StoredRestartOperation {
+    const current = this.restartOperation(id);
+    if (current === undefined) throw new WebConsoleError("restart_not_found", "Restart request not found.", 404);
+    if (current.outcome !== undefined) return current;
+    this.database.prepare(`UPDATE restart_operations SET stage = ?, outcome = ?, reason = ?,
+      operation_id = ?, uncertain = ? WHERE id = ? AND outcome IS NULL`).run(
+      next.stage ?? current.stage, next.outcome ?? null, next.reason ?? current.reason ?? null,
+      next.operationId ?? current.operationId ?? null, next.uncertain === undefined ? Number(current.uncertain) : Number(next.uncertain), id,
+    );
+    return this.restartOperation(id)!;
+  }
+
+  /** A real user cancellation always takes precedence over restart interruption. */
+  turnCancelOrigin(turnId: string): WebCancelOrigin | undefined {
+    const row = this.database.prepare("SELECT cancel_origin FROM turns WHERE id = ?").get(turnId) as unknown as { cancel_origin: WebCancelOrigin | null } | undefined;
+    return row?.cancel_origin ?? undefined;
+  }
+
+  /** A lost response has no trustworthy agent telemetry; persist only the timeline row. */
+  recordManualCompactionFailure(threadId: string, reason?: "outcome_unknown"): void {
+    this.transaction(() => {
+      this.requireThread(threadId);
+      this.insertCompactionMarker(threadId, this.now(), {
+        operationId: randomUUID(), trigger: "manual", status: "failed", ...(reason === undefined ? {} : { reason }),
+      });
+    });
+  }
+
+  /** Persist a promptless compaction notice on this thread's last settled answer. */
+  recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
+    return this.transaction(() => {
+      this.requireThread(threadId);
+      const row = this.database.prepare(`SELECT id, parts_json FROM messages
+        WHERE thread_id = ? AND role = 'assistant' AND status != 'running'
+        ORDER BY created_at DESC, id DESC LIMIT 1`).get(threadId) as { id: string; parts_json: string } | undefined;
+      const recordedAt = this.now();
+      this.insertCompactionMarker(threadId, recordedAt, result);
+      if (row === undefined) return undefined;
+      const parts = parseParts(row.parts_json);
+      upsertContextCompaction(parts, {
+        type: "runtime_telemetry", kind: "context_compaction",
+        data: { ...result, sdk: "pi", timestamp: Date.parse(recordedAt) },
+      });
+      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1 WHERE id = ?")
+        .run(serializeParts(parts), recordedAt, row.id);
+      return row.id;
+    });
+  }
+  private readonly usageMemo = new Map<string, MessageUsageRollup>();
+  private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
@@ -921,13 +1108,17 @@ export class WebStore {
         chmod(`${paths.database}-wal`, 0o600).catch(ignoreMissing),
         chmod(`${paths.database}-shm`, 0o600).catch(ignoreMissing),
       ]);
+      // A requesting operation crossed the durable marker but its adapter
+      // acceptance never reached durable web state. Never infer acceptance.
+      store.database.prepare(`UPDATE restart_operations SET outcome = 'not_confirmed',
+        reason = 'The web console restarted before the request was confirmed.', uncertain = 1
+        WHERE stage = 'requesting' AND outcome IS NULL`).run();
       store.recoverInterruptedTurns();
       store.recoverLiveInputs();
       store.recoverWebPushDeliveries();
       // After recovery, so anything the recovery settled is already indexed by
       // its own trigger and this only sweeps what genuinely stayed running.
       store.reindexUnsettledMessages();
-      store.reindexLegacyMonitorMessages();
       return store;
     } catch (error) {
       store.close();
@@ -941,6 +1132,7 @@ export class WebStore {
     // Drop the cached statements first: they hold native handles onto the
     // connection this is about to close.
     this.partsWriteStatements.clear();
+    this.streamSnapshots.clear();
     this.database.close();
   }
 
@@ -1078,6 +1270,19 @@ export class WebStore {
     return true;
   }
 
+  /** Console-owned reasons to retain a stopped source, collected once per refresh. */
+  retainedStoppedAgentSourceIds(): ReadonlySet<string> {
+    const rows = this.database.prepare(`
+      SELECT substr(key, length('agent_pin:') + 1) AS source_id
+      FROM settings WHERE key GLOB 'agent_pin:*' AND value = '1'
+      UNION
+      SELECT source_id FROM threads
+      UNION
+      SELECT source_id FROM restart_operations WHERE outcome IS NULL
+    `).all() as unknown as { source_id: string }[];
+    return new Set(rows.map((row) => row.source_id));
+  }
+
   listAgents(): WebAgentSummary[] {
     const rows = this.database.prepare(agentSelectSql(
       "WHERE a.discovered = 1 ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id",
@@ -1118,12 +1323,12 @@ export class WebStore {
 
   setAgentRunOverride(
     sourceId: string,
-    override: { readonly model: string | null; readonly effort: string | null },
+    override: { readonly model: string | null; readonly effort: string | null; readonly context1M?: boolean | null },
   ): WebAgentSummary {
     if (this.getAgent(sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
     }
-    if (override.model === null && override.effort === null) {
+    if (override.model === null && override.effort === null && override.context1M == null) {
       throw new WebConsoleError(
         "invalid_request",
         "Choose a model or effort override, or use Revert to config.",
@@ -1131,13 +1336,14 @@ export class WebStore {
       );
     }
     this.database.prepare(`
-      INSERT INTO agent_run_overrides (source_id, model, effort, updated_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO agent_run_overrides (source_id, model, effort, context_1m, updated_at)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(source_id) DO UPDATE SET
         model = excluded.model,
         effort = excluded.effort,
+        context_1m = excluded.context_1m,
         updated_at = excluded.updated_at
-    `).run(sourceId, override.model, override.effort, this.now());
+    `).run(sourceId, override.model, override.effort, nullableBooleanSql(override.context1M), this.now());
     return this.getAgent(sourceId)!;
   }
 
@@ -1686,6 +1892,29 @@ export class WebStore {
       throw new WebConsoleError("cron_reply_unavailable", "Only visible terminal cron results can be replied to.", 422);
     }
     if (snapshotKind === "summary") {
+      // A gate skip is not a failure: its bounded reason rides in `error` on
+      // the wire, so surface it as result text rather than a failure message.
+      // That text is synthesized here, never a truncation of `run.text`, so no
+      // fuller-text recovery applies to it.
+      const gateSkip = run.status === "skipped_gate";
+      const compactText = gateSkip
+        ? `Skipped by preflight gate${run.error === undefined ? "" : `: ${run.error}`}`
+        : run.text ?? "";
+      // The summary projection clips `text` to a 2 KiB prefix, but the verbatim
+      // notification text (or a loaded detail) for this exact run is already
+      // persisted in the run's message parts or turn. Hand the fuller copy to
+      // the 32 KiB context import instead of the clipped prefix. Provenance
+      // stays honest: `text` leaves `sourceFieldsTruncated` only when the
+      // handed text is complete; otherwise the truncation blame is unchanged.
+      const storedTextParts: string[] = [];
+      for (const part of parseParts(row.parts_json)) {
+        if (part.type === "text") storedTextParts.push(part.text);
+      }
+      const recoveredText = !gateSkip
+        && run.fieldsTruncated?.includes("text") === true
+        && typeof run.text === "string" && run.text.length > 0
+        ? fullerStoredTextForTruncatedPrefix(run.text, [...storedTextParts, row.text])
+        : undefined;
       return {
         sourceId,
         jobId,
@@ -1693,10 +1922,12 @@ export class WebStore {
         snapshotKind,
         capturedAt: this.now(),
         run,
-        text: run.text ?? "",
+        text: recoveredText ?? compactText,
         ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
-        ...(run.error === undefined ? {} : { errorMessage: run.error }),
-        sourceFieldsTruncated: run.fieldsTruncated ?? [],
+        ...(run.error === undefined || run.status === "skipped_gate" ? {} : { errorMessage: run.error }),
+        sourceFieldsTruncated: recoveredText === undefined
+          ? run.fieldsTruncated ?? []
+          : (run.fieldsTruncated ?? []).filter((field) => field !== "text"),
         sourceTruncationKnown: true,
       };
     }
@@ -1772,14 +2003,14 @@ export class WebStore {
       const snapshotText = formatCronReplyContext(candidate);
       const snapshotSha256 = createHash("sha256").update(snapshotText).digest("hex");
       const title = normalizeTitle(`Reply to ${candidate.jobId} · Run ${String(candidate.run.sequence)}`);
-      const override = this.database.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
-        .get(candidate.sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+      const override = this.database.prepare("SELECT model, effort, context_1m FROM agent_run_overrides WHERE source_id = ?")
+        .get(candidate.sourceId) as unknown as { model: string | null; effort: string | null; context_1m: number | null } | undefined;
       this.database.prepare(`
         INSERT INTO cron_reply_operations (
           operation_id, source_id, job_id, run_id, thread_id, conversation_id,
           provenance_message_id, result_message_id, idempotency_key, state, snapshot_kind,
-          snapshot_text, snapshot_sha256, title, run_model, run_effort, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+          snapshot_text, snapshot_sha256, title, run_model, run_effort, run_context_1m, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         operationId,
         candidate.sourceId,
@@ -1796,6 +2027,7 @@ export class WebStore {
         title,
         override?.model ?? null,
         override?.effort ?? null,
+        override?.context_1m ?? null,
         candidate.capturedAt,
       );
       const row = this.requireCronReplyOperationRow(operationId);
@@ -1819,8 +2051,8 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1)
+          created_at, updated_at, run_model, run_effort, run_context_1m, revision
+        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 1)
       `).run(
         row.thread_id,
         row.source_id,
@@ -1830,6 +2062,7 @@ export class WebStore {
         now,
         row.run_model,
         row.run_effort,
+        row.run_context_1m,
       );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
@@ -1872,7 +2105,7 @@ export class WebStore {
       this.database.prepare(`
         UPDATE cron_reply_operations SET state = 'failed', provenance_message_id = NULL,
           result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
-          title = NULL, run_model = NULL, run_effort = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, run_context_1m = NULL,
           failure_reason = ?, failed_at = ?
         WHERE operation_id = ? AND state = 'pending'
       `).run(reason.slice(0, 128), now, operationId);
@@ -1883,7 +2116,6 @@ export class WebStore {
   reconcileCronRuns(sourceId: string, jobId: string, runs: readonly WebCronRun[]): WebMessage[] {
     return [...this.reconcileCronRunsResult(sourceId, jobId, runs).messages];
   }
-
   reconcileCronRunsResult(
     sourceId: string,
     jobId: string,
@@ -1993,13 +2225,24 @@ export class WebStore {
           && priorParts.some((part) => part.type === "telemetry"
             && part.event === "cron_run"
             && record(part.data)?.activityLoaded === true);
+        // A later summary poll must not downgrade an already-stored fuller turn
+        // text to the 2 KiB prefix either. Unlike the activity-loaded case
+        // above, this needs no load flag: the prefix-consistency guard inside
+        // `fullerStoredTextForTruncatedPrefix` only preserves the stored text
+        // when it is strictly longer than, and starts with, this poll's
+        // prefix — so a genuinely new result still replaces a stale turn.
+        const preserveFullerTurnText = run.projection === "summary"
+          && run.fieldsTruncated?.includes("text") === true
+          && typeof run.text === "string" && run.text.length > 0
+          && existingTurn !== undefined
+          && fullerStoredTextForTruncatedPrefix(run.text, [existingTurn.text]) !== undefined;
         const preserveLoadedError = run.projection === "summary"
           && priorParts.some((part) => part.type === "telemetry"
             && part.event === "cron_run"
             && record(part.data)?.activityLoaded === true)
           && (run.fieldsTruncated?.includes("error") === true
             || run.fieldsTruncated?.includes("failureKind") === true);
-        const turnText = preserveLoadedText && existingTurn !== undefined
+        const turnText = (preserveLoadedText || preserveFullerTurnText) && existingTurn !== undefined
           ? existingTurn.text
           : run.text ?? "";
         const turnErrorCode = preserveLoadedError && existingTurn !== undefined
@@ -2193,8 +2436,8 @@ export class WebStore {
         this.database.prepare(`
           INSERT INTO process_job_cards (
             source_id, job_id, delivery_key, thread_id, message_id,
-            projection_sha256, response_text, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            projection_sha256, response_text, created_at, updated_at, state, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           input.sourceId,
           projection.jobId,
@@ -2205,6 +2448,8 @@ export class WebStore {
           input.responseText ?? null,
           now,
           now,
+          projection.state,
+          projection.timestamps.completedAt ?? null,
         );
         this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
           .run(now, input.threadId);
@@ -2234,6 +2479,10 @@ export class WebStore {
       || priorPart.job.jobId !== projection.jobId
       || priorParts.length !== 1 + priorReplyParts.length) {
       throw new WebConsoleError("storage_corrupt", "A retained process-job card has invalid content.", 500);
+    }
+    if (existing.state !== priorPart.job.state
+      || existing.completed_at !== (priorPart.job.timestamps.completedAt ?? null)) {
+      throw new WebConsoleError("storage_corrupt", "A retained process-job projection disagrees with its message.", 500);
     }
     assertProcessJobCardTransition(priorPart.job, projection);
     if (priorPart.job.kind === "internal" && projection.kind === "internal" && priorPart.job.subagentProgress
@@ -2279,9 +2528,10 @@ export class WebStore {
       );
       this.database.prepare(`
         UPDATE process_job_cards
-        SET projection_sha256 = ?, response_text = ?, updated_at = ?
+        SET projection_sha256 = ?, response_text = ?, updated_at = ?, state = ?, completed_at = ?
         WHERE source_id = ? AND job_id = ?
-      `).run(projectionSha256, responseText ?? null, now, input.sourceId, projection.jobId);
+      `).run(projectionSha256, responseText ?? null, now, projection.state,
+        projection.timestamps.completedAt ?? null, input.sourceId, projection.jobId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, input.threadId);
       this.recordThreadRevision(input.threadId, "process_job_card_updated", now);
@@ -2295,6 +2545,7 @@ export class WebStore {
     readonly threadId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
+    readonly wakeRecovery?: ProcessJobWakeRecovery;
   }): ProcessJobWakeReservation {
     const card = this.database.prepare(`
       SELECT thread_id, delivery_key FROM process_job_cards WHERE source_id = ? AND job_id = ?
@@ -2308,25 +2559,43 @@ export class WebStore {
       throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
     }
     const existing = this.database.prepare(`
-      SELECT state, disposition FROM process_job_wake_deliveries
+      SELECT state, disposition, delivery_key, attempt_token FROM process_job_wake_deliveries
       WHERE source_id = ? AND job_id = ?
     `).get(input.sourceId, input.jobId) as unknown as {
       state: "accepted" | "completed";
+      delivery_key: string;
+      attempt_token: string | null;
       disposition: "steered" | "follow_up" | null;
     } | undefined;
     if (existing?.state === "completed"
       && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
       return { kind: "completed", disposition: existing.disposition };
     }
-    if (existing !== undefined) return { kind: "uncertain" };
+    if (existing !== undefined) {
+      const proof = input.wakeRecovery;
+      if (existing.state !== "accepted" || existing.delivery_key !== input.deliveryKey
+        || existing.attempt_token === null || proof?.version !== 1
+        || !proof.notCrossed.includes(existing.attempt_token) || proof.token === existing.attempt_token) return { kind: "uncertain" };
+      const replaced = this.database.prepare(`
+        UPDATE process_job_wake_deliveries SET attempt_token = ?, turn_id = NULL
+        WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted' AND attempt_token = ?
+      `).run(proof.token, input.sourceId, input.jobId, input.deliveryKey, existing.attempt_token);
+      return replaced.changes === 1 ? { kind: "new" } : { kind: "uncertain" };
+    }
     const now = this.now();
     this.database.prepare(`
       INSERT INTO process_job_wake_deliveries (
         source_id, job_id, delivery_key, thread_id, state, disposition, turn_id,
-        created_at, completed_at
-      ) VALUES (?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
-    `).run(input.sourceId, input.jobId, input.deliveryKey, input.threadId, now);
+        created_at, completed_at, attempt_token
+      ) VALUES (?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL, ?)
+    `).run(input.sourceId, input.jobId, input.deliveryKey, input.threadId, now, input.wakeRecovery?.token ?? null);
     return { kind: "new" };
+  }
+
+  ownsProcessJobWake(deliveryKey: string, attemptToken?: string): boolean {
+    return this.database.prepare(`SELECT 1 FROM process_job_wake_deliveries
+      WHERE delivery_key = ? AND state = 'accepted' AND attempt_token IS ?`)
+      .get(deliveryKey, attemptToken ?? null) !== undefined;
   }
 
   /**
@@ -2338,13 +2607,14 @@ export class WebStore {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
+    readonly attemptToken?: string;
     readonly disposition: "steered" | "follow_up";
     readonly turnId?: string;
   }): WebMessage | undefined {
     const result = this.database.prepare(`
       UPDATE process_job_wake_deliveries
       SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
-      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
+      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted' AND attempt_token IS ?
     `).run(
       input.disposition,
       input.turnId ?? null,
@@ -2352,6 +2622,7 @@ export class WebStore {
       input.sourceId,
       input.jobId,
       input.deliveryKey,
+      input.attemptToken ?? null,
     );
     if (result.changes !== 1) {
       throw new WebConsoleError("notification_reservation_lost", "The process-job wake reservation was lost.", 409);
@@ -2360,9 +2631,9 @@ export class WebStore {
       const turn = this.requireTurn(input.turnId);
       if (turn.status === "complete" && this.hasProcessJobTurnAssociation(input.turnId)) {
         const message = this.requireMessage(turn.assistant_message_id);
-        const normalized = normalizeMonitorTerminalReply(message.parts, true);
+        const normalized = normalizeWakeTerminalReply(message.parts, true, turn.reply_disposition ?? undefined);
         if (normalized.changed) this.writeMessageParts(message.id, normalized.parts, this.now());
-        this.repairMonitorResponsePush(input.turnId, normalized.parts);
+        this.repairWakeResponsePush(input.turnId, normalized.parts);
         return normalized.changed ? this.requireMessage(message.id) : undefined;
       }
     }
@@ -2370,13 +2641,13 @@ export class WebStore {
   }
 
   /** Bind an accepted host wake to its exact follow-up before crossing the turn boundary. */
-  associateProcessJobWakeTurn(deliveryKey: string, turnId: string, pending = true): void {
+  associateProcessJobWakeTurn(deliveryKey: string, turnId: string, pending = true, attemptToken?: string): void {
     const result = this.database.prepare(`
       UPDATE process_job_wake_deliveries SET turn_id = ?
-      WHERE delivery_key = ? AND state = 'accepted'
+      WHERE delivery_key = ? AND state = 'accepted' AND attempt_token IS ?
         AND thread_id = (SELECT turns.thread_id FROM turns JOIN threads ON threads.id = turns.thread_id
           WHERE turns.id = ? AND threads.source_id = process_job_wake_deliveries.source_id)
-    `).run(pending ? turnId : null, deliveryKey, turnId);
+    `).run(pending ? turnId : null, deliveryKey, attemptToken ?? null, turnId);
     if (result.changes !== 1) {
       throw new WebConsoleError("notification_reservation_lost", "The process-job wake turn association was lost.", 409);
     }
@@ -2393,11 +2664,11 @@ export class WebStore {
   }
 
   /** Release only a pending notification hold; the ambiguous delivery reservation remains durable. */
-  releaseProcessJobWakeTurn(deliveryKey: string, turnId: string): void {
+  releaseProcessJobWakeTurn(deliveryKey: string, turnId: string, attemptToken?: string): void {
     this.database.prepare(`
       UPDATE process_job_wake_deliveries SET turn_id = NULL
-      WHERE delivery_key = ? AND turn_id = ? AND state = 'accepted'
-    `).run(deliveryKey, turnId);
+      WHERE delivery_key = ? AND turn_id = ? AND state = 'accepted' AND attempt_token IS ?
+    `).run(deliveryKey, turnId, attemptToken ?? null);
   }
 
   /** Release a reservation only while no operator delivery has begun, proving the exact claim was removed. */
@@ -2405,170 +2676,20 @@ export class WebStore {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
+    readonly attemptToken?: string;
   }): boolean {
     const result = this.database.prepare(`
       DELETE FROM process_job_wake_deliveries
-      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
-    `).run(input.sourceId, input.jobId, input.deliveryKey);
+      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted' AND attempt_token IS ?
+    `).run(input.sourceId, input.jobId, input.deliveryKey, input.attemptToken ?? null);
     return result.changes === 1;
   }
 
-  /** Durably claim one Monitor wake before touching the operator. */
-  reserveMonitorWake(input: {
-    readonly sourceId: string;
-    readonly threadId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-    readonly payloadSha256: string;
-    readonly monitor: MonitorProjection;
-  }): MonitorWakeReservation {
-    const monitor = parseMonitorProjection(input.monitor);
-    if (monitor.monitorId !== input.monitorId) {
-      throw new WebConsoleError("invalid_notification", "The Monitor projection does not match its delivery identity.", 409);
-    }
-    const thread = this.database.prepare("SELECT source_id, archived_at, trigger_kind FROM threads WHERE id = ?")
-      .get(input.threadId) as unknown as {
-        source_id: string;
-        archived_at: string | null;
-        trigger_kind: string | null;
-      } | undefined;
-    if (thread === undefined || thread.source_id !== input.sourceId) {
-      throw new WebConsoleError("invalid_notification", "The Monitor wake does not match its web thread.", 409);
-    }
-    if (thread.archived_at !== null || thread.trigger_kind !== null) {
-      throw new WebConsoleError("thread_archived", "The Monitor wake destination is not an active web conversation.", 409);
-    }
-    const existing = this.database.prepare(`
-      SELECT monitor_id, thread_id, payload_sha256, state, disposition
-      FROM monitor_wake_deliveries WHERE source_id = ? AND delivery_key = ?
-    `).get(input.sourceId, input.deliveryKey) as unknown as {
-      monitor_id: string;
-      thread_id: string | null;
-      payload_sha256: string;
-      state: "accepted" | "completed";
-      disposition: "steered" | "follow_up" | null;
-    } | undefined;
-    if (existing !== undefined) {
-      if (existing.monitor_id !== input.monitorId
-        || existing.thread_id !== input.threadId
-        || existing.payload_sha256 !== input.payloadSha256) {
-        throw new WebConsoleError(
-          "notification_idempotency_conflict",
-          "The Monitor delivery key was already used for a different wake.",
-          409,
-        );
-      }
-      if (existing.state === "completed"
-        && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
-        return { kind: "completed", disposition: existing.disposition };
-      }
-      return { kind: "uncertain" };
-    }
-    this.database.prepare(`
-      INSERT INTO monitor_wake_deliveries (
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256, projection_json,
-        state, disposition, turn_id, created_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
-    `).run(
-      input.sourceId,
-      input.monitorId,
-      input.deliveryKey,
-      input.threadId,
-      input.payloadSha256,
-      JSON.stringify(monitor),
-      this.now(),
-    );
-    return { kind: "new" };
-  }
-
-  /** Hold terminal pushes while this exact turn's steering receipt is unresolved. */
-  setMonitorWakeSteeringTurn(sourceId: string, deliveryKey: string, turnId: string, pending: boolean): void {
-    const turn = this.requireTurn(turnId);
-    const changed = this.database.prepare(`
-      UPDATE monitor_wake_deliveries SET turn_id = ?
-      WHERE source_id = ? AND delivery_key = ? AND thread_id = ? AND state = 'accepted'
-    `).run(pending ? turnId : null, sourceId, deliveryKey, turn.thread_id);
-    if (changed.changes !== 1) {
-      throw new WebConsoleError("notification_reservation_lost", "The Monitor steering reservation was lost.", 409);
-    }
-  }
-
-  completeMonitorWake(input: {
-    readonly sourceId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-    readonly disposition: "steered" | "follow_up";
-    readonly turnId?: string;
-  }): WebMessage | undefined {
-    let messageId: string | undefined;
-    this.transaction(() => {
-      const result = this.database.prepare(`
-        UPDATE monitor_wake_deliveries
-        SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
-        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-      `).run(
-        input.disposition,
-        input.turnId ?? null,
-        this.now(),
-        input.sourceId,
-        input.monitorId,
-        input.deliveryKey,
-      );
-      if (result.changes !== 1) {
-        throw new WebConsoleError("notification_reservation_lost", "The Monitor wake reservation was lost.", 409);
-      }
-      if (input.turnId === undefined) return;
-      const turn = this.requireTurn(input.turnId);
-      const reservation = this.database.prepare(`
-        SELECT thread_id, projection_json FROM monitor_wake_deliveries
-        WHERE source_id = ? AND monitor_id = ? AND delivery_key = ?
-      `).get(input.sourceId, input.monitorId, input.deliveryKey) as unknown as {
-        thread_id: string | null;
-        projection_json: string | null;
-      } | undefined;
-      if (reservation?.thread_id !== turn.thread_id) {
-        throw new WebConsoleError("monitor_origin_mismatch", "The Monitor activity does not belong to this turn.", 409);
-      }
-      if (reservation.projection_json === null) return;
-      let projection: MonitorProjection;
-      try {
-        projection = parseMonitorProjection(JSON.parse(reservation.projection_json) as unknown);
-        if (projection.monitorId !== input.monitorId) throw new TypeError("Monitor identity mismatch.");
-      } catch {
-        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
-      }
-      const message = this.requireMessage(turn.assistant_message_id);
-      const raw = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
-        .get(message.id) as unknown as { parts_json: string };
-      const original = parseParts(raw.parts_json);
-      const normalized = turn.status === "complete" ? normalizeMonitorTerminalReply(original) : { parts: original, changed: false };
-      const parts = normalized.parts;
-      const activityChanged = upsertMonitorActivity(parts, projection, input.deliveryKey);
-      if (turn.status === "complete") this.repairMonitorResponsePush(input.turnId, parts);
-      if (!activityChanged && !normalized.changed) return;
-      this.writeMessageParts(message.id, parts, this.now());
-      messageId = message.id;
-    });
-    return messageId === undefined ? undefined : this.requireMessage(messageId);
-  }
-
-  private hasMonitorTurnAssociation(turnId: string, deliveryKey?: string): boolean {
-    const rows = this.database.prepare(`
-      SELECT deliveries.delivery_key FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE (deliveries.state = 'completed' AND deliveries.turn_id = turns.id
-        AND deliveries.disposition IN ('steered', 'follow_up'))
-        OR (deliveries.state = 'accepted' AND deliveries.delivery_key = ?)
-    `).all(turnId, deliveryKey ?? null);
-    return rows.length > 0;
-  }
-
-  private repairMonitorResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
+  private repairWakeResponsePush(turnId: string, parts: readonly WebMessagePart[]): void {
     const key = `turn:${turnId}:terminal`;
-    if (hasMonitorReplyContent(parts)) {
+    if (hasWakeReplyContent(parts)) {
       this.database.prepare("UPDATE push_events SET body = ? WHERE logical_key = ? AND kind = 'response.ready'")
-        .run(webPushPreview(monitorReplyText(parts)), key);
+        .run(webPushPreview(wakeReplyText(parts)), key);
     } else {
       const now = this.now();
       this.database.prepare(`
@@ -2577,28 +2698,6 @@ export class WebStore {
           SELECT id FROM push_events WHERE logical_key = ? AND kind = 'response.ready'
         )
       `).run(now, now, key);
-    }
-  }
-
-  /** Resolve only an exact Monitor live-input receipt belonging to this turn. */
-  private monitorWakeProjection(turnId: string, deliveryKey: string): MonitorProjection | undefined {
-    const row = this.database.prepare(`
-      SELECT deliveries.monitor_id, deliveries.projection_json
-      FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE deliveries.delivery_key = ?
-    `).get(turnId, deliveryKey) as unknown as {
-      monitor_id: string;
-      projection_json: string | null;
-    } | undefined;
-    if (row === undefined || row.projection_json === null) return undefined;
-    try {
-      const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
-      if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
-      return projection;
-    } catch {
-      throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
     }
   }
 
@@ -2627,10 +2726,11 @@ export class WebStore {
    * telemetry carries the `inputId`, so the mapping survives the `live_inputs`
    * row that `markLiveInputApplied` deletes. The `live_inputs` lookup below
    * covers only rows offered before this console learned to persist that
-   * marker. Anything else (queued, uncertain, cancelled, another turn) misses
-   * and keeps the legacy synthetic tool row.
+   * marker. An uncertain input lost its turn association when delivery failed;
+   * only a receipt in a running turn of the same thread can restore it. Queued,
+   * cancelled and otherwise unmatched receipts keep the legacy tool row.
    */
-  private steerForTurn(turnId: string, inputId: string): {
+  private steerForTurn(turnId: string, inputId: string, recovered: WebMessage[]): {
     readonly inputId: string;
     readonly messageId: string;
     readonly text: string;
@@ -2648,30 +2748,58 @@ export class WebStore {
       const parts = parseParts(candidate.parts_json);
       if (liveInputIdFromParts(parts) !== inputId) continue;
       const marker = steerMarkerFromUserParts(inputId, candidate.id, parts, candidate.created_at);
-      if (marker !== undefined) return marker;
+      if (marker === undefined) continue;
+      // A stream receipt is authoritative even when the HTTP settlement is
+      // still pending. Finalize the dispatched row in this frame transaction so
+      // a later transport failure cannot detach an already-consumed steer.
+      const dispatched = this.database.prepare(`
+        SELECT id FROM live_inputs
+        WHERE id = ? AND message_id = ? AND thread_id = ? AND active_turn_id = ?
+          AND dispatch_started_at IS NOT NULL
+      `).get(inputId, candidate.id, turn.thread_id, turnId);
+      if (dispatched !== undefined) {
+        const now = this.now();
+        this.writeMessageParts(candidate.id, withLiveInputStatus(parts, "applied", inputId), now);
+        this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(inputId);
+        this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+          .run(now, turn.thread_id);
+        this.recordThreadRevision(turn.thread_id, "live_input_applied", now);
+        recovered.push(this.requireMessage(candidate.id));
+      }
+      return marker;
     }
     const legacy = this.database.prepare(
       "SELECT message_id, thread_id, created_at FROM live_inputs WHERE id = ?",
     ).get(inputId) as unknown as
       { message_id: string; thread_id: string; created_at: string } | undefined;
-    if (legacy === undefined || legacy.thread_id !== turn.thread_id) return undefined;
-    const row = this.database.prepare(
-      "SELECT parts_json, created_at FROM messages WHERE id = ?",
-    ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
-    if (row === undefined) return undefined;
-    return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
-  }
-
-  /** Release a Monitor reservation only before any operator delivery begins. */
-  abandonMonitorWake(input: {
-    readonly sourceId: string;
-    readonly monitorId: string;
-    readonly deliveryKey: string;
-  }): void {
-    this.database.prepare(`
-      DELETE FROM monitor_wake_deliveries
-      WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
-    `).run(input.sourceId, input.monitorId, input.deliveryKey);
+    if (legacy !== undefined && legacy.thread_id === turn.thread_id) {
+      const row = this.database.prepare(
+        "SELECT parts_json, created_at FROM messages WHERE id = ?",
+      ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
+      if (row !== undefined) {
+        return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
+      }
+    }
+    const uncertain = this.database.prepare(`
+      SELECT id, parts_json, created_at FROM messages
+      WHERE thread_id = ? AND turn_id IS NULL AND role = 'user'
+        AND json_extract(parts_json, '$[0].event') = 'live_input'
+        AND json_extract(parts_json, '$[0].data.status') = 'uncertain'
+        AND json_extract(parts_json, '$[0].data.inputId') = ?
+    `).get(turn.thread_id, inputId) as unknown as
+      { id: string; parts_json: string; created_at: string } | undefined;
+    if (uncertain === undefined) return undefined;
+    const parts = parseParts(uncertain.parts_json);
+    if (liveInputStatusFromParts(parts) !== "uncertain" || liveInputIdFromParts(parts) !== inputId) return undefined;
+    const marker = steerMarkerFromUserParts(inputId, uncertain.id, parts, uncertain.created_at);
+    if (marker === undefined) return undefined;
+    const now = this.now();
+    this.writeMessageParts(uncertain.id, withLiveInputStatus(parts, "applied", inputId), now, { turnId });
+    this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+      .run(now, turn.thread_id);
+    this.recordThreadRevision(turn.thread_id, "live_input_applied", now);
+    recovered.push(this.requireMessage(uncertain.id));
+    return marker;
   }
 
   /**
@@ -2749,19 +2877,20 @@ export class WebStore {
         ? null
         : this.requireProjectForThread(explicit.projectId, sourceId).id;
       const override = this.database.prepare(`
-        SELECT model, effort FROM agent_run_overrides WHERE source_id = ?
-      `).get(sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+        SELECT model, effort, context_1m FROM agent_run_overrides WHERE source_id = ?
+      `).get(sourceId) as unknown as { model: string | null; effort: string | null; context_1m: number | null } | undefined;
       const model = explicit.model === undefined ? override?.model ?? null : explicit.model;
       const effort = explicit.effort === undefined ? override?.effort ?? null : explicit.effort;
+      const context1M = explicit.context1M === undefined ? override?.context_1m ?? null : nullableBooleanSql(explicit.context1M);
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, project_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
-      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
+          created_at, updated_at, run_model, run_effort, run_context_1m, revision
+        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, ?, 1)
+      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort, context1M);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
-      if (projectId !== null) this.applyProjectMembership(id, null, projectId, now);
+      if (projectId !== null) this.applyProjectMembership(id, null, projectId);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -2963,11 +3092,8 @@ export class WebStore {
         SELECT thread_id FROM turns WHERE status = 'running'
         UNION
         SELECT c.thread_id
-          FROM messages m
-          JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
-          JOIN json_each(m.parts_json) part
-         WHERE json_extract(part.value, '$.type') = 'process-job'
-           AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+          FROM process_job_cards c
+         WHERE c.state IN ('queued', 'starting', 'running')
       )
       SELECT t.id AS id, t.source_id AS source_id
         FROM active a
@@ -3035,10 +3161,70 @@ export class WebStore {
     return {
       thread,
       messages: page.messages,
-      projectTransitions: page.projectTransitions ?? [],
-      modelTransitions: page.modelTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
+  }
+
+  /** On-demand full-conversation accounting; the tail message page is not a total. */
+  async threadUsage(id: string): Promise<WebThreadUsage> {
+    const threadId = this.resolveThreadId(id);
+    if (this.getThread(threadId) === undefined) {
+      throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    }
+    const start = performance.now();
+    const rows = this.database.prepare(`SELECT m.rowid AS rowid, m.id, m.seq, m.status, m.turn_id, t.model AS executed_model
+      FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND m.role = 'assistant'`)
+      .all(threadId) as unknown as Array<{ rowid: number; id: string; seq: number; status: string; turn_id: string | null; executed_model: string | null }>;
+    const rollups: MessageUsageRollup[] = [];
+    const fetch = this.database.prepare("SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))");
+    // A same-run cron re-insert can reuse both the deterministic id and created_at.
+    // The SQLite row identity distinguishes it even when seq restarts at zero.
+    // SQLite can reuse the highest deleted rowid, but cron retention deletes a
+    // same-run card before a usage read could memoize its discarded row.
+    const memoKey = (row: (typeof rows)[number]) => `${row.id}:${row.rowid}:${row.seq}`;
+    let misses = 0;
+    let parsedBytes = 0;
+    for (let index = 0; index < rows.length; index += 100) {
+      const batch = rows.slice(index, index + 100);
+      // Pin all hits before any insert: a miss at the front of a full LRU must
+      // never evict a later hit that we didn't fetch from SQLite.
+      const cached = new Map(batch.flatMap((row) => {
+        const hit = this.usageMemo.get(memoKey(row));
+        return hit === undefined ? [] : [[memoKey(row), hit] as const];
+      }));
+      const missing = batch.filter((row) => !cached.has(memoKey(row)));
+      const fetched: Array<{ id: string; parts_json: string }> = missing.length === 0
+        ? [] : fetch.all(JSON.stringify(missing.map((row) => row.id))) as unknown as Array<{ id: string; parts_json: string }>;
+      const blobs = new Map(fetched.map((blob) => [blob.id, blob.parts_json]));
+      for (const row of batch) {
+        const key = memoKey(row);
+        let rollup = cached.get(key);
+        if (rollup === undefined) {
+          // A row deleted after the key scan is absent from the batch read.
+          const partsJson = blobs.get(row.id);
+          if (partsJson === undefined) continue;
+          misses += 1;
+          parsedBytes += Buffer.byteLength(partsJson);
+          const parsed = messageUsageRollup({ parts: parseParts(partsJson),
+            ...(row.executed_model === null ? {} : { attribution: { executed: { model: row.executed_model } } }),
+          });
+          rollup = Object.freeze({ main: Object.freeze(parsed.main),
+            subagents: Object.freeze(parsed.subagents.map((child) => Object.freeze(child))),
+          });
+        }
+        this.usageMemo.delete(key);
+        this.usageMemo.set(key, rollup);
+        rollups.push(rollup);
+      }
+      while (this.usageMemo.size > 20_000) this.usageMemo.delete(this.usageMemo.keys().next().value!);
+      if (index + 100 < rows.length) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    while (this.usageMemo.size > 20_000) this.usageMemo.delete(this.usageMemo.keys().next().value!);
+    if (/(?:^|[,\s])web(?:$|[,\s])/u.test(process.env.DEBUG ?? "")) {
+      console.debug("web thread usage", { messages: rows.length, misses, parsedBytes, elapsedMs: Math.round(performance.now() - start) });
+    }
+    return sumThreadUsage(rollups, new Date().toISOString(), rows.filter((row) => row.turn_id !== null && row.status !== "running").length);
   }
 
   getMessage(id: string): WebMessage | undefined {
@@ -3057,7 +3243,7 @@ export class WebStore {
     }
     const limit = boundedPageLimit(input.limit, WEB_MESSAGE_PAGE_MAX);
     const cursor = input.before === undefined ? undefined : decodeMessageCursor(input.before);
-    const rank = messageRoleRankSql("m", "t");
+    const rank = messageRoleRankSql("m");
     const orderedAt = "COALESCE(t.started_at, m.created_at)";
     const beforeSql = cursor === undefined ? "" : `AND (
       ${orderedAt} < ?
@@ -3081,22 +3267,31 @@ export class WebStore {
       );
     }
     values.push(limit + 1);
+    // Rank and bound KEYS before fetching parts_json. Carrying m.* through the
+    // temporary ORDER BY made SQLite copy multi-megabyte message blobs into its
+    // sorter, even though a page needs only the winning rows.
     const rows = this.database.prepare(`
-      SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid,
+      WITH page AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, ${orderedAt} AS ordered_at,
+          ${rank} AS role_rank, m.created_at AS created_at
+        FROM messages m
+        LEFT JOIN turns t ON t.id = m.turn_id
+        WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
+        ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
+        LIMIT ?
+      )
+      SELECT m.*, page.ordered_at, page.role_rank, page.storage_rowid,
         t.finished_at AS turn_finished_at
-      FROM messages m
+      FROM page
+      JOIN messages m ON m.rowid = page.storage_rowid
       LEFT JOIN turns t ON t.id = m.turn_id
-      WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
-      ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
-      LIMIT ?
+      ORDER BY page.ordered_at DESC, page.role_rank DESC, page.created_at DESC, page.storage_rowid DESC
     `).all(...values) as unknown as MessagePageRow[];
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit).reverse();
     const oldest = pageRows[0];
     return {
-      messages: pageRows.map((row) => this.mapMessage(row)),
-      projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
-      modelTransitions: this.modelTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
+      messages: this.mapMessages(pageRows),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -3150,7 +3345,7 @@ export class WebStore {
     return this.transaction(() => {
       const resolved = this.resolveThreadId(id);
       const current = this.requireThread(resolved);
-      if (current.runModel !== null || current.runEffort !== null) {
+      if (current.runModel !== null || current.runEffort !== null || current.runContext1M != null) {
         return { applied: false, thread: { ...current, sourceId: current.sourceId } };
       }
       return { applied: true, thread: this.writeThreadPatch(resolved, patch) };
@@ -3165,14 +3360,14 @@ export class WebStore {
     const tagsChanged = tagIds !== undefined
       && (tagIds.length !== current.tagIds.length || tagIds.some((tagId) => !current.tagIds.includes(tagId)));
     if (tagIds !== undefined && !tagsChanged && patch.projectId === undefined && patch.title === undefined
-      && patch.archived === undefined && patch.model === undefined && patch.effort === undefined) return current;
+      && patch.archived === undefined && patch.model === undefined && patch.effort === undefined && patch.context1M === undefined) return current;
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
     if (patch.projectId !== undefined && patch.title === undefined && patch.archived === undefined
-      && patch.model === undefined && patch.effort === undefined && patch.tagIds === undefined) {
+      && patch.model === undefined && patch.effort === undefined && patch.context1M === undefined && patch.tagIds === undefined) {
       const pending = this.pendingProjectDto(id).pendingProject;
       if ((pending === undefined && patch.projectId === current.projectId) || (pending !== undefined && patch.projectId === pending.projectId)) return current;
     }
@@ -3183,7 +3378,7 @@ export class WebStore {
         : patch.projectId === current.projectId ? current.projectId : this.requireProjectForThread(patch.projectId, current.sourceId).id;
     {
       const sets: string[] = [];
-      const values: Array<string | null> = [];
+      const values: Array<string | number | null> = [];
       if (title !== undefined) {
         sets.push("title = ?", "title_manual = 1");
         values.push(title);
@@ -3195,6 +3390,10 @@ export class WebStore {
       if (runModel !== undefined) {
         sets.push("run_model = ?");
         values.push(runModel);
+      }
+      if (patch.context1M !== undefined) {
+        sets.push("run_context_1m = ?");
+        values.push(nullableBooleanSql(patch.context1M));
       }
       if (runEffort !== undefined) {
         sets.push("run_effort = ?");
@@ -3233,6 +3432,12 @@ export class WebStore {
               : tagsChanged ? "tags_changed" : "run_config_changed",
         now,
       );
+      if (patch.archived === true) {
+        this.database.prepare("DELETE FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").run(id);
+        this.database.prepare(`UPDATE wake_schedules SET state = 'paused', next_due_at = NULL,
+          generation = generation + 1, revision = revision + 1, updated_at = ?
+          WHERE thread_id = ? AND source_id = ? AND state = 'active'`).run(now, id, current.sourceId);
+      }
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
@@ -3343,7 +3548,7 @@ export class WebStore {
     this.requireProject(id);
     const now = this.now();
     const sets: string[] = [];
-    const values: Array<string | null> = [];
+    const values: Array<string | number | null> = [];
     if (patch.color !== undefined) {
       sets.push("color = ?");
       values.push(parseProjectColor(patch.color));
@@ -3354,6 +3559,10 @@ export class WebStore {
     if (patch.name !== undefined) {
       sets.push("name = ?");
       values.push(patch.name);
+      // A chosen name is authoritative over the channel's learned label.
+      if (patch.name !== this.requireProject(id).name) {
+        this.database.prepare("UPDATE external_conversations SET project_auto_named = 0 WHERE project_id = ?").run(id);
+      }
     }
     if (patch.context !== undefined) {
       sets.push("context = ?");
@@ -3392,13 +3601,220 @@ export class WebStore {
         throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
       }
       for (const memberId of members) {
-        this.applyProjectMembership(memberId, id, null, now);
+        this.applyProjectMembership(memberId, id, null);
         this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
       }
       for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
+      // A mirrored channel conversation is detached, never deleted, and keeps
+      // a tombstone so the next observation does not recreate the project.
+      this.database.prepare(`UPDATE external_conversations SET project_id = NULL, detached_at = ?, updated_at = ?
+        WHERE project_id = ?`).run(now, now, id);
       this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
       return members;
     });
+  }
+
+  /**
+   * Mirror what an agent observed on a channel, one way, into projects.
+   *
+   * A newly seen conversation gets a project with empty context, named
+   * `Chat › Topic`; later labels rename only projects nobody renamed. A
+   * detached conversation (its project was deleted or it was moved out) keeps
+   * its tombstone and is never re-projected by observation. Lifecycle state
+   * follows the newest evidence: an explicit closed/reopened, or any activity
+   * after a send found the conversation gone. Returns the projects whose
+   * summaries changed.
+   */
+  observeExternalConversations(
+    sourceId: string,
+    channel: WebExternalConversationChannel,
+    observations: readonly ExternalConversationObservation[],
+  ): { readonly projects: readonly string[]; readonly truncated: boolean } {
+    if (this.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    return this.transaction(() => {
+      const changed = new Set<string>();
+      let truncated = false;
+      for (const observation of observations) {
+        const now = this.now();
+        // A skewed sender clock must not pin state in the future.
+        const seenAt = observation.seenAt > now ? now : observation.seenAt;
+        const stateAt = observation.stateAt === undefined || observation.stateAt > now ? seenAt : observation.stateAt;
+        const row = this.externalRowByKey(sourceId, channel, observation.key);
+        if (row === undefined) {
+          const count = (this.database.prepare("SELECT COUNT(*) AS count FROM external_conversations WHERE source_id = ?")
+            .get(sourceId) as unknown as { count: number }).count;
+          if (count >= MAX_EXTERNAL_CONVERSATIONS_PER_SOURCE) { truncated = true; continue; }
+          const chatLabel = observation.chatLabel ?? null, topicLabel = observation.topicLabel ?? null;
+          const project = this.createProject({ sourceId, name: externalConversationLabel(observation.kind, chatLabel, topicLabel) });
+          this.database.prepare(`INSERT INTO external_conversations (id, source_id, channel, external_key, kind, chat_label, topic_label,
+            state, state_at, project_id, project_auto_named, detached_at, first_seen_at, last_seen_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`)
+            .run(randomUUID(), sourceId, channel, observation.key, observation.kind, chatLabel, topicLabel,
+              observation.state ?? "open", stateAt, project.id, seenAt, seenAt, now);
+          changed.add(project.id);
+          continue;
+        }
+        const chatLabel = observation.chatLabel ?? row.chat_label;
+        const topicLabel = observation.topicLabel ?? row.topic_label;
+        let state = row.state, nextStateAt = row.state_at;
+        if (observation.state !== undefined && stateAt >= row.state_at) {
+          state = observation.state; nextStateAt = stateAt;
+        } else if (row.state === "gone" && seenAt > row.state_at) {
+          state = "open"; nextStateAt = seenAt;
+        }
+        const lastSeenAt = seenAt > row.last_seen_at ? seenAt : row.last_seen_at;
+        const summaryChanged = chatLabel !== row.chat_label || topicLabel !== row.topic_label || state !== row.state;
+        if (summaryChanged || lastSeenAt !== row.last_seen_at || nextStateAt !== row.state_at) {
+          this.database.prepare(`UPDATE external_conversations SET chat_label = ?, topic_label = ?, state = ?, state_at = ?,
+            last_seen_at = ?, updated_at = ? WHERE id = ?`).run(chatLabel, topicLabel, state, nextStateAt, lastSeenAt, now, row.id);
+        }
+        let projectId = row.project_id;
+        if (projectId === null && row.detached_at === null) {
+          projectId = this.createProject({ sourceId, name: externalConversationLabel(row.kind, chatLabel, topicLabel) }).id;
+          this.database.prepare("UPDATE external_conversations SET project_id = ?, project_auto_named = 1 WHERE id = ?").run(projectId, row.id);
+          changed.add(projectId);
+        }
+        if (projectId === null) continue;
+        const name = externalConversationLabel(row.kind, chatLabel, topicLabel);
+        if (row.project_auto_named === 1 && this.requireProject(projectId).name !== name) {
+          this.database.prepare("UPDATE projects SET name = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(name, now, projectId);
+          changed.add(projectId);
+        } else if (summaryChanged) {
+          this.bumpProjectRevision(projectId);
+        }
+        if (summaryChanged) changed.add(projectId);
+      }
+      return { projects: [...changed], truncated };
+    });
+  }
+
+  /**
+   * Record that a send proved a channel conversation no longer exists.
+   * The project, its context and its web chats are kept. Returns the bound
+   * project to refresh, if any.
+   */
+  markExternalConversationGone(sourceId: string, channel: WebExternalConversationChannel, key: string): { readonly projectId?: string } {
+    const row = this.externalRowByKey(sourceId, channel, key);
+    if (row === undefined) return {};
+    const now = this.now();
+    if (row.state !== "gone") {
+      this.transaction(() => {
+        this.database.prepare("UPDATE external_conversations SET state = 'gone', state_at = ?, updated_at = ? WHERE id = ?").run(now, now, row.id);
+        if (row.project_id !== null) this.bumpProjectRevision(row.project_id);
+      });
+    }
+    return row.project_id === null ? {} : { projectId: row.project_id };
+  }
+
+  externalConversationByKey(sourceId: string, channel: WebExternalConversationChannel, key: string): StoredExternalConversation | undefined {
+    const row = this.externalRowByKey(sourceId, channel, key);
+    return row === undefined ? undefined : this.mapExternal(row);
+  }
+
+  getExternalConversation(id: string): StoredExternalConversation | undefined {
+    const row = this.database.prepare("SELECT * FROM external_conversations WHERE id = ?").get(id) as unknown as ExternalConversationRow | undefined;
+    return row === undefined ? undefined : this.mapExternal(row);
+  }
+
+  /** One agent's channel conversations, most recently seen first. */
+  listExternalConversations(sourceId: string, options: { readonly projectId?: string; readonly limit: number }): StoredExternalConversation[] {
+    const rows = (options.projectId === undefined
+      ? this.database.prepare("SELECT * FROM external_conversations WHERE source_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT ?")
+        .all(sourceId, options.limit)
+      : this.database.prepare("SELECT * FROM external_conversations WHERE source_id = ? AND project_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT ?")
+        .all(sourceId, options.projectId, options.limit)) as unknown as ExternalConversationRow[];
+    return rows.map((row) => this.mapExternal(row));
+  }
+
+  /**
+   * Bind, move or detach one channel conversation. A project holds at most one
+   * channel conversation beside any number of web chats; detaching leaves the
+   * same tombstone a project deletion does.
+   */
+  setExternalConversationProject(id: string, projectId: string | null): StoredExternalConversation {
+    return this.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM external_conversations WHERE id = ?").get(id) as unknown as ExternalConversationRow | undefined;
+      if (row === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+      const now = this.now();
+      if (projectId === null) {
+        if (row.project_id !== null || row.detached_at === null) {
+          this.database.prepare("UPDATE external_conversations SET project_id = NULL, detached_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
+          if (row.project_id !== null) this.bumpProjectRevision(row.project_id, now);
+        }
+        return this.getExternalConversation(id)!;
+      }
+      this.requireProjectForThread(projectId, row.source_id);
+      const occupant = this.database.prepare("SELECT id FROM external_conversations WHERE project_id = ? AND id <> ?").get(projectId, id);
+      if (occupant !== undefined) {
+        throw new WebConsoleError("project_has_external_conversation", "This project is already linked to another Telegram topic.", 409);
+      }
+      if (row.project_id !== projectId || row.detached_at !== null) {
+        this.database.prepare(`UPDATE external_conversations SET project_id = ?, project_auto_named = 0, detached_at = NULL, updated_at = ?
+          WHERE id = ?`).run(projectId, now, id);
+        this.bumpProjectRevision(projectId, now);
+        // The project it left no longer shows it: a new revision there too.
+        if (row.project_id !== null && row.project_id !== projectId) this.bumpProjectRevision(row.project_id, now);
+      }
+      return this.getExternalConversation(id)!;
+    });
+  }
+
+  /** The project context a channel turn in this conversation carries, read at dispatch. */
+  externalTurnContext(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalTurnContext {
+    const conversation = this.externalConversationByKey(sourceId, channel, key);
+    if (conversation?.projectId == null) return conversation === undefined ? {} : { conversation };
+    const project = this.requireProject(conversation.projectId);
+    return { conversation, project: { id: project.id, name: project.name, context: project.context } };
+  }
+
+  /**
+   * Resolve a project to its bound channel conversation for a send. Refuses
+   * rather than falling back: an unbound project, another channel, a closed
+   * topic and a gone topic each have their own code.
+   */
+  resolveExternalProjectDestination(
+    sourceId: string,
+    channel: WebExternalConversationChannel,
+    projectId: string,
+  ): { readonly key: string; readonly label: string } {
+    const project = this.getProjectRow(projectId);
+    if (project === undefined || project.source_id !== sourceId) throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    const row = this.database.prepare("SELECT * FROM external_conversations WHERE project_id = ?").get(projectId) as unknown as ExternalConversationRow | undefined;
+    if (row === undefined || row.channel !== channel) {
+      throw new WebConsoleError("project_not_linked", "This project is not linked to a Telegram topic.", 409);
+    }
+    if (row.state === "gone") throw new WebConsoleError("external_conversation_gone", "This project's Telegram topic no longer exists.", 409);
+    if (row.state === "closed") throw new WebConsoleError("external_conversation_closed", "This project's Telegram topic is closed.", 409);
+    return { key: row.external_key, label: this.mapExternal(row).label };
+  }
+
+  /**
+   * A project summary carries its bound channel conversation, so every change
+   * to that binding, label or state is a new project revision; otherwise a
+   * listing read before the change would carry the same revision and a
+   * console's revision guard would let it restore the stale state. Binding
+   * changes also move recency when `at` is given.
+   */
+  private bumpProjectRevision(projectId: string, at?: string): void {
+    if (at === undefined) this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(projectId);
+    else this.database.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(at, projectId);
+  }
+
+  private externalRowByKey(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalConversationRow | undefined {
+    return this.database.prepare("SELECT * FROM external_conversations WHERE source_id = ? AND channel = ? AND external_key = ?")
+      .get(sourceId, channel, key) as unknown as ExternalConversationRow | undefined;
+  }
+
+  private mapExternal(row: ExternalConversationRow): StoredExternalConversation {
+    return {
+      id: row.id,
+      sourceId: row.source_id,
+      channel: row.channel,
+      label: externalConversationLabel(row.kind, row.chat_label, row.topic_label),
+      state: row.state,
+      projectId: row.project_id,
+      lastSeenAt: row.last_seen_at,
+    };
   }
 
   /**
@@ -3443,6 +3859,27 @@ export class WebStore {
     const readOnly = CONSOLE_READ_TOOL_NAMES.has(operation.tool);
     const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
     const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
+    if (scope.kind === "external") {
+      // A channel turn has no web thread or turn row; its receipt is keyed by
+      // the owning process's turn identity instead of fabricating either.
+      return this.transaction(() => {
+        if (this.getAgent(scope.sourceId) === undefined) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+        if (readOnly) return executeConsoleTool(this, scope, operation);
+        const prior = this.database.prepare("SELECT payload_sha256, result_json FROM external_tool_operations WHERE operation_id = ?")
+          .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
+        if (prior !== undefined) {
+          if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
+          return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
+        }
+        const commit = executeConsoleTool(this, scope, operation);
+        const now = this.now();
+        this.database.prepare("DELETE FROM external_tool_operations WHERE created_at < ?")
+          .run(new Date(Date.parse(now) - EXTERNAL_TOOL_RECEIPT_RETENTION_MS).toISOString());
+        this.database.prepare(`INSERT INTO external_tool_operations(operation_id, source_id, scope_key, turn_key, payload_sha256, result_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`).run(operation.operationId, scope.sourceId, `${scope.channel}:${scope.key ?? "-"}`, scope.turnKey, hash, JSON.stringify(commit.result), now);
+        return commit;
+      });
+    }
     return this.transaction(() => {
       const origin = this.requireThread(scope.threadId);
       if (origin.sourceId !== scope.sourceId || origin.trigger !== undefined || origin.archivedAt !== null
@@ -3479,7 +3916,7 @@ export class WebStore {
       .get(threadId) as { id: string } | undefined;
     if (before === after || active === undefined) {
       this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
-      if (before !== after) this.applyProjectMembership(threadId, before, after, now);
+      if (before !== after) this.applyProjectMembership(threadId, before, after);
       return;
     }
     this.database.prepare(`INSERT INTO pending_project_memberships(thread_id, project_id, turn_id) VALUES (?, ?, ?)
@@ -3492,42 +3929,201 @@ export class WebStore {
     if (pending === undefined || (turnId !== undefined && pending.turnId !== turnId)) return;
     if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId)) return;
     const before = this.requireThread(threadId).projectId;
-    this.applyProjectMembership(threadId, before, pending.projectId, now, pending.turnId);
+    this.applyProjectMembership(threadId, before, pending.projectId);
     this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
   }
 
-  private applyProjectMembership(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+  private applyProjectMembership(threadId: string, before: string | null, after: string | null): void {
     if (before === after) return;
-    this.recordProjectTransition(threadId, before, after, now, turnId);
+    this.recordProjectMarker(threadId, before, after);
     this.database.prepare("UPDATE threads SET project_id = ? WHERE id = ?").run(after, threadId);
     for (const id of [before, after]) if (id !== null) {
       this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(id);
     }
   }
 
-  private recordProjectTransition(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
-    const identity = (id: string | null): WebProjectTransition["before"] => {
+  private recordProjectMarker(threadId: string, before: string | null, after: string | null): void {
+    const identity = (id: string | null) => {
       if (id === null) return null;
       const project = this.requireProject(id);
       return { id, name: project.name, color: project.color };
     };
-    const anchor = turnId === undefined
-      ? this.database.prepare(`SELECT messages.id, messages.turn_id FROM messages
-          LEFT JOIN turns ON turns.id = messages.turn_id
-          WHERE messages.thread_id = ? AND (turns.status IS NULL OR turns.status <> 'running')
-            AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
-          ORDER BY messages.rowid DESC LIMIT 1`).get(threadId) as { id: string; turn_id: string | null } | undefined
-      : { id: this.requireTurn(turnId).assistant_message_id, turn_id: turnId };
-    this.database.prepare(`INSERT INTO project_transitions
-      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+    this.insertMarker(threadId, null, this.projectTurnAdmissionTime(threadId), {
+      type: "conversation-marker", kind: "project", at: this.now(), before: identity(before), after: identity(after),
+    });
   }
+
+  private insertMarker(threadId: string, turnId: string | null, createdAt: string, marker: WebConversationMarkerPart): void {
+    const id = randomUUID();
+    this.database.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, ?, 'system', ?, ?, ?, 'complete')`)
+      .run(id, threadId, turnId, serializeParts([marker]), createdAt, createdAt);
+    this.pendingMarkers.push({ threadId, messageId: id, updatedAt: createdAt });
+  }
+
+  /** The assistant row is the turn's anchor; the unbound marker sorts after it. */
+  private insertCompactionMarker(threadId: string, at: string, data: unknown): void {
+    if (data === null || typeof data !== "object" || Array.isArray(data)) return;
+    const value = data as Record<string, unknown>;
+    const marker: unknown = {
+      type: "conversation-marker", kind: "compaction", at,
+      operationId: value.operationId,
+      trigger: value.trigger === "manual" ? "manual" : "automatic",
+      status: value.status,
+      ...(value.tokensBefore === undefined ? {} : { tokensBefore: value.tokensBefore }),
+      ...(value.tokensAfter === undefined ? {} : { tokensAfter: value.tokensAfter }),
+      ...(value.tokenCountsExact === undefined ? {} : { tokenCountsExact: value.tokenCountsExact }),
+      ...(value.status !== "succeeded" && (value.reason === "model_changed" || value.reason === "nothing_to_compact" || (value.status === "failed" && value.reason === "outcome_unknown"))
+        ? { reason: value.reason } : {}),
+    };
+    if (!isConversationMarker(marker) || marker.kind !== "compaction") return; // Untrusted stream data never enters marker storage.
+    const existing = this.database.prepare(`SELECT 1 FROM messages WHERE thread_id = ?
+      AND role = 'system' AND json_extract(parts_json, '$[0].kind') = 'compaction'
+      AND json_extract(parts_json, '$[0].operationId') = ? LIMIT 1`).get(threadId, marker.operationId);
+    if (existing !== undefined) return;
+    this.insertMarker(threadId, null, at, marker);
+  }
+
+  private recordResumeMarker(threadId: string, turnId: string, createdAt: string): void {
+    const previous = this.database.prepare(`SELECT m.created_at FROM messages m WHERE m.thread_id = ?
+      AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
+      AND (m.turn_id IS NULL OR m.turn_id <> ?)
+      ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1`).get(threadId, turnId) as { created_at: string } | undefined;
+    const at = this.now();
+    const idleMs = previous === undefined ? 0 : Date.parse(at) - Date.parse(previous.created_at);
+    if (previous !== undefined && idleMs > 3_600_000) this.insertMarker(threadId, turnId, createdAt, {
+      type: "conversation-marker", kind: "resumed", at, previousMessageAt: previous.created_at, idleMs,
+    });
+  }
+
+  private captureConversationMarkers(turnId: string, threadId: string, text: string, validateLimit = true): void {
+    // All admission markers rank before the virtual user boundary. Unbound
+    // markers have monotonic instants, so strictly newer groups are the window.
+    const previous = this.database.prepare(`SELECT started_at FROM turns
+      WHERE thread_id = ? AND id <> ? AND dispatch_started_at IS NOT NULL
+      ORDER BY started_at DESC, rowid DESC LIMIT 1`).get(threadId, turnId) as { started_at: string } | undefined;
+    const rows = this.database.prepare(`SELECT m.parts_json FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND ${markerMessageSql("m")}
+      AND (? IS NULL OR COALESCE(t.started_at, m.created_at) > ?)
+      ORDER BY COALESCE(t.started_at, m.created_at), ${messageRoleRankSql("m")}, m.created_at, m.rowid`)
+      .all(threadId, previous?.started_at ?? null, previous?.started_at ?? null) as Array<{ parts_json: string }>;
+    const markers = rows.flatMap((row) => parseParts(row.parts_json).filter(isConversationMarker));
+    this.database.prepare("UPDATE turns SET conversation_markers_json = ? WHERE id = ?").run(JSON.stringify(markers), turnId);
+    if (validateLimit && withProjectContext(text, this.projectContextForThread(threadId), markers).length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+      throw new WebConsoleError("turn_text_too_large", "The message and its conversation context exceed the turn text limit.", 413);
+    }
+  }
+
+  conversationMarkersForTurn(turnId: string): readonly WebConversationMarkerPart[] {
+    const row = this.database.prepare("SELECT conversation_markers_json FROM turns WHERE id = ?").get(turnId) as { conversation_markers_json: string | null } | undefined;
+    if (row?.conversation_markers_json == null) return [];
+    const markers: unknown = JSON.parse(row.conversation_markers_json);
+    if (!Array.isArray(markers) || !markers.every((part: unknown) => isConversationMarker(part) || isUnknownMarker(part)))
+      throw new WebConsoleError("storage_corrupt", "Invalid turn marker snapshot.", 500);
+    return markers.filter(isConversationMarker);
+  }
+
+  markTurnDispatchStarted(turnId: string, generation?: string): void {
+    this.database.prepare(`UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?),
+      dispatch_generation = COALESCE(dispatch_generation, ?) WHERE id = ?`)
+      .run(this.now(), generation ?? null, turnId);
+  }
+
+  /** A generation change is evidence of process loss, not evidence that a child settled. */
+  reconcileParentInterruptions(sourceId: string, currentGeneration: string): ReadonlyArray<{
+    readonly threadId: string; readonly messageId: string; readonly turnId: string;
+  }> {
+    const created: Array<{ threadId: string; messageId: string; turnId: string }> = [];
+    this.transaction(() => {
+      // Startup recovery proves web-console loss, not agent loss. The first
+      // process generation observed after reopening is the only comparison
+      // that can classify it: if still the dispatched generation, permanently
+      // exclude it before a later unrelated agent restart, without erasing the
+      // original dispatch identity.
+      this.database.prepare(`UPDATE turns SET web_recovery_generation_confirmed_at = ?
+        WHERE dispatch_generation = ? AND status = 'interrupted' AND error_code = 'interrupted'
+          AND web_recovery_generation_confirmed_at IS NULL
+          AND thread_id IN (SELECT id FROM threads WHERE source_id = ?)`)
+        .run(this.now(), currentGeneration, sourceId);
+      const turns = this.database.prepare(`SELECT t.id, t.thread_id, t.status FROM turns t
+        JOIN threads th ON th.id = t.thread_id
+        WHERE th.source_id = ? AND t.dispatch_generation IS NOT NULL AND t.dispatch_generation <> ?
+          AND t.web_recovery_generation_confirmed_at IS NULL AND t.cancel_origin IS NULL
+          AND (t.status = 'running' OR (t.status = 'failed' AND t.error_code = 'agent_connection_lost')
+            OR (t.status = 'interrupted' AND t.error_code IN ('interrupted', 'agent_restart_interrupted')))
+          AND NOT EXISTS (SELECT 1 FROM parent_turn_interruptions n WHERE n.turn_id = t.id)`)
+        .all(sourceId, currentGeneration) as Array<{ id: string; thread_id: string; status: string }>;
+      for (const turn of turns) {
+        if (turn.status === "running") this.finishTurnInTransaction(turn.id, "interrupted", undefined,
+          "agent_process_interrupted", "The agent process ended before this turn completed.", undefined);
+        const now = this.now();
+        const messageId = randomUUID();
+        const notice = "The agent process ended during a previous turn. That turn was not replayed. Inspect background jobs and subagents (for example, with AgentManage inspect) before continuing; their outcomes are not established by this notice.";
+        this.database.prepare(`INSERT INTO messages
+          (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+          VALUES (?, ?, NULL, 'assistant', ?, ?, ?, 'complete')`)
+          .run(messageId, turn.thread_id, serializeParts([{ type: "text", text: notice }]), now, now);
+        this.database.prepare(`INSERT INTO parent_turn_interruptions
+          (source_id, turn_id, thread_id, message_id, wake_key, state, created_at, deadline)
+          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`)
+          .run(sourceId, turn.id, turn.thread_id, messageId,
+            `parent-interruption:${sourceId}:${turn.id}`, now, new Date(Date.parse(now) + 10 * 60_000).toISOString());
+        this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+          .run(now, turn.thread_id);
+        this.recordThreadRevision(turn.thread_id, "parent_turn_interrupted", now);
+        created.push({ threadId: turn.thread_id, messageId, turnId: turn.id });
+      }
+    });
+    return created;
+  }
+
+  pendingParentInterruptions(sourceId: string): ReadonlyArray<{
+    readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string;
+  }> {
+    return this.database.prepare(`SELECT source_id AS sourceId, thread_id AS threadId,
+      turn_id AS turnId, wake_key AS wakeKey FROM parent_turn_interruptions
+      WHERE source_id = ? AND state = 'pending' ORDER BY created_at`).all(sourceId) as
+      Array<{ sourceId: string; threadId: string; turnId: string; wakeKey: string }>;
+  }
+
+  /** Once an operator request may have crossed the boundary, never redeliver it. */
+  claimParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId?: string): boolean {
+    return this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'attempted', associated_turn_id = ?
+      WHERE source_id = ? AND turn_id = ? AND state = 'pending' AND deadline > ?`)
+      .run(associatedTurnId ?? null, sourceId, turnId, this.now()).changes === 1;
+  }
+
+  /** Only an explicit pre-dispatch refusal proves this attempt never entered a turn. */
+  deferParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId: string): void {
+    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'pending', associated_turn_id = NULL
+      WHERE source_id = ? AND turn_id = ? AND state = 'attempted' AND associated_turn_id = ?`)
+      .run(sourceId, turnId, associatedTurnId);
+  }
+
+  expireParentInterruptionWake(sourceId: string, turnId: string): void {
+    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'expired'
+      WHERE source_id = ? AND turn_id = ? AND state = 'pending' AND deadline <= ?`)
+      .run(sourceId, turnId, this.now());
+  }
+
+  completeParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId: string): void {
+    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'completed', associated_turn_id = ?
+      WHERE source_id = ? AND turn_id = ? AND state = 'attempted'`)
+      .run(associatedTurnId, sourceId, turnId);
+  }
+
+  /** Observers run only after the outer transaction commits and its depth clears. */
+  onConversationMarker: ((marker: { threadId: string; messageId: string; updatedAt: string }) => void) | undefined;
+  private pendingMarkers: Array<{ threadId: string; messageId: string; updatedAt: string }> = [];
 
   /** Keep causal turn groups ordered when the wall clock ties or moves backwards. */
   private projectTurnAdmissionTime(threadId: string): string {
     const now = this.now();
-    const previous = this.database.prepare("SELECT MAX(started_at) AS latest FROM turns WHERE thread_id = ?")
-      .get(threadId) as { latest: string | null };
+    const previous = this.database.prepare(`SELECT MAX(at) AS latest FROM (
+      SELECT started_at AS at FROM turns WHERE thread_id = ?
+      UNION ALL SELECT created_at AS at FROM messages WHERE thread_id = ? AND turn_id IS NULL
+    )`)
+      .get(threadId, threadId) as { latest: string | null };
     return previous.latest !== null && previous.latest >= now
       ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
   }
@@ -3544,15 +4140,6 @@ export class WebStore {
     this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify({ name: row?.name ?? "", context: row?.context ?? "", tags: this.tagNamesForThread(threadId) }), turnId);
   }
 
-  projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
-    return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
-        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
-      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
-        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
-        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
-      }));
-  }
-
   /**
    * Record a change of the conversation's selected route at the boundary where
    * it takes effect, for the turn `turnId` that was just admitted.
@@ -3566,13 +4153,12 @@ export class WebStore {
    * the agent's own default is reported the same way as a picker change --
    * because the route the next turn runs on is what actually changed.
    *
-   * Called inside the admitting transaction, after that turn's own messages
-   * exist: the anchor is the newest settled message NOT part of this turn, so
-   * the rule renders between the two turns. Nothing is recorded when either
+   * Called inside the admitting transaction. A marker ranks before its user
+   * row, independently of insertion order. Nothing is recorded when either
    * side is unresolved, when this is the first routed turn (it establishes the
    * baseline rather than changing anything), or when no message precedes it.
    */
-  private recordModelTransition(threadId: string, turnId: string, now: string): void {
+  private recordModelMarker(threadId: string, turnId: string, now: string): void {
     type RouteRow = { requested_model: string | null; requested_effort: string | null };
     const selection = (row: RouteRow): WebRouteSelection =>
       ({ model: row.requested_model, effort: row.requested_effort });
@@ -3593,27 +4179,15 @@ export class WebStore {
     const effortChanged = previous.requested_effort !== null && current.requested_effort !== null
       && previous.requested_effort !== current.requested_effort;
     if (!modelChanged && !effortChanged) return;
-    const anchor = this.database.prepare(`SELECT messages.id FROM messages
-        LEFT JOIN turns ON turns.id = messages.turn_id
-        WHERE messages.thread_id = ? AND (messages.turn_id IS NULL OR messages.turn_id <> ?)
-          AND (turns.status IS NULL OR turns.status <> 'running')
-          AND ${visibleMessageSql("messages")}
-          AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
-        ORDER BY messages.rowid DESC LIMIT 1`)
-      .get(threadId, turnId) as { id: string } | undefined;
+    const anchor = this.database.prepare(`SELECT 1 FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND (m.turn_id IS NULL OR m.turn_id <> ?)
+      AND (t.status IS NULL OR t.status <> 'running') AND ${visibleMessageSql("m")}
+      AND NOT (${markerMessageSql("m")})
+      AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = m.id) LIMIT 1`).get(threadId, turnId);
     if (anchor === undefined) return;
-    this.database.prepare(`INSERT INTO model_transitions
-      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(threadId, anchor.id, turnId, JSON.stringify(selection(previous)), JSON.stringify(selection(current)), now);
-  }
-
-  modelTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebModelTransition[] {
-    return (this.database.prepare(`SELECT * FROM model_transitions WHERE thread_id = ?
-        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
-      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
-        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
-        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
-      }));
+    this.insertMarker(threadId, turnId, now, {
+      type: "conversation-marker", kind: "model", at: this.now(), before: selection(previous), after: selection(current),
+    });
   }
 
   private getProjectRow(id: string): ProjectRow | undefined {
@@ -3652,6 +4226,8 @@ export class WebStore {
           WHERE thread_id IN (SELECT value FROM json_each(?)) AND status = 'running'
         `).get(JSON.stringify(memberIds)) as unknown as { count: number }).count;
     const monthUsd = this.projectMonthUsd(memberIds, this.now());
+    const external = this.database.prepare("SELECT * FROM external_conversations WHERE project_id = ?")
+      .get(row.id) as unknown as ExternalConversationRow | undefined;
     return {
       id: row.id,
       sourceId: row.source_id,
@@ -3665,6 +4241,7 @@ export class WebStore {
       conversationCount: memberIds.length,
       runningCount,
       ...(monthUsd === undefined ? {} : { monthUsd }),
+      ...(external === undefined ? {} : { external: this.mapExternal(external) }),
     };
   }
 
@@ -3755,11 +4332,10 @@ export class WebStore {
           UNION ALL SELECT 1 FROM web_submissions WHERE thread_id = ?
           UNION ALL SELECT 1 FROM cron_reply_operations WHERE thread_id = ? AND state = 'completed'
           UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
-          UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
           LIMIT 1
-        `).get(id, id, id, id, id, id, id, id, id, id) !== undefined;
+        `).get(id, id, id, id, id, id, id, id, id) !== undefined;
         if (hasContent) {
           throw new WebConsoleError(
             "thread_not_empty",
@@ -3772,7 +4348,7 @@ export class WebStore {
       this.database.prepare(`
         UPDATE cron_reply_operations SET state = 'tombstoned', provenance_message_id = NULL,
           result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
-          title = NULL, run_model = NULL, run_effort = NULL, completed_at = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, run_context_1m = NULL, completed_at = NULL,
           failure_reason = 'thread_deleted', tombstoned_at = ?
         WHERE thread_id = ? AND state = 'completed'
       `).run(now, id);
@@ -4015,20 +4591,22 @@ export class WebStore {
     const turnId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, context_1m, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(
         turnId,
         threadId,
         input.text,
         input.model ?? null,
         input.effort ?? null,
+        nullableBooleanSql(input.context1M),
         input.requestedModel ?? null,
         input.requestedEffort ?? null,
         assistantMessageId,
@@ -4067,7 +4645,9 @@ export class WebStore {
         WHERE id = ?
       `).run(title, now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      this.recordResumeMarker(threadId, turnId, now);
+      this.captureConversationMarkers(turnId, threadId, input.quote === undefined ? input.text : formatQuotedTurn(input.quote.text, input.text));
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4084,21 +4664,223 @@ export class WebStore {
     };
   }
 
+  private wakeRow(threadId: string): (Record<string, string | number | null> & {
+    thread_id: string; source_id: string; schedule_id: string; generation: number; revision: number;
+    definition_json: string; state: "active" | "paused" | "completed"; next_due_at: string | null;
+    last_outcome: "fired" | "skipped" | "uncertain" | "failed" | null; created_at: string;
+  }) | undefined {
+    return this.database.prepare(`SELECT schedules.* FROM wake_schedules schedules
+      JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
+      WHERE schedules.thread_id = ?`).get(this.resolveThreadId(threadId)) as ReturnType<WebStore["wakeRow"]>;
+  }
+
+  wakeSchedule(threadId: string): WebWakeSchedule | null {
+    const thread = this.assertWakeThread(threadId);
+    const row = this.wakeRow(thread.id);
+    if (row === undefined) return null;
+    return { threadId: row.thread_id, sourceId: row.source_id, scheduleId: row.schedule_id,
+      definition: JSON.parse(row.definition_json) as WebWakeScheduleDefinition, state: row.state,
+      revision: row.revision, nextFireAt: row.next_due_at, lastOutcome: row.last_outcome, createdAt: row.created_at };
+  }
+
+  private assertWakeThread(threadId: string): WebThread {
+    const thread = this.requireThread(threadId);
+    if (thread.trigger !== undefined) throw new WebConsoleError("invalid_wake_thread", "Schedules are only available on ordinary conversations.", 409);
+    return thread;
+  }
+
+  private bumpWakeThread(threadId: string): void {
+    const now = this.now();
+    this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(threadId);
+    this.recordThreadRevision(threadId, "wake_schedule_changed", now);
+  }
+
+  createWakeSchedule(threadId: string, definition: WebWakeScheduleDefinition): WebWakeSchedule {
+    return this.transaction(() => {
+      const thread = this.assertWakeThread(threadId);
+      if (thread.archivedAt !== null) throw new WebConsoleError("thread_archived", "Unarchive before scheduling a wake-up.", 409);
+      if (this.wakeRow(thread.id) !== undefined) throw new WebConsoleError("wake_schedule_exists", "This conversation already has a schedule.", 409);
+      const now = this.now();
+      const due = nextWakeOccurrence(definition, new Date(now));
+      if (due === null) throw new WebConsoleError("invalid_wake_schedule", "localAt: Choose a future time.", 400);
+      this.database.prepare(`INSERT INTO wake_schedules
+        (thread_id, source_id, schedule_id, definition_json, kind, state, next_due_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(thread.id, thread.sourceId, randomUUID(), JSON.stringify(definition), definition.kind, due.toISOString(), now, now);
+      this.bumpWakeThread(thread.id);
+      return this.wakeSchedule(thread.id)!;
+    });
+  }
+
+  changeWakeSchedule(threadId: string, expectedRevision: number, change:
+    { readonly definition: WebWakeScheduleDefinition } | { readonly state: "active" | "paused" } | { readonly delete: true }): WebWakeSchedule | null {
+    return this.transaction(() => {
+      const thread = this.assertWakeThread(threadId);
+      const row = this.wakeRow(thread.id);
+      if (row === undefined) throw new WebConsoleError("wake_schedule_not_found", "No schedule exists for this conversation.", 404);
+      if (row.revision !== expectedRevision) throw new WebConsoleError("wake_revision_conflict", "Schedule changed; reload and retry.", 409);
+      if ("state" in change && change.state === "active" && thread.archivedAt !== null) {
+        throw new WebConsoleError("thread_archived", "Unarchive before resuming a wake-up.", 409);
+      }
+      this.database.prepare("DELETE FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").run(thread.id);
+      if ("delete" in change) {
+        this.database.prepare("DELETE FROM wake_schedules WHERE thread_id = ? AND source_id = ?").run(thread.id, thread.sourceId);
+        this.bumpWakeThread(thread.id);
+        return null;
+      }
+      const definition = "definition" in change ? change.definition : JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
+      const state = "state" in change ? change.state : "active";
+      const now = this.now();
+      const due = state === "active" ? nextWakeOccurrence(definition, new Date(now)) : null;
+      if (state === "active" && due === null) throw new WebConsoleError("invalid_wake_schedule", "localAt: Edit this expired one-off to a future time.", 400);
+      this.database.prepare(`UPDATE wake_schedules SET definition_json = ?, kind = ?, state = ?, next_due_at = ?,
+        generation = generation + 1, revision = revision + 1, last_outcome = NULL, updated_at = ?
+        WHERE thread_id = ? AND source_id = ?`).run(JSON.stringify(definition), definition.kind, state, due?.toISOString() ?? null, now, thread.id, thread.sourceId);
+      this.bumpWakeThread(thread.id);
+      return this.wakeSchedule(thread.id)!;
+    });
+  }
+
+  wakeDueThreadIds(): string[] {
+    return (this.database.prepare(`SELECT schedules.thread_id AS id FROM wake_schedules schedules
+      JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
+      WHERE schedules.state = 'active' AND (schedules.next_due_at <= ? OR EXISTS
+        (SELECT 1 FROM wake_occurrences o WHERE o.thread_id = schedules.thread_id AND o.state = 'pending'))
+      ORDER BY schedules.next_due_at`).all(this.now()) as Array<{ id: string }>).map((row) => row.id);
+  }
+
+  /** Queue one occurrence while busy, or within the offline/idle grace; skip older unqueued work. */
+  reconcileWake(threadId: string, connected: boolean): boolean {
+    return this.transaction(() => {
+      const thread = this.getThread(threadId);
+      const row = thread === undefined ? undefined : this.wakeRow(thread.id);
+      if (row === undefined || row.state !== "active" || thread!.archivedAt !== null) return false;
+      const pending = this.database.prepare("SELECT 1 FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").get(thread!.id);
+      if (pending !== undefined) return true;
+      if (row.next_due_at === null || row.next_due_at > this.now()) return false;
+      const now = this.now();
+      const active = this.database.prepare("SELECT started_at FROM turns WHERE thread_id = ? AND status = 'running'").get(thread!.id) as { started_at: string } | undefined;
+      const busy = active !== undefined && active.started_at <= row.next_due_at;
+      const definition = JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
+      // A bounded backwards probe finds the latest missed weekly slot without
+      // stepping through months of occurrences.
+      const recent = definition.kind === "weekly"
+        ? nextWakeOccurrence(definition, new Date(Date.parse(now) - 60 * 60 * 1_000 - 1)) : null;
+      const latest = !busy && recent !== null && recent <= new Date(now) ? recent.toISOString() : row.next_due_at;
+      const age = Date.parse(now) - Date.parse(latest);
+      if (!busy && !connected && age <= 60 * 60 * 1_000) return false;
+      const eligible = busy || (connected && age <= 60 * 60 * 1_000);
+      if (eligible) {
+        this.database.prepare(`INSERT INTO wake_occurrences
+          (id, thread_id, schedule_id, generation, scheduled_at, message, state, reason)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`).run(randomUUID(), thread!.id, row.schedule_id, row.generation,
+          latest, definition.message ?? null, busy ? "busy" : "grace");
+      }
+      const next = definition.kind === "weekly" ? nextWakeOccurrence(definition, new Date(now)) : null;
+      this.database.prepare(`UPDATE wake_schedules SET next_due_at = ?, state = ?, revision = revision + 1,
+        last_outcome = ?, updated_at = ? WHERE thread_id = ? AND source_id = ?`).run(
+        next?.toISOString() ?? null, next === null && !eligible ? "completed" : "active",
+        eligible ? row.last_outcome : "skipped", now, thread!.id, thread!.sourceId);
+      this.bumpWakeThread(thread!.id);
+      return eligible;
+    });
+  }
+
+  /** Idle pending work eligible for a pre-claim compaction reservation. */
+  wakeReadyForCompaction(threadId: string): boolean {
+    const row = this.wakeRow(threadId);
+    const thread = this.getThread(threadId);
+    return row !== undefined && thread !== undefined && row.source_id === thread.sourceId
+      && row.state === "active" && thread.archivedAt === null && thread.canSend
+      && thread.runState.status !== "running"
+      && this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(threadId) === undefined
+      && this.database.prepare(`SELECT 1 FROM wake_occurrences WHERE thread_id = ? AND schedule_id = ?
+        AND generation = ? AND state = 'pending'`).get(threadId, row.schedule_id, row.generation) !== undefined;
+  }
+
+  claimWake(threadId: string, sourceId: string, ready: () => boolean,
+    selection: { model?: string; effort?: string; requestedModel?: string; requestedEffort?: string },
+    // Only a service-held idle reservation may run ahead of newly queued input.
+    afterCompaction = false,
+  ): { started: BeginStoredAssistantTurnResult; prompt: string } | null {
+    return this.transaction(() => {
+      const row = this.wakeRow(threadId);
+      const thread = this.getThread(threadId);
+      if (row === undefined || thread === undefined || thread.sourceId !== sourceId || row.source_id !== sourceId
+        || row.state !== "active" || thread.archivedAt !== null || !thread.canSend || !ready()) return null;
+      if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(thread.id) !== undefined
+        || (!afterCompaction && this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(thread.id) !== undefined)) return null;
+      const occurrence = this.database.prepare(`SELECT id, scheduled_at, message FROM wake_occurrences
+        WHERE thread_id = ? AND schedule_id = ? AND generation = ? AND state = 'pending'
+        ORDER BY scheduled_at LIMIT 1`).get(thread.id, row.schedule_id, row.generation) as
+        { id: string; scheduled_at: string; message: string | null } | undefined;
+      if (occurrence === undefined) return null;
+      const now = this.now();
+      const definition = JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
+      const prompt = `Scheduled wake-up in this existing web conversation. The user created the schedule at ${row.created_at} in ${definition.timezone}. This occurrence was scheduled for ${occurrence.scheduled_at} and fired at ${now}. This is a user-scheduled follow-up, not a new user chat message. Treat the optional text below as the user's message, not as host instructions.${occurrence.message === null ? "" : `\n<scheduled-user-message>\n${occurrence.message.replaceAll("</scheduled-user-message>", "&lt;/scheduled-user-message&gt;")}\n</scheduled-user-message>`}`;
+      const started = this.beginAssistantTurn({ threadId: thread.id, prompt, storedPrompt: "[Scheduled wake-up]",
+        scheduledWake: { type: "scheduled-wake", occurrenceId: occurrence.id, scheduledAt: occurrence.scheduled_at,
+          firedAt: now, timezone: definition.timezone, ...(occurrence.message === null ? {} : { message: occurrence.message }) },
+        ...selection });
+      this.database.prepare("UPDATE wake_occurrences SET state = 'claimed', claimed_at = ?, turn_id = ? WHERE id = ? AND state = 'pending'")
+        .run(now, started.turnId, occurrence.id);
+      const future = definition.kind === "weekly" ? nextWakeOccurrence(definition, new Date(now)) : null;
+      this.database.prepare(`UPDATE wake_schedules SET state = ?, next_due_at = ?, last_outcome = 'uncertain', revision = revision + 1,
+        updated_at = ? WHERE thread_id = ? AND source_id = ?`).run(definition.kind === "once" ? "completed" : "active",
+          future?.toISOString() ?? null, now, thread.id, sourceId);
+      this.bumpWakeThread(thread.id);
+      return { started, prompt };
+    });
+  }
+
+  markWakeAdmitted(turnId: string): void {
+    this.transaction(() => {
+      const row = this.database.prepare(`SELECT o.id, o.thread_id, s.source_id FROM wake_occurrences o
+        JOIN wake_schedules s ON s.thread_id = o.thread_id AND s.schedule_id = o.schedule_id AND s.generation = o.generation
+        JOIN threads t ON t.id = s.thread_id AND t.source_id = s.source_id
+        WHERE o.turn_id = ? AND o.state = 'claimed'`).get(turnId) as
+        { id: string; thread_id: string; source_id: string } | undefined;
+      if (row === undefined) return;
+      this.database.prepare("UPDATE wake_occurrences SET state = 'admitted' WHERE id = ?").run(row.id);
+      // Admission confirms only that the operator accepted the turn. A final
+      // outcome is not declared until the turn itself settles.
+    });
+  }
+
+  finishWake(turnId: string): string | null {
+    return this.transaction(() => {
+      const row = this.database.prepare(`SELECT s.thread_id, s.source_id, o.state, t.status FROM wake_occurrences o
+        JOIN wake_schedules s ON s.thread_id = o.thread_id AND s.schedule_id = o.schedule_id AND s.generation = o.generation
+        JOIN threads th ON th.id = s.thread_id AND th.source_id = s.source_id
+        JOIN turns t ON t.id = o.turn_id AND t.thread_id = o.thread_id
+        WHERE o.turn_id = ?`).get(turnId) as { thread_id: string; source_id: string; state: string; status: string } | undefined;
+      if (row === undefined) return null;
+      const outcome = row.state !== "admitted" || row.status === "running" ? "uncertain"
+        : row.status === "complete" ? "fired" : "failed";
+      this.database.prepare("UPDATE wake_schedules SET last_outcome = ?, revision = revision + 1 WHERE thread_id = ? AND source_id = ?")
+        .run(outcome, row.thread_id, row.source_id);
+      this.bumpWakeThread(row.thread_id);
+      return row.thread_id;
+    });
+  }
+
   /** Begin one host-owned assistant-only follow-up without inventing a user row. */
   beginAssistantTurn(input: {
     readonly threadId: string;
     readonly prompt: string;
-    /** Monitor output stays memory-only; callers may retain only a non-secret marker. */
+    /** Host wake prompts stay memory-only; callers may retain only a non-secret marker. */
     readonly storedPrompt?: string;
     readonly model?: string;
     readonly effort?: string;
+  readonly context1M?: boolean;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
+    readonly processJobWakeAttempt?: string;
     readonly processJobWake?: {
       readonly jobId: string;
       readonly deliveryKey: string;
       readonly disposition: "follow_up";
     };
+    readonly scheduledWake?: Extract<WebMessagePart, { type: "scheduled-wake" }>;
   }): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
@@ -4118,7 +4900,7 @@ export class WebStore {
     }
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     if (input.processJobWake !== undefined) {
       const card = this.database.prepare(`
         SELECT 1 FROM process_job_cards AS cards
@@ -4134,22 +4916,24 @@ export class WebStore {
         throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
       }
     }
-    const initialParts: WebMessagePart[] = input.processJobWake === undefined
-      ? []
-      : [{ type: "process-job-wake", ...input.processJobWake }];
+    const initialParts: WebMessagePart[] = input.scheduledWake === undefined
+      ? input.processJobWake === undefined ? [] : [{ type: "process-job-wake", ...input.processJobWake }]
+      : [input.scheduledWake];
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, context_1m, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(
         turnId,
         threadId,
         input.storedPrompt ?? input.prompt,
         input.model ?? null,
         input.effort ?? null,
+        nullableBooleanSql(input.context1M),
         input.requestedModel ?? null,
         input.requestedEffort ?? null,
         assistantMessageId,
@@ -4160,13 +4944,14 @@ export class WebStore {
         VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'running')
       `).run(assistantMessageId, threadId, turnId, serializeParts(initialParts), now, now);
       if (input.processJobWake !== undefined) {
-        this.associateProcessJobWakeTurn(input.processJobWake.deliveryKey, turnId);
+        this.associateProcessJobWakeTurn(input.processJobWake.deliveryKey, turnId, true, input.processJobWakeAttempt);
       }
       this.database.prepare(
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      this.captureConversationMarkers(turnId, threadId, input.prompt);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4220,8 +5005,8 @@ export class WebStore {
       throw new WebConsoleError("live_input_queue_full", "Too many follow-up messages are waiting.", 429);
     }
     const active = this.database.prepare(
-      "SELECT id, model, effort FROM turns WHERE thread_id = ? AND status = 'running'",
-    ).get(threadId) as unknown as Pick<TurnRow, "id" | "model" | "effort"> | undefined;
+      "SELECT id, model, effort, context_1m FROM turns WHERE thread_id = ? AND status = 'running'",
+    ).get(threadId) as unknown as Pick<TurnRow, "id" | "model" | "effort" | "context_1m"> | undefined;
     const id = randomUUID();
     const messageId = randomUUID();
     const now = this.now();
@@ -4233,6 +5018,7 @@ export class WebStore {
     // nulls to the thread override.
     const model = active === undefined ? thread.runModel : active.model;
     const effort = active === undefined ? thread.runEffort : active.effort;
+    const context1M = active === undefined ? nullableBooleanSql(thread.runContext1M) : active.context_1m;
     const parts: WebMessagePart[] = [
       liveInputTelemetry(status === "offered" ? "pending" : "queued", id),
       ...(quote === undefined
@@ -4247,8 +5033,8 @@ export class WebStore {
       `).run(messageId, threadId, active?.id ?? null, serializeParts(parts), now, now);
       this.database.prepare(`
         INSERT INTO live_inputs (
-          id, thread_id, message_id, active_turn_id, text, model, effort, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, thread_id, message_id, active_turn_id, text, model, effort, context_1m, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         threadId,
@@ -4257,6 +5043,7 @@ export class WebStore {
         operatorText,
         model,
         effort,
+        context1M,
         status,
         now,
         now,
@@ -4433,16 +5220,17 @@ export class WebStore {
     if (!thread.canSend || thread.archivedAt !== null) return undefined;
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.projectTurnAdmissionTime(threadId);
+    let now = this.projectTurnAdmissionTime(threadId);
     const userMessage = this.requireRawParts(row.message_id);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
+      now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, context_1m, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now);
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(turnId, threadId, row.text, row.model, row.effort, row.context_1m, row.model, row.effort, assistantMessageId, now);
       this.writeMessageParts(
         row.message_id,
         withoutLiveInputTelemetry(userMessage),
@@ -4457,7 +5245,10 @@ export class WebStore {
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
       this.captureProjectContext(turnId, threadId);
-      this.recordModelTransition(threadId, turnId, now);
+      this.recordModelMarker(threadId, turnId, now);
+      // Already accepted queue entries settle on the existing before-dispatch
+      // failure path instead of rolling back forever at the head of the queue.
+      this.captureConversationMarkers(turnId, threadId, row.text, false);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -4472,18 +5263,20 @@ export class WebStore {
   }
 
   applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): StoredMessageWrite {
-    const turn = this.requireTurn(turnId);
-    // Nothing is written for a turn that already settled, so there is no
-    // version for a delta to name.
-    if (turn.status !== "running") return { message: this.requireMessage(turn.assistant_message_id) };
-    // The base read, the frames applied to it and the write are ONE atomic
-    // span, as they already are on the finish path. A delta whose ops were
-    // diffed against a version other than the one its `baseSeq` names is
-    // self-consistent and WRONG -- the one corruption a sequence number cannot
-    // expose, because the console would apply it without complaint.
-    const write = this.transaction(() => {
-      const message = this.requireMessage(turn.assistant_message_id);
+    // Each attempt validates turn lifecycle and message ownership under the
+    // same writer lock as the sequence guard. A different SQLite writer may
+    // settle or reparent the assistant between a conflict rollback and retry.
+    const persist = (): StoredMessageWrite => this.transaction(() => {
+      let turn = this.requireTurn(turnId);
+      const message = (turn.status === "running" ? this.streamSnapshots.get(turnId) : undefined)
+        ?? this.requireMessage(turn.assistant_message_id);
+      if (message.id !== turn.assistant_message_id || message.turnId !== turn.id || message.threadId !== turn.thread_id) {
+        throw new WebConsoleError("storage_corrupt", "A streaming assistant message does not belong to its turn and thread.", 500);
+      }
+      // A settled turn has no write (and therefore no delta) to announce.
+      if (turn.status !== "running") return { message };
       const parts = [...message.parts];
+      const recoveredSteers: WebMessage[] = [];
       let actualModel: string | undefined;
       let actualEffort: string | undefined;
       let actualEffectiveEffort: string | undefined;
@@ -4502,9 +5295,8 @@ export class WebStore {
           applyEvent(
             parts,
             frame.event,
-            (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey),
             (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
-            (inputId) => this.steerForTurn(turnId, inputId),
+            (inputId) => this.steerForTurn(turnId, inputId, recoveredSteers),
           );
           if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
             const model = canonicalRouteString(frame.event.data?.model);
@@ -4572,14 +5364,14 @@ export class WebStore {
         }
       }
       if (actualModel !== undefined || actualEffort !== undefined || actualEffectiveEffort !== undefined || attributionChanged) {
-        this.database.prepare(`
+        turn = this.database.prepare(`
           UPDATE turns SET
             model = CASE WHEN ? IS NULL THEN model ELSE ? END,
             effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effort ELSE ? END,
             effective_effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effective_effort ELSE ? END,
             routing_json = ?
-          WHERE id = ?
-        `).run(
+          WHERE id = ? RETURNING *
+        `).get(
           actualModel ?? null,
           actualModel ?? null,
           clearEffort ? 1 : 0,
@@ -4590,7 +5382,7 @@ export class WebStore {
           actualEffectiveEffort ?? null,
           serializeRoutingState(routing),
           turnId,
-        );
+        ) as unknown as TurnRow;
       }
       // Diffed on the parts already in hand, before and after: a text delta
       // moves neither the tool-call count nor the phase nor the cost, and it is
@@ -4601,13 +5393,55 @@ export class WebStore {
         runActivityFromParts(message.parts),
         runActivityFromParts(parts),
       );
+      // Match the durable read projection without a JSON round trip. Preserve
+      // unchanged references so append-only deltas stay append-only.
+      for (let index = 0; index < parts.length; index++) {
+        const part = parts[index]!;
+        if (part === message.parts[index]) continue;
+        const durable = canonicalizePersistedPartHistory(durableMessagePart(part));
+        if (!isWebMessagePart(durable)) throw new WebConsoleError("storage_corrupt", "Invalid streaming message part.", 500);
+        parts[index] = durable;
+      }
+      const now = this.now();
+      // A terminal compaction may be replayed or updated by later frames. One
+      // durable row per operation is written in the same transaction as the answer.
+      for (const frame of frames) if (frame.kind === "event"
+        && frame.event.type === "runtime_telemetry" && frame.event.kind === "context_compaction") {
+        this.insertCompactionMarker(turn.thread_id, now, frame.event.data);
+      }
+      const serialized = serializeParts(parts);
+      // The cache is optimistic, never authoritative. A stale sequence writes
+      // nothing; roll back routing changes too, reread, and replay the frames.
+      const changed = this.database.prepare(`UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1
+        WHERE id = ? AND turn_id = ? AND thread_id = ? AND seq = ? RETURNING seq`)
+        .get(serialized, now, message.id, turn.id, turn.thread_id, message.seq) as { seq: number } | undefined;
+      if (changed === undefined) throw STREAM_SEQUENCE_CONFLICT;
+      const attribution = runAttribution(turn);
+      const committed: WebMessage = { ...message, parts, updatedAt: now, seq: changed.seq, ...(attribution === undefined ? {} : { attribution }) };
       return {
-        delta: this.writeMessageDelta(message, parts, this.now()),
+        message: committed,
+        ...(recoveredSteers.length === 0 ? {} : { recoveredSteers }),
+        serializedBytes: Buffer.byteLength(serialized),
+        delta: { messageId: message.id, baseSeq: message.seq, seq: changed.seq,
+          status: message.status, updatedAt: now, ...(attribution === undefined ? {} : { attribution }), ops: diffParts(message.parts, parts) },
         ...(attributionChanged ? { attributionChanged: true as const } : {}),
         ...(activityChanged ? { activityChanged: true as const } : {}),
       };
     });
-    return { message: this.requireMessage(turn.assistant_message_id), ...write };
+    try {
+      let write: StoredMessageWrite;
+      try { write = persist(); } catch (error) {
+        this.streamSnapshots.delete(turnId);
+        if (error !== STREAM_SEQUENCE_CONFLICT) throw error;
+        write = persist(); // One fresh read under BEGIN IMMEDIATE; no unbounded retry.
+      }
+      if (write.delta === undefined) this.streamSnapshots.delete(turnId);
+      else this.streamSnapshots.set(turnId, write.message);
+      return write;
+    } catch (error) {
+      this.streamSnapshots.delete(turnId);
+      throw error;
+    }
   }
 
   completeTurn(
@@ -4615,7 +5449,7 @@ export class WebStore {
     finalText?: string,
     metadata?: Readonly<Record<string, unknown>>,
     replyParts?: readonly AgentReplyPart[],
-    options: { readonly suppressResponsePush?: boolean; readonly monitorWakeDeliveryKey?: string } = {},
+    options: { readonly suppressResponsePush?: boolean; readonly hostWakeDeliveryKey?: string; readonly replyProcessGeneration?: string } = {},
   ): StoredTurnFinish {
     const runtime = runtimeMetadata(metadata);
     return this.finishTurn(
@@ -4627,7 +5461,8 @@ export class WebStore {
       runtime,
       replyParts,
       options.suppressResponsePush === true,
-      options.monitorWakeDeliveryKey,
+      options.hostWakeDeliveryKey,
+      options.replyProcessGeneration,
     );
   }
 
@@ -4645,6 +5480,11 @@ export class WebStore {
 
   interruptTurn(turnId: string, message = "The web service stopped before this turn completed."): StoredTurnFinish {
     return this.finishTurn(turnId, "interrupted", undefined, "interrupted", message, undefined);
+  }
+
+  interruptTurnForRestart(turnId: string): StoredTurnFinish {
+    return this.finishTurn(turnId, "interrupted", undefined, "agent_restart_interrupted",
+      "The agent stopped during a requested restart.", undefined);
   }
 
   recordCancelOrigin(turnId: string, origin: WebCancelOrigin): void {
@@ -4668,11 +5508,6 @@ export class WebStore {
       status: WebMessageStatus;
     } | undefined;
     return row?.status;
-  }
-
-  threadIdForTurn(turnId: string): string | undefined {
-    const row = this.database.prepare("SELECT thread_id FROM turns WHERE id = ?").get(turnId) as unknown as { thread_id: string } | undefined;
-    return row?.thread_id;
   }
 
   ensureWebPushIdentity(generate: () => { readonly publicKey: string; readonly privateKey: string }): WebPushIdentity {
@@ -4926,11 +5761,6 @@ export class WebStore {
         JOIN push_subscriptions s ON s.id = d.subscription_id
         WHERE d.status = 'pending' AND d.next_attempt_at <= ? AND e.expires_at > ? AND s.state = 'active'
           AND NOT EXISTS (
-            SELECT 1 FROM monitor_wake_deliveries m
-            WHERE e.kind = 'response.ready' AND m.state = 'accepted' AND m.turn_id IS NOT NULL
-              AND e.logical_key = 'turn:' || m.turn_id || ':terminal'
-          )
-          AND NOT EXISTS (
             SELECT 1 FROM process_job_wake_deliveries j
             WHERE e.kind = 'response.ready' AND j.state = 'accepted' AND j.turn_id IS NOT NULL
               AND e.logical_key = 'turn:' || j.turn_id || ':terminal'
@@ -5117,12 +5947,28 @@ export class WebStore {
         ask_by_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS restart_operations (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        operation_id TEXT,
+        requested_at TEXT NOT NULL,
+        deadline TEXT NOT NULL,
+        stage TEXT NOT NULL CHECK (stage IN ('requesting', 'restarting', 'back_online')),
+        outcome TEXT CHECK (outcome IN ('success', 'failure', 'not_confirmed')),
+        reason TEXT,
+        uncertain INTEGER NOT NULL DEFAULT 0 CHECK (uncertain IN (0, 1)),
+        approximate_running_turns INTEGER NOT NULL DEFAULT 0 CHECK (approximate_running_turns >= 0)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS restart_operations_one_active_source
+        ON restart_operations(source_id) WHERE outcome IS NULL;
       CREATE TABLE IF NOT EXISTS agent_run_overrides (
         source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
         model TEXT,
         effort TEXT,
         updated_at TEXT NOT NULL,
-        CHECK (model IS NOT NULL OR effort IS NOT NULL)
+        context_1m INTEGER CHECK (context_1m IS NULL OR context_1m IN (0,1)),
+        CHECK (model IS NOT NULL OR effort IS NOT NULL OR context_1m IS NOT NULL)
       );
       CREATE TABLE IF NOT EXISTS projects (
         color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose')),
@@ -5153,6 +5999,35 @@ export class WebStore {
         run_effort TEXT,
         revision INTEGER NOT NULL DEFAULT 1
       );
+      CREATE TABLE IF NOT EXISTS wake_schedules (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        schedule_id TEXT NOT NULL UNIQUE,
+        generation INTEGER NOT NULL DEFAULT 1,
+        revision INTEGER NOT NULL DEFAULT 1,
+        definition_json TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('once', 'weekly')),
+        state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'completed')),
+        next_due_at TEXT,
+        last_outcome TEXT CHECK (last_outcome IN ('fired', 'skipped', 'uncertain', 'failed')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS wake_schedules_due ON wake_schedules(state, next_due_at);
+      CREATE TABLE IF NOT EXISTS wake_occurrences (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES wake_schedules(thread_id) ON DELETE CASCADE,
+        schedule_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        message TEXT,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'claimed', 'admitted', 'skipped')),
+        reason TEXT NOT NULL CHECK (reason IN ('busy', 'grace')),
+        claimed_at TEXT,
+        turn_id TEXT,
+        UNIQUE(schedule_id, generation, scheduled_at)
+      );
+      CREATE INDEX IF NOT EXISTS wake_occurrences_pending ON wake_occurrences(thread_id, state, scheduled_at);
       CREATE TABLE IF NOT EXISTS tags (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
@@ -5202,6 +6077,17 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
       CREATE INDEX IF NOT EXISTS messages_by_turn ON messages(turn_id);
+      CREATE TABLE IF NOT EXISTS restart_proposal_bindings (
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        part_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        generation TEXT NOT NULL CHECK (length(generation) > 0),
+        operation_id TEXT UNIQUE REFERENCES restart_operations(id),
+        PRIMARY KEY (message_id, part_id)
+      );
+      CREATE INDEX IF NOT EXISTS restart_proposal_bindings_by_source
+        ON restart_proposal_bindings(source_id, generation);
       CREATE TABLE IF NOT EXISTS live_inputs (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -5473,6 +6359,7 @@ export class WebStore {
           migrateMonitorWakeDeliveries: () => this.migrateMonitorWakeDeliveries(),
           suppressSilentCronHistory: () => this.suppressSilentCronHistory(),
           backfillMessageSearch: () => this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL),
+          refreshMessageSearch: () => this.database.exec(MESSAGE_SEARCH_SCHEMA_SQL),
         });
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
@@ -5764,19 +6651,6 @@ export class WebStore {
         throw new WebConsoleError("storage_corrupt", `Message ${message.id} contains invalid persisted parts.`, 500);
       }
     }
-    const monitorProjections = this.database.prepare(`
-      SELECT monitor_id, projection_json
-      FROM monitor_wake_deliveries
-      WHERE projection_json IS NOT NULL
-    `).all() as unknown as Array<{ monitor_id: string; projection_json: string }>;
-    for (const row of monitorProjections) {
-      try {
-        const projection = parseMonitorProjection(JSON.parse(row.projection_json) as unknown);
-        if (projection.monitorId !== row.monitor_id) throw new TypeError("Monitor identity mismatch.");
-      } catch {
-        throw new WebConsoleError("storage_corrupt", "A retained Monitor wake projection is invalid.", 500);
-      }
-    }
   }
 
   /**
@@ -5788,45 +6662,6 @@ export class WebStore {
     this.transaction(() => {
       this.database.exec(MESSAGE_SEARCH_UNSETTLED_SQL);
     });
-  }
-
-  /** Repair only the derived search projection of verified legacy Monitor replies.
-   * New completions already normalize before the ordinary indexing triggers run.
-   * Page by rowid so opening a large retained history does not materialize it all.
-   */
-  private reindexLegacyMonitorMessages(): void {
-    const select = this.database.prepare(`
-      SELECT m.rowid AS row_id, m.parts_json FROM messages m
-      JOIN turns ON turns.id = m.turn_id AND turns.thread_id = m.thread_id
-      JOIN threads ON threads.id = m.thread_id
-      WHERE m.rowid > ? AND m.role = 'assistant' AND m.status = 'complete'
-        AND EXISTS (
-          SELECT 1 FROM monitor_wake_deliveries d
-          WHERE d.turn_id = turns.id AND d.thread_id = turns.thread_id
-            AND d.source_id = threads.source_id AND d.state = 'completed'
-            AND d.disposition IN ('steered', 'follow_up')
-        )
-      ORDER BY m.rowid LIMIT 100
-    `);
-    const remove = this.database.prepare("DELETE FROM message_search WHERE rowid = ?");
-    const insert = this.database.prepare(`
-      INSERT INTO message_search(rowid, body)
-      SELECT ?, (${messageSearchBody("m")}) FROM (SELECT ? AS parts_json) m
-    `);
-    let after = 0;
-    while (true) {
-      const rows = select.all(after) as unknown as Array<{ row_id: number; parts_json: string }>;
-      if (rows.length === 0) return;
-      this.transaction(() => {
-        for (const row of rows) {
-          const normalized = normalizeMonitorTerminalReply(parseParts(row.parts_json));
-          if (!normalized.changed) continue;
-          remove.run(row.row_id);
-          insert.run(row.row_id, serializeParts(normalized.parts));
-        }
-      });
-      after = rows[rows.length - 1]!.row_id;
-    }
   }
 
   private recoverInterruptedTurns(): void {
@@ -5913,10 +6748,11 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
+    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
-    monitorWakeDeliveryKey?: string,
+    hostWakeDeliveryKey?: string,
+    replyProcessGeneration?: string,
   ): StoredTurnFinish {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
@@ -5931,7 +6767,8 @@ export class WebStore {
       runtime,
       replyParts,
       suppressResponsePush,
-      monitorWakeDeliveryKey,
+      hostWakeDeliveryKey,
+      replyProcessGeneration,
     ));
     return {
       ...this.requireThreadDetail(turn.thread_id),
@@ -5945,13 +6782,15 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
+    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
-    monitorWakeDeliveryKey?: string,
+    hostWakeDeliveryKey?: string,
+    replyProcessGeneration?: string,
   ): StoredMessageWrite | undefined {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return undefined;
+    this.streamSnapshots.delete(turnId);
     const existing = this.requireMessage(turn.assistant_message_id);
     let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
@@ -5959,18 +6798,10 @@ export class WebStore {
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
-    const monitorAssociated = status === "complete" && this.hasMonitorTurnAssociation(turnId, monitorWakeDeliveryKey);
-    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, monitorWakeDeliveryKey);
+    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
     if (processJobAssociated) {
-      parts = normalizeMonitorTerminalReply(parts, true).parts;
-      suppressResponsePush = !hasMonitorReplyContent(parts);
-    }
-    if (monitorAssociated) {
-      const normalized = normalizeMonitorTerminalReply(parts);
-      parts = normalized.parts;
-      // A suppressed callback may still have streamed the sentinel. Preserve a
-      // preceding answer and rich output even when its terminal reply was empty.
-      suppressResponsePush = !hasMonitorReplyContent(parts);
+      parts = normalizeWakeTerminalReply(parts, true, runtime?.turnDisposition).parts;
+      suppressResponsePush = !hasWakeReplyContent(parts);
     }
     const now = this.now();
     const thread = this.requireThread(turn.thread_id);
@@ -5979,7 +6810,8 @@ export class WebStore {
         UPDATE turns SET status = ?, finished_at = ?, error_code = ?, error_message = ?,
           model = CASE WHEN ? IS NULL THEN model ELSE ? END,
           effort = CASE WHEN ? IS NULL THEN effort ELSE ? END,
-          effective_effort = CASE WHEN ? IS NULL THEN effective_effort ELSE ? END
+          effective_effort = CASE WHEN ? IS NULL THEN effective_effort ELSE ? END,
+          reply_disposition = ?
         WHERE id = ?
     `).run(
         status,
@@ -5992,9 +6824,24 @@ export class WebStore {
         runtime?.effort ?? null,
         runtime?.effectiveEffort ?? null,
         runtime?.effectiveEffort ?? null,
+        status === "complete" ? runtime?.turnDisposition ?? null : null,
         turnId,
       );
     const delta = this.writeMessageDelta(existing, parts, now, { status });
+    if (status === "complete" && thread.trigger === undefined && replyProcessGeneration !== undefined
+      && replyProcessGeneration.length > 0) {
+      // The source comes from this message's persisted thread. The generation
+      // comes from the operator client that actually ran the turn, NOT model
+      // metadata or a later discovery pass. Persist the binding in the same
+      // transaction as the reply part; raw transcript reads expose neither.
+      const proposal = parts.find((part) => part.type === "restart_proposal");
+      if (proposal?.type === "restart_proposal") {
+        this.database.prepare(`INSERT INTO restart_proposal_bindings
+          (message_id, part_id, thread_id, source_id, generation) VALUES (?, ?, ?, ?, ?)`).run(
+          existing.id, proposal.id, thread.id, thread.sourceId, replyProcessGeneration,
+        );
+      }
+    }
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
     this.applyPendingProjectMembership(turn.thread_id, now, turnId);
@@ -6016,13 +6863,15 @@ export class WebStore {
             : "run.failed";
       const label = agent?.label ?? "mono-agent";
       const body = status === "complete"
-        ? monitorAssociated ? monitorReplyText(parts) : parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+        ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
           .map((part) => part.text)
           .join(" ")
         : status === "cancelled"
           ? "The run was cancelled."
           : status === "interrupted"
-            ? "The run was interrupted when the web service stopped."
+            ? errorCode === "agent_restart_interrupted"
+              ? "The run was interrupted when the agent restarted."
+              : "The run was interrupted when the web service stopped."
             : errorMessage ?? "The run failed.";
       this.enqueueWebPushEventInTransaction({
         logicalKey: `turn:${turnId}:terminal`,
@@ -6069,6 +6918,15 @@ export class WebStore {
     const runStates = this.latestRunStates(ids);
     const previews = this.lastMessagePreviews(ids);
     const jobActivities = this.jobActivities(ids);
+    const wakes = new Map((this.database.prepare(`SELECT schedules.thread_id, schedules.state, schedules.kind,
+      schedules.next_due_at, schedules.revision, schedules.definition_json FROM wake_schedules schedules
+      JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
+      WHERE schedules.thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
+        thread_id: string; state: "active" | "paused" | "completed"; kind: "once" | "weekly";
+        next_due_at: string | null; revision: number; definition_json: string;
+      }>).map((wake) => [wake.thread_id, { state: wake.state, kind: wake.kind,
+        nextFireAt: wake.next_due_at, revision: wake.revision,
+        ...(JSON.parse(wake.definition_json).compactFirst === true ? { compactFirst: true } : {}) }]));
     const pending = new Map((this.database.prepare(`SELECT thread_id, project_id, turn_id FROM pending_project_memberships
       WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
         thread_id: string; project_id: string | null; turn_id: string;
@@ -6087,6 +6945,7 @@ export class WebStore {
       return {
         id: row.id,
         sourceId: row.source_id,
+        ...(wakes.has(row.id) ? { wakeSchedule: wakes.get(row.id)! } : {}),
         tagIds: tagsByThread.get(row.id) ?? [],
         projectId: row.project_id,
         ...(row.project_id === null || row.project_name === null
@@ -6118,6 +6977,7 @@ export class WebStore {
         canUpload: row.can_upload === 1,
         runModel: row.run_model,
         runEffort: row.run_effort,
+        ...(row.run_context_1m === null ? {} : { runContext1M: row.run_context_1m === 1 }),
       };
     });
   }
@@ -6136,7 +6996,7 @@ export class WebStore {
    * Only the two paths a console watches live -- streaming frames and the write
    * that settles a turn -- go on to build a {@link WebMessageDelta} from this.
    * Every other caller (a live-input transition, restart recovery, and the
-   * notification, cron-run, process-job and Monitor reconciliations) bumps the
+   * notification, cron-run, process-job reconciliations) bumps the
    * version without describing the change: those writes reach the browser as an
    * invalidation it answers by re-reading the message, and the new `seq` is what
    * tells it the re-read is newer than the delta stream it was applying.
@@ -6154,7 +7014,7 @@ export class WebStore {
     columns: MessagePartsColumns = {},
   ): { readonly baseSeq: number; readonly seq: number } {
     const assignments: string[] = [];
-    const values: Array<string | null> = [];
+    const values: Array<string | number | null> = [];
     if (columns.threadId !== undefined) {
       assignments.push("thread_id = ?");
       values.push(columns.threadId);
@@ -6181,11 +7041,29 @@ export class WebStore {
       statement = this.database.prepare(sql);
       this.partsWriteStatements.set(sql, statement);
     }
-    const row = statement.get(...values, id) as unknown as { seq: number } | undefined;
-    if (row === undefined) {
-      throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
-    }
-    return { baseSeq: row.seq - 1, seq: row.seq };
+    const prepared = statement;
+    const persist = (): { readonly baseSeq: number; readonly seq: number } => {
+      // This transaction-local marker suppresses only the fallback JSON trigger.
+      // It contains no prose and is removed before commit. A rollback/crash
+      // removes it with the message/FTS write; independent SQL writers retain
+      // their trigger-backed indexing. Never disable triggers connection-wide.
+      const precomputeSearch = columns.status !== undefined && columns.status !== "running";
+      if (precomputeSearch) this.database.prepare("INSERT INTO message_search_writes(message_id) VALUES (?)").run(id);
+      const row = prepared.get(...values, id) as unknown as { seq: number } | undefined;
+      if (row === undefined) {
+        throw new WebConsoleError("storage_corrupt", `Message ${id} is missing from this conversation.`, 500);
+      }
+      if (precomputeSearch) {
+        const body = parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+          .map((part) => part.text).join(" ").replace(/[\u0002\u0003]/gu, "");
+        this.database.prepare("DELETE FROM message_search WHERE rowid = (SELECT rowid FROM messages WHERE id = ?)").run(id);
+        this.database.prepare("INSERT INTO message_search(rowid, body) SELECT rowid, ? FROM messages WHERE id = ?").run(body, id);
+        this.database.prepare("DELETE FROM message_search_writes WHERE message_id = ?").run(id);
+      }
+      return { baseSeq: row.seq - 1, seq: row.seq };
+    };
+    // Initialization owns a transaction before the runtime depth counter exists.
+    return this.database.isTransaction ? persist() : this.transaction(persist);
   }
 
   /**
@@ -6230,52 +7108,76 @@ export class WebStore {
   }
 
   private mapMessage(row: MessageRow): WebMessage {
-    const attachments = this.database
-      .prepare("SELECT * FROM attachments WHERE message_id = ? AND origin = 'upload' ORDER BY created_at, id")
-      .all(row.id) as unknown as AttachmentRow[];
-    const rawParts = parseParts(row.parts_json);
-    const storedParts = row.role === "assistant" && row.status === "complete" && row.turn_id !== null
-      && this.hasMonitorTurnAssociation(row.turn_id)
-      ? normalizeMonitorTerminalReply(rawParts).parts : rawParts;
-    const quote = quoteFromParts(storedParts);
-    const liveInputStatus = liveInputStatusFromParts(storedParts);
-    const role = normalizeRole(row.role);
-    const finishedAt = role === "assistant" ? this.turnFinishedAt(row) : undefined;
-    const attribution = role === "assistant" && row.turn_id !== null
-      ? runAttribution(this.requireTurn(row.turn_id))
-      : undefined;
-    return {
-      id: row.id,
-      threadId: row.thread_id,
-      ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
-      role,
-      ...(quote === undefined ? {} : { quote }),
-      parts: storedParts.filter(
-        (part) => part.type !== "telemetry"
-          || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
-      ),
-      attachments: attachments.map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ...(finishedAt === undefined ? {} : { finishedAt }),
-      status: normalizeMessageStatus(row.status),
-      ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
-      ...(attribution === undefined ? {} : { attribution }),
-      seq: row.seq,
-    };
+    return this.mapMessages([row])[0] as WebMessage;
   }
 
   /**
-   * The turn's terminal stamp, which `finishTurnInTransaction` writes with the
-   * message status. A page query projects it from its own join; only a
-   * single-row read pays for a lookup.
+   * Hydrate a bounded message set with a constant number of statements.
+   *
+   * A transcript page used to query attachments once per row and the turn once
+   * per assistant row. Besides the statement count, every turn lookup prepared
+   * and crossed the native SQLite boundary separately. The page already owns a
+   * bounded id set, so both relations are read once and grouped here.
    */
-  private turnFinishedAt(row: MessageRow): string | undefined {
-    if (row.turn_id === null) return undefined;
-    if (row.turn_finished_at !== undefined) return row.turn_finished_at ?? undefined;
-    const turn = this.database.prepare("SELECT finished_at FROM turns WHERE id = ?")
-      .get(row.turn_id) as unknown as { finished_at: string | null } | undefined;
-    return turn?.finished_at ?? undefined;
+  private mapMessages(rows: readonly MessageRow[]): WebMessage[] {
+    if (rows.length === 0) return [];
+    const messageIds = rows.map((row) => row.id);
+    const attachmentRows = this.database.prepare(`
+      SELECT * FROM attachments
+      WHERE message_id IN (SELECT value FROM json_each(?)) AND origin = 'upload'
+      ORDER BY message_id, created_at, id
+    `).all(JSON.stringify(messageIds)) as unknown as AttachmentRow[];
+    const attachments = new Map<string, AttachmentRow[]>();
+    for (const attachment of attachmentRows) {
+      if (attachment.message_id === null) continue;
+      const owned = attachments.get(attachment.message_id) ?? [];
+      owned.push(attachment);
+      attachments.set(attachment.message_id, owned);
+    }
+    const turnIds = [...new Set(rows.flatMap((row) =>
+      normalizeRole(row.role) === "assistant" && row.turn_id !== null ? [row.turn_id] : []))];
+    const turns = turnIds.length === 0
+      ? new Map<string, TurnRow>()
+      : new Map((this.database.prepare(`
+          SELECT * FROM turns WHERE id IN (SELECT value FROM json_each(?))
+        `).all(JSON.stringify(turnIds)) as unknown as TurnRow[]).map((turn) => [turn.id, turn]));
+
+    return rows.map((row) => {
+      const storedParts = parseParts(row.parts_json);
+      const quote = quoteFromParts(storedParts);
+      const liveInputStatus = liveInputStatusFromParts(storedParts);
+      const role = normalizeRole(row.role);
+      // A missing turn is storage corruption. Keep the established error shape
+      // on that exceptional path without putting one lookup per row back on the
+      // healthy page path.
+      const turn = role === "assistant" && row.turn_id !== null
+        ? turns.get(row.turn_id) ?? this.requireTurn(row.turn_id)
+        : undefined;
+      const finishedAt = role === "assistant"
+        ? row.turn_finished_at !== undefined ? row.turn_finished_at ?? undefined : turn?.finished_at ?? undefined
+        : undefined;
+      const attribution = turn === undefined ? undefined : runAttribution(turn);
+      return {
+        id: row.id,
+        threadId: row.thread_id,
+        ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
+        role,
+        ...(quote === undefined ? {} : { quote }),
+        parts: storedParts.filter(
+          (part) => part.type !== "telemetry"
+            || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
+        ),
+        attachments: (attachments.get(row.id) ?? [])
+          .map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...(finishedAt === undefined ? {} : { finishedAt }),
+        status: normalizeMessageStatus(row.status),
+        ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
+        ...(attribution === undefined ? {} : { attribution }),
+        seq: row.seq,
+      };
+    });
   }
 
   /** The newest turn of each listed conversation, by thread id. */
@@ -6316,6 +7218,7 @@ export class WebStore {
           : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
         ...(row.model === null ? {} : { model: row.model }),
         ...(row.effort === null ? {} : { effort: row.effort }),
+        ...(row.context_1m == null ? {} : { context1M: row.context_1m === 1 }),
         ...(attribution === undefined ? {} : { attribution }),
         ...(status === "running"
           ? { activity: activities.get(row.assistant_message_id) ?? runActivityFromParts([]) }
@@ -6325,98 +7228,26 @@ export class WebStore {
     return states;
   }
 
-  /**
-   * The prior meaningful outcome of each settled conversation, by thread id.
-   *
-   * Successful assistant-only turns without visible reply content are host
-   * no-ops, not a new conversation outcome. Keep their real run state while
-   * projecting the prior meaningful outcome for status priority. Derive this
-   * from retained provenance/normalized parts so old stores need no migration.
-   * Match hasMonitorReplyContent without loading transcript bodies into lists.
-   *
-   * Two statements, whatever the listing holds and however deep its silence
-   * runs. Only a turn a completed Monitor delivery claims can be a no-op, and
-   * the candidate read knows which those are: it returns, for every thread at
-   * once, each candidate down to and including the first one nothing can
-   * silence. A second statement reads the parts of the claimed ones. Legacy
-   * rows keep their raw sentinel bytes and normalize only on read, so that
-   * read is the one place a silent turn is told apart from an answer.
-   */
+  /** Prior meaningful outcomes, excluding silent assistant-only turns in SQL. */
   private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
     const threadIds = [...new Set(latest.map((row) => row.thread_id))];
     if (threadIds.length === 0) return new Map();
     const candidates = this.priorOutcomeCandidates(threadIds);
-    const noOps = this.monitorNoOpTurnIds(candidates);
     const outcomes = new Map<string, PriorOutcomeRow>();
     for (const candidate of candidates) {
-      if (!outcomes.has(candidate.thread_id) && !noOps.has(candidate.id)) {
+      if (!outcomes.has(candidate.thread_id)) {
         outcomes.set(candidate.thread_id, candidate);
       }
     }
     return outcomes;
   }
 
-  /**
-   * Every candidate of these threads that could still be the outcome, newest
-   * first within each thread.
-   *
-   * A candidate with a user message, an unsuccessful one, or one no Monitor
-   * delivery claims settles its thread on the spot; the read stops at it and
-   * carries only the claimed assistant-only completions above it, which are the
-   * only rows whose parts have to be asked.
-   */
+  /** Settled candidates ordered newest first within each thread. */
   private priorOutcomeCandidates(threadIds: readonly string[]): PriorOutcomeRow[] {
     return this.database.prepare(`
-      SELECT thread_id, id, status, finished_at, assistant_message_id, started_at, ordinal, has_user, claimed
-      FROM (
-        SELECT r.*, MIN(CASE WHEN r.settles THEN r.rn END) OVER (PARTITION BY r.thread_id) AS settled_rn
-        FROM (
-          SELECT c.*,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
-                 ) AS rn,
-                 (c.status <> 'complete' OR c.has_user = 1 OR c.claimed = 0) AS settles
-          FROM (${priorOutcomeCandidateSql()}) c
-        ) r
-      ) WHERE settled_rn IS NULL OR rn <= settled_rn
-      ORDER BY thread_id, rn
+      SELECT * FROM (${priorOutcomeCandidateSql()})
+      ORDER BY thread_id, started_at DESC, ordinal DESC
     `).all(JSON.stringify(threadIds), OUTCOME_TEXT_TRIM) as unknown as PriorOutcomeRow[];
-  }
-
-  /**
-   * Which of these candidates are Monitor no-ops, in one statement.
-   *
-   * Legacy Monitor rows retain raw sentinel bytes and normalize only on read, so
-   * the answer needs their parts -- but only for the candidates a host-owned
-   * delivery actually claims, which is a small fraction of any listing. Nothing
-   * here materializes a transcript or rewrites history to derive sidebar status.
-   */
-  private monitorNoOpTurnIds(candidates: readonly PriorOutcomeRow[]): Set<string> {
-    const claimed = candidates.filter((row) => row.status === "complete" && row.has_user === 0 && row.claimed === 1);
-    const parts = this.messageParts(claimed.map((row) => row.assistant_message_id));
-    return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
-      normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
-    ) ? [] : [row.id]));
-  }
-
-  /**
-   * Which of these turns a host-owned Monitor delivery claims, in one statement.
-   *
-   * The batched readers never resolve an in-flight receipt by delivery key --
-   * that is {@link WebStore.hasMonitorTurnAssociation}'s single-turn question --
-   * so this asks only about deliveries that completed by steering or following
-   * up.
-   */
-  private monitorAssociatedTurnIds(turnIds: readonly string[]): Set<string> {
-    if (turnIds.length === 0) return new Set();
-    const rows = this.database.prepare(`
-      SELECT DISTINCT turns.id AS id FROM monitor_wake_deliveries AS deliveries
-      JOIN turns ON turns.id IN (SELECT value FROM json_each(?)) AND turns.thread_id = deliveries.thread_id
-      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
-      WHERE deliveries.state = 'completed' AND deliveries.turn_id = turns.id
-        AND deliveries.disposition IN ('steered', 'follow_up')
-    `).all(JSON.stringify(turnIds)) as unknown as Array<{ id: string }>;
-    return new Set(rows.map((row) => row.id));
   }
 
   /** The stored parts of these messages, by message id, in one statement. */
@@ -6448,34 +7279,39 @@ export class WebStore {
    *
    * Only the prose is wanted, so this reads the rows themselves rather than
    * mapping whole messages: a preview never needed a listing to fetch every
-   * conversation's attachments, turn row and finish stamp. The one thing a raw
-   * row does not already say is whether a settled assistant reply was a Monitor
-   * no-op, and that is asked about all of them at once.
+   * conversation's attachments, turn row and finish stamp.
    */
   private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
+    // The window ranks keys only. Selecting m.* inside it made SQLite carry
+    // every candidate parts_json through the partition sorter before discarding
+    // all but one row per conversation.
     const rows = this.database.prepare(`
-      SELECT * FROM (
-        SELECT m.*, ROW_NUMBER() OVER (
-          PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
-        ) AS rn
+      WITH latest AS MATERIALIZED (
+        SELECT m.rowid AS storage_rowid, m.thread_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
+          ) AS rn
         FROM messages m
-        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")}
-      ) WHERE rn = 1
-    `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
-    const monitor = this.monitorAssociatedTurnIds(rows.flatMap((row) =>
-      row.role === "assistant" && row.status === "complete" && row.turn_id !== null ? [row.turn_id] : []));
+        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
+      )
+      SELECT latest.thread_id, m.parts_json
+      FROM latest JOIN messages m ON m.rowid = latest.storage_rowid
+      WHERE latest.rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as Array<{ thread_id: string; parts_json: string }>;
     const previews = new Map<string, string>();
     for (const row of rows) {
-      const stored = parseParts(row.parts_json);
-      const parts = row.turn_id !== null && monitor.has(row.turn_id)
-        ? normalizeMonitorTerminalReply(stored).parts : stored;
+      const parts = parseParts(row.parts_json);
       const text = parts
         .flatMap((part) => part.type === "text" ? [part.text]
           : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
         .join(" ")
         .replace(/\s+/gu, " ")
         .trim();
-      if (text.length > 0) previews.set(row.thread_id, text.slice(0, 160));
+      const scheduledWake = parts.find((part) => part.type === "scheduled-wake");
+      const preview = text || (scheduledWake?.type === "scheduled-wake"
+        ? scheduledWake.message?.replace(/\s+/gu, " ").trim() || "Scheduled wake-up"
+        : "");
+      if (preview.length > 0) previews.set(row.thread_id, preview.slice(0, 160));
     }
     return previews;
   }
@@ -6490,15 +7326,10 @@ export class WebStore {
   private jobActivities(threadIds: readonly string[]): Map<string, WebJobActivity> {
     const rows = this.database.prepare(`
       WITH jobs AS (
-        SELECT m.thread_id AS thread_id,
-               json_extract(part.value, '$.job.state') AS state,
-               json_extract(part.value, '$.job.timestamps.completedAt') AS completed_at,
-               c.response_text, m.rowid AS ordinal
-        FROM messages m
-        JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
-        JOIN json_each(m.parts_json) part
-        WHERE m.thread_id IN (SELECT value FROM json_each(?))
-          AND json_extract(part.value, '$.type') = 'process-job'
+        SELECT c.thread_id, c.state, c.completed_at, c.response_text, m.rowid AS ordinal
+        FROM process_job_cards c
+        CROSS JOIN messages m ON m.id = c.message_id
+        WHERE c.thread_id IN (SELECT value FROM json_each(?))
       )
       SELECT g.thread_id AS thread_id,
              count(*) FILTER (WHERE g.state = 'queued') AS queued,
@@ -6832,16 +7663,21 @@ export class WebStore {
     if (this.transactionDepth > 0) return operation();
     this.database.exec("BEGIN IMMEDIATE");
     this.transactionDepth += 1;
+    let result: T;
     try {
-      const result = operation();
+      result = operation();
       this.database.exec("COMMIT");
-      return result;
     } catch (error) {
+      this.pendingMarkers = [];
       this.database.exec("ROLLBACK");
       throw error;
     } finally {
       this.transactionDepth -= 1;
     }
+    const markers = this.pendingMarkers;
+    this.pendingMarkers = [];
+    for (const marker of markers) this.onConversationMarker?.(marker);
+    return result;
   }
 
   private now(): string {
@@ -6963,20 +7799,13 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
  *
  * The predicate is the cheap half of the question: it excludes a successful
  * assistant-only turn with no visible reply content without reading any
- * transcript. Whether the visible content it did find is a Monitor sentinel is
- * the expensive half, and only the rows this returns are ever asked.
+ * transcript.
  */
 function priorOutcomeCandidateSql(): string {
   return `
     SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
            t.started_at, t.rowid AS ordinal,
-           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user,
-           EXISTS (
-             SELECT 1 FROM monitor_wake_deliveries d
-             JOIN threads th ON th.id = t.thread_id AND th.source_id = d.source_id
-             WHERE d.thread_id = t.thread_id AND d.turn_id = t.id AND d.state = 'completed'
-               AND d.disposition IN ('steered', 'follow_up')
-           ) AS claimed
+           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
     FROM turns t
     WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
       t.status <> 'complete'
@@ -6997,7 +7826,7 @@ function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
            t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
-           t.run_model, t.run_effort,
+           t.run_model, t.run_effort, t.run_context_1m,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
@@ -7018,6 +7847,7 @@ function agentSelectSql(suffix: string): string {
     SELECT a.*,
            o.model AS override_model,
            o.effort AS override_effort,
+           o.context_1m AS override_context_1m,
            CASE WHEN EXISTS (
              SELECT 1 FROM settings s
              WHERE s.key = 'agent_pin:' || a.source_id AND s.value = '1'
@@ -7113,6 +7943,7 @@ function isTerminalCronRun(status: WebCronRun["status"]): boolean {
     || status === "failed"
     || status === "cancelled"
     || status === "skipped_overlap"
+    || status === "skipped_gate"
     || status === "dropped";
 }
 
@@ -7129,8 +7960,42 @@ function clearSilentCronPart(part: WebMessagePart): WebMessagePart {
     ? { ...part, data: withoutCronSilentFlag(part.data) } : part;
 }
 
+/**
+ * Recover fuller result text already persisted for a run whose compact summary
+ * projection truncated `text` to its 2 KiB prefix.
+ *
+ * The operator summary prefix is UTF-8-boundary-safe, so a genuine fuller copy
+ * starts with the prefix byte-for-byte. A candidate only wins when it is
+ * strictly longer AND has the prefix as a prefix: this keeps a later summary
+ * poll (or a reply capture) from grafting stale or mismatched text from an
+ * earlier reconciliation onto a newer run result. The bare
+ * `NOTHING_TO_REPORT` sentinel never qualifies — a fuller copy that short
+ * cannot exist under an honest 2 KiB truncation flag, and claiming a bare
+ * sentinel as the complete result would overstate what was reported.
+ */
+function fullerStoredTextForTruncatedPrefix(
+  prefix: string,
+  candidates: readonly (string | undefined | null)[],
+): string | undefined {
+  const prefixBytes = Buffer.byteLength(prefix, "utf8");
+  let best: string | undefined;
+  let bestBytes = prefixBytes;
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.length === 0) continue;
+    if (candidate.trim().toUpperCase() === NOTHING_TO_REPORT_SENTINEL) continue;
+    if (!candidate.startsWith(prefix)) continue;
+    const bytes = Buffer.byteLength(candidate, "utf8");
+    if (bytes <= bestBytes) continue;
+    best = candidate;
+    bestBytes = bytes;
+  }
+  return best;
+}
+
 function definitelySilentCronRun(run: WebCronRun): boolean {
-  return run.status === "succeeded" && run.fieldsTruncated?.includes("text") !== true
+  if (run.status !== "succeeded" || run.replyPartOutcomes?.length) return false;
+  if (run.turnDisposition !== undefined) return run.turnDisposition === "silent";
+  return run.fieldsTruncated?.includes("text") !== true
     && classifyNotifySuppression(run.text) !== "none";
 }
 
@@ -7139,7 +8004,7 @@ function hasMeaningfulCronContent(parts: readonly WebMessagePart[]): boolean {
     ? !isSyntheticCronStateText(part.text) && classifyNotifySuppression(part.text) === "none"
     : part.type === "attachment" || part.type === "error" || part.type === "mcp_app"
       || part.type === "failure" || part.type === "process-job" || part.type === "process-job-wake"
-      || part.type === "monitor-activity");
+      );
 }
 
 function cronRunParts(
@@ -7183,7 +8048,7 @@ function cronRunParts(
     ? [...retained]
     : retained.filter((part) => part.type === "text" || part.type === "error" || part.type === "attachment"
       || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job"
-      || part.type === "process-job-wake" || part.type === "monitor-activity");
+      || part.type === "process-job-wake");
   for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
   const preserveLoadedText = run.projection === "summary"
     && run.fieldsTruncated?.includes("text") === true
@@ -7199,11 +8064,13 @@ function cronRunParts(
   if (!hasText) {
     const stateText = run.status === "succeeded"
       ? "Completed silently (no message was reported)."
-      : run.status === "skipped_overlap"
-        ? run.blockedByTrigger === "manual"
-          ? "Scheduled firing skipped because an operator-started manual run was still in flight."
-          : "Firing skipped because the previous run was still in flight."
-        : run.status === "queued"
+      : run.status === "skipped_gate"
+        ? run.error ?? "Firing skipped by the job's preflight gate before any model turn."
+        : run.status === "skipped_overlap"
+          ? run.blockedByTrigger === "manual"
+            ? "Scheduled firing skipped because an operator-started manual run was still in flight."
+            : "Firing skipped because the previous run was still in flight."
+          : run.status === "queued"
           ? `Queued behind an active run${run.queueDepth === undefined ? "." : ` (position ${String(run.queueDepth)}).`}`
           : run.status === "dropped"
             ? "Dropped because the pending-run queue was full."
@@ -7216,7 +8083,10 @@ function cronRunParts(
                   : "Run is in progress.";
     parts.push({ type: "text", text: stateText });
   }
+  // A gate skip's `error` is its bounded reason, already shown as the state
+  // text; presenting it again as a failure would misreport a deliberate skip.
   if (!preserveLoadedError
+    && run.status !== "skipped_gate"
     && run.error !== undefined
     && !parts.some((part) => part.type === "error" && part.message === run.error)) {
     parts.push({
@@ -7336,7 +8206,8 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
     || typeof run.orderedAt !== "string"
     || !Number.isSafeInteger(run.sequence)
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
+    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
+      "dropped"]
       .includes(String(run.status))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0) {
@@ -7345,8 +8216,13 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
   return run as WebCronRunSummary;
 }
 
-function messageRoleRankSql(messageAlias: string, turnAlias: string): string {
-  return `CASE WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
+function markerMessageSql(alias: string): string {
+  return `COALESCE(json_extract(${alias}.parts_json, '$[0].type') = 'conversation-marker', 0)`;
+}
+
+function messageRoleRankSql(messageAlias: string): string {
+  return `CASE WHEN ${markerMessageSql(messageAlias)} THEN -1
+    WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
     WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'system' THEN 1
     WHEN ${messageAlias}.turn_id IS NOT NULL THEN 2 ELSE 3 END`;
 }
@@ -7451,15 +8327,22 @@ function mapAgent(row: AgentRow): WebAgentSummary {
 function agentRunSettings(row: AgentRow): WebAgentRunSettings {
   const effectiveModel = row.override_model ?? row.default_model;
   const effectiveEffort = row.override_effort ?? row.default_effort;
+  const options = parseRecord(row.model_options_json) as Record<string, WebModelOption> | undefined;
+  const configuredContext1M = row.default_model === null ? undefined : options?.[row.default_model]?.context1M;
+  const supportsContext1M = effectiveModel !== null && options?.[effectiveModel]?.supportsContext1M === true;
+  const context1M = row.override_context_1m !== null ? row.override_context_1m === 1
+    : supportsContext1M ? options?.[effectiveModel!]?.context1M : undefined;
   const config = {
     ...(row.default_model === null ? {} : { model: row.default_model }),
     ...(row.default_effort === null ? {} : { effort: row.default_effort }),
+    ...(configuredContext1M === undefined ? {} : { context1M: configuredContext1M }),
   };
-  const override = row.override_model === null && row.override_effort === null
+  const override = row.override_model === null && row.override_effort === null && row.override_context_1m === null
     ? null
     : {
         ...(row.override_model === null ? {} : { model: row.override_model }),
         ...(row.override_effort === null ? {} : { effort: row.override_effort }),
+        ...(row.override_context_1m === null ? {} : { context1M: row.override_context_1m === 1 }),
       };
   return {
     config,
@@ -7469,6 +8352,7 @@ function agentRunSettings(row: AgentRow): WebAgentRunSettings {
       modelSource: row.override_model === null ? "config" : "override",
       ...(effectiveEffort === null ? {} : { effort: effectiveEffort }),
       effortSource: row.override_effort === null ? "config" : "override",
+      ...(context1M === undefined ? {} : { context1M, context1MSource: row.override_context_1m === null ? "config" as const : "override" as const }),
     },
   };
 }
@@ -7515,8 +8399,6 @@ export function toWebAttachment(attachment: StoredAttachment): WebAttachment {
     ...(attachment.uploaded ? { contentUrl: `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content` } : {}),
   };
 }
-
-type MonitorWakeProjectionResolver = (deliveryKey: string) => MonitorProjection | undefined;
 type ProcessJobWakeResolver = (deliveryKey: string) => {
   readonly jobId: string;
   readonly deliveryKey: string;
@@ -7530,26 +8412,9 @@ type SteerMarker = {
 };
 type SteerResolver = (inputId: string) => SteerMarker | undefined;
 
-function appliedMonitorWake(
-  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
-  resolveMonitorWake: MonitorWakeProjectionResolver | undefined,
-): { readonly deliveryKey: string; readonly projection: MonitorProjection } | undefined {
-  if (resolveMonitorWake === undefined
-    || event.metadata?.liveInput !== true
-    || event.metadata?.synthetic !== true
-    || typeof event.metadata.inputId !== "string") {
-    return undefined;
-  }
-  const projection = resolveMonitorWake(event.metadata.inputId);
-  return projection === undefined
-    ? undefined
-    : { deliveryKey: event.metadata.inputId, projection };
-}
-
 function applyEvent(
   parts: WebMessagePart[],
   event: AgentStreamEvent,
-  resolveMonitorWake?: MonitorWakeProjectionResolver,
   resolveProcessJobWake?: ProcessJobWakeResolver,
   resolveSteer?: SteerResolver,
 ): void {
@@ -7558,7 +8423,6 @@ function applyEvent(
     return;
   }
   if (event.type === "tool_call_started") {
-    if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
     if (appliedProcessJobWake(event, resolveProcessJobWake) !== undefined) return;
     if (appliedSteer(event, resolveSteer) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
@@ -7605,11 +8469,6 @@ function applyEvent(
     return;
   }
   if (event.type === "tool_call_completed") {
-    const monitorWake = appliedMonitorWake(event, resolveMonitorWake);
-    if (monitorWake !== undefined) {
-      upsertMonitorActivity(parts, monitorWake.projection, monitorWake.deliveryKey);
-      return;
-    }
     const processJobWake = appliedProcessJobWake(event, resolveProcessJobWake);
     if (processJobWake !== undefined) {
       if (!parts.some((part) => part.type === "process-job-wake"
@@ -7638,6 +8497,7 @@ function applyEvent(
           status,
           ...(executionMs === undefined ? {} : { executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
+          ...(subagent.usage === undefined ? {} : { usage: subagent.usage }),
           ...(subagent.attribution === undefined ? {} : { attribution: subagent.attribution }),
         }, historyUpdate));
         return;
@@ -7704,7 +8564,7 @@ function appliedProcessJobWake(
 /**
  * A human steer the run consumed: like the wake interceptors above, but the
  * marker carries the operator's own full text instead of compact activity.
- * Runs last so Monitor and process-job wakes keep their purpose-built rows.
+ * Runs last so process-job wakes keep their purpose-built rows.
  */
 function appliedSteer(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
@@ -7730,38 +8590,6 @@ function validSteerReceivedAt(value: unknown): string | undefined {
     && !/[\u0000-\u001f\u007f]/u.test(value)
     ? value
     : undefined;
-}
-
-type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
-
-function upsertMonitorActivity(
-  parts: WebMessagePart[],
-  projection: MonitorProjection,
-  deliveryKey: string,
-): boolean {
-  const index = parts.findIndex((part) => part.type === "monitor-activity");
-  const previous = index < 0 ? undefined : parts[index] as MonitorActivityPart;
-  const monitors = previous?.monitors ?? [];
-  const monitorIndex = monitors.findIndex((entry) => entry.projection.monitorId === projection.monitorId);
-  const prior = monitorIndex < 0 ? undefined : monitors[monitorIndex];
-  // The stream receipt and the durable delivery settlement can race. Once an
-  // exact key is present, settlement is bookkeeping only: replacing its newer
-  // projection with the reservation's older snapshot would make the activity
-  // row move backwards and emit a duplicate invalidation.
-  if (prior?.deliveryKeys.includes(deliveryKey) === true) return false;
-  const deliveryKeys = prior === undefined ? [deliveryKey] : [...prior.deliveryKeys, deliveryKey];
-  const entry = { projection, deliveryKeys };
-  const nextMonitors = monitorIndex < 0
-    ? [...monitors, entry]
-    : monitors.map((value, at) => at === monitorIndex ? entry : value);
-  const next: MonitorActivityPart = { type: "monitor-activity", monitors: nextMonitors };
-  if (index < 0) {
-    parts.push(next);
-    return true;
-  }
-  if (isDeepStrictEqual(previous, next)) return false;
-  parts[index] = next;
-  return true;
 }
 
 function contextCompactionOperationId(value: unknown): string | undefined {
@@ -7833,10 +8661,17 @@ function withEventHistoryUpdate<T extends WebToolCall | SubagentPart>(
  * the operator wire, so a malformed payload must fall through to an ordinary
  * tool-call part instead of keying a group on a non-string.
  */
-/** Late child stream events cannot replace a canonical detached launch receipt. */
+/**
+ * Late child stream events cannot replace a canonical detached launch receipt.
+ *
+ * `"AgentSend"` is legacy history: the tool was renamed to `AgentManage` with
+ * no alias, and retained transcripts still carry the old tool name on their
+ * stored receipts. Accepted on this read path only; never emitted.
+ */
 function hasDetachedSubagentReceipt(parts: readonly WebMessagePart[], id: string): boolean {
   const part = parts.find((candidate) => candidate.type === "tool-call" && candidate.toolCallId === id);
-  if (part?.type !== "tool-call" || (part.toolName !== "Agent" && part.toolName !== "AgentSend")) return false;
+  if (part?.type !== "tool-call"
+    || (part.toolName !== "Agent" && part.toolName !== "AgentManage" && part.toolName !== "AgentSend")) return false;
   const value = part.structuredResult;
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;
@@ -7858,6 +8693,7 @@ function subagentOf(
   readonly name: string;
   readonly label?: string;
   readonly costUsd?: number;
+  readonly usage?: WebUsageTokens;
   readonly attribution?: WebRunAttribution;
 } | undefined {
   const subagent = event.metadata?.subagent;
@@ -7875,12 +8711,14 @@ function subagentOf(
   const costUsd = typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
     ? record.costUsd
     : undefined;
+  const usage = validSubagentUsage(record.usage) ? record.usage : undefined;
   const attribution = canonicalRunAttribution(record.attribution);
   return {
     id: canonicalId,
     name: name.length === 0 ? "subagent" : name,
     ...(label.length === 0 ? {} : { label }),
     ...(costUsd === undefined ? {} : { costUsd }),
+    ...(usage === undefined ? {} : { usage }),
     ...(attribution === undefined ? {} : { attribution }),
   };
 }
@@ -7995,10 +8833,6 @@ function separatesStreamedText(part: WebMessagePart, appending: "text" | "reason
   // so distinct thoughts cannot merge into one reasoning part and lose their
   // chronology.
   if (appending === "text" && part.type === "reasoning") return false;
-  // A Monitor acknowledgement may arrive while the provider is still flushing
-  // the preceding message's final text delta. Its compact activity row must not
-  // split that word; the explicit message boundary below separates responses.
-  if (part.type === "monitor-activity") return false;
   if (part.type !== "telemetry") return true;
   const event = part.data;
   if (event === null || typeof event !== "object" || Array.isArray(event)) return false;
@@ -8242,7 +9076,7 @@ const REPLY_FAILURE_CODES = new Set([
 
 const REPLY_PARTS_TRUNCATED_ID = "web-reply-parts-truncated";
 const INVALID_REPLY_PART_ID = "invalid-rich-part";
-type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "failure" }>;
+type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "restart_proposal" | "reply_options" | "failure" }>;
 
 /**
  * The SQLite boundary does not trust the operator wire parser. A truncated
@@ -8280,7 +9114,7 @@ function replyPartIdCounts(values: readonly unknown[]): Map<string, number> {
 }
 
 function isDurableWebReplyPart(part: WebMessagePart): part is DurableWebReplyPart {
-  return part.type === "attachment" || part.type === "mcp_app" || part.type === "failure";
+  return part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "reply_options" || part.type === "failure";
 }
 
 function boundedWebReplyParts(
@@ -8328,6 +9162,8 @@ function boundedWebReplyParts(
     inputParts.length,
     Math.max(0, MAX_AGENT_REPLY_PARTS - retainedExistingCount - (needsDiagnostic ? 1 : 0)),
   );
+  let optionsSeen = retainedExistingParts.some((part) => part.type === "reply_options");
+  let proposalSeen = retainedExistingParts.some((part) => part.type === "restart_proposal");
   const retained = Array.from(
     { length: retainedCount },
     (_, index): DurableWebReplyPart => {
@@ -8339,8 +9175,22 @@ function boundedWebReplyParts(
           ? inputId
           : nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids);
       });
+      if (converted.type === "reply_options" && optionsSeen) {
+        const duplicate: DurableWebReplyPart = { type: "failure", id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+          code: "unsupported_destination", message: "Only one quick reply set can be displayed with a reply." };
+        claimedIds.add(duplicate.id);
+        return duplicate;
+      }
+      if (converted.type === "restart_proposal" && proposalSeen) {
+        const duplicate: DurableWebReplyPart = { type: "failure", id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+          code: "unsupported_destination", message: "Only one restart proposal can be displayed with a reply." };
+        claimedIds.add(duplicate.id);
+        return duplicate;
+      }
       if (!claimedIds.has(converted.id)) {
         claimedIds.add(converted.id);
+        if (converted.type === "reply_options") optionsSeen = true;
+        if (converted.type === "restart_proposal") proposalSeen = true;
         return converted;
       }
       const collision: DurableWebReplyPart = {
@@ -8446,6 +9296,22 @@ function toWebReplyPart(input: unknown, syntheticId: () => string): DurableWebRe
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
     };
   }
+  if (part?.type === "reply_options") {
+    if (!hasOnlyKeys(part, DURABLE_REPLY_OPTIONS_KEYS) || !validRichId(part.id) || !isAgentReplyOptions(part.options)) {
+      return { type: "failure", id: syntheticId(), code: "unsupported_destination",
+        message: "Invalid quick reply metadata could not be displayed." };
+    }
+    return { type: "reply_options", id: part.id, options: [...part.options] };
+  }
+  if (part?.type === "restart_proposal") {
+    if (!hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS) || !validRichId(part.id)
+      || (part.reason !== undefined && (typeof part.reason !== "string" || part.reason.length > 1_024))) {
+      return { type: "failure", id: syntheticId(), code: "unsupported_destination",
+        message: "Invalid restart proposal metadata could not be displayed." };
+    }
+    const reason = sanitizeRestartProposalReason(part.reason);
+    return { type: "restart_proposal", id: part.id, ...(reason === undefined ? {} : { reason }) };
+  }
   if (
     part?.type === "failure"
     && validRichId(part.id)
@@ -8501,6 +9367,12 @@ function durableMessagePart(part: WebMessagePart): WebMessagePart {
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
     };
   }
+  if (part.type === "reply_options") {
+    return { type: "reply_options", id: part.id, options: [...part.options] };
+  }
+  if (part.type === "restart_proposal") {
+    return { type: "restart_proposal", id: part.id, ...(part.reason === undefined ? {} : { reason: part.reason }) };
+  }
   if (part.type === "failure") {
     return {
       type: "failure",
@@ -8537,6 +9409,14 @@ function validOptionalBoundedText(value: unknown, maxBytes: number): boolean {
   return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= maxBytes);
 }
 
+/** Unknown future marker kinds are hidden on read; known malformed kinds still fail. */
+function isUnknownMarker(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const part = value as Record<string, unknown>;
+  return part.type === "conversation-marker" && typeof part.kind === "string"
+    && !["model", "project", "resumed", "compaction"].includes(part.kind);
+}
+
 function parseParts(value: string): WebMessagePart[] {
   let parsed: unknown;
   try {
@@ -8544,14 +9424,18 @@ function parseParts(value: string): WebMessagePart[] {
   } catch {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts are not valid JSON.", 500);
   }
+  // monitor-activity parts were written by versions before monitors were removed;
+  // they are dropped on read so retained conversations stay loadable.
+  // If ordinary recovery later rewrites the message, they are also dropped from
+  // storage. This is accepted because retired activity can no longer render.
   const parts = Array.isArray(parsed)
-    ? parsed.map(canonicalizePersistedPartHistory)
+    ? parsed.filter((part: unknown) => !(typeof part === "object" && part !== null
+      && !Array.isArray(part) && (part as Record<string, unknown>).type === "monitor-activity"))
+      .filter((part: unknown) => !isUnknownMarker(part))
+      .map(canonicalizePersistedPartHistory)
     : parsed;
   if (!Array.isArray(parts) || !parts.every(isWebMessagePart)) {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts have an invalid shape.", 500);
-  }
-  if (parts.filter((part) => part.type === "monitor-activity").length > 1) {
-    throw new WebConsoleError("storage_corrupt", "Persisted Monitor activity is duplicated.", 500);
   }
   const wakeKeys = parts.flatMap((part) => part.type === "process-job-wake" ? [part.deliveryKey] : []);
   if (new Set(wakeKeys).size !== wakeKeys.length) {
@@ -8797,17 +9681,49 @@ function canonicalizePersistedPartHistory(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const part = value as Record<string, unknown>;
   if (part.type === "tool-call") return canonicalizePersistedHistoryRecord(part);
+  if (part.type === "process-job") return canonicalizePersistedProcessJobUsage(part);
   if (part.type !== "subagent") return value;
   const canonicalPart = canonicalizePersistedObjectHistory(part);
-  const { attribution: _rawAttribution, ...withoutAttribution } = canonicalPart;
+  const { attribution: _rawAttribution, usage: _rawUsage, ...withoutOptional } = canonicalPart;
   const attribution = canonicalRunAttribution(part.attribution);
+  const rawUsage = part.usage;
+  // Old consoles may read newer optional subagent fields. Drop invalid usage,
+  // not the message. Canonicalization also runs before writes, so an extension
+  // discarded here will not survive a later rewrite by this older console.
+  const usage = canonicalizePersistedSubagentUsage(rawUsage);
   return {
-    ...withoutAttribution,
+    ...withoutOptional,
     ...(attribution === undefined ? {} : { attribution }),
+    ...(usage === undefined ? {} : { usage }),
     ...(Array.isArray(part.calls)
       ? { calls: part.calls.map((call) => canonicalizePersistedHistoryRecord(call)) }
       : {}),
   };
+}
+
+function canonicalizePersistedSubagentUsage(raw: unknown): WebUsageTokens | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const known = { input: candidate.input, output: candidate.output,
+    cacheRead: candidate.cacheRead, cacheWrite: candidate.cacheWrite };
+  return validSubagentUsage(known) ? known : undefined;
+}
+
+function canonicalizePersistedProcessJobUsage(part: Record<string, unknown>): Record<string, unknown> {
+  const job = part.job;
+  if (typeof job !== "object" || job === null || Array.isArray(job)) return part;
+  const projection = job as Record<string, unknown>;
+  const progress = projection.subagentProgress;
+  if (typeof progress !== "object" || progress === null || Array.isArray(progress)
+    || !Object.hasOwn(progress, "usage")) return part;
+  const { usage: rawUsage, ...withoutUsage } = progress as Record<string, unknown>;
+  // Only persisted card reads are tolerant. Ingress and agent durable records
+  // still use the strict shared progress parser; no other field is relaxed.
+  // If this older console later rewrites the card, extra usage fields are lost.
+  const usage = canonicalizePersistedSubagentUsage(rawUsage);
+  return { ...part, job: { ...projection, subagentProgress: {
+    ...withoutUsage, ...(usage === undefined ? {} : { usage }),
+  } } };
 }
 
 function canonicalizePersistedHistoryRecord(value: unknown): unknown {
@@ -8839,6 +9755,14 @@ function nonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function validSubagentUsage(value: unknown): value is WebUsageTokens {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!hasOnlyKeys(record, new Set(["input", "output", "cacheRead", "cacheWrite"]))) return false;
+  const tokens = [record.input, record.output, record.cacheRead, record.cacheWrite];
+  return tokens.every(nonNegativeSafeInteger) && tokens.some((token) => Number(token) > 0);
+}
+
 const DURABLE_REPLY_ATTACHMENT_KEYS = new Set([
   "type", "id", "artifactId", "name", "mediaType", "sizeBytes", "integrityId", "expiresAt",
 ]);
@@ -8849,6 +9773,8 @@ const DURABLE_MCP_APP_KEYS = new Set([
 const DURABLE_REPLY_FAILURE_KEYS = new Set([
   "type", "id", "code", "message", "relatedPartId",
 ]);
+const DURABLE_REPLY_OPTIONS_KEYS = new Set(["type", "id", "options"]);
+const DURABLE_RESTART_PROPOSAL_KEYS = new Set(["type", "id", "reason"]);
 
 function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
@@ -8857,6 +9783,7 @@ function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: Readonly
 function isWebMessagePart(value: unknown): value is WebMessagePart {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
+  if (part.type === "conversation-marker") return isConversationMarker(part);
   if (part.type === "text" || part.type === "reasoning") return typeof part.text === "string";
   if (part.type === "tool-call") return isWebToolCall(part);
   if (part.type === "subagent") {
@@ -8865,6 +9792,7 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && (part.label === undefined || typeof part.label === "string")
       && (part.executionMs == null || typeof part.executionMs === "number")
       && (part.costUsd === undefined || typeof part.costUsd === "number")
+      && (part.usage === undefined || validSubagentUsage(part.usage))
       && (part.attribution === undefined || canonicalRunAttribution(part.attribution) !== undefined)
       && (part.history === undefined || isSessionToolHistoryMetadata(part.history))
       && isWebToolCallStatus(part.status)
@@ -8882,6 +9810,13 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
     } catch {
       return false;
     }
+  }
+  if (part.type === "scheduled-wake") {
+    return hasOnlyKeys(part, new Set(["type", "occurrenceId", "scheduledAt", "firedAt", "timezone", "message"]))
+      && validRichId(part.occurrenceId) && typeof part.scheduledAt === "string" && validOptionalDate(part.scheduledAt)
+      && typeof part.firedAt === "string" && validOptionalDate(part.firedAt)
+      && typeof part.timezone === "string" && part.timezone.length <= 128
+      && validOptionalBoundedText(part.message, 1000);
   }
   if (part.type === "process-job-wake") {
     return hasOnlyKeys(part, new Set(["type", "jobId", "deliveryKey", "disposition"]))
@@ -8922,48 +9857,6 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && typeof record.messageId === "string"
       && validRichId(record.messageId);
   }
-  if (part.type === "monitor-activity") {
-    if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
-      || !Array.isArray(part.monitors)
-      || part.monitors.length === 0
-      || part.monitors.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
-      return false;
-    }
-    const monitorIds = new Set<string>();
-    let deliveryCount = 0;
-    for (const raw of part.monitors) {
-      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
-      const entry = raw as Record<string, unknown>;
-      if (!hasOnlyKeys(entry, new Set(["projection", "deliveryKeys"])) || !Array.isArray(entry.deliveryKeys)) {
-        return false;
-      }
-      let projection: MonitorProjection;
-      try {
-        projection = parseMonitorProjection(entry.projection);
-      } catch {
-        return false;
-      }
-      if (monitorIds.has(projection.monitorId)
-        || entry.deliveryKeys.length === 0
-        || entry.deliveryKeys.length > AGENT_LIVE_INPUT_MAX_MESSAGES) {
-        return false;
-      }
-      monitorIds.add(projection.monitorId);
-      const keys = new Set<string>();
-      for (const key of entry.deliveryKeys) {
-        if (typeof key !== "string"
-          || key.length === 0
-          || key.length > 1_024
-          || /[\u0000-\u001f\u007f]/u.test(key)
-          || keys.has(key)) {
-          return false;
-        }
-        keys.add(key);
-      }
-      deliveryCount += entry.deliveryKeys.length;
-    }
-    return deliveryCount <= AGENT_LIVE_INPUT_MAX_MESSAGES;
-  }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");
   if (part.type === "attachment") {
@@ -8996,6 +9889,16 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && validOptionalBoundedText(part.title, 240)
       && validOptionalBoundedText(part.description, 1_000)
       && validOptionalDate(part.expiresAt);
+  }
+  if (part.type === "reply_options") {
+    return hasOnlyKeys(part, DURABLE_REPLY_OPTIONS_KEYS) && validRichId(part.id) && isAgentReplyOptions(part.options);
+  }
+  if (part.type === "restart_proposal") {
+    return hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS)
+      && validRichId(part.id)
+      && (part.reason === undefined
+        || (typeof part.reason === "string" && part.reason.length > 0
+          && part.reason.length <= 280 && sanitizeRestartProposalReason(part.reason) === part.reason));
   }
   if (part.type === "failure") {
     return hasOnlyKeys(part, DURABLE_REPLY_FAILURE_KEYS)
@@ -9366,14 +10269,19 @@ function runAttribution(row: TurnRow): WebRunAttribution | undefined {
 
 function runtimeMetadata(
   metadata: Readonly<Record<string, unknown>> | undefined,
-): { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string } | undefined {
+): { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" } | undefined {
   const runtime = metadata?.runtime;
-  if (typeof runtime !== "object" || runtime === null || Array.isArray(runtime)) return undefined;
+  const turnDisposition = metadata?.turnDisposition === "silent" || metadata?.turnDisposition === "visible"
+    ? metadata.turnDisposition : undefined;
+  if (typeof runtime !== "object" || runtime === null || Array.isArray(runtime)) {
+    return turnDisposition === undefined ? undefined : { turnDisposition };
+  }
   const record = runtime as Record<string, unknown>;
   const model = canonicalRouteString(record.model);
   const effort = canonicalRouteString(record.effort, 64);
   const effectiveEffort = canonicalRouteString(record.effectiveEffort, 64);
-  return model === undefined && effort === undefined && effectiveEffort === undefined ? undefined : {
+  return model === undefined && effort === undefined && effectiveEffort === undefined && turnDisposition === undefined ? undefined : {
+    ...(turnDisposition === undefined ? {} : { turnDisposition }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
     ...(effectiveEffort === undefined ? {} : { effectiveEffort }),
@@ -9383,3 +10291,5 @@ function runtimeMetadata(
 function ignoreMissing(error: unknown): void {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }
+
+function nullableBooleanSql(value: boolean | null | undefined): number | null { return value == null ? null : value ? 1 : 0; }

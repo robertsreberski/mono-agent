@@ -2,6 +2,7 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
+  getCurrentTools,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 
@@ -99,7 +100,9 @@ describe("provider check", () => {
     const model = faux.getModel("fixture");
     if (!model) throw new Error("faux model missing");
     const dispatch = vi.fn((context, _options, _state, requestModel) => {
-      expect(context.tools ?? []).toEqual([]);
+      // pi-ai 0.86.0 folds request tools into the transcript's leading system
+      // message: replay them with getCurrentTools(), not context.tools.
+      expect(getCurrentTools(context.messages)).toEqual([]);
       expect(requestModel.provider).toBe(model.provider);
       expect(requestModel.id).toBe(model.id);
       cancel?.abort();
@@ -131,6 +134,7 @@ describe("provider check", () => {
     ["prompt is too long: RAW_PROVIDER_SECRET_SENTINEL", "inconclusive"],
     ["401 Unauthorized RAW_PROVIDER_SECRET_SENTINEL", "auth_failed"],
     ["429 rate limit RAW_PROVIDER_SECRET_SENTINEL", "quota_limited"],
+    ["subscription_sharing_usage_limit_exceeded RAW_PROVIDER_SECRET_SENTINEL", "quota_limited"],
     ["unsupported model RAW_PROVIDER_SECRET_SENTINEL", "model_not_entitled"],
     ["ECONNREFUSED RAW_PROVIDER_SECRET_SENTINEL", "network_failed"],
     // The ordinary runtime labels unrecognized provider errors unavailable.

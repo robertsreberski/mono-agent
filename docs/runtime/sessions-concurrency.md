@@ -23,7 +23,7 @@ Boundary rules:
 
 | Boundary | What ends | What survives | What is emitted |
 | --- | --- | --- | --- |
-| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the console (TUI + web) | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
+| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the web console | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
 | Isolated proactive turn (`runtime.session.isolateProactive: true`) | Nothing shared; the proactive turn intentionally skips the conversation's warm provider session | Existing interactive warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "proactive"` |
 | Model change within a continuous conversation | The previous model-bound provider epoch; the new model starts from canonical history | Durable message and tool history, memory, and run artifacts | `session_boundary` with `kind: "resume_replay"` and `reason: "model_change"` |
 | First bound turn for a legacy unbound provider record | The pre-model-binding provider epoch; the requested model starts from canonical history without guessing the previous owner | Durable message and tool history, memory, and run artifacts | One cold session event plus `session_boundary` with `kind: "resume_replay"`, both with `reason: "legacy_unbound_model"` |
@@ -77,7 +77,6 @@ In `continuous` mode the runtime holds one warm provider session per conversatio
 }
 ```
 
-Env vars: `MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`, `MONO_AGENT_SESSION_ROLLOVER`, `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE`, `MONO_AGENT_SESSION_ROLLOVER_NOTICE`.
 
 Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (see [Pi-native tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
 
@@ -105,8 +104,8 @@ owners; the store never age-deletes a claim. Full-synchronous DELETE journals
 make interrupted row changes recoverable, while fixed file, row-count, and byte
 ceilings prevent per-conversation lock-file growth.
 
-Rollover never applies to the console channel (the `gui` operator channel behind
-both `mono-agent tui` and the web console). A console thread already carries an
+Rollover never applies to the console channel (the `gui` operator channel used
+by the web console; its stable protocol/source id remains `tui`). A console thread already carries an
 explicit, reader-owned session boundary: it has a permanent conversation id and
 a visible "new thread" action. Bucketing it by day on top of that severed a live
 conversation at midnight, so the next morning's follow-up in the same visible
@@ -143,7 +142,6 @@ turn after that resumes normally.
 }
 ```
 
-Env vars: `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`, `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`.
 
 These bounds cover the harness run path (which begins at `responder.respond`). Channel adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* that boundary, so cross-conversation transport download IO is not covered here — per-file byte caps and timeouts apply to that instead. A plain-text same-conversation follow-up can be applied inside the active provider run; its reserved adapter queue slot is released after acknowledgement or becomes the next normal turn on an unsupported/failed/end-of-turn race. Adapter queues are drained and aborted on `/cancel` and stop.
 
@@ -237,13 +235,29 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 }
 ```
 
-Env vars: `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`, `MONO_AGENT_PI_TRANSPORT`, `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT`.
 
 `auto` preserves Pi's provider-specific default and fallback behavior. An explicit mode is host-authoritative for configured agents: request-scoped runtime extensions cannot replace it. Every Pi result records the normalized choice as `diagnostics.pi_transport_requested`; this is the requested mode, not a claim that a provider with only one transport changed its wire protocol.
 
 ### Durable sessions and restart
 
-With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding a cross-process conversation lock from a fixed 16-shard table. The fixed table bounds lock files while safely serializing shard collisions; legacy per-conversation lock files are honored in place during migration. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding cross-process logical/exact owner rows in the fixed 16-file claim registry. Physical shard collisions do not serialize unrelated provider turns or their cancellation publication; existing legacy per-conversation lock files are still honored in place. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
+
+Concurrent writers sharing a history directory must use v0.20.0 or later and
+participate in the logical/exact claim protocol. Stop all pre-v0.20.0 writers
+before sharing that directory with an upgraded writer. This is a supported
+co-owner boundary, **not** a technical fence that rejects old binaries. Claim-aware
+older writers may still hold physical shard transactions; upgraded writers share
+their exact-key claims without waiting on unrelated shard transactions. Existing
+model-binding schema restrictions still apply independently.
+
+The root SQLite lock still serializes retention accounting, active-marker and
+dirty-fence maintenance, and history publication; it is not held across provider
+execution. Fail-closed provider retirement during root maintenance can still delay
+other mutations. Claim rows are deleted on settlement or reclaimed only after
+owner death, never stolen on a timer. The bounded registry and existing 16
+conversation-shard files remain in place; no per-conversation lock files are
+created, and no possibly-open lock inode is unlinked. Storage growth and claim
+capacity limits are unchanged.
 
 If the process dies after provider mutation but before that clean commit, the fence remains. The next same-conversation run retires the exact fenced JSONL, rotates to a new random epoch, and replays canonical history. An unrelated mutation also reclaims inactive fences as retirement journals: provider deletion and directory fsync complete before the fence is removed. If canonical epoch/revision proves that history commit succeeded and only fence cleanup crashed, maintenance preserves the valid transcript and removes only the stale fence. Beginning and aborting a fresh conversation cannot evict an older successful conversation because fences are bounded separately. Missing/v1 records, failed sync, retention that removes a record, and `appendVerbatimTurn` host-only deliveries retire and rotate provider state for the same reason.
 
@@ -289,11 +303,12 @@ Canonical context import is a separate optional v1 contract; `append` or
 two-message provenance/assistant batch fits every retention and staging quota,
 and when durable provider state is explicitly absent or exact retirement is
 fail-closed. The default store serializes import with Send in continuous,
-per-message, and sessions-disabled modes. The new non-provider path holds only
-logical/exact claims during provider execution, then briefly acquires the
-physical shard to verify an opaque history version and publish. The existing
-durable-provider transaction still holds that shard for the full turn; this
-known same-shard blocking behavior is unchanged.
+per-message, and sessions-disabled modes. Both non-provider and durable-provider
+turns retain logical/exact keyed claims during runtime execution, without holding
+a physical shard transaction. Non-provider commits verify an opaque history
+version under those claims; publication uses the root lock. Unrelated physical
+shard collisions do not serialize turns, though root-locked maintenance and
+fail-closed retirement can still delay publication.
 
 An exact retained provenance/assistant pair is the bounded retry receipt. A
 same-key/same-text retry returns `duplicate`, including after a later Send while
@@ -320,12 +335,12 @@ For retry behavior across *different* models (provider failover, not transport r
 
 ## Prompt-cache diagnostics
 
-`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
+`providers.piNative.promptCacheDiagnostics` (default `false`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
 
 
 ## Persistent child sessions
 
-`Agent({persist: true})` creates a conversation-scoped child, and `AgentSend`
+`Agent({persist: true})` creates a conversation-scoped child, and `AgentManage`
 resumes that child's own Pi-native durable session. Its registry lives at
 `<subagents root>/<sha256(conversationId)>/instances.json`; provider transcripts
 live in the sibling `sessions/` directory. The default root is
@@ -338,8 +353,8 @@ recovers with an interrupted outcome on the next access: `awaiting_reply` if a
 pending question exists, otherwise idle. Session context
 is retained on disk, while an in-flight task is not automatically restarted.
 `AskParent` persists a pending question under the turn lock before its terminating
-tool result returns. `Agent`/`AgentSend` expose it as successful `awaiting_reply`;
-the parent answers through ordinary `AgentSend` in the same durable transcript.
+tool result returns. `Agent`/`AgentManage` expose it as successful `awaiting_reply`;
+the parent answers through ordinary `AgentManage` in the same durable transcript.
 Failed replies preserve the pending question and a minimal recovery fence;
 they are not permission to retry the same transcript. Successful replies clear
 the question, and another question replaces it. Idle expiry includes clean
@@ -359,13 +374,10 @@ continuity resumable. Registry incarnations and turn intents prevent abandoned
 locks from silently authorizing a successor. Unresolved linked owners require
 their registered service; disabled, failed or missing owners fail closed. See [detached persistent children](/tools/background-process-jobs/#detached-persistent-children).
 
-### Optional Anthropic cache retention
+### Anthropic cache retention
 
-`providers.piNative.cacheRetention` accepts `"short"` or `"long"`; its environment
-variable is `MONO_AGENT_PI_CACHE_RETENTION`. Nonempty MONO_AGENT environment wins
-over JSON, then unset. Either explicit resolved value overrides Pi's separate
-ambient `PI_CACHE_RETENTION`; unset forwards nothing and preserves Pi behavior.
-The opt-in is default-off only when no external `PI_CACHE_RETENTION=long` is set.
+`providers.piNative.cacheRetention` defaults to `"long"` (one hour); set `"short"`
+(five minutes) to opt out. JSON wins over the `"long"` default, and the resolved value overrides Pi's ambient `PI_CACHE_RETENTION`.
 The runtime forwards retention only to Anthropic Messages, including child
 routes. Pi's `supportsLongCacheRetention` model check remains authoritative;
 unsupported models receive no one-hour TTL.
@@ -375,3 +387,10 @@ short-cache writes. Model support is required, and no cache hit is guaranteed.
 Metadata-only diagnostics record the requested setting and observed cache TTL;
 an ephemeral Anthropic cache control without an explicit TTL denotes five
 minutes. Evaluate the measurement gates before separately authorizing spending.
+
+The default benefits agents whose turns arrive 5–60 minutes apart. In a measured
+maintainer-console workload, 72% of Anthropic cache writes were 5–60-minute
+re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
+This is workload-specific evidence, not a billing guarantee. Agents that only
+chain turns within five minutes pay slightly more with long retention and can
+set `"short"` instead.

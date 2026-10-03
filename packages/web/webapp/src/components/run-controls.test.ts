@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ThreadDetail, WebMessage } from "../types";
-import { modelChangeNotice, modelChangeNoticeInput } from "./run-controls";
+import { activeProviderUsageId, modelChangeNotice, modelChangeNoticeInput } from "./run-controls";
 
 const assistantMessage = (
   id: string,
@@ -45,6 +45,26 @@ const attribution = (
   disposition: requestedModel === executedModel ? "requested" : "fallback",
   transitions: [],
   retries: [],
+});
+
+describe("activeProviderUsageId", () => {
+  it("uses the effective next-turn provider before the measured context model", () => {
+    expect(activeProviderUsageId("openai-codex:gpt-5.6-sol", {
+      status: "last_measured",
+      measuredModel: "anthropic:claude-sonnet-4-6",
+    })).toBe("openai-codex");
+  });
+
+  it("falls back to the measured model only when the effective model is empty", () => {
+    expect(activeProviderUsageId("", {
+      status: "current",
+      usage: { model: "github-copilot:gpt-5", total: 20 },
+    })).toBe("github-copilot");
+  });
+
+  it("omits providers outside the usage contract", () => {
+    expect(activeProviderUsageId("pi:openai-codex:gpt-5.6-sol", undefined)).toBeNull();
+  });
 });
 
 describe("modelChangeNotice", () => {

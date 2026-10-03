@@ -13,6 +13,50 @@ const OTHER_BEARER = "opaque-service-bearer-credential-abcdef";
 const SHORT_BEARER = "abc";
 
 describe("Telegram log redaction", () => {
+  it.each(["api%4bey", "ticket", "%74oken%ZZ"])("redacts URL query credentials under %s", (key) => {
+    expect(redactTelegramSecretText(`https://host.invalid/path?${key}=private-value&page=3`))
+      .toBe(`https://host.invalid/path?${key}=[REDACTED_BEARER_CREDENTIAL]&page=3`);
+  });
+
+  it("bounds diagnostic input and avoids proxy traps, accessors and binary credential fragments", () => {
+    const trap = vi.fn(() => { throw new Error(OTHER_BEARER); });
+    const proxy = new Proxy({}, { get: trap, getPrototypeOf: trap, ownKeys: trap });
+    const accessor = Object.defineProperty({}, "description", { get: trap, enumerable: true });
+    const sink = vi.fn();
+    const logger = createSecretSafeTelegramLogger({ error: sink }, [TOKEN]);
+    logger?.error?.("poll failed", {
+      proxy,
+      accessor,
+      binary: new TextEncoder().encode(TOKEN),
+      deep: new Array(257).fill(OTHER_BEARER),
+      fragments: [TOKEN.slice(0, 10), TOKEN.slice(10)],
+    });
+    expect(trap).not.toHaveBeenCalled();
+    expect(sink).toHaveBeenCalledWith("poll failed", {
+      proxy: "[TELEGRAM_LOG_DETAILS_UNAVAILABLE]",
+      accessor: { description: "[Accessor]" },
+      binary: "[TELEGRAM_LOG_BINARY_DATA_OMITTED]",
+      deep: ["[TELEGRAM_LOG_DETAILS_TRUNCATED]"],
+      fragments: ["[TELEGRAM_LOG_DETAILS_TRUNCATED]"],
+    });
+    expect(redactTelegramSecretText("x".repeat(16_385))).toBe("[TELEGRAM_LOG_DETAILS_TRUNCATED]");
+    expect(redactTelegramSecretText("a".repeat(1_000), ["a"]))
+      .toBe("[TELEGRAM_LOG_DETAILS_TRUNCATED]");
+    expect(redactTelegramError(proxy, []).message).toBe("[TELEGRAM_LOG_DETAILS_UNAVAILABLE]");
+  });
+
+  it("snapshots configured secrets and detects fragments before writing metadata", () => {
+    const sink = vi.fn();
+    const secrets = [TOKEN];
+    const logger = createSecretSafeTelegramLogger({ error: sink }, secrets);
+    secrets.length = 0;
+    logger?.error?.("poll failed", { left: TOKEN.slice(0, 10), right: TOKEN.slice(10) });
+    expect(sink).toHaveBeenCalledWith("poll failed", {
+      left: "[REDACTED_FRAGMENTED_CREDENTIAL]",
+      right: "[REDACTED_FRAGMENTED_CREDENTIAL]",
+    });
+  });
+
   it("redacts configured tokens and Bot API URL tokens", () => {
     const redacted = redactTelegramSecretText(
       `token=${TOKEN} api=${API_URL} file=${FILE_URL} Authorization: Bearer ${SHORT_BEARER} X-Amz-Security-Token: ${OTHER_BEARER} Cookie: session=${OTHER_BEARER} https://host.invalid/?X-Amz-Signature=${OTHER_BEARER}&refresh_token=${SHORT_BEARER} https://user:${OTHER_BEARER}@host.invalid/`,

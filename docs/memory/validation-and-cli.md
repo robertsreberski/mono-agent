@@ -11,9 +11,9 @@ The memory subsystem **never silently downshifts**: invalid tier prerequisites a
 
 ## `mono-agent memory` — config-aware preview
 
-`mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, backend, root path, embeddings provider, and Supermemory settings without a separate root argument.
+`mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, local root path, and embeddings provider without a separate root argument.
 
-This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes both live memory-read tools (`MemoryRecall` and, on local tiers, `MemoryJournal`) from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same backend, Supermemory-container, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
+This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes both live memory-read tools (`MemoryRecall` and, on local tiers, `MemoryJournal`) from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same local store, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
 
 Coverage: cli.
 
@@ -57,6 +57,40 @@ mono-agent memory rollback --json
 # index whose replay-owned SQLite state predates the canonical sidecar
 mono-agent memory adopt-replay --json
 
+# One-time BuJo cleanup: estimate without model calls, then generate a private plan
+mono-agent memory curate prepare --plan ./curate-plan.json --limit 120 --dry-run
+mono-agent memory curate prepare --model openai-codex:gpt-6-sol --plan ./curate-plan.json
+mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice,label:*
+mono-agent stop
+mono-agent memory curate apply --plan ./curate-plan.json --json
+# Only while no intervening store write has occurred
+mono-agent memory curate restore --backup /path/returned/by/apply
+
+# Entity identity: list names held by several ids, then merge them explicitly
+mono-agent memory entities --duplicates --json
+mono-agent memory curate prepare --plan ./identity-plan.json --limit 0 --merge person:morgan-2=person:morgan
+mono-agent memory curate review --plan ./identity-plan.json --merge-file ./merges.txt --allow-cross-type
+mono-agent stop
+mono-agent memory curate apply --plan ./identity-plan.json --json
+
+# Owner backfill: link old owner-subject lines to person:owner (no model call)
+mono-agent memory curate prepare --plan ./owner-plan.json --limit 0 --owner-backfill --json
+mono-agent memory curate review --plan ./owner-plan.json --reject id:<memoryId>
+mono-agent stop
+mono-agent memory curate apply --plan ./owner-plan.json --json
+
+# Person links: link old lines to the one person they name (no model call)
+mono-agent memory curate prepare --plan ./people-plan.json --limit 0 --link-people --json
+mono-agent memory curate review --plan ./people-plan.json --reject associate:person-name
+mono-agent stop
+mono-agent memory curate apply --plan ./people-plan.json --json
+
+# Tasks to notes: turn open task lines into dated history notes (no model call)
+mono-agent memory curate prepare --plan ./tasks-plan.json --tasks-to-notes --before 2026-09-01 --capture-only --json
+mono-agent memory curate review --plan ./tasks-plan.json --accept retype:* --reject id:<memoryId>
+mono-agent stop
+mono-agent memory curate apply --plan ./tasks-plan.json --json
+
 # Explicit, reversible removal of selected BuJo memories
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent stop
@@ -74,15 +108,72 @@ Plain `audit` is the detailed local operator report: its JSON contains counts, s
 
 While the configured store runs, it atomically publishes a coalesced metadata-only snapshot at `.index/runtime.json` (plus a 30-second heartbeat). `audit` uses that snapshot for queue capacity/backlog/high-water/drain/failure/discard counts and embedding/LLM call counts since that store start. It marks a closed, dead-process, invalid, or older-than-90-seconds snapshot as stale. Monetary cost, tokens, and search percentiles remain `null` unless another telemetry surface records them; audit does not guess them from memory content.
 
-`search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
+`search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded.
 
 The CLI's `today` and `show <date>` commands remain local operator inspection: they
 print raw daily Markdown and are not the model-facing chronological API. The configured
 host instead offers bounded `MemoryJournal` pages for Lite, Journal, and BuJo. Validation
-reports local chronology as supported, disabled when `recallTool.enabled` is false, and
-unsupported for Supermemory. A restrictive policy that mentions `MemoryJournal` while
-its memory capability is absent also reports that mismatch; no state is represented as
+reports local chronology as supported or disabled when `recallTool.enabled` is
+false. A restrictive policy that mentions `MemoryJournal` while its memory
+capability is absent also reports that mismatch; no state is represented as
 a successful empty journal.
+
+### Curating a live store
+
+For an existing running agent, stop it before planning so the reviewed snapshot
+stays stable. Use a new private plan path outside the memory root each time;
+`prepare` refuses to overwrite a previous plan. Keep plans and backups private.
+
+```bash
+mono-agent stop
+mono-agent memory curate prepare --plan ./curate-plan.json --limit 120
+mono-agent memory curate review --plan ./curate-plan.json
+# Inspect the private plan; accept only proposals you intend to apply.
+mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice
+mono-agent memory curate apply --plan ./curate-plan.json --json
+mono-agent memory audit --strict --json
+mono-agent start
+```
+
+If apply fails, check its `reason` and `restored` result before restarting. If
+recovery could not be verified, leave the agent stopped. To undo a successful
+apply, stop the agent and run `mono-agent memory curate restore --backup <dir>`
+using the exact backup path returned by apply, before any intervening store
+write; audit again before starting. Restore refuses a changed store.
+
+#### Open task lines to history notes
+
+Memory is not a task list: task lifecycle belongs to the agent's task tools, and automatic capture no longer writes open tasks. Stores that already hold open task lines (`[ ]`) can convert them with `curate prepare --tasks-to-notes`. The pass is rule-based and calls no model. It proposes one `retype` for every open task line, and apply changes only that line's type to note (`–`). The id, text, date, salience and labels stay, so nothing is re-embedded beyond the usual post-apply rebuild. Done, migrated, scheduled, dropped and superseded tasks are untouched.
+
+- `--before <date>` limits the pass to tasks created before that ISO date (UTC midnight) or instant. An impossible calendar date such as `2026-02-30` is a usage error, not a later day.
+- `--capture-only` limits it to lines minted by automatic capture (`C-` ids), which leaves older or operator-written tasks as they are.
+- `--dry-run` reports the counts (`openTasks`, `proposed`, `outsideWindow`, `notCapture`) without writing a plan.
+
+Proposals start not accepted. Accept them with `review --accept retype:*` and reject single lines with `--reject id:<memoryId>`. The pass is its own plan: it cannot be combined with `--limit`, `--select`, `--owner-backfill`, `--link-people` or merges. A plan holds one proposal per line, so a retype can never meet a drop of the same line. Apply rechecks that each accepted line is still the same open task, and `curate restore` undoes it like any curate apply.
+
+`memory labels --limit N` reads up to 1000 indexed labels per invocation
+(default 200); `truncated` means more remain. It is read-only and safe while
+an agent runs.
+
+### Reviewed one-time BuJo curation
+
+`memory curate prepare --plan <private-file>` reads at most 8192 selected live canonical lines (120 by default). The default `--select recent,repeated,risky,oldest` reserves bounded shares for recent lines, near-duplicates, credential/instruction-like lines, and the oldest lines; `--select oldest` restores the former oldest-first order. A custom comma-separated mix uses only its named buckets; prepare and dry-run report selected counts per bucket. Mixed selection caps the scanned live inventory at 65536 lines and fails explicitly above that bound; `--select oldest` keeps only its bounded oldest slice even on larger stores. Model-free `--limit 0` calls no LLM: besides operator merges and owner backfill it proposes deterministic coarse fact labels for lines already associated with a person, at most 1024 per pass and within the private plan size cap, walking oldest first (or newest first with `--select recent`; other buckets are rejected). Lines that already carry a fact for that person are skipped, so repeated prepare/apply passes cover a large store; prepare reports `coarseLabels.more` while lines remain. A line that cannot form a valid label becomes an `invalid-label` discard instead of failing the run. Prepare adds bounded adjacent-line and exact-name graph hints **from the same store only**, and sends batches of 12 to the configured memory LLM or an explicit `--model provider:model` override. `--dry-run` reports estimated calls/tokens without calling the model or writing a plan. Monetary cost is `unknown` when there is no trustworthy price. A successful prepare creates a new owner-private 0600 JSON plan outside the memory root containing original lines, proposals and source/root fingerprints; treat it as private memory data. Recheck the proposal count and examples with `review` before making changes. A checksum binds immutable proposals while permitting only `accepted` edits; other plan edits are rejected. Proposal defaults are rejected; `review --accept drop:generic-advice,label:*` flips matching booleans in one step, `--reject id:<id>` wins over a matching category, and manual editing of `accepted` is supported. Model output cannot authorize user attribution, a verified lesson, a legacy preference scope or identity. Curate has no user turn, so every label it proposes is an assistant-inferred person fact (an owner fact only on an explicit user/owner line); it never mints user-stated labels, preferences or lessons. A rewrite keeps preference and lesson labels, and each existing fact label exactly as stored while the new text still names its subject (and states its structured value), dropping it otherwise; it never re-derives or downgrades attribution, and a legacy relationship fact becomes a coarse fact on the same person with the same attribution. Re-prepare curate plans created by an older version. Agent-host curation calls use strict structured output (a single completion plus its structured-output finalization, at most three model turns) and no tools, MCP servers, process jobs, or agent-root lease; text-only providers may return either a proposal array or its `{ "proposals": [...] }` wrapper; a running agent's root lease does not block read-only prepare. Each batch gets one retry for transport/model/JSON-envelope failures, then its lines are discarded as `model-error` or `invalid-response` and later batches continue. Authentication/configuration failures abort without writing a plan, and so does a failed first model batch or two consecutive model-error batches before any batch has succeeded; an unavailable endpoint cannot yield an all-discarded success. Once a batch has succeeded, later failed batches are discarded and the run keeps its paid work. Individually invalid suggestions are discarded with bounded validation reason codes (action, fields, reason, text, label, merge, or generic proposal) listed in the private plan and review, while valid siblings survive the paid run. Prepare reports discard counts by reason without model error text. Both estimate and prepare report counts of canonical lines skipped as raw host observations, unstructured bullets, missing-identity bullets, legacy-source records, or terminal bullets; raw host observations excluded by rebuild are never sent to the model, even when they precede the selection limit. Keep durable user facts, dated values, plans and user-specific assistant findings; drop raw turn-log envelopes, process chatter and generic advice. Rewrites are only for supported attribution or date repairs, not shortening or guessing truncated text. Apply still strictly refuses any invalid or stale selected proposal before mutation.
+
+Stop the agent before `apply`. A rejected-all plan is a no-op; otherwise apply rechecks each accepted source at its original file and line (including status, text, date, and references) and validates merges against the current graph before backup. Unrelated captures and status changes do not stale the plan; newly added lines are not curated. The plan's source fingerprint records the preparation snapshot, while the current canonical fingerprint binds the durable backup and mutation. Plans prepared before status-pinned sources were introduced must be prepared again. Apply refuses selected IDs absent from the active index before creating a backup. If a transaction fails, the error retains its original cause internally; the CLI reports only a bounded tool-owned reason when safe to do so, without echoing memory text. Apply takes a durable verified root backup, uses forget semantics for drops, keeps/clears/replaces labels with rewrites, and reprojects from canonical daily/graph sources after accepted same-type exact-name entity merges. It seals only after safe rebuild and health/parity checks; any failed transaction restores the original tree. `restore --backup` requires the exact post-apply tree and refuses intervening changes. A backup is root-bound and participates in the same managed retention budget as other stopped-store backups. This is a one-time operator operation, not an automatic capture or background agent task. No external conversation or second memory store is used as context; configured `capture.focus/only` only guide the model's suggestions (not a host-enforced filter).
+
+### Entity identity and operator merges
+
+Capture can record one real person or thing under several entity ids. `memory entities --duplicates` is read-only and lists every case-, accent- and whitespace-folded name held by more than one id, busiest first, with each id's type and association count (`--limit N`, default 20; `--json`). It prints entity ids and names, so treat its output as private.
+
+Model merges stay narrow: same type, same folded name, supported by the line. The operator can decide more. `curate prepare` and `curate review` accept `--merge <fromId>=<toId>` (repeatable) and `--merge-file <file>` (one `fromId=toId` per line, `#` comments). These operator merges may join different names. They may join different types only with `--allow-cross-type`. They enter the private plan pre-accepted and are listed as `merge:operator`; `review --reject id:<fromId>` or `--reject merge:operator` turns them off. `prepare --limit 0` prepares only operator merges and makes no model call. Several ids may merge into one target; chains (`a=b`, `b=c`), unknown ids, merges that would turn a graph relation or a relationship fact label into a self-relation, and merges that would move a person fact label onto a non-person id are refused before any backup. References and labels that become identical on one line are collapsed to one. Apply then uses the same checks, backup, root swap, rebuild and restore as every other curation. Merged ids disappear. Their associations, relations, daily references and fact labels move to the target, and the target keeps its name.
+
+Owner turns use one canonical host-owner id, `person:owner`. Merge any older owner ids into it. Apply creates `person:owner` if capture has not yet minted it; no other target may be missing. Only host-verified owner turns and operator merges bind `person:owner`: on any other turn capture drops a model-emitted `person:owner` entity, its relations, references and labels. When capture sees several known ids with one name, it marks the most-associated id as the one to reuse.
+
+`curate prepare --owner-backfill` scans live canonical lines and proposes a `person:owner` association only when an existing structured fact label explicitly names `person:owner`, or an `agent`-scoped preference label is attributed `user-stated`. This language-neutral, model-free scan never guesses a subject from legacy prose. Newly captured owner statements are linked at capture time; unlabelled older statements require separate operator review. The plan records each line's id, text hash and reason (`owner-label`); proposals start accepted and can be rejected in review with `--reject associate:owner` or `--reject id:<memoryId>`. For compatibility, `prepare` still reports `notProven` and `bare` counts as zero. A drop in the same plan wins over an owner association. Apply refuses changed, unqualified, dropped or already-linked lines before backup, and preserves name-derived links during the root swap and rebuild. Re-prepare plans created under the former prose grammar; they cannot authorize associations after this change.
+
+Coarse person labels are only derived for lines that are already associated with a person. Older lines often name a person without that association. `curate prepare --limit 0 --link-people` scans every live note and event line (not tasks, not credential-like lines) and proposes an `associate:person-name` link to every `person:` entity whose full display name the line contains, as a whole word with the same capitalisation. Matching uses only the entity names already in the graph; there are no word lists and no grammar rules. Only proper names count: every word capitalised, letters and inner hyphens only, at most four words. A first name alone does not link to a longer display name. A name held by more than one person entity, after the plan's operator merges, is ambiguous and never linked. A name used as a line-leading speaker label (`Name: ...`, as in a pasted log) is not a mention. `person:owner` is never linked this way, not even through a name the same plan merges into it; owner links come from `--owner-backfill`.
+
+No model is called. Links enter the plan pre-accepted. `review --reject associate:person-name` or `--reject id:<memoryId>` (every link of that line) turns them off. Lines already associated with that person, counting operator merges in the same plan, are skipped, so repeated passes are idempotent. Each daily file is parsed once, a pass proposes at most 1024 links (a line's links stay in one pass unless the line alone names more people than that; the rest then come in the next pass), and the whole plan must still fit the private plan size cap. `prepare` reports counts only: `live`, `linkedBefore` (lines with any person association), `alreadyLinked`, `proposed`, `newlyLinkedLines`, `ambiguousNames`, `ambiguousLines`, and `more` when another pass is needed. A dropped line wins over its person links, as for owner associations. Apply refuses a link whose line changed, no longer names that person or is no longer eligible (also after a rewrite or an operator merge in the same plan), or is already linked, before any backup. It then uses the same backup, root swap, rebuild and restore as every other curation. Coarse labels for the new links come from the next `--limit 0` prepare.
 
 ### Reversible explicit BuJo forget plans
 
@@ -160,7 +251,7 @@ prepared backup left before transaction publication is safely reused. Read-only
 stores never run the repair, and any other invalid or ambiguous intent remains
 a hard failure for operator review.
 
-`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, LM Studio, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
+`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, LM Studio, or OpenAI request. For the local backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
 
 Fresh durable work is `in_progress`, but it cannot remain successful forever after its owner disappears. A due intake item with no active retry, or a published capture intent awaiting replay, becomes `work_stalled` after the same 90-second grace used for runtime staleness. The timestamps and stability digests used for that decision remain private; the public report carries only the stable issue and aggregate counts. A live/fresh Journal write lock is similarly distinguished from a stale or malformed owner without mutating the lock during audit.
 
@@ -169,7 +260,7 @@ The JSON object has exactly these fields (the `mode` field exists only for `back
 | Field | Contract |
 | --- | --- |
 | `schemaVersion` | Integer `1`. |
-| `backend` | `bujo`, `supermemory`, or `none`. |
+| `backend` | `bujo` or `none`. |
 | `mode` | For `bujo` only: `lite`, `journal`, or `bujo`. |
 | `status` | `healthy`, `in_progress`, `degraded`, `unhealthy`, `unknown`, or `not_configured`. |
 | `checkedAt` | ISO-8601 instant for this audit. |
@@ -184,7 +275,7 @@ The statuses and process exit codes are deliberately different dimensions:
 | `in_progress` | Durable or snapshot-coherent work is actively pending, with no degraded/unhealthy/unknown condition. | `0` |
 | `degraded` | Dead letters, stalled durable work, or missing, stale, or invalid runtime telemetry needs attention. | `1` |
 | `unhealthy` | Managed identity, database/index, canonical source, intake/outbox, or temporary-artifact integrity failed. | `1` |
-| `unknown` | The built-in database/native module or health check could not be inspected, or a remote Supermemory index cannot be inspected locally. | `1` |
+| `unknown` | The local database/native module or health check could not be inspected. | `1` |
 | `not_configured` | No memory backend is configured (`backend: "none"`; no `mode`). | `0` |
 
 For `backend: "bujo"`, classification uses this exact precedence:
@@ -209,7 +300,7 @@ intake_invalid intake_pending dead_letters outbox_invalid outbox_pending
 work_stalled temporary_artifacts runtime_missing runtime_stale runtime_invalid
 ```
 
-The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. `backend: "supermemory"` therefore reports `unknown` with empty issues and zeroed counts instead of pretending to know remote health; an absent backend reports `not_configured` with the same closed empty shape.
+The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. An absent backend reports `not_configured` with a closed empty shape.
 
 ### BuJo replay projection and explicit legacy adoption
 
@@ -303,7 +394,7 @@ projection safely.
 
 ### Completed-turn intake inspection and recovery
 
-The config-aware intake commands operate only on the built-in Lite/Journal/BuJo intake; Supermemory rejects them. `inspect` is read-only and may be used while the agent is running. It returns only the stable 64-character item id, state, admission timestamp, attempt/revision, due flag, and bounded failure category (`model_output`, `provider`, or `processing`), plus aggregate state counts. It never returns `runId`, `conversationId`, summary/capture text, payload hash, filesystem path, or raw model/provider error.
+The config-aware intake commands operate only on the local Lite/Journal/BuJo intake. `inspect` is read-only and may be used while the agent is running. It returns only the stable 64-character item id, state, admission timestamp, attempt/revision, due flag, and bounded failure category (`model_output`, `provider`, or `processing`), plus aggregate state counts. It never returns `runId`, `conversationId`, summary/capture text, payload hash, filesystem path, or raw model/provider error.
 
 `retry` and `resolve` acquire the memory writer lease and refuse to run while the trace registries show a live process for the same canonical config. Stop the agent first:
 
@@ -376,7 +467,7 @@ The validator's behavior depends on `memory.llm.provider`. There are two provide
 | `endpoint` | Ollama URL (default `http://localhost:11434`) | **rejected** — Ollama-only |
 | `validate` chat-model check | yes (probes `/api/tags`) | no |
 
-Env overrides: `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`.
+Configure these fields in the JSON `memory.llm` block.
 
 ### Ollama-backed memory LLM
 
@@ -403,7 +494,7 @@ Env overrides: `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, 
 
 ### Host-runtime (SDK) memory LLM
 
-The `agent-host` provider runs memory LLM passes (one batched memory/graph extraction and, only when close existing candidates need classification, one batched reconcile) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference. Do not set `endpoint` — it is Ollama-only and rejected here.
+The `agent-host` provider runs memory LLM passes (one batched memory/graph extraction, one small review only when the turn has review-eligible lines, and, only when close existing candidates need classification, one batched reconcile) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference. Do not set `endpoint` — it is Ollama-only and rejected here.
 
 :::note
 The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit `runtime.fallbacks`, so there is no failover chain on memory passes. This is deliberate: reusing the channel fallback router would silently run capture on `runtime.model`.
@@ -435,7 +526,7 @@ The memory LLM always executes on `memory.llm.model`, and that model is its **so
 
 ## The memory-LLM timeout
 
-`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` / `memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
+`memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one review + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
 
 There used to be a second default: the removed standalone `memory-bujo` binary read the same env var but defaulted to `120000`. That binary and its `migrate` path are [gone](#memory-bujo-cli--removed), so only the in-app `60000` default remains.
 
@@ -479,9 +570,15 @@ The logical digest is an integrity/CAS commitment under mono-agent's owner-only 
 
 Rebuild output and `audit --json` report the generation name, indexed count, raw/unstructured/missing-identity/legacy-source/Journal-duplicate skips, source locations that require review, and legacy associations derived by exact unique whole-name matching. BuJo raw audit files are never promoted automatically into the curated index, and no command replays history through a paid chat model.
 
-Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, and `adopt-replay` reject that backend explicitly.
-
 ## Enable v1 on an existing agent
+
+:::caution
+This historical v1 cutover procedure now applies only to local Lite, Journal, and
+BuJo stores. If the existing agent still declares the retired first-party
+Supermemory backend, complete the [retirement checklist](/reference/framework-simplification-migration/#retired-first-party-supermemory-support)
+before running any current CLI command. No automatic export, replacement, or
+remote cleanup is performed.
+:::
 
 `0.8.0` is the first product-v1 lockstep release published to npm. The immutable
 `0.7.0` source tag introduced the milestone but was not published. Product v1 is
@@ -527,14 +624,7 @@ for an existing local agent, with one backend-specific branch in step 6.
 
    For a new global install, prefer `create-mono-agent`. To switch package
    owners, uninstall the currently listed package before installing the other
-   one. If this agent's existing configuration selects Supermemory as
-   `memory.backend`, install the matching plugin in the agent folder now,
-   before any new CLI command loads the configured responder:
-
-   ```bash
-   VERSION="0.8.0"
-   npm install --save-exact "@mono-agent/memory-supermemory@$VERSION"
-   ```
+   one.
 
 3. Check or refresh the managed memory skill. Reconcile any operator-modified
    skill before using `--update`; the updater also reports and safely retires
@@ -546,11 +636,11 @@ for an existing local agent, with one backend-specific branch in step 6.
    mono-agent config
    mono-agent validate
    mono-agent restart
-   mono-agent tui
+   mono-agent web run --loopback
    ```
 
    Edit the config or identity directly, never enter secrets in either file,
-   validate the result, restart, and only then open the browser console (`mono-agent web run --loopback`) or the optional terminal console.
+   validate the result, restart, and only then open the browser console (`mono-agent web run --loopback`).
 
 4. Confirm that the exact embeddings model is available from the selected provider. For Ollama:
 
@@ -599,28 +689,15 @@ for an existing local agent, with one backend-specific branch in step 6.
    instruction, run `adopt-replay` and then rerun the rebuild without starting
    another writer between them.
 
-   If `memory.backend` is `supermemory`, the matching plugin was installed in
-   step 2. Skip `adopt-replay`, `memory rebuild`, and `rollback`: Supermemory
-   owns its remote index and those built-in index-transition commands
-   intentionally reject it.
 
-   ```bash
-   mono-agent validate
-   mono-agent start
-   mono-agent status
-   ```
-
-   `memory audit --json` is safe for Supermemory but reports local integration
-   metadata only; it cannot inspect the remote index.
-
-7. Verify all evidence routes in the TUI or an enabled conversational channel without
+7. Verify all evidence routes in the web console or an enabled conversational channel without
    restarting between messages. For Telegram, send `Reply exactly with this token:
    V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last
    message?` and confirm the token comes back from active history without a durable
    lookup. Ask one specific durable question such as `Which release color did we choose?`
    to exercise `MemoryRecall`. On a local tier, call a broad retrospective with an
    explicit period such as `What did we work on from 2026-09-01 through 2026-09-07 in
-   Europe/Amsterdam?` to exercise `MemoryJournal`; treat its answer as a curated summary.
+   CET?` to exercise `MemoryJournal`; treat its answer as a curated summary.
    Ask for exact commands/results or interrupted recovery separately and require
    `RunHistory`/`SessionHistory`. These observations are provider behavior checks; prompt
    string tests alone do not prove autonomous routing.
@@ -655,5 +732,5 @@ The config-aware `mono-agent memory rebuild` / `rollback` read the tier, embeddi
 - [Capture & recall](/memory/capture-and-recall/) — `writeMode` and the `MemoryRecall` tool.
 - [Consolidation](/memory/rituals/) — in-app consolidation auto-scheduler.
 - [Config blueprint](/config/blueprint/) — the full annotated `memory` block.
-- [Environment variables](/config/env-vars/) — every `MONO_AGENT_MEMORY_*` override.
+- [Operational environment variables](/config/env-vars/) — secret references and process plumbing.
 - [CLI reference](/observability/cli-reference/) — the broader `mono-agent` command surface.

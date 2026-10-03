@@ -684,12 +684,6 @@ export function isStrictMemoryReport(report) {
       && report.issues.length === 0
       && hasOnlyZeroMemoryCounts(report.counts);
   }
-  if (report.backend === "supermemory") {
-    return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
-      && report.status === "unknown"
-      && report.issues.length === 0
-      && hasOnlyZeroMemoryCounts(report.counts);
-  }
   return false;
 }
 

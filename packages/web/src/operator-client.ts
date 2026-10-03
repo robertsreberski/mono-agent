@@ -13,11 +13,11 @@ import {
   parseProviderAuthSessionSnapshot,
   parseProviderAuthStatusSnapshot,
   parseProviderAuthCheckSessionSnapshot,
-  parseAgentStreamFrame,
   MAX_INFO_BODY_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
   MAX_INFO_PROVIDER_LABEL_BYTES,
+  type AgentManualCompactionResult,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
@@ -44,7 +44,6 @@ import type {
   WebCronJob,
   WebCronMutationResult,
   WebCronOverview,
-  WebCronRun,
   WebCronRunDetail,
   WebCronRunPage,
   WebCronRunSummary,
@@ -56,9 +55,17 @@ import type {
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
-import { fetchLongLivedTurn } from "./long-lived-fetch.js";
+import {
+  fetchLongLivedHostWake,
+  fetchLongLivedTurn,
+  operatorResponseFromFinishFrame,
+  OperatorStreamFrameTooLargeError,
+  readOperatorStreamFrames,
+} from "@mono-agent/operator-adapter/client";
 
 const OPERATOR_WIRE_SCHEMA = 1;
+// Align with the ten-minute agent/wake budget, with room for provider cleanup.
+export const MANUAL_COMPACTION_TIMEOUT_MS = 15 * 60 * 1_000;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 // Compatibility boundary: older operators may emit frames up to 8 MiB. New
@@ -89,6 +96,9 @@ const CONTEXT_IMPORT_TIMEOUT_MS = 5_000;
  */
 const PRESERVED_PROCESS_JOB_ERRORS = new Map<string, number>([
   ["process_job_not_found", 404],
+]);
+const PRESERVED_COMPACTION_ERRORS = new Map<string, number>([
+  ["compaction_busy", 409], ["compaction_unsupported", 501], ["compaction_failed", 500],
 ]);
 const PRESERVED_CONTEXT_IMPORT_ERRORS = new Map<string, number>([
   ["context_import_conflict", 409],
@@ -121,12 +131,23 @@ export interface OperatorConnection {
   readonly apiKey?: string;
   /** Independent owner-only bearer for process-job routes. */
   readonly processJobsBearer?: string;
-  /** Independent owner-only bearer for Monitor wake callbacks. */
-  readonly monitorsBearer?: string;
 }
 
+export interface OperatorRestartSupport {
+  readonly supported: boolean;
+  readonly reason?: string;
+}
+
+export type OperatorRestartResponse =
+  | { readonly kind: "accepted"; readonly operationId: string; readonly pid: number }
+  | { readonly kind: "in_progress"; readonly operationId: string }
+  | { readonly kind: "refused"; readonly reason: string };
+
 export interface OperatorInfo {
+  /** Always fail closed on older or malformed producers. */
+  readonly restart: OperatorRestartSupport;
   readonly schema: number;
+  readonly pid?: number;
   readonly label?: string;
   readonly model?: string;
   readonly effort?: string;
@@ -138,6 +159,7 @@ export interface OperatorInfo {
   readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
+  readonly supportsManualCompaction?: true;
   readonly contextImport?: {
     readonly version: typeof AGENT_CONTEXT_IMPORT_VERSION;
     readonly maxTextBytes: number;
@@ -145,6 +167,7 @@ export interface OperatorInfo {
   readonly supportsAskUser: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
+  readonly supportsProcessJobWakeAdmission?: true;
   readonly supportsLiveInputTargeting?: true;
   readonly supportsToolEnvironment?: boolean;
   readonly replyAttachments?: { readonly version: 1; readonly maxBytes: number };
@@ -169,8 +192,10 @@ export interface OperatorLiveInputInput {
   readonly conversationId: string;
   readonly id: string;
   readonly text: string;
+  readonly ownerText?: string;
   readonly receivedAt: string;
   readonly deliveryKey?: string;
+  readonly processJobWakeAttempt?: string;
   readonly targetTurnId?: string;
   readonly targetRunId?: string;
   readonly signal?: AbortSignal;
@@ -182,6 +207,7 @@ export interface OperatorTurnInput {
   readonly attachments: readonly AgentAttachment[];
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly processJobWakeDeliveryKey?: string;
+  readonly processJobWakeAttempt?: string;
   readonly client?: "web" | "acp";
   readonly toolEnvironment?: AgentToolEnvironment;
   readonly signal: AbortSignal;
@@ -199,13 +225,17 @@ export interface OperatorClientOptions extends OperatorConnection {
   readonly fetchImpl?: typeof fetch;
 }
 
+/* Only the agent's explicit error frame carries this type. Transport failures
+ * and an incomplete stream must remain distinguishable from provider errors. */
+export class OperatorTurnFrameError extends WebConsoleError {}
+
 export class OperatorClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly processJobsBearer: string | undefined;
-  private readonly monitorsBearer: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly turnFetchImpl: typeof fetch;
+  private readonly liveInputFetchImpl: typeof fetch;
 
   constructor(options: OperatorClientOptions) {
     if (!isTrustedOperatorBaseUrl(options.baseUrl)) {
@@ -214,9 +244,11 @@ export class OperatorClient {
     this.baseUrl = options.baseUrl.replace(/\/+$/u, "");
     this.apiKey = options.apiKey;
     this.processJobsBearer = options.processJobsBearer;
-    this.monitorsBearer = options.monitorsBearer;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.turnFetchImpl = options.fetchImpl ?? fetchLongLivedTurn;
+    // The agent settles this response only when the run consumes the steer.
+    // A blocking tool may hold headers longer than Undici's parser default.
+    this.liveInputFetchImpl = options.fetchImpl ?? fetchLongLivedHostWake;
   }
 
   async info(signal?: AbortSignal): Promise<OperatorInfo> {
@@ -249,6 +281,12 @@ export class OperatorClient {
     const contextImport = parseContextImportCapability(capabilities?.contextImport);
     return {
       schema: body.schema,
+      ...(Number.isSafeInteger(body.pid) && (body.pid as number) > 0 ? { pid: body.pid as number } : {}),
+      restart: this.apiKey === undefined
+        ? { supported: false, reason: "Agent restart requires a configured operator API key." }
+        : !Number.isSafeInteger(body.pid) || (body.pid as number) <= 0
+          ? { supported: false, reason: "Agent restart needs a verified process identity." }
+          : parseRestartSupport(capabilities?.restart),
       ...(typeof body.label === "string" ? { label: body.label } : {}),
       ...(typeof body.model === "string" ? { model: body.model } : {}),
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
@@ -258,10 +296,12 @@ export class OperatorClient {
       ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
+      ...(record(capabilities?.manualCompaction)?.version === 1 ? { supportsManualCompaction: true } : {}),
       ...(contextImport === undefined ? {} : { contextImport }),
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
+      ...(record(capabilities?.processJobWakeAdmission)?.version === 1 ? { supportsProcessJobWakeAdmission: true } : {}),
       ...(record(capabilities?.liveInputTargeting)?.version === 1 ? { supportsLiveInputTargeting: true } : {}),
       ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
@@ -277,6 +317,47 @@ export class OperatorClient {
         ? { supportsProviderAuthChecks: true }
         : {}),
     };
+  }
+
+  /** Send only to the discovered operator connection; no agent-supplied target. */
+  async restart(signal?: AbortSignal): Promise<OperatorRestartResponse> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/v1/restart`, {
+        method: "POST", redirect: "error", headers: this.headers(true), body: "{}",
+        ...(signal === undefined ? {} : { signal }),
+      });
+    } catch {
+      // Request may have reached the worker and committed despite transport loss.
+      throw new WebConsoleError("restart_unconfirmed", "The restart request could not be confirmed.", 502);
+    }
+    let body: Record<string, unknown> | undefined;
+    try {
+      body = record(JSON.parse(await readBoundedBody(response, 4096, "restart_unconfirmed")) as unknown);
+    } catch {
+      throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
+    }
+    const operation = record(body?.operation);
+    const operationId = operation?.id;
+    const process = record(body?.process);
+    if (response.status === 202 && typeof operationId === "string" && operationId.length > 0
+      && Buffer.byteLength(operationId, "utf8") <= 128
+      && Number.isSafeInteger(process?.pid) && (process?.pid as number) > 0
+      && typeof process?.startedAt === "string" && Number.isFinite(Date.parse(process.startedAt))) {
+      return { kind: "accepted", operationId, pid: process.pid as number };
+    }
+    const error = record(body?.error);
+    if (response.status === 409 && error?.code === "restart_in_progress") {
+      if (typeof operationId === "string" && operationId.length > 0 && Buffer.byteLength(operationId, "utf8") <= 128) {
+        return { kind: "in_progress", operationId };
+      }
+      throw new WebConsoleError("restart_unconfirmed", "The in-progress restart ID was not confirmed.", 502);
+    }
+    if ([400, 401, 403].includes(response.status)
+      || (response.status === 409 && error?.code === "restart_unsupported")) {
+      return { kind: "refused", reason: boundedRestartReason(error?.message) };
+    }
+    throw new WebConsoleError("restart_unconfirmed", "The restart response could not be confirmed.", 502);
   }
 
   async providerUsage(provider?: ProviderUsageId, signal?: AbortSignal): Promise<ProviderUsageSnapshot> {
@@ -392,13 +473,14 @@ export class OperatorClient {
       `${this.baseUrl}/v1/turns`,
       {
         method: "POST",
-        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.processJobWakeDeliveryKey) },
+        headers: this.headers(true),
         signal: input.signal,
         body: JSON.stringify({
           conversationId: input.conversationId,
           text: input.text,
           client: input.client ?? "web",
           metadata: input.metadata,
+          ...(input.processJobWakeAttempt === undefined ? {} : { processJobWakeAttempt: input.processJobWakeAttempt }),
           ...(input.processJobWakeDeliveryKey === undefined
             ? {}
             : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),
@@ -418,18 +500,13 @@ export class OperatorClient {
     }
     input.onAdmitted?.();
     try {
-      for await (const line of readBoundedNdjsonLines(response.body, MAX_NDJSON_FRAME_BYTES)) {
-        if (line.trim().length === 0) continue;
-        const frame = parseAgentStreamFrame(line);
+      for await (const frame of readOperatorStreamFrames(response.body, MAX_NDJSON_FRAME_BYTES)) {
         if (frame.kind === "finish") {
-          return {
-            ...(frame.finalText === undefined ? {} : { finalText: frame.finalText }),
-            ...(frame.metadata === undefined ? {} : { metadata: frame.metadata }),
-            ...(frame.parts === undefined ? {} : { parts: frame.parts }),
-          };
+          const { text, ...result } = operatorResponseFromFinishFrame(frame);
+          return { ...result, ...(text === undefined ? {} : { finalText: text }) };
         }
         if (frame.kind === "error") {
-          const error = new WebConsoleError(
+          const error = new OperatorTurnFrameError(
             frame.code ?? (frame.cancelled === true ? "cancelled" : "agent_error"),
             frame.message,
             frame.cancelled === true ? 409 : 502,
@@ -439,8 +516,11 @@ export class OperatorClient {
         }
         await input.onFrame(frame);
       }
-    } finally {
-      await response.body.cancel().catch(() => undefined);
+    } catch (error) {
+      if (error instanceof OperatorStreamFrameTooLargeError) {
+        throw new WebConsoleError("operator_frame_too_large", "Agent stream frame exceeded its size limit.", 502);
+      }
+      throw error;
     }
     throw new WebConsoleError("incomplete_operator_stream", "The agent stream ended without a terminal frame.", 502);
   }
@@ -460,17 +540,21 @@ export class OperatorClient {
       `${this.baseUrl}/v1/conversations/${encodeURIComponent(input.conversationId)}/live-input`,
       {
         method: "POST",
-        headers: { ...this.headers(true), ...this.monitorWakeHeaders(input.deliveryKey) },
+        headers: this.headers(true),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         body: JSON.stringify({
           id: input.id,
           text: input.text,
+          ...(input.ownerText === undefined ? {} : { ownerText: input.ownerText }),
           receivedAt: input.receivedAt,
           ...(input.targetTurnId === undefined ? {} : { targetTurnId: input.targetTurnId }),
           ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
           ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
+          ...(input.processJobWakeAttempt === undefined ? {} : { processJobWakeAttempt: input.processJobWakeAttempt }),
         }),
       },
+      undefined,
+      this.liveInputFetchImpl,
     );
     const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_live_input_too_large")));
     if (body === undefined || typeof body.status !== "string") {
@@ -498,6 +582,50 @@ export class OperatorClient {
       return { status: "unavailable", reason: body.reason };
     }
     throw new WebConsoleError("invalid_operator_live_input", "The agent returned an invalid live-input settlement.", 502);
+  }
+
+  async compactConversation(conversationId: string, options?: { readonly model?: string; readonly context1M?: boolean }): Promise<AgentManualCompactionResult> {
+    let response: Response;
+    try {
+      response = await this.request(
+        `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/compact`,
+        {
+          method: "POST",
+          headers: this.headers(true),
+          // The same model selection the next turn would declare; {} means the agent default.
+          body: JSON.stringify(options ?? {}),
+          signal: AbortSignal.timeout(MANUAL_COMPACTION_TIMEOUT_MS),
+        },
+        PRESERVED_COMPACTION_ERRORS,
+      );
+    } catch (error) {
+      if ((error instanceof DOMException && ["TimeoutError", "AbortError"].includes(error.name))
+        || (error instanceof WebConsoleError && error.code === "agent_unreachable")) {
+        throw new WebConsoleError("compaction_outcome_unknown", "The compaction response was lost; its outcome is unknown. Refresh this conversation.", 504);
+      }
+      throw error;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readBoundedBody(response, 2048, "compaction_response_too_large")) as unknown;
+    } catch {
+      throw new WebConsoleError("invalid_compaction_response", "The agent returned invalid compaction data.", 502);
+    }
+    const body = record(raw);
+    if (body === undefined || !["succeeded", "skipped", "failed"].includes(String(body.status))
+      || body.trigger !== "manual" || typeof body.operationId !== "string"
+      || body.operationId.length === 0 || body.operationId.length > 128
+      || (body.tokensBefore !== undefined && (typeof body.tokensBefore !== "number" || !Number.isFinite(body.tokensBefore) || body.tokensBefore < 0))
+      || (body.tokensAfter !== undefined && (typeof body.tokensAfter !== "number" || !Number.isFinite(body.tokensAfter) || body.tokensAfter < 0))) {
+      throw new WebConsoleError("invalid_compaction_response", "The agent returned invalid compaction data.", 502);
+    }
+    return {
+      status: body.status as AgentManualCompactionResult["status"], trigger: "manual", operationId: body.operationId,
+      ...(typeof body.reason === "string" ? { reason: body.reason.slice(0, 128) } : {}),
+      ...(typeof body.tokensBefore === "number" ? { tokensBefore: body.tokensBefore } : {}),
+      ...(typeof body.tokensAfter === "number" ? { tokensAfter: body.tokensAfter } : {}),
+      tokenCountsExact: body.tokenCountsExact === true,
+    };
   }
 
   async recordVerbatim(conversationId: string, text: string, idempotencyKey: string): Promise<void> {
@@ -887,14 +1015,6 @@ export class OperatorClient {
     return parseCronMutation(parsed);
   }
 
-  private monitorWakeHeaders(deliveryKey: string | undefined): Record<string, string> {
-    if (deliveryKey?.trim().startsWith("monitor:") !== true) return {};
-    if (this.monitorsBearer === undefined) {
-      throw new WebConsoleError("monitors_unavailable", "Owner Monitor credentials are unavailable for this agent.", 409);
-    }
-    return { "x-mono-agent-monitor-wake-authorization": `Bearer ${this.monitorsBearer}` };
-  }
-
   private processJobHeaders(): Record<string, string> {
     if (this.processJobsBearer === undefined) {
       throw new WebConsoleError(
@@ -1079,6 +1199,7 @@ function parseCatalogModel(value: unknown): WebModelPage["models"][number] {
     provider: model.provider,
     providerLabel: model.providerLabel,
     ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+    ...(model.supportsContext1M === true ? { supportsContext1M: true as const, ...(typeof model.context1M === "boolean" ? { context1M: model.context1M } : {}) } : {}),
     ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
     ...(effortLevels === undefined ? {} : { effortLevels }),
     ...(model.reasoningMode === undefined ? {} : { reasoningMode: model.reasoningMode }),
@@ -1285,50 +1406,6 @@ async function readBodyPrefix(response: Response, maxBytes: number): Promise<str
   return `${Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8")}${truncated ? "…" : ""}`;
 }
 
-async function* readBoundedNdjsonLines(
-  body: ReadableStream<Uint8Array>,
-  maxFrameBytes: number,
-): AsyncGenerator<string> {
-  const reader = body.getReader();
-  let segments: Uint8Array[] = [];
-  let pendingBytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      let start = 0;
-      for (let index = 0; index < value.byteLength; index += 1) {
-        if (value[index] !== 0x0a) continue;
-        const segment = value.subarray(start, index);
-        if (pendingBytes + segment.byteLength > maxFrameBytes) {
-          throw new WebConsoleError("operator_frame_too_large", "Agent stream frame exceeded its size limit.", 502);
-        }
-        yield decodeSegments(segments, segment, pendingBytes + segment.byteLength);
-        segments = [];
-        pendingBytes = 0;
-        start = index + 1;
-      }
-      const remainder = value.subarray(start);
-      if (pendingBytes + remainder.byteLength > maxFrameBytes) {
-        throw new WebConsoleError("operator_frame_too_large", "Agent stream frame exceeded its size limit.", 502);
-      }
-      if (remainder.byteLength > 0) {
-        segments.push(remainder);
-        pendingBytes += remainder.byteLength;
-      }
-    }
-    if (pendingBytes > 0) yield decodeSegments(segments, undefined, pendingBytes);
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-}
-
-function decodeSegments(segments: readonly Uint8Array[], tail: Uint8Array | undefined, total: number): string {
-  const buffers = segments.map((segment) => Buffer.from(segment));
-  if (tail !== undefined && tail.byteLength > 0) buffers.push(Buffer.from(tail));
-  return Buffer.concat(buffers, total).toString("utf8");
-}
-
 function parseModelOptions(value: unknown): Record<string, WebModelOption> | undefined {
   const input = record(value);
   if (input === undefined) return undefined;
@@ -1345,6 +1422,7 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
       ...(typeof option.reasoning === "boolean" ? { reasoning: option.reasoning } : {}),
       ...(typeof option.reasoningMode === "string" ? { reasoningMode: option.reasoningMode } : {}),
       ...(typeof option.label === "string" ? { label: option.label } : {}),
+      ...(option.supportsContext1M === true ? { supportsContext1M: true as const, ...(typeof option.context1M === "boolean" ? { context1M: option.context1M } : {}) } : {}),
       ...(Number.isSafeInteger(option.contextWindow) && Number(option.contextWindow) > 0
         ? { contextWindow: option.contextWindow as number }
         : {}),
@@ -1386,6 +1464,21 @@ function parseProviders(value: unknown): readonly WebAgentProvider[] | undefined
 
 function stringArray(value: unknown): readonly string[] | undefined {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
+}
+
+function boundedRestartReason(value: unknown): string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 256
+    ? value : "Agent restart was refused.";
+}
+
+function parseRestartSupport(value: unknown): OperatorRestartSupport {
+  const support = record(value);
+  if (support === undefined || !hasOnlyKeys(support, ["supported", "reason"])) {
+    return { supported: false, reason: "Agent restart support is unavailable." };
+  }
+  if (support.supported === true && support.reason === undefined) return { supported: true };
+  if (support.supported === false) return { supported: false, reason: boundedRestartReason(support.reason) };
+  return { supported: false, reason: "Agent restart support is unavailable." };
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

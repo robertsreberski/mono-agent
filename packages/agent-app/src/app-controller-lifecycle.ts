@@ -1,6 +1,6 @@
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import type { ChannelDriver, ChannelId, ChannelStatus, RunningChannel } from "./channels.js";
-import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus, ExporterStatus } from "./app-controller-types.js";
+import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus } from "./app-controller-types.js";
 
 export interface LifecycleControllerPort {
   readonly drivers: readonly ChannelDriver[];
@@ -13,8 +13,7 @@ export interface LifecycleControllerPort {
   invalidateMemoryHealthRefresh(): void;
   stopChannel(id: ChannelId, reason: string): Promise<void>;
   stopContinuationService(): Promise<void>;
-  stopProcessJobsService(): Promise<void>;
-  stopMonitorsService(): Promise<void>;
+  stopProcessJobsService(shutdownDeadline?: number): Promise<void>;
   stopInteractionBridge(): Promise<void>;
   stopMemoryRituals(): void;
   stopArtifactRetentionScheduler(): void;
@@ -22,14 +21,10 @@ export interface LifecycleControllerPort {
   stopTraceSource(reason: string): Promise<void>;
   refreshSandboxStatus(reason: string): Promise<SandboxStatus>;
   startTraceability(reason: string): Promise<TraceabilityStatus>;
-  startExporters(reason: string): Promise<ExporterStatus>;
   startContinuationServiceIfConfigured(reason: string): Promise<void>;
   prepareProcessJobsProtection(reason: string): Promise<void>;
   startProcessJobsIfConfigured(reason: string): Promise<void>;
   activateProcessJobWakes(): Promise<void>;
-  prepareMonitors(): Promise<void>;
-  startMonitorsIfConfigured(): Promise<void>;
-  activateMonitorWakes(): Promise<void>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
   startMemoryRitualsIfConfigured(reason: string): Promise<void>;
   refreshMemoryHealthAfterLifecycle(reason: string, beforePublish?: () => void): Promise<void>;
@@ -56,11 +51,7 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     // Publish the durable A+B protection generation before stopping admission.
     // Store/secret creation remains behind the post-drain mutation gate below.
     await controller.prepareProcessJobsProtection(`${reason}:prepare`);
-    // Monitors own live watcher process groups, so they are torn down before
-    // the process-job store that owns their shared protected state root.
-    await controller.stopMonitorsService();
     await controller.stopProcessJobsService();
-    await controller.prepareMonitors();
     await Promise.all(controller.drivers.map(
       (driver) => controller.stopChannel(driver.id, `${reason}:reload`),
     ));
@@ -75,13 +66,10 @@ export async function applyConfigChange(controller: LifecycleControllerPort, rea
     await controller.stopTraceSource(`${reason}:reload`);
     await controller.refreshSandboxStatus(reason);
     await controller.startTraceability(reason);
-    await controller.startExporters(reason);
     await controller.startContinuationServiceIfConfigured(reason);
     await controller.startProcessJobsIfConfigured(reason);
-    await controller.startMonitorsIfConfigured();
     await Promise.all(controller.drivers.map((driver) => controller.startChannelIfConfigured(driver.id, reason)));
     await controller.activateProcessJobWakes();
-    await controller.activateMonitorWakes();
     await controller.startMemoryRitualsIfConfigured(reason);
     await controller.refreshMemoryHealthAfterLifecycle(`${reason}:complete`);
     return controller.applyResult();
@@ -128,7 +116,7 @@ export async function startChannelIfConfigured(controller: LifecycleControllerPo
   return status;
 }
 
-export async function stop(controller: LifecycleControllerPort): Promise<void> {
+export async function stop(controller: LifecycleControllerPort, shutdownDeadline?: number): Promise<void> {
   if (controller.stopped) {
     return;
   }
@@ -136,8 +124,7 @@ export async function stop(controller: LifecycleControllerPort): Promise<void> {
   // Stop the periodic audit before the first teardown await. Already-entered
   // computation is generation-fenced and must never delay shutdown.
   controller.invalidateMemoryHealthRefresh();
-  await controller.stopMonitorsService();
-  await controller.stopProcessJobsService();
+  await controller.stopProcessJobsService(shutdownDeadline);
   await Promise.all(controller.drivers.map((driver) => controller.stopChannel(driver.id, "stop")));
   await controller.stopContinuationService();
   await controller.stopInteractionBridge();

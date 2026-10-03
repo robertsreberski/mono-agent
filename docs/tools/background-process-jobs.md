@@ -8,7 +8,26 @@ sidebar:
 Background process jobs let the existing Pi-native `Exec` and `Bash` tools
 return immediately while mono-agent continues to own the spawned POSIX process
 group.
-There is no separate job tool. When the host has an available process-job
+For `Exec`/`Bash` there is no separate job tool. Configured `PeerAgent` can
+also use the internal durable job lane for background peer calls; it is not a
+subagent. Its started receipt binds the caller conversation, peer and thread;
+terminal wake output is a bounded, untrusted preview, not owner instructions.
+If the peer asks a question, this job terminates visibly with a typed
+`peerQuestion` (state `awaiting_answer`) and wakes its exact caller. The caller
+may answer the current `questionId` using `PeerAgent answer`, or decline. An
+answer starts a new continuation job bound to the original wake origin; its
+completion, failure, or next question wakes that origin again. The question
+text and form are untrusted, never instructions or owner approval. The first
+job card updates its question to `answered`, `expired`, or `interrupted`
+without an additional expiry wake. Stopping a continuation job cancels its
+parked ACP turn; no undeliverable next question is silently consumed. A
+restart interrupts a parked question without replaying it.
+Peer calls made while serving an ACP request have no wake-capable origin and
+must remain foreground. A restart interrupts an in-flight call without prompt
+replay; a later explicit send resumes the named ACP session. The existing
+ambiguous-delivery suppression applies to peer terminal wakes too.
+
+When the host has an available process-job
 controller, both schemas gain the optional `background: true` field. Without
 that controller, background starts are unavailable. A configured host still
 discloses request lineage diagnostics in the tool descriptions, including
@@ -179,9 +198,9 @@ enforce this host policy, so they are rejected while any registered private
 root exists.
 
 This agent-root-aware coverage belongs to the full app, configured
-harness/responder, local TUI, the lazy-run wrapper returned by
+harness/responder, app-owned operator endpoint, the lazy-run wrapper returned by
 `createConfiguredAgentRuntime`, configured named children, and direct configured
-memory LLM/embedding calls. Remote TUI and ACP bridges are thin clients of an
+memory LLM/embedding calls. Web and ACP clients are thin clients of an
 already owned host and do not invoke a provider themselves. Lower-level
 `@mono-agent/runtime-adapter` and `@mono-agent/agent-runtime` factories are
 root-agnostic unless an app-owned caller supplies the protection policy and
@@ -230,7 +249,7 @@ runtime surfaces: a managed configuration apply performs that teardown/rebuild,
 and a process restart does the same. Existing in-flight runs are not mutated.
 No state migration or reset occurs, and retained registry roots remain
 registered when the flag is enabled, disabled, or removed. `validate`,
-foreground/background `status`, trace metadata, and the local TUI summary show
+foreground/background `status` and trace metadata show
 the path-free warning `UNSAFE: ProcessJobs state and operator secret are
 model-accessible.`
 
@@ -238,7 +257,7 @@ model-accessible.`
 
 Official local hosts also take one cooperative lifetime lease keyed by the
 canonical realpath of the agent root and stored under the effective account
-home. In one process, repeated configured app/harness/responder/local-TUI owners
+home. In one process, repeated configured app/harness/responder/operator-endpoint owners
 share a reentrant reference count. Physical release waits for all owner
 references and all true-settlement request leases; a release failure makes every
 later in-process acquisition fail deterministically. A stale official-process
@@ -331,10 +350,14 @@ without `background: true` is invalid. This preference survives restart;
 older records retain the default wake behavior. Cancellation never restarts a
 command.
 
-A genuine completion wake can answer with exactly `NOTHING_TO_REPORT` to
-suppress delivery. Narration and rich reply parts remain visible. The host
+A genuine completion wake can call `FinishSilently({})` alone, without narration
+or attachments, to end with a host-recorded silent disposition. If that tool is
+unavailable, answering with exactly `NOTHING_TO_REPORT` still suppresses
+delivery. Narration and rich reply parts remain visible. The host
 matches the exact active delivery key; unrelated and stale keys cannot silence
-another turn. Web removes the sentinel from the settled reply and emits no
+another turn. Web wake admission has parity with the sentinel's exact live-flight
+binding, not stronger authentication: an operator client that knows a live key
+may submit another turn using it. Web removes the sentinel from the settled reply and emits no
 response push for a reply without visible content.
 
 A timeout before the destination confirms steering or durably admits the exact
@@ -560,7 +583,7 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
-Successful background `Exec`/`Bash` and persistent `Agent`/`AgentSend` launches carry a bounded versioned start
+Successful background `Exec`/`Bash` and persistent `Agent`/`AgentManage` launches carry a bounded versioned start
 receipt in their machine-readable tool result. The receipt records the exact job
 id, tool, admission state, and real start stamp when one exists; the human result
 text is not an identity source. The web console uses that causal receipt only
@@ -578,23 +601,67 @@ only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console
 collects running and terminal jobs from the loaded transcript window into one
-stack after the conversation (tool, purpose, state and elapsed time on each
-card; output tail, wake state and the wake's response behind it, without the
-host-local artifact paths an operator cannot open from a browser). Queued,
-starting, and running work stays visible by default. Every terminal
-outcome remains mounted but hidden until the operator expands history; that
-choice is remembered per conversation for the browser session. The stack labels
-its active and history counts as loaded and points to **Load earlier messages**
-whenever older history is available. A running card polls its exact job once per
-second and opens when its first output arrives. Operators may collapse that
-card; later output and settlement preserve the choice, and the tail follows the
-bottom only until the operator scrolls upward. Queued/starting jobs and failed
-reads retain bounded backoff. Each nonterminal card polls only its
+compact shelf directly above the composer. Every row counts in exactly one
+bucket, so the shelf's numbers add up to its rows: a question awaiting the
+agent, work in progress (queued, starting, running or stopping), an issue (a
+failed, timed-out, unstarted, expired or interrupted job, or a wake problem or a
+child still busy even when the job succeeded), a clean cancellation, or done.
+Closed by default, the shelf is one line with no visible title (its accessible
+name still starts with "Background jobs"). One current row shows its status,
+kind and purpose; two or more are named without their task (an agent's or
+peer's id, a command's tool), questions first, separated by middle dots and
+ending in "+n" for those that do not fit. The other buckets are chips of the
+rows' own glyph and a number in a fixed order, with their words in each chip's
+tooltip and the bar's accessible name. Open, its header shows the same chips for
+every bucket and it lists
+current work purpose-first, with state, elapsed time, tool, exit facts and a
+labelled output or step preview on each row; a row opens for its output tail,
+wake state and the wake's response, without the host-local artifact paths an
+operator cannot open from a browser.
+
+Every detached child is one row, an agent group: all `Agent` and `AgentManage`
+turns of one persistent subagent instance (legacy `AgentSend` included), or all
+`PeerAgent` jobs to one peer, keyed by that family and the instance id or peer
+name. A reused instance id stays one group. The group's row shows the child's id
+and newest task with the status of the turn that speaks for it (a pending peer
+question first, then running work, else the newest turn). Opening it shows a
+timeline: the parent's calls read from the loaded transcript as tool rows (the
+`Agent` brief, each `AgentManage` message or reply, foreground messages that
+have no detached turn, steer, stop and close, and `PeerAgent` sends and
+answers), without a background of their own until hovered, focused or opened,
+each opening to its whole text with the transcript's own **Load full
+message** for a preview the server shortened, and the child's turns as ordinary
+job rows between them, plus any question a turn ended with. A call is linked to
+the job it started only by the host's own start receipt; tool result text never
+moves a turn between groups, and a close is shown only once the host confirmed
+it. When one peer serves several threads, each row names its thread. After three
+turns the older ones fold behind one row, except a peer question still awaiting
+the agent, which stays in view. The shelf counts rows, not jobs: a group
+counts once in the chips, the open header, History and the polite
+announcement, and only its newest turn's outcome can make it an issue. Each row names its tool beside a terminal or agent icon, and a
+circular status glyph with the row's words gives the status: outlined rings for
+current work (empty when queued, half-filled while in progress, a square while
+stopping, a question mark for a pending question) and solid discs for outcomes
+(a check, a cross, a clock or a square). In progress is yellow and done is
+green in every console theme. The closed bar and rows use the same static
+half-filled ring while work is in progress; shelf glyphs never animate. Every terminal
+outcome remains mounted but hidden behind **History** inside the shelf, except
+a PeerAgent job whose question still awaits the agent's answer, which stays
+with current work (and keeps a question count in the closed shelf, even when
+the job itself failed or was cancelled) until the question is answered or
+expires. The shelf and
+History choices are remembered per conversation for the browser session.
+**History** shows how many finished rows it holds. Counts cover the loaded
+messages only; whenever older history is available, History notes that older
+jobs are in earlier messages, which **Load earlier messages** reveals. Nothing opens by
+itself: a running card polls its exact job once per second, and an opened tail
+follows the bottom only until the operator scrolls upward. Queued/starting jobs
+and failed reads retain bounded backoff. Each nonterminal card polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
 
-The stack remains the only live card and poller. Response Activity rows do not
+The shelf remains the only live card and poller. Response Activity rows do not
 poll, show output/artifacts/wake details, offer cancellation, or duplicate the
 completion response.
 
@@ -612,18 +679,27 @@ paths, does not mutate the live controller, and never creates a missing store.
 
 When ProcessJobs is enabled and healthy on an exact-conversation Pi-native route,
 `Agent({persist:true, background:true, prompt:"Review the change"})` returns a
-durable started receipt. `AgentSend({id:"helper", message:"Continue", background:true})`
-continues the same child transcript. Both require the ordinary Agent/AgentSend
+durable started receipt. `AgentManage({id:"helper", message:"Continue", background:true})`
+continues the same child transcript. Both require the ordinary Agent/AgentManage
 policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
 background controller; unsupported calls fail clearly.
 
+A detached continuation can also carry `model` and `effort`
+(`AgentManage({id:"helper", message:"Continue", background:true, model:"fable"})`).
+The route is persisted on the instance when the turn is reserved, before the job
+starts, so it survives a failed start or a failed turn and later continuations
+inherit it. Retargeting is rejected for `stop`, `steer`, `inspect` and
+close-only calls, which start no turn.
+
 In the web console, detached launches keep their receipt in the parent's Activity,
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
-state); `AgentSend` uses the corresponding label. The child no longer streams
-foreground-style subagent rows into the parent response. Its Background jobs
-card uses the subagent glyph and a height-bounded scroll region with clustered
-tool calls, running/complete/failed status, durations, and a plain-text terminal
-report. State, Wake, and terminal facts remain on the card. Scrolling upward
+state); `AgentManage` uses the corresponding label. The child no longer streams
+foreground-style subagent rows into the parent response. Its turns share one
+agent group in the Background jobs shelf; each turn row names the agent beside
+an agent icon, marks its last recorded tool calls as
+complete, failed or running while it works, and opens to a height-bounded scroll
+region with clustered tool calls, running/complete/failed status, durations, and
+a prose terminal report. State, Wake, and terminal facts remain on the card. Scrolling upward
 holds the reading position through later progress and report arrival.
 
 Progress is separate from stdout and from the parent's completion-wake output.
@@ -640,13 +716,34 @@ unavailable. Upgrade host and console together: the optional internal-only
 populated records or projections. This adds no new state directory or web
 SQLite migration; ordinary process-job retention still owns the data.
 
-Detached children can run long **foreground** Bash/Exec commands: `timeout_ms`
-is capped at the smaller of the owning job's remaining runtime at child-run
-setup and `subagents.commandTimeoutMs` (positive integer milliseconds; default
-`1800000`, or 30 minutes). Tool descriptions report this effective ceiling;
-the job's abort signal still stops commands when its deadline arrives, including
-commands started later in the turn. Raising the command ceiling does not extend
+Children can run long **foreground** Bash/Exec commands: `timeout_ms` is
+capped by `subagents.commandTimeoutMs` (positive integer milliseconds; default
+`1800000`, or 30 minutes). Detached children clamp it to the owning job's
+remaining runtime at child-run setup; foreground children clamp it to their
+remaining turn time minus a settlement reserve (10% for short turns, at most
+15 seconds). Tool descriptions and the child envelope report this effective
+ceiling; the child timer and parent abort still stop commands sooner, as does
+the detached job deadline, including for commands started later in the turn.
+Raising the command ceiling does not extend
 `subagents.timeoutMs`, profile timeouts, or `processJobs.maxRuntimeMs`.
+Both child turn timeout fields accept 1,000–14,400,000 ms (four hours). For
+attached detached children the effective timer is the smaller of that timeout
+and the job's remaining runtime minus a settlement reserve (10% of remaining
+runtime, capped at 15 seconds). Admission fails when no child budget remains;
+the job's hard deadline is never extended. Configure `processJobs.maxRuntimeMs`
+above 14,415,000 ms for a full four-hour child turn. A timeout that actually
+settled with matching native Pi continuity and released commands/publication
+is inspectable as `resumable:true` and accepts ordinary `AgentManage({id,
+message})` (also `background:true`) without an ack. An uncertified timeout,
+parent cancellation or `childStillBusy` remains fenced. Optional Git verification
+may report `observation_unavailable` while certified continuation remains
+resumable under the current authorization policy. If the job deadline also
+arrives after the child's own timer, a later matching native settlement can
+still certify continuity without changing the terminal job or sending a second
+wake. A durable certified disposition remains resumable after restart, subject
+to the same ownership and current-policy checks. Once job retention removes
+required owner proof, authorization fails closed (`policy_unavailable`); do not
+remove records to force a resume.
 Interactive turns and foreground children retain the 120-second cap, and
 NodeRepl retains its fixed 120-second timer. Child-owned background commands
 remain unsupported and are explicitly out of scope.
@@ -656,10 +753,106 @@ queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.
 A queued child is reserved before the receipt returns, so another send or close
 reports busy. Its prompt and raw parameters are never stored in job metadata.
 Completion, failure and AskParent deliver one terminal wake; AskParent preserves
-`awaiting_reply` and its structured question for a later AgentSend. Do not poll or
+`awaiting_reply` and its structured question for a later AgentManage. Do not poll or
 replay a started job. Message plus close closes only after a successful answer.
 
-Timeout/cancellation requests abort and waits through the Agent grace period.
+### Parent stop and resume
+
+Use `AgentManage({id, stop: true})` to cooperatively stop a queued or running
+managed detached child. An optional `description` string of at most 80 characters
+is accepted and ignored: stop creates no job to label. Stop is exclusive with
+message, close, background, inspect and ack (even explicitly false values).
+It invokes no new provider turn (`executed:false`) and accepts no job id. Foreground
+children are reachable by neither stop nor steer: a foreground child blocks the
+parent's own turn, so only cancelling that parent turn ends it. Stop never
+force-kills an in-process provider or rolls back filesystem/network effects.
+
+Invalid requests return a JSON error receipt with a human-readable `message`,
+`stopRequested:false` and `executed:false`, before instance lookup:
+
+- `subagent_stop_not_requested`: `stop` must be exactly `true`.
+- `subagent_stop_invalid_id`: `id` must be a string of 1–40 lowercase letters,
+  digits or hyphens, starting with a letter or digit.
+- `subagent_stop_invalid_request`: `description` must be a string of at most
+  80 characters.
+- `subagent_stop_unexpected_parameters`: only `id`, `stop` and `description`
+  are accepted; the message lists unexpected keys in sorted order.
+
+The operation waits at most six seconds, including storage work:
+
+- `stopped`, `resumable:true`: the matched job, provider, owned commands and
+  registry publication have settled, and native session continuity is certified.
+- `already_idle`, `resumable:true`: no stop was needed; ordinary continuation is
+  admissible.
+- `stop_requested`, `childStillBusy:true`, `resumable:false`: cancellation was
+  accepted, but settlement remains unproven. Ownership and capacity remain held.
+  Ordinary messages and close remain blocked; do not poll or replay the job.
+
+After a resumable receipt (`stopped` or `already_idle`), use
+`AgentManage({id, message: "Continue"})` (optionally `background:true`) to resume
+the same warm instance and prior context, or `AgentManage({id, close:true})` to
+retire it. While a `stop_requested` receipt stands the instance is still busy,
+so both are rejected until it settles. A queued stop charges no
+turn; a begun stopped turn charges one. Completion winning the race keeps its
+actual disposition, and pending AskParent questions survive stopping.
+
+Lost or unproven continuity returns `subagent_stop_recovery_required`, not a
+resumable receipt. Unsupported ownership/storage returns
+`subagent_stop_unavailable`; uncertain cancellation acceptance is reported as
+`stopRequested:"unknown"`. A stale captured turn is refused. These errors never
+authorize bypassing recovery fences. Intentional, certified parent stops do not
+require a failure acknowledgement; certified, fully settled child-owned
+timeouts also admit an ordinary continuation. Uncertified timeouts,
+cancellation and failure recovery rules below are unchanged.
+
+### Parent steering
+
+Use `AgentManage({id, steer: "<text>"})` to offer text to a managed detached turn
+that is already in progress, the way live input reaches a running conversation.
+Steering starts no turn, invokes no new provider turn (`executed:false`), forces
+no answer and changes no ownership: the child's model loop decides what to do
+with the text on its next step. Steer is exclusive with every other parameter,
+including `description` — one mode per call — and a queued or running instance
+keeps rejecting `message` and `close` exactly as before.
+
+Invalid requests return a JSON error receipt with a human-readable `message`,
+`status:"not_applied"`, `applied:false` and `executed:false`, before instance lookup:
+
+- `subagent_steer_invalid_request`: `steer` must be a non-empty string of at most
+  8000 characters.
+- `subagent_steer_invalid_id`: `id` must be a string of 1–40 lowercase letters,
+  digits or hyphens, starting with a letter or digit.
+- `subagent_steer_unexpected_parameters`: only `id` and `steer` are accepted; the
+  message lists unexpected keys in sorted order.
+- `subagent_steer_unavailable`: no steering controller, or the offer's delivery
+  stayed unknown within the bounded wait.
+- `subagent_steer_foreground_unsupported`: the instance's active turn is foreground.
+- `subagent_steer_instance_not_found`, `subagent_steer_not_running`: unknown or
+  closed instance, or no detached turn to steer — use `message` to start one.
+
+The offer waits at most three seconds for the child to settle it, and the whole
+operation is bounded at six seconds. The receipt reports only what this offer did:
+
+| `status` | Meaning |
+| --- | --- |
+| `applied` | The child consumed the text into its turn (`applied:true`). |
+| `pending` | Offered and still unsettled within the bounded wait; it may still be consumed, so do not resend. |
+| `not_applied` | Refused. `not_started` means the turn is still queued with no provider loop yet, and is the only retryable reason. `inactive` means the turn has started but can no longer take input — it settled, was cancelled, moved on to its wrap-up continuation, or lost its mailbox to a host restart. `cancelled`, `closed`, `full`, `too_large` and `invalid` come from the mailbox itself. |
+| `unsupported` | This child's runtime route cannot take live input at all. |
+
+The mailbox is in-process and never persisted: it is created with the detached
+turn and closed and removed at every termination path, including cancellation,
+reporting, release and host shutdown. After a host restart there is no mailbox,
+and steer answers with a truthful negative receipt — the provider loop it would
+have steered did not survive either. A steer that arrives after the turn settles
+is refused, never silently queued for a later turn.
+
+Steering reaches the main run only. When a child exhausts `maxTurns`, the
+mailbox closes before the commit-and-report wrap-up continuation and is not
+handed to it at all, so a late steer reads `not_applied` (`inactive`) instead of
+being injected into that wrap-up.
+
+Timeout/cancellation requests abort and wait through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.
 The instance stays busy and retains its turn lock and independent runtime
 protection lease until actual settlement. Process death alone does not prove
@@ -708,11 +901,12 @@ verification. These private receipts do not widen ProcessJob/wake projections.
 
 ### Explicit child recovery inspection and acknowledgement
 
-`AgentSend({id, inspect: true})` is separate from message/close/background/ack
+`AgentManage({id, inspect: true})` is separate from message/close/background/ack
 requests and invokes no provider. It can perform one bounded owner reconciliation
 pass, then returns held/unavailable or current-policy-authorized recovery facts.
-After independently verifying the work, a retained-only acknowledgement may be
-submitted with a message; recovery of a detached job requires `background: true`.
+Acknowledgement is the parent's own decision after reading that evidence: the
+handler requires a retained-only token plus a message, not a preceding
+`inspect` call, and recovery of a detached job requires `background: true`.
 The same token and request semantics return `subagent_recovery_already_consumed`
 without execution, even while the first continuation is busy. Changed semantics
 return conflict. Consumption and the new reservation are durable before admission.
@@ -724,17 +918,17 @@ A proven rejected admission retains a not-started disposition; ambiguous absence
 never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
 retained context: resolve ownership, then explicitly close/create instead.
 
-The configured foreground persistent path currently classifies failures as
-`lost` (a native response outside the selected session) or `unknown` (including
-late timeout settlement). It does not establish a retained failure epoch eligible
-for acknowledgement. While the original runtime is unresolved, inspection is
-`held` and close/continuation remain blocked. After settlement, authorized
-inspection reports `structured_job_recovery_unavailable` with the minimal registry
-fence, not a ProcessJob, command checkpoint or acknowledgement token. Explicitly
-close the instance and create another with the necessary context. A late answer
-or existing JSONL file does not upgrade unknown continuity. Ordinary successful
-foreground continuation and AskParent replies still resume their retained session
-without a recovery acknowledgement.
+Foreground persistent failures still classify as `lost` (a native response
+outside the selected session) or `unknown` unless the child's own timeout fires
+and its matching native recovery receipt is applied after actual settlement.
+While the runtime is unresolved, inspection is `held` and close/continuation
+remain blocked. A certified timeout reports `ready`, `resumable:true` and a
+retained fence, with no ack token; ordinary `AgentManage({id,message})` continues
+the same instance in foreground or detached mode. Other foreground failures
+report `structured_job_recovery_unavailable` with a minimal fence. Explicitly
+close and recreate those lost/unknown children with the necessary context. A
+late answer or existing JSONL file does not upgrade unknown continuity. Ordinary
+successful foreground continuation and AskParent replies remain unchanged.
 
 For a managed detached failure explicitly classified as retained, an accepted
 acknowledgement resumes the same durable session; it does not replay the failed

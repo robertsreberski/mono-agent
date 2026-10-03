@@ -106,20 +106,19 @@ describe("baseConfig", () => {
 });
 
 describe("known-tools", () => {
-  it("lists all thirteen built-in tools", () => {
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(15);
+  it("lists all built-in tools", () => {
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(14);
     for (const name of [
       "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl",
-      "Monitor", "MonitorStop", "WebFetch", "WebSearch", "Agent", "AgentSend",
+      "WebFetch", "WebSearch", "Agent", "AgentManage", "FinishSilently",
     ]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
     }
   });
 
   it("keeps conditionally registered built-ins out of the safe defaults", () => {
-    // Monitor runs an arbitrary command and holds host capacity after the turn;
     // Agent deploys subagents. Neither belongs in a new agent's pre-checked set.
-    for (const name of ["Monitor", "MonitorStop", "Agent", "AgentSend"]) {
+    for (const name of ["Agent", "AgentManage"]) {
       expect(DEFAULT_SAFE_TOOLS as readonly string[]).not.toContain(name);
     }
   });
@@ -129,7 +128,8 @@ describe("known-tools", () => {
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("AskUser")).toBe(true);
-    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "Remember"]);
+    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle",
+      "SuggestReplies", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "PeerAgent", "Remember"]);
     expect(isKnownToolName("RunHistory")).toBe(true);
     expect(isKnownToolName("run_history")).toBe(true);
     expect(isKnownToolName("SessionHistory")).toBe(true);

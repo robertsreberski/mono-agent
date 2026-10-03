@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   canSendInConsole,
   canUploadInConsole,
-  coalesceMonitorWakeMessages,
   convertWebMessage,
+  compactionMarkerIdsForMessages,
+  visibleCompactionMessages,
 } from "./runtime";
 import { projectProcessJobPresentation } from "./process-job-presentation";
-import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
+import { agent, attachment, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
 const processJobReceipt = (
@@ -40,283 +41,6 @@ const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
   updatedAt: "2026-07-17T10:00:00.000Z",
   status: "complete",
   ...overrides,
-});
-
-const monitorWake = (
-  id: string,
-  projection = monitor(),
-  overrides: Partial<WebMessage> = {},
-): WebMessage => message({
-  id,
-  threadId: "thread-1",
-  turnId: `turn-${id}`,
-  role: "assistant",
-  parts: [{
-    type: "monitor-activity",
-    monitors: [{ projection, deliveryKeys: [`monitor:${projection.monitorId}:${String(projection.counters.seq)}`] }],
-  }],
-  attachments: [],
-  createdAt: `2026-07-17T10:00:0${id}.000Z`,
-  updatedAt: `2026-07-17T10:00:1${id}.000Z`,
-  finishedAt: `2026-07-17T10:00:1${id}.000Z`,
-  status: "complete",
-  ...overrides,
-});
-
-describe("coalesceMonitorWakeMessages", () => {
-  it("does not coalesce across a project transition anchor", () => {
-    const first = monitorWake("1");
-    const anchor = monitorWake("2", monitor(), { projectTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-2", before: null, after: { id: "p", name: "P", color: "blue" }, createdAt: "2026-09-12T00:00:00Z" }] });
-    const last = monitorWake("3");
-    const result = coalesceMonitorWakeMessages([first, anchor, last]);
-    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(convertWebMessage(anchor).metadata?.custom?.projectTransitions).toEqual(anchor.projectTransitions);
-  });
-  it("does not coalesce across a route change anchor", () => {
-    const first = monitorWake("1");
-    const anchor = monitorWake("2", monitor(), { modelTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-3", before: { model: "provider/sol", effort: "low" }, after: { model: "provider/astra", effort: "high" }, createdAt: "2026-09-12T00:00:00Z" }] });
-    const last = monitorWake("3");
-    const result = coalesceMonitorWakeMessages([first, anchor, last]);
-    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(convertWebMessage(anchor).metadata?.custom?.modelTransitions).toEqual(anchor.modelTransitions);
-  });
-  it("uses the newest same-Monitor wake as one chronological presentation carrier", () => {
-    const firstProjection = monitor({
-      description: "First batch",
-      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-    });
-    const secondProjection = monitor({
-      description: "Second batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    });
-    const terminalProjection = monitor({
-      description: "Terminal batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:13.000Z" },
-      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
-      exitCode: 0,
-    });
-    const first = monitorWake("1", firstProjection, {
-      parts: [
-        { type: "reasoning", text: "Check the underlying source." },
-        { type: "tool-call", toolCallId: "read-1", toolName: "Read", status: "complete" },
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: firstProjection, deliveryKeys: ["monitor:first"] }],
-        },
-      ],
-    });
-    const second = monitorWake("2", secondProjection);
-    const terminal = monitorWake("3", terminalProjection, {
-      turnId: "turn-terminal",
-      updatedAt: "2026-07-17T10:00:30.000Z",
-      finishedAt: "2026-07-17T10:00:30.000Z",
-      parts: [
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: terminalProjection, deliveryKeys: ["monitor:terminal"] }],
-        },
-        { type: "text", text: "The watch finished normally." },
-      ],
-    });
-
-    const shaped = coalesceMonitorWakeMessages([first, second, terminal]);
-
-    expect(shaped).toHaveLength(1);
-    expect(shaped[0]).toMatchObject({
-      id: "3",
-      turnId: "turn-terminal",
-      status: "complete",
-      updatedAt: "2026-07-17T10:00:30.000Z",
-      finishedAt: "2026-07-17T10:00:30.000Z",
-    });
-    expect(shaped[0]?.parts.map((part) => part.type)).toEqual([
-      "reasoning",
-      "tool-call",
-      "monitor-activity",
-      "monitor-activity",
-      "monitor-activity",
-      "text",
-    ]);
-    expect(shaped[0]?.parts.flatMap((part) =>
-      part.type === "monitor-activity" ? part.monitors.map((entry) => entry.projection.description) : [],
-    )).toEqual(["First batch", "Second batch", "Terminal batch"]);
-    expect(first.parts).toHaveLength(3);
-    expect(second.parts).toHaveLength(1);
-  });
-
-  it("recomputes a streaming carrier from raw messages without duplicating its terminal update", () => {
-    const first = monitorWake("1", monitor({
-      description: "First batch",
-      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
-    }));
-    const runningProjection = monitor({
-      description: "Streaming batch",
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-    });
-    const running = monitorWake("2", runningProjection, {
-      status: "running",
-      finishedAt: undefined,
-    });
-
-    const streaming = coalesceMonitorWakeMessages([first, running]);
-    expect(streaming).toHaveLength(1);
-    expect(streaming[0]).toMatchObject({ id: "2", status: "running", turnId: "turn-2" });
-    expect(streaming[0]?.parts).toHaveLength(2);
-
-    const terminalProjection = monitor({
-      description: "Terminal batch",
-      state: "exited",
-      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
-      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
-      exitCode: 0,
-    });
-    const settled = monitorWake("2", terminalProjection);
-    const completed = coalesceMonitorWakeMessages([first, settled]);
-
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatchObject({ id: "2", status: "complete", turnId: "turn-2" });
-    expect(completed[0]?.parts.flatMap((part) =>
-      part.type === "monitor-activity" && part.monitors[0]?.projection.state === "exited" ? [part] : [],
-    )).toHaveLength(1);
-  });
-
-  it("does not fold a later wake past a visible same-Monitor reply", () => {
-    const first = monitorWake("1");
-    const visible = monitorWake("2", monitor({ description: "Important batch" }), {
-      parts: [
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: monitor({ description: "Important batch" }), deliveryKeys: ["monitor:important"] }],
-        },
-        { type: "text", text: "The queue needs attention." },
-      ],
-    });
-    const later = monitorWake("3", monitor({ description: "Later batch" }));
-
-    const shaped = coalesceMonitorWakeMessages([first, visible, later]);
-
-    expect(shaped).toHaveLength(2);
-    expect(shaped.map((entry) => entry.id)).toEqual(["2", "3"]);
-    expect(shaped[0]?.parts.at(-1)).toEqual({ type: "text", text: "The queue needs attention." });
-  });
-
-  it.each([
-    ["different Monitor", monitorWake("2", monitor({ monitorId: "different-monitor" }))],
-    ["mixed Monitor ids", monitorWake("2", monitor(), {
-      parts: [{
-        type: "monitor-activity" as const,
-        monitors: [
-          { projection: monitor(), deliveryKeys: ["monitor:first"] },
-          { projection: monitor({ monitorId: "different-monitor" }), deliveryKeys: ["monitor:second"] },
-        ],
-      }],
-    })],
-    ["identity-less legacy activity", monitorWake("2", monitor(), {
-      parts: [{ type: "monitor-activity" as const, monitors: [] }],
-    })],
-    ["malformed Monitor id", monitorWake("2", monitor(), {
-      parts: [{
-        type: "monitor-activity" as const,
-        monitors: [{
-          projection: { ...monitor(), monitorId: "   " },
-          deliveryKeys: ["monitor:malformed"],
-        }],
-      }],
-    })],
-    ["process job", monitorWake("2", monitor(), {
-      parts: [
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-        { type: "process-job" as const, job: processJob() },
-      ],
-    })],
-    ["message attachment", monitorWake("2", monitor(), {
-      attachments: [attachment("upload")],
-    })],
-    ["error", monitorWake("2", monitor(), {
-      parts: [
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-        { type: "error" as const, code: "provider_failed", message: "Provider failed." },
-      ],
-    })],
-    ["model fallback", monitorWake("2", monitor(), {
-      attribution: {
-        requested: { model: "fixture:a", effort: "high" },
-        attempted: { model: "fixture:b", effort: "high", effectiveEffort: "off" },
-        executed: { model: "fixture:b", effort: "high", effectiveEffort: "off" },
-        disposition: "fallback" as const,
-        transitions: [{ from: "fixture:a", to: "fixture:b", reason: "overloaded" }],
-        retries: [],
-      },
-    })],
-    ["reply attachment", monitorWake("2", monitor(), {
-      parts: [
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-        {
-          type: "attachment" as const,
-          id: "reply",
-          artifactId: "artifact",
-          name: "report.txt",
-          mediaType: "text/plain",
-          sizeBytes: 12,
-          integrityId: `sha256:${"a".repeat(64)}`,
-        },
-      ],
-    })],
-    ["Monitor start receipt", monitorWake("2", monitor(), {
-      parts: [
-        { type: "tool-call" as const, toolCallId: "monitor-start", toolName: "Monitor", status: "complete" as const },
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-      ],
-    })],
-    ["nested AskUser", monitorWake("2", monitor(), {
-      parts: [
-        {
-          type: "subagent" as const,
-          toolCallId: "agent-one",
-          name: "worker",
-          status: "complete" as const,
-          calls: [{ toolCallId: "ask-one", toolName: "mcp__interaction__AskUser", status: "complete" as const }],
-        },
-        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-      ],
-    })],
-  ])("keeps %s as a presentation boundary", (_name, boundary) => {
-    expect(coalesceMonitorWakeMessages([monitorWake("1"), boundary])).toHaveLength(2);
-  });
-
-  it.each(["user", "system", "assistant"] as const)(
-    "does not join across an intervening %s message",
-    (role) => {
-      const separator = message({
-        id: "separator",
-        role,
-        parts: role === "assistant" ? [{ type: "text", text: "Ordinary reply." }] : [],
-      });
-      const shaped = coalesceMonitorWakeMessages([
-        monitorWake("1"),
-        separator,
-        monitorWake("2"),
-      ]);
-      expect(shaped.map((entry) => entry.id)).toEqual(["1", "separator", "2"]);
-    },
-  );
-
-  it("keeps a receipt-bearing background launch as its own Monitor wake boundary", () => {
-    const job = processJob();
-    const launchWake = monitorWake("2", monitor(), {
-      parts: [
-        launchPart(job, "background-launch"),
-        { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
-      ],
-    });
-    expect(coalesceMonitorWakeMessages([monitorWake("1"), launchWake]).map(({ id }) => id)).toEqual(["1", "2"]);
-    const withoutReceipt = {
-      ...launchWake,
-      parts: launchWake.parts.map((part) => part.type === "tool-call" ? { ...part, structuredResult: undefined } : part),
-    };
-    expect(coalesceMonitorWakeMessages([monitorWake("1"), withoutReceipt])).toHaveLength(1);
-  });
 });
 
 describe("projectProcessJobPresentation", () => {
@@ -1148,106 +872,6 @@ describe("convertWebMessage", () => {
     expect(converted.content).toEqual([{ type: "text", text: "I'm really sorry" }]);
   });
 
-  it("keeps Monitor activity compact without splitting one streamed word", () => {
-    const projection = monitor();
-    const converted = convertWebMessage(message({
-      role: "assistant",
-      status: "complete",
-      parts: [
-        { type: "text", text: "The worker is re" },
-        {
-          type: "monitor-activity",
-          monitors: [{ projection, deliveryKeys: ["monitor:one", "monitor:two"] }],
-        },
-        { type: "text", text: "ady." },
-      ],
-    }));
-
-    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content).toEqual([
-      {
-        type: "data-monitor-activity",
-        data: {
-          type: "monitor-activity",
-          monitors: [{ projection, deliveryKeys: ["monitor:one", "monitor:two"] }],
-        },
-      },
-      { type: "text", text: "The worker is ready." },
-    ]);
-  });
-
-  it("uses assistant message boundaries to keep Monitor wake responses separate", () => {
-    const boundary = {
-      type: "telemetry" as const,
-      event: "runtime_telemetry",
-      data: { type: "runtime_telemetry", kind: "assistant_message_boundary" },
-    };
-    const converted = convertWebMessage(message({
-      role: "assistant",
-      status: "complete",
-      parts: [
-        { type: "text", text: "Initial response." },
-        boundary,
-        {
-          type: "monitor-activity",
-          monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one", "monitor:two"] }],
-        },
-        { type: "text", text: "First update." },
-        boundary,
-        { type: "text", text: "Second update." },
-      ],
-    }));
-
-    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content.map((part) => part.type)).toEqual([
-      "data-note",
-      "data-monitor-activity",
-      "data-note",
-      "text",
-    ]);
-    expect(converted.content[0]).toEqual({ type: "data-note", data: { text: "Initial response." } });
-    expect(converted.content[2]).toEqual({ type: "data-note", data: { text: "First update." } });
-    expect(converted.content[3]).toEqual({ type: "text", text: "Second update." });
-  });
-
-  it("collapses legacy Monitor steering rows and uses context usage as their response boundary", () => {
-    const converted = convertWebMessage(message({
-      role: "assistant",
-      status: "cancelled",
-      parts: [
-        { type: "text", text: "First update." },
-        {
-          type: "tool-call",
-          toolCallId: "live-input:monitor:first",
-          toolName: "Steered: Monitor update",
-          status: "complete",
-        },
-        {
-          type: "telemetry",
-          event: "runtime_telemetry",
-          data: { type: "runtime_telemetry", kind: "context_usage" },
-        },
-        { type: "text", text: "Second update." },
-        {
-          type: "tool-call",
-          toolCallId: "live-input:monitor:second",
-          toolName: "Steered: Monitor update",
-          status: "complete",
-        },
-      ],
-    }));
-
-    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
-    expect(converted.content).toEqual([
-      { type: "text", text: "First update." },
-      {
-        type: "data-monitor-activity",
-        data: { type: "monitor-activity", monitors: [], legacyUpdateCount: 2 },
-      },
-      { type: "text", text: "Second update." },
-    ]);
-  });
-
   it("keeps text either side of a delegation apart", () => {
     const converted = convertWebMessage(
       message({
@@ -1295,14 +919,14 @@ describe("convertWebMessage", () => {
         parts: [
           { type: "text", text: "The" },
           { type: "reasoning", text: "." },
-          { type: "text", text: " targeted search only surfaced daycare threads." },
+          { type: "text", text: " targeted search only surfaced invoice threads." },
         ],
       }));
       if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
       // One sentence, no thought row — and with nothing else to group, no
       // empty activity card either.
       expect(converted.content).toEqual([
-        { type: "text", text: "The targeted search only surfaced daycare threads." },
+        { type: "text", text: "The targeted search only surfaced invoice threads." },
       ]);
     },
   );
@@ -1641,6 +1265,58 @@ describe("convertWebMessage", () => {
     ]);
   });
 
+  it("keeps an automatic compaction between two Activity bands while the answer settles", () => {
+    const before = { type: "tool-call" as const, toolCallId: "before", toolName: "Read", status: "complete" as const };
+    const after = { type: "tool-call" as const, toolCallId: "after", toolName: "Search", status: "complete" as const };
+    const compact = { type: "telemetry" as const, event: "runtime_telemetry", data: {
+      type: "runtime_telemetry", kind: "context_compaction", data: {
+        operationId: "auto-midturn", status: "succeeded", trigger: "proactive", tokensBefore: 80_000, tokensAfter: 20_000,
+      },
+    } };
+    const parts = [before, compact, after];
+    const running = convertWebMessage(message({ role: "assistant", status: "running", parts }));
+    const settled = convertWebMessage(message({ role: "assistant", status: "complete",
+      parts: [...parts, { type: "text", text: "Here is the answer." }] }));
+    const types = (value: typeof settled) => Array.isArray(value.content) ? value.content.map((part) => part.type) : [];
+    expect(types(running)).toEqual(["tool-call", "data-context-compaction", "tool-call"]);
+    expect(types(settled)).toEqual([...types(running), "text"]);
+    const manual = convertWebMessage(message({ role: "assistant", status: "complete",
+      parts: [before, { type: "text", text: "Here is the answer." }, { ...compact, data: {
+        ...compact.data, data: { ...compact.data.data, trigger: "manual" },
+      } }] }));
+    expect(types(manual)).toEqual(["tool-call", "text", "data-context-compaction"]);
+  });
+
+  it("keeps the automatic marker only when terminal inline telemetry is absent", () => {
+    const telemetry = message({ role: "assistant", status: "complete", parts: [
+      { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_compaction",
+        data: { operationId: "auto-midturn", status: "succeeded", trigger: "proactive" } } },
+    ] });
+    const marker = message({ id: "marker", role: "system", parts: [{ type: "conversation-marker", kind: "compaction",
+      at: "2026-01-15T10:00:00Z", operationId: "auto-midturn", status: "succeeded", trigger: "automatic" }] });
+    expect(visibleCompactionMessages([telemetry, marker])).toEqual([telemetry]);
+    expect(compactionMarkerIdsForMessages([telemetry, marker])).not.toContain("auto-midturn");
+    expect(visibleCompactionMessages([marker])).toEqual([marker]);
+    expect(visibleCompactionMessages([message({ role: "assistant", status: "running", parts: [
+      { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_compaction",
+        data: { operationId: "auto-midturn", status: "running", trigger: "proactive" } } },
+    ] }), marker])).toHaveLength(2);
+  });
+
+  it("shows older telemetry only without a matching marker in the loaded transcript", () => {
+    const telemetry = message({ role: "assistant", status: "complete", parts: [
+      { type: "text", text: "Done" },
+      { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_compaction",
+        data: { operationId: "fictional-operation", status: "succeeded", trigger: "manual" } } },
+    ] });
+    const marker = message({ role: "system", parts: [{ type: "conversation-marker", kind: "compaction", at: "2026-01-15T10:00:00Z",
+      operationId: "fictional-operation", status: "succeeded", trigger: "manual" }] });
+    expect(convertWebMessage(telemetry, { compactionMarkerIds: compactionMarkerIdsForMessages([telemetry]) }).content)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ type: "data-context-compaction" })]));
+    expect(convertWebMessage(telemetry, { compactionMarkerIds: compactionMarkerIdsForMessages([telemetry, marker]) }).content)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ type: "data-context-compaction" })]));
+  });
+
   it("maps a persisted quote into assistant-ui message metadata", () => {
     const converted = convertWebMessage(message({
       quote: { text: "Quoted response", messageId: "source-message" },
@@ -1714,20 +1390,28 @@ describe("runtime capability gates", () => {
 });
 
 
-it("renders a normalized Monitor answer below reasoning and activity", () => {
+describe("restart proposal placement", () => {
+  it("places the card directly after the settled answer, before other rich parts and outside activity", () => {
+    const converted = convertWebMessage(message({ role: "assistant", parts: [
+      { type: "tool-call", toolCallId: "read", toolName: "Read", status: "complete" },
+      { type: "text", text: "The answer." },
+      { type: "failure", id: "old", code: "unsupported_destination", message: "Other rich part." },
+      { type: "restart_proposal", id: "proposal-1", reason: "Restart now", restartable: { state: "available" } },
+    ] }));
+    expect((converted.content as readonly { type: string }[]).map((part) => part.type)).toEqual([
+      "tool-call", "text", "data-restart-proposal", "data-reply-failure",
+    ]);
+  });
+});
+
+it("places quick replies immediately after the answer outside activity", () => {
   const converted = convertWebMessage(message({ role: "assistant", parts: [
-    { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one:1"] }] },
-    { type: "reasoning", text: "Inspecting the pane." },
-    { type: "text", text: "The worker is ready for Robert's review." },
-    { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary" } },
-    { type: "reasoning", text: "No new update." },
-    { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "assistant_message_boundary" } },
+    { type: "tool-call", toolCallId: "read", toolName: "Read", status: "complete" },
+    { type: "text", text: "What next?" },
+    { type: "failure", id: "old", code: "unsupported_destination", message: "Other part." },
+    { type: "reply_options", id: "choices", options: ["Review draft", "Continue"] },
   ] }));
-  if (typeof converted.content === "string") throw new Error("Expected structured content");
-  expect(converted.content.at(-1)).toEqual({ type: "text", text: "The worker is ready for Robert's review." });
-  expect(converted.content.filter((part) => part.type === "reasoning")).toEqual([
-    { type: "reasoning", text: "Inspecting the pane." }, { type: "reasoning", text: "No new update." },
+  expect((converted.content as readonly { type: string }[]).map((part) => part.type)).toEqual([
+    "tool-call", "text", "data-reply-options", "data-reply-failure",
   ]);
-  expect(converted.content.some((part) => part.type === "data-monitor-activity")).toBe(true);
-  expect(converted.content.some((part) => part.type === "data-note")).toBe(false);
 });

@@ -12,7 +12,6 @@ import {
 } from "@mono-agent/memory/bujo";
 import type { BujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { SupermemoryMemoryStore } from "@mono-agent/memory-supermemory";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,10 +21,10 @@ import {
   createMemoryEmbeddingProvider,
   createMemoryRecallServer,
   createRecallStore,
-  memoryRecallSettingsFromEnv,
   resolveMemoryRecallSettings,
 } from "../memory-recall.js";
 import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall.js";
+import { readLabelSections } from "../memory-label-sections.js";
 
 let dir: string;
 
@@ -43,9 +42,9 @@ function configWithMemory(memory: MonoAgentConfig["memory"]): MonoAgentConfig {
   return { memory } as unknown as MonoAgentConfig;
 }
 
-/** Narrow recall settings to the bujo shape (asserts it is not the supermemory backend). */
+/** Narrow recall settings to the configured local shape. */
 function bujo(settings: MemoryRecallSettings | undefined): MemoryRecallBujoSettings {
-  if (settings === undefined || "supermemory" in settings) {
+  if (settings === undefined) {
     throw new Error("expected bujo recall settings");
   }
   return settings;
@@ -223,119 +222,8 @@ describe("resolveMemoryRecallSettings", () => {
   });
 });
 
-describe("memoryRecallSettingsFromEnv", () => {
-  const settings = {
-    root: "/memory",
-    tier: "bujo" as const,
-    embeddings: {
-      provider: "ollama" as const,
-      model: "nomic-embed-text:v1.5",
-      endpoint: "http://localhost:11434",
-      dim: 768,
-    },
-  };
-
-  it("hydrates built-in settings from the standalone binary environment", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_MODE: "bujo",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
-      MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:11434",
-      MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(settings);
-  });
-
-  it("rejects env missing the required memory path", () => {
-    expect(() => memoryRecallSettingsFromEnv({})).toThrow(/missing required environment/u);
-  });
-
-  it("hydrates embeddings timeout + circuit-breaker tuning from the env (F11)", () => {
-    const tuned: MemoryRecallSettings = {
-      root: "/memory",
-      embeddings: {
-        provider: "ollama",
-        model: "nomic-embed-text:v1.5",
-        timeoutMs: 4_000,
-        circuitBreaker: { failureThreshold: 7, cooldownMs: 12_000 },
-      },
-    };
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
-      MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "4000",
-      MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "7",
-      MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: "12000",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(tuned);
-  });
-
-  it("resolves a declared apiKeyEnv from the inherited standalone-binary environment (F13)", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "MY_OPENAI_KEY",
-    };
-    const resolved = bujo(memoryRecallSettingsFromEnv({ ...env, MY_OPENAI_KEY: "resolved-secret" }));
-    expect(resolved.embeddings?.apiKey).toBe("resolved-secret");
-    expect(resolved.embeddings?.apiKeyEnv).toBe("MY_OPENAI_KEY");
-  });
-
-  it("hydrates LM Studio settings with a named secret", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_MODE: "journal",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-test",
-      MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:1234",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
-      MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "4",
-    };
-
-    expect(memoryRecallSettingsFromEnv({ ...env, LM_STUDIO_API_KEY: "child-secret" })).toEqual({
-      root: "/memory",
-      tier: "journal",
-      embeddings: {
-        provider: "lmstudio",
-        model: "text-embedding-test",
-        endpoint: "http://localhost:1234",
-        apiKey: "child-secret",
-        apiKeyEnv: "LM_STUDIO_API_KEY",
-        dim: 4,
-      },
-    });
-  });
-
-  it("rejects a missing declared recall credential instead of falling back to a literal or keyless request", () => {
-    expect(() => memoryRecallSettingsFromEnv({
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-test",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "must-not-fallback",
-    })).toThrow(/LM_STUDIO_API_KEY.*no non-empty value/iu);
-  });
-
-  it("accepts a literal apiKey when no apiKeyEnv is declared (F13 residual)", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "inline-secret",
-    };
-    expect(bujo(memoryRecallSettingsFromEnv(env)).embeddings?.apiKey).toBe("inline-secret");
-  });
-
-  it("resolves FTS-only settings from an env carrying only the memory path (F12)", () => {
-    expect(memoryRecallSettingsFromEnv({ MONO_AGENT_MEMORY_PATH: "/memory" })).toEqual({ root: "/memory" });
-  });
-});
-
 describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
-  it("routes last-message questions to active history without searching durable memory", async () => {
+  it("routes explicit searches without language-specific query suppression", async () => {
     let recallCalls = 0;
     const store = {
       async recall() {
@@ -351,35 +239,30 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
+      expect(tools.tools[0]?.description).toMatch(/one short, specific topic per query.*several times for several topics/iu);
+      expect(tools.tools[0]?.description).toMatch(/owner's name unless asking about the owner.*Weak or merely related hits are not answers/iu);
       expect(tools.tools[0]?.description).toMatch(/Do not use MemoryRecall.*current or last message/iu);
       expect(tools.tools[0]?.description).toMatch(/pick up, continue, or recover interrupted work.*RunHistory with \{\} first/iu);
+      expect(tools.tools[0]?.description).not.toMatch(/original.*automatic lookup/iu);
+      expect(tools.tools[0]?.inputSchema).toMatchObject({
+        type: "object",
+        required: ["query"],
+        properties: { query: expect.any(Object), limit: expect.any(Object) },
+      });
+      const properties = (tools.tools[0]?.inputSchema as {
+        properties?: Record<string, { description?: string }>
+      }).properties;
+      expect(properties).not.toHaveProperty("useOriginalQuery");
+      expect(properties?.kind?.description).toContain("local BuJo memory");
+      expect(properties?.about?.description).toContain("Guidance is empty in about mode");
       for (const query of [
-        "What did you send in the last message?",
-        "What was your previous reply?",
         "What was the last message?",
-        "What did you say?",
-        "What did you just send?",
-        "What happened in this conversation?",
-      ]) {
-        const result = (await client.callTool({ name: "MemoryRecall", arguments: { query } })) as {
-          content: Array<{ type: string; text: string }>;
-          structuredContent?: { hits: unknown[]; conversationRelative?: boolean };
-        };
-        expect(result.structuredContent, query).toMatchObject({ hits: [], conversationRelative: true });
-        expect(result.content[0]?.text, query).toMatch(/active conversation|current conversation history/iu);
-      }
-      expect(recallCalls).toBe(0);
-
-      for (const query of [
-        "What did you send Casey for her birthday last year?",
-        "What did you say our durable deployment policy was?",
-        "What did Alice's last message say?",
-        "What was the last message from the deploy bot?",
+        "Co było w poprzedniej wiadomości?",
+        "¿Qué decía el último mensaje?",
+        "What did Morgan send Casey last year?",
       ]) {
         const result = await client.callTool({ name: "MemoryRecall", arguments: { query } });
-        expect(result.structuredContent, query).toMatchObject({
-          hits: [expect.objectContaining({ id: "old" })],
-        });
+        expect(result.structuredContent, query).toMatchObject({ hits: [expect.objectContaining({ id: "old" })] });
       }
       expect(recallCalls).toBe(4);
     } finally {
@@ -391,8 +274,11 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
   it("answers a tools/call against a lite (FTS-only) store", async () => {
     // No embeddings → lite tier → FTS-only recall, so the test needs no Ollama/OpenAI.
     const store = createBujoMemoryStore({ root: dir });
-    await store.appendHostSummary("conv-1", "The deploy pipeline uses blue-green releases on Fridays.");
-    await store.appendHostSummary("conv-1", "Lunch preferences are irrelevant noise.");
+    await store.persistCompletedTurn({ runId: "fixture-1", conversationId: "conv-1", summary: "The deploy pipeline uses blue-green releases on Fridays." });
+    await store.flush();
+    await store.persistCompletedTurn({ runId: "fixture-2", conversationId: "conv-1", summary: "Lunch preferences are irrelevant noise." });
+
+    await store.flush();
 
     const server = createMemoryRecallServer(store);
     const client = new Client({ name: "memory-recall-test", version: "0.1.0" }, { capabilities: {} });
@@ -420,7 +306,8 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
 
   it("returns a no-match message when nothing matches", async () => {
     const store = createBujoMemoryStore({ root: dir });
-    await store.appendHostSummary("conv-1", "An unrelated note about gardening.");
+    await store.persistCompletedTurn({ runId: "fixture-3", conversationId: "conv-1", summary: "An unrelated note about gardening." });
+    await store.flush();
     const server = createMemoryRecallServer(store);
     const client = new Client({ name: "memory-recall-test", version: "0.1.0" }, { capabilities: {} });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -484,7 +371,7 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
 
 describe("createRecallStore", () => {
   it("builds a keyless LM Studio provider with the exact root and identity", async () => {
-    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
       return new Response(JSON.stringify({
         data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
@@ -515,6 +402,30 @@ describe("createRecallStore", () => {
     })).rejects.toThrow(/LM_STUDIO_API_KEY.*no resolved value/iu);
   });
 
+  it("resolves a declared apiKeyEnv at use and sends it as the bearer token", async () => {
+    // Without resolve-at-use the loader carries only the name, so the provider
+    // would fail to authenticate even with the variable set.
+    vi.stubEnv("RECALL_TEST_API_KEY", "env-resolved-secret");
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const provider = await createMemoryEmbeddingProvider({
+      provider: "lmstudio",
+      model: "text-embedding-test",
+      endpoint: "http://localhost:1234",
+      apiKeyEnv: "RECALL_TEST_API_KEY",
+    });
+    await expect(provider.embed(["remember this"])).resolves.toEqual([[1, 0, 0]]);
+
+    const headers = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers?.["authorization"]).toBe("Bearer env-resolved-secret");
+  });
+
   it("builds an FTS-only store when settings carry no embeddings (F12)", async () => {
     // No embeddings → lite tier → FTS recall answers without any Ollama/OpenAI backend.
     await seedRecallMemory(dir, "The deploy pipeline uses blue-green releases on Fridays.");
@@ -523,7 +434,7 @@ describe("createRecallStore", () => {
       expect(store.tier()).toBe("lite");
       const hits = await store.recall("deploy pipeline releases");
       expect(hits.some((hit) => hit.record.text.includes("blue-green releases"))).toBe(true);
-      await expect(store.appendHostSummary("conv-2", "Recall must not write.")).rejects.toThrow(/read.?only/iu);
+      await expect(store.persistCompletedTurn({ runId: "rejected-write", conversationId: "conv-2", summary: "Recall must not write." })).rejects.toThrow(/read.?only/iu);
     } finally {
       await store.close();
     }
@@ -655,7 +566,7 @@ describe("createRecallStore", () => {
 async function seedRecallMemory(root: string, text: string): Promise<void> {
   const store = createBujoMemoryStore({ root });
   try {
-    await store.appendHostSummary("conv-1", text);
+    await store.remember("conv-1", text);
   } finally {
     await store.close();
   }
@@ -689,124 +600,149 @@ function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
   };
 }
 
-function supermemoryConfig(overrides: {
-  readonly recallEnabled?: boolean;
-  readonly container?: string;
-  readonly apiKey?: string;
-  readonly apiKeyEnv?: string;
-  readonly timeoutMs?: number;
-  readonly sourceId?: string;
-}): MonoAgentConfig {
-  return {
-    memory: {
-      backend: "supermemory",
-      mode: "lite",
-      path: "/memory",
-      maxBytes: 64_000,
-      writeMode: "capture",
-      recallTool: { enabled: overrides.recallEnabled ?? true },
-      supermemory: {
-        baseUrl: "http://127.0.0.1:6767",
-        ...(overrides.container === undefined ? {} : { container: overrides.container }),
-        ...(overrides.apiKey === undefined ? {} : { apiKey: overrides.apiKey }),
-        ...(overrides.apiKeyEnv === undefined ? {} : { apiKeyEnv: overrides.apiKeyEnv }),
-        ...(overrides.timeoutMs === undefined ? {} : { timeoutMs: overrides.timeoutMs }),
-      },
-    },
-    traceability: { registryDir: "/trace", ...(overrides.sourceId === undefined ? {} : { sourceId: overrides.sourceId }) },
-  } as unknown as MonoAgentConfig;
-}
-
-describe("supermemory backend recall", () => {
-  it("defaults recall on when a programmatic Supermemory config omits recallTool", () => {
-    const config = supermemoryConfig({ sourceId: "agent-alpha" });
-    const memory = { ...config.memory };
-    delete memory.recallTool;
-
-    expect(resolveMemoryRecallSettings({ ...config, memory } as MonoAgentConfig)).toEqual({
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-    });
-  });
-
-  it("resolves supermemory recall settings with the container derived from the trace sourceId", () => {
-    const settings = resolveMemoryRecallSettings(supermemoryConfig({ sourceId: "agent-alpha" }));
-    expect(settings).toEqual({
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-    });
-  });
-
-  it("honors an explicit container over the trace identity", () => {
-    const settings = resolveMemoryRecallSettings(supermemoryConfig({ sourceId: "agent-alpha", container: "custom" }));
-    expect(settings).toEqual({
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "custom" },
-    });
-  });
-
-  it("bypasses only the live tool gate for previews and preserves Supermemory precedence", () => {
-    const shared = {
-      container: "explicit-container",
-      sourceId: "trace-container",
-      apiKey: "resolved-sm-secret",
-      apiKeyEnv: "SUPERMEMORY_KEY",
-      timeoutMs: 4_500,
-    } as const;
-    const previewConfig = supermemoryConfig({
-      ...shared,
-      recallEnabled: false,
-    });
-    const liveConfig = supermemoryConfig({ ...shared, recallEnabled: true });
-
-    expect(resolveMemoryRecallSettings(previewConfig)).toBeUndefined();
-    const previewSettings = resolveMemoryRecallSettings(previewConfig, { ignoreRecallToolGate: true });
-    expect(previewSettings).toEqual(resolveMemoryRecallSettings(liveConfig));
-    expect(previewSettings).toEqual({
-      supermemory: {
-        baseUrl: "http://127.0.0.1:6767",
-        container: "explicit-container",
-        apiKey: "resolved-sm-secret",
-        timeoutMs: 4_500,
-      },
-    });
-  });
-
-  it("hydrates a resolved Supermemory apiKey value from the standalone-binary env", () => {
-    const settings: MemoryRecallSettings = {
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha", apiKey: "sm-secret", timeoutMs: 5_000 },
+describe("backend-agnostic recall server", () => {
+  it("names all ambiguous identities and ranks current facts ahead of older history with a visible cap", () => {
+    const entities = [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" },
+      { id: "person:morgan-two", name: "Mórgan", createdAt: "2026-09-06T00:00:00.000Z" }];
+    const store = {
+      findMemoryEntitiesByNames: (names: readonly string[]) => names.includes("morgan") ? entities : [],
+      labelsForEntity: (id: string) => Array.from({ length: 14 }, (_, index) => ({
+        memoryId: `${id}-${index}`, ordinal: 0, text: "Morgan was born 1990-05-17.",
+        status: index === 13 ? "open" : "invalidated", active: index === 13,
+        currentAt: index === 13, conflict: false, createdAt: `2026-09-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+        label: { v: 1 as const, kind: "fact" as const, entityId: id, key: "birth_date",
+          value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const },
+      })),
+      guidanceForScope: () => [],
     };
-    const env = {
-      MONO_AGENT_MEMORY_BACKEND: "supermemory",
-      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
-      MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: "sm-secret",
-      MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "5000",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(settings);
+    const result = readLabelSections(store, { query: "Morgan", about: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
+    expect(result?.text).toContain("Ambiguous name — 2 entities, specify an entity id");
+    expect(result?.text).toContain("[person:morgan]");
+    expect(result?.text).toContain("[person:morgan-two]");
+    expect(result?.factSheet?.[0]).toMatchObject({ entityId: "person:morgan", current: true });
+    expect(result?.factSheetTruncated).toBe(true);
+    expect(result?.text).toContain("Fact sheet truncated");
+    const exact = readLabelSections(store, { query: "Morgan", about: "person:morgan", kind: "fact" }, { hostDate: "2026-09-24" });
+    expect(exact?.factSheet?.every((entry) => entry.entityId === "person:morgan")).toBe(true);
   });
 
-  it("hydrates a keyless (local, no-auth) Supermemory recall config", () => {
-    const keyless: MemoryRecallSettings = {
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
+  it("serves this speaker before the conversation and agent under a bounded guidance cap", () => {
+    const token = "a".repeat(32);
+    const store = {
+      labelsForEntity: () => [],
+      guidanceForScope: (scope: string) => Array.from({ length: 5 }, (_, index) => ({
+        memoryId: `${scope}-${index}`, ordinal: 0, text: `Guidance ${index} for ${scope}.`,
+        status: "open", active: true, conflict: false, createdAt: "2026-09-06T00:00:00.000Z",
+        label: { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
+      })),
     };
-    const env = {
-      MONO_AGENT_MEMORY_BACKEND: "supermemory",
-      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
+    const candidates = [`user:${token}`, "conversation:conv", "agent"].flatMap((scope, scopeIndex) =>
+      Array.from({ length: 5 }, (_, index) => ({ score: 0.95 - scopeIndex * 0.1 - index * 0.01,
+        record: { id: `${scope}-${index}`, text: `Guidance ${index} for ${scope}.` } })));
+    const result = readLabelSections(store, { query: "notes", kind: "preference" },
+      { conversationId: "conv", senderToken: token, hostDate: "2026-09-24" }, candidates);
+    expect(result?.preferencesAndLessons?.[0]?.scope).toBe(`user:${token}`);
+    expect(result?.preferencesAndLessons?.[5]?.scope).toBe("conversation:conv");
+    expect(result?.preferencesAndLessonsTruncated).toBe(true);
+    expect(result?.text).toContain("Preferences & lessons truncated");
+  });
+  it("filters guidance by the query's retrieved scores while retaining scope precedence and explicit-kind fallback", () => {
+    const token = "a".repeat(32);
+    const labels = [
+      { id: "music", scope: "agent", kind: "preference" as const, text: "Prefer Maple music." },
+      { id: "map", scope: "agent", kind: "preference" as const, text: "Prefer Maple maps." },
+      { id: "route", scope: `user:${token}`, kind: "preference" as const, text: "Prefer Maple routes." },
+      { id: "lesson", scope: "conversation:conv", kind: "lesson" as const, text: "Verify Maple routes." },
+    ];
+    const store = {
+      labelsForEntity: () => [],
+      guidanceForScope: (scope: string) => labels.filter((entry) => entry.scope === scope).map((entry) => ({
+        memoryId: entry.id, ordinal: 0, text: entry.text, status: "open", active: true,
+        conflict: false, createdAt: "2026-09-06T00:00:00.000Z",
+        label: entry.kind === "lesson"
+          ? { v: 1 as const, kind: "lesson" as const, scope, verified: true, attribution: "user-stated" as const }
+          : { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
+      })),
     };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(keyless);
+    const context = { conversationId: "conv", senderToken: token, hostDate: "2026-09-24" };
+    const candidates = [
+      { score: 0.92, record: { id: "map", text: "Prefer Maple maps." } },
+      { score: 0.88, record: { id: "route", text: "Prefer Maple routes." } },
+      { score: 0.86, record: { id: "lesson", text: "Verify Maple routes." } },
+      ...Array.from({ length: 5 }, (_, index) => ({ score: 0.66 - index * 0.01,
+        record: { id: `other-${index}`, text: "Other context." } })),
+      { score: 0.4, record: { id: "music", text: "Prefer Maple music." } },
+    ];
+    const result = readLabelSections(store, { query: "Maple routes" }, context, candidates);
+    expect(result?.preferencesAndLessons?.map((entry) => entry.text)).toEqual([
+      "Prefer Maple routes.", "Verify Maple routes.", "Prefer Maple maps.",
+    ]);
+    expect(result?.text).not.toContain("Maple music");
+    const explicit = readLabelSections(store, { query: "Maple music", kind: "preference" }, context,
+      [{ score: 0.2, record: { id: "music", text: "Prefer Maple music." } }]);
+    expect(explicit?.preferencesAndLessons?.map((entry) => entry.text)).toEqual(["Prefer Maple music."]);
+    expect(readLabelSections(store, { query: "Maple routes", kind: "lesson" }, context, candidates)
+      ?.preferencesAndLessons?.map((entry) => entry.text)).toEqual(["Verify Maple routes."]);
+    const empty = readLabelSections(store, { query: "unrelated" }, context,
+      [{ score: 0.95, record: { id: "other", text: "Unrelated context." } }]);
+    expect(empty?.preferencesAndLessons).toBeUndefined();
+    expect(empty?.text).not.toContain("Preferences & lessons:");
   });
-
-  it("fails loud when the child env is missing the container (wiring bug, not a default)", () => {
-    expect(() =>
-      memoryRecallSettingsFromEnv({
-        MONO_AGENT_MEMORY_BACKEND: "supermemory",
-        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      }),
-    ).toThrow(/SUPERMEMORY_CONTAINER/);
+  it("prepends labelled fact/history/conflicts and scoped guidance in both modes without filtering ordinary hits", async () => {
+    const birth = (id: string, active: boolean) => ({ memoryId: id, ordinal: 0,
+      text: "Morgan was born 1990-05-17.", status: active ? "open" : "invalidated", active,
+      conflict: active, currentAt: active, createdAt: "2026-09-06T00:00:00.000Z",
+      label: { v: 1 as const, kind: "fact" as const, entityId: "person:morgan", key: "birth_date",
+        value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const } });
+    const store = {
+      recall: async () => [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted.", createdAt: "2026-09-06" } },
+        { score: 0.5, record: { id: "guidance", text: "Keep reports concise." } }],
+      recallOriginalWithOutcome: async () => ({ available: true as const, query: "Morgan birthday",
+        outcome: { hits: [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted." } },
+          { score: 0.5, record: { id: "guidance", text: "Keep reports concise." } }], retrievalMode: "hybrid" as const } }),
+      labelsForEntity: () => [birth("current", true), birth("past", false)],
+      guidanceForScope: (scope: string) => scope === "agent" ? [{ memoryId: "guidance", ordinal: 0,
+        text: "Keep reports concise.", status: "open", active: true, conflict: false,
+        createdAt: "2026-09-06T00:00:00.000Z", label: { v: 1 as const, kind: "preference" as const,
+          scope: "agent", attribution: "user-stated" as const } }] : [],
+      findMemoryEntitiesByNames: (names: readonly string[]) => names.includes("morgan")
+        ? [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" }] : [],
+      close: async () => {},
+    };
+    const server = createMemoryRecallServer(store);
+    const client = new Client({ name: "label-recall", version: "0.1.0" }, { capabilities: {} });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await server.connect(st); await client.connect(ct);
+    try {
+      const factResult = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birthday", about: "morgan", kind: "fact" } });
+      expect(factResult.structuredContent).toMatchObject({ hits: [{ id: "hit" }, { id: "guidance" }], factSheet: [
+        { current: true, conflict: true, attribution: "user-stated" }, { current: false, conflict: false }],
+      });
+      expect(factResult.structuredContent).not.toHaveProperty("preferencesAndLessons");
+      const lessonResult = await client.callTool({ name: "MemoryRecall", arguments: { useOriginalQuery: true, kind: "preference" } });
+      expect(lessonResult.structuredContent).toMatchObject({ queryMode: "original", hits: [{ id: "hit" }, { id: "guidance" }],
+        preferencesAndLessons: [{ scope: "agent", text: "Keep reports concise." }] });
+      expect(lessonResult.structuredContent).not.toHaveProperty("factSheet");
+      expect(JSON.stringify(lessonResult.content)).toContain("Preferences & lessons:");
+      const absent = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birthday", about: "unmatched" } });
+      expect(absent.structuredContent).toMatchObject({ factSheet: [] });
+    } finally { await client.close(); await server.close(); }
   });
-
-  it("builds a SupermemoryMemoryStore from supermemory settings", async () => {
-    const store = await createRecallStore({ supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" } });
-    expect(store).toBeInstanceOf(SupermemoryMemoryStore);
+  it("renders source and validity dates on direct or graph-expanded records when supplied", async () => {
+    const store = {
+      recall: async () => [{ score: 0.9, record: { id: "a", text: "Morgan was born in May" } }],
+      expandGraph: async () => [{ score: 0.9, record: { id: "b", text: "Morgan birth date", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "1990-05-17T00:00:00.000Z" } }],
+      close: async () => {},
+    };
+    const server = createMemoryRecallServer(store);
+    const client = new Client({ name: "dated-recall", version: "0.1.0" }, { capabilities: {} });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await server.connect(st); await client.connect(ct);
+    try {
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birth date" } });
+      expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("recorded 2026-09-20T00:00:00.000Z") })]);
+      expect(result.structuredContent).toMatchObject({ hits: [{ id: "b", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "1990-05-17T00:00:00.000Z" }] });
+    } finally { await client.close(); await server.close(); }
   });
 
   it("answers a tools/call against a recall-capable store (backend-agnostic server)", async () => {
@@ -827,6 +763,8 @@ describe("supermemory backend recall", () => {
       const text = result.content.map((part) => part.text).join("\n");
       expect(text).toContain("user prefers dark mode");
       expect(result.structuredContent?.hits[0]?.text).toBe("user prefers dark mode");
+      expect(result.structuredContent).not.toHaveProperty("factSheet");
+      expect(result.structuredContent).not.toHaveProperty("preferencesAndLessons");
     } finally {
       await client.close();
       await server.close();

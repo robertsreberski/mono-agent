@@ -7,6 +7,24 @@ sidebar:
 
 This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, Exec, NodeRepl, WebFetch, WebSearch, Agent) and the runtime guards that protect each turn: loss-aware process execution, the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
 
+## Configured local peers (`PeerAgent`)
+
+`PeerAgent` calls another running local mono-agent by a named ACP thread. It is
+not an `Agent` profile: the peer keeps its own tools, model, workspace and
+credentials. Configure `peers.finance.sourceId` and allow `PeerAgent` in
+`tools.allowedTools`; only running compatible peers appear in its description.
+`send` waits for a bounded untrusted answer, or `background:true` returns a
+started process-job receipt when an exact-origin wake is available. `stop`
+requests ACP cancellation. ACP-served turns can only send in the foreground.
+Named sessions survive restarts without replaying interrupted prompts; a lost
+session starts fresh only on the next explicit send. Signed generations reject
+replays and the source chain rejects cycles before a nested foreground call can
+deadlock its origin. A peer's `AskUser` now returns an untrusted bounded ACP
+form to this caller: `answer` with its current `questionId` and form field IDs,
+or `decline`; answer from your own evidence or ask your own user. The bridge
+rejects invalid/sensitive forms, and a peer request is not owner approval. See
+[ACP bridge](/programmatic/acp-bridge/) for the handoff and trust boundary.
+
 ## Subagents (`Agent`)
 
 `Agent` lets the main agent hand a self-contained task to a helper that works
@@ -16,7 +34,7 @@ independently and reports back. It exists only on the pi runtime, and only when
 
 ```json
 {
-  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent", "AgentSend"] },
+  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent", "AgentManage"] },
   "subagents": {
     "enabled": true,
     "maxConcurrent": 5,
@@ -100,36 +118,38 @@ retained text names that file directly under its header
 (`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
 Without a configured artifact sink the text says the full result was not saved.
 
-**What operators see.** Foreground subagent tool calls stream live to the TUI and web
+**What operators see.** Foreground subagent tool calls stream live to the web console
 console as its own entry, named `<profile>▸<tool>` and bracketed by the
 subagent's own start/finish rows. The subagent's thinking and prose stay
 internal — only its final answer reaches the parent, through the tool result.
 Detached persistent children instead publish bounded, redacted tool progress and
-a terminal report in the web Background jobs card, with a subagent glyph and
+a terminal report in the web Background jobs card, with an agent icon and a
 scrollable body; the parent Activity keeps the launch and terminal job rows.
 
 **Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous
-subagents; the provider may schedule fewer. In particular, Pi 0.85 exposes only
-a global tool-execution mode, so any offered stateful/mutating or MCP tool makes
-the whole harness sequential, including an otherwise parallel batch of `Agent`
-calls. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
+subagents; the provider may schedule fewer. `Agent` calls can overlap even when
+stateful tools are offered, but an **invoked** stateful, MCP, or unknown tool is
+an exclusive barrier: earlier calls settle first and later calls wait.
+Overlapping children share the workspace, so give parallel children disjoint file
+ownership rather than allowing competing writes to the same paths. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
 runaway guard, since a delegation loop can spend budget serially without ever
 hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
 begins, not while queued.
 
-Detached persistent children (`Agent` / `AgentSend` with `background: true`)
-get a foreground Bash/Exec `timeout_ms` ceiling of the smaller of their own
-process job’s remaining runtime at child-run setup and
+All children get a foreground Bash/Exec `timeout_ms` ceiling bounded by
 `subagents.commandTimeoutMs` (positive integer milliseconds, default 30 minutes).
-Their tool descriptions show that ceiling; the job deadline can stop a command
-sooner as time elapses. Interactive turns and foreground children keep the
-120-second cap. NodeRepl keeps its fixed 120-second timer. Child-owned background
-commands remain unsupported and are out of scope for this rule.
+Detached persistent children (`Agent` / `AgentManage` with `background: true`)
+clamp it to their process job’s remaining runtime at child-run setup. Foreground
+children clamp it to their remaining turn time minus a settlement reserve (10%
+for short turns, at most 15 seconds). Tool descriptions and the child envelope
+show the effective ceiling; the child timer and parent abort can stop commands
+sooner, as can the detached job deadline. Interactive parent turns and NodeRepl
+keep their 120-second caps. Child-owned background commands remain unsupported.
 
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
-it never receives `Agent`, `AgentSend`, `AskUser`, or any channel-send tool — it cannot
+it never receives `Agent`, `AgentManage`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
 with no provider session of its own. Without a call-time override or profile pin,
@@ -152,11 +172,11 @@ non-empty skill list makes skill support a routing requirement.
 ### Persistent subagents
 
 With subagents enabled, persistence is available when effective tool policy
-allows both `Agent` and `AgentSend` (explicitly or through `"*"`, with denies
+allows both `Agent` and `AgentManage` (explicitly or through `"*"`, with denies
 applied). When only `Agent` is allowed, it keeps its stateless schema and the
 Session envelope omits instance guidance. `Agent({name: "researcher", prompt: "Review the design", persist: true,
 id: "reviewer"})` creates an instance and runs its first turn.
-`AgentSend({id: "reviewer", message: "Now check this revision"})` resumes its own
+`AgentManage({id: "reviewer", message: "Now check this revision"})` resumes its own
 Pi-native durable session. The parent transcript is never seeded into the child.
 The selected model, effort, prompt, and profile are retained for that instance.
 The tool copy states that a child is stateless by default and that `persist`
@@ -168,11 +188,30 @@ retained; their configuration is resolved from the current catalog. A removed
 server or unavailable retained route causes an error rather than using stale
 configuration or silently changing the selected model.
 
+`AgentManage({id, message, model, effort})` runs that continuation on a
+different route. The child keeps its durable session and full prior context; the
+new route is persisted on the instance, so later continuations inherit it
+without repeating it. `model` takes the same configured choices as `Agent` and
+is offered only when the host configured any; `effort` takes the usual levels.
+Both compose with `background: true`, `close: true` and `ack`, and both are
+rejected — starting no turn and writing nothing — with `stop`, `steer`,
+`inspect` and close-only calls, and for an unknown model name or effort level.
+A turn that fails keeps the new route, because the next continuation should
+inherit what was asked for; a failed foreground retarget leaves the instance
+close-only until its recovery evidence is inspected and acknowledged, exactly
+like any other failed foreground turn.
+
 IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
 an id such as `researcher-1` is generated. Results include the id, turn count,
 and status; the parent's Session envelope lists live instances on every turn.
-Use `AgentSend({id: "reviewer", close: true})` when done, or combine a final
-`message` with `close: true`. A combined call closes only after a successful
+Use `AgentManage({id: "reviewer", close: true})` when done, or combine a final
+`message` with `close: true`. While a detached turn runs,
+`AgentManage({id, steer: "<text>"})` offers text into that in-progress turn and
+returns an honest receipt (`applied` / `pending` / `not_applied` / `unsupported`);
+it starts no turn, and a foreground child can be reached by neither steer nor
+stop, because it blocks the parent's own turn. See
+[Background process jobs](../tools/background-process-jobs.md) for the receipt
+table and the in-process, restart-truthful mailbox. A combined call closes only after a successful
 message; busy, cancelled, timed-out, or failed turns keep the instance live.
 Close-only calls do not spend the parent call budget.
 
@@ -185,9 +224,9 @@ The tool durably saves the question before ending the child turn. It never
 blocks waiting for a reply, calls the parent directly, or contacts the user.
 `AskUser` and channel send tools remain unavailable to children.
 
-The enclosing `Agent` or `AgentSend` result is successful with
+The enclosing `Agent` or `AgentManage` result is successful with
 `details.subagent.status: "awaiting_reply"` and structured `question` details.
-Reply with ordinary `AgentSend({id, message})` into the same child transcript.
+Reply with ordinary `AgentManage({id, message})` into the same child transcript.
 The Session envelope also includes a bounded, quoted pending question for
 restart or compaction recovery. Failed replies retain the question; a successful
 answer clears it; another `AskParent` replaces it. Close-only retires it.
@@ -197,7 +236,7 @@ Configure `subagents.instances`:
 
 | Field | Default | Limits / behavior |
 | --- | --- | --- |
-| `enabled` | `true` when subagents are enabled | `false` keeps stateless `Agent`, without persistence parameters, and removes `AgentSend`. |
+| `enabled` | `true` when subagents are enabled | `false` keeps stateless `Agent`, without persistence parameters, and removes `AgentManage`. |
 | `root` | `<artifacts.dir>/../subagents` | Relative paths resolve like other config paths. |
 | `maxPerConversation` | `8` | 1–32 live instances. |
 | `idleTtlMs` | `86400000` (one day) | 60000–604800000; expiry is applied on registry access. Running instances do not expire. |
@@ -252,7 +291,7 @@ These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always w
 }
 ```
 
-Env equivalents: `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` (comma-separated tool names).
+Configure `tools.allowedTools` and `tools.disallowedTools` as JSON arrays.
 
 :::note
 An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `disallowedTools` — the allow-all default. Listing specific names narrows to those; an **explicit empty** `[]` allows none (a deliberate chat-only agent). Add names to `disallowedTools` to subtract from the open default without switching to a full allowlist.
@@ -342,13 +381,13 @@ This guard is always on (coverage: `auto`). You do not enable it; you only choos
 }
 ```
 
-Env: `MONO_AGENT_ARTIFACT_DIR`.
+Configure `artifacts.dir` in JSON.
 
 ## Usage & cost tracking (auto)
 
 Each run collects per-turn usage, cost, and cache metrics as events for its JSONL artifact. Pi catalog estimates delegate to Pi's native cost calculation, including request-wide pricing tiers and cache-write rates. Before persistence, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. The recorder applies a 4,096-byte default cap per string, writes an empty start snapshot, schedules best-effort `running` checkpoints after 25 new events or five seconds from the first uncheckpointed event, and queues the terminal snapshot after any scheduled checkpoint. It replaces the events and summary files separately rather than appending or fsyncing a journal, so a crash can preserve the last successful prefix while losing the unscheduled or failed-write tail. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary and stale-reconciliation contract.
 
-Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
+Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these.
 
 ## Context compaction (Pi bridge-driven, configurable)
 
@@ -373,9 +412,21 @@ changes do not prove cache misses, and delta/unsupported prefix comparisons rema
 unknown. Summary requests keep Pi's existing disabled-cache setting.
 
 
-Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
+Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge owns the decision in all three cases:
 
 - **Proactively** — before a turn when the running model is near its context window.
+- **Mid-run** — between completed model/tool rounds of a single turn, so a long
+  tool-using run that crosses the trigger while it is still working compacts
+  then instead of drifting until the turn ends. The check runs at Pi's own
+  durable checkpoints, which are only reached once a whole tool batch has
+  finished, and the compaction is applied inside the same run: it never starts a
+  second agent run, appends a user message, consumes queued steering input, or
+  splits a tool call from its result. The summary itself is a separate paid
+  provider request. Guards keep it cheap — at most one attempt in flight, at most one
+  evaluation per completed round, a re-check of the trigger before a summary is
+  requested, no summary at all when the retained recent messages already hold
+  nearly all of the context, and required fresh assistant progress plus
+  meaningful growth before any further attempt.
 - **Reactively** — if a turn still overflows, it compacts and re-prompts once
   only after the rebuilt context preview proves a positive reduction. A
   non-reducing compaction is cancelled before persistence and is not sent back
@@ -393,18 +444,20 @@ Every run reports `context_compaction_applied`:
 
 | Value | Meaning |
 | --- | --- |
-| `true` | Compaction fired this run. |
+| `true` | Compaction fired this run (before the request or mid-run). |
 | `false` | Enabled but not needed. |
 | `null` | Compaction disabled (or the bridge does not support it). |
 
 Pi diagnostics also report the full proactive request estimate and fixed
 overhead components on every check, plus `context_compaction_reactive_attempted`,
-`context_compaction_tokens_after`, and `context_compaction_reduced`. If the
+`context_compaction_tokens_after`, and `context_compaction_reduced`. Mid-run
+activity is reported separately as `context_compaction_midrun_armed`,
+`context_compaction_midrun_attempts` and `context_compaction_midrun_applied`. If the
 request still exceeds the primary model's window, the run is classified as
 `context_limit`; the fallback router may then try the next configured model.
 
-This is automatic and configurable on the Pi-native bridge. Defaults resolve against the effective context window `W`: trigger ratio `0.70`, safety headroom
-`clamp(floor(W × 0.25), 16000, 96000)`, retained context
+This is automatic and configurable on the Pi-native bridge. Defaults resolve against the effective context window `W`: trigger ratio `0.90`, safety headroom
+`clamp(floor(W × 0.10), 16000, 48000)`, retained context
 `clamp(floor(W × 0.10), 4000, 20000)`, summary output
 `clamp(floor(W × 0.04), 2000, 12000)`, and minimum proactive savings
 `clamp(floor(W × 0.10), 4000, 20000)`. Configure overrides under
@@ -442,12 +495,17 @@ This is distinct from provider-transport retries (`providers.piNative.piMaxRetri
 
 ## Tool scheduling (code-only)
 
-Pi defaults to safe parallelism. With Pi 0.85, independent read-only tools may
-overlap only when the offered tool set contains no sequential tool. If `Write`,
-`Edit`, `Bash`, `Exec`, `NodeRepl`, any MCP tool, or another stateful/mutating
-built-in is available, the harness serializes the whole batch because upstream
-no longer exposes mixed per-tool scheduling. A host can also force every tool
-to run sequentially:
+Pi defaults to safe parallelism. Invoked independent read-only tools and `Agent`
+calls may overlap even if stateful tools are merely offered. An invoked `Write`,
+`Edit`, `Bash`, `Exec`, `NodeRepl`, `Monitor`, `AgentManage`, `AskParent`,
+`StructuredOutput`, MCP, or unknown tool is exclusive: it waits for earlier
+admitted calls, then blocks later calls until its result settles. A background
+process job or detached Agent releases admission on its started receipt, not
+when the detached work finishes; separate job and child limits still apply.
+Calls waiting behind the gate already have Pi's durable `effect_pending` intent
+and emitted `tool_execution_start`: a visible “running” state and its duration
+include time waiting for admission, not just execution time. If interrupted
+before admission, non-replay-safe calls recover as interrupted, not re-executed. A host can also force every tool to run sequentially:
 
 ```ts
 const runtimeOptions = {

@@ -24,8 +24,11 @@ export type {
   MemoryStoreAudit,
   MemoryStoreStatsOptions,
   MemoryType,
+  RecallDegradationCode,
   RecallHit,
   RecallOptions,
+  RecallOutcome,
+  RecallRetrievalMode,
   RecallWeights,
   SimilarHit,
 } from "./types.js";
@@ -35,4 +38,4 @@ export {
   MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES,
   MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,
 } from "./types.js";
-export type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+export type { MemoryBlock, MemoryLoadOptions, MemoryStore } from "@mono-agent/agent-contracts";

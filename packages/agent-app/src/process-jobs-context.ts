@@ -1,3 +1,4 @@
+import type { WakeRecovery } from "./process-jobs-wake-fence.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
@@ -13,6 +14,8 @@ import {
 export interface ProcessJobWakeContext {
   readonly jobId: string;
   readonly chainDepth: number;
+  readonly pendingQuestion?: boolean;
+  readonly wakeRecovery?: WakeRecovery;
 }
 
 interface ProcessJobWakeFlight extends ProcessJobWakeContext {
@@ -31,6 +34,19 @@ export type ProcessJobWakeContextResolution =
   | { readonly kind: "missed" };
 
 const wakeContext = new AsyncLocalStorage<ProcessJobWakeFlight>();
+// Recall-only provenance. An authenticated web channel is not evidence that a
+// host-created follow-up contains human-authored text. Keep capture unchanged.
+const hostWakeRecallContext = new AsyncLocalStorage<boolean>();
+
+export function isHostProcessJobWakeRecall(): boolean {
+  return hostWakeRecallContext.getStore() === true;
+}
+
+/** Private routing metadata for the authenticated app-owned web ingress. */
+export function currentProcessJobWakeRecovery(): WakeRecovery | undefined {
+  return wakeContext.getStore()?.wakeRecovery;
+}
+
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 // The metadata object is only an identity key. No string field is added to it,
 // and a wire/user-created object cannot forge membership in this owner-private
@@ -146,14 +162,21 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
         wakeContextByRequestMetadata.set(request.metadata, [...current, installed]);
       }
       try {
-        const response = await responder.respond(request, stream);
+        // The web operator already sends a delivery key, but its JSON field is
+        // client-supplied. Only an exact active private flight can suppress
+        // automatic recall. A client knowing that live key could suppress its
+        // own concurrent turn's automatic block; explicit recall and capture
+        // remain unchanged. Keep captureSpeakerKind and delivery unchanged.
+        const response = await (context === undefined
+          ? responder.respond(request, stream)
+          : hostWakeRecallContext.run(true, () => responder.respond(request, stream)));
         const active = context === undefined ? [] : wakeFlightsByDeliveryKey.get(context.deliveryKey) ?? [];
-        // Monitor wraps the same lineage seam but owns its own suppression policy.
         // A stale/missing/ambiguous key, narration, or any rich part stays visible.
         if (context !== undefined
-          && !context.deliveryKey.startsWith("monitor:")
           && active.length === 1 && active[0]?.token === context.token
-          && classifyNotifySuppression(response.text) === "sentinel"
+          && (response.metadata?.turnDisposition === "silent"
+            || (response.metadata?.turnDisposition === undefined
+              && classifyNotifySuppression(response.text) === "sentinel"))
           && (response.parts?.length ?? 0) === 0) {
           if (silentWakeDeliveryKeys.size >= 10_096) {
             const oldest = silentWakeDeliveryKeys.values().next().value;
@@ -175,6 +198,9 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
         }
       }
     },
+    ...(responder.compactConversation === undefined
+      ? {}
+      : { compactConversation: responder.compactConversation.bind(responder) }),
     ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
     ...(responder.liveInputOwnership === undefined ? {} : { liveInputOwnership: responder.liveInputOwnership }),
     ...(responder.offerLiveInput === undefined
@@ -218,7 +244,9 @@ function offerProcessJobWakeToActiveRun(
   if (candidates.length !== 1) return { status: "unavailable", reason: "inactive" };
   const target = candidates[0]!;
   const wakeToken = Object.freeze({});
-  target.wakeDepths.set(wakeToken, flight.chainDepth + 1);
+  // The service already advances the lineage when it creates this wake. Live
+  // steering and a separate wake turn must carry the same depth.
+  target.wakeDepths.set(wakeToken, flight.chainDepth);
   const rollback = (): void => {
     target.wakeDepths.delete(wakeToken);
   };
@@ -324,5 +352,6 @@ function resolveFlights(
 }
 
 function publicWakeContext(context: ProcessJobWakeFlight): ProcessJobWakeContext {
-  return Object.freeze({ jobId: context.jobId, chainDepth: context.chainDepth });
+  return Object.freeze({ jobId: context.jobId, chainDepth: context.chainDepth,
+    ...(context.pendingQuestion === true ? { pendingQuestion: true } : {}) });
 }

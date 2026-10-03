@@ -48,6 +48,6 @@ You implement changes in the mono-agent monorepo with this repo's specific disci
 ## How you finish
 
 - Conventional commit with scope and an explanatory body via
-  `git commit -q -F - <<'EOF' … EOF`; author `author@example.com`.
+  `git commit -q -F - <<'EOF' … EOF`; keep the default commit author.
 - Report: what changed and why this ladder rung; verification evidence (exact
   commands + outcomes, not adjectives); known gaps or follow-ups.

@@ -23,6 +23,9 @@ export {
   isKnownToolName,
   isMcpToolName,
   LEGACY_TOOL_ALIASES,
+  RENAMED_TOOL_NAMES,
+  renamedToolMessage,
+  renamedToolName,
   suggestToolName,
 } from "./known-tools.js";
 

@@ -67,6 +67,62 @@ describe("telegram proactive notify allowlist", () => {
     expect(notify).toHaveBeenCalledWith(42, "hi", undefined);
   });
 
+  it("routes a forum-topic destination to that topic, keeping the chat-level allowlist", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const running = await telegramDriver(notify).start(startInput(config({})));
+
+    await expect(running.notify!({ conversationId: "telegram:42:7", text: "digest", verbatim: true }))
+      .resolves.toEqual({ delivered: true });
+    expect(notify).toHaveBeenCalledWith({ chatId: 42, messageThreadId: 7 }, "digest", { verbatim: true });
+
+    const outsider = await running.notify!({ conversationId: "telegram:999:7", text: "digest" });
+    expect(outsider).toMatchObject({ delivered: false });
+    expect(outsider.reason).toMatch(/allowlist/);
+    const malformed = await running.notify!({ conversationId: "telegram:42:general", text: "digest" });
+    expect(malformed).toMatchObject({ delivered: false, reason: "unparseable telegram destination" });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes AskUser, tool status and process-job cards of a topic conversation into that topic", async () => {
+    const presentAsk = vi.fn(async () => undefined);
+    const postStatus = vi.fn(async () => undefined);
+    const updateProcessJob = vi.fn(async () => ({ delivered: true, code: "surface_posted" }));
+    let sink: import("@mono-agent/agent-contracts").ChannelInteractionSink | undefined;
+    const input = {
+      ...startInput(config({})),
+      interaction: {
+        registerSink: (_channelId: string, registered: typeof sink) => { sink = registered; },
+        getPendingAsk: () => undefined,
+        submitAskAnswers: () => ({ accepted: false, code: "not_found" }),
+        cancelAsks: () => undefined,
+      },
+    } as never;
+    const running = await createTelegramChannelDriver({
+      startAdapter: async () => ({
+        stop: async () => undefined,
+        notify: vi.fn(),
+        presentAsk,
+        updateAsk: vi.fn(),
+        postStatus,
+        updateProcessJob,
+      }) as never,
+    }).start(input);
+
+    const snapshot = { interactionId: "ask" } as never;
+    await sink!.presentAsk("telegram:42:7#2026-09-28", snapshot);
+    await sink!.postStatus("telegram:42", "Searching…", { key: "k", state: "working" });
+    await expect(sink!.presentAsk("telegram:999:7", snapshot)).rejects.toThrow(/allowlist/);
+    expect(presentAsk).toHaveBeenCalledWith({ chatId: 42, messageThreadId: 7 }, snapshot);
+    expect(postStatus).toHaveBeenCalledWith(42, "Searching…", { key: "k", state: "working" });
+
+    const processJob = projection("telegram:42:7#bucket", "telegram");
+    await expect(running.processJobs!.update({ conversationId: "telegram:42:7", processJob, deliveryKey: processJob.wake.deliveryKey }))
+      .resolves.toMatchObject({ delivered: true });
+    expect(updateProcessJob).toHaveBeenCalledWith({ chatId: 42, messageThreadId: 7 }, processJob, undefined);
+    await expect(running.processJobs!.update({ conversationId: "telegram:42", processJob, deliveryKey: processJob.wake.deliveryKey }))
+      .resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });
+  });
+
   it("rejects a chat that is not in the allowlist", async () => {
     const notify = vi.fn(async () => ({ delivered: true }));
     const running = await telegramDriver(notify).start(startInput(config({})));

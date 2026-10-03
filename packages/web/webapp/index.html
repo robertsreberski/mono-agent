@@ -22,16 +22,19 @@
       it as an opaque strip whose color is sampled once and then cached until the
       app is relaunched, so a theme change leaves a mismatched bar that no CSS
       here can repair. `black-translucent` extends the document under the strip
-      instead, and every top edge already reserves `env(safe-area-inset-top)`
-      (`.chat-header`, `.dashboard-header`, `.project-header`) on top of
-      `viewport-fit=cover`, so the header's own surface is what shows through.
+      instead. A fixed, full-width `.status-bar-surface` fills the inset, and
+      every header reserves the same `env(safe-area-inset-top)` with
+      `viewport-fit=cover`. WebKit's `LocalFrameView::fixedContainerEdges`
+      hit-tests the top midpoint at y=4; a fixed box covering >=90% of the
+      viewport width there gives the status bar its header colour and hides
+      the installed app's soft scroll-edge blur.
 
       Two caveats this cannot fix from here. iOS reads this meta at INSTALL time
       (WebKit 316008): an already-installed console keeps its old strip until it
       is removed from the Home Screen and added again. And the same versions that
       regressed 301994 can report `env(safe-area-inset-top)` as 0; the top edges
-      keep a `max(10px, ...)` floor so a 0 inset degrades to a tight header
-      rather than a title under the clock. Glyph contrast follows the system
+      keep a padding floor (7px on phones), and standalone mode keeps a 5px
+      fixed band for WebKit's y=4 probe without covering header content. Glyph contrast follows the system
       appearance, which is also what the console's own light/dark themes follow.
     -->
     <meta name="mobile-web-app-capable" content="yes" />
@@ -43,7 +46,7 @@
     <title>mono-agent</title>
   </head>
   <body>
-    <!-- Real paint target for installed iOS status-bar sampling; survives React loading/errors. -->
+    <!-- Fixed top-edge container for WebKit's status colour extension; survives React loading/errors. -->
     <div class="status-bar-surface" aria-hidden="true" inert></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

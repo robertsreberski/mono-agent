@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { EFFORT_LEVELS, type EffortLevel } from "@mono-agent/config";
+import { isPiOAuthLoginEnabled } from "@mono-agent/agent-runtime/ai";
 import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
 } from "../pi-auth-store-inspection.js";
-import { runBoundedProviderCommand } from "../provider-setup.js";
+import { hasUsablePiOAuthClientId, runBoundedProviderCommand } from "../provider-setup.js";
 
 export type WizardModelSource = "pi" | "ollama" | "lmstudio" | "custom";
 export type WizardModelAvailability = "catalog_available";
@@ -19,6 +20,7 @@ export const GUIDED_PI_PROVIDER_IDS = [
   "anthropic",
   "github-copilot",
   "openai-codex",
+  "openai",
   "opencode-go",
 ] as const;
 
@@ -26,6 +28,7 @@ const GUIDED_PI_PROVIDERS = new Set<string>(GUIDED_PI_PROVIDER_IDS);
 const GUIDED_LOCAL_PI_PROVIDERS = new Set(["ollama", "lmstudio"]);
 const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
+  openai: "OPENAI_API_KEY",
 };
 
 /** Whether a selected Pi route has an API key in the destination agent environment. */
@@ -47,7 +50,7 @@ export function guidedPiProviderProblem(provider: string): string | undefined {
   }
   return builtinModels().getProvider(provider) === undefined
     ? "Custom Pi providers require a hand-authored providers.local[] entry. Guided init supports discovered Ollama and LM Studio routes."
-    : "Guided init supports Pi Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
+    : "Guided init supports Pi Anthropic, GitHub Copilot, OpenAI, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
 }
 
 export interface WizardModelCandidate {
@@ -188,25 +191,6 @@ export function formatModelDiscoveryStatus(statuses: readonly ModelDiscoveryStat
   return statuses.map((status) => `${status.provider}: ${status.detail}`).join("\n");
 }
 
-export function defaultEffortForModelRef(modelRef: string, reasoning?: boolean): EffortLevel | undefined {
-  if (reasoning === true) {
-    return "medium";
-  }
-  if (reasoning === false) {
-    return "none";
-  }
-
-  const separator = modelRef.indexOf(":");
-  if (separator <= 0 || separator === modelRef.length - 1) return undefined;
-  const provider = modelRef.slice(0, separator);
-  const model = modelRef.slice(separator + 1);
-  if (provider === "opencode-go" || provider === "ollama" || provider === "lmstudio") {
-    return localModelDefaultEffort(model);
-  }
-
-  return undefined;
-}
-
 async function discoverPiModels(
   opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
 ): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
@@ -227,7 +211,7 @@ async function discoverPiModels(
     } else {
       const providers = readPiAuthProviderMap(inspection.auth);
       credentialProviders = new Set(Object.entries(providers)
-        .filter(([provider, credential]) => GUIDED_PI_PROVIDERS.has(provider) && hasUsablePiCredential(credential))
+        .filter(([provider, credential]) => GUIDED_PI_PROVIDERS.has(provider) && hasUsablePiCredential(credential, provider))
         .map(([provider]) => provider));
       status = credentialProviders.size > 0
         ? {
@@ -268,7 +252,7 @@ async function discoverPiModels(
   const models = builtinModels();
   const oauthProviders = new Set(
     models.getProviders()
-      .filter((provider) => provider.auth.oauth !== undefined)
+      .filter((provider) => isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined)
       .map((provider) => provider.id),
   );
   const providerNames = new Map(models.getProviders().map((provider) => [provider.id, provider.name]));
@@ -318,10 +302,11 @@ function readPiAuthProviderMap(auth: Readonly<Record<string, unknown>>): Record<
   return { ...nestedProviders, ...topLevelProviders };
 }
 
-function hasUsablePiCredential(value: unknown): boolean {
+function hasUsablePiCredential(value: unknown, provider: string): boolean {
   if (!isRecord(value)) return false;
   if (value.type === "oauth") {
-    return isCredentialString(value.access) || isCredentialString(value.refresh);
+    return (isCredentialString(value.access) || isCredentialString(value.refresh))
+      && hasUsablePiOAuthClientId(provider, value);
   }
   return value.type === "api_key" && isCredentialString(value.key);
 }
@@ -537,15 +522,6 @@ function parseOllamaList(stdout: string): string[] {
     .filter((name): name is string => name !== undefined && name.length > 0);
 }
 
-export function parseOpenCodeGoModels(stdout: string): string[] {
-  const prefix = "opencode-go/";
-  return stdout
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith(prefix) && line.length > prefix.length)
-    .map((line) => line.slice(prefix.length));
-}
-
 function parseOpenAiModelEntriesBody(body: unknown): DiscoveredModelEntry[] {
   if (!isRecord(body) || !Array.isArray(body.data)) {
     return [];
@@ -602,14 +578,6 @@ function booleanCapability(value: unknown): boolean | undefined {
 
 function arrayCapability(value: readonly unknown[]): boolean | undefined {
   return value.some((entry) => typeof entry === "string" && /^(reasoning|thinking)$/iu.test(entry)) ? true : undefined;
-}
-
-function localModelDefaultEffort(model: string): EffortLevel {
-  const normalized = model.toLowerCase();
-  return ["gpt-oss", "qwen3", "qwq", "deepseek-r1", "reasoning", "thinking"].some((token) => normalized.includes(token))
-    || /(?:^|[-_:/.\s])o[1345](?:$|[-_:/.\s])/u.test(normalized)
-    ? "medium"
-    : "none";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

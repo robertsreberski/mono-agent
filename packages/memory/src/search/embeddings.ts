@@ -1,3 +1,8 @@
+import {
+  configuredEmbeddingIdentity,
+  legacyEmbeddingIdentity,
+  type EmbeddingInstructionsSetting,
+} from "./instructions.js";
 import type { EmbeddingProvider, EmbeddingProviderConfig, MemorySearchErrorCode } from "./types.js";
 
 export class MemorySearchError extends Error {
@@ -42,11 +47,13 @@ export interface OllamaEmbeddingOptions {
   readonly endpoint?: string;
   readonly timeoutMs?: number;
   readonly fetchImpl?: FetchLike;
+  readonly instructions?: EmbeddingInstructionsSetting;
 }
 
 /** Local embeddings via Ollama's `/api/embed` endpoint (e.g. nomic-embed-text). */
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly id: string;
+  readonly legacyId?: string;
   private readonly model: string;
   private readonly endpoint: string;
   private readonly timeoutMs: number;
@@ -60,7 +67,9 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_OLLAMA_ENDPOINT, "Ollama");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.id = `ollama:${this.model}`;
+    const identity = providerIdentity("ollama", this.model, options.instructions);
+    this.id = identity.id;
+    if (identity.legacyId !== undefined) this.legacyId = identity.legacyId;
   }
 
   async embed(texts: readonly string[]): Promise<number[][]> {
@@ -101,6 +110,7 @@ export interface OpenAIEmbeddingOptions {
   readonly endpoint?: string;
   readonly timeoutMs?: number;
   readonly fetchImpl?: FetchLike;
+  readonly instructions?: EmbeddingInstructionsSetting;
 }
 
 export interface LmStudioEmbeddingOptions {
@@ -109,11 +119,13 @@ export interface LmStudioEmbeddingOptions {
   readonly apiKey?: string;
   readonly timeoutMs?: number;
   readonly fetchImpl?: FetchLike;
+  readonly instructions?: EmbeddingInstructionsSetting;
 }
 
 /** Local embeddings via LM Studio's OpenAI-compatible `/v1/embeddings` endpoint. */
 export class LmStudioEmbeddingProvider implements EmbeddingProvider {
   readonly id: string;
+  readonly legacyId?: string;
   private readonly model: string;
   private readonly apiKey: string | undefined;
   private readonly endpoint: string;
@@ -131,7 +143,9 @@ export class LmStudioEmbeddingProvider implements EmbeddingProvider {
     this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_LMSTUDIO_ENDPOINT, "LM Studio");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.id = `lmstudio:${this.model}`;
+    const identity = providerIdentity("lmstudio", this.model, options.instructions);
+    this.id = identity.id;
+    if (identity.legacyId !== undefined) this.legacyId = identity.legacyId;
   }
 
   async embed(texts: readonly string[]): Promise<number[][]> {
@@ -169,6 +183,7 @@ export class LmStudioEmbeddingProvider implements EmbeddingProvider {
 /** Remote embeddings via the OpenAI-compatible `/embeddings` endpoint. */
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly id: string;
+  readonly legacyId?: string;
   private readonly model: string;
   private readonly apiKey: string;
   private readonly endpoint: string;
@@ -187,7 +202,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_OPENAI_ENDPOINT, "OpenAI");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.id = `openai:${this.model}`;
+    const identity = providerIdentity("openai", this.model, options.instructions);
+    this.id = identity.id;
+    if (identity.legacyId !== undefined) this.legacyId = identity.legacyId;
   }
 
   async embed(texts: readonly string[]): Promise<number[][]> {
@@ -216,6 +233,16 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+function providerIdentity(
+  provider: EmbeddingProviderConfig["provider"],
+  model: string,
+  instructions: EmbeddingInstructionsSetting | undefined,
+): { id: string; legacyId?: string } {
+  const config = { provider, model, ...(instructions === undefined ? {} : { instructions }) };
+  const legacyId = legacyEmbeddingIdentity(config);
+  return { id: configuredEmbeddingIdentity(config), ...(legacyId === undefined ? {} : { legacyId }) };
+}
+
 export function createEmbeddingProvider(
   config: EmbeddingProviderConfig,
   fetchImpl?: FetchLike,
@@ -225,6 +252,7 @@ export function createEmbeddingProvider(
       model: config.model,
       ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
       ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }),
+      ...(config.instructions === undefined ? {} : { instructions: config.instructions }),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }
@@ -237,6 +265,7 @@ export function createEmbeddingProvider(
       apiKey: config.apiKey,
       ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
       ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }),
+      ...(config.instructions === undefined ? {} : { instructions: config.instructions }),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }
@@ -246,6 +275,7 @@ export function createEmbeddingProvider(
       ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
       ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
       ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }),
+      ...(config.instructions === undefined ? {} : { instructions: config.instructions }),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }

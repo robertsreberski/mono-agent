@@ -35,9 +35,10 @@ const execFileAsync = promisify(execFile);
 
 /**
  * @param {{pattern: string, path?: string, limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{ctx: import("./shared/tool-context.js").ToolContext, sandboxPolicy?: any, sandboxEngine?: any}} options
  */
-export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, { sandboxPolicy, sandboxEngine, ctx } = {}) {
+export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, options) {
+  const { sandboxPolicy, sandboxEngine, ctx } = options ?? {};
   const cwd = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
   const protectedSearch = protectedFilesystemTargetPlan(cwd, { sandboxPolicy, ctx });
   const protectedExecution = protectedSearch !== null;

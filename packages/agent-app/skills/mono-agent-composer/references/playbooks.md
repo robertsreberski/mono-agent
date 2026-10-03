@@ -3,7 +3,7 @@
 Condensed, offline copy of the end-to-end recipes. Each maps a persona/goal to a
 concrete `mono-agent.config.json` shape and the `init → configure → validate →
 start → smoke` flow. Mirrors the published Playbooks index
-(<https://mono-agent-docs.vercel.app/playbooks/>); this file is the
+(<https://docs.mono-agent.dev/playbooks/>); this file is the
 self-contained in-skill version so the composer can offer a matching recipe
 without fetching anything. Before hand-assembling a config in the Composition
 Flow, check whether one of these fits and adapt it. Verify every key against
@@ -11,17 +11,6 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ---
 
-## Efficient command watches
-
-For repeated terminal redraws, enable `processJobs.enabled` and
-`monitors.enabled`, then use Monitor with `wake_on: "batch"`,
-`dedupe: "batch"`, and a chosen `min_wake_interval_ms`. The host clamps the
-interval to `monitors.maxWakeIntervalMs` (default/cap 300000); check the start
-receipt's effective policy. First and terminal wakes bypass the floor.
-Use `wake_on: "exit"` with default dedupe/interval for exactly one terminal
-wake and a bounded retained tail. Finite work whose final result matters still
-fits a background process job. Cancellation intentionally stops the watch;
-never automatically recreate it.
 
 ## 1. Personal Telegram assistant with BuJo memory
 **For:** an individual wanting a private assistant that remembers.
@@ -131,7 +120,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 }
 ```
 **Steps:** `mono-agent init` → add the destination adapter and allowlist → add the cron job (or `cron/morning-digest.md`) with `conversationId`, IANA timezone, `notify: true`, and optional `notifyConversationId` → `validate` → `start`.
-**Smoke:** trigger a one-off tick; confirm the final answer lands verbatim in the allowed destination with no tool call, no Slack link/media preview under the example config, and `conversationId` shares context across ticks. Return `NOTHING_TO_REPORT` to test the silent path.
+**Smoke:** trigger a one-off tick; confirm the final answer lands verbatim in the allowed destination with no tool call, no Slack link/media preview under the example config, and `conversationId` shares context across ticks. Call `FinishSilently({})` alone to test the silent path, or return `NOTHING_TO_REPORT` if the tool is unavailable.
 
 ## 7. A2A provider + consumer pair
 **For:** a platform integrator connecting two agents over A2A.
@@ -200,35 +189,7 @@ const orchestrator = await createConfiguredAgentResponder({
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
 **Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Every route is Pi-native, so this sandbox policy applies uniformly to the primary, every fallback, and every per-trigger override.
 
-## 10. Phoenix-observed agent with the TUI
-**For:** an agent builder evaluating runs in a tracing dashboard.
-**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a sensitive-key-redacted, credential-scanned, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
-**Features:** `observability.phoenix-exporter`, `observability.jsonl-artifacts`, `observability.trace-registry`, `tui.chat`.
-
-```json
-{
-  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
-  "artifacts": { "dir": ".mono-agent/artifacts" },
-  "traceability": { "registryDir": ".mono-agent/trace-sources", "sourceId": "my-agent", "heartbeatMs": 10000 },
-  "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project", "includeSensitiveData": false, "contentPatternRedaction": false, "timeoutMs": 5000 }] }
-}
-```
-**Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.
-**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Strings are capped. For local artifacts, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. Phoenix applies that scan only when `contentPatternRedaction` is true.
-
-## 11. Backfill historical runs to Phoenix
-**For:** an ops engineer onboarding observability after the fact.
-**Goal:** retroactively export recorded JSONL runs to Phoenix with original timestamps, idempotently.
-**Features:** `observability.backfill`, `observability.phoenix-exporter`, `observability.jsonl-artifacts`.
-
-```json
-{ "artifacts": { "dir": ".mono-agent/artifacts" }, "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project" }] } }
-```
-**Steps:** ensure `run-*.summary.json` + `run-*.events.jsonl` exist and Phoenix is reachable → `mono-agent backfill --all --since <iso> --until <iso> --dry-run` → `mono-agent backfill --all --since <iso>`.
-**Smoke:** dry-run then real export; historical timestamps preserved in Phoenix and a second run does not duplicate spans (deterministic ids).
-
-
-## 12. Multi-model fallback chain with transcript resume
+## 10. Multi-model fallback chain with transcript resume
 **For:** a reliability-minded builder who can't afford a single-provider outage.
 **Goal:** a primary model with ordered backups the native failover router tries on retryable failures, resuming from the transcript tail — reported, never silent.
 **Features:** `runtime.multi-backend`, `runtime.fallback-models`, `runtime.pi-native-tuning`, `runtime.provider-sessions`.
@@ -242,29 +203,9 @@ const orchestrator = await createConfiguredAgentResponder({
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired in 0.21.0
 and are rejected at load; emit `runtime.fallbacks[]` only.
 
-## 13. Personal Telegram assistant with Supermemory
-**For:** a power user trying an external memory layer while keeping the agent local.
-**Goal:** a Telegram bot captures turns into a local or hosted Supermemory instance and recalls through the same `MemoryRecall` tool.
-**Features:** `telegram.long-polling`, `memory.backend-supermemory`, `memory.per-turn-capture`, `memory.recall-tool`.
-
-```json
-{
-  "runtime": { "model": "anthropic:claude-sonnet-4-6" },
-  "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
-  "memory": {
-    "backend": "supermemory", "mode": "lite", "path": "./.mono-agent/memory",
-    "writeMode": "capture",
-    "supermemory": { "baseUrl": "http://127.0.0.1:6767", "container": "my-telegram-agent" },
-    "recallTool": { "enabled": true }
-  }
-}
-```
-**Steps:** install the exact `@mono-agent/memory-supermemory` version matching agent-app, run `supermemory-server`, save its `sm_...` key in `.env`, add the explicit memory block plus Telegram token/chat id, `validate`, `start`.
-**Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `MemoryRecall` returning Supermemory hits.
-
-## 14. Fully local LM Studio agent
+## 11. Fully local LM Studio agent
 **For:** a privacy-focused user who prefers LM Studio's GUI local server.
-**Goal:** a local LM Studio model answers through the webhook channel with lite memory and no cloud calls.
+**Goal:** a local LM Studio model answers through the webhook channel with lite memory; network-capable tools remain governed separately.
 **Features:** `runtime.local-providers`, `runtime.multi-backend`, `memory.lite`, `webhook.http-invoke`.
 
 ```json
@@ -278,7 +219,7 @@ and are rejected at load; emit `runtime.fallbacks[]` only.
 **Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model lmstudio:qwen3.6-32b --memory lite` (the `lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
-## 15. Interactive agent with long jobs and large media
+## 12. Interactive agent with long jobs and large media
 **For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
 **Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
 **Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `agent-app.rich-replies`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
@@ -299,7 +240,7 @@ minutes.
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
 **Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive both an explicit `TelegramSendFile` send and a final generated reply file published with `PublishReplyFile` as native documents.
 
-## 16. Local-first web research agent
+## 13. Local-first web research agent
 **For:** a researcher wanting operator-owned search infrastructure and bounded public-page extraction.
 **Goal:** discover through explicit Ollama or loopback SearXNG, extract pages locally, and optionally render JavaScript HTML in an isolated anonymous browser.
 **Features:** `runtime.web-research`, `runtime.webfetch-retry`, `runtime.builtin-tools`, `sandbox.network-policy`.
@@ -310,7 +251,7 @@ minutes.
   "tools": {
     "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
     "web": {
-      "search": { "backend": "auto", "maxRequestsPerRun": 4, "ollama": { "baseUrl": "http://127.0.0.1:11434" }, "searxng": { "endpoint": "http://127.0.0.1:8088" } },
+      "search": { "backend": ["parallel", "ollama"], "maxRequestsPerRun": 4, "ollama": { "baseUrl": "http://127.0.0.1:11434" }, "searxng": { "endpoint": "http://127.0.0.1:8088" } },
       "fetch": { "render": "never", "browserCommand": "agent-browser" }
     }
   },
@@ -318,18 +259,23 @@ minutes.
 }
 ```
 
-**Steps:** configure explicit local or hosted `ollama`, or provision an operator-owned loopback SearXNG instance with JSON responses enabled → keep a named backend strict or choose `auto` for explicitly configured Ollama, configured SearXNG, ChatGPT-subscription Codex, then keyless fallback → keep the default four-request run budget → keep config render `never`, or install `agent-browser >=0.33.1` and opt into config render `auto` for SPA pages; use per-call `WebFetch` `render: "always"` only when a known page must be browser-first → `validate` → `start`.
+**Steps:** configure explicit local or hosted `ollama`, or provision an operator-owned loopback SearXNG instance with JSON responses enabled → keep a named backend strict or choose an explicit ordered array (default Parallel then local Ollama; keyless is opt-in) → keep the default four-request run budget → keep config render `never`, or install `agent-browser >=0.33.1` and opt into config render `auto` for SPA pages; use per-call `WebFetch` `render: "always"` only when a known page must be browser-first → `validate` → `start`.
 **Boundary:** local SearXNG and Ollama search are private infrastructure, not offline indexes; they contact public services and WebFetch contacts result sites. Hosted Ollama credentials are bound to the exact official origin. `localhost` permits a local companion but blocks public fetches. Rendering does not bypass authentication or access challenges.
 **Smoke:** ask for one broad query and one official-page fetch; require canonical ranked URLs, request-budget metadata, untrusted-content boundaries, bounded timing metadata without query/URL leakage, and no duplicate network work for an identical call in the run. The researcher must not sleep or retry after a cooldown.
 
 ### Detached persistent delegation
 
-Enable persistent Agent/AgentSend and ProcessJobs on an exact-conversation Pi
-route. Use `Agent` with `persist:true, background:true`, then `AgentSend` with a
+Enable persistent Agent/AgentManage and ProcessJobs on an exact-conversation Pi
+route. Use `Agent` with `persist:true, background:true`, then `AgentManage` with a
 message and optional `background:true`. A durable started receipt schedules an
 exact-origin wake, including AskParent questions. Do not poll or replay; a
 terminal job with `childStillBusy:true` does not permit another send until the
-child actually settles. Restart interrupts and wakes without replay.
+child actually settles. Use `AgentManage({id, stop:true})` alone for cooperative
+stop (detached turns only, no rollback or force-kill). A `resumable:true` receipt
+permits ordinary message continuation on the same session or `close:true`;
+`stop_requested` retains ownership and blocks messages/close. Lost or unknown
+continuity requires explicit recovery, not replay. Restart interrupts and wakes
+without replay.
 Recovery acknowledgement is retained-context only and single-use. A failed
 acknowledged `close:true` continuation leaves the child and pending AskParent
 question available, while private registry I/O failures remain path-free and do

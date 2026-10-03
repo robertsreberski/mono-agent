@@ -1,7 +1,9 @@
+import { isProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useConsoleStore } from "../console-store";
-import type { ThreadDetail } from "../types";
-import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
+import { runningManualCompaction } from "../manual-compaction";
+import type { ProviderUsageId, ThreadDetail } from "../types";
+import { conversationConsoleUsage, type ConsoleContextProjection, type ConsoleUsage } from "../usage";
 import { sameModel } from "./model-comparison";
 import {
   buildSelectorModels,
@@ -48,6 +50,16 @@ export function modelChangeNoticeInput(
   };
 }
 
+export function activeProviderUsageId(
+  effectiveModel: string,
+  context: ConsoleContextProjection | undefined,
+): ProviderUsageId | null {
+  const model = effectiveModel.trim() || context?.measuredModel || context?.usage?.model;
+  if (model === undefined) return null;
+  const provider = providerOfModel(model);
+  return isProviderUsageId(provider) ? provider : null;
+}
+
 /**
  * The model and context derivations, owned by neither surface that shows them.
  * The desktop renders a popover in the chat header and the phone renders bottom
@@ -58,6 +70,8 @@ export function useRunControls() {
   const {
     model,
     effort,
+    context1M,
+    setContext1M,
     modelOptions,
     effortOptions,
     setModel,
@@ -114,6 +128,10 @@ export function useRunControls() {
           },
     };
   }, [detail, effectiveModel, selectedThread]);
+  const providerUsageId = useMemo(
+    () => activeProviderUsageId(effectiveModel, usage?.context),
+    [effectiveModel, usage?.context],
+  );
 
   const changeNoticeInput = useMemo(
     () => modelChangeNoticeInput(detail, effectiveModel),
@@ -165,9 +183,23 @@ export function useRunControls() {
 
   return {
     usage,
+    threadId: selectedThread?.id,
+    detail,
+    running: selectedThread?.runState.status === "running",
+    contextLoading: selectedThread !== null && detail === null,
+    compactThreadId: selectedAgent?.supportsManualCompaction === true
+      && selectedAgent.status !== "offline" && selectedThread?.canSend === true
+      && selectedThread.trigger?.kind !== "cron" ? selectedThread.id : undefined,
+    compactBlocked: selectedThread?.runState.status === "running",
+    manualCompacting: runningManualCompaction(selectedThread),
+    providerUsage: selectedAgent !== null && providerUsageId !== null
+      ? { agent: selectedAgent, providerId: providerUsageId }
+      : undefined,
     selectorModels,
     model,
     effort,
+    context1M,
+    setContext1M,
     effectiveModel,
     effectiveEffort,
     setModel,

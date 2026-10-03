@@ -77,14 +77,14 @@ describe("process-job lifecycle surface routing", () => {
       runtime: { model: "openai-codex:gpt-5.6-sol", workspace: "." },
       context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
       tools: { allowedTools: [], disallowedTools: [] },
-      artifacts: { dir: ".config-state/artifacts" },
+      artifacts: { dir: ".state/artifacts" },
       processJobs: { enabled: true, stateDir: ".state/history" },
     }));
     const agentRootOwnership = await ownershipFor(cwd);
     const controller: ProcessJobsControllerPort = {
       cwd,
       configReadPath,
-      env: { MONO_AGENT_ARTIFACT_DIR: ".state/artifacts" },
+      env: { MONO_AGENT_ARTIFACT_DIR: ".stale-env/artifacts" },
       logger: undefined,
       drivers: [],
       running: new Map(),

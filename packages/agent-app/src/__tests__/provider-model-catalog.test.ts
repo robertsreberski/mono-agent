@@ -117,14 +117,34 @@ describe("provider-model-catalog", () => {
     }
   });
 
-  it("advertises the supplemented opencode-go DeepSeek V4.1 Flash like a builtin", () => {
+  it("advertises new Pi and supplemented models once with their limits and effort", () => {
+    for (const [provider, model, contextWindow] of [
+      ["anthropic", "claude-sonnet-5-5", 1_000_000],
+      ["anthropic", "claude-opus-5-5", 1_000_000],
+      ["openai-codex", "gpt-6-sol", 272_000],
+      ["openai-codex", "gpt-6-luna", 272_000],
+      ["openai", "gpt-6-sol", 272_000],
+      ["openai", "gpt-6-luna", 272_000],
+    ] as const) {
+      const upstream = listPiBuiltinModels(provider).find((row) => row.id === model)!;
+      const catalog = buildProviderModelCatalog({ providers: [{ id: provider }] });
+      const advertised = catalog.listModels(provider).models.filter((row) => row.id === model);
+      expect(advertised).toHaveLength(1);
+      expect(advertised[0]).toMatchObject({
+        id: model, provider, contextWindow,
+        reasoning: resolveAdvertisedModelEffortForBuiltin(upstream).reasoning,
+      });
+    }
+  });
+
+  it("advertises the upstream opencode-go DeepSeek V4.1 Flash like a builtin", () => {
     const catalog = buildProviderModelCatalog({ providers: [{ id: "opencode-go" }] });
     const provider = catalog.listProviders().find((entry) => entry.id === "opencode-go");
 
     const full = listPiBuiltinModels("opencode-go");
     expect(full.some((model) => model.id === "deepseek-v4.1-flash")).toBe(true);
-    // 27 upstream rows plus the one supplement: far below the 100 default cap,
-    // so maxAdvertisedModels behavior is unchanged (no totalModelCount).
+    // 27 upstream rows: far below the 100 default cap, so maxAdvertisedModels
+    // behavior is unchanged (no totalModelCount).
     expect(provider?.modelCount).toBe(full.length);
     expect(provider?.totalModelCount).toBeUndefined();
 
@@ -478,7 +498,7 @@ describe("provider-model-catalog", () => {
 
   it("does not fall back to the full built-in catalog when every allowlist entry is disabled", () => {
     // Branching on the FILTERED list would make "narrowed to two, both
-    // withdrawn" advertise all 13 Pi anthropic models instead of none.
+    // withdrawn" advertise every Anthropic catalog model instead of none.
     const real = listPiBuiltinModels("anthropic").slice(0, 2).map((model) => model.id);
     const catalog = buildProviderModelCatalog({
       providers: [{
@@ -554,5 +574,17 @@ describe("provider-model-catalog", () => {
     expect(catalog.listModels("does-not-exist")).toEqual({ models: [], truncated: false });
     expect(catalog.listModels("does-not-exist", { cursor: "x", limit: 200 }))
       .toEqual({ models: [], truncated: false });
+  });
+});
+
+describe("1M context catalog advertisements", () => {
+  it("projects one inferred capability and configured window consistently in shortlist and lazy rows", () => {
+    const ref = parseMonoRuntimeModelReference("openai-codex:gpt-6.1-sol");
+    const catalog = buildProviderModelCatalog({ configuredRoutes: [ref], context1MModels: { [ref.reference]: true } });
+    expect(catalog.describe([ref])[ref.reference]).toMatchObject({ supportsContext1M: true, context1M: true, contextWindow: 1_000_000 });
+    expect(catalog.listModels("openai-codex").models.find((row) => row.id === ref.model)).toMatchObject({ supportsContext1M: true, context1M: true, contextWindow: 1_000_000 });
+    expect(catalog.listModels("openai-codex").models.find((row) => row.id === "gpt-5.3-codex-spark")?.supportsContext1M).toBeUndefined();
+    const off = buildProviderModelCatalog({ configuredRoutes: [ref], context1MModels: { [ref.reference]: false } });
+    expect(off.describe([ref])[ref.reference]).toMatchObject({ context1M: false, contextWindow: 272_000 });
   });
 });

@@ -230,6 +230,13 @@ describe("mapRunToSession", () => {
     });
   });
 
+  it("reads a successful recorded disposition before legacy text classification", () => {
+    const { summary, events } = loadFixture("silent-recall");
+    expect(mapRunToSession({ ...summary, turnDisposition: "visible" }, events, OPTS).outcome).toBe("notified");
+    expect(mapRunToSession({ ...summary, turnDisposition: "silent" }, [], OPTS).outcome).toBe("silent");
+    expect(mapRunToSession({ ...summary, status: "failed", turnDisposition: "silent" }, events, OPTS).outcome).toBe("notified");
+  });
+
   it("splits recalled memory, treats the NOTHING_TO_REPORT sentinel as silent, and marks a failed tool ok:false", () => {
     const { summary, events } = loadFixture("silent-recall");
     const session = mapRunToSession(summary, events, OPTS);

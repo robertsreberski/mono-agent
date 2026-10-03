@@ -229,7 +229,7 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
         const audit = { action: "run_now", jobId, idempotencyKey: action.idempotencyKey };
         const required = confirmation(
           requestHash,
-          `Run “${jobId}” now? Cron overlap is fixed to skip: while this manual run is in flight, a scheduled firing will be recorded as skipped_overlap.`,
+          `Run “${jobId}” now? Cron overlap is fixed to skip: while this manual run is in flight, a scheduled firing will be recorded as skipped_overlap. If the job defines a preflight, it still runs and its input is used, but a run:false verdict cannot suppress a manual run.`,
           action.confirmationToken,
           audit,
         );

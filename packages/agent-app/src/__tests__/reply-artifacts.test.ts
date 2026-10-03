@@ -829,6 +829,49 @@ describe("reply artifact publication", () => {
     await expect(access(join(artifactDir, "reply-files", acceptedId, "content"))).resolves.toBeUndefined();
   });
 
+  it("groups surviving storage-full failures without changing each model-facing tool result", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(workspace);
+    for (const name of ["one.txt", "two.txt", "three.txt"]) await writeFile(join(workspace, name), "contents");
+    const service = createReplyArtifactService({
+      artifactDir, workspace, storageBudget: replyArtifactStorageBudgetFor(artifactDir, 16_384),
+    });
+    const publisher = await openPublisher(service, "run-grouped-quota", "conversation");
+    try {
+      for (const name of ["one.txt", "two.txt", "three.txt"]) {
+        const result = await publisher.client.callTool({ name: PUBLISH_REPLY_FILE_TOOL_NAME, arguments: { path: name } });
+        expect(result).toMatchObject({ isError: true, content: [{ text: "Reply artifact storage is full; this file was not published." }] });
+      }
+    } finally { await publisher.close(); }
+    const response = await service.wrapResponder(responder("run-grouped-quota")).respond({
+      conversationId: "conversation", text: "publish", abortSignal: new AbortController().signal,
+    }, stream);
+    expect(response.parts?.filter((part) => part.type === "failure")).toEqual([
+      expect.objectContaining({ message: "Reply artifact storage is full; 3 files were not published." }),
+    ]);
+  });
+
+  it("allows unlimited storage and enforces a configured smaller per-file limit", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "small.txt"), "ok");
+    await writeFile(join(workspace, "large.txt"), "large");
+    const budget = replyArtifactStorageBudgetFor(artifactDir, "unlimited");
+    expect(budget.maxBytes).toBe("unlimited");
+    const service = createReplyArtifactService({ artifactDir, workspace, storageBudget: budget, maxFileBytes: 3 });
+    const publisher = await openPublisher(service, "run-unlimited", "conversation");
+    try {
+      expect(await publisher.client.callTool({ name: PUBLISH_REPLY_FILE_TOOL_NAME, arguments: { path: "small.txt" } }))
+        .toMatchObject({ structuredContent: { published: true } });
+      expect(await publisher.client.callTool({ name: PUBLISH_REPLY_FILE_TOOL_NAME, arguments: { path: "large.txt" } }))
+        .toMatchObject({ structuredContent: { published: false, code: "artifact_too_large" } });
+    } finally { await publisher.close(); }
+  });
+
   it("does not expire committed current-run content before responder finalization", async () => {
     const root = await tempDir();
     const workspace = join(root, "workspace");

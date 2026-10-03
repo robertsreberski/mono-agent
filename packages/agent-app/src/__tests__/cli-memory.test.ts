@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAppTraceRegistryDir } from "../app-config.js";
 import { parseCliArgs, renderHelp, renderHelpTopic, runCli } from "../cli.js";
+import { curateRecoveredFailureReason, runMemoryCommand } from "../memory-command.js";
 
 /** Resolve a help topic to its rendered detail text. */
 function helpTopicText(topic: string): string {
@@ -35,6 +36,130 @@ const tempDirs: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("memory label CLI flags", () => {
+  it("parses only the two read-only label verbs", () => {
+    expect(parseCliArgs(["memory", "labels", "--kind", "fact", "--about", "Morgan", "--scope", "agent", "--json"]))
+      .toMatchObject({ positionals: ["labels"], labelKind: "fact", labelAbout: "Morgan", labelScope: "agent", json: true });
+    expect(parseCliArgs(["memory", "lessons", "--propose"]).propose).toBe(true);
+    expect(() => parseCliArgs(["memory", "stats", "--kind", "lesson"])).toThrow(/memory labels/iu);
+    expect(() => parseCliArgs(["memory", "labels", "--kind", "unknown"])).toThrow(/--kind/iu);
+    expect(helpTopicText("memory")).toContain("memory lessons --propose");
+    expect(parseCliArgs(["memory", "labels", "--limit", "500"]).limit).toBe(500);
+    expect(() => parseCliArgs(["memory", "labels", "--limit", "1001"])).toThrow(/1000/u);
+  });
+
+  it("prints memory and exact subcommand help without reading an agent", async () => {
+    const root = await captureCli(() => runCli(["memory", "--help"]));
+    expect(root.code).toBe(0);
+    expect(root.stdout).toContain("mono-agent memory labels");
+    const nested = await captureCli(() => runCli(["memory", "curate", "apply", "--help"]));
+    expect(nested.code).toBe(0);
+    expect(nested.stdout).toContain("Usage: mono-agent memory curate apply --plan <file>");
+    const labels = await captureCli(() => runCli(["memory", "labels", "--help"]));
+    expect(labels.stdout).toContain("--limit 1..1000");
+    for (const [args, expected] of [
+      [["--config", "./a.json", "labels"], "memory labels"],
+      [["curate", "--plan", "x", "apply"], "curate apply --plan <file>"],
+      [["curate"], "curate prepare|review|apply|restore"],
+      [["forget"], "forget prepare|apply|restore"],
+      [["import"], "import prepare|apply|restore"],
+      [["labels", "--json"], "memory labels"],
+      [["search", "foo"], "memory search"],
+    ] as const) {
+      const result = await captureCli(() => runCli(["memory", ...args, "--help"]));
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain(expected);
+    }
+  });
+
+  it("returns a valid JSON error for an unknown labels flag", async () => {
+    const result = await captureCli(() => runCli(["memory", "labels", "--unknown", "--json"]));
+    expect(result.code).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "failed", code: "memory_usage" });
+  });
+
+  it("preserves command-specific JSON envelopes without an index", async () => {
+    const dir = await agentDir({ memory: { mode: "lite", path: join(await tempDir(), "empty"),
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect(JSON.parse((await invoke(["memory", "labels", "--json"])).stdout))
+      .toEqual({ labels: [], truncated: false });
+    expect(JSON.parse((await invoke(["memory", "lessons", "--propose", "--json"])).stdout))
+      .toEqual({ proposals: [], truncated: false });
+  });
+
+  it("requires two distinct source lines, not two labels on one memory, for a proposal", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot,
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    await seedLocalStore(memoryRoot);
+    const db = openMemoryDb({ path: join(memoryRoot, "memory.db") });
+    try {
+      const record = db.topSalient(1)[0]!;
+      db.replaceMemoryLabels(record.id, [{ v: 1, kind: "lesson", scope: "agent", verified: true },
+        { v: 1, kind: "lesson", scope: "agent", verified: true }]);
+      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "lessons", "--propose", "--json"]))));
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).proposals).toEqual([]);
+      for (let index = 0; index < 201; index++) {
+        const id = `lesson:cap-${index}`;
+        db.upsertLexical({ ...record, id, text: `Unique lesson ${index}.`,
+          source: { file: "daily/2026-09-06.md", line: index + 1 } });
+        db.replaceMemoryLabels(id, [{ v: 1, kind: "lesson", scope: "agent", verified: true }]);
+      }
+      const capped = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "lessons", "--propose"]))));
+      expect(capped.stdout).toContain("Inventory truncated at 200; proposals may be incomplete.");
+      const labels = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "labels", "--limit", "250", "--json"]))));
+      expect(labels.code).toBe(0);
+      expect(JSON.parse(labels.stdout).labels).toHaveLength(203);
+      expect(JSON.parse(labels.stdout).truncated).toBe(false);
+    } finally { db.close(); }
+  });
+
+  it("reads labelled history while a writer runs and proposes only repeated verified lessons", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot,
+      writeMode: "append-host-summary", recallTool: { enabled: false } } });
+    await seedLocalStore(memoryRoot);
+    const db = openMemoryDb({ path: join(memoryRoot, "memory.db") });
+    const records = db.topSalient(20);
+    const one = records.find((row) => row.text.startsWith("Deploy"))!;
+    const two = records.find((row) => row.id !== one.id)!;
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" });
+    db.replaceMemoryLabels(one.id, [{ v: 1, kind: "lesson", scope: "agent", verified: true },
+      { v: 1, kind: "fact", entityId: "person:morgan", key: "birth_date",
+        value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }]);
+    db.replaceMemoryLabels(two.id, [{ v: 1, kind: "lesson", scope: "agent", verified: false }]);
+    db.upsertLexical({ ...one, id: "lesson:repeat", text: "Deploy pipeline uses blue green releases!",
+      source: { file: "daily/2026-09-06.md", line: 99 } });
+    db.replaceMemoryLabels("lesson:repeat", [{ v: 1, kind: "lesson", scope: "agent", verified: true }]);
+    // Same normalized instruction and scope; an unverified third lesson is excluded.
+    const writer = createBujoMemoryStore({ root: memoryRoot });
+    try {
+      const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+      const all = await invoke(["memory", "labels", "--json"]);
+      expect(all.stderr).toBe("");
+      expect(all.code).toBe(0);
+      expect(JSON.parse(all.stdout)).toMatchObject({ labels: expect.arrayContaining([
+        expect.objectContaining({ label: expect.objectContaining({ kind: "fact" }), source: expect.any(String),
+          status: "open", recordedAt: expect.any(String) }),
+      ]) });
+      const exact = await invoke(["memory", "labels", "--kind", "fact", "--about", "morgan", "--json"]);
+      expect(JSON.parse(exact.stdout).labels).toHaveLength(1);
+      const filtered = await invoke(["memory", "labels", "--scope", "agent"]);
+      expect(filtered.stdout).toContain("lesson");
+      const proposals = await invoke(["memory", "lessons", "--propose", "--json"]);
+      expect(JSON.parse(proposals.stdout).proposals).toMatchObject([
+        { scope: "agent", snippet: expect.stringContaining("Deploy pipeline"), sources: expect.any(Array) },
+      ]);
+      expect(JSON.parse(proposals.stdout).proposals[0].sources).toHaveLength(2);
+    } finally { await writer.close(); db.close(); }
+  });
 });
 
 describe("parseCliArgs memory bundles", () => {
@@ -135,6 +260,37 @@ describe("runCli memory", () => {
     expect(stdout).toContain("No memory configured");
   });
 
+  it("labels an exported bundle with the active pre-preset embedding identity", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "bge-m3:latest", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:bge-m3:latest", 8),
+      dim: 8,
+    });
+    const bundlePath = join(await tempDir(), "bundle");
+
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "export", "--bundle", bundlePath, "--json",
+    ]))));
+
+    expect(result.code, result.stderr).toBe(0);
+    const manifest = JSON.parse(await readFile(join(bundlePath, "manifest.json"), "utf8")) as {
+      readonly embeddingModel?: string;
+    };
+    expect(manifest.embeddingModel).toBe("ollama:bge-m3:latest");
+  }, 15_000);
+
   it("surfaces a typed export destination failure without changing canonical memory", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({
@@ -175,14 +331,17 @@ describe("runCli memory", () => {
   it("runs import prepare, apply, and restore from the temp-root alias and keeps plans outside the canonical root", async () => {
     const sourceRoot = join(await tempDir(), "memory");
     const destinationRoot = join(await tempDir(), "memory");
-    await seedLocalStore(sourceRoot);
+    // Remember uses content-derived ids. Shared fixture records need the same
+    // timestamp so they represent identical canonical memories in both stores.
+    const seededAt = new Date();
+    await seedLocalStore(sourceRoot, seededAt);
     const sourceOnly = createBujoMemoryStore({ root: sourceRoot });
     try {
-      await sourceOnly.appendHostSummary("source-only", "Portable source-only memory sentinel.");
+      await sourceOnly.remember("source-only", "Portable source-only memory sentinel.");
     } finally {
       await sourceOnly.close();
     }
-    await seedLocalStore(destinationRoot);
+    await seedLocalStore(destinationRoot, seededAt);
     const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
     await safeRebuildMemoryIndex({ root: sourceRoot, tier: "bujo", embeddings, dim: 8 });
     await safeRebuildMemoryIndex({ root: destinationRoot, tier: "bujo", embeddings, dim: 8 });
@@ -234,7 +393,7 @@ describe("runCli memory", () => {
 
     const prepared = await captureCli(() => withCwd(destinationDir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "import", "prepare", "--bundle", bundlePath, "--plan", planPath, "--json"]))));
-    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(prepared.code, prepared.stderr || prepared.stdout).toBe(0);
     const prepareResult = JSON.parse(prepared.stdout) as {
       readonly operation: string;
       readonly status: string;
@@ -264,7 +423,7 @@ describe("runCli memory", () => {
     expect(bujoMemory.readBujoCanonicalSourceFingerprint(destinationRoot)).toBe(before);
   }, 30_000);
 
-  it("emits the closed strict-health JSON contract for unconfigured and remote memory", async () => {
+  it("emits the closed strict-health JSON contract for unconfigured memory", async () => {
     const unconfiguredDir = await agentDir({ memory: undefined });
     const unconfigured = await captureCli(() => withCwd(unconfiguredDir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "audit", "--strict", "--json"]))));
@@ -289,24 +448,6 @@ describe("runCli memory", () => {
     });
     expect(unconfigured.stdout).not.toContain(unconfiguredDir);
 
-    const remoteDir = await agentDir({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "strict-agent" },
-      },
-    });
-    const remote = await captureCli(() => withCwd(remoteDir, () => withCleanMonoAgentEnv(() =>
-      runCli(["memory", "audit", "--strict", "--json"]))));
-    expect(remote.code).toBe(1);
-    expect(remote.stderr).toBe("");
-    expect(JSON.parse(remote.stdout)).toMatchObject({
-      schemaVersion: 1,
-      backend: "supermemory",
-      status: "unknown",
-      issues: [],
-    });
   });
 
   it("audits a real Lite store exactly and exits one for degraded and unhealthy states", async () => {
@@ -319,7 +460,9 @@ describe("runCli memory", () => {
     const store = createBujoMemoryStore({ root: memoryRoot });
     let closed = false;
     try {
-      await store.appendHostSummary(privateConversation, privateText);
+      await store.persistCompletedTurn({ runId: "fixture-2", conversationId: privateConversation, summary: privateText });
+
+      await store.flush();
 
       const healthy = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
         runCli(["memory", "audit", "--strict", "--json"]))));
@@ -565,19 +708,19 @@ describe("runCli memory", () => {
       },
     });
     try {
-      store.scheduleCapture("telegram:live", "private sentinel input");
+      await store.persistCompletedTurn({ runId: "private-capture", conversationId: "telegram:live", summary: "private sentinel input", captureText: "private sentinel input" });
       await store.flush();
 
       const audit = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "audit", "--json"]))));
       expect(audit.code).toBe(0);
       expect(JSON.parse(audit.stdout)).toMatchObject({
-        backlog: { captureQueue: 0 },
+        backlog: { completedTurnIntake: 0 },
         runtime: {
           available: true,
           stale: false,
           processAlive: true,
           state: "running",
-          queues: { capture: { completed: 1, queued: 0, inFlight: 0 } },
+          queues: { intake: { resolved: 1, pending: 0, retrying: 0 } },
         },
         cost: { known: true, embeddingCalls: 2, embeddingTexts: 2, llmCalls: 1 },
       });
@@ -843,7 +986,7 @@ describe("runCli memory", () => {
       },
     });
     await seedLocalStore(memoryRoot);
-    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
       return new Response(JSON.stringify({
         data: body.input.map((text, index) => ({
@@ -1256,7 +1399,7 @@ describe("runCli memory", () => {
     const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
       "memory", "forget", "prepare", "--ids-file", idsFile, "--reason", "failure_test", "--plan", planPath, "--json",
     ]))));
-    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(prepared.code, prepared.stderr || prepared.stdout).toBe(0);
     const beforeSource = bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot);
     const beforeDb = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
     const beforeIntegrity = beforeDb.logicalIntegrityDigest();
@@ -1286,24 +1429,6 @@ describe("runCli memory", () => {
     unchanged.close();
     expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("forget-backup"))).toBe(false);
   }, 30_000);
-
-  it("rejects rebuild and rollback for Supermemory", async () => {
-    const dir = await agentDir({
-      memory: {
-        backend: "supermemory",
-        mode: "lite",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "agent-alpha" },
-      },
-    });
-
-    for (const operation of ["rebuild", "rollback"]) {
-      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", operation]))));
-      expect(result.code, operation).toBe(1);
-      expect(result.stdout, operation).toBe("");
-      expect(result.stderr, operation).toMatch(/Supermemory.*remote index/iu);
-    }
-  });
 
   it("runs explicit BuJo replay adoption with an aggregate-only JSON contract", async () => {
     const privateRoot = join(await tempDir(), "private-memory-root");
@@ -1513,12 +1638,6 @@ describe("runCli memory", () => {
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "private-test-embed", dim: 8 },
       },
-      {
-        backend: "supermemory",
-        mode: "bujo",
-        writeMode: "capture",
-        supermemory: { baseUrl: "https://memory.invalid", container: "private-container" },
-      },
     ]) {
       const dir = await agentDir({ memory });
       const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
@@ -1528,7 +1647,6 @@ describe("runCli memory", () => {
         "private-lite-memory",
         "private-journal-memory",
         "private-test-embed",
-        "private-container",
       ]);
 
       const human = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
@@ -1538,7 +1656,6 @@ describe("runCli memory", () => {
         "private-lite-memory",
         "private-journal-memory",
         "private-test-embed",
-        "private-container",
       ]);
     }
   });
@@ -1643,40 +1760,14 @@ describe("runCli memory", () => {
     }
   });
 
-  it("previews Supermemory with the live recall tool disabled and marks local stats unavailable", async () => {
-    const server = await supermemoryServer();
-    try {
-      const dir = await agentDir({
-        memory: {
-          backend: "supermemory",
-          mode: "lite",
-          writeMode: "capture",
-          recallTool: { enabled: false },
-          supermemory: { baseUrl: server.baseUrl, container: "agent-alpha" },
-        },
-      });
 
-      const stats = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "stats"]))));
-      expect(stats.code).toBe(0);
-      expect(stats.stdout).toContain("Remote-only fields not known locally");
-      expect(stats.stdout).toContain("agent-alpha");
-
-      const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "search", "coffee"]))));
-      expect(search.code).toBe(0);
-      expect(search.stdout).toContain("Supermemory remembers coffee preference.");
-      expect(server.searchBodies).toHaveLength(1);
-      expect(server.searchBodies[0]).toMatchObject({ containerTag: "agent-alpha", q: "coffee" });
-    } finally {
-      await server.close();
-    }
-  });
 });
 
-async function seedLocalStore(root: string): Promise<void> {
-  const store = createBujoMemoryStore({ root });
+async function seedLocalStore(root: string, seededAt?: Date): Promise<void> {
+  const store = createBujoMemoryStore({ root, ...(seededAt === undefined ? {} : { clock: () => seededAt }) });
   try {
-    await store.appendHostSummary("conv-1", "Deploy pipeline uses blue green releases.");
-    await store.appendHostSummary("conv-2", "Memory preview should show source metadata.");
+    await store.remember("conv-1", "Deploy pipeline uses blue green releases.");
+    await store.remember("conv-2", "Memory preview should show source metadata.");
   } finally {
     await store.close();
   }
@@ -1905,52 +1996,6 @@ async function withCleanMonoAgentEnv<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-async function supermemoryServer(): Promise<{
-  readonly baseUrl: string;
-  readonly searchBodies: Record<string, unknown>[];
-  readonly close: () => Promise<void>;
-}> {
-  const searchBodies: Record<string, unknown>[] = [];
-  const server = createServer((req, res) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      if (req.method !== "POST" || req.url !== "/v4/search") {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end("{}");
-        return;
-      }
-      searchBodies.push(JSON.parse(body) as Record<string, unknown>);
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        results: [
-          { id: "sm-1", memory: "Supermemory remembers coffee preference.", similarity: 0.88 },
-        ],
-      }));
-    });
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-    searchBodies,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
-    }),
-  };
-}
-
 async function closedLoopbackEndpoint(): Promise<string> {
   const server = createServer();
   await new Promise<void>((resolve) => {
@@ -1972,7 +2017,7 @@ async function failingEmbeddingServer(beforeFailure: () => Promise<void>): Promi
   readonly close: () => Promise<void>;
 }> {
   let requests = 0;
-  const server = createServer((req, res) => {
+  const server = createServer((_req, res) => {
     void (async () => {
       requests += 1;
       await beforeFailure();
@@ -2000,3 +2045,673 @@ async function failingEmbeddingServer(beforeFailure: () => Promise<void>): Promi
     }),
   };
 }
+
+describe("memory curate operator CLI", () => {
+  it("parses bounded prepare and category review flags without widening other commands", () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--model", "openai-codex:gpt-6-sol", "--limit", "400", "--dry-run"]))
+      .toMatchObject({ positionals: ["curate", "prepare"], model: "openai-codex:gpt-6-sol", limit: 400, dryRun: true });
+    expect(parseCliArgs(["memory", "curate", "review", "--plan", "plan.json", "--accept", "drop:generic-advice,label:*", "--reject", "id:fictional-a"]))
+      .toMatchObject({ curateAccept: "drop:generic-advice,label:*", curateReject: "id:fictional-a" });
+    expect(parseCliArgs(["memory", "curate", "prepare", "--limit", "8192"]).limit).toBe(8192);
+    expect(parseCliArgs(["memory", "curate", "prepare", "--select", "risky,repeated"]).curateSelect).toBe("risky,repeated");
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--select", "risky,risky"])).toThrow(/--select/u);
+    expect(() => parseCliArgs(["memory", "curate", "review", "--select", "oldest"])).toThrow(/--select/u);
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--limit", "8193"])).toThrow();
+    expect(() => parseCliArgs(["memory", "forget", "prepare", "--model", "openai-codex:gpt-6-sol"])).toThrow(/--model/u);
+  });
+  it("estimates without creating a plan or calling a model", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open",
+      text: "Morgan completed the example.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-raw", type: "note", status: "open",
+      text: "Host-observed completed turn. Fictional audit envelope.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const plan = join(dir, "plan.json");
+    const missing = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "prepare", "--dry-run", "--json",
+    ]))));
+    expect(missing.code).toBe(2);
+    expect(JSON.parse(missing.stdout).code).toBe("curate_usage");
+    const absent = await agentDir({ memory: undefined });
+    const unconfigured = await captureCli(() => withCwd(absent, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "prepare", "--plan", join(absent, "plan.json"), "--json",
+    ]))));
+    expect(JSON.parse(unconfigured.stdout).code).toBe("curate_requires_bujo");
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "prepare", "--plan", plan, "--dry-run", "--json",
+    ]))));
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" }, skipped: { raw: 1 },
+      selected: { recent: 1, repeated: 0, risky: 0, oldest: 0 } });
+    await expect(stat(plan)).rejects.toThrow();
+  });
+});
+
+describe("memory curate review safety", () => {
+  it("accepts categories in one review step and leaves reject-all apply inert", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open",
+      text: "Generic example advice.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curation-plan.json");
+    const plan = { schemaVersion: 1, operation: "curate", rootFingerprint: createHash("sha256").update(await realpath(memoryRoot)).digest("hex"),
+      sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), model: "fake", createdAt: "2026-07-12T10:00:00.000Z",
+      proposals: [{ source: bujoMemory.inspectCurateSource(memoryRoot).lines[0]!, action: "drop", reason: "generic-advice", accepted: false }], discarded: [] };
+    const planDigest = createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...plan, planDigest }), { mode: 0o600 });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "drop:generic-advice", "--json"])).code).toBe(0);
+    expect(JSON.parse(await readFile(planPath, "utf8")).proposals[0].accepted).toBe(true);
+    const untampered = await readFile(planPath, "utf8");
+    for (const modification of [{ action: "merge", mergeEntity: { from: "person:a", to: "person:b" } }, { reason: "duplicate" },
+      { source: { ...plan.proposals[0]!.source, text: "Changed proposal content" } }]) {
+      const changed = JSON.parse(untampered) as { proposals: Record<string, unknown>[] };
+      changed.proposals[0] = { ...changed.proposals[0], ...modification };
+      await writeFile(planPath, JSON.stringify(changed));
+      const refused = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+      expect(refused.code).toBe(1);
+      expect(JSON.parse(refused.stdout).code).toBe("curate_review_failed");
+    }
+    const invalid = { ...plan, proposals: [{ ...plan.proposals[0]!, source: { ...plan.proposals[0]!.source, status: "invalidated" } }] };
+    const invalidDigest = createHash("sha256").update(JSON.stringify({ ...invalid,
+      proposals: invalid.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...invalid, planDigest: invalidDigest }));
+    const diagnostic = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(diagnostic.stdout).reason).toBe("memory-curate: invalid proposal");
+    await writeFile(planPath, untampered);
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-a"])).code).toBe(0);
+    const result = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe("no-op");
+    expect(bujoMemory.inspectCurateSource(memoryRoot).lines[0]!.text).toBe("Generic example advice.");
+    for (const [proposed, tampered] of [
+      [{ action: "rewrite", text: "Generic example instruction." }, { text: "Changed without approval." }],
+      [{ action: "merge", mergeEntity: { from: "person:alias", to: "person:morgan" } },
+        { mergeEntity: { from: "person:alias", to: "person:other" } }],
+    ] as const) {
+      const candidate = { ...plan, proposals: [{ source: plan.proposals[0]!.source, ...proposed, accepted: true }] };
+      const digest = createHash("sha256").update(JSON.stringify({ ...candidate,
+        proposals: candidate.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+      await writeFile(planPath, JSON.stringify({ ...candidate, planDigest: digest, proposals: [{ ...candidate.proposals[0], ...tampered }] }));
+      const denied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+      expect(JSON.parse(denied.stdout).code).toBe("curate_apply_failed");
+    }
+    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("curate-backup"))).toBe(false);
+    const keepPayload = { ...plan, proposals: [{ source: plan.proposals[0]!.source, action: "keep", accepted: true }] };
+    const keepDigest = createHash("sha256").update(JSON.stringify({ ...keepPayload,
+      proposals: keepPayload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...keepPayload, planDigest: keepDigest }));
+    expect(JSON.parse((await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"])).stdout).status).toBe("no-op");
+    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("curate-backup"))).toBe(false);
+    const mergePayload = { ...plan, proposals: [{ source: plan.proposals[0]!.source, action: "merge",
+      mergeEntity: { from: "person:morgan-alias", to: "person:morgan" }, accepted: false }] };
+    const mergeDigest = createHash("sha256").update(JSON.stringify({ ...mergePayload,
+      proposals: mergePayload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...mergePayload, planDigest: mergeDigest }));
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "merge:*", "--json"])).code).toBe(0);
+    expect(JSON.parse(await readFile(planPath, "utf8")).proposals[0].accepted).toBe(true);
+  });
+});
+
+describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
+  it("distinguishes withheld in-process causes from interrupted recovery", () => {
+    expect(curateRecoveredFailureReason(new bujoMemory.ExplicitMemoryCurateError("apply_failed_recovered", "/fixture/backup",
+      new Error("fictional private memory text")))).toContain("withheld");
+    expect(curateRecoveredFailureReason(new bujoMemory.ExplicitMemoryCurateError("apply_failed_recovered", "/fixture/backup")))
+      .toContain("not retained");
+  });
+  it("routes stale post-mutation sources into durable recovery and reports the backup in JSON", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open", text: "Generic example advice.",
+      salience: 0.5, isInsight: false, createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings, dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curation-plan.json");
+    const rootFingerprint = createHash("sha256").update(await realpath(memoryRoot)).digest("hex");
+    const proposal = { source: bujoMemory.inspectCurateSource(memoryRoot).lines[0]!, action: "drop" as const,
+      reason: "generic-advice" as const, accepted: true };
+    const payload = { schemaVersion: 1, operation: "curate", rootFingerprint,
+      sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), model: "fake",
+      createdAt: "2026-07-12T10:00:00.000Z", proposals: [proposal], discarded: [] };
+    const planDigest = createHash("sha256").update(JSON.stringify({ ...payload,
+      proposals: payload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
+    const selectedDigest = createHash("sha256").update(JSON.stringify({ planDigest, selected: [proposal] })).digest("hex");
+    const competing = createBujoMemoryStore({ root: memoryRoot, tier: "bujo", embeddings, dim: 8,
+      llm: { id: "fake", complete: async () => "[]" } });
+    try {
+      const refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
+      expect(refused.code).toBe(1);
+      expect(JSON.parse(refused.stdout).code).toBe("curate_apply_failed");
+      expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
+    } finally { await competing.close(); }
+    const originalFailure = new Error("memory-curate: source changed");
+    await expect(bujoMemory.applyExplicitMemoryCurate({ root: memoryRoot, proposals: [proposal],
+      expectedRootFingerprint: rootFingerprint, expectedSourceFingerprint: payload.sourceFingerprint,
+      planDigest: selectedDigest, embeddings, dimension: 8,
+      hooks: { afterMutation: () => { throw originalFailure; },
+        afterRootQuarantined: () => { throw new Error("interrupt recovery"); } } }))
+      .rejects.toMatchObject({ code: "apply_recovery_failed", cause: originalFailure, backupPath: expect.any(String),
+        recoveryError: expect.objectContaining({ message: "interrupt recovery" }) });
+    expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).not.toBe(payload.sourceFingerprint);
+    const recovered = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
+    expect(recovered.code).toBe(1);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({ code: "curate_apply_failed_recovered", restored: true, backupPath: expect.any(String) });
+    expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-unindexed", type: "note", status: "open",
+      text: "Morgan completed a later fictional task.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const unindexed = { source: bujoMemory.inspectCurateSource(memoryRoot).lines.find(({ id }) => id === "fictional-unindexed")!,
+      action: "drop" as const, reason: "generic-advice" as const, accepted: true };
+    const later = { ...payload, sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), proposals: [unindexed] };
+    const laterDigest = createHash("sha256").update(JSON.stringify({ ...later,
+      proposals: later.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...later, planDigest: laterDigest }), { mode: 0o600 });
+    const backupsBefore = (await readdir(join(memoryRoot, ".."))).filter((name) => name.includes("curate-backup"));
+    const refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: "curate_apply_failed",
+      reason: "memory-curate: selected id is not in the active index", restored: false });
+    expect((await readdir(join(memoryRoot, ".."))).filter((name) => name.includes("curate-backup"))).toEqual(backupsBefore);
+    const text = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "apply", "--plan", planPath]))));
+    expect(text.stdout).toContain("memory-curate: selected id is not in the active index");
+    expect(text.stdout).toContain("Curation was refused before a recoverable backup");
+  });
+});
+
+describe("curate private plan bound", () => {
+  it("reads and rewrites a private plan over 8 MiB but refuses one over 16 MiB", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "large-plan.json");
+    const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: createHash("sha256").update(await realpath(memoryRoot)).digest("hex"),
+      sourceFingerprint: "a".repeat(64), model: "fake", createdAt: "2026-07-12T10:00:00.000Z",
+      proposals: Array.from({ length: 900 }, (_, index) => ({ action: "drop", reason: "generic-advice", accepted: false,
+        source: { id: `fictional-${index}`, file: "daily/2026-07-12.md", line: index + 1, text: "Morgan example.",
+          textHash: createHash("sha256").update("Morgan example.").digest("hex"), createdAt: "2026-07-12T10:00:00.000Z", status: "open",
+          refs: Array.from({ length: 15 }, (_, offset) => `ref-${offset}-${"x".repeat(700)}`) } })), discarded: [] };
+    const planDigest = createHash("sha256").update(JSON.stringify({ ...payload,
+      proposals: payload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
+    expect((await stat(planPath)).size).toBeGreaterThan(8 * 1024 * 1024);
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "review", "--plan", planPath, "--accept", "drop:*", "--json",
+    ]))));
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(planPath, "utf8")).proposals.every((proposal: { accepted: boolean }) => proposal.accepted)).toBe(true);
+    await writeFile(planPath, `${await readFile(planPath, "utf8")}${" ".repeat(16 * 1024 * 1024)}`);
+    const tooLarge = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "review", "--plan", planPath, "--json",
+    ]))));
+    expect(JSON.parse(tooLarge.stdout).code).toBe("curate_review_failed");
+    const compact = { ...payload, proposals: Array.from({ length: 8192 }, (_, index) => ({
+      ...payload.proposals[0]!, source: { ...payload.proposals[0]!.source, id: `fictional-${index}`, line: index + 1, refs: [] },
+    })) };
+    const digest = createHash("sha256").update(JSON.stringify({ ...compact,
+      proposals: compact.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...compact, planDigest: digest }));
+    const atCap = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "review", "--plan", planPath, "--json",
+    ]))));
+    expect(atCap.code, atCap.stderr).toBe(0);
+    await writeFile(planPath, JSON.stringify({ ...compact, proposals: [...compact.proposals, {
+      ...compact.proposals[0]!, source: { ...compact.proposals[0]!.source, id: "fictional-8192", line: 8193 },
+    }], planDigest: digest }));
+    const overCap = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "review", "--plan", planPath, "--json",
+    ]))));
+    expect(JSON.parse(overCap.stdout).code).toBe("curate_review_failed");
+  });
+});
+
+describe("curate paid-run isolation", () => {
+  it("prepares a plan when an unrelated capture arrives during model work", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    const at = new Date("2026-07-12T10:00:00.000Z");
+    const bullet = (id: string) => ({ id, type: "note" as const, status: "open" as const,
+      text: "Morgan's fictional example.", salience: 0.5, isInsight: false, createdAt: at.toISOString(), refs: [] });
+    bujoMemory.appendBullet(memoryRoot, bullet("fictional-a"), at);
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curate-plan.json");
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
+      curateLlm: { id: "fake", complete: async () => {
+        bujoMemory.appendBullet(memoryRoot, bullet("fictional-b"), at);
+        return JSON.stringify([{ id: "fictional-a", action: "drop", reason: "generic-advice" }]);
+      } },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    const plan = JSON.parse(await readFile(planPath, "utf8"));
+    expect(plan.proposals.map((proposal: { source: { id: string } }) => proposal.source.id)).toEqual(["fictional-a"]);
+    expect(plan.sourceFingerprint).not.toBe(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot));
+    const duplicate = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
+      curateLlm: { id: "fake", complete: async () => { throw new Error("model must not be called"); } },
+    }))));
+    expect(duplicate.code).toBe(1);
+    expect(JSON.parse(duplicate.stdout)).toMatchObject({ status: "failed", code: "curate_prepare_failed",
+      reason: expect.stringContaining(`Plan already exists at ${planPath}; choose a new --plan path.`) });
+    expect(await readFile(planPath, "utf8")).toBe(JSON.stringify(plan, null, 2) + "\n");
+    const estimate = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false, dryRun: true,
+    }))));
+    expect(estimate.code).toBe(0);
+    expect(JSON.parse(estimate.stdout).status).toBe("estimated");
+    expect(await readFile(planPath, "utf8")).toBe(JSON.stringify(plan, null, 2) + "\n");
+  });
+  it("explains tool-owned preparation failures without exposing provider errors", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open", text: "Morgan's demo note.",
+      salience: 0.5, isInsight: false, createdAt: "2026-07-12T10:00:00.000Z", refs: [] },
+    new Date("2026-07-12T10:00:00.000Z"));
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    let planNumber = 0;
+    const prepare = (complete: () => Promise<string>, json: boolean) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath: join(dir, `plan-${planNumber++}.json`), json, strict: false,
+      curateLlm: { id: "fake", complete },
+    }))));
+    const own = await prepare(async () => "{}", false);
+    expect(own.code).toBe(0);
+    expect(own.stdout).toContain("invalid-response");
+    const ownJson = await prepare(async () => "{}", true);
+    expect(JSON.parse(ownJson.stdout).discardedByReason).toEqual({ "invalid-response": 1 });
+    const external = await prepare(async () => { throw new Error("provider failed with private text"); }, false);
+    expect(external.code).toBe(1);
+    expect(external.stdout).not.toContain("private text");
+    expect(external.stdout).toContain("Curation preparation failed");
+    const spoofed = await prepare(async () => { throw new Error("memory-curate: secret private text"); }, true);
+    expect(JSON.parse(spoofed.stdout)).toMatchObject({ status: "failed", code: "curate_prepare_failed" });
+    expect(JSON.parse(spoofed.stdout).reason).toBeUndefined();
+  });
+  it("records individual invalid model proposals without losing valid siblings", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    for (const [index, text] of ["Generic example advice.", "Morgan used Maple as an alias.", "Morgan used another alias."].entries()) {
+      bujoMemory.appendBullet(memoryRoot, { id: `fictional-${index}`, type: "note", status: "open", text,
+        salience: 0.5, isInsight: false, createdAt: "2026-07-12T10:00:00.000Z", refs: [] },
+      new Date("2026-07-12T10:00:00.000Z"));
+    }
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curate-private-plan.json");
+    let calls = 0;
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
+      curateLlm: { id: "fake", complete: async () => { calls++; return JSON.stringify([
+        { id: "fictional-0", action: "drop", reason: "generic-advice" },
+        { id: "fictional-1", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:taylor", key: "preferred_name",
+          value: { type: "text", text: "Cedar City" }, attribution: "user-stated" }] },
+        { id: "fictional-2", action: "merge", mergeEntity: { from: "person:unlisted", to: "person:absent" } },
+      ]); } },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(calls).toBe(1);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 1, discarded: 2,
+      discardedByReason: { "invalid-label": 1, "invalid-preview": 1 } });
+    const plan = JSON.parse(await readFile(planPath, "utf8"));
+    expect(plan.proposals.map((proposal: { source: { id: string } }) => proposal.source.id)).toEqual(["fictional-0"]);
+    expect(plan.discarded).toEqual([{ id: "fictional-1", reason: "invalid-label" },
+      { id: "fictional-2", reason: "invalid-preview" }]);
+    const reviewed = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "review", "--plan", planPath, "--json"]))));
+    expect(JSON.parse(reviewed.stdout).discarded).toEqual(plan.discarded);
+  });
+});
+
+describe("memory entity identity CLI", { timeout: 30_000 }, () => {
+  // Canonical v1 encoding of a coarse owner fact (label keys are sorted).
+  const ownerFact = `label:v1:${Buffer.from(JSON.stringify({ attribution: "user-stated", entityId: "person:owner",
+    kind: "fact", v: 1 })).toString("base64url")}`;
+  it("parses operator merge and duplicate flags only where they apply", () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--merge", "person:a=person:b",
+      "--merge", "concept:a=person:b", "--merge-file", "merges.txt", "--allow-cross-type"]))
+      .toMatchObject({ limit: 0, curateMerges: ["person:a=person:b", "concept:a=person:b"], curateMergeFile: "merges.txt", allowCrossType: true });
+    expect(parseCliArgs(["memory", "entities", "--duplicates", "--json"])).toMatchObject({ positionals: ["entities"], duplicates: true });
+    expect(() => parseCliArgs(["memory", "curate", "apply", "--plan", "p.json", "--merge", "a:b=c:d"])).toThrow(/--merge/u);
+    expect(() => parseCliArgs(["memory", "stats", "--duplicates"])).toThrow(/--duplicates/u);
+    expect(() => parseCliArgs(["memory", "stats", "--limit", "0"])).toThrow(/--limit/u);
+  });
+
+  it("lists duplicate names, then merges a fictional person's three ids through a reviewed plan", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Morgan was born on 1990-05-17."], ["fictional-b", "Morgan likes Maple tea."],
+      ["fictional-c", "The user asked about Maple tea."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    bujoMemory.appendGraphBatch(memoryRoot, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-2", name: "morgan", type: "person", createdAt: at },
+      { id: "concept:morgan", name: "Morgan", type: "concept", createdAt: at },
+      { id: "person:the-user", name: "the user", type: "person", createdAt: at },
+    ], associations: [
+      { memoryId: "fictional-a", entityId: "person:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "person:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "concept:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-c", entityId: "person:the-user", provenance: "capture", createdAt: at },
+    ] });
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+
+    const listed = await invoke(["memory", "entities", "--duplicates", "--json"]);
+    expect(listed.code, listed.stderr).toBe(0);
+    expect(JSON.parse(listed.stdout)).toMatchObject({ summary: { names: 1, crossType: 1, ids: 3 }, truncated: false,
+      duplicates: [{ name: "morgan", types: ["concept", "person"], associations: 3,
+        ids: [{ id: "person:morgan", associations: 2 }, { id: "concept:morgan", associations: 1 }, { id: "person:morgan-2", associations: 0 }] }] });
+    const human = await invoke(["memory", "entities", "--duplicates"]);
+    expect(human.stdout).toContain("1 names map to more than one id (1 across types, 3 ids).");
+    expect(human.stdout).toContain("  person:morgan (person, 2)");
+
+    const planPath = join(dir, "identity-plan.json");
+    const mergeFile = join(dir, "merges.txt");
+    await writeFile(mergeFile, "# fictional owner aliases\nperson:morgan-2=person:morgan\n", { mode: 0o600 });
+    // Cross-type needs explicit consent; nothing is written on refusal.
+    const refused = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0",
+      "--merge", "concept:morgan=person:morgan", "--json"]);
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: "curate_prepare_failed", reason: "memory-curate: cross-type merge requires --allow-cross-type" });
+    await expect(stat(planPath)).rejects.toThrow();
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--merge-file", mergeFile, "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 3, operatorMerges: 1, coarseLabels: { more: false } });
+    // A model-free pass walks oldest or newest first; bucket mixes need a model.
+    const mixed = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "mixed.json"), "--limit", "0", "--select", "risky", "--json"]);
+    expect(mixed.code).toBe(2);
+    expect(JSON.parse(mixed.stdout)).toMatchObject({ status: "failed", code: "curate_usage" });
+    const recent = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "recent.json"), "--limit", "0", "--select", "recent", "--json"]);
+    expect(JSON.parse(recent.stdout)).toMatchObject({ status: "prepared", count: 3, coarseLabels: { more: false } });
+    // Model-free coarse labels are reviewable alongside operator-only merges.
+    const added = await invoke(["memory", "curate", "review", "--plan", planPath, "--merge", "concept:morgan=person:morgan",
+      "--merge", "person:the-user=person:morgan", "--allow-cross-type", "--json"]);
+    expect(added.code, added.stderr).toBe(0);
+    expect(JSON.parse(added.stdout)).toMatchObject({ counts: { "merge:operator": { total: 3, accepted: 3 } } });
+    // Operator merges are reviewable like any other proposal.
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:person:the-user", "--json"])).code).toBe(0);
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as { operatorMerges: { from: string; accepted: boolean }[] };
+    expect(plan.operatorMerges.map(({ from, accepted }) => [from, accepted]))
+      .toEqual([["person:morgan-2", true], ["concept:morgan", true], ["person:the-user", false]]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 2 });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.entities.map(({ id }) => id).sort()).toEqual(["person:morgan", "person:the-user"]);
+    expect(bujoMemory.findDuplicateEntityNames(graph)).toEqual([]);
+    expect(graph.associations.filter(({ entityId }) => entityId === "person:morgan").map(({ memoryId }) => memoryId).sort())
+      .toEqual(["fictional-a", "fictional-b"]);
+    const after = await invoke(["memory", "entities", "--duplicates"]);
+    expect(after.stdout).toBe("No entity name is shared by more than one id.\n");
+  });
+
+  it("re-runs a model-free coarse label pass idempotently after apply", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Morgan planted fictional tulips."], ["fictional-b", "Maple repaired a fictional bicycle."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    bujoMemory.appendGraphBatch(memoryRoot, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:maple", name: "Maple", type: "person", createdAt: at },
+    ], associations: [
+      { memoryId: "fictional-a", entityId: "person:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "person:maple", provenance: "capture", createdAt: at },
+    ] });
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const first = join(dir, "coarse-1.json");
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", first, "--limit", "0", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 2, coarseLabels: { more: false } });
+    expect((await invoke(["memory", "curate", "review", "--plan", first, "--accept", "label:*", "--json"])).code).toBe(0);
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", first, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 2 });
+    // The same lines already carry their coarse fact: a second pass proposes nothing.
+    const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "coarse-2.json"), "--limit", "0", "--json"]);
+    expect(again.code, again.stderr).toBe(0);
+    expect(JSON.parse(again.stdout)).toMatchObject({ status: "prepared", count: 0, discarded: 0, coarseLabels: { more: false } });
+  });
+
+  it("backfills reviewed person:owner associations for owner-subject lines without a model", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--owner-backfill"]))
+      .toMatchObject({ limit: 0, ownerBackfill: true });
+    expect(() => parseCliArgs(["memory", "curate", "review", "--plan", "p.json", "--owner-backfill"])).toThrow(/--owner-backfill/u);
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Maple tea is preferred."], ["fictional-b", "Maple tea was served."],
+      ["fictional-c", "Chess is played on Fridays."], ["fictional-d", "Morgan likes Maple tea."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: id === "fictional-a" || id === "fictional-c" ? [ownerFact] : [] }, new Date(at));
+    }
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const planPath = join(dir, "owner-plan.json");
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--owner-backfill", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 0, operatorMerges: 0,
+      ownerBackfill: { live: 4, alreadyLinked: 0, proposed: 2, bare: 0 } });
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "associate:owner": { total: 2, accepted: 2 } } });
+    let plan = JSON.parse(await readFile(planPath, "utf8")) as { ownerAssociations: { id: string; accepted: boolean }[] };
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-a", true], ["fictional-c", true]]);
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-c", "--json"])).code).toBe(0);
+    plan = JSON.parse(await readFile(planPath, "utf8")) as { ownerAssociations: { id: string; accepted: boolean }[] };
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-a", true], ["fictional-c", false]]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 1 });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.associations.filter(({ entityId }) => entityId === "person:owner").map(({ memoryId }) => memoryId)).toEqual(["fictional-a"]);
+    // Applied links are not proposed again.
+    const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "owner-plan-2.json"), "--limit", "0", "--owner-backfill", "--json"]);
+    expect(JSON.parse(again.stdout)).toMatchObject({ ownerBackfill: { alreadyLinked: 1, proposed: 1 } });
+  });
+
+  it("turns open task lines into history notes through a reviewed model-free plan", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", "2026-09-01", "--capture-only"]))
+      .toMatchObject({ tasksToNotes: true, tasksBefore: "2026-09-01", captureOnly: true });
+    expect(() => parseCliArgs(["memory", "curate", "review", "--plan", "p.json", "--tasks-to-notes"])).toThrow(/--tasks-to-notes/u);
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--capture-only"])).toThrow(/--tasks-to-notes/u);
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", "soon"])).toThrow(/--before/u);
+    // An impossible calendar day is rejected, not normalised into the next month.
+    for (const value of ["2026-02-30", "2026-02-31T10:00Z", "2026-04-31"]) {
+      expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", value])).toThrow(/--before/u);
+    }
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", "2028-02-29"]))
+      .toMatchObject({ tasksBefore: "2028-02-29" });
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, type, status, text] of [["C-a", "task", "open", "Renew the Maple lease."], ["C-b", "task", "done", "Water the Maple garden."],
+      ["C-c", "note", "open", "Morgan likes Maple tea."], ["OPERATOR-d", "task", "open", "Pay the Maple invoice."]] as const) {
+      bujoMemory.appendBullet(memoryRoot, { id, type, status, text, salience: 0.5, isInsight: false, createdAt: at, refs: [] }, new Date(at));
+    }
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const invalidText = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "x.json"), "--tasks-to-notes", "--before", "2026-02-30"]);
+    expect(invalidText.code).toBe(2);
+    expect(invalidText.stderr).toContain("--before requires a valid ISO date");
+    const invalidJson = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "x.json"), "--tasks-to-notes", "--before", "2026-02-30", "--json"]);
+    expect(invalidJson.code).toBe(2);
+    expect(JSON.parse(invalidJson.stdout)).toMatchObject({ status: "failed", code: "memory_usage" });
+    const combined = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "x.json"), "--tasks-to-notes", "--limit", "5", "--json"]);
+    expect(combined.code).not.toBe(0);
+    const dry = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "dry.json"), "--tasks-to-notes", "--capture-only", "--dry-run", "--json"]);
+    expect(dry.code, dry.stderr).toBe(0);
+    expect(JSON.parse(dry.stdout)).toMatchObject({ status: "estimated", model: "none",
+      tasksToNotes: { openTasks: 2, proposed: 1, outsideWindow: 0, notCapture: 1 } });
+    const planPath = join(dir, "tasks-plan.json");
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--tasks-to-notes", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 2, discarded: 0,
+      tasksToNotes: { openTasks: 2, proposed: 2 } });
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "retype:*", "--reject", "id:OPERATOR-d", "--json"])).code).toBe(0);
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "retype:none": { total: 2, accepted: 1 } } });
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 1 });
+    const types = Object.fromEntries(bujoMemory.parseDailyFile(await readFile(join(memoryRoot, "daily", "2026-07-12.md"), "utf8")).bullets
+      .map(({ id, type, status }) => [id, `${type}/${status}`]));
+    expect(types).toEqual({ "C-a": "note/open", "C-b": "task/done", "C-c": "note/open", "OPERATOR-d": "task/open" });
+
+    // Drift: the operator task is completed after a second plan was prepared; apply refuses before any write.
+    const driftPlan = join(dir, "tasks-plan-2.json");
+    expect((await invoke(["memory", "curate", "prepare", "--plan", driftPlan, "--tasks-to-notes", "--json"])).code).toBe(0);
+    expect((await invoke(["memory", "curate", "review", "--plan", driftPlan, "--accept", "retype:*", "--json"])).code).toBe(0);
+    const dailyPath = join(memoryRoot, "daily", "2026-07-12.md");
+    const daily = bujoMemory.parseDailyFile(await readFile(dailyPath, "utf8"));
+    await writeFile(dailyPath, bujoMemory.serializeDailyFile({ lines: daily.lines.map((line) => line.bullet?.id === "OPERATOR-d"
+      ? { ...line, bullet: { ...line.bullet, status: "done" as const } } : line) }));
+    const beforeDriftApply = await readFile(dailyPath, "utf8");
+    const drifted = await invoke(["memory", "curate", "apply", "--plan", driftPlan, "--json"]);
+    expect(drifted.code).not.toBe(0);
+    expect(JSON.parse(drifted.stdout)).toMatchObject({ operation: "curate-apply", status: "failed" });
+    expect(await readFile(dailyPath, "utf8")).toBe(beforeDriftApply);
+  });
+
+  it("links lines to the one person they name through a reviewed model-free plan", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--link-people"]))
+      .toMatchObject({ limit: 0, linkPeople: true });
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--link-people"])).toThrow(/--link-people/u);
+    expect(() => parseCliArgs(["memory", "curate", "review", "--plan", "p.json", "--link-people"])).toThrow(/--link-people/u);
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Quill booked the Maple trip."], ["fictional-b", "Ottrin asked for a Maple summary."],
+      ["fictional-c", "Wexa likes Maple tea."], ["fictional-d", "Brenn and Quill met Wexa."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    bujoMemory.appendGraphBatch(memoryRoot, { entities: [
+      { id: "person:owner", name: "Owner", type: "person", createdAt: at },
+      { id: "person:ottrin", name: "Ottrin", type: "person", createdAt: at },
+      { id: "person:quill", name: "Quill", type: "person", createdAt: at },
+      { id: "person:wexa", name: "Wexa", type: "person", createdAt: at },
+      { id: "person:brenn-1", name: "Brenn", type: "person", createdAt: at },
+      { id: "person:brenn-2", name: "Brenn", type: "person", createdAt: at }] });
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const planPath = join(dir, "people-plan.json");
+    // Ottrin is merged into the owner in the same plan; a name merged into the owner is never linked.
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--link-people",
+      "--merge", "person:ottrin=person:owner", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", operatorMerges: 1,
+      linkPeople: { live: 4, proposed: 4, ambiguousNames: 1, ambiguousLines: 1, more: false } });
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "associate:person-name": { total: 4, accepted: 4 } } });
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-d", "--json"])).code).toBe(0);
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as { personAssociations: { id: string; entityId: string; accepted: boolean }[] };
+    expect(plan.personAssociations.map(({ id, entityId, accepted }) => `${id}>${entityId}>${accepted}`)).toEqual([
+      "fictional-a>person:quill>true", "fictional-c>person:wexa>true",
+      "fictional-d>person:quill>false", "fictional-d>person:wexa>false"]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 3 });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.entities.some(({ id }) => id === "person:ottrin")).toBe(false);
+    expect(graph.associations.filter(({ entityId }) => entityId.startsWith("person:"))
+      .map(({ memoryId, entityId }) => `${memoryId}>${entityId}`).sort())
+      .toEqual(["fictional-a>person:quill", "fictional-c>person:wexa"]);
+    // Applied links are not proposed again; the rejected line is.
+    const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "people-plan-2.json"), "--limit", "0", "--link-people", "--json"]);
+    expect(JSON.parse(again.stdout)).toMatchObject({ linkPeople: { linkedBefore: 2, alreadyLinked: 2, proposed: 2 } });
+  });
+
+  it("keeps a dropped line out of owner backfill so the reviewed plan applies", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    const lines = [["fictional-a", "Maple tea is preferred."], ["fictional-c", "Chess is played on Fridays."],
+      ["fictional-e", "Maple tea is on the table."]] as const;
+    for (const [id, text] of lines) {
+      bujoMemory.appendBullet(memoryRoot, { id, type: "note", status: "open", text, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [ownerFact] }, new Date(at));
+    }
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const planPath = join(dir, "drop-owner-plan.json");
+    // The model proposes dropping two lines that would otherwise qualify for owner backfill.
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false, ownerBackfill: true, curateSelect: "oldest",
+      curateLlm: { id: "fake", complete: async () => JSON.stringify([
+        { id: "fictional-a", action: "drop", reason: "generic-advice" },
+        { id: "fictional-c", action: "drop", reason: "generic-advice" },
+      ]) },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    // Only the unanswered line is discarded; neither drop is lost to an owner-link conflict.
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 2, discarded: 1, discardedByReason: { "missing-proposal": 1 },
+      ownerBackfill: { live: 3, proposed: 1, bare: 0, supersededByDrop: 2 } });
+    type Plan = { proposals: { source: { id: string }; accepted: boolean }[];
+      ownerAssociations: { id: string; textHash: string; reason: string; accepted: boolean }[]; planDigest?: string };
+    let plan = JSON.parse(await readFile(planPath, "utf8")) as Plan;
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-e", true]]);
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "drop:*", "--json"])).code).toBe(0);
+
+    // A plan written before this rule may carry an owner link for a dropped line;
+    // review sets it to not accepted and reports the count.
+    const { planDigest: _digest, ...payload } = JSON.parse(await readFile(planPath, "utf8")) as Plan;
+    payload.ownerAssociations.push({ id: "fictional-c", textHash: createHash("sha256").update(lines[1][1]).digest("hex"),
+      reason: "owner-label", accepted: true });
+    const strip = <T extends { accepted: boolean }>({ accepted: _accepted, ...rest }: T) => rest;
+    const planDigest = createHash("sha256").update(JSON.stringify({ ...payload, proposals: payload.proposals.map(strip),
+      ownerAssociations: payload.ownerAssociations.map(strip) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(reviewed.code, reviewed.stderr).toBe(0);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ ownerSupersededByDrop: 1,
+      counts: { "drop:generic-advice": { total: 2, accepted: 2 }, "associate:owner": { total: 2, accepted: 1 } } });
+    // Accepting the owner links again keeps the drop authoritative.
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "associate:owner", "--json"])).code).toBe(0);
+    plan = JSON.parse(await readFile(planPath, "utf8")) as Plan;
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-e", true], ["fictional-c", false]]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied" });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.associations.filter(({ entityId }) => entityId === "person:owner").map(({ memoryId }) => memoryId)).toEqual(["fictional-e"]);
+  });
+});

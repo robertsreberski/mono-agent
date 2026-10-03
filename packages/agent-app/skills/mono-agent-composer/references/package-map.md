@@ -28,11 +28,10 @@ Every real host needs these concepts:
 Minimal local host:
 
 ```ts
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });
@@ -49,13 +48,12 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Prompt assembly | `@mono-agent/agent-harness` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
 | Selected skill bodies | `@mono-agent/agent-harness` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
 | Live operator skill registry | `@mono-agent/agent-app` + `@mono-agent/operator-adapter` | Classify installed skills as inlined, on-demand, or unavailable and expose a bounded memory-only snapshot for console discovery |
-| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
+| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`, `MemoryBlock`, `MemoryCompletedTurn`, and `MemoryCompletedTurnResult` from `@mono-agent/agent-contracts` |
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + static salience (journal), LLM capture/reconcile + entity graph + projection-only scheduled consolidation (bujo); all tiers affirm bounded canonical chronological browse |
 | Embedding providers | `@mono-agent/memory/search` | Exclusive Ollama/LM Studio/OpenAI embedding providers used by the store subpath for vector recall; `agent-app` owns guided typed discovery and the real readiness probe |
 | Composer documentation search + guided reading | `@mono-agent/docs-mcp` (optional plugin) | Exact-version offline hybrid semantic/BM25 `mono_agent_docs` search plus anchored reads, cross-link resolution, and continuation windows over canonical docs and composer references; paired by `mono-agent install-skill`, outside the composed agent's own `mcp.json` |
-| External Supermemory backend | `@mono-agent/memory-supermemory` (optional plugin) | Explicitly installed lockstep package selected by `memory.backend: "supermemory"`; proxies the shared `MemoryStore` / `MemoryRecall` contracts to local or hosted Supermemory for server-side extraction, consolidation, and hybrid recall |
 | Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions read-only `MemoryRecall` for every configured tier and direct configured responder; automatic/tool recall share the same store and per-turn query cache |
-| Chronological journal tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions policy-gated `MemoryJournal` only for affirmative local Lite/Journal/BuJo capability; strict explicit dates/zone, frozen request snapshots, safe provenance, no Supermemory/search fallback |
+| Chronological journal tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions policy-gated `MemoryJournal` only for affirmative local Lite/Journal/BuJo capability; strict explicit dates/zone, frozen request snapshots, safe provenance, and no search fallback |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
 
@@ -90,8 +88,7 @@ key. `SetConversationTitle` appears only for writable interactive web threads;
 it keeps automatic semantic titles current, while a user rename permanently
 wins. Allow-all exposes eligible tools; a specific allowlist must name each one.
 `MemoryJournal` also requires `memory.recallTool.enabled` and an affirmative local
-browse capability; Supermemory never acquires it through policy alone. Every route is
-Pi-native, so no route family suppresses any of these tools; the
+browse capability. Every route is Pi-native, so no route family suppresses any of these tools; the
 surface conditions above (writable interactive web thread, retained managed-tool
 calls) are the only gates.
 `@mono-agent/agent-app` also owns rich reply composition. `PublishReplyFile`
@@ -102,7 +99,18 @@ the web console, and because every route is Pi-native the whole fallback chain
 carries that bridge. Adapters consume the shared reply-part contract: Slack and
 Telegram confirm native uploads, the web serves authorized downloads and
 sandboxed Apps, and machine/verbatim adapters preserve answer text when they
-cannot represent a part.
+cannot represent a part. `SuggestReplies` is a web-only app-owned request-scoped tool for non-blocking
+quick reply choices, including web-bound job wakes: 2–8 distinct trimmed
+single-line labels, each 1–75 characters. A later call replaces the reply's
+choices; one set counts against the shared 20-part budget. A click sends the
+label as a new user turn; use `AskUser` when the current run must wait.
+Restrictive `tools.allowedTools` must name `SuggestReplies`; deny wins.
+
+`ProposeRestart` is another app-owned request-scoped
+tool, installed only on interactive web turns when the supervised agent's
+keyed restart support verifies successfully and tool policy allows it.
+Restrictive `tools.allowedTools` must name `ProposeRestart`; its reply part is
+only a proposal and requires the operator to confirm in the web console.
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
@@ -128,7 +136,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Slack | `@mono-agent/slack-adapter` | Allowed channel or DM receives text and a generated reply file through the external upload flow |
 | WhatsApp | `@mono-agent/whatsapp-adapter` (external channel plugin) | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
-| Operator endpoint | `@mono-agent/operator-adapter` | `mono-agent tui` and `mono-agent web` connect for chat |
+| Operator endpoint | `@mono-agent/operator-adapter` | `mono-agent web`, ACP, and jobs clients connect |
 | A2A provider/consumer | `@mono-agent/a2a-adapter` (external channel plugin) | Send text to the Agent Card URL |
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path (with `Authorization: Bearer ...` when `apiKey` is set) |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
@@ -139,12 +147,11 @@ Adapters must not import the harness, runtime adapter, memory package (`@mono-ag
 
 Use:
 
-- `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with structured stream-event insight, recorded-run replay, and config view. Remote event frames have a strict 256 KiB UTF-8 NDJSON cap: assistant-thought/tool-call payload fields are reduced and remeasured, while another oversized variant or a reducible event whose minimal form still does not fit becomes a bounded `oversized_event` marker. Other frame kinds are unaffected, and replay contains only sensitive-key-redacted, credential-scanned, capped events that reached terminal JSONL persistence.
 - `@mono-agent/web` for the assistant-ui always-on browser console (`mono-agent web`): persistent multi-agent conversations and same-thread quotes, fixed compact/expanded agent navigation with offline filtering, separate Chats and overview-backed Automations destinations with stable read-only cron history routes, explicit alive-page/PWA response notifications, device-local file picking, integrity-checked reply downloads, confirmation-gated MCP Apps in a double-frame sandbox, streamed reasoning/tools, internal telemetry-backed cumulative context usage, cancellation, LAN-default HTTP on port 5050, and conflict-safe optional Tailscale Serve HTTPS. It has no app login; network reachability is the access boundary.
-- `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint the TUI and web chat console connect to (`tui` config section, on by default).
-- `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the `@mono-agent/observability/otel` Phoenix OTLP exporter configured via `observability.exporters`.
+- `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint used by web, ACP, and jobs clients (`tui` remains the compatibility config section and defaults on).
+- `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and provider-neutral `RunExporter` composition. The framework does not bundle a trace exporter.
 
-Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; its terminal-batched export is best-effort. Independently, the local recorder writes empty events plus a `running` summary at start and a sensitive-key-redacted, credential-scanned, capped snapshot at finish/fail. Events stay in RAM between those boundaries, so a crash can lose them. Without Phoenix, those bounded terminal JSONL snapshots are the only local run record.
+Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. The recorder writes empty events plus a `running` summary at start, schedules bounded checkpoints, and writes a sensitive-key-redacted, credential-scanned, capped terminal snapshot at finish/fail. A crash can still lose an unsaved tail. These local artifacts remain available after the first-party Phoenix/OTLP exporter retirement.
 
 ## Multi-Agent Join
 

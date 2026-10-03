@@ -14,6 +14,10 @@ function freshRunState() {
     toolResultsSeen: 0,
     lastToolName: null,
     maxTurnsHit: false,
+    toolExecutionsThisTurn: 0,
+    toolFailureThisTurn: false,
+    structuredOutputCompletedThisTurn: false,
+    structuredResult: null,
   };
 }
 
@@ -42,6 +46,7 @@ function driver(overrides = {}) {
     options: {
       cwd: "/repo",
       maxTurns: overrides.maxTurns,
+      outputSchema: overrides.outputSchema,
       toolLifecycleSink: overrides.toolLifecycleSink,
       abortSignal: overrides.abortSignal,
     },
@@ -461,6 +466,113 @@ describe("createStreamSubscriber — turn counting + maxTurns stop", () => {
 
   it("aborts and flags maxTurnsHit when the crossing turn ended to run more tools", () => {
     const { runState, harness, handler } = driver({ maxTurns: 1 });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(true);
+    expect(harness.calls.aborts).toBe(1);
+  });
+
+  it.each(["mcp__reply_files__PublishReplyFile", "SuggestReplies", "mcp__mono-agent-suggest-replies__SuggestReplies"])("blocks silence after %s and exempts a sole successful terminal silence", (toolName) => {
+    const { runState, harness, handler } = driver({ maxTurns: 1 });
+    runState.silentTurn = { soleCall: true, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: true, completed: false };
+    handler({ type: "tool_execution_start", toolName: "FinishSilently", toolCallId: "silent-1", args: {} });
+    handler({ type: "tool_execution_end", toolName: "FinishSilently", toolCallId: "silent-1",
+      result: { content: [{ type: "text", text: "Silent completion accepted." }],
+        details: { tool: "FinishSilently", accepted: true } }, isError: false });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(false);
+    expect(harness.calls.aborts).toBe(0);
+    handler({ type: "tool_execution_end", toolName, toolCallId: "file-1",
+      result: { content: [{ type: "text", text: "published" }] }, isError: false });
+    expect(runState.silentTurn.visibleContent).toBe(true);
+  });
+
+  it("invalidates accepted silence on a later assistant continuation", () => {
+    const { runState, handler } = driver();
+    runState.silentTurn = { soleCall: true, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: true, completed: false };
+    handler({ type: "tool_execution_end", toolName: "FinishSilently", toolCallId: "silent-1",
+      result: { content: [], details: { accepted: true } }, isError: false });
+    expect(runState.silentTurn.completed).toBe(true);
+    handler({ type: "message_start", runId: "run-1", message: { role: "assistant" } });
+    expect(runState.silentTurn).toMatchObject({ accepted: false, completed: false });
+  });
+
+  it("allows a later silence after ordinary tool errors and refused silence", () => {
+    const { runState, handler } = driver();
+    runState.silentTurn = { soleCall: false, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: false, completed: false };
+    for (const name of ["Read", "FinishSilently"]) {
+      handler({ type: "tool_execution_end", toolName: name, toolCallId: name,
+        result: { content: [{ type: "text", text: "Error" }] }, isError: true });
+    }
+    expect(runState.silentTurn.failed).toBe(false);
+  });
+
+  it("blocks silence after a completed AskUser interaction", () => {
+    const { runState, handler } = driver();
+    runState.silentTurn = { soleCall: false, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: false, completed: false };
+    handler({ type: "tool_execution_end", toolName: "mcp__adapter_send_tools__AskUser", toolCallId: "ask-1",
+      result: { content: [{ type: "text", text: "Answered" }] }, isError: false });
+    expect(runState.silentTurn.visibleContent).toBe(true);
+  });
+
+  it("accepts a successful terminal StructuredOutput submission at the exact ceiling", () => {
+    const { runState, harness, handler } = driver({ maxTurns: 1, outputSchema: { type: "object" } });
+    handler({ type: "tool_execution_start", toolName: "StructuredOutput", toolCallId: "structured-1", args: { ok: true } });
+    runState.structuredResult = { ok: true };
+    handler({
+      type: "tool_execution_end",
+      toolName: "StructuredOutput",
+      toolCallId: "structured-1",
+      result: { content: [{ type: "text", text: "Structured output received." }], details: { ok: true } },
+      isError: false,
+    });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(false);
+    expect(harness.calls.aborts).toBe(0);
+  });
+
+  it.each([
+    ["failed StructuredOutput", { outputSchema: { type: "object" }, toolName: "StructuredOutput", isError: true }],
+    ["ordinary tool", { outputSchema: { type: "object" }, toolName: "Read", isError: false }],
+    ["same-named tool without a schema", { outputSchema: undefined, toolName: "StructuredOutput", isError: false }],
+  ])("still stops for %s at the exact ceiling", (_label, fixture) => {
+    const { runState, harness, handler } = driver({ maxTurns: 1, outputSchema: fixture.outputSchema });
+    handler({ type: "tool_execution_start", toolName: fixture.toolName, toolCallId: "tool-1", args: {} });
+    handler({
+      type: "tool_execution_end",
+      toolName: fixture.toolName,
+      toolCallId: "tool-1",
+      result: "done",
+      isError: fixture.isError,
+    });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(true);
+    expect(harness.calls.aborts).toBe(1);
+  });
+
+  it("does not exempt a mixed turn containing successful StructuredOutput and a failed ordinary tool", () => {
+    const { runState, harness, handler } = driver({ maxTurns: 1, outputSchema: { type: "object" } });
+    handler({ type: "tool_execution_start", toolName: "StructuredOutput", toolCallId: "structured-1", args: {} });
+    runState.structuredResult = { ok: true };
+    handler({ type: "tool_execution_end", toolName: "StructuredOutput", toolCallId: "structured-1", result: "done", isError: false });
+    handler({ type: "tool_execution_start", toolName: "Read", toolCallId: "read-1", args: {} });
+    handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "read-1", result: "failed", isError: true });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(true);
+    expect(harness.calls.aborts).toBe(1);
+  });
+
+  it("does not carry a successful structured exemption into a later tool turn", () => {
+    const { runState, harness, handler } = driver({ maxTurns: 2, outputSchema: { type: "object" } });
+    handler({ type: "tool_execution_start", toolName: "StructuredOutput", toolCallId: "structured-1", args: {} });
+    runState.structuredResult = { ok: true };
+    handler({ type: "tool_execution_end", toolName: "StructuredOutput", toolCallId: "structured-1", result: "done", isError: false });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    handler({ type: "tool_execution_start", toolName: "Read", toolCallId: "read-1", args: {} });
+    handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "read-1", result: "done", isError: false });
     handler({ type: "turn_end", message: { stopReason: "toolUse" } });
     expect(runState.maxTurnsHit).toBe(true);
     expect(harness.calls.aborts).toBe(1);

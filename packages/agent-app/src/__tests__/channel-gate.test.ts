@@ -88,7 +88,7 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
 
   it("tui is the deliberate exception: ungated, and its empty-input default is ENABLED", async () => {
     // The TUI stream endpoint is an operator surface (loopback-only, ephemeral
-    // port), so with no `tui` section it still starts — `mono-agent tui` must
+    // port), so with no `tui` section it still starts — operator clients must
     // reach any running agent without a config edit.
     const tui = defaultChannelDrivers().find((driver) => driver.id === "tui")!;
 

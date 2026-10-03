@@ -7,7 +7,7 @@ sidebar:
 
 mono-agent can return more than answer text without placing file bytes, local
 paths, or app HTML in the reply stream. A response may carry an opaque file
-reference, an MCP App reference, or a visible per-part failure. These parts are
+reference, an MCP App reference, quick reply choices, a restart proposal, or a visible per-part failure. These parts are
 additive: valid text and earlier parts remain deliverable when a later part
 fails.
 
@@ -35,7 +35,8 @@ media type, byte count, SHA-256 integrity id, expiry, and an opaque id.
 Host-private roots are refused even when they are located inside the configured
 workspace.
 
-The default per-file limit is 20 MiB. Files and apps share one limit of 20 rich
+The default and maximum per-file limit is 20 MiB; configure a smaller value
+with `artifacts.replyFiles.maxFileBytes`. Files and apps share one limit of 20 rich
 parts per run. A retry with the same integrity identity reuses the first part;
 the twenty-first distinct producer request returns a visible capability failure
 to the model without replacing the first twenty.
@@ -57,13 +58,69 @@ run id, conversation id, workspace, or artifact path. The tool is removed by
 the host's sealed tool policy and is not installed on a route that
 cannot safely receive its MCP server.
 
+## Web-only quick replies
+
+`SuggestReplies` is an app-owned, request-scoped MCP tool on web-console
+conversation turns, including existing web-bound background/job wakes. It is
+non-blocking: the agent finishes its reply, and a click arrives later as a new
+user turn in the same conversation. Use `AskUser` when the current run must
+wait for a selection. Ordinary `tools.allowedTools` / `tools.disallowedTools`
+policy applies; a restrictive allow-list must include `SuggestReplies`.
+
+```json
+{ "options": ["Review draft", "Keep going", "Try another approach"] }
+```
+
+Supply 2–8 distinct single-line labels, each 1–75 characters after trimming.
+Control characters and duplicate trimmed labels are rejected. The tool adds
+one `reply_options` part containing only `type`, an opaque `id`, and `options`.
+A later call in the same run replaces the choices without claiming another
+slot in the shared 20-part reply budget. The choices persist with the assistant
+message and appear as keyboard-accessible, wrapping buttons directly below the
+final answer. A click sends the label verbatim through the normal chat path and
+shows it as a user message. Buttons become disabled after a click, while a turn
+is running, or once any later user message exists. There is no separate click
+store or cross-device lock: the later user message makes old choices inert on
+reload and other devices.
+
+Telegram, Slack, webhook, terminal, ACP, cron, A2A and OpenAI-compatible turns
+never receive this tool. Unexpected delivery to a non-web human destination
+adds only a concise warning, not choices or actionable controls. Machine
+transports leave answer text unchanged and expose a sanitized
+`unsupported_destination` outcome with `partType: "reply_options"`, never labels.
+
+## Web-only restart proposals
+
+`ProposeRestart` is an app-owned, request-scoped MCP tool only on an
+interactive web-console turn whose keyed, supervised agent advertises verified
+restart support; ordinary tool allow/deny policy still applies. A call with
+`{ "reason": "short explanation" }` records at most one additive
+`restart_proposal` part on that assistant reply. The part contains only
+`{ "type": "restart_proposal", "id": "opaque id", "reason": "optional short text" }`:
+reason is single-line and capped at 280 characters; no URL, bearer, command,
+agent target, source id or process generation is model-supplied. The tool
+reports **proposed**, never **restarted**. The web service binds the stored
+part to its real conversation, source and process generation. An operator sees
+it directly beneath the answer, reviews the interruption warning, and clicks
+Confirm to use the same restart flow as selected-agent settings. Old, used,
+offline and unsupported proposals remain readable but cannot start a second
+request. Read [restart one agent](../observability/web-console.md#restart-one-agent)
+for outcomes and the trust boundary.
+
+Telegram, Slack, webhook, terminal, ACP, cron and other non-web turns never
+receive the tool. If a producer nevertheless delivers this part to another
+human destination, its existing unsupported-part fallback says it could not
+be delivered, with **no actionable link or restart**. Machine/verbatim
+transports leave assistant text unchanged and return only sanitized terminal
+`unsupported_destination` outcomes.
+
 ## Channel delivery and fallback
 
 | Destination | Reply-file behavior | Other unsupported rich parts |
 | --- | --- | --- |
 | Slack | Uses `files.getUploadURLExternal`, uploads bytes to Slack's returned URL, then confirms with `files.completeUploadExternal` in the exact channel/thread. | Concise human-readable warning. |
 | Telegram | Sends a native `sendDocument` to the exact chat/reply target and preserves silent proactive delivery. | Concise human-readable warning. |
-| Web console | Shows a message-bound download control after server-side authorization and integrity verification. | MCP Apps render as described below; failures remain individual message parts. |
+| Web console | Shows a message-bound download control after server-side authorization and integrity verification. | Quick replies and restart proposals render beneath the answer; MCP Apps render as described below; failures remain individual message parts. |
 | Terminal and other human channels | Preserve the answer and render a safe warning when a part has no native representation. | Same. |
 | OpenAI-compatible API | Keeps assistant `content` byte-for-byte unchanged and returns sanitized failures in `mono_agent.reply_part_outcomes`. | Non-stream JSON and a metadata-only SSE chunk use the same bounded shape. |
 | Webhook | Keeps `text` byte-for-byte unchanged and returns sanitized `replyPartOutcomes`. | Sync responses, async status reads, and result callbacks retain the outcomes. |
@@ -87,7 +144,8 @@ Every machine adapter uses the shared
 ```
 
 - `partIndex` is rewritten to the dense zero-based output position.
-- `partType` is exactly `attachment`, `mcp_app`, `failure`, or `unknown`.
+- `partType` is exactly `attachment`, `mcp_app`, `restart_proposal`, `reply_options`,
+  `failure`, or `unknown`.
 - `status` is the terminal literal `failed`.
 - `code` is exactly one of `app_capability_mismatch`,
   `app_connection_closed`, `app_resource_invalid`, `artifact_expired`,
@@ -217,8 +275,15 @@ reports `connected: false` and cannot call tools or read resources.
 Bridge requests are limited to 64 KiB, results to 1 MiB, and each connection to
 60 requests per minute. Each app keeps a rotating owner-private audit log with
 a 256 KiB file ceiling and two retained rotations. Durable rich-reply payloads
-and audit files stay within a 256 MiB aggregate ceiling; configured composition
-reserves 1 MiB for independently admitted audit records and uses fair-share,
+use `artifacts.replyFiles.maxStorageBytes` (2 GiB by default;
+`"unlimited"` disables content quota rejection). Configured composition reserves 1 MiB
+for independently admitted audit records when MCP Apps are enabled; finite
+budgets must exceed that reserve. Published files use
+`artifacts.replyFiles.maxFileBytes` (20 MiB by default and at most 20 MiB),
+because web, Slack and Telegram delivery buffer whole files and web reply
+storage enforces its own 20 MiB bound. Values above 20 MiB fail config
+validation rather than producing undownloadable files. Retention pruning still
+applies with unlimited storage. Audit storage uses fair-share,
 oldest-segment reclamation when that reserve fills. One bounded inventory per
 artifact-root lifecycle restores accounting after a restart; later appends
 update exact in-memory ownership under one process-wide gate instead of

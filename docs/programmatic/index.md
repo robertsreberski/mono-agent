@@ -15,7 +15,7 @@ Most agents use the CLI host. Embed the app only when you need a custom driver s
 | --- | --- | --- | --- |
 | App (default) | `@mono-agent/agent-app` | `startMonoAgentApp({ cwd, configPath, drivers, runtime })` | You want the full config-first host but need to override the channel driver set, inject a runtime, or embed it in a larger process. |
 | Responder | `@mono-agent/agent-app` | `createConfiguredAgentResponder({ config, memory, historyStore, runtimeOptions, runtimeOptionsForRequest })` | You want config-driven runtime/harness/memory composition but you own the transport (your own server, queue, or test harness). |
-| Bare | `@mono-agent/agent-app` + `@mono-agent/config` | `loadMonoAgentConfigWithSources(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest config-driven responder, without channels or host-level service/scheduler lifecycle. Per-run JSONL recording and configured exporters still apply. |
+| Bare | `@mono-agent/agent-app` + `@mono-agent/config` | `loadMonoAgentConfig(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest config-driven responder, without channels or host-level service/scheduler lifecycle. Per-run JSONL recording and configured exporters still apply. |
 
 All three use the same `MonoAgentConfig`. The escape hatch changes composition and request handling; it does not require you to rebuild runtime, prompt assembly, or memory.
 
@@ -56,13 +56,12 @@ When you own the transport but still want config-driven runtime, harness, and me
 
 ```ts
 import { BufferedMessageStream } from "@mono-agent/agent-contracts";
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
 // The loader uses only the env record supplied here. Load dotenv yourself first
 // if this process needs one.
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });
@@ -107,11 +106,10 @@ The responder also honors warm-session mode and rollover from `runtime.session`.
 The minimal local host is just two packages: load a config, build a responder. It starts no channels and owns no host-level trace registry, service, retention, or memory-consolidation scheduler lifecycle. Each turn still uses the config-driven JSONL recorder and any configured per-run exporter.
 
 ```ts
-import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { loadMonoAgentConfig } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
-const config = await loadMonoAgentConfigWithSources({
-  env: process.env,
+const config = await loadMonoAgentConfig({
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
 });
@@ -122,7 +120,7 @@ const responder = await createConfiguredAgentResponder({ config });
 This corresponds to the **Core Join** in the package map: `agent-contracts` (request/response shape), `config` (settings), `runtime-adapter` (model refs and provider-option validation), and `agent-app` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/agent-harness` directly — that is the **Execution Join** and is fully code-only.
 
 :::note
-Only the `env` record passed to `loadMonoAgentConfigWithSources` participates in overrides. The loader does not load `.env` and does not implicitly merge `process.env`. See [Environment variables](/config/env-vars/).
+The loader reads core settings only from JSON and built-in defaults. Environment remains available separately for referenced credentials and adapter settings.
 :::
 
 ## In this section

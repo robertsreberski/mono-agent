@@ -35,7 +35,7 @@ npm install @mono-agent/memory
 ```
 
 This provider-free Lite example creates a local store, admits one completed turn
-at the strong run-idempotent boundary, recalls it, and closes the writer lease:
+at the strong run-idempotent boundary, retrieves it explicitly, and closes the writer lease:
 
 <!-- doc-test:typescript -->
 
@@ -53,8 +53,8 @@ await store.persistCompletedTurn({
   summary: "User prefers concise answers.",
 });
 
-const recalled = await store.load("conv-1", "How should answers be written?");
-console.log(recalled?.content);
+const recalled = await store.recallWithOutcome("How should answers be written?");
+console.log(recalled.hits);
 await store.close();
 ```
 
@@ -110,15 +110,129 @@ The normal write and read paths are:
 | --- | --- |
 | `src/store/` | SQLite schema, FTS5/sqlite-vec indexes, graph projection, ranking, and low-level database maintenance. |
 | `src/search/` | Ollama, LM Studio, and OpenAI embedding clients plus the embedding circuit breaker. |
-| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
+| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/curate recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
 
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.
 
+### Status-bearing local recall
+
+`MemoryDb.recall()` remains the strict compatibility API: any embedding failure
+rejects. Local callers that can surface degraded service may opt into
+`recallWithOutcome()`, which returns hits plus `retrievalMode` and a closed
+`embedding_unavailable` degradation code. Only provider request failures, an
+open embedding circuit, or an invalid provider response qualify. Caller aborts,
+dimension mismatches, SQLite/native/integrity failures, and arbitrary exceptions
+still reject.
+
+When fallback qualifies, recall reuses the lexical candidates computed before
+the provider call and scores them as one real retriever; it does not retry the
+provider or invent semantic scores. A Lite store with no embedding provider is
+normally `lexical_only` and is not degraded. Callers must keep the degradation
+visible even when no lexical hit survives their own selection policy.
+
+### BuJo capture resilience
+
+BuJo retains a private, run-keyed extraction plan across intake retries, so a
+reconciliation failure never asks the model to extract the same turn again.
+Only on the final automatic intake attempt, if the capture classifier fails,
+the host writes novel candidates as ADDs and skips exact-text duplicates;
+embedding or durable-write failures still retry.
+Host-verified owner turns can bind the owner's own facts to `person:owner` and keep
+agent-wide preferences even without a sender id. Unidentified senders remain
+conversation-scoped, including colon-containing conversation ids (hashed for
+safe scope keys). Newer dated updates supersede the prior line without erasing
+its history. Capture and reconcile use a 160-code-point bound; multi-sentence
+memories are split into separate candidates up to the eight-memory plan limit
+rather than silently discarding later sentences. Overlong individual sentences
+still clamp at a word or clause boundary.
+
+### Standalone automatic recall
+
+`BujoMemoryStore.load()` uses the same score-based, language-neutral
+`selectPossiblyRelevantRecallHits` policy as the app's automatic block: hybrid
+results only, at most three lines, no grammar or claim of factual correctness.
+Lite and degraded lexical-only results never inject automatic context; use
+`recallWithOutcome()` for explicit retrieval and its degradation status. Unlike
+the app service, this standalone API has no host-verified owner-turn signal;
+callers must enforce their own audience/privacy policy before injecting a block.
+
+### BuJo memory labels
+
+A BuJo daily bullet may carry up to eight validated `label:v1:<base64url>` refs
+inside its existing `<!--mem ... refs=...-->` metadata comment. The encoded
+canonical JSON has one kind: `fact` (person entity and attribution, optionally
+paired typed key/value and civil-date validity for built-in properties),
+`preference` (scope and attribution), or
+`lesson` (scope and host-verified success boolean). The readable sentence remains
+the bullet's text; daily Markdown is canonical, and SQLite `memory_labels` is a
+rebuildable cache. Old versions parse the labelled line normally and ignore the
+refs as ordinary refs; they neither interpret nor enforce labels. A newer reader
+keeps the bullet when a label is malformed, omits the invalid label from the index,
+and reports its file and line in audit; new writes reject invalid labels. Only `invalidated`
+and `dropped` statuses make labels inactive; other statuses remain live. Internal
+`MemoryDb.labelsForEntity(entityId, asOfDate?)` returns fact labels, history,
+and conflicts; `guidanceForScope(scope)` returns preferences and lessons.
+`listLabels` reads up to 200 labelled rows (including inactive history) with
+kind/entity/scope filters and indexed source file/line, without a writer lease.
+BuJo capture derives coarse person facts from associated note/event lines without
+requiring a model label proposal, while still validating any model-proposed
+structured facts and preferences. `memory curate prepare --limit 0` proposes
+assistant-inferred coarse fact labels on already-associated canonical lines in
+bounded, idempotent passes without a model; review and apply still require
+operator acceptance. Curate never mints user-stated labels or preferences.
+Capture labels use no word lists or grammar, so they work in any language. The
+extraction model marks each memory's `source` (`user`, `assistant`, `tool` or
+`document`); the host trusts `user` only on a human turn with user text and
+`tool` only with host-observed tool outcomes. A person fact needs the capture's
+entity association plus the person's name in the line; an owner fact instead
+needs a `person:owner` association and a `user` source on a host-verified owner
+turn. A fact is user-stated only for a `user` source whose user text names the
+person (for the owner, the owner rule), and a structured value must also appear
+in that text. A structured date matches only as `YYYY-MM-DD` or an unambiguous
+numeric day/month/year, never a month written in words. A structured owner
+property falls back to the coarse owner fact when the line is also associated
+with, or names, another person entity. A capture plan retained before `source`
+existed keeps its already-validated labels while its text is unchanged. An `assistant`-sourced memory is kept only with a model salience of at least
+0.5, so the assistant's own progress or status reports and generic advice are
+dropped before reconciliation. One constrained review call (`capture:review`) then sees only the
+turn's assistant lines and owner user lines without a preference: it may add a host-gated
+preference to the owner's own stated taste and drop assistant lines that are general world
+information or transient process reports, never changing text or dropping user, tool or document
+lines. A preference needs a `user` source on a human turn; unidentified
+speakers' preferences are conversation-scoped. A verified lesson needs the
+model's lesson label and a host-observed successful tool outcome. Optional `capture.focus` (operator guidance) narrows extraction selection and the subsequent review of assistant lines; review cannot drop owner-stated lines. With no focus, the review prompt is unchanged.
+`capture.only` filters curated capture to host-accepted label kinds after final
+reconcile text validation, including its graph. Because the host labels every
+person-associated note/event line with a coarse fact, `capture.only: ["fact"]`
+keeps any such line, not only structured attribute facts. Unset leaves capture unchanged;
+explicit `Remember` writes are unaffected. Tool outcomes exposed to extraction contain only bounded fixed categories,
+never arguments, outputs, paths, URLs or raw error messages. App-owned automatic
+recall can append up to three relevant, scoped live preferences/verified lessons
+and up to three exact-name person cards as a separate background block. On web,
+TUI and ACP owner turns of at most 16 NFC-normalized, trimmed Unicode code points,
+only the unsolicited possibly-relevant lines are suppressed; the person card and
+labelled background remain available. Project
+scope is not injected until the host supplies a verified active project. Global
+agent preferences require a host-confirmed owner/operator turn; other identified
+speakers get user scope. Person cards show attribution/recorded date, omit
+conflicting values, and derive age from the UTC host observation date rather
+than storing it. Ordinary recall hits are unaffected. UPDATE retains labels only when text is unchanged unless
+replacements are supplied; SUPERSEDE does not copy them by default. Lite and
+Journal ignore labels. **Do not downgrade** to a binary without coarse fact
+support after writing keyless `fact` refs: older readers reject them on rebuild
+and when adding labels. New readers retain legacy structured `other:` and
+relationship refs, but new capture/curate writes them coarse-only. Older
+versions cannot safely replay pending label-changing UPDATE intents or read
+pending capture intake records containing `captureEvidence` after downgrade; drain
+pending intake before downgrading. Sender scope tokens are unsalted, local-only
+hashes of host sender ids; do not export them as cross-channel identity. No extra
+file or separate fact authority is involved.
+
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly
-stated fact. Unlike `appendHostSummary` it writes the curated `daily/` source on
+stated fact. Unlike completed-turn summaries it writes the curated `daily/` source on
 every tier and indexes in the same critical section, so the fact is recallable as
 soon as the call returns.
 
@@ -128,6 +242,11 @@ is what makes retries idempotent: the index is consulted first, then the whole
 canonical source, so a bullet appended before a crash is completed rather than
 duplicated even when the retry lands on a later day. `supportsRemember()` reports
 whether the store can accept writes at all; it is `false` on a read-only store.
+`supportsRememberDetails()` affirms the writable BuJo-only variant: an existing
+person association, an explicitly replaceable unlinked observation, and/or
+explicit supersession of a captured note/event or enhanced Remember write are committed via the recoverable capture outbox with
+assistant-inferred coarse fact attribution. It never creates a person or
+replaces text-only Remember lines, user-stated facts, preferences or lessons.
 
 ### Curated chronological reads
 
@@ -157,24 +276,20 @@ await store.persistCompletedTurn({
   conversationId: "conv-1",
   summary: "Host-observed completed turn.\nUser: Be concise.\nAssistant: Understood.",
   captureText: "User: Be concise.\nAssistant: Understood.",
+  // Only a host that verified the outer human speaker may set this:
+  captureSpeakerKind: "human-turn",
 });
 ```
 
 ### BuJo capture paths
 
-The bundled `@mono-agent/agent-harness` never calls `scheduleCapture` on
-`BujoMemoryStore`. BuJo implements `persistCompletedTurn`, so the harness always
-takes the strong, run-idempotent branch; `writeMode: "capture"` passes the
-approved turn text through that durable intake and the strict capture parser.
-
-`scheduleCapture`, direct `capture()`, and the loose capture primitives exported
-from `@mono-agent/memory/bujo` remain explicit opt-in compatibility/composition
-surfaces for direct embedders and offline calibration tooling. No bundled host
-invokes them. The `scheduleCapture` queue is allocated lazily on its first direct
-call. Creating a writable BuJo store through the bundled host therefore leaves
-that best-effort queue absent, rather than creating an idle queue that no shipped
-trigger can feed. New host integrations should implement or call
-`persistCompletedTurn`; they should not route BuJo turns through the legacy pair.
+`persistCompletedTurn` is the sole host write protocol. Summary-only turns omit
+`captureText`; capture mode includes the full host-approved turn. Both modes
+cross durable admission before background projection. Direct embedders should
+retain the run id when retrying and call `flush()` before expecting downstream
+curation or Journal vectors to be complete. The strict `captureTurnStrict` and
+`extractCapturePlanStrict` primitives remain available for controlled low-level
+uses; normal completed turns should enter durable intake.
 
 The built-in store keeps `.capture-intake/{pending,dead,resolved}` private
 (`0700` directories, `0600` files). Filenames are SHA-256 run keys and contain
@@ -187,14 +302,59 @@ capture or a successful empty result. The extraction prompt states the validator
 exact field, `0..1` salience, identifier, reference, and relation contracts. The
 reconcile prompt states the exact action-dependent objects: `ADD` has only index/action,
 `NOOP` requires a supplied target id, and `UPDATE`/`SUPERSEDE` require that target plus
-complete replacement text. The strict parser remains authoritative and never clamps,
-rescales, fills missing fields, or coerces model values.
+complete replacement text. The strict parser remains authoritative and never
+rescales, fills missing fields, or coerces model values. Its one exception is
+memory text length: text beyond the capture bound is clamped rather than
+rejected, because rejecting one long sentence would discard every other memory
+in the same response. Returned memory text is therefore bounded, not
+necessarily verbatim, model output. If clamping makes two otherwise distinct
+memories identical (the same words in the same order), only the colliding
+candidate is dropped; identical memories the model itself authored still fail
+the whole attempt. There is no word-shape near-duplicate rule: whether two
+differently worded lines say the same thing is the model's judgement, at
+extraction and against the store at reconciliation. Malformed or unsafe text
+and every structural field remain all-or-nothing.
+
+Capture and reconciliation prompts ask the selected model to preserve material
+speaker, evidence, preference scope, negation, and temporal qualification;
+distinguish corrections of erroneous reports from real-world changes; and keep
+observed outcomes separate from causal guesses. Strict capture receives a
+separate host-owned UTC observation instant. On the durable completed-turn path
+this is the turn's immutable `admittedAt`, so delayed retries and restart recovery
+reuse the original instant rather than the retry clock. The model is asked to
+resolve unambiguous relative dates against that UTC observation anchor, retain
+an interval when precision is not supported, and date age snapshots as historical
+observations. The anchor is receipt context, not an asserted event time.
+
+Turn text remains untrusted content: dates or instructions in quoted messages,
+logs, and pasted historical transcripts cannot replace host observation metadata,
+and nested relative phrases must not be interpreted as if spoken at current
+admission. A controlled direct `extractCapturePlanStrict` call may omit the
+optional observation context when trusted host provenance is unavailable; it
+never manufactures an anchor from turn text. These rules are model guidance,
+not factual verification: the parser enforces the JSON contract but cannot prove
+a claim, infer hidden evidence, semantically validate a
+date, or guarantee fidelity. Record `createdAt` is storage metadata and is not
+rendered as per-claim event or observation provenance.
 
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and
 canonical parity, durable intake/outbox state, temporary artifacts, and runtime
-metadata. Its closed result contains no paths, filenames, ids, memory/model
-text, payloads, or raw errors:
+metadata. Direct callers and `mono-agent memory audit --strict` retain the
+default three-attempt stability budget. The agent app's periodic observer runs
+the same audit in a worker with an explicit one-attempt budget, so genuine
+concurrent mutation remains visible and waits for the next scheduled cycle
+instead of causing immediate repeated work.
+
+Canonical parity may reuse its deterministic graph projection only when the
+fingerprint of all canonical source bytes is unchanged. The audit still reads
+and fingerprints those sources and recomputes SQLite integrity and inventory,
+queues, runtime, locks, temporary artifacts, mutation markers, and parity on
+every call. A fingerprint difference always rebuilds the projection. This is an
+internal optimization and adds no public package API.
+
+The closed result contains no paths, filenames, ids, memory/model text,
+payloads, or raw errors:
 
 ```ts
 import { auditBujoMemoryHealth } from "@mono-agent/memory/bujo";
@@ -355,6 +515,7 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 | `@mono-agent/memory/search` | `createEmbeddingProvider` | Construct one Ollama, LM Studio, or OpenAI embedding provider. |
 | `@mono-agent/memory/search` | `MemorySearchError` | Handle stable embedding-search error codes without string matching. |
 | `@mono-agent/memory/store` | `openMemoryDb` | Open the low-level SQLite/FTS/vector store when the BuJo engine is not the desired abstraction. |
+| `@mono-agent/memory/store` | `RecallOutcome`, `RecallRetrievalMode`, `RecallDegradationCode` | Consume the opt-in, status-bearing result from local `recallWithOutcome()` calls. |
 
 The complete generated inventory follows. The package has no `.` entrypoint;
 each heading is an independently supported export subpath.
@@ -369,9 +530,8 @@ Every symbol exported by each public code entrypoint is listed below.
 ```text
 AUTO_RECALL_BACKEND_HITS
 AUTO_RECALL_MAX_BYTES
-AUTO_RECALL_MAX_HITS
 AUTO_RECALL_MIN_SCORE
-AUTO_RECALL_RELATIVE_SCORE
+ApplyExplicitMemoryCurateOptions
 ApplyExplicitMemoryForgetOptions
 ApplyMemoryBundleImportOptions
 BUJO_MEMORY_HEALTH_SCHEMA_VERSION
@@ -387,6 +547,7 @@ BujoRuntimeSnapshotObservation
 BujoTier
 Bullet
 COMPLETED_TURN_INTAKE_SCHEMA_VERSION
+CURATE_DISCARD_REASONS
 CandidateMemory
 CanonicalBulletLocation
 CanonicalGraphMutationState
@@ -396,15 +557,32 @@ CanonicalGraphParityOptions
 CanonicalGraphParityResult
 CanonicalGraphParitySection
 CanonicalGraphParityStatus
+CaptureObservationContext
 CapturePlan
 CaptureTurnResult
 CompletedTurnIntakeAudit
 CompletedTurnIntakeInspection
 CompletedTurnIntakeItem
 CompletedTurnIntakeSnapshot
+CurateAction
+CurateDiscard
+CurateLine
+CurateOperatorMerge
+CurateOwnerAssociation
+CurateOwnerAssociationReason
+CurateOwnerBackfillScan
+CuratePersonAssociation
+CuratePersonAssociationReason
+CuratePersonLinkScan
+CurateProposal
+CurateReason
+CurateSnapshot
+CurateSuggestionResult
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT
+DuplicateEntityName
 ExplicitForgetPreview
+ExplicitMemoryCurateError
 ExplicitMemoryForgetApplyResult
 ExplicitMemoryForgetError
 ExplicitMemoryForgetErrorCode
@@ -413,12 +591,14 @@ ExplicitMemoryForgetRestoreResult
 ExportMemoryBundleOptions
 ExtractedEntity
 ExtractedRelation
-Extraction
+FormattedRecallRecord
 GraphBatchInput
 GraphBatchResult
 JournalBrowseCapableStore
 JournalBrowseInput
 JournalBrowseSnapshot
+KnownEntity
+KnownEntityHint
 LegacyReplayAdoptionOptions
 LegacyReplayAdoptionResult
 LlmComplete
@@ -427,6 +607,10 @@ MARKER_FOR
 MAX_CAPTURE_ENTITIES
 MAX_CAPTURE_MEMORIES
 MAX_CAPTURE_RELATIONS
+MAX_CURATE_OPERATOR_MERGES
+MAX_CURATE_OWNER_ASSOCIATIONS
+MAX_CURATE_PERSON_ASSOCIATIONS
+MAX_CURATE_PERSON_ASSOCIATIONS_PER_PASS
 MAX_KNOWN_ENTITY_HINTS
 MEMORY_BUNDLE_EXTRAS_DIR
 MEMORY_BUNDLE_MANIFEST_FILE
@@ -469,66 +653,93 @@ MemoryRememberPartialWriteError
 MemoryRememberResult
 MigrateDeps
 MigrateResult
+OWNER_ENTITY_ID
+POSSIBLY_RELEVANT_HEADING
+POSSIBLY_RELEVANT_MAX_BYTES
+POSSIBLY_RELEVANT_MAX_LINES
+POSSIBLY_RELEVANT_MIN_SCORE
+POSSIBLY_RELEVANT_WINDOW
+PossiblyRelevantRecord
 PrepareMemoryBundleImportOptions
 ReconcileAction
 ReconcileDeps
+RestoreExplicitMemoryCurateOptions
 RestoreExplicitMemoryForgetOptions
 RestoreMemoryBundleImportOptions
 SafeMemoryIndexOptions
 SafeMemoryIndexResult
 SafeMemoryRebuildHooks
+TasksToNotesOptions
+TasksToNotesScan
 adoptLegacyReplayProjection
 appendAssociation
 appendBullet
 appendGraphBatch
+applyExplicitMemoryCurate
 applyExplicitMemoryForget
 applyMemoryBundleImport
 auditBujoMemoryHealth
 auditCanonicalGraphParity
 auditCompletedTurnIntake
-captureTurn
 captureTurnStrict
-composeRecallBlock
 createBujoMemoryStore
 createIdFactory
 createOllamaLlm
+curateEstimate
 dailyFilePath
 exportMemoryBundle
-extractCapturePlan
 extractCapturePlanStrict
 findCanonicalMemoryBullet
+findDuplicateEntityNames
+foldEntityName
+formatPossiblyRelevantBlock
 inspectCompletedTurnIntake
-isConversationRelativeQuery
+inspectCurateSource
 migrate
 normalizeMemoryText
 normalizedContentHash
+ownerAssociationReason
 parseBullet
+parseCurateOperatorMerges
 parseDailyFile
 parseMemoryExportBundleManifest
 prepareMemoryBundleImport
 previewCanonicalExplicitForgetMemories
+previewCurateMutations
+proposeCoarseCurate
+proposeCurate
+proposeOwnerAssociations
+proposePersonAssociations
+proposeTasksToNotes
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
 readGraph
 readManagedIndexManifest
 rebuildFromMarkdown
+recallLineStatus
 reconcile
 reconcileBatch
 renderKnownEntityHints
 resolveActiveMemoryDbPath
 resolveCompletedTurnIntake
+resolveExplicitMemoryCurateRoot
 resolveExplicitMemoryForgetRoot
 resolveMemoryBundleImportRoot
+restoreExplicitMemoryCurate
 restoreExplicitMemoryForget
 restoreMemoryBundleImport
 retryCompletedTurnIntake
 rollbackMemoryIndex
 safeRebuildMemoryIndex
-selectAutomaticRecallHits
 selectKnownEntityHints
+selectPossiblyRelevantRecallHits
 serializeBullet
 serializeDailyFile
+validateCurateOperatorMerge
+validateCurateOwnerAssociation
+validateCuratePersonAssociation
+validateCurateProposal
 writeFutureLog
 writeIndex
 ```
@@ -538,6 +749,11 @@ writeIndex
 ```text
 CircuitBreakerEmbeddingOptions
 CircuitBreakerEmbeddingProvider
+EMBEDDING_INSTRUCTION_PRESETS
+EmbeddingIdentityConfig
+EmbeddingInstructionPreset
+EmbeddingInstructionsSetting
+EmbeddingPrefixes
 EmbeddingProvider
 EmbeddingProviderConfig
 EmbeddingProviderKind
@@ -546,8 +762,17 @@ MemorySearchError
 MemorySearchErrorCode
 OllamaEmbeddingProvider
 OpenAIEmbeddingProvider
+adoptEmbeddingIndexIdentity
+configuredEmbeddingIdentity
 createCircuitBreakerEmbeddingProvider
 createEmbeddingProvider
+effectiveEmbeddingIdentity
+embeddingIdentity
+embeddingPrefixesForIdentity
+isEmbeddingInstructionsSetting
+legacyEmbeddingIdentity
+modelInstructionPreset
+resolveEmbeddingInstructionPreset
 ```
 
 **`@mono-agent/memory/store`**
@@ -588,9 +813,11 @@ MemoryStoreAudit
 MemoryStoreStats
 MemoryStoreStatsOptions
 MemoryType
-MemoryWriteResult
+RecallDegradationCode
 RecallHit
 RecallOptions
+RecallOutcome
+RecallRetrievalMode
 RecallWeights
 SimilarHit
 isCanonicalDailySourcePath
@@ -606,19 +833,18 @@ This package may depend on core contracts and local persistence/search dependenc
 ## What This Package Does Not Own
 
 It does not own host configuration, backend selection, app-owned `MemoryRecall`
-or `MemoryJournal` MCP wiring, external Supermemory storage, model runtime
-execution, communication channels, or run artifact persistence.
-`@mono-agent/agent-app` chooses which memory backend to build and wires eligible
-tools, while `@mono-agent/memory-supermemory` owns the external Supermemory
-backend and does not claim local chronology.
+or `MemoryJournal` MCP wiring, external custom-store implementations, model
+runtime execution, communication channels, or run artifact persistence.
+`@mono-agent/agent-app` chooses the local tier to build and wires eligible tools;
+programmatic hosts may inject a separate structural `MemoryStore`.
 
 ## Related Documentation
 
-- [Memory overview and tier selection](https://mono-agent-docs.vercel.app/memory/)
-- [Write modes, durable capture, and recall](https://mono-agent-docs.vercel.app/memory/capture-and-recall/)
-- [Embeddings](https://mono-agent-docs.vercel.app/memory/embeddings/)
-- [Validation and config-aware maintenance](https://mono-agent-docs.vercel.app/memory/validation-and-cli/)
-- [Built-in versus Supermemory backends](https://mono-agent-docs.vercel.app/memory/backends-comparison/)
+- [Memory overview and tier selection](https://docs.mono-agent.dev/memory/)
+- [Write modes, durable capture, and recall](https://docs.mono-agent.dev/memory/capture-and-recall/)
+- [Embeddings](https://docs.mono-agent.dev/memory/embeddings/)
+- [Validation and config-aware maintenance](https://docs.mono-agent.dev/memory/validation-and-cli/)
+- [Local memory tiers and custom stores](https://docs.mono-agent.dev/memory/backends-comparison/)
 
 ## Verification
 

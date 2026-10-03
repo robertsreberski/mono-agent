@@ -5,9 +5,8 @@
 // @ts-check
 
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { readToolRuntime } from "./runtime-context.js";
 import { runPreparedProcess } from "./process-runner.js";
-import { resolveSandboxPolicy } from "./tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./tool-context.js";
 
 const PROTECTED_OPERATION_TIMEOUT_MS = 15_000;
 
@@ -23,7 +22,7 @@ export async function runProtectedFilesystemCommand(command, {
   input,
   maxBufferBytes,
 } = {}) {
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (!hasProtectedRoots(policy)) {
     return null;
@@ -64,7 +63,7 @@ function hasProtectedRoots(policy) {
  * @returns {{cwd: string, searchTarget: string}|null}
  */
 export function protectedFilesystemTargetPlan(target, { sandboxPolicy, ctx } = {}) {
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (!hasProtectedRoots(policy)) return null;
   const resolvedTarget = resolve(target);

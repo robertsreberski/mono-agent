@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
+import { retainCapturePlan, listRetainedCapturePlanKeys } from "../capture-plan-cache.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -63,6 +64,90 @@ function manager(
 }
 
 describe("completed-turn durable intake", () => {
+  it("keeps the legacy run commitment for unknown provenance across an upgrade retry", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const first = intake.admit(turn({ runId: "before-provenance" }));
+    const before = JSON.parse(readFileSync(first.source, "utf8")) as Record<string, unknown>;
+    expect(before).not.toHaveProperty("captureSpeakerKind");
+    expect(intake.admit(turn({ runId: "before-provenance", captureSpeakerKind: "unknown" })).admissionStatus).toBe("duplicate");
+    expect(JSON.parse(readFileSync(first.source, "utf8"))).not.toHaveProperty("captureSpeakerKind");
+    expect(() => intake.admit(turn({ runId: "before-provenance", captureSpeakerKind: "human-turn" }))).toThrow(/conflicts/iu);
+    intake.abortForShutdown(false);
+  });
+
+  it("keeps the prior payload hash when evidence is absent, and commits evidence through retry", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { capture: async () => { throw new Error("retry"); }, maxAttempts: 1 });
+    const prior = intake.admit(turn({ runId: "legacy-evidence" }));
+    const bytes = readFileSync(prior.source, "utf8");
+    expect(bytes).not.toContain("captureEvidence");
+    expect(intake.admit(turn({ runId: "legacy-evidence" })).admissionStatus).toBe("duplicate");
+    const evidence = { userText: "Morgan prefers concise notes.", senderToken: "a".repeat(32),
+      toolOutcomes: [{ category: "read" as const, outcome: "failed" as const },
+        { category: "read" as const, outcome: "succeeded" as const }] };
+    expect(() => intake.admit(turn({ runId: "legacy-evidence", captureEvidence: evidence }))).toThrow(/conflicts/iu);
+    const newer = intake.admit(turn({ runId: "new-evidence", captureEvidence: evidence }));
+    await intake.flush();
+    intake.finishShutdown();
+    expect(retryCompletedTurnIntake(memoryRoot).retried).toBe(2);
+    const pending = JSON.parse(readFileSync(join(memoryRoot, ".capture-intake", "pending", `${newer.id}.json`), "utf8")) as Record<string, unknown>;
+    expect(pending.captureEvidence).toEqual(evidence);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+  });
+
+  it("commits owner-turn evidence without changing older capture hashes", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const previous = { userText: "Morgan prefers concise notes.", toolOutcomes: [] };
+    intake.admit(turn({ runId: "without-owner", captureEvidence: previous }));
+    expect(intake.admit(turn({ runId: "without-owner", captureEvidence: previous })).admissionStatus).toBe("duplicate");
+    expect(() => intake.admit(turn({ runId: "without-owner", captureEvidence: { ...previous, ownerTurn: true } })))
+      .toThrow(/conflicts/iu);
+    const admitted = intake.admit(turn({ runId: "owner", captureEvidence: { ...previous, ownerTurn: true } }));
+    expect(JSON.parse(readFileSync(admitted.source, "utf8")).captureEvidence.ownerTurn).toBe(true);
+    expect(() => intake.admit(turn({ runId: "invalid-owner", captureEvidence: { ...previous, ownerTurn: false } as never })))
+      .toThrow(/owner turn is invalid/iu);
+    intake.abortForShutdown(false);
+  });
+
+  it("persists only outcome categories, never webhook trigger text, for a trigger turn", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const admitted = intake.admit(turn({ runId: "webhook-trigger-evidence", captureSpeakerKind: "trigger",
+      captureText: "Webhook trigger (trigger text omitted):\nAssistant: A retry worked.",
+      captureEvidence: { userText: "", toolOutcomes: [
+        { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
+      ] } }));
+    const serialized = readFileSync(admitted.source, "utf8");
+    expect(JSON.parse(serialized)).toMatchObject({ captureEvidence: { userText: "" } });
+    expect(serialized).not.toContain("fictional-webhook-secret");
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    intake.abortForShutdown(false);
+  });
+
+  it("rejects a malformed provenance field before admitting a run", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    expect(() => intake.admit({ ...turn(), captureSpeakerKind: "user-stated" } as unknown as MemoryCompletedTurn))
+      .toThrow(/captureSpeakerKind is invalid/iu);
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot.pending).toBe(0);
+    intake.abortForShutdown(false);
+  });
+
+  it("commits host-stamped provenance and preserves it through a dead-letter retry", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { capture: async () => { throw new Error("retry"); }, maxAttempts: 1 });
+    const admitted = intake.admit(turn({ runId: "role-dead", captureSpeakerKind: "trigger" }));
+    expect(JSON.parse(readFileSync(admitted.source, "utf8"))).toHaveProperty("captureSpeakerKind", "trigger");
+    await intake.flush();
+    intake.finishShutdown();
+    expect(retryCompletedTurnIntake(memoryRoot).retried).toBe(1);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    const pending = join(memoryRoot, ".capture-intake", "pending", `${admitted.id}.json`);
+    expect(JSON.parse(readFileSync(pending, "utf8"))).toHaveProperty("captureSpeakerKind", "trigger");
+  });
+
   it("treats a pre-upgrade root with no intake tree as a valid empty state", () => {
     const memoryRoot = root();
     expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
@@ -95,6 +180,38 @@ describe("completed-turn durable intake", () => {
     expect(lstatSync(join(memoryRoot, ".capture-intake-v1")).mode & 0o777).toBe(0o600);
     expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 1, due: 1 });
     intake.abortForShutdown(false);
+  });
+
+  it("removes an orphaned extraction when an operator resolves pending intake", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { capture: async () => { throw new Error("fictional unavailable classifier"); } });
+    const admitted = intake.admit(turn({ runId: "fictional-operator-resolve" }));
+    retainCapturePlan(memoryRoot, admitted.id, "a".repeat(64), { candidates: [], entities: [], relations: [] });
+    intake.abortForShutdown(false);
+    intake.finishShutdown();
+    expect(resolveCompletedTurnIntake(memoryRoot, admitted.id, "operator_accepted", FIXED)).toEqual({ resolved: true });
+    expect(listRetainedCapturePlanKeys(memoryRoot)).toEqual([]);
+  });
+
+  it("marks only the last automatic retry as eligible for classifier fallback", async () => {
+    const memoryRoot = root();
+    const flags: boolean[] = [];
+    const capture: NonNullable<ConstructorParameters<typeof CompletedTurnIntakeManager>[0]["capture"]> =
+      async (_turn, _id, _at, _signal, isFinalAttempt) => {
+        flags.push(isFinalAttempt);
+        if (!isFinalAttempt) throw new Error("fictional transient classifier outage");
+        return "captured";
+      };
+    const intake = manager(memoryRoot, { capture, maxAttempts: 2, retryBaseMs: 1 });
+    const admitted = intake.admit(turn({ runId: "fictional-final-attempt" }));
+    await intake.flush();
+    intake.abortForShutdown(false);
+    intake.finishShutdown();
+    retryCompletedTurnIntake(memoryRoot, { id: admitted.id, now: FIXED });
+    const restarted = manager(memoryRoot, { capture, maxAttempts: 2, retryBaseMs: 1 });
+    await restarted.flush();
+    expect(flags).toEqual([false, true]);
+    restarted.abortForShutdown(false);
   });
 
   it("notifies metadata-only observers across admission, processing, and shutdown transitions", async () => {
@@ -264,11 +381,11 @@ describe("completed-turn durable intake", () => {
     const memoryRoot = root();
     const intake = manager(memoryRoot);
     const input = turn({
-      summary: "Family preference: 👨‍👩‍👧‍👦 trips.",
-      captureText: "User: remember the 👨‍👩‍👧‍👦 trip preference.",
+      summary: "Group preference: 🧑‍💻 trips.",
+      captureText: "User: remember the 🧑‍💻 trip preference.",
     });
     const admitted = intake.admit(input);
-    expect(readFileSync(admitted.source, "utf8")).toContain("👨‍👩‍👧‍👦");
+    expect(readFileSync(admitted.source, "utf8")).toContain("🧑‍💻");
     await intake.flush();
     expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
     intake.finishShutdown();
@@ -1092,6 +1209,74 @@ describe("BujoMemoryStore completed-turn integration", () => {
     },
   );
 
+  it("persists independent attributed facts together and keeps duplicate admission model-free after restart", async () => {
+    const memoryRoot = root();
+    const facts = [
+      "The user reports that Project Atlas's production deployment is scheduled for 20 November 2026.",
+      "The user reports that Project Atlas's approved downtime budget is 30 minutes.",
+    ];
+    let initialLlmCalls = 0;
+    const input = turn({
+      runId: "independent-attributed-restart",
+      summary: "The user supplied two independent Project Atlas facts.",
+      captureText: "User: retain the Project Atlas deployment schedule and downtime budget. Assistant: acknowledged.",
+    });
+    const first = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "independent-attributed-facts",
+        complete: async () => {
+          initialLlmCalls += 1;
+          return JSON.stringify({
+            memories: facts.map((text) => ({ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] })),
+            entities: [],
+            relations: [],
+          });
+        },
+      },
+      clock: () => FIXED,
+    });
+
+    const admitted = await first.persistCompletedTurn(input);
+    await first.flush();
+    const dailyPath = join(memoryRoot, "daily", "2026-07-12.md");
+    const initiallyStored = parseDailyFile(readFileSync(dailyPath, "utf8")).bullets;
+    expect(admitted.admissionStatus).toBe("admitted");
+    expect(initialLlmCalls).toBe(1);
+    expect(initiallyStored.map((bullet) => bullet.text).sort()).toEqual([...facts].sort());
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await first.close();
+
+    let restartLlmCalls = 0;
+    const restarted = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "must-not-run-for-duplicate",
+        complete: async () => {
+          restartLlmCalls += 1;
+          throw new Error("duplicate completed turn must not call the model");
+        },
+      },
+      clock: () => FIXED,
+    });
+    const duplicate = await restarted.persistCompletedTurn(input);
+    await restarted.flush();
+
+    const afterRestart = parseDailyFile(readFileSync(dailyPath, "utf8")).bullets;
+    expect(duplicate).toMatchObject({ id: admitted.id, admissionStatus: "duplicate", bytesWritten: 0 });
+    expect(restartLlmCalls).toBe(0);
+    expect(afterRestart.map((bullet) => bullet.id)).toEqual(initiallyStored.map((bullet) => bullet.id));
+    expect(afterRestart.map((bullet) => bullet.text).sort()).toEqual([...facts].sort());
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await restarted.close();
+  });
+
   it("publishes admission immediately while coalescing ordinary transition snapshots", async () => {
     const memoryRoot = root();
     const store = createBujoMemoryStore({ root: memoryRoot, clock: () => FIXED });
@@ -1211,6 +1396,124 @@ describe("BujoMemoryStore completed-turn integration", () => {
     expect(warnings.join(" ")).not.toContain("Valid-looking secret marker");
     expect(existsSync(join(memoryRoot, "daily"))).toBe(false);
     await store.close();
+  });
+
+  it("reuses immutable admittedAt as the strict extraction anchor after provider retry and restart", async () => {
+    const memoryRoot = root();
+    const firstPrompts: string[] = [];
+    const first = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "temporal-anchor-first-attempt",
+        complete: async (prompt) => {
+          firstPrompts.push(prompt);
+          throw new Error("retry after restart");
+        },
+      },
+      clock: () => FIXED,
+    });
+
+    await first.persistCompletedTurn(turn({
+      runId: "temporal-anchor-retry",
+      captureText: "User: The museum visit happened this past weekend.",
+    }));
+    await first.flush();
+    expect(firstPrompts).toHaveLength(1);
+    expect(firstPrompts[0]).toContain(`The outer completed turn was admitted at ${FIXED.toISOString()}.`);
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 1, resolved: 0 });
+    await first.close();
+
+    const restartedAt = new Date("2026-07-13T10:15:00.000Z");
+    const restartPrompts: string[] = [];
+    const restarted = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "temporal-anchor-recovered-attempt",
+        complete: async (prompt) => {
+          restartPrompts.push(prompt);
+          return '{"memories":[],"entities":[],"relations":[]}';
+        },
+      },
+      clock: () => restartedAt,
+    });
+    await restarted.flush();
+
+    expect(restartPrompts).toHaveLength(1);
+    expect(restartPrompts[0]).toContain(`The outer completed turn was admitted at ${FIXED.toISOString()}.`);
+    expect(restartPrompts[0]).not.toContain(restartedAt.toISOString());
+    expect(inspectCompletedTurnIntake(memoryRoot, restartedAt).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    await restarted.close();
+  });
+
+  it("round-trips a canned two-turn museum qualification through reconciliation after restart", async () => {
+    // This proves transport and canonical persistence of a supplied qualified
+    // payload. It deliberately does not claim that a real model will produce it.
+    const memoryRoot = root();
+    const firstObservedAt = new Date("2023-07-06T20:18:00.000Z");
+    const firstText = "Melanie reported taking her kids to a museum yesterday, relative to turn observed at 2023-07-06T20:18:00.000Z.";
+    const candidateText = "Melanie reported taking her kids to a museum yesterday, and said the dinosaur exhibit and bones excited them.";
+    const mergedText = "Melanie reported taking her kids to a dinosaur exhibit at a museum yesterday, relative to turn observed at 2023-07-06T20:18:00.000Z; the bones excited them.";
+    const plan = (text: string): string => JSON.stringify({
+      memories: [{ type: "event", text, salience: 0.8, isInsight: false, entityIds: [] }],
+      entities: [],
+      relations: [],
+    });
+    const first = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: { id: "museum-first", complete: async () => plan(firstText) },
+      clock: () => firstObservedAt,
+    });
+    await first.persistCompletedTurn(turn({
+      runId: "museum-turn-one",
+      captureText: "Melanie said: Yesterday I took the kids to the museum.",
+    }));
+    await first.flush();
+    await first.close();
+
+    const reconciliationPrompts: string[] = [];
+    const restarted = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: {
+        id: "museum-second",
+        complete: async (prompt, options) => {
+          if (options?.label === "capture:extract") return plan(candidateText);
+          reconciliationPrompts.push(prompt);
+          const input = JSON.parse(prompt.split("INPUT:\n")[1] ?? "[]") as Array<{
+            readonly index: number;
+            readonly existing: Array<{ readonly id: string }>;
+          }>;
+          const targetId = input[0]?.existing[0]?.id;
+          if (targetId === undefined) throw new Error("museum fixture expected a close existing memory");
+          return JSON.stringify([{ index: 0, action: "update", targetId, text: mergedText }]);
+        },
+      },
+      clock: () => new Date("2023-07-06T20:19:00.000Z"),
+    });
+    await restarted.persistCompletedTurn(turn({
+      runId: "museum-turn-two",
+      captureText: "Melanie said: They were excited by the dinosaur exhibit and thought the bones were cool.",
+    }));
+    await restarted.flush();
+    await restarted.close();
+
+    expect(reconciliationPrompts).toHaveLength(1);
+    expect(reconciliationPrompts[0]).toContain(firstText);
+    expect(reconciliationPrompts[0]).toContain(candidateText);
+    expect(reconciliationPrompts[0]).toContain("observation anchors");
+    const bullets = parseDailyFile(readFileSync(join(memoryRoot, "daily", "2023-07-06.md"), "utf8")).bullets;
+    expect(bullets.map((bullet) => bullet.text)).toEqual([mergedText]);
   });
 
   it("does not duplicate the real audit bullet after a crash-window summary replay", async () => {

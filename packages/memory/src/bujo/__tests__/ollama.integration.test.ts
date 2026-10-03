@@ -1,3 +1,4 @@
+import { projectSummary } from "./helpers.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +17,8 @@ describe.skipIf(!OLLAMA)("BujoMemoryStore @ real Ollama", () => {
       embeddings: createEmbeddingProvider({ provider: "ollama", model: "nomic-embed-text:v1.5" }),
       dim: 768,
     });
-    await store.appendHostSummary("global", "The team decided to adopt opt-in memory with a validate self-check.");
-    await store.appendHostSummary("global", "Lunch was pizza on Tuesday.");
+    await projectSummary(store, "global", "The team decided to adopt opt-in memory with a validate self-check.");
+    await projectSummary(store, "global", "Lunch was pizza on Tuesday.");
     const block = await store.load("memory configuration decision");
     expect(block?.content).toContain("opt-in memory");
     await store.close();

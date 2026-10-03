@@ -13,9 +13,9 @@ Both are part of the assembled context block. For how they sit alongside memory 
 
 | Field | Required | Env var | Renders as | Coverage |
 | --- | --- | --- | --- | --- |
-| `agent.name` | No | `MONO_AGENT_NAME` | Human-facing label only | `config` |
-| `context.identityPath` | Yes | `MONO_AGENT_IDENTITY_PATH` | `## Identity` section | `config` |
-| `context.soulPath` | No | `MONO_AGENT_SOUL_PATH` | `## Core Guardrails` section | `config` |
+| `agent.name` | No | — | Human-facing label only | `config` |
+| `context.identityPath` | Yes | — | `## Identity` section | `config` |
+| `context.soulPath` | No | — | `## Core Guardrails` section | `config` |
 
 `context.identityPath` is one of only two fields that are never optional (the other is `runtime.model`). Omit `context.soulPath` and the framework substitutes a built-in default soul — see [Default soul fallback](#default-soul-fallback).
 
@@ -52,9 +52,7 @@ During guided init, the Role prompt and Creation review both name the single can
 
 Override the path without editing config:
 
-```bash
-MONO_AGENT_IDENTITY_PATH=/etc/mono-agent/IDENTITY.md mono-agent start
-```
+Set `context.identityPath` to `/etc/mono-agent/IDENTITY.md` in JSON.
 
 ### Reference, don't duplicate
 
@@ -95,9 +93,7 @@ Duplicating those files into the identity invites drift: when `CLAUDE.md` change
 }
 ```
 
-```bash
-MONO_AGENT_SOUL_PATH=/etc/mono-agent/SOUL.md mono-agent start
-```
+Set `context.soulPath` to `/etc/mono-agent/SOUL.md` in JSON.
 
 Use the soul for cross-cutting behavior that is not tied to any one task: how to handle uncertainty, how to surface failures, what never to fake, and how to leave handoff notes.
 

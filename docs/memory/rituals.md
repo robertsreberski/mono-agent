@@ -88,23 +88,7 @@ You can also shift cadence — e.g. every four hours:
 }
 ```
 
-### Environment overrides
-
-Each key has a `MONO_AGENT_MEMORY_*` env var that overrides the config value:
-
-| Env var | Overrides |
-|---------|-----------|
-| `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` |
-| `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` |
-
-```bash
-export MONO_AGENT_MEMORY_CONSOLIDATION_CRON="0 */4 * * *"
-export MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED=true
-```
-
-Retired `memory.reflection.*` / `memory.migration.*` keys and
-`MONO_AGENT_MEMORY_REFLECTION_*` / `MONO_AGENT_MEMORY_MIGRATION_*` env vars are tolerated
-but ignored. `mono-agent validate` reports value-free warnings when it sees them.
+Core memory ritual settings are configured in JSON; former environment overrides are silently ignored.
 
 ## Living index files
 

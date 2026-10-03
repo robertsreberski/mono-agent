@@ -3,19 +3,42 @@ import process from "node:process";
 import { runAuditRuns } from "./audit-runs.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import { runMetrics } from "./metrics.js";
+import { runInspection, writeRunInspectionUsageFailure } from "./run-inspection.js";
 import * as ui from "./ui.js";
 
 /**
  * Thin dispatcher for the consolidated `runs` command. The mode positional
- * selects the read-only engine: `report` (default) aggregates metrics via
- * `runMetrics`, `audit` runs the structural artifact audit via `runAuditRuns`.
- * The engine modules (`metrics.ts`/`audit-runs.ts`) are deliberately untouched —
- * this wrapper only routes and forwards the subcommand-relevant flags.
+ * selects the read-only engine: `report` (default) aggregates metrics,
+ * `audit` checks artifact structure, and `list`/`show` inspect bounded run data.
+ * The existing engine modules remain untouched; this wrapper only routes and
+ * forwards each subcommand's relevant flags.
  */
 export async function runRunsCommand(args: ParsedCliArgs): Promise<number> {
   const [mode = "report", ...extra] = args.positionals;
+  if (mode === "list" || mode === "show") {
+    const positionalsAreValid = mode === "list" ? extra.length === 0 : extra.length === 1;
+    const hasModeInappropriateFlag = args.consumerPath !== undefined
+      || args.groupBy !== undefined
+      || args.since !== undefined
+      || args.until !== undefined
+      || args.staleAfterMs !== undefined;
+    if (!positionalsAreValid || hasModeInappropriateFlag) {
+      writeRunInspectionUsageFailure(args.json === true);
+      return 2;
+    }
+    const common = {
+      ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+      ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
+      includeMemory: args.includeMemory,
+      json: args.json === true,
+    };
+    return mode === "list"
+      ? await runInspection({ mode: "list", ...common })
+      : await runInspection({ mode: "show", runId: extra[0]!, ...common });
+  }
+
   if (mode !== "report" && mode !== "audit") {
-    process.stderr.write(ui.errorLine(`Unknown \`runs\` mode \`${mode}\`. Expected report or audit.`));
+    process.stderr.write(ui.errorLine(`Unknown \`runs\` mode \`${mode}\`. Expected report, audit, list, or show.`));
     return 2;
   }
   if (extra.length > 0) {

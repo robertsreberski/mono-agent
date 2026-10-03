@@ -35,6 +35,7 @@ import {
   checkPiProviderAuth,
   describePiProviderAuth,
   getPiBuiltinModel,
+  isPiOAuthLoginEnabled,
   listPiBuiltinModels,
   loginPiProviderAuth,
   loginPiOAuth,
@@ -219,6 +220,52 @@ describe("Pi interoperability facade", () => {
     expect(describePiProviderAuth("missing")).toBeUndefined();
   });
 
+  it("advertises Pi's ChatGPT OAuth alongside OpenAI API keys without changing Codex OAuth", () => {
+    piMocks.builtinProviders.mockReturnValue([
+      {
+        id: "openai", name: "OpenAI", auth: {
+          oauth: { name: "Sign in with ChatGPT" },
+          apiKey: { name: "OpenAI API key" },
+        },
+      },
+      {
+        id: "openai-codex", name: "OpenAI Codex (legacy)", auth: {
+          oauth: { name: "Codex sign-in" },
+        },
+      },
+    ]);
+
+    expect(isPiOAuthLoginEnabled("openai")).toBe(true);
+    expect(isPiOAuthLoginEnabled("openai-codex")).toBe(true);
+    expect(describePiProviderAuth("openai")).toEqual({
+      providerId: "openai", label: "OpenAI",
+      methods: [
+        { type: "oauth", label: "Sign in with ChatGPT", interactive: true },
+        { type: "api_key", label: "OpenAI API key", interactive: false },
+      ],
+    });
+    expect(describePiProviderAuth("openai-codex")).toEqual({
+      providerId: "openai-codex", label: "OpenAI Codex (legacy)",
+      methods: [{ type: "oauth", label: "Codex sign-in", interactive: true }],
+    });
+  });
+
+  it("requires a stable callback and passes it to both OpenAI OAuth facades", async () => {
+    const interaction = { prompt: vi.fn(), notify: vi.fn() };
+    await expect(loginPiProviderAuth("openai", "oauth", interaction)).rejects.toThrow(/installation device ID/u);
+    await expect(loginPiOAuth("openai", {})).rejects.toThrow(/installation device ID/u);
+    const getDeviceId = vi.fn(() => "3e53b686-a244-45b6-8267-4dd9e6dce936");
+    const login = vi.fn(async () => ({ type: "oauth", access: "access", refresh: "refresh", expires: 1, clientId: "issued" }));
+    piMocks.builtinModels.mockReturnValueOnce({ login });
+    const credentials = await loginPiProviderAuth("openai", "oauth", interaction, { getDeviceId });
+    expect(credentials.clientId).toBe("issued");
+    expect(login).toHaveBeenCalledWith("openai", "oauth", expect.any(Object), { getDeviceId });
+    const oauthLogin = vi.fn(async () => credentials);
+    piMocks.getPiOAuthAuth.mockReturnValueOnce({ login: oauthLogin });
+    await loginPiOAuth("openai", { onAuth() {}, onDeviceCode() {}, onPrompt() {}, onSelect() {} }, { getDeviceId });
+    expect(oauthLogin).toHaveBeenCalledWith(expect.any(Object), { getDeviceId });
+  });
+
   it("checks auth through Pi Models without refreshing or exposing credentials", async () => {
     const checkAuth = vi.fn(async () => ({ source: "OPENCODE_API_KEY", type: "api_key" }));
     piMocks.builtinModels.mockReturnValueOnce({ checkAuth });
@@ -253,70 +300,37 @@ describe("Pi interoperability facade", () => {
     expect(suppliedOptions.credentials).toBeDefined();
   });
 
-  describe("pi catalog supplement (ai/pi-supplement.js)", () => {
-    it("merges the supplemented model into list/get on an upstream miss", () => {
-      piMocks.getBuiltinModels.mockReturnValue([]);
-      piMocks.getBuiltinModel.mockReturnValue(undefined);
+  describe("pi catalog reads", () => {
+    it("lists upstream rows snapshot-cloned for providers without supplements", () => {
+      piMocks.getBuiltinModels.mockReturnValue([rawModel]);
 
-      const listed = listPiBuiltinModels("opencode-go");
+      const listed = listPiBuiltinModels("provider-1");
       expect(listed).toHaveLength(1);
-      expect(listed[0]).toMatchObject({
-        id: "deepseek-v4.1-flash",
-        name: "DeepSeek V4.1 Flash",
-        provider: "opencode-go",
-      });
-      expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("opencode-go");
+      expect(listed[0]).toMatchObject({ id: "model-1", provider: "provider-1" });
+      expect(listed[0]).not.toBe(rawModel);
+      expect(piMocks.getBuiltinModels).toHaveBeenCalledWith("provider-1");
 
-      expect(getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash")).toMatchObject({
-        id: "deepseek-v4.1-flash",
-        provider: "opencode-go",
-        input: ["text", "image"],
-      });
-      expect(getPiBuiltinModel("opencode-go", "deepseek-v9-flash")).toBeUndefined();
-    });
-
-    it("prefers the upstream row when pi-ai ships the supplemented id", () => {
-      const upstream = {
-        ...rawModel,
-        id: "deepseek-v4.1-flash",
-        name: "DeepSeek V4.1 Flash (upstream)",
-        provider: "opencode-go",
-        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
-      };
-      piMocks.getBuiltinModels.mockReturnValue([upstream]);
-      piMocks.getBuiltinModel.mockImplementation((provider, id) =>
-        id === "deepseek-v4.1-flash" ? upstream : undefined);
-
-      const listed = listPiBuiltinModels("opencode-go");
-      expect(listed).toHaveLength(1);
-      expect(listed[0]).toMatchObject({ id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (upstream)" });
-
-      expect(getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash")).toMatchObject({
-        name: "DeepSeek V4.1 Flash (upstream)",
-        cost: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9 },
-      });
-    });
-
-    it("snapshot-clones supplemented rows like upstream ones", () => {
-      piMocks.getBuiltinModels.mockReturnValue([]);
-      piMocks.getBuiltinModel.mockReturnValue(undefined);
-
-      const listed = listPiBuiltinModels("opencode-go");
+      // Mutating the snapshot never touches the shared upstream row.
       listed[0].cost.input = 999;
       listed[0].input.push("video");
-      expect(listPiBuiltinModels("opencode-go")[0]).toMatchObject({
-        cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
-        input: ["text", "image"],
-      });
-
-      const selected = getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash");
-      selected.compat.supportsStore = true;
-      expect(getPiBuiltinModel("opencode-go", "deepseek-v4.1-flash")).toMatchObject({
-        compat: expect.objectContaining({ supportsStore: false }),
+      expect(listPiBuiltinModels("provider-1")[0]).toMatchObject({
+        cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 },
+        input: ["text"],
       });
     });
 
-    it("leaves unrelated providers supplement-free", () => {
+    it("reads one row straight from upstream with no miss-fallback", () => {
+      // All former backfill rows ship upstream by 0.99.1. The facade reports
+      // the upstream row verbatim and undefined on a genuine miss.
+      piMocks.getBuiltinModel.mockImplementation((provider, id) =>
+        id === "model-1" ? rawModel : undefined);
+
+      expect(getPiBuiltinModel("provider-1", "model-1")).toEqual(rawModel);
+      expect(getPiBuiltinModel("provider-1", "model-1")).not.toBe(rawModel);
+      expect(getPiBuiltinModel("provider-1", "missing")).toBeUndefined();
+    });
+
+    it("leaves unrelated providers untouched", () => {
       piMocks.getBuiltinModels.mockReturnValue([rawModel]);
       expect(listPiBuiltinModels("provider-1")).toHaveLength(1);
       expect(listPiBuiltinModels("provider-1")[0].id).toBe("model-1");

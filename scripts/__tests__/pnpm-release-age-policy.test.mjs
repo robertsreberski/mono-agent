@@ -467,6 +467,7 @@ describe("pnpm release-age policy", () => {
   it("pins one exact pnpm across both manifests and every workflow install", async () => {
     const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
     const websitePackageJson = JSON.parse(await readFile(join(repoRoot, "website/package.json"), "utf8"));
+    const marketingPackageJson = JSON.parse(await readFile(join(repoRoot, "marketing/package.json"), "utf8"));
     const workflows = await Promise.all(
       [".github/workflows/ci.yml", ".github/workflows/npm-release.yml"]
         .map(async (path) => ({ path, source: await readFile(join(repoRoot, path), "utf8") })),
@@ -477,6 +478,7 @@ describe("pnpm release-age policy", () => {
     // replaces it, and the pin is only worth anything while every copy of it agrees.
     expect(packageJson.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[a-f\d]{128}$/u);
     expect(websitePackageJson.packageManager).toBe(packageJson.packageManager);
+    expect(marketingPackageJson.packageManager).toBe(packageJson.packageManager);
 
     const expectedInstall = `run: npm install --global pnpm@${pinnedPnpmVersion(packageJson.packageManager)}`;
     for (const { path, source } of workflows) {

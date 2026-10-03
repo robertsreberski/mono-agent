@@ -212,7 +212,7 @@ const channelCron: CapabilityModule = {
         "---",
         "",
         "Produce a concise digest of anything noteworthy since the last run.",
-        "Your final reply is delivered to the user verbatim as the notification — write it as the finished message, with no preface. If nothing is noteworthy, reply with exactly NOTHING_TO_REPORT.",
+        "Your final reply is delivered to the user verbatim as the notification — write it as the finished message, with no preface. If nothing is noteworthy, call FinishSilently({}) alone without narration. If that tool is unavailable, reply with exactly NOTHING_TO_REPORT.",
         "",
       ].join("\n"),
     },
@@ -406,55 +406,6 @@ const memoryBujo: CapabilityModule = {
   ],
 };
 
-const memorySupermemory: CapabilityModule = {
-  id: "memory:supermemory",
-  kind: "memory",
-  title: "Supermemory (external server)",
-  summary: "External Supermemory instance for server-side extraction + recall.",
-  riskLevel: "medium",
-  // The package is optional and no longer part of agent-app's dependency
-  // closure. Existing presets/config composition can still resolve the module
-  // explicitly, but the core interactive wizard must not advertise an
-  // unavailable backend as though it were built in.
-  wizardSelectable: false,
-  inputs: [
-    {
-      id: "supermemoryBaseUrl",
-      label: "Supermemory base URL",
-      description: "REST URL of your supermemory-server (local default http://127.0.0.1:6767) or the hosted cloud.",
-      default: "http://127.0.0.1:6767",
-    },
-    {
-      id: "supermemoryApiKey",
-      label: "Supermemory API key (optional)",
-      description: "Bearer key for hosted or authenticated instances. Omit it for a keyless local service. Saved to .env; .env.example contains only a placeholder.",
-      secret: true,
-      envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
-      required: false,
-    },
-  ],
-  configFragment: (values) => ({
-    memory: {
-      backend: "supermemory",
-      writeMode: "capture",
-      supermemory: { baseUrl: values.supermemoryBaseUrl ?? "http://127.0.0.1:6767" },
-      recallTool: { enabled: true },
-      rememberTool: { enabled: false }, // no durable write surface on this backend
-    },
-  }),
-  envExampleLines: () => [
-    "# Supermemory bearer key (printed by supermemory-server on first boot)",
-    "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY=",
-  ],
-  validateExpectations: [
-    {
-      sectionId: "memory",
-      mustBe: "ok",
-      note: "Run `supermemory-server` (or point baseUrl at your instance) before sending turns.",
-    },
-  ],
-};
-
 // ---------------------------------------------------------------------------
 // Sandbox
 // ---------------------------------------------------------------------------
@@ -477,25 +428,6 @@ const sandbox: CapabilityModule = {
   }),
   recommendedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Exec", "Bash"],
   validateExpectations: [{ sectionId: "sandbox", mustBe: "ok", note: SANDBOX_FAIL_CLOSED_ENGINE_NOTE }],
-};
-
-// ---------------------------------------------------------------------------
-// Observability
-// ---------------------------------------------------------------------------
-
-const observabilityPhoenix: CapabilityModule = {
-  id: "observability:phoenix",
-  kind: "observability",
-  title: "Phoenix tracing",
-  summary: "Best-effort Phoenix OTLP export, sensitive data excluded.",
-  riskLevel: "low",
-  inputs: [],
-  configFragment: () => ({
-    observability: { exporters: [{ type: "phoenix", includeSensitiveData: false }] },
-  }),
-  validateExpectations: [
-    { sectionId: "observability", mustBe: "ok", note: "Start Phoenix (or it reports `waiting`)." },
-  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -537,7 +469,7 @@ const providerLmStudio: CapabilityModule = {
 };
 
 /**
- * Ordered catalog: the six channels, four memory tiers, sandbox, observability,
+ * Ordered catalog: the six channels, four memory tiers, sandbox,
  * then the two internal provider modules. Wizard-visible modules (all but the two
  * `provider:*`) come first; the composer presents them in this order.
  */
@@ -551,9 +483,7 @@ export const CAPABILITY_MODULES: readonly CapabilityModule[] = [
   memoryLite,
   memoryJournal,
   memoryBujo,
-  memorySupermemory,
   sandbox,
-  observabilityPhoenix,
   providerOllama,
   providerLmStudio,
 ];

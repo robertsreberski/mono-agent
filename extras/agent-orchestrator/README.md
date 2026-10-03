@@ -138,13 +138,13 @@ It does not start Telegram, WhatsApp, or A2A transports, discover remote agents,
 
 ## Related Documentation
 
-- [Multi-agent orchestration](https://mono-agent-docs.vercel.app/programmatic/multi-agent/)
+- [Multi-agent orchestration](https://docs.mono-agent.dev/programmatic/multi-agent/)
   documents the full API and request-scoped lifecycle.
-- [Multi-agent playbook](https://mono-agent-docs.vercel.app/playbooks/multi-agent-orchestration/)
+- [Multi-agent playbook](https://docs.mono-agent.dev/playbooks/multi-agent-orchestration/)
   provides an end-to-end composition recipe.
-- [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
+- [Programmatic composition](https://docs.mono-agent.dev/programmatic/composition/)
   explains `runtimeOptionsForRequest` and its cleanup contract.
-- [A2A consumer](https://mono-agent-docs.vercel.app/programmatic/a2a-consumer/) shows how a
+- [A2A consumer](https://docs.mono-agent.dev/programmatic/a2a-consumer/) shows how a
   remote agent can satisfy the same collaborator responder interface.
 - [`@mono-agent/agent-contracts`](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
   owns the responder and stream contracts used by this package.

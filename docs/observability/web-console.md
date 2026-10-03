@@ -7,9 +7,9 @@ sidebar:
 
 `mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
 
-This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The former `mono-agent sessions` read-only run browser [was removed](#session-recorder-removed); recorded-run replay now lives in `mono-agent tui`.
+This is the maintained first-party operator console. The former `mono-agent sessions` read-only run browser and terminal renderer were removed; use `mono-agent runs list|show` for bounded offline run diagnostics.
 
-The web service does not run the terminal UI. Both consoles discover and connect to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`; they merely share the same bidirectional operator protocol.
+The web service discovers and connects to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`. Those legacy names remain the stable bidirectional operator-protocol identifiers.
 
 Successful cron runs suppressed by the shared `NOTHING_TO_REPORT` classifier have
 no visible message row. Compact run history remains available separately from the
@@ -117,6 +117,65 @@ and operating-system admission controls remain the boundary.
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
 
+## Restart one agent
+
+The selected agent's settings include **Restart agent** when the agent supports
+it. An agent may also call `ProposeRestart` on a supported web-console turn;
+that adds a card below its answer, but **never restarts the agent**. The operator
+must select Restart, read the interruption warning, and confirm. The displayed
+running-conversation count is approximate and advisory, not a guarantee that
+new work cannot begin. Cards from an older process, unsupported agents, and
+offline agents remain readable but cannot request a restart. The settings and
+reply cards use the same confirmation and progress flow.
+
+Progress reads **Requesting → Restarting → Back online**. The web service stores
+the operation before contacting the agent and keeps status across browser reloads.
+An adapter acceptance means only that shutdown was committed; **success** needs
+that same discovered source id to return as a *different process* and answer a
+ready `/v1/info` probe. A `degraded` discovery status still counts as ready
+when that info probe answered (for example, a stale heartbeat does not undo
+operator readiness). A definite refusal is **failure** with a short reason. Changed approved
+launchd inputs or invalid systemd startup inputs refuse **before** stopping the
+old agent; run `mono-agent validate` and then `mono-agent restart` from its
+folder to apply changes. If inputs race after launchd acceptance, `mono-agent
+status` retains a snapshot-refusal failure until approved startup or explicit
+stop.
+A dropped reply, unknown acceptance, or no confirmed ready replacement within
+two minutes is **not confirmed**; observing a new process after a lost reply is
+not proof that this request caused it. The browser cannot infer success from
+connection changes. Restarting does not purge saved conversations, memory or
+sessions; it interrupts running turns and stops process jobs and monitors, loses
+warm process-local sessions, and may delay notifications until the new worker is
+ready. Durable history and persistent subagent state remain available after
+recovery; an interrupted turn does not resume itself. A second externally sent
+`SIGTERM` while the worker is stopping for an accepted restart takes the OS
+signal's default action: the console cannot turn an external forced stop into
+a confirmed successful restart.
+
+Only a supervised launchd/systemd worker with a configured operator API key and
+a verifiably loaded relaunch policy advertises `capabilities.restart.supported`.
+Plain foreground/embedded, keyless, stopped, or unverifiable agents refuse.
+When discovery confirms that an agent process generation changed, a dispatched
+web parent turn left running or failed by a lost connection gets one durable
+conversation notice. The original turn is never replayed. The notice asks the
+agent to inspect its background jobs and subagents; it does not assert their
+outcomes. Explicit user cancellations and older turns without a persisted
+process-generation marker are not classified retrospectively. The separate
+host wake may be acknowledged as attempted even when model receipt is uncertain;
+an ambiguous dispatch or steer is never automatically replayed. Accepted
+supervised restarts briefly drain running background jobs before cancellation,
+under a single shutdown-wide ten-second forced-exit bound; unresolved work is
+reconciled by the next process generation.
+
+The agent's `POST {basePath}/v1/restart` requires its bearer; the web console
+proxies `POST /api/v1/agents/:id/restart` or a persisted reply-part click to the
+selected source, and browsers poll the web-owned operation. `ProposeRestart`
+carries **no restart authority** or target. This adds **no human login**:
+restart uses the same trusted console network/OS boundary and exact-origin
+checks as existing console mutations plus the existing operator bearer from
+web to agent. It is not an authenticated-human-only feature. Keep untrusted
+proxies and browsers off the console listener.
+
 ## Provider authentication
 
 Agent settings uses the same compact responsive sheet as project/tag settings:
@@ -145,7 +204,24 @@ cards without auth badges or controls:
 Numbers are vendor-reported percent used, clamped to 0–100, not estimates from
 session costs. A sole weekly Codex limit stays Weekly even when it occupies the
 primary slot. Reset countdowns include an absolute time on hover; vendor reset
-timestamps are authoritative (the nominal monthly period is 30 days). No Spark,
+timestamps are authoritative (the nominal monthly period is 30 days). Windows
+burning ahead of pace append one fragment to the countdown line —
+`Resets in 3d 21h · empty 3d 18h early` in amber when ahead, red when
+unsustainable (1.5x pace or more) — with the full local run-out time and pace
+on hover; on-track windows add nothing. How early the run-out lands is the
+decision, so the absolute instant stays on hover rather than in the meter.
+Windows clearly under pace instead append `· 45% unused` in muted type (at
+least 5 % unused, never a warning). Every projected
+bar also carries an on-track dot at the elapsed share of the window — inside
+the bar, in the meter's accent family, flipping to the surface colour where the
+fill has already passed it — and a
+one-decimal pace chip beside the percentage (`1.2×`, tier-coloured when ahead,
+muted otherwise, withheld while confidence is low); the meter's accessible name
+states the elapsed share and pace so the comparison is not visual-only. The
+projection is a constant-rate extrapolation anchored at
+the measurement fetch, so stale **Last known usage** meters keep their original
+lead unchanged as wall-clock advances. The state is also
+carried in the meter's accessible name, never colour alone. No Spark,
 Codex credits, Sonnet, extra-usage, organization billing or cost meters are included. Unsupported providers
 and absent/unusable credentials add no placeholders. Successfully mapped usage
 reads using the agent’s Pi credential provide weaker **Credential OK** evidence,
@@ -247,7 +323,7 @@ credential identity is still retained; a credential replacement clears its proof
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
 code while the headless host polls. Anthropic shows an authorization URL and a
-field for the final localhost redirect URL or code because Pi 0.85.1 has no
+field for the final localhost redirect URL or code because Pi 0.87.0 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
 The neutral recovery action remains available at the sheet's compact button size whenever
@@ -457,6 +533,16 @@ from a chat uses the existing conversation menu flow.
 The agent can also use [console project tools](../tools/mcp.md#console-project-tools)
 during a writable interactive turn. Creating a conversation does not start it.
 
+With [Telegram forum topics as projects](/channels/telegram/#forum-topics-as-projects),
+each topic the agent's bot has seen appears here as a project named
+`Chat › Topic`. Its page shows the topic as **Telegram · history not viewable
+here** (its history stays in Telegram) with **Closed in Telegram** or
+**Telegram topic gone** when that applies, and the Projects list prefixes it
+with `Telegram ·`. Edit its context like any project; it reaches the next turn
+in that topic. Web chats can join it as well. Deleting it detaches the topic
+without touching Telegram, and the topic is not re-projected until someone
+links it again. The console never creates, renames or deletes Telegram topics.
+
 
 On narrow touch screens the console opens on the Dashboard. Tapping a row, a
 Running card or the new-conversation control pushes the conversation over it;
@@ -477,9 +563,9 @@ Selecting an agent filters its conversations; each conversation is permanently b
 
 Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
-Every turn tells the agent that it is in an interactive web console conversation and states the thread's conversation id, `web:<threadId>`, verbatim in its Session block. That id is the thread the person is already reading, not a route elsewhere, and it is disclosed so an agent can hand it to host-side tools and operator commands that bind background work to the thread — a Monitor, a process job, or a maintainer-style task record that must wake this exact conversation. Cron channels and other request-driven turns keep their existing wording and disclose nothing. See [Context assembly](/context/assembly/#session).
+Every turn tells the agent that it is in an interactive web console conversation and states the thread's conversation id, `web:<threadId>`, verbatim in its Session block. That id is the thread the person is already reading, not a route elsewhere, and it is disclosed so an agent can hand it to host-side tools and operator commands that bind background work to the thread — a process job, or a maintainer-style task record that must wake this exact conversation. Cron channels and other request-driven turns keep their existing wording and disclose nothing. See [Context assembly](/context/assembly/#session).
 
-Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Opening an Automations row uses that same route and chronological feed; loading the route directly selects the Automations chip. The list shows each overview job once with its id, cadence/timezone, enabled state, last or active run, and next run. A saved overview remains readable when the agent is offline or no longer advertises cron, but is visibly a snapshot and cannot supply actionable live state; truncated overviews disclose that removed historical jobs may be omitted. The chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, and dropped states, plus artifact/session links when the agent reports them. The header opens collapsed on one line — schedule, state and next run — and expands to show schedule, timezone, state, last and next run, and health. It is a native disclosure, so its expanded state is exposed to assistive technology and driven from the keyboard by the browser, and nothing about it is persisted. The disclosure belongs to one agent's one job, so every cron channel opens collapsed, including a direct switch from one cron channel to another. It retains **Run now**, **Enable/Disable**, and the redacted **View config** surface; action controls use the existing authentication, opt-in, confirmation, idempotency, and capability gates and explain when they are unavailable. Configuration remains file/config-JSON owned, and the browser never computes next-run locally or treats stale state as actionable. The cron transcript itself remains read-only, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
+Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Opening an Automations row uses that same route and chronological feed; loading the route directly selects the Automations chip. The list shows each overview job once with its id, cadence/timezone, enabled state, last or active run, and next run. A saved overview remains readable when the agent is offline or no longer advertises cron, but is visibly a snapshot and cannot supply actionable live state; truncated overviews disclose that removed historical jobs may be omitted. The chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, gate-skipped, and dropped states, plus artifact/session links when the agent reports them. The header opens collapsed on one line — schedule, state and next run — and expands to show schedule, timezone, state, last and next run, and health. It is a native disclosure, so its expanded state is exposed to assistive technology and driven from the keyboard by the browser, and nothing about it is persisted. The disclosure belongs to one agent's one job, so every cron channel opens collapsed, including a direct switch from one cron channel to another. It retains **Run now**, **Enable/Disable**, and the redacted **View config** surface; action controls use the existing authentication, opt-in, confirmation, idempotency, and capability gates and explain when they are unavailable. Configuration remains file/config-JSON owned, and the browser never computes next-run locally or treats stale state as actionable. The cron transcript itself remains read-only, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
 
 Every terminal cron row offers **Reply**. It captures the exact persisted summary
 or already-loaded detail and imports it into a separate normal conversation as
@@ -549,10 +635,10 @@ what was said rather than the machine payloads behind it.
 
 Message text and titles match differently, because they are matched by different
 means. Message text is tokenized: each query word matches from the start of a
-word, so `deploy phoen` finds "deploy the phoenix exporter" but `hoenix` does
+word, so `deploy retr` finds "deploy the retry monitor" but `onitor` does
 not, and accents are folded so an unaccented query still matches accented prose.
-Titles are matched as a plain substring, so `hoenix` does find a conversation
-*titled* "deploy the phoenix exporter", and title matching folds ASCII case only
+Titles are matched as a plain substring, so `onitor` does find a conversation
+*titled* "deploy the retry monitor", and title matching folds ASCII case only
 — `reunion` will not match a title spelled "Réunion". Adding a word narrows the
 results either way.
 
@@ -772,7 +858,7 @@ settings changes never rewrite existing conversations. The layer applies only
 to interactive web-console creation: Telegram, Slack, cron, webhook, API, and
 TUI requests continue to use their own configured or request-scoped values.
 
-When a process job or Monitor event must start a standalone revival turn, it
+When a process-job event must start a standalone revival turn, it
 re-reads this conversation snapshot immediately before admission. A wake that
 can be steered into the active run instead keeps that run's existing route.
 
@@ -784,7 +870,7 @@ The header never calls an in-flight measurement current. A running turn is label
 
 The popover keeps aggregate last-turn processed tokens and accumulated conversation cost separate from context occupancy. Older conversations without exact telemetry show **—** and may still show their processed-token breakdown and cost; no aggregate number is converted into a context percentage.
 
-Reported cost and processed tokens include what the run's subagents spent. A delegation is work the run asked for and is billed to the same account, so the Pi runtime folds each subagent's reported usage into the parent run's own before publishing it — which is also why the TUI status bar and the exported metrics agree with the console. The trade is attribution: a subagent running on a different model has its spend reported under the parent run's model, which is the right answer for a run total and the wrong one for a per-model breakdown.
+Reported cost and processed tokens include what the run's subagents spent. A delegation is work the run asked for and is billed to the same account, so the Pi runtime folds each subagent's reported usage into the parent run's own before publishing it — which is also why exported metrics agree with the console. The trade is attribution: a subagent running on a different model has its spend reported under the parent run's model, which is the right answer for a run total and the wrong one for a per-model breakdown.
 
 Assistant reasoning, routine tool calls, subagent delegations, and context compactions share one compact **Activity** disclosure without changing their order. Each compaction is one row that updates from running to succeeded, skipped, failed, or interrupted instead of producing duplicate start/end rows. Pi's before/after token counts are estimates and carry a `~` prefix; provider summary text is never displayed. Activity opens while the message is running and force-collapses when the message completes, fails, is cancelled, or is interrupted; it can be reopened afterward, and individual tool payloads remain collapsed inside it. Standalone interactive tools remain outside the group.
 
@@ -803,7 +889,7 @@ honestly remain stack-only.
 Receipt-bearing launches stay as separate tool/event runs; ordinary adjacent
 same-tool calls keep their existing grouping.
 
-An `Agent` call is one foldable row inside Activity — profile name, the model's short task label, and a `4 tools · 12.4s · $0.0042` summary — that **owns** the tool calls its subagent made rather than listing them as siblings. The price appears when the runtime priced that subagent's model, and is the one place a single expensive delegation is identifiable; the run total it folds into cannot say which one spent it. Opening the row reveals each child call indented, individually foldable for its input and output, followed by the report the subagent sent back. Nesting keeps concurrent delegations readable when the provider overlaps them: their events interleave, so a flat transcript would shuffle several agents' work together. Pi 0.85 cannot overlap an `Agent` batch when any stateful/mutating or MCP tool is also offered because its scheduling mode applies to the whole harness. A child that failed is marked without marking the delegation that contains it, and a delegation whose parent call was never observed (a truncated or replayed stream) still renders from its children alone.
+An `Agent` call is one foldable row inside Activity — profile name, the model's short task label, and a `4 tools · 12.4s · $0.0042` summary — that **owns** the tool calls its subagent made rather than listing them as siblings. The price appears when the runtime priced that subagent's model, and is the one place a single expensive delegation is identifiable; the run total it folds into cannot say which one spent it. Opening the row reveals each child call indented, individually foldable for its input and output, followed by the report the subagent sent back. Nesting keeps concurrent delegations readable when the provider overlaps them: their events interleave, so a flat transcript would shuffle several agents' work together. `Agent` calls can overlap even when stateful tools are offered; an invoked stateful, MCP, or unknown call is an exclusive barrier for the batch. A child that failed is marked without marking the delegation that contains it, and a delegation whose parent call was never observed (a truncated or replayed stream) still renders from its children alone.
 
 The child run's model and any fallback appear inside its own delegation row.
 Parent and child routing attribution stay independent.
@@ -833,6 +919,19 @@ Lifecycle rows never poll, expose output, offer cancellation, or repeat the
 wake response. The separate stack remains the single live operational owner.
 
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
+
+## Suggested quick replies
+
+An agent can call `SuggestReplies` to attach 2–8 non-blocking choices directly
+beneath its final answer, including web-bound background/job wake replies.
+The compact buttons wrap on mobile and support keyboard navigation. Clicking
+one sends its label verbatim as an ordinary user message in the same
+conversation; the current agent run never waits for a choice. The choices are
+stored with the answer and survive reload. They remain readable but disabled
+after a click, while a turn is running, or after any later user message.
+Use `AskUser` instead when a run must wait for the operator's response.
+See [web-only quick replies](/tools/rich-replies/#web-only-quick-replies) for
+validation, tool policy, and unsupported-destination behavior.
 
 ## Reply files and MCP Apps
 
@@ -934,7 +1033,7 @@ index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
 agent generated. Schemas 11 through 17 carried per-conversation run overrides,
-the provider summary an agent advertises, Monitor wake delivery receipts, and
+the provider summary an agent advertises, host wake delivery receipts, and
 discovery presence. Schema 18 adds `messages.seq`, the per-message write counter
 a console compares against to tell the next delta from one it missed; existing
 rows start at 0, which is exactly what a browser that has never seen a delta
@@ -1027,25 +1126,25 @@ cron channels rebuild from the running agents.
 
 The web console covers discovery, configurable console identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a console-named PWA when served from a secure browser context.
 
-General recorded-run replay and source-annotated configuration remain in the TUI. Use:
+Recorded-run and resolved-configuration inspection remain available as bounded offline commands:
 
 ```bash
-mono-agent tui
+mono-agent runs list
+mono-agent runs show <run-id>
+mono-agent config
 ```
 
 To change an agent, edit `mono-agent.config.json` or `IDENTITY.md`, run
-`mono-agent validate`, restart the agent, and open the ordinary TUI if you want
-to continue chatting.
+`mono-agent validate`, restart the agent, and return to the web console.
 
 ## Session Recorder removed
 
-The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) for operator run inspection.
+The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent runs list|show` for bounded offline diagnostics or `mono-agent web` for live operation.
 
 `@mono-agent/session-web`, the read-only `live` event relay, and their config/env surface have also been removed. `MONO_AGENT_WEB_AUTH_TOKEN` is no longer read by any code. See the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 
 - [CLI command reference](/observability/cli-reference/#web) — lifecycle and flags.
-- [Terminal UI](/observability/tui/) — replay, live chat, and the config view.
-- [TUI stream endpoint](/channels/tui/) — the default-on agent endpoint used for web chat.
+- [Operator stream endpoint](/channels/tui/) — the default-on agent endpoint used for web chat.
 - [Sessions and concurrency](/runtime/sessions-concurrency/) — how web threads map to harness conversations and provider sessions.

@@ -1,4 +1,6 @@
+import type { SubagentSalvage } from "./subagent-salvage.js";
 import type { SubagentVerificationTarget } from "./subagent-verification-observer.js";
+import type { LiveInputMailbox } from "@mono-agent/agent-harness";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import type { InstanceOutcome } from "./subagent-instances.js";
 import type { SubagentContinuity, SubagentFailureReason, SubagentOwnerIdentity } from "./subagent-registry-ownership.js";
@@ -9,6 +11,9 @@ export interface SubagentDisposition {
   continuity: SubagentContinuity;
   reason?: SubagentFailureReason;
   closeAfterSuccess?: boolean;
+  /** Intentional parent stop, certified continuity and released ownership only. */
+  resumeAfterStop?: true;
+  certifiedTimeout?: true;
 }
 export interface ManagedSubagentAdmission {
   readonly instanceIncarnation: string;
@@ -16,6 +21,8 @@ export interface ManagedSubagentAdmission {
 }
 export interface ManagedSubagentExecution {
   readonly ownedForegroundProcesses: OwnedForegroundProcesses;
+  /** In-process steering mailbox for this detached turn; absent means steering is unavailable. */
+  readonly liveInput?: LiveInputMailbox;
   started(): Promise<void>;
   /** Attached to the actual provider promise BEFORE the reporting race. */
   settled(outcome?: InstanceOutcome): Promise<void>;
@@ -26,10 +33,13 @@ export interface SubagentRegistryPublication {
   readonly sequence: number;
   readonly disposition: SubagentDisposition;
   readonly released: boolean;
+  /** Durable owner settlement proves the provider and child commands never started. */
+  readonly neverStarted?: true;
   readonly outcome?: InstanceOutcome;
 }
 export interface ManagedSubagentRegistry {
   readonly root: string;
+  salvage?(identity: SubagentOwnerIdentity): Promise<SubagentSalvage | undefined>;
   verify(identity: SubagentOwnerIdentity): Promise<void | { readonly retained: boolean; readonly verification?: SubagentVerificationTarget }>;
   publish(phase: "intent" | "confirm" | "finalize" | "acknowledge", publication: SubagentRegistryPublication): Promise<void>;
 }

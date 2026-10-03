@@ -1,23 +1,17 @@
-import { type Stats } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import type { EmbeddingProvider } from "../search/index.js";
 import { openMemoryDb, type MemoryDb } from "../store/index.js";
 
 import {
-  assertDurableRootSwapBackupDirectoryInfo,
-  assertDurableSwapPrivateArtifactInfo,
   assertHealthyRoot,
   assertSafeRelative,
-  assertSameDurableSwapFile,
-  assertSameDurableSwapSnapshot,
   cleanupSqliteCoordination,
   createDurableRootSwapBackup,
   durableRootSwapTransactionMatches,
   isSha256,
   MEMORY_FORGET_SWAP_OPERATION,
   memoryTreeFingerprint,
-  parseDurableRootSwapBackupManifest,
   readDurableRootSwapBackup,
   readDurableRootSwapTransaction,
   readDurableRootSwapTransactionOptional,
@@ -28,7 +22,6 @@ import {
   unlinkDurable,
   writeJsonExclusiveDurable,
   type DurableRootSwapBackupState,
-  type DurableRootSwapBackupStatus,
   type DurableRootSwapHooks,
   type DurableRootSwapTransaction,
 } from "./durable-root-swap.js";
@@ -110,21 +103,6 @@ export class ExplicitMemoryForgetError extends Error {
     super(`memory-forget: ${code}`, cause === undefined ? undefined : { cause });
     this.name = "ExplicitMemoryForgetError";
   }
-}
-
-export interface ExplicitMemoryForgetBackupManifest {
-  readonly schemaVersion: typeof SCHEMA_VERSION;
-  readonly operation: "memory-forget-backup";
-  readonly status: DurableRootSwapBackupStatus;
-  readonly rootFingerprint: string;
-  readonly sourceFingerprint: string;
-  readonly treeFingerprint: string;
-  readonly activeDbRelativePath: string;
-  readonly dimension: number;
-  readonly createdAt: string;
-  readonly planDigest: string;
-  readonly postTreeFingerprint?: string;
-  readonly postActiveDbRelativePath?: string;
 }
 
 export async function applyExplicitMemoryForget(
@@ -350,37 +328,6 @@ export async function restoreExplicitMemoryForget(
   } finally {
     try { writer?.release(); } finally { maintenance.release(); }
   }
-}
-
-/** @internal Shared with the asynchronous retention reader. */
-export function assertExplicitMemoryForgetBackupDirectoryInfo(info: Stats): void {
-  assertDurableRootSwapBackupDirectoryInfo(info);
-}
-
-/** @internal Shared with the asynchronous retention reader. */
-export function parseExplicitMemoryForgetBackupManifest(value: unknown): ExplicitMemoryForgetBackupManifest {
-  return parseDurableRootSwapBackupManifest(value, FORGET_OPERATION) as ExplicitMemoryForgetBackupManifest;
-}
-
-/** @internal Shared with the asynchronous retention reader. */
-export function assertExplicitMemoryForgetPrivateArtifactInfo(info: Stats): void {
-  assertDurableSwapPrivateArtifactInfo(info);
-}
-
-export function assertSameExplicitMemoryForgetFile(
-  expected: Pick<Stats, "dev" | "ino" | "isFile" | "isSymbolicLink" | "nlink">,
-  actual: Stats,
-  label: string,
-): void {
-  assertSameDurableSwapFile(expected, actual, label);
-}
-
-export function assertSameExplicitMemoryForgetSnapshot(
-  expected: Stats,
-  actual: Stats,
-  label: string,
-): void {
-  assertSameDurableSwapSnapshot(expected, actual, label);
 }
 
 function assertApplyOptions(options: ApplyExplicitMemoryForgetOptions): void {

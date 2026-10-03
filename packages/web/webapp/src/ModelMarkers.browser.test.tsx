@@ -86,7 +86,7 @@ const routed = thread("routed", "alpha", {
   runEffort: "medium",
 });
 
-const message = (id: string, role: "user" | "assistant", text: string, at: string): WebMessage => ({
+const message = (id: string, role: "user" | "assistant" | "system", text: string, at: string): WebMessage => ({
   id,
   threadId: routed.id,
   turnId: id.startsWith("first") ? "turn-first" : "turn-second",
@@ -98,30 +98,38 @@ const message = (id: string, role: "user" | "assistant", text: string, at: strin
   updatedAt: at,
 });
 
+// Sep 12 of the current year: the rule prints the year only for another one,
+// so a fixed calendar date would drift into a different rendering next January.
+const resumedAt = new Date(new Date().getFullYear(), 8, 12, 9, 4, 40);
+
+const resumedLabel = (): string => `Resumed ${resumedAt.toLocaleString(undefined,
+  { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+
+const resumedRow = (): WebMessage => ({
+  ...message("resume-marker", "system", "", new Date(resumedAt.getTime() + 1_000).toISOString()),
+  parts: [{ type: "conversation-marker", kind: "resumed", at: resumedAt.toISOString(),
+    previousMessageAt: new Date(resumedAt.getTime() - 7_480_000).toISOString(), idleMs: 7_480_000 }],
+});
+
 const detail = (): ThreadDetail => ({
   thread: routed,
   messages: [
     message("first-user", "user", "Draft the release note for the console.", "2026-09-12T09:00:00.000Z"),
     message("first-assistant", "assistant", "Here is a first pass at the release note.", "2026-09-12T09:00:04.000Z"),
+    { ...message("project-marker", "system", "", "2026-09-12T09:04:40.000Z"), parts: [{ type: "conversation-marker", kind: "project",
+    before: null,
+    after: { id: "project-web", name: "Web console", color: "blue" },
+    at: "2026-09-12T09:04:30.000Z",
+  }] },
+    { ...message("model-marker", "system", "", "2026-09-12T09:04:40.000Z"), parts: [{ type: "conversation-marker", kind: "model",
+    before: { model: SOL, effort: "high" },
+    after: { model: FABLE, effort: "medium" },
+    at: "2026-09-12T09:04:40.000Z",
+  }] },
     message("second-user", "user", "Try that again, with more care about the wording.", "2026-09-12T09:05:00.000Z"),
     message("second-assistant", "assistant", "Reworked, with the tone tightened throughout.", "2026-09-12T09:05:06.000Z"),
   ],
-  modelTransitions: [{
-    id: 1,
-    afterMessageId: "first-assistant",
-    turnId: "turn-second",
-    before: { model: SOL, effort: "high" },
-    after: { model: FABLE, effort: "medium" },
-    createdAt: "2026-09-12T09:04:40.000Z",
-  }],
-  projectTransitions: [{
-    id: 1,
-    afterMessageId: "first-assistant",
-    turnId: "turn-second",
-    before: null,
-    after: { id: "project-web", name: "Web console", color: "blue" },
-    createdAt: "2026-09-12T09:04:30.000Z",
-  }],
+
 });
 
 const persistence = createThreadPersistence();
@@ -182,6 +190,7 @@ describe("route change markers in the transcript", () => {
       name: `Model changed from ${SOL}, effort High to ${FABLE}, effort Medium`,
     });
     expect(marker).toBeVisible();
+    expect(marker.closest(".message")).toBeNull();
     expect(marker).toHaveTextContent("Sol 5.6 · high");
     expect(marker).toHaveTextContent("Fable 5.1 · medium");
     // Between the turns it sits between, and telling itself apart from the
@@ -200,12 +209,32 @@ describe("route change markers in the transcript", () => {
     await capture("transcript-desktop-light-1280x900");
   });
 
+  it("renders a resumed system row as a short local-time quiet rule without bubble chrome", async () => {
+    await page.viewport(1_280, 900);
+    const data = detail();
+    vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumedRow(), ...data.messages.slice(-2)] });
+    openConsole();
+    await settled();
+    const marker = screen.getByText(resumedLabel());
+    const rule = marker.closest('[role="note"]');
+    expect(rule).toBeVisible();
+    expect(rule).toHaveAccessibleName(resumedLabel());
+    // No seconds, and the idle duration stays in the agent's context only.
+    expect(rule).not.toHaveTextContent(/:\d\d:\d\d/u);
+    expect(rule).not.toHaveTextContent(/idle/u);
+    expect(marker.closest(".message")).toBeNull();
+    expect(marker.getBoundingClientRect().bottom).toBeLessThan(screen.getByText("Try that again, with more care about the wording.").getBoundingClientRect().top);
+    await capture("transcript-resumed-desktop-1280x900");
+  });
+
   it("keeps the rule inside a phone transcript", async () => {
     // The viewport is set BEFORE the console mounts: the mobile shell picks its
     // layout at mount, so resizing a desktop tree leaves the drawer half open
     // and the shot would be of neither layout.
     await page.viewport(390, 844);
     await emulate("light");
+    const data = detail();
+    vi.mocked(api.thread).mockResolvedValue({ ...data, messages: [...data.messages.slice(0, 2), resumedRow(), ...data.messages.slice(2)] });
     openConsole();
     // The phone shell opens on the conversation list, so the transcript is one
     // tap away rather than already on screen.
@@ -214,9 +243,17 @@ describe("route change markers in the transcript", () => {
 
     const marker = await screen.findByRole("note", { name: /Model changed from/u });
     expect(marker).toBeVisible();
+    expect(marker.closest(".message")).toBeNull();
     expect(marker).toHaveTextContent("Fable 5.1 · medium");
     expect(marker.getBoundingClientRect().right).toBeLessThanOrEqual(390);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+
+    // The resume rule is the longest of the three: it has to stay on one line
+    // at 390px, which is what the shortened date buys.
+    const resumed = await screen.findByRole("note", { name: resumedLabel() });
+    expect(resumed).toBeVisible();
+    expect(screen.getByText(resumedLabel()).getClientRects()).toHaveLength(1);
+    expect(resumed.getBoundingClientRect().right).toBeLessThanOrEqual(390);
     await capture("transcript-phone-light-390x844");
 
     await emulate("dark");

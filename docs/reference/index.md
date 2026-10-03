@@ -41,7 +41,7 @@ If a capability is marked `code` only, it cannot be turned on through `mono-agen
 
 ## How to read a config example
 
-Reference examples use real keys from the [config blueprint](/config/blueprint/). A config field has a matching `MONO_AGENT_*` environment override only when the [generated config reference](/config/reference/) names one; the [environment-variable reference](/config/env-vars/) explains those supported mappings by domain.
+Reference examples use real keys from the [config blueprint](/config/blueprint/). Core settings resolve from JSON, then built-in defaults.
 
 ```json
 {
@@ -49,7 +49,7 @@ Reference examples use real keys from the [config blueprint](/config/blueprint/)
 }
 ```
 
-The example above sets the primary model; the equivalent override is `MONO_AGENT_MODEL`. For the full annotated file, see the [blueprint](/config/blueprint/).
+The example above sets the primary model. For the full annotated file, see the [blueprint](/config/blueprint/).
 
 ## Keeping the registry current
 

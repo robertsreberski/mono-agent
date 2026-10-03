@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { WebStore } from "../store.js";
 import { fakeProcessJob, temporaryRoot } from "./helpers.js";
-import { normalizeMonitorTerminalReply } from "../monitor-reply.js";
+import { normalizeWakeTerminalReply } from "../wake-reply.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -37,7 +37,7 @@ describe("process-job exact terminal suppression", () => {
     try {
       if (!late) s.store.associateProcessJobWakeTurn(s.input.deliveryKey, s.turn.turnId);
       s.store.applyStreamFrames(s.turn.turnId, [{ kind: "append", delta: "NOTHING_TO_REPORT" }]);
-      s.store.completeTurn(s.turn.turnId, "", undefined, undefined, { monitorWakeDeliveryKey: s.input.deliveryKey });
+      s.store.completeTurn(s.turn.turnId, "", undefined, undefined, { hostWakeDeliveryKey: s.input.deliveryKey });
       s.store.completeProcessJobWake({ ...s.input, disposition: "follow_up", turnId: s.turn.turnId });
       expect(s.store.getMessage(s.turn.assistantMessageId)?.parts).toEqual([{
         type: "process-job-wake",
@@ -56,7 +56,7 @@ describe("process-job exact terminal suppression", () => {
       const text = kind === "narration" ? "The change is ready.\nNOTHING_TO_REPORT" : "NOTHING_TO_REPORT";
       s.store.applyStreamFrames(s.turn.turnId, [{ kind: "append", delta: text }]);
       s.store.completeTurn(s.turn.turnId, text, undefined, undefined, kind === "missing" ? {}
-        : { monitorWakeDeliveryKey: kind === "stale" ? "process-job:stale" : s.input.deliveryKey });
+        : { hostWakeDeliveryKey: kind === "stale" ? "process-job:stale" : s.input.deliveryKey });
       expect(s.store.getMessage(s.turn.assistantMessageId)?.parts).toContainEqual({ type: "text", text });
       s.store.associateProcessJobWakeTurn(s.input.deliveryKey, s.turn.turnId, false);
       s.advance(); expect(s.store.claimDueWebPushDeliveries(10)).toHaveLength(1);
@@ -66,7 +66,7 @@ describe("process-job exact terminal suppression", () => {
   it("preserves a sentinel with any rich reply part", () => {
     const parts = [{ type: "text" as const, text: "NOTHING_TO_REPORT" },
       { type: "failure" as const, id: "part", code: "artifact_missing" as const, message: "File missing" }];
-    expect(normalizeMonitorTerminalReply(parts, true)).toEqual({ parts, changed: false });
+    expect(normalizeWakeTerminalReply(parts, true)).toEqual({ parts, changed: false });
   });
 
   it("holds a push while steering is unresolved and suppresses it after the exact applied receipt", async () => {

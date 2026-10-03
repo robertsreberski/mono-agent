@@ -1,6 +1,5 @@
-import { useAuiState } from "@assistant-ui/react";
 import { useConsoleStore } from "../../console-store";
-import type { ProjectTransition } from "../../types";
+import type { ConversationMarkerPart } from "../../types";
 import { Icon } from "../Icon";
 
 /**
@@ -8,14 +7,14 @@ import { Icon } from "../Icon";
  * a faint tinted line with the event in the middle, between the turn it
  * followed and the first turn that carried the new context.
  */
-export function ProjectMarkers({ transitions = [] }: { readonly transitions?: readonly ProjectTransition[] }) {
-  return <>{transitions.map((transition) => (
+export function ProjectMarkers({ transitions = [] }: { readonly transitions?: readonly Extract<ConversationMarkerPart, { kind: "project" }>[] }) {
+  return <>{transitions.map((transition, index) => (
     <div
-      key={transition.id}
+      key={index}
       className="project-transition"
       role="note"
       data-project-color={(transition.after ?? transition.before)?.color ?? "default"}
-      title={new Date(transition.createdAt).toLocaleString()}
+      title={new Date(transition.at).toLocaleString()}
     >
       <span className="project-transition-label">
         <Icon name="folder" size={11} />
@@ -25,16 +24,6 @@ export function ProjectMarkers({ transitions = [] }: { readonly transitions?: re
       </span>
     </div>
   ))}</>;
-}
-
-export function MessageProjectMarkers() {
-  const transitions = useAuiState((state) => state.message.metadata.custom?.projectTransitions) as readonly ProjectTransition[] | undefined;
-  return <ProjectMarkers transitions={transitions} />;
-}
-
-export function StartProjectMarkers() {
-  const { detail } = useConsoleStore();
-  return <ProjectMarkers transitions={detail?.projectTransitions?.filter((item) => item.afterMessageId === null)} />;
 }
 
 /**

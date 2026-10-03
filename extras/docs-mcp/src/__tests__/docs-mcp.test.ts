@@ -77,7 +77,7 @@ describe.sequential("@mono-agent/docs-mcp", () => {
     const semantic = await index.search({ query: "How can my agent answer people through Telegram?", limit: 5 });
     expect(semantic.results.some((result) => /telegram/iu.test(`${result.title} ${result.headingPath.join(" ")} ${result.markdown}`))).toBe(true);
 
-    const docsOnly = await index.search({ query: "external Supermemory backend", scope: "docs", limit: 8 });
+    const docsOnly = await index.search({ query: "local memory tiers custom store", scope: "docs", limit: 8 });
     expect(docsOnly.results.every((result) => result.source === "docs")).toBe(true);
     expect(docsOnly.results.some((result) => result.path.includes("memory"))).toBe(true);
     const sections = docsOnly.results.map((result) => `${result.path}:${result.canonicalUrl?.split("#")[1] ?? "overview"}`);
@@ -110,7 +110,7 @@ describe.sequential("@mono-agent/docs-mcp", () => {
 
     for (const target of [
       "/tools/documentation-mcp/#tool-contract",
-      "https://mono-agent-docs.vercel.app/tools/documentation-mcp/#tool-contract",
+      "https://docs.mono-agent.dev/tools/documentation-mcp/#tool-contract",
       "docs/tools/documentation-mcp.md#tool-contract",
     ]) {
       const anchored = index.read(target);

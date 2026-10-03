@@ -64,9 +64,7 @@ export default defineConfig({
           items: [
             { slug: 'observability' },
             { slug: 'observability/artifacts-and-traces' },
-            { slug: 'observability/phoenix-and-backfill' },
             { slug: 'observability/cli-reference' },
-            { slug: 'observability/tui' },
             { slug: 'observability/linux-services' },
           ],
         },
