@@ -1,6 +1,6 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
-import { automaticIntentEligible, recallLineStatus, semanticRecallAuthorities } from "@mono-agent/memory/bujo";
+import { automaticIntentEligible, recallLineStatus } from "@mono-agent/memory/bujo";
 import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecallHit } from "./memory-recall.js";
 
@@ -9,19 +9,8 @@ export interface LabelRecallStore {
   labelsForEntity?(id: string, date?: string): readonly MemoryLabelHit[];
   guidanceForScope?(scope: string): readonly MemoryLabelHit[];
   findMemoryEntitiesByNames?(names: readonly string[]): readonly EntityRecord[];
-  /** Labels on these memory ids: attribution and opt-in whole-source eligibility. */
+  /** Labels on these memory ids: attribution and deliberate label sections. */
   labelsForMemories?(memoryIds: readonly string[]): readonly MemoryLabelHit[];
-}
-
-/** Check every label on a selected source, not just the preference/fact that selected it. */
-function semanticAuthorities(store: LabelRecallStore, sources: readonly MemoryLabelHit[], date: string, now?: string, intentExpiry = false): ReadonlyMap<string, number> {
-  const ids = [...new Set(sources.map((hit) => hit.memoryId))];
-  const labels = [...sources];
-  // Metadata reads do not add search candidates; respect each reader's 50-id bound.
-  for (let offset = 0; offset < ids.length; offset += 50) {
-    labels.push(...store.labelsForMemories?.(ids.slice(offset, offset + 50)) ?? []);
-  }
-  return semanticRecallAuthorities(labels, store.labelsForEntity?.bind(store), date, now, intentExpiry);
 }
 
 const MAX_BACKGROUND_BYTES = 1024;
@@ -142,7 +131,6 @@ export function formatMemoryBackground(
   byteBudget = MAX_BACKGROUND_BYTES,
   /** Memory ids already shown in the possibly-relevant block. */
   shownMemoryIds: ReadonlySet<string> = new Set(),
-  semanticOnly = false,
   intentExpiry = false,
 ): { readonly content: string; readonly truncated: boolean } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
@@ -156,11 +144,8 @@ export function formatMemoryBackground(
   const scoped = scopes.flatMap((scope) => store.guidanceForScope!(scope))
     .filter((hit) => (!intentExpiry || automaticIntentEligible(hit)) && hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
       && ranked.has(hit.memoryId) && (scores.get(hit.memoryId) ?? 0) >= floor && !shownMemoryIds.has(hit.memoryId));
-  const semanticGuidance = semanticOnly ? semanticAuthorities(store, scoped, date, options.hostInstant, intentExpiry) : undefined;
   const guidance = scoped
-    .filter((hit) => semanticGuidance === undefined || semanticGuidance.has(hit.memoryId))
-    .sort((a, b) => (semanticGuidance === undefined ? 0 : (semanticGuidance.get(b.memoryId) ?? 0) - (semanticGuidance.get(a.memoryId) ?? 0))
-      || (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0) || a.memoryId.localeCompare(b.memoryId))
+    .sort((a, b) => (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0) || a.memoryId.localeCompare(b.memoryId))
     .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index);
 
   const entities = resolveMemoryEntities(store, query);
@@ -172,8 +157,7 @@ export function formatMemoryBackground(
   const cards: string[] = [];
   for (const entity of entities.filter((entry) => !ambiguous.has(entry.id)).slice(0, 3)) {
     const allFacts = store.labelsForEntity(entity.id, date);
-    const semanticFacts = semanticOnly ? semanticAuthorities(store, allFacts, date, options.hostInstant, intentExpiry) : undefined;
-    const facts = allFacts.filter((hit) => !intentExpiry || automaticIntentEligible(hit)).filter((hit) => semanticFacts === undefined || semanticFacts.has(hit.memoryId)).filter((hit) => hit.label.kind === "fact" && hit.label.key !== undefined && hit.active
+    const facts = allFacts.filter((hit) => !intentExpiry || automaticIntentEligible(hit)).filter((hit) => hit.label.kind === "fact" && hit.label.key !== undefined && hit.active
       && (hit.label.attribution === "user-stated" || hit.label.attribution === "document"));
     const parts: string[] = [];
     for (const key of [...new Set(facts.flatMap((hit) => hit.label.kind === "fact" && hit.label.key !== undefined ? [hit.label.key] : []))]) {
@@ -181,7 +165,7 @@ export function formatMemoryBackground(
       if (candidates.length === 0) continue;
       const distinct = new Set(candidates.flatMap((hit) => hit.label.kind === "fact" && hit.label.value !== undefined
         ? [fold(factValueText(hit.label.value))] : []));
-      if ((!semanticOnly && candidates.some((hit) => hit.conflict)) || distinct.size > 1) {
+      if (candidates.some((hit) => hit.conflict) || distinct.size > 1) {
         parts.push(`${keyText(key)}: conflicting values — ask`);
         continue;
       }
@@ -224,12 +208,10 @@ export interface MemoryProfile {
 }
 
 /** Whole supported entries, deterministic byte ordering, including the heading in the budget. */
-export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string, semanticOnly = false, intentExpiry = false): MemoryProfile {
+export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string): MemoryProfile {
   const sources = [...(store.guidanceForScope?.("agent") ?? []), ...(store.labelsForEntity?.("person:owner", date) ?? [])];
-  const semantic = semanticOnly ? semanticAuthorities(store, sources, date, now, intentExpiry) : undefined;
   const supported = sources
-    .filter((hit) => semantic === undefined || semantic.has(hit.memoryId))
-    .filter((hit) => hit.active && (semanticOnly || !hit.conflict) && hit.type === "note" && hit.status === "open"
+    .filter((hit) => hit.active && !hit.conflict && hit.type === "note" && hit.status === "open"
       && hit.dueAt === undefined && hit.supersededBy === undefined
       && recallLineStatus(hit, date, now) === "current"
       && ((hit.label.kind === "preference" && hit.label.scope === "agent" && hit.label.attribution === "user-stated")

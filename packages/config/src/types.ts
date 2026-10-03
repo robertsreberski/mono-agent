@@ -359,8 +359,8 @@ export interface MonoAgentConfig {
      * disabling automatic memory context.
      */
     readonly recallTool?: { readonly enabled: boolean };
-    /** BuJo-only volatile preceding-owner-query window; default off. */
-    readonly recall?: { readonly contextWindow?: boolean; readonly semanticOnly?: boolean; readonly intentExpiry?: boolean; readonly recency?: boolean };
+    /** BuJo-only intention expiry and deliberate recency; independently default off. */
+    readonly recall?: { readonly intentExpiry?: boolean; readonly recency?: boolean };
     /** BuJo-only deterministic owner label profile; default off. */
     readonly profile?: { readonly enabled: boolean };
     /**

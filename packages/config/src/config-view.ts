@@ -106,8 +106,6 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.llm.timeoutMs": true,
   "memory.llm.endpoint": true,
   "memory.recallTool.enabled": true,
-  "memory.recall.contextWindow": true,
-  "memory.recall.semanticOnly": true,
   "memory.recall.intentExpiry": true,
   "memory.recall.recency": true,
   "memory.capture.intentLifecycle": true,
@@ -549,14 +547,8 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       value: memory.writeMode,
       jsonPresent: json.memory?.writeMode !== undefined,
     }),
-    ...(["recall", "profile"] as const).flatMap((key) => {
-      const id = key === "recall" ? "memory.recall.contextWindow" : "memory.profile.enabled";
-      const enabled = key === "recall" ? memory.recall?.contextWindow : memory.profile?.enabled;
-      return [toField({ id, label: key === "recall" ? "Owner query window" : "Owner profile",
-        value: enabled === true ? "on" : "off", jsonPresent: json.memory?.[key] !== undefined })];
-    }),
-    toField({ id: "memory.recall.semanticOnly", label: "Semantic notes only",
-      value: memory.recall?.semanticOnly === true ? "on" : "off", jsonPresent: json.memory?.recall?.semanticOnly !== undefined }),
+    toField({ id: "memory.profile.enabled", label: "Owner profile",
+      value: memory.profile?.enabled === true ? "on" : "off", jsonPresent: json.memory?.profile !== undefined }),
     ...([ ["intentExpiry", "Exclude dated/closed intention notes"], ["recency", "Deliberate transient recency"] ] as const).map(([key, label]) => toField({
       id: `memory.recall.${key}`, label, value: memory.recall?.[key] === true ? "on" : "off", jsonPresent: json.memory?.recall?.[key] !== undefined,
     })),

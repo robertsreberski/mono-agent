@@ -79,8 +79,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.llm.timeoutMs": "integer",
   "memory.llm.endpoint": "string",
   "memory.recallTool.enabled": "boolean",
-  "memory.recall.contextWindow": "boolean",
-  "memory.recall.semanticOnly": "boolean",
   "memory.recall.intentExpiry": "boolean",
   "memory.recall.recency": "boolean",
   "memory.capture.intentLifecycle": "boolean",

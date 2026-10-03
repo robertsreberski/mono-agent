@@ -63,7 +63,7 @@ describe("supported intention lifecycle", () => {
     for (const [index, state] of (["planned", "pending", "done", "abandoned"] as const).entries()) {
       const text = sentences[index]!;
       const plan = await extractCapturePlanStrict(text, { id: "fictional", complete: async () => response(memory(text, state)) },
-        undefined, [], observation(text), undefined, false, true);
+        undefined, [], observation(text), undefined, true);
       expect(plan.candidates[0]).toMatchObject({ type: "note", intentState: state });
       expect(plan.candidates[0]).not.toHaveProperty("validTo");
     }
@@ -75,7 +75,7 @@ describe("supported intention lifecycle", () => {
       expect(prompt).toContain("Undated plans/pending intentions have no validTo");
       return response(memory(texts[0]!, "pending", "2032-06-09"));
     } };
-    const plan = await extractCapturePlanStrict(texts[0]!, llm, undefined, [], observation(texts[0]!), undefined, false, true);
+    const plan = await extractCapturePlanStrict(texts[0]!, llm, undefined, [], observation(texts[0]!), undefined, true);
     expect(plan.candidates[0]).toMatchObject({ intentState: "pending", validTo: "2032-06-09" });
   });
 
@@ -83,7 +83,7 @@ describe("supported intention lifecycle", () => {
     const end = "2032-06-10T23:59:59.999+02:00";
     const text = "Owner awaits a canoe lesson through June 10 in UTC+02:00.";
     const plan = await extractCapturePlanStrict(text, { id: "fixture-zone", complete: async () => response(memory(text, "pending", end)) },
-      undefined, [], observation(text), undefined, false, true);
+      undefined, [], observation(text), undefined, true);
     expect(plan.candidates[0]?.validTo).toBe(end);
     const record = { type: "note" as const, text, dueAt: end };
     expect(recallLineEndDate(record, "2032-06-10", "2032-06-10T21:59:59.999Z", true)).toBeUndefined();
@@ -93,7 +93,7 @@ describe("supported intention lifecycle", () => {
   it("rejects impossible/non-civil ends and ungated proposal fields", async () => {
     for (const validTo of ["2032-02-30", "2032-06-10T12:00:00Z", "tomorrow"]) {
       await expect(extractCapturePlanStrict(texts[0]!, { id: "invalid", complete: async () => response(memory(texts[0]!, "pending", validTo)) },
-        undefined, [], observation(texts[0]!), undefined, false, true)).rejects.toThrow("intent_end_invalid");
+        undefined, [], observation(texts[0]!), undefined, true)).rejects.toThrow("intent_end_invalid");
     }
     await expect(extractCapturePlanStrict(texts[0]!, { id: "off", complete: async () => response(memory(texts[0]!, "done")) },
       undefined, [], observation(texts[0]!))).rejects.toThrow("missing or unknown fields");
@@ -101,12 +101,12 @@ describe("supported intention lifecycle", () => {
 
   it.each([null, ["done"], { state: "done" }, 1, "unknown"])("rejects an invalid state without coercion: %s", async (intentState) => {
     await expect(extractCapturePlanStrict(texts[0]!, { id: "invalid-state", complete: async () => response({ ...memory(texts[0]!), intentState } as ReturnType<typeof memory>) },
-      undefined, [], observation(texts[0]!), undefined, false, true)).rejects.toThrow("intent_proposal_invalid");
+      undefined, [], observation(texts[0]!), undefined, true)).rejects.toThrow("intent_proposal_invalid");
   });
 
   it.each(["assistant", "tool", "document", "user"] as const)("requires verified owner evidence, not just model source %s", async (source) => {
     const plan = await extractCapturePlanStrict(texts[0]!, { id: "untrusted", complete: async () => response({ ...memory(texts[0]!, "done", "2032-06-10"), source }) },
-      undefined, [], { observedAt, captureSpeakerKind: "human-turn", captureEvidence: { userText: texts[0]!, toolOutcomes: [] } }, undefined, false, true);
+      undefined, [], { observedAt, captureSpeakerKind: "human-turn", captureEvidence: { userText: texts[0]!, toolOutcomes: [] } }, undefined, true);
     expect(plan.candidates[0]).not.toHaveProperty("intentState"); expect(plan.candidates[0]).not.toHaveProperty("validTo");
   });
 
@@ -116,7 +116,7 @@ describe("supported intention lifecycle", () => {
       prompts.push(prompt); schemas.push(opts?.outputSchema); return response(memory(texts[0]!));
     } };
     const absent = await extractCapturePlanStrict(texts[0]!, llm, undefined, [], observation(texts[0]!));
-    const off = await extractCapturePlanStrict(texts[0]!, llm, undefined, [], observation(texts[0]!), undefined, false, false);
+    const off = await extractCapturePlanStrict(texts[0]!, llm, undefined, [], observation(texts[0]!), undefined, false);
     expect(off).toEqual(absent); expect(prompts[1]).toBe(prompts[0]); expect(schemas[1]).toEqual(schemas[0]);
     expect(JSON.stringify(schemas[0])).toContain('"validTo":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}');
     expect(prompts[0]).not.toContain("INTENTION LIFECYCLE POLICY");
@@ -216,7 +216,7 @@ describe("supported intention lifecycle", () => {
     const embeddings = fakeEmbeddings(16); let now = observedAt; let completed = false; const warnings: string[] = [];
     const done = "Owner completed the canoe lesson.";
     const store = createBujoMemoryStore({ root, tier: "bujo", embeddings, dim: 16, clock: () => new Date(now),
-      logger: { warn: (code) => { warnings.push(code); } }, capture: { intentLifecycle: true }, recall: { semanticOnly: true, intentExpiry: true }, llm: { id: "fixture", complete: async (prompt, opts) => {
+      logger: { warn: (code) => { warnings.push(code); } }, capture: { intentLifecycle: true }, recall: { intentExpiry: true }, llm: { id: "fixture", complete: async (prompt, opts) => {
         if (opts?.label === "capture:review") return '{"decisions":[{"index":0,"decision":"none"}]}';
         if (opts?.label === "capture:reconcile-batch") {
           const input = JSON.parse(prompt.split("INPUT:\n").at(-1)!) as Array<{ existing: Array<{ id: string }> }>;

@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { PrivateError, privateCode, validatePrivateRoots, validatePrivateAuthPath, requirePrivateAuthParent, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
-import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate, writePrivateArtifact } from "../lib/memory-e2e-private-report.mjs";
+import { PRIVATE_ARMS, blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate, writePrivateArtifact } from "../lib/memory-e2e-private-report.mjs";
 import { privateMain, resolvePrivateArm, privateReplaySnapshot } from "../lib/memory-e2e-private-runner.mjs";
 import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime, privatePiRuntime, PrivateProviderError } from "../lib/memory-e2e-private-providers.mjs";
 import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-runner.mjs";
@@ -270,14 +270,10 @@ describe("private memory evaluation privacy boundary", () => {
     const json = { runtime: { model: "openai:gpt-4o" }, context: { identityPath: "IDENTITY.md" }, memory: { path: "memory", mode: "bujo", writeMode: "disabled", embeddings: { provider: "ollama", model: "fictional", dim: 3 }, llm: { provider: "ollama", model: "fictional" } } };
     const current = resolvePrivateArm(modules, json, root, "current-only");
     expect(current.status).toBe("completed");
-    expect(current.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: false, intentExpiry: false });
-    const semantic = resolvePrivateArm(modules, json, root, "semantic-only");
-    expect(semantic.status).toBe("completed");
-    expect(semantic.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: true, intentExpiry: false });
-    expect(semantic.config.memory.profile).toEqual({ enabled: false });
+    expect(current.config.memory.recall).toEqual({ intentExpiry: false });
     const expiry = resolvePrivateArm(modules, json, root, "intent-expiry");
     expect(expiry.status).toBe("completed");
-    expect(expiry.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: false, intentExpiry: true });
+    expect(expiry.config.memory.recall).toEqual({ intentExpiry: true });
     const withoutExpiry = { ...modules, config: { ...modules.config, resolveJsonMonoAgentConfig: (input) => {
       const config = modules.config.resolveJsonMonoAgentConfig(input);
       if (config.memory.recall) delete config.memory.recall.intentExpiry;
@@ -286,11 +282,11 @@ describe("private memory evaluation privacy boundary", () => {
     expect(resolvePrivateArm(withoutExpiry, json, root, "intent-expiry")).toEqual({ status: "unsupported" });
     const unknown = structuredClone(json); unknown.memory.recall = { fictionalUnsupportedFlag: true };
     expect(() => modules.config.resolveJsonMonoAgentConfig({ json: unknown, cwd: root })).toThrow();
-    expect(resolvePrivateArm(modules, unknown, root, "semantic-only")).toEqual({ status: "unsupported" });
-    const window = resolvePrivateArm(modules, json, root, "follow-up-window");
-    expect(window.config.memory.recall).toEqual({ contextWindow: true, semanticOnly: false, intentExpiry: false });
-    expect(window.config.memory.profile).toEqual({ enabled: false });
-    expect(resolvePrivateArm(modules, json, root, "window-profile-on").config.memory.profile.enabled).toBe(true);
+    expect(resolvePrivateArm(modules, unknown, root, "profile-on")).toEqual({ status: "unsupported" });
+    const profile = resolvePrivateArm(modules, json, root, "profile-on");
+    expect(profile.config.memory.recall).toEqual({ intentExpiry: false });
+    expect(profile.config.memory.profile).toEqual({ enabled: true });
+    expect(PRIVATE_ARMS).toEqual(["current-only", "length-only-abstention", "profile-on", "intent-expiry", "historical-baseline"]);
   });
   it("requires an exact declared/allowed production route for Pi, and refuses content sinks", () => {
     const r = registration(); r.productionRoutes = ["openai:fictional-model"];
@@ -405,7 +401,7 @@ describe("private replay performance contracts", () => {
     expect(builds.length).toBe(services.length * (snapshot === "present_diagnostic" ? 1 : 2)); expect(services.length).toBeGreaterThan(1);
     expect(contexts.every((value) => value === false)).toBe(true); expect(resets).toEqual(services.map((_service, index) => (index + 1) * selected.length));
     expect(texts.length).toBe(new Set(texts).size);
-    expect(texts.some((text) => text.toLowerCase().includes("which pottery wheel is available") && text.toLowerCase().includes("and avery"))).toBe(true);
+    expect(texts.some((text) => text.toLowerCase().includes("which pottery wheel is available") && text.toLowerCase().includes("and avery"))).toBe(false);
     const observed = JSON.parse(await readFile(join(f.outputRoot, "observations.json"), "utf8"));
     expect(observed.filter((row) => row.id === selected[1].id).every((row) => row.indexingEmbeddingRequests === 0)).toBe(true);
     expect(observed.some((row) => row.indexingEmbeddingCacheHits > 0)).toBe(true);
@@ -678,7 +674,7 @@ describe("private memory evaluation measurement", () => {
   });
   it("computes paired conversation bootstrap 95% intervals, with stable differences", () => {
     const a = Array.from({ length: 400 }, (_, i) => row(i, "current-only", "noise"));
-    const b = Array.from({ length: 400 }, (_, i) => row(i, "follow-up-window", "useful"));
+    const b = Array.from({ length: 400 }, (_, i) => row(i, "profile-on", "useful"));
     const result = pairedBootstrap(a, b, { iterations: 200 });
     expect(result.conversations).toBe(40); expect(result.metrics.usefulCoverage).toEqual({ difference: 1, low: 1, high: 1 });
     expect(result.metrics.noiseRate).toEqual({ difference: -1, low: -1, high: -1 });
@@ -687,8 +683,15 @@ describe("private memory evaluation measurement", () => {
     expect(metrics([row(1, "current-only", "partial")])).toMatchObject({ usefulPrecision: 0, partialRate: 1, usefulCoverage: 0 });
   });
   it("declares insufficient counts/unjudged/contaminated evidence inconclusive and unsupported arms honestly", () => {
-    const a = Array.from({ length: 400 }, (_, i) => row(i, "current-only")); const b = Array.from({ length: 400 }, (_, i) => row(i, "follow-up-window"));
-    expect(summarizePrivate([...a, ...b], registration()).status).toBe("measured");
+    const a = Array.from({ length: 400 }, (_, i) => row(i, "current-only")); const b = Array.from({ length: 400 }, (_, i) => row(i, "profile-on"));
+    const summary = summarizePrivate([...a, ...b], registration());
+    expect(summary.status).toBe("measured");
+    const allArms = summarizePrivate([...a, ...b, ...["length-only-abstention", "intent-expiry", "historical-baseline"]
+      .flatMap((arm) => a.map((entry) => ({ ...entry, arm })))], registration());
+    expect(allArms.comparisons.map(({ baseline, candidate }) => [baseline, candidate])).toEqual([
+      ["length-only-abstention", "current-only"], ["current-only", "profile-on"],
+      ["current-only", "intent-expiry"], ["historical-baseline", "current-only"],
+    ]);
     expect(summarizePrivate([...a.slice(0, 399), ...b], registration()).status).toBe("inconclusive");
     const fewFollow = a.map((entry, i) => ({ ...entry, followUp: i < 49 })); expect(summarizePrivate(fewFollow, registration()).status).toBe("inconclusive");
     const fewLines = a.map((entry, i) => ({ ...entry, lines: i < 50 ? entry.lines.slice(0, 1) : entry.lines })); expect(summarizePrivate(fewLines, registration()).status).toBe("inconclusive");
@@ -697,8 +700,8 @@ describe("private memory evaluation measurement", () => {
     const abstention = a.map((entry) => ({ ...entry, arm: "length-only-abstention", lines: [], bytes: 0 }));
     const abstentionPair = summarizePrivate([...a, ...b, ...abstention], registration()).comparisons.find((pair) => pair.baseline === "length-only-abstention");
     expect(abstentionPair.status).toBe("measured"); expect(abstentionPair.metrics.usefulCoverage.low).toBe(1); expect(abstentionPair.metrics.usefulPrecision).toBeNull();
-    const unsupported = a.map((entry) => ({ ...entry, arm: "semantic-only", status: "unsupported", lines: [] }));
-    expect(summarizePrivate([...a, ...unsupported], registration()).arms.find((entry) => entry.arm === "semantic-only").status).toBe("unsupported");
+    const unsupported = a.map((entry) => ({ ...entry, arm: "intent-expiry", status: "unsupported", lines: [] }));
+    expect(summarizePrivate([...a, ...unsupported], registration()).arms.find((entry) => entry.arm === "intent-expiry").status).toBe("unsupported");
   });
   it("replays fictional turns through real config/store/harness without loading private inputs or persisting sentinels", async () => {
     const f = await fixture();
@@ -707,7 +710,7 @@ describe("private memory evaluation measurement", () => {
       refs: [encodeMemoryLabel({ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" })] };
     const episode = { ...knowledge, id: "fictional-episode", type: "event" };
     // Equal text/scores keep every source inside the existing relevance window.
-    // The semantic arm must inject only the labelled note, not the other sources.
+    // The profile arm independently composes the supported preference.
     await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), [unlabelled, knowledge, episode].map(grammar.serializeBullet).join("\n") + "\n", { mode: 0o600 });
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       expect(url).toBe("http://127.0.0.1:11434/api/embed");
@@ -733,19 +736,15 @@ describe("private memory evaluation measurement", () => {
     const names = await readdir(f.outputRoot); expect(names).toContain("review.json"); expect(names.some((name) => name.startsWith("clone-"))).toBe(false);
     for (const name of names) { expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel); expect((await lstat(join(f.outputRoot, name))).mode & 0o077).toBe(0); }
     const observed = JSON.parse(await readFile(join(f.outputRoot, "observations.json"), "utf8"));
-    const semantic = observed.filter((entry) => entry.arm === "semantic-only");
-    expect(semantic).toHaveLength(turns().length);
-    expect(semantic.every((entry) => entry.status === "completed" && entry.bytes > 0)).toBe(true);
-    // Earlier arms warmed the volatile cache; supported semantic replay still
-    // rebuilds its own index once, then reuses it for this same-day fixture.
-    expect(semantic[0].indexingEmbeddingRequests).toBe(0);
-    expect(semantic[0].indexingEmbeddingCacheHits).toBeGreaterThan(0);
-    expect(semantic.slice(1).every((entry) => entry.indexingEmbeddingRequests === 0 && entry.indexingEmbeddingCacheHits === 0)).toBe(true);
-    for (const [id, kind] of [[opaque(1), "similarity"], [opaque(2), "guidance"], [opaque(3), "similarity"]]) {
-      expect(semantic.find((entry) => entry.id === id).lines.map((line) => line.kind)).toEqual([kind]);
-    }
+    const profile = observed.filter((entry) => entry.arm === "profile-on");
+    expect(profile).toHaveLength(turns().length);
+    expect(profile.every((entry) => entry.status === "completed" && entry.bytes > 0)).toBe(true);
+    expect(profile[0].indexingEmbeddingRequests).toBe(0);
+    expect(profile[0].indexingEmbeddingCacheHits).toBeGreaterThan(0);
+    expect(profile.slice(1).every((entry) => entry.indexingEmbeddingRequests === 0 && entry.indexingEmbeddingCacheHits === 0)).toBe(true);
+    expect(profile.every((entry) => entry.lines.some((line) => line.kind === "profile"))).toBe(true);
+    expect([...new Set(observed.map((entry) => entry.arm))]).toEqual(PRIVATE_ARMS);
     const current = observed.find((entry) => entry.arm === "current-only" && entry.id === opaque(1));
-    expect(current.bytes).toBeGreaterThan(semantic[0].bytes);
     // Legacy text dedup selects one similarity source; scoped guidance is separate.
     expect(current.lines).toHaveLength(2);
     expect(current.lines.filter((line) => line.kind === "similarity")).toHaveLength(1);
@@ -794,7 +793,7 @@ describe("private memory evaluation measurement", () => {
   }, 60000);
   it("analyzes opaque annotations without providers or turn input reads", async () => {
     const f = await fixture(); await mkdir(f.outputRoot, { mode: 0o700 });
-    const observed = [row(1, "current-only"), row(1, "follow-up-window")];
+    const observed = [row(1, "current-only"), row(1, "profile-on")];
     const seed = newReviewSeed();
     await writeFile(join(f.outputRoot, "review-seed.json"), JSON.stringify({ seed }), { mode: 0o600 });
     await writeFile(join(f.outputRoot, "protocol.json"), JSON.stringify({ id: reviewId(seed, "registration", validateRegistration(registration())) }), { mode: 0o600 });
@@ -884,7 +883,7 @@ describe("private memory evaluation measurement", () => {
   }, 60000);
   it("reports constant per-day capture yield as point-only with no bootstrap interval", () => {
     const baseline = Array.from({ length: 40 }, (_, i) => ({ ...row(i, "current-only"), conversationId: opaque(20000 + i), dayId: opaque(30000 + i) }));
-    const candidate = baseline.map((entry, i) => ({ ...entry, arm: "follow-up-window", lines: [...entry.lines, { id: opaque(40000 + i), kind: "capture", label: "useful", bytes: 20, repeated: false }] }));
+    const candidate = baseline.map((entry, i) => ({ ...entry, arm: "profile-on", lines: [...entry.lines, { id: opaque(40000 + i), kind: "capture", label: "useful", bytes: 20, repeated: false }] }));
     const paired = pairedBootstrap(baseline, candidate, { iterations: 200 });
     expect(paired.conversations).toBe(40);
     for (const key of ["capturedLinesPerDay", "captureUsefulLinesPerDay"]) expect(paired.metrics[key]).toEqual({ difference: 1, interval: "no interval" });

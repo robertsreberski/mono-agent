@@ -751,8 +751,8 @@ reviewed `memory curate` operations. Profile failures return stable codes only.
 
 ## Reviewed semantic types and labels
 
-Before enabling `memory.recall.semanticOnly`, use BuJo's existing private curate
-prepare/review/apply flow to inspect legacy note/event types and labels:
+Use BuJo's explicit private curate prepare/review/apply flow to inspect and
+retype legacy note/event types and labels independently of recall configuration:
 
 ```bash
 mono-agent memory curate prepare --plan semantic-review.json --semantic-review --limit 60 --dry-run
@@ -760,8 +760,7 @@ mono-agent memory curate prepare --plan semantic-review.json --semantic-review -
 mono-agent memory curate review --plan semantic-review.json
 ```
 
-This explicit model pass works before the read flag is enabled; it is not
-combined with the model-free `--tasks-to-notes` or `--limit 0` passes. It proposes
+This explicit model pass needs no recall flag; it is not combined with the model-free `--tasks-to-notes` or `--limit 0` passes. It proposes
 `retype` with `type: "note"` or `"event"`, and optionally a complete reviewed
 `labels` list. Absent labels retain current refs; `labels: []` removes labels
 only after operator acceptance. Existing attribution can be retained exactly,
@@ -775,8 +774,8 @@ Apply accepted proposals using the existing stopped-store
 `memory curate apply --plan semantic-review.json` command. The fingerprint-bound
 root-swap transaction creates the same backup and rebuilds the index; existing
 `memory curate restore --backup <backup-directory>` restores canonical bytes.
-Validate useful labelled-note coverage before enabling the flag. Retyping alone
-does not label an unknown note or prove its original speaker.
+Retyping does not change automatic recall policy, label an unknown note or
+prove its original speaker. Use a private store copy for subsequent experiments.
 
 
 ## Review intention dates before enabling expiry

@@ -17,7 +17,7 @@
   with a specific budget-exhaustion code. Preserve cold replay service state
   across store rebuilds and leave present diagnostics/capture chronology intact.
 
-- Fix intention-policy boundary validation, dated profile competitors and
+- Fix intention-policy boundary validation and
   deliberate fact-sheet currentness; preserve supported ends when omitted and
   deny recency to invalid recording instants.
 
@@ -26,13 +26,9 @@
   as superseded history; exclude all dated and completed/abandoned notes from
   automatic context after reviewed enablement, without a schema migration.
 
-- Add default-off BuJo `memory.recall.semanticOnly` to restrict automatic memory
-  to current labelled knowledge notes, prefer user-stated evidence and protect
-  it from inferred overwrites; keep events searchable through deliberate tools.
-  Reuse reviewed curate retyping for legacy note/event and label review, with
-  backup/restore and no invented attribution or dates. Preserve newer user
-  refinements against delayed older capture retries using dated supersession;
-  keep profile inspection aligned with automatic whole-source eligibility.
+- Add explicit BuJo `memory curate prepare --semantic-review` for reviewed
+  legacy note/event and label retyping with backup/restore, without invented
+  attribution or dates.
 
 - Add an opt-in private BuJo evaluation mode with external owner-only inputs
   and disposable replay stores, blinded label-only review, aggregate paired
@@ -46,18 +42,15 @@
 - Keep graph-expanded recall fresh after memory writes, even when a pre-write
   search finishes afterward, without discarding pending invocation receipts.
 
-- Add default-off BuJo `memory.recall.contextWindow` and
-  `memory.profile.enabled` for bounded owner follow-up recall and an
-  embedding-independent, 600-code-point owner profile. Suppress unchanged
+- Add default-off BuJo `memory.profile.enabled` for an embedding-independent,
+  600-code-point owner profile. Suppress unchanged
   automatic context on retained sessions using invocation receipts; add the
   read-only `memory profile show` inspection view.
 - Keep memory recall and consolidation failure warnings content-free with
-  stable codes instead of exception text, including when both recall flags are
-  off.
-- Fix owner recall bookkeeping across isolated triggers, continuations and
-  Remember writes; exclude attachment evidence from follow-up query context,
-  enforce case-expanded query budgets, honor instant-aware profile expiry and
-  finish shutdown when a memory reset hook fails.
+  stable codes instead of exception text, including when memory opt-ins are off.
+- Fix owner recall receipts across isolated triggers, continuations and
+  Remember writes; honor instant-aware profile expiry and finish shutdown when
+  a memory reset hook fails.
 
 - Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
   `SearchConversations` message-date and role filters, bounded dated evidence
@@ -65,6 +58,9 @@
   Return stable search codes for malformed rich MCP arguments without validation
   diagnostics, including unavailable Telegram and flag-off requests, while
   preserving legacy SDK validation responses when rich search is unavailable.
+
+- Fix process-job store reopening after an owner crash during an atomic write,
+  preserving committed records and removing verified replacement residue.
 
 - Fix devalue serialization vulnerabilities in documentation and marketing site
   dependencies.

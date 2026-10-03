@@ -2,7 +2,6 @@ import type { MemoryBlock } from "@mono-agent/agent-contracts";
 import type { MemoryDb } from "../store/index.js";
 
 import { MARKER_FOR } from "./grammar.js";
-import { semanticRecallAuthorities } from "./semantic.js";
 
 /** Calibrated score reference shared with explicit recall's insufficiency status. */
 export const AUTO_RECALL_MIN_SCORE = 0.65;
@@ -37,7 +36,7 @@ export function selectPossiblyRelevantRecallHits<T extends {
   readonly record: PossiblyRelevantRecord;
 }>(
   hits: readonly T[],
-  options: { readonly maxLines?: number; readonly asOf?: string; readonly now?: string; readonly intentExpiry?: boolean; readonly semanticAuthorities?: ReadonlyMap<string, number> } = {},
+  options: { readonly maxLines?: number; readonly asOf?: string; readonly now?: string; readonly intentExpiry?: boolean } = {},
 ): readonly T[] {
   const top = hits[0]?.score;
   if (top === undefined || !Number.isFinite(top) || top < POSSIBLY_RELEVANT_MIN_SCORE) return [];
@@ -47,15 +46,9 @@ export function selectPossiblyRelevantRecallHits<T extends {
     if (hit.score < top - POSSIBLY_RELEVANT_WINDOW) break;
     window.push(hit);
   }
-  // Authority only filters/reorders the already-qualified window. Ineligible
-  // leaders never lower the reference score or widen the fifty-hit lookup.
-  const authorities = options.semanticAuthorities;
   const eligibleWindow = options.intentExpiry === true ? window.filter((hit) => automaticIntentEligible(hit.record)) : window;
-  const prioritized = authorities === undefined
-    ? [...eligibleWindow.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) === "current"),
-      ...eligibleWindow.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) !== "current")]
-    : eligibleWindow.filter((hit) => authorities.has(hit.record.id ?? ""))
-      .sort((a, b) => (authorities.get(b.record.id ?? "") ?? 0) - (authorities.get(a.record.id ?? "") ?? 0));
+  const prioritized = [...eligibleWindow.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) === "current"),
+    ...eligibleWindow.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) !== "current")];
   // Deduplicate identical text after currency preference, so a current copy wins.
   const seen = new Set<string>();
   const unique = prioritized.filter((hit) => {
@@ -163,7 +156,7 @@ function clampLineBytes(text: string, maxBytes: number): string {
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
-  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string; now?: string; semanticOnly?: boolean; intentExpiry?: boolean } = {},
+  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string; now?: string; intentExpiry?: boolean } = {},
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? POSSIBLY_RELEVANT_MAX_BYTES, POSSIBLY_RELEVANT_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
@@ -176,12 +169,7 @@ export async function composeRecallBlock(
   // Standalone callers enforce audience policy. Lexical-only/degraded results
   // remain available through explicit recall, never as automatic context.
   if (outcome.retrievalMode !== "hybrid" || outcome.degradation !== undefined) return undefined;
-  const semanticAuthorities = options.semanticOnly === true ? semanticRecallAuthorities(
-    db.labelsForMemories(outcome.hits.map((hit) => hit.record.id)), db.labelsForEntity.bind(db),
-    options.asOf ?? new Date().toISOString().slice(0, 10), options.now, options.intentExpiry,
-  ) : undefined;
   const hits = selectPossiblyRelevantRecallHits(outcome.hits, {
-    ...(semanticAuthorities === undefined ? {} : { semanticAuthorities }),
     intentExpiry: options.intentExpiry === true, maxLines: topK, ...(options.asOf === undefined ? {} : { asOf: options.asOf }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
@@ -189,5 +177,5 @@ export async function composeRecallBlock(
   if (block === undefined) return undefined;
   if (options.trackAccess !== false) db.recordAccess(block.shown.map((hit) => hit.record.id));
   return { kind: "markdown", content: block.content, source: "memory-bujo", truncated: block.truncated,
-    ...(options.semanticOnly === true || options.intentExpiry === true ? { traceContent: false } : {}) };
+    ...(options.intentExpiry === true ? { traceContent: false } : {}) };
 }

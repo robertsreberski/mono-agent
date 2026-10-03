@@ -550,36 +550,19 @@ Journal and BuJo require an explicit, non-empty `memory.embeddings` **block**, b
 
 ## Optional BuJo owner context
 
-Two independent flags default to `false` and require `memory.mode: "bujo"`:
+`memory.profile.enabled` defaults to `false` and requires `memory.mode: "bujo"`:
 
 ```json
 {
   "memory": {
-    "recall": { "contextWindow": true },
     "profile": { "enabled": true }
   }
 }
 ```
 
-Add these blocks to an otherwise valid BuJo configuration. Automatic context is
+Add this block to an otherwise valid BuJo configuration. Automatic context is
 still restricted to host-verified owner web, TUI and ACP turns; Telegram, other
 speakers and triggers receive no automatic profile or recall block.
-
-`memory.recall.contextWindow` adds the immediately preceding redacted owner query
-to automatic retrieval, including short follow-ups normally suppressed at 16
-code points. The predecessor contains only original owner-authored text, not
-attachment-expanded text or attachment metadata. It keeps no assistant/tool text:
-the previous query is capped at 512 Unicode code points and the combined query
-at 1,536, measured after normalization and case expansion. Adjacency expires
-after 30 minutes or a non-owner/trigger turn; host continuations and standalone
-process-job wakes also break it. There is no language-specific topic
-classifier; a new query replaces the predecessor for the next turn, rather than
-accumulating a transcript. Explicit `MemoryRecall` original-query mode still
-uses only the current query and embeds that query only if requested.
-
-A process-job wake applied as live steering inside an owner turn stays within
-that logical invocation. The following owner turn may still use that
-invocation's original owner query as its predecessor.
 
 `memory.profile.enabled` derives a profile from active owner-stated owner facts
 and agent-scope preferences in the existing label projection. It uses current,
@@ -592,15 +575,15 @@ respects `memory.maxBytes`. Missing labels produce no profile. No model call,
 new file, store, version or history field is involved. Embedding failures do not
 erase the profile and emit only `memory_recall_unavailable`.
 
-With either flag on, a confirmed retained provider session excludes unchanged
+With the profile enabled, a confirmed retained provider session excludes unchanged
 already-served recall/background lines. A profile enters a cold reseed or when
 its supported contents change. Preparation alone does not count: only a
 successful retained provider invocation establishes receipts. Isolated turns
 do not replace shared-session receipts, and Remember writes invalidate searches
-without discarding pending receipts. Host continuations break adjacency without
-loading memory. The bounded
+without discarding pending receipts. Host continuations do not load memory.
+The bounded
 volatile cache keeps at most 256 conversations and 256 served-line fingerprints
-per conversation. Query context and receipts disappear on reset, disposal or
+per conversation. Receipts disappear on reset, disposal or
 restart. If receipt knowledge is lost while the host still confirms retained
 provider context, automatic reinjection is conservatively suppressed until a
 cold reseed; deliberate memory tools remain available. A full receipt set also
@@ -608,77 +591,8 @@ suppresses further automatic warm injection rather than forgetting served lines.
 
 Opt-in automatic blocks are omitted from content-bearing `turn_context` traces;
 only their byte count is recorded. The model/provider still receives the block.
-Disabling both flags restores the existing automatic retrieval path, but cannot
+Disabling the profile restores the existing automatic retrieval path, but cannot
 erase blocks already retained by a provider session.
-
-## Optional semantic-only BuJo memory
-
-`memory.recall.semanticOnly` defaults to `false` and requires BuJo. It is
-independent of `memory.recall.contextWindow` and `memory.profile.enabled`:
-
-```json
-{ "memory": { "recall": { "semanticOnly": true } } }
-```
-
-Retained flags-off capture plans and already-published outbox actions complete
-under flags-off semantics, rather than being retroactively reclassified by this
-flag. Let pending capture intake drain and run the reviewed legacy note/event
-and label curate step before enabling `semanticOnly`.
-
-Add this to an otherwise valid BuJo configuration **after reviewing legacy
-coverage**. Similarity lines, the optional owner profile, scoped guidance and
-exact-name cards use current, open notes with an active accepted fact,
-preference or verified-lesson label. Unknown attribution, absent labels,
-events, tasks and closed/ended sources are not automatic assertions. Legacy
-labels/types remain canonical: unlabelled notes are not promoted. Events and
-unknown lines remain available through deliberate `MemoryRecall`,
-`MemoryJournal` and operator search.
-
-The same flag opts capture into a language-neutral model distinction: `note`
-for lasting knowledge, `event` for what happened, including consequential
-assistant operations reports (commits, tests, scans, configuration changes or
-what the assistant reported). Pure progress chatter is skipped. A constrained
-review may retype a useful assistant episode to `event`; no English grammar or
-word list decides its type. With the flag absent/off, extraction and review
-prompts, memory output and canonical writes retain the previous behavior;
-Lite/Journal do not adopt this policy. The 160-code-point capture bound stays.
-
-Relevance still comes first: the fifty-hit superset, `0.62` leader floor,
-`0.04` window, three-line and byte budgets are unchanged. Within eligible
-candidates, user-stated evidence precedes document/inferred evidence. A leading
-event can still starve relevant notes below the unchanged window or outside the
-fifty hits; filtering does not silently widen retrieval. Structured built-in
-fact-key conflicts prefer stronger attribution and omit unresolved
-equal-authority values from every automatic section, including when a competing
-source lies outside the retrieved window. Coarse fact and preference labels
-have no comparable property/value, so unresolved equal-authority contradictions
-in those lines are a known limitation and may still appear automatically.
-
-Reconcile receives existing labels and host capture-source evidence. An
-inferred/unknown candidate cannot UPDATE or SUPERSEDE user-stated content; a
-supported newer user correction may supersede an older statement. Changed
-user-stated refinements use timestamped supersession so a delayed older retry
-cannot replace newer evidence. To avoid promoting contradictory ADDs, inferred
-candidates near user-stated neighbors remain searchable without semantic labels, even when classification says ADD;
-final classifier-fallback inferred ADDs likewise receive no semantic labels.
-This conservative rule may omit unrelated inferred findings near owner evidence.
-`Remember` remains retention priority, not owner authorship; its existing
-replacement guard is unchanged. No new canonical field, tags projection or
-profile store is created. Opt-in automatic blocks omit content-bearing traces.
-
-`capture.focus` still narrows extraction/review, and `capture.only` still filters
-by host-accepted label kinds before and after reconcile. `only: ["fact"]` does
-**not** solve episodic noise: a person-associated event can carry a coarse fact
-label. Explicit Remember writes are unaffected.
-
-Prepare a bounded reviewed migration with
-`memory curate prepare --semantic-review`; see
-[reviewed semantic types and labels](/memory/validation-and-cli/#reviewed-semantic-types-and-labels).
-Disable `semanticOnly` to restore the old read policy. Reviewed retyping needs
-curate backup/restore for semantic rollback; an older binary can automatically
-surface events again. Already-retained provider blocks cannot be erased by
-switching the flag off.
-
 
 ## Optional intention lifecycle and deliberate recency
 
@@ -723,8 +637,7 @@ never implies completion and never mutates a status.
 `memory.recall.intentExpiry` is a **conservative automatic read policy**:
 exclude **all dated notes**, even before their end, plus done/dropped notes,
 from similarity, scoped guidance and person cards. The optional profile already
-omits dated/closed notes. With `semanticOnly`, the same boundary also applies to
-source authority/conflict selection. There is no persisted intention marker,
+omits dated/closed notes. There is no persisted intention marker,
 so an open pending note's date cannot be distinguished from an ambiguous legacy
 `due=`. Neither is automatically asserted. Unexpired dated plans also stay in
 the task app; this policy does not promise automatic reminder coverage.

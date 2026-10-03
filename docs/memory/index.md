@@ -460,15 +460,12 @@ removal remains the explicit two-phase `mono-agent memory forget` workflow.
 - [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
 - [Feature registry](/reference/feature-registry/) rows — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`, `memory.journal-browse`
 
-### Optional semantic-only policy
+### Reviewed note/event types and labels
 
-BuJo-only `memory.recall.semanticOnly` defaults off. It restricts all automatic
-sections to current labelled knowledge notes, prioritizes owner-stated evidence
-within unchanged relevance budgets and gives capture model-guided note/event
-semantics. Useful episodes remain searchable through deliberate tools. Review
-legacy types and labels before enabling it; see
-[semantic-only capture and recall](/memory/capture-and-recall/#optional-semantic-only-bujo-memory).
-
+BuJo's explicit `memory curate prepare --semantic-review` pass proposes legacy
+note/event and label retyping for owner review, with backup/restore. It does not
+change automatic recall policy. See
+[reviewed semantic types and labels](/memory/validation-and-cli/#reviewed-semantic-types-and-labels).
 
 ### Optional supported intentions and transient recency
 

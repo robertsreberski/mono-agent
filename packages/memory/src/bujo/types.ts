@@ -45,7 +45,7 @@ export interface BujoOptions {
   /** Optional extraction guidance and host-enforced label-kind filter for automatic capture only. */
   readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly intentLifecycle?: boolean };
   /** BuJo-only, default-off read eligibility, authority and extraction policy. */
-  readonly recall?: { readonly semanticOnly?: boolean; readonly intentExpiry?: boolean; readonly recency?: boolean };
+  readonly recall?: { readonly intentExpiry?: boolean; readonly recency?: boolean };
   /** Explicit tier override. When absent, the tier is derived from the options:
    * no embeddings → `"lite"`; embeddings + no llm → `"journal"`; embeddings + llm → `"bujo"`. */
   readonly tier?: BujoTier;

@@ -128,7 +128,7 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
-  it.each(["update", "supersede", "noop"] as const)("does not retire a newer intention from a delayed %s when semantic-only is off", async (action) => {
+  it.each(["update", "supersede", "noop"] as const)("does not retire a newer intention from a delayed %s with the default capture policy", async (action) => {
     const root = newRoot(); const db = openDb(root);
     const oldText = "Owner awaits a canoe lesson.";
     const newText = "Owner completed the canoe lesson.";
@@ -139,7 +139,7 @@ describe("reconcile", () => {
       isInsight: false, source: "user", intentState: "done" }], makeDeps(db, root, {
         id: "delayed-intention", complete: async () => JSON.stringify([{ index: 0, action,
           targetId: "LATER-INTENTION", ...(action === "noop" ? {} : { text: newText }) }]),
-      }, { strictModelOutput: true, semanticOnly: false, now: () => earlier,
+      }, { strictModelOutput: true, now: () => earlier,
         nextId: createIdFactory({ clock: () => earlier, random: () => 0 }),
         captureSpeakerKind: "human-turn", captureEvidence: { ownerTurn: true, userText: newText, toolOutcomes: [] },
         captureSettings: { intentLifecycle: true } }));
