@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix process-job store reopening after an owner crash during an atomic write,
+  preserving committed records and removing verified replacement residue.
+
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
 
