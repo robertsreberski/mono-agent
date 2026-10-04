@@ -42,6 +42,9 @@ describe("Pi dependency update automation", () => {
       rangeStrategy: "pin",
       respectLatest: true,
       ignoreUnstable: true,
+      // Pi 1.0 removed the Agent Core harness this runtime is built on; hold
+      // the stack on 0.x until a deliberate harness migration lands.
+      allowedVersions: "<1.0.0",
       minimumReleaseAge: "0 days",
       prCreation: "immediate",
       draftPR: true,

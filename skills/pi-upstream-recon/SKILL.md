@@ -42,6 +42,13 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 ## Version pins (keep them exact)
 
 - `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.99.2`; `pi-agent-core` at `0.99.2`.
+  Pi 1.0 is held back deliberately: `pi-agent-core` 1.0.0 removed the
+  experimental harness (`AgentHarness`, session repositories, lanes,
+  compaction, `NodeExecutionEnv`) that `src/ai/providers/pi-native/` is built
+  on, and points to `@earendil-works/pi-durable`, whose API, storage format and
+  event model differ. `.github/renovate.json` caps the Pi stack at `<1.0.0`;
+  lift that cap only together with a planned harness (pi-durable or other)
+  migration, never as a mechanical version bump.
   Pi 0.85 replaces the old constructor/session surface with
   `AgentHarness.create()`, explicit operation `Context` arguments, and
   lane-scoped prompt, navigation, compaction, and event APIs. Keep that

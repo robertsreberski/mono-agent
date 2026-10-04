@@ -31,6 +31,7 @@
       "rangeStrategy": "pin",
       "respectLatest": true,
       "ignoreUnstable": true,
+      "allowedVersions": "<1.0.0",
       "minimumReleaseAge": "0 days",
       "prCreation": "immediate",
       "draftPR": true,
