@@ -49,8 +49,8 @@
 // previous attempt.
 
 import { randomUUID } from "node:crypto";
-import { estimateTokens, shouldCompact } from "./harness/compaction-kit/compaction.js";
-import { buildPiSessionContext } from "./harness-adapter.js";
+import { estimateTokens, shouldCompact } from "@mono-agent/harness/compaction-kit/compaction.js";
+import { buildHarnessSessionContext } from "./harness-adapter.js";
 import {
   createCompactionAccounting,
   createCompactionEmitter,
@@ -134,7 +134,7 @@ function piThresholdWindow(harness) {
  * The retained tail is a contiguous SUFFIX of the pre-compaction context (Pi
  * builds it from the same branch path — harness/compaction/compaction.js:
  * 457-462), and the rebuilt context is exactly `[summary, ...retainedTail]`
- * (harness-adapter.js buildPiSessionContext), so the run-owned messages that
+ * (harness-adapter.js buildHarnessSessionContext), so the run-owned messages that
  * survive are the last `min(retained, runOwned)` of them.
  * @param {Array<any>} contextBefore
  * @param {number} baseline
@@ -306,7 +306,7 @@ export function createMidRunCompaction(runState, { harness, options, reference, 
       accounting,
       fixedOverheadTokens,
       beforeAttempt: (hookEvent) => {
-        const contextBefore = buildPiSessionContext(hookEvent.branchEntries || [], { includeFailed: true });
+        const contextBefore = buildHarnessSessionContext(hookEvent.branchEntries || [], { includeFailed: true });
         measured = {
           contextBefore,
           transcriptTokens: transcriptTokensOf(contextBefore),

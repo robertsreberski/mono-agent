@@ -145,6 +145,10 @@ provider overflow ceilings lower it across toggles. OFF preserves catalog behavi
 
 ## Architecture
 
+The provider bridge imports the model-run loop, native journal/storage and
+compaction kit from `@mono-agent/harness`. The separate `agent-harness` host
+package owns conversation/history orchestration.
+
 The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
 HTML engine) with per-request policy/admission and fail-closed robots. No
 external service or Python runtime is used; retired endpoint settings
@@ -232,7 +236,7 @@ Without an outer abort, a trusted `cancelled` hint retains a known cancellation
 failure kind and otherwise falls back to `cancelled`.
 
 This outer-abort rule matches the harness run-level classifier. The standalone
-runtime keeps its zero-`@mono-agent/*` dependency boundary by recognizing the
+runtime keeps host contracts out of the low-level harness boundary by recognizing the
 shared brand structurally rather than importing `@mono-agent/agent-contracts`.
 Its deliberate extra fidelity is tool-level only: a trusted bridge hint can
 retain a cancellation subtype when no outer abort exists. The run-level harness

@@ -1,7 +1,7 @@
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "../../ai/providers/pi-native/harness/session-store.js";
+import { MemorySessionRepo } from "@mono-agent/harness/session-store.js";
 import { describe, expect, it, vi } from "vitest";
-import { createPiHarnessAdapter, createPiSessionAdapter, PI_CONTEXT } from "../../ai/providers/pi-native/harness-adapter.js";
+import { createHarnessAdapter, createPiSessionAdapter, HARNESS_CONTEXT } from "../../ai/providers/pi-native/harness-adapter.js";
 import { createToolExecutionGate, isSharedTool } from "../../ai/providers/pi-native/tool-execution-gate.js";
 
 function deferred() {
@@ -20,7 +20,7 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
     fauxAssistantMessage([fauxText("done")]),
   ]);
   const repo = new MemorySessionRepo();
-  const rawSession = await repo.create({ id: `gate-${Math.random()}` }, PI_CONTEXT);
+  const rawSession = await repo.create({ id: `gate-${Math.random()}` }, HARNESS_CONTEXT);
   const session = createPiSessionAdapter(rawSession);
   let driver;
   const originalAttach = session.attach.bind(session);
@@ -45,7 +45,7 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
         ...(name === "AskParent" && question ? { details: { tool: "AskParent" }, terminate: true } : {}) };
     },
   }));
-  const harness = await createPiHarnessAdapter(session, {
+  const harness = await createHarnessAdapter(session, {
     models, model, thinkingLevel: "off", systemPrompt: "system", tools,
     toolExecutionMode: mode, streamOptions: { transport: "auto", maxRetries: 0, maxRetryDelayMs: 1 },
     steeringMode: "one-at-a-time", followUpMode: "one-at-a-time",
@@ -53,7 +53,7 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
   const run = harness.prompt("run");
   const finish = async () => {
     blockers.forEach((blocker) => blocker.resolve());
-    try { return await run; } finally { await harness.close(); await repo.close(PI_CONTEXT); }
+    try { return await run; } finally { await harness.close(); await repo.close(HARNESS_CONTEXT); }
   };
   return { events, blockers, run, finish, harness, session, driver, signals };
 }
@@ -62,7 +62,7 @@ const enter = (i) => `enter:call-${i}`;
 const exit = (i) => `exit:call-${i}`;
 const wait = (fn) => vi.waitFor(fn, { timeout: 5000 });
 
-describe("Pi harness invoked-call admission", () => {
+describe("mono-agent harness invoked-call admission", () => {
   it.each([["Agent", "Agent"], ["Read", "Agent"]])("overlaps %s and %s with Bash offered", async (a, b) => {
     const state = await batch([a, b]);
     try {
@@ -129,7 +129,7 @@ describe("Pi harness invoked-call admission", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const repo = new MemorySessionRepo();
-    const raw = await repo.create({ id: "restored-gate" }, PI_CONTEXT);
+    const raw = await repo.create({ id: "restored-gate" }, HARNESS_CONTEXT);
     const metadata = raw.metadata;
     const blocks = [deferred(), deferred()];
     const entries = [];
@@ -142,7 +142,7 @@ describe("Pi harness invoked-call admission", () => {
         return { content: [{ type: "text", text: id }] };
       },
     }));
-    const make = (session, toolExecutionMode) => createPiHarnessAdapter(session, {
+    const make = (session, toolExecutionMode) => createHarnessAdapter(session, {
       models, model, thinkingLevel: "off", systemPrompt: "system", tools, toolExecutionMode,
       streamOptions: { transport: "auto", maxRetries: 0, maxRetryDelayMs: 1 },
     });
@@ -151,7 +151,7 @@ describe("Pi harness invoked-call admission", () => {
       const first = await make(createPiSessionAdapter(raw), "sequential");
       expect((await first.prompt("first")).status).toBe("completed");
       await first.close();
-      const restored = createPiSessionAdapter(await repo.open(metadata, PI_CONTEXT));
+      const restored = createPiSessionAdapter(await repo.open(metadata, HARNESS_CONTEXT));
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("Agent", {}, { id: "parallel-0" }), fauxToolCall("Agent", {}, { id: "parallel-1" })]),
         fauxAssistantMessage([fauxText("done")]),
@@ -163,7 +163,7 @@ describe("Pi harness invoked-call admission", () => {
         blocks.forEach((block) => block.resolve());
         expect((await run).status).toBe("completed");
       } finally { blocks.forEach((block) => block.resolve()); await second.close(); }
-    } finally { await repo.close(PI_CONTEXT); }
+    } finally { await repo.close(HARNESS_CONTEXT); }
   });
 
   it("stops queued execution before the run driver signals abort", async () => {

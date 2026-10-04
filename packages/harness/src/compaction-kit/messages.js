@@ -1,5 +1,5 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
-// Copyright (c) 2025 Mario Zechner. See agent-runtime/THIRD_PARTY_NOTICES.md.
+// Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>

@@ -104,9 +104,9 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
 - Pi Core 1.0 removes AgentHarness and SessionRepo. The Pi-native adapter now
-  owns a narrow harness over the pinned `runAgentLoop`, not a fork of that loop.
+  uses the mono-agent harness over the pinned `runAgentLoop`, not a fork of that loop.
   Compaction helpers retain the attributed old cut/estimator for parity.
-  Session files use `mono-v1`: import idle legacy v3/v4 main context once, fsync
+  The mono-agent harness in `@mono-agent/harness` uses `mono-v2/journals`: import idle legacy v3/v4 main context once, fsync
   the new transcript before archiving the source, and cold-replay legacy files
   with open operations. Never test migration against real session directories.
 - A packed consumer should resolve Pi AI `1.0.1` from both the runtime and Pi

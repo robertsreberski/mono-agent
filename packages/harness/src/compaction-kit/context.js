@@ -1,5 +1,5 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
-// Copyright (c) 2025 Mario Zechner. See agent-runtime/THIRD_PARTY_NOTICES.md.
+// Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 export function buildContextEntries(pathEntries) {
     let compaction;

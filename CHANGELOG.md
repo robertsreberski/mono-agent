@@ -8,8 +8,10 @@
 - Fix provider readiness probes accepting premature or context-limited output
   as successful.
 
-- Keep Pi-native execution on Pi 1.x with an owned session store; import idle
-  legacy main-branch context and cold-replay interrupted sessions.
+- Keep Pi-native execution on Pi 1.x through the mono-agent harness, with
+  versioned native journals and distinct logical turns/execution operations.
+  Import idle legacy Pi main-branch context; reopen still aborts old operations
+  and model-change retirement remains destructive.
 
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth

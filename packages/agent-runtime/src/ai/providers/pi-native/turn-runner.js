@@ -15,7 +15,7 @@ import {
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
-import { createPiHarnessAdapter } from "./harness-adapter.js";
+import { createHarnessAdapter } from "./harness-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { createStreamSubscriber } from "./stream-subscriber.js";
 
@@ -288,7 +288,7 @@ export async function buildTurnHarness(runState, {
   steeringMode,
   options,
 }) {
-  const harness = await createPiHarnessAdapter(session, {
+  const harness = await createHarnessAdapter(session, {
     session,
     models: piModels,
     model,

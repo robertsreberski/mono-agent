@@ -245,11 +245,11 @@ describe("pi-native sessions", () => {
         sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
       sessionId = result.providerSessionId;
       expect(result.providerSessionRecovery).toBeDefined();
-      const { PI_CONTEXT } = await import("../../ai/providers/pi-native/harness-adapter.js");
+      const { HARNESS_CONTEXT } = await import("../../ai/providers/pi-native/harness-adapter.js");
       const repo = resolveDurableNativeSessionRepo(root);
-      const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
+      const raw = await repo.open((await repo.list(undefined, HARNESS_CONTEXT))[0], HARNESS_CONTEXT);
       await raw.appendMessage({ role: "user", content: "unexpected append", timestamp: Date.now() });
-      await raw.close(PI_CONTEXT);
+      await raw.close(HARNESS_CONTEXT);
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
     } finally {
       if (sessionId) await retireDurableNativeSession(sessionId, root);
@@ -262,7 +262,7 @@ describe("pi-native sessions", () => {
     const sessionId = `capture-close-${resumed}-${Date.now()}`;
     const model = setup();
     const controller = new AbortController();
-    const { PI_CONTEXT, createPiSessionAdapter } = sessionAdapter;
+    const { HARNESS_CONTEXT, createPiSessionAdapter } = sessionAdapter;
     const base = { cwd: root, piSessionsRoot: root, sessionKeepAlive: true, sessionId, compaction: { enabled: false } };
     const repo = resolveDurableNativeSessionRepo(root);
     let baseline;
@@ -273,9 +273,9 @@ describe("pi-native sessions", () => {
         faux.setResponses([fauxAssistantMessage([fauxText("warm answer")])]);
         const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm ask" }] }));
         expect(warm.error).toBeNull();
-        const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
+        const raw = await repo.open((await repo.list(undefined, HARNESS_CONTEXT))[0], HARNESS_CONTEXT);
         baseline = await raw.getLeafId();
-        await raw.close(PI_CONTEXT);
+        await raw.close(HARNESS_CONTEXT);
       }
       // Reject at the adapter boundary before upstream closes. The outer catch
       // must still roll back and close this real Pi handle through the legacy path.
@@ -296,9 +296,9 @@ describe("pi-native sessions", () => {
       expect(cancelled.providerSessionRecovery).toBeUndefined();
       expect(closeSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // capture and legacy cleanup
       if (resumed) {
-        const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
+        const raw = await repo.open((await repo.list(undefined, HARNESS_CONTEXT))[0], HARNESS_CONTEXT);
         expect(await raw.getLeafId()).toBe(baseline);
-        await raw.close(PI_CONTEXT);
+        await raw.close(HARNESS_CONTEXT);
       } else {
         expect(countJsonlFiles(root)).toBe(0);
       }
@@ -954,7 +954,7 @@ describe("pi-native sessions", () => {
       expect(JSON.parse(readFileSync(`${path}.migrated`, "utf8").split("\n", 1)[0])).toMatchObject({ type: "session", version: 3, id: sessionId });
       const imported = findJsonlFiles(root);
       expect(imported).toHaveLength(1);
-      expect(JSON.parse(readFileSync(imported[0], "utf8").split("\n", 1)[0])).toMatchObject({ format: "mono-pi-session", version: 1, id: sessionId });
+      expect(JSON.parse(readFileSync(imported[0], "utf8").split("\n", 1)[0])).toMatchObject({ format: "mono-harness", version: 2, id: sessionId });
     } finally {
       await invalidateProviderSession(sessionId).catch(() => {});
       rmSync(root, { recursive: true, force: true });

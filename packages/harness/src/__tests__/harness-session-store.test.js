@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JsonlSessionRepo, MemorySessionRepo, SessionStore } from "../../ai/providers/pi-native/harness/session-store.js";
-import { readLegacySession } from "../../ai/providers/pi-native/harness/legacy-import.js";
+import { JsonlSessionRepo, MemorySessionRepo, SessionStore } from "../session-store.js";
+import { readLegacySession } from "../legacy-import.js";
 const roots = [];
 async function root() { const r = await mkdtemp(join(tmpdir(), "mono-pi-store-")); roots.push(r); return r; }
 afterEach(async () => { for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); });
@@ -13,19 +13,21 @@ const message = { role: "user", content: [{ type: "text", text: "Fictional proje
 async function fixture(r, version) {
   await mkdir(join(r, "legacy"));
   const path = join(r, "legacy", "fixture_fixture-session.jsonl");
-  await copyFile(new URL(`./fixtures/pi-harness/legacy-v${version}.jsonl`, import.meta.url), path);
+  await copyFile(new URL(`./fixtures/legacy-v${version}.jsonl`, import.meta.url), path);
   return path;
 }
 
-describe("owned Pi session store", () => {
+describe("mono-agent harness session store", () => {
   for (const durable of [false, true]) {
     it(`round-trips messages, compaction, terminal markers and rollback (${durable ? "JSONL" : "memory"})`, async () => {
       const repo = durable ? new JsonlSessionRepo({ sessionsRoot: await root() }) : new MemorySessionRepo();
       const s = await repo.create({ id: "fictional-session" });
       const a = await s.appendMessage(message);
-      await s.openTurn("run-one", { model: { provider: "faux", id: "fictional-model" } });
+      await s.beginTurn("turn-one");
+      await s.openOperation("run-one", { model: { provider: "faux", id: "fictional-model" } });
       await s.appendCompaction({ summary: "Fictional summary.", retainedTail: [message], tokensBefore: 100 });
-      await s.closeTurn("run-one", "completed");
+      await s.closeOperation("run-one", "completed");
+      await s.endTurn("turn-one", "completed");
       await s.moveTo(a);
       await s.sync();
       const metadata = s.metadata;
@@ -94,7 +96,7 @@ describe("owned Pi session store", () => {
   it("repairs only a torn owned line, leaving the complete turn-open marker pending", async () => {
     const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
     const s = await repo.create({ id: "torn-session" });
-    await s.openTurn("interrupted", {}); await s.appendMessage(message);
+    await s.beginTurn("interrupted", {}); await s.appendMessage(message);
     await s.close(); await appendFile(s.metadata.path, '{"kind":"turn_close"');
     const reopened = await repo.open(s.metadata);
     expect(await reopened.getEntries()).toHaveLength(1);
@@ -106,19 +108,19 @@ describe("owned Pi session store", () => {
     const order = []; let release;
     const appendBarrier = new Promise((r) => { release = r; });
     const s = new SessionStore({ id: "ordering" }, [], {
-      append: async () => { order.push("append"); await appendBarrier; },
+      append: async (text) => { if (JSON.parse(text).kind === "message") { order.push("append"); await appendBarrier; } },
       sync: async () => { order.push("file+directory-sync"); },
     });
     const pending = s.appendMessage(message);
     const commit = s.sync().then(() => order.push("host-history-commit"));
-    await Promise.resolve(); expect(order).toEqual(["append"]);
+    await vi.waitFor(() => expect(order).toEqual(["append"]));
     release(); await pending; await commit;
     expect(order).toEqual(["append", "file+directory-sync", "host-history-commit"]);
     await s.close();
   });
   it("detects an unfinished turn after killing a child between append and sync", async () => {
     const r = await root();
-    const child = fork(new URL("./fixtures/pi-harness/append-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    const child = fork(new URL("./fixtures/append-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
     try {
       const [notice] = await once(child, "message");
       expect(notice).toEqual({ phase: "appended-not-synced" });
@@ -152,18 +154,3 @@ it("projects only the legacy main branch through its latest compaction", async (
   await s.close();
 });
 
-it("salvages owned paired tool evidence without executing an unfinished turn", async () => {
-  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
-  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
-  const s = await repo.create({ id: "salvage-fixture" });
-  await s.openTurn("interrupted", {});
-  await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1700000000000 });
-  await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "Fictional evidence." }], isError: false, timestamp: 1700000000001 });
-  await s.close();
-  const bytes = await readFile(s.metadata.path);
-  const evidence = await salvageDurableNativeSession("salvage-fixture", r);
-  expect(evidence.completed).toEqual([{ name: "Read", result: "Fictional evidence." }]);
-  expect(evidence.outcomeUnknown).toEqual([]);
-  expect(evidence.additionalOutcomesUnknown).toBe(true);
-  expect(await readFile(s.metadata.path)).toEqual(bytes);
-});

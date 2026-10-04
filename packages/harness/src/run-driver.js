@@ -2,7 +2,7 @@
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
-import { buildPiSessionContext } from "./session-context.js";
+import { buildHarnessSessionContext } from "./session-context.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
@@ -13,6 +13,20 @@ export function createRunDriver(store, options) {
   const queue = new Map();
   const messageIds = new WeakMap();
   let runId, controller, running;
+  let turnId = null, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
+  const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
+  async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic") {
+    if (turnId) throw new Error("Pi logical turn is already open");
+    await store.beginTurn(id, modelConfig(), source); turnId = id; promptCount = 0; initialInputKey = undefined;
+  }
+  async function endTurn(status) {
+    if (!turnId) return;
+    const id = turnId; await store.endTurn(id, status); turnId = null; ownsTurn = false;
+  }
+  async function ensureTurn(cause) {
+    if (turnId) return false;
+    await beginTurn(`synthetic:${cause}:${randomUUID()}`); ownsTurn = true; return true;
+  }
   let closed = false, compactionArmed = false;
   let settings = { enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 };
   let tools = options.tools || [];
@@ -55,7 +69,21 @@ export function createRunDriver(store, options) {
     if (event.type === "message_end") {
       if (event.message.role === "assistant") await hooks("after_response", { message: event.message });
       const id = messageIds.get(event.message) || randomUUID();
-      const entryId = await store.appendMessage(event.message, id);
+      const isInput = event.message.role === "user" && !queue.has(id);
+      const inputId = isInput ? currentInputId : (queue.has(id) ? id : null);
+      const entryId = await store.appendMessage(event.message, id, { id: inputId, complete: true,
+        ...(isInput ? { placement: promptCount === 1 ? "initial" : "replay" } : {}) });
+      if (inputId && !store.validator.turns.get(turnId)?.inputs.has(inputId)) {
+        await store.write("input_consumed", { inputId, messageId: entryId }, { operationId: runId });
+      }
+      if (event.message.role === "assistant" && Array.isArray(event.message.content)) {
+        for (const call of event.message.content.filter((part) => part?.type === "toolCall")) {
+          await store.write("tool_call", { callId: call.id, name: call.name, messageId: entryId, admission: "observed" }, { operationId: runId });
+        }
+      } else if (event.message.role === "toolResult" && store.validator.calls.has(event.message.toolCallId)) {
+        await store.write("tool_result", { callId: event.message.toolCallId, name: event.message.toolName, messageId: entryId,
+          outcome: event.message.isError ? "error" : "success" }, { operationId: runId });
+      }
       const queued = queue.get(id);
       if (queued) queued.state = "placed";
       publish({ ...event, entryId });
@@ -71,8 +99,11 @@ export function createRunDriver(store, options) {
   async function performCompaction(reason = "manual") {
     publish({ type: "compaction_start", reason });
     const context = { abortSignal: controller?.signal || new AbortController().signal };
-    let entry, ended = false;
+    let entry, ended = false, operationOpened = false;
+    const operationId = randomUUID();
+    const own = await ensureTurn("manual-compaction");
     try {
+      await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
       let decision;
       for (const handler of registrations.get("before_compaction") || []) {
         decision = await handler({ reason, branchEntries: await store.getEntries(), signal: context.abortSignal, context }, context);
@@ -94,18 +125,20 @@ export function createRunDriver(store, options) {
       publish({ type: "compaction_end", reason, status: "failed", error, cancelled: true });
       throw error;
     } finally {
+      if (operationOpened) await store.closeOperation(operationId, entry ? "completed" : "failed");
+      if (own) await endTurn(entry ? "completed" : "failed");
       if (!ended && reason !== "manual") publish({ type: "compaction_end", reason, status: "declined", cancelled: true });
     }
   }
   async function requestContext() {
-    const messages = buildPiSessionContext(await store.getEntries());
+    const messages = buildHarnessSessionContext(await store.getEntries());
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
     return { messages: normalizeContext({ systemPrompt: options.systemPrompt,
       tools: tools.map(toToolDeclaration), messages: messages.filter((m) => m.role !== "system") }).messages, tools };
   }
   async function drive(text, promptOptions) {
-    if (closed || running) throw new Error("Pi harness is closed or busy");
+    if (closed || running) throw new Error("mono-agent harness is closed or busy");
     runId = randomUUID(); controller = new AbortController();
     const id = runId;
     promptOptions?.onOperationAdmitted?.(id);
@@ -114,8 +147,13 @@ export function createRunDriver(store, options) {
     running = (async () => {
       let opened = false, status = "failed", error, deferred;
       try {
-        await store.openTurn(id, { model: { provider: options.model.provider, id: options.model.id } }); opened = true;
-        const messages = buildPiSessionContext(await store.getEntries());
+        await ensureTurn("prompt");
+        promptCount += 1;
+        const inputKey = JSON.stringify([text, promptOptions?.images ?? []]);
+        initialInputKey ??= inputKey;
+        currentInputId = inputKey === initialInputKey ? `${turnId}:input:initial` : `synthetic:input:${randomUUID()}`;
+        await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
+        const messages = buildHarnessSessionContext(await store.getEntries());
         /** @type {any[]} */
         const prompts = [{ role: "user", content: [{ type: "text", text }, ...(promptOptions?.images || [])], timestamp: Date.now() }];
         await runAgentLoop(prompts, { messages, tools }, {
@@ -129,7 +167,7 @@ export function createRunDriver(store, options) {
           getFollowUpMessages: async () => [],
           prepareRequest: async () => {
             if (compactionArmed && settings.enabled) {
-              const messages = buildPiSessionContext(await store.getEntries());
+              const messages = buildHarnessSessionContext(await store.getEntries());
               if (shouldCompact(estimateContextTokens(messages).tokens, options.model.contextWindow, settings)) await performCompaction("threshold");
             }
             return { context: await requestContext() };
@@ -164,7 +202,10 @@ export function createRunDriver(store, options) {
         error = { code: "run_failed", message: cause?.message || String(cause) };
         throw cause;
       } finally {
-        if (opened && status !== "suspended") await store.closeTurn(id, status);
+        if (opened && status !== "suspended") {
+          await store.closeOperation(id, status);
+          if (ownsTurn) await endTurn(status);
+        }
         if (status === "suspended") publish({ type: "run_suspend", reason: "deferred", deferred });
         else publish({ type: "run_end", status, error });
       }
@@ -174,11 +215,12 @@ export function createRunDriver(store, options) {
   }
   return {
     hooks: { on },
+    beginTurn, endTurn,
     emit,
     prompt: drive,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async steer(message) {
-      if (closed) throw new Error("Pi harness is closed");
+      if (closed) throw new Error("mono-agent harness is closed");
       const entryId = randomUUID(); const copy = typeof message === "string"
         ? { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now() }
         : structuredClone(message);
@@ -193,7 +235,7 @@ export function createRunDriver(store, options) {
     async abort() { controller?.abort(); },
     async waitForIdle() { await running; },
     async compact() {
-      if (running || closed) throw new Error("Pi harness is closed or busy");
+      if (running || closed) throw new Error("mono-agent harness is closed or busy");
       controller = new AbortController();
       running = performCompaction();
       try { return await running; } finally { running = null; }
@@ -202,7 +244,9 @@ export function createRunDriver(store, options) {
     setMidRunCompactionArmed(value) { compactionArmed = value === true; },
     setCompactionSettings(value) { settings = { ...settings, ...value }; },
     async abortOpenOperations() {
-      for (const turn of await store.getOpenTurns()) await store.closeTurn(turn.runId, "aborted");
+      for (const op of (await store.getOpenOperations()).reverse()) await store.closeOperation(op.operationId, "aborted");
+      for (const turn of await store.getOpenTurns()) await store.endTurn(turn.turnId, "aborted");
+      turnId = null; ownsTurn = false;
     },
     async close() { closed = true; controller?.abort(); await running; },
   };

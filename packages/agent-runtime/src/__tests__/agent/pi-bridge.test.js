@@ -1056,7 +1056,7 @@ describe("pi MCP tool helpers", () => {
     }
   });
 
-  it("preserves MCP protocol errors and bounded structured content for the Pi harness hook", async () => {
+  it("preserves MCP protocol errors and bounded structured content for the mono-agent harness hook", async () => {
     const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
     const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
       tools: [{ name: "failing_thing", description: "d", inputSchema: { type: "object", properties: {} } }],

@@ -655,6 +655,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
     }
 
+    // One logical turn encompasses proactive/manual compaction and every prompt
+    // operation, including reactive overflow re-prompts. Ownership remains unbound
+    // until the protected descriptor arrives in P1b.
+    const recoveryIdentity = options.sessionRecovery;
+    const hasHostIdentity = typeof recoveryIdentity?.runId === "string" && recoveryIdentity.runId.length > 0
+      && recoveryIdentity.runId.length <= 512 && Number.isSafeInteger(recoveryIdentity.revision) && recoveryIdentity.revision >= 0;
+    await harness.beginTurn(hasHostIdentity ? recoveryIdentity.runId : undefined, hasHostIdentity ? "host" : "synthetic");
+
     if (options.manualCompaction === true) {
       // The same resolve/reopen/seed path as a turn, but without a user prompt,
       // tool execution, turn telemetry, or response generation. The guarded
@@ -691,6 +699,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
         throw new Error("Manual compaction failed or was cancelled.");
       }
+      await harness.endTurn("completed");
       await commitSession(runState, {
         options,
         requestedSessionId,
@@ -738,6 +747,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // deleted; the finally clears sessionEntry.busy, removes the abort handler,
       // and closes MCP clients. For a resume no transcript was appended yet
       // (prompt never ran), so the live session needs no rollback.
+      await harness.endTurn("aborted");
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -792,6 +802,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // accept is ordered after it, so Pi cancels the admitted operation itself.
     // The finally below disarms mid-run compaction.
     if (options.abortSignal?.aborted) {
+      await harness.endTurn("aborted");
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -1042,6 +1053,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       && typeof options.sessionRecovery?.runId === "string" && options.sessionRecovery.runId.length > 0
       && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
       && typeof runState.recoveryOperationId === "string";
+    await harness.endTurn(runState.externalAbort ? "aborted" : errorMessage ? "failed" : "completed");
     await commitSession(runState, {
       options,
       requestedSessionId,
@@ -1101,6 +1113,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
+    try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen aborts unsealed work */ }
     await cleanupSessionOnThrow(runState, { durableRepo });
     // The throw path still holds the original Error, so its cause chain is the
     // authoritative source here — no correlation guesswork needed.

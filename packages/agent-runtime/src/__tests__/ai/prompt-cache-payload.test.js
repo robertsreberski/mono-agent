@@ -125,7 +125,7 @@ describe('built provider prompt prefix', () => {
 
 it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered native tool prefix through %s without failed reasoning', async (api) => {
   const { fauxAssistantMessage, fauxThinking, fauxToolCall } = await import('@earendil-works/pi-ai');
-  const { buildPiSessionContext } = await import('../../ai/providers/pi-native/harness-adapter.js');
+  const { buildHarnessSessionContext } = await import('../../ai/providers/pi-native/harness-adapter.js');
   const { validRecoveryProjection } = await import('../../ai/providers/pi-native/terminal-recovery.js');
   const send = api === 'anthropic-messages'
     ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
@@ -134,7 +134,7 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
   const signature = api === 'anthropic-messages' ? 'faux-signature'
     : JSON.stringify({ type: 'reasoning', id: 'rs_fixture', summary: [], encrypted_content: 'faux-signature' });
   const assistant = (content, stopReason) => ({ ...fauxAssistantMessage(content, { stopReason }), api, provider: model.provider, model: model.id });
-  const messages = buildPiSessionContext([
+  const messages = buildHarnessSessionContext([
     { type: 'message', message: { role: 'user', content: 'cancelled ask', timestamp: 1 } },
     { type: 'message', message: assistant([{ ...fauxThinking('completed'), thinkingSignature: signature }, fauxToolCall('Read', { file_path: 'file' }, { id: 'call_fixture' })], 'toolUse') },
     // A surviving orphan call is paired by Pi's serializer, without a host append.
@@ -220,7 +220,7 @@ it.each([
 ])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
   vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
   const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
-  const driverModule = await import('../../ai/providers/pi-native/harness/run-driver.js');
+  const driverModule = await import('@mono-agent/harness/run-driver.js');
   const create = vi.spyOn(driverModule, 'createRunDriver');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });

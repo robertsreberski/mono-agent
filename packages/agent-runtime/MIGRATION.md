@@ -76,7 +76,9 @@ renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
 harness. The Pi compatibility adapter now owns admission, steering and session
 storage over the upstream `runAgentLoop`; provider code remains Pi-owned.
 
-Native transcripts use the `mono-v1` subdirectory of `piSessionsRoot`. Idle
+Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoot`.
+The immutable journal ID is independent of the epoch-bound provider handle;
+logical ownership remains explicitly unbound until a host descriptor binds it. Idle
 legacy v3/v4 files import their effective main-branch context only. After the
 new store is fsynced, the source is renamed to `*.jsonl.migrated`; other branches
 and upstream operation internals are not imported. Files with open operations

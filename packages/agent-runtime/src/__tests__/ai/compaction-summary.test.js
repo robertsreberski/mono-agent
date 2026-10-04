@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { PI_CONTEXT as BACKGROUND_CONTEXT } from "../../ai/providers/pi-native/harness/context.js";
-import { compact, serializeConversation } from "../../ai/providers/pi-native/harness/compaction-kit/compaction.js";
+import { HARNESS_CONTEXT as BACKGROUND_CONTEXT } from "@mono-agent/harness/context.js";
+import { compact, serializeConversation } from "@mono-agent/harness/compaction-kit/compaction.js";
 import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../ai/providers/pi-native/compaction-summary.js";
 
 const user = (text) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });

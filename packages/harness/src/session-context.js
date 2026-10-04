@@ -3,7 +3,7 @@ import { createBranchSummaryMessage, createCompactionSummaryMessage } from "./co
 const isContextMessage = (message) => message?.role !== "assistant"
   || !["error", "aborted", "deferred"].includes(message.stopReason);
 
-export function buildPiSessionContext(pathEntries, { includeFailed = false } = {}) {
+export function buildHarnessSessionContext(pathEntries, { includeFailed = false } = {}) {
   let start = 0;
   for (let index = pathEntries.length - 1; index >= 0; index -= 1) {
     if (pathEntries[index]?.type === "compaction") { start = index; break; }

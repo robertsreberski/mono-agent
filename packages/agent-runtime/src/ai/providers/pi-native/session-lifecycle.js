@@ -10,14 +10,14 @@
 // createSessionLiveness primitives so the await-free spans are enforced by
 // construction rather than by inline sequencing.
 
-import { JsonlSessionRepo, MemorySessionRepo } from "./harness/session-store.js";
+import { JsonlSessionRepo, MemorySessionRepo } from "@mono-agent/harness/session-store.js";
 import { validRecoveryProjection } from "./terminal-recovery.js";
 import { createHash } from "node:crypto";
 import { access, open, readdir, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
-import { buildPiSessionContext, createPiSessionAdapter, PI_CONTEXT } from "./harness-adapter.js";
+import { buildHarnessSessionContext, createPiSessionAdapter, HARNESS_CONTEXT } from "./harness-adapter.js";
 
 async function syncPath(path) {
   const handle = await open(path, "r");
@@ -58,7 +58,7 @@ async function invalidateNativeSession(entry) {
       throw error;
     }
   }
-  await entry.repo.delete(entry.metadata, PI_CONTEXT);
+  await entry.repo.delete(entry.metadata, HARNESS_CONTEXT);
   if (entry.durable) {
     const path = entry.metadata.path;
     // Make the unlink durable before the registry forgets the busy marker.
@@ -81,7 +81,7 @@ async function closeAndDeleteSession(session, repo, knownMetadata) {
   }
   try { await session.close(); } catch { /* best-effort */ }
   if (metadata) {
-    try { await repo.delete(metadata, PI_CONTEXT); } catch { /* best-effort */ }
+    try { await repo.delete(metadata, HARNESS_CONTEXT); } catch { /* best-effort */ }
   }
 }
 
@@ -109,7 +109,7 @@ const nativeSessions = createSessionRegistry({
       return;
     }
     if (entry.durable) return;
-    await entry.repo.delete(entry.metadata, PI_CONTEXT);
+    await entry.repo.delete(entry.metadata, HARNESS_CONTEXT);
   },
 });
 const liveness = createSessionLiveness(nativeSessions);
@@ -161,7 +161,7 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
 
   const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
   if (!repo) throw new Error("Durable Pi session repository is unavailable");
-  const matches = (await repo.list(undefined, PI_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
+  const matches = (await repo.list(undefined, HARNESS_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
   const changedDirectories = new Set();
   for (const metadata of matches) {
     if (typeof metadata?.path !== "string" || !metadata.path) {
@@ -174,7 +174,7 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
         if (error?.code !== "ENOENT") throw error;
       }
     } else {
-      await repo.delete(metadata, PI_CONTEXT);
+      await repo.delete(metadata, HARNESS_CONTEXT);
     }
     changedDirectories.add(dirname(metadata.path));
   }
@@ -195,7 +195,7 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
   for (const directory of changedDirectories) await syncPath(directory);
   if (changedDirectories.size > 0) await syncPath(resolve(piSessionsRoot));
 
-  const remaining = (await repo.list(undefined, PI_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
+  const remaining = (await repo.list(undefined, HARNESS_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
   const remainingPaths = await exactDurableSessionFiles(piSessionsRoot, providerSessionId);
   if (!providerStillUnwinding && (remaining.length > 0 || remainingPaths.length > 0)) {
     throw new Error(`Durable Pi session ${providerSessionId} could not be retired completely`);
@@ -251,7 +251,7 @@ function isSafeSessionId(id) {
 
 async function reopenDurableNativeSession(repo, sessionId) {
   try {
-    const metadata = (await repo.list(undefined, PI_CONTEXT)).find((entry) => entry?.id === sessionId);
+    const metadata = (await repo.list(undefined, HARNESS_CONTEXT)).find((entry) => entry?.id === sessionId);
     if (!metadata) return null;
     return { metadata, repo, durable: true, busy: false };
   } catch {
@@ -388,7 +388,7 @@ export async function resolveSession(runState, {
           runState.reservation = reservation;
           runState.session = createPiSessionAdapter(await durableRepo.create(
             { id: providerSessionId, cwd: cwd || process.cwd() },
-            PI_CONTEXT,
+            HARNESS_CONTEXT,
           ));
           runState.createdOnMiss = true;
         }
@@ -450,7 +450,7 @@ export async function resolveSession(runState, {
       runState.sessionEntry = claimed.entry;
       delete claimed.entry.recovery;
       try {
-        const raw = await claimed.entry.repo.open(claimed.entry.metadata, PI_CONTEXT);
+        const raw = await claimed.entry.repo.open(claimed.entry.metadata, HARNESS_CONTEXT);
         runState.session = createPiSessionAdapter(raw);
         // Import publishes a new versioned pathname; the registry must sync and
         // retire that file, never the archived legacy pathname.
@@ -473,7 +473,7 @@ export async function resolveSession(runState, {
     // that primary's transcript. Only keep-alive calls use a shared repository.
     if (options.sessionKeepAlive !== true) runState.ephemeralSessionRepo = new MemorySessionRepo();
     runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
-      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, PI_CONTEXT));
+      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, HARNESS_CONTEXT));
   }
   return { done: false };
 }
@@ -688,16 +688,19 @@ export async function recoverDurableNativeSession(receipt, context) {
   entry.busy = true;
   let raw;
   try {
-    const matches = (await entry.repo.list(undefined, PI_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
+    const matches = (await entry.repo.list(undefined, HARNESS_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
     if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
-    raw = await entry.repo.open(matches[0], PI_CONTEXT);
+    raw = await entry.repo.open(matches[0], HARNESS_CONTEXT);
     if (await raw.getLeafId() !== receipt.tipId) return false;
     const terminal = await raw.getTerminal(proof.operationId);
     if ((await raw.getOpenTurns()).length !== 0
-      || terminal?.kind !== "turn_close"
+      || terminal?.kind !== "operation_end"
       || terminal.config?.model.provider !== proof.model.provider || terminal.config?.model.id !== proof.model.id
       || !["completed", "failed", "aborted"].includes(terminal.status) || terminal.tipId !== receipt.tipId
       || terminal.fromTipId !== proof.baselineTipId) return false;
+    const turn = await raw.getTurn(terminal.turnId);
+    if (turn?.turnId !== receipt.runId || turn.payload.finalOperationId !== proof.operationId
+      || !["completed", "failed", "aborted"].includes(turn.payload.status)) return false;
     const entries = await raw.getEntries();
     if (createHash("sha256").update(JSON.stringify(entries)).digest("hex") !== proof.ancestry) return false;
     const baseline = proof.baselineTipId === null ? -1 : entries.findIndex((item) => item.id === proof.baselineTipId);
@@ -705,9 +708,9 @@ export async function recoverDurableNativeSession(receipt, context) {
     const tail = entries.slice(baseline + 1);
     if (tail[0]?.type !== "message" || tail[0].message.role !== "user"
       || tail.filter((item) => item.type === "message" && item.message.role === "user").length !== 1 + proof.inputIds.length) return false;
-    if (!validRecoveryProjection(buildPiSessionContext(entries), proof.model)) return false;
+    if (!validRecoveryProjection(buildHarnessSessionContext(entries), proof.model)) return false;
     await raw.sync();
-    await raw.close(PI_CONTEXT);
+    await raw.close(HARNESS_CONTEXT);
     raw = undefined;
     // Pending is cleared only after persistence is certain. Bypass the ordinary
     // sync guard while keeping the public busy reservation throughout the fsync.
@@ -717,7 +720,7 @@ export async function recoverDurableNativeSession(receipt, context) {
   } catch {
     return false;
   } finally {
-    try { await raw?.close(PI_CONTEXT); } catch { /* already failed closed */ }
+    try { await raw?.close(HARNESS_CONTEXT); } catch { /* already failed closed */ }
     entry.busy = false;
   }
 }

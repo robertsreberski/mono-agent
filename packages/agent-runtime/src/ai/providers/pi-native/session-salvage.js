@@ -1,6 +1,7 @@
 // Read-only, best-effort evidence from Pi v4 JSONL. Never open through the Pi repo:
 // its cold-open path repairs torn transactions by rewriting the source file.
-import { SessionStore } from "./harness/session-store.js";
+import { SessionStore } from "@mono-agent/harness/session-store.js";
+import { readBoundedJsonl } from "@mono-agent/harness/bounded-jsonl.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, stat as statPath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -28,7 +29,17 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       matches.push(join(parent, file.name));
     }
   }
-  const owned = matches.filter((path) => path.includes(`${sep}mono-v1${sep}`));
+  const owned = [];
+  const journals = join(root, "mono-v2", "journals");
+  let journalFiles = [];
+  try { journalFiles = await readdir(journals, { withFileTypes: true }); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  for (const file of journalFiles) {
+    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+    const path = join(journals, file.name);
+    const { records: [header] } = await readBoundedJsonl(path, root);
+    if (header?.format === "mono-harness" && header.version === 2 && header.id === sessionId) owned.push(path);
+  }
   if (owned.length === 1) matches.splice(0, matches.length, owned[0]);
   if (matches.length !== 1) fail();
   const path = matches[0];
@@ -67,7 +78,7 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   const values = new Map();
   const pending = new Map();
   let openTurn = false;
-  if (header?.format === "mono-pi-session" && header.version === 1 && header.id === sessionId) {
+  if (header?.format === "mono-harness" && header.version === 2 && header.id === sessionId) {
     const store = new SessionStore(header, lines.map((line) => JSON.parse(line)), null);
     for (const [id, entry] of store.entries) entries.set(id, entry);
     values.set("main", store.tip);

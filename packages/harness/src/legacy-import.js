@@ -2,7 +2,7 @@
 import { lstat, readdir, rename, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { readBoundedJsonl } from "./bounded-jsonl.js";
-import { buildPiSessionContext } from "./session-context.js";
+import { buildHarnessSessionContext } from "./session-context.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const fail = () => { throw new Error("Invalid legacy Pi session"); };
@@ -12,7 +12,7 @@ export async function listLegacySessions(root) {
   try { dirs = await readdir(root, { withFileTypes: true }); }
   catch (error) { if (error.code === "ENOENT") return []; throw error; }
   for (const dir of dirs) {
-    if (!dir.isDirectory() || dir.name === "mono-v1") continue;
+    if (!dir.isDirectory() || dir.name === "mono-v2") continue;
     for (const file of await readdir(join(root, dir.name), { withFileTypes: true })) {
       if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
       const path = join(root, dir.name, file.name);
@@ -47,7 +47,7 @@ export async function readLegacySession(metadata, root) {
         const all = [...entries.values()];
         const cut = all.findIndex((e) => e.id === entry.firstKeptEntryId);
         if (cut < 0) fail();
-        entry.retainedTail = buildPiSessionContext(all.slice(cut));
+        entry.retainedTail = buildHarnessSessionContext(all.slice(cut));
       }
       if (typeof entry.id !== "string" || entries.has(entry.id) || (entry.parentId !== null && !entries.has(entry.parentId))) fail();
       entries.set(entry.id, { ...entry, timestamp: Date.parse(entry.timestamp) });
@@ -89,7 +89,7 @@ export async function readLegacySession(metadata, root) {
     branch.push(entry); id = entry.parentId;
   }
   branch.reverse();
-  return { status: "import", messages: buildPiSessionContext(branch), evidence };
+  return { status: "import", messages: buildHarnessSessionContext(branch), evidence };
 }
 
 export async function archiveLegacySession(metadata, root, evidence) {

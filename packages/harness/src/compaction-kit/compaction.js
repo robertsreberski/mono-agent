@@ -1,5 +1,5 @@
 // Adapted from @earendil-works/pi-agent-core 0.99.2 (MIT).
-// Copyright (c) 2025 Mario Zechner. See agent-runtime/THIRD_PARTY_NOTICES.md.
+// Copyright (c) 2025 Mario Zechner. See harness/THIRD_PARTY_NOTICES.md.
 import { contentText, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai";
 import { convertToLlm, createBranchSummaryMessage, createCompactionSummaryMessage } from "./messages.js";
 import { buildContextEntries, sessionEntryToContextMessages } from "./context.js";
@@ -411,6 +411,7 @@ export async function generateSummaryWithRequest(currentMessages, options, reque
     return ok({ text: textContent, usage: response.usage });
 }
 /** Prepare session entries for compaction, or return undefined when compaction is not applicable. */
+/** @returns {{ok:boolean, value?:any, error?:any}} */
 export function prepareCompaction(pathEntries, settings) {
     if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
         return ok(undefined);

@@ -2,12 +2,12 @@
 // Compatibility boundary between mono-agent's Pi-native bridge and the
 // mono-owned harness built on the pinned Pi agent loop.
 
-import { createRunDriver } from "./harness/run-driver.js";
-import { PI_CONTEXT } from "./harness/context.js";
-import { buildPiSessionContext } from "./harness/session-context.js";
+import { createRunDriver, projectContext } from "@mono-agent/harness";
+import { HARNESS_CONTEXT } from "@mono-agent/harness/context.js";
+import { buildHarnessSessionContext } from "@mono-agent/harness/session-context.js";
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
-export { PI_CONTEXT, buildPiSessionContext };
+export { HARNESS_CONTEXT, buildHarnessSessionContext };
 
 /** @param {any} rawSession */
 export function createPiSessionAdapter(rawSession) {
@@ -17,7 +17,7 @@ export function createPiSessionAdapter(rawSession) {
     rawSession,
     get metadata() { return rawSession.metadata; },
     attach(nextDriver) { driver = nextDriver; },
-    async buildContext() { return { messages: buildPiSessionContext(await rawSession.getEntries(), { includeFailed: true }) }; },
+    async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true }); },
     getEntries: () => rawSession.getEntries(),
     getLeafId: () => rawSession.getLeafId(),
     appendMessage: (message) => rawSession.appendMessage(message),
@@ -34,7 +34,7 @@ export function createPiSessionAdapter(rawSession) {
 }
 
 /** @param {any} session @param {any} options */
-export async function createPiHarnessAdapter(session, options) {
+export async function createHarnessAdapter(session, options) {
   const originalTools = Array.isArray(options.tools) ? options.tools : [];
   const toolExecution = options.toolExecutionMode === "sequential" ? "sequential" : "parallel";
   const gate = toolExecution === "parallel" ? createToolExecutionGate() : null;
@@ -101,8 +101,10 @@ export async function createPiHarnessAdapter(session, options) {
     async setCompactionSettings(settings) { driver.setCompactionSettings(settings); },
     setMidRunCompactionArmed(value) { driver.setMidRunCompactionArmed(value); },
     appendMessage: (message) => session.appendMessage(message),
+    beginTurn: (id, source) => driver.beginTurn(id, source),
+    endTurn: (status) => driver.endTurn(status),
     async prompt(text, promptOptions) {
-      if (closed) throw new Error("Pi harness is closed");
+      if (closed) throw new Error("mono-agent harness is closed");
       runState.stopping = false; questionState.awaiting = false; gate?.resume();
       return driver.prompt(text, promptOptions);
     },
@@ -118,7 +120,7 @@ export async function createPiHarnessAdapter(session, options) {
         if (result?.cancel) return { decline: true };
         return result?.compaction === undefined ? undefined : { compaction: result.compaction };
       });
-      throw new Error(`Unsupported Pi harness hook: ${String(type)}`);
+      throw new Error(`Unsupported mono-agent harness hook: ${String(type)}`);
     },
     subscribe: (listener) => driver.subscribe(listener),
     async abortOpenOperations() { await driver.abortOpenOperations(); },

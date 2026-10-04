@@ -21,7 +21,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { shouldCompact } from "../../ai/providers/pi-native/harness/compaction-kit/compaction.js";
+import { shouldCompact } from "@mono-agent/harness/compaction-kit/compaction.js";
 import { runReactiveCompaction } from "../../ai/providers/pi-native/compaction-driver.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {
@@ -29,7 +29,7 @@ import {
   midRunBaselineAdjustment,
   midRunReserveTokens,
 } from "../../ai/providers/pi-native/mid-run-compaction.js";
-import { buildPiSessionContext } from "../../ai/providers/pi-native/harness-adapter.js";
+import { buildHarnessSessionContext } from "../../ai/providers/pi-native/harness-adapter.js";
 
 // 30k characters ≈ 7.5k estimated tokens: two of these cross a 14k trigger, and
 // neither one alone is large enough to make the retained tail unsummarizable.
@@ -290,7 +290,7 @@ function controllerFixture({ policy: policyOverrides = {}, summary = "## Goal\ns
       ...compaction,
       fromHook: true,
     };
-    const rebuilt = buildPiSessionContext([...entries, committed], { includeFailed: true });
+    const rebuilt = buildHarnessSessionContext([...entries, committed], { includeFailed: true });
     transcript.splice(0, transcript.length, ...rebuilt);
   }
   const controller = createMidRunCompaction(runState, {
@@ -584,7 +584,7 @@ describe("mid-run transcript accounting", () => {
     expect(adjustment.lostMessages).toEqual([]);
     expect(adjustment.carriedUsage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
     expect(adjustment.baselineAfter).toBe(2);
-    expect(buildPiSessionContext([
+    expect(buildHarnessSessionContext([
       { type: "compaction", id: "c1", parentId: null, timestamp: 1, summary: "s", retainedTail: contextBefore },
     ], { includeFailed: true }).slice(adjustment.baselineAfter)).toEqual(contextBefore.slice(1));
   });
