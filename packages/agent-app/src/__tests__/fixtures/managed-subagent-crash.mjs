@@ -5,6 +5,7 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { JournalReader } from "@mono-agent/harness/journal-reader.js";
 import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/pi-native/session-salvage.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,11 +86,16 @@ async function open(root, options = {}) {
 }
 async function sessionFile(instances) {
   const instance = await instances.get("proof");
-  const directories = await readdir(instance.sessionsRoot, { withFileTypes: true });
+  const directory = resolve(instance.sessionsRoot, "mono-v2", "journals");
   const paths = [];
-  for (const directory of directories) if (directory.isDirectory()) {
-    const parent = resolve(instance.sessionsRoot, directory.name);
-    for (const file of await readdir(parent)) if (file.endsWith(`_${instance.sessionId}.jsonl`)) paths.push(resolve(parent, file));
+  for (const file of await readdir(directory, { withFileTypes: true })) {
+    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+    const path = resolve(directory, file.name);
+    const reader = await JournalReader.open(path, instance.sessionsRoot);
+    try {
+      const header = await reader.readHeader();
+      if (header.format === "mono-harness" && header.version === 2 && header.id === instance.sessionId) paths.push(path);
+    } finally { await reader.close(); }
   }
   assert.equal(paths.length, 1);
   return { path: paths[0], instance };

@@ -1,6 +1,7 @@
 // @ts-check
 // Streaming JSONL validation plus offset-backed lookup. No transcript/line caps.
 import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 const fail = () => { throw new Error("Harness journal read unavailable"); };
@@ -81,6 +82,17 @@ export class JournalReader {
     const after = await this.assertIdentity();
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail();
     return { identity: before, completeBytes, torn: fragmentBytes > 0 };
+  }
+  async fingerprint() {
+    const before = await this.assertIdentity();
+    const hash = createHash("sha256"), chunk = Buffer.alloc(64 * 1024);
+    for (let offset = 0; offset < before.size;) {
+      const { bytesRead } = await this.handle.read(chunk, 0, Math.min(chunk.length, before.size - offset), offset);
+      if (!bytesRead) fail(); hash.update(chunk.subarray(0, bytesRead)); offset += bytesRead;
+    }
+    const after = await this.assertIdentity();
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail();
+    return { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs, sha256: hash.digest("hex") };
   }
   async readHeader() {
     const before = await this.assertIdentity();

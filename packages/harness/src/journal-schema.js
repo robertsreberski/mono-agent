@@ -15,6 +15,18 @@ export function validateJournalHeader(header) {
     && header.ownershipSchemaVersion === 1 && header.ownership?.kind === "unbound"
     && id(header.initialHandle?.id) && header.id === header.initialHandle.id
     && typeof header.cwd === "string" && time(header.createdAt));
+  if (header.import !== undefined) {
+    const info = header.import, source = info?.source, identity = source?.identity;
+    requireValue(object(info) && info.version === 1 && /^[a-f0-9]{64}$/.test(info.importId)
+      && ["import", "clean_break"].includes(info.mode) && time(info.messageCount)
+      && /^[a-f0-9]{64}$/.test(info.contextHash) && source?.id === header.id
+      && typeof source.path === "string" && source.path.split(/[\\/]/).length === 2
+      && source.path.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
+      && source.path.split(/[\/]/)[0] !== "mono-v2"
+      && source.path.endsWith(".jsonl") && object(identity)
+      && ["dev", "ino", "size"].every((key) => time(identity[key]))
+      && Number.isFinite(identity.mtimeMs) && /^[a-f0-9]{64}$/.test(identity.sha256));
+  }
 }
 
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
@@ -24,11 +36,12 @@ export class JournalValidator {
     /** @type {string|null} */ this.parentId = null;
     this.ids = new Set();
     this.contextIds = new Set();
+    this.contextInfo = new Map();
     /** @type {string|null} */ this.tip = null;
     this.turns = new Map();
     this.operations = new Map();
     this.calls = new Map();
-    this.inputs = new Set();
+    this.inputs = new Map();
     this.handles = new Set();
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
@@ -48,10 +61,13 @@ export class JournalValidator {
     // Even administrative writes have an explicitly synthetic execution scope.
     requireValue(turn && !turn.end);
     const op = this.operations.get(record.operationId);
+    const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
     if (record.kind === "operation_start") {
       requireValue(id(record.operationId) && !op
         && (![...this.operations.values()].some((o) => !o.end)
           || (p.type === "compaction" && this.operations.get(p.parentOperationId)?.start.payload.type === "prompt"
+            && this.operations.get(p.parentOperationId)?.turnId === record.turnId
+            && [...this.operations.values()].filter((o) => !o.end).length === 1
             && !this.operations.get(p.parentOperationId)?.end))
         && ["prompt", "compaction"].includes(p.type) && typeof p.cause === "string"
         && p.baselineTipId === this.tip && object(p.config));
@@ -78,18 +94,23 @@ export class JournalValidator {
           // Keep the adapter-shaped compaction unchanged until exact checkpoints
           // in P1b; ordered IDs and explicit derived messages are already versioned.
           requireValue(object(p.compaction) && typeof p.compaction.summary === "string"
-            && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i) => this.contextIds.has(i))
+            && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i, index) => this.contextInfo.get(i)?.kind === "message"
+              && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
             && Array.isArray(p.derivedMessages) && Number.isSafeInteger(p.coverageVersion) && p.coverageVersion > 0);
         }
       } else if (record.kind === "rewind") {
         requireValue(p.tipId === null || this.contextIds.has(p.tipId));
       } else if (record.kind === "tool_call") {
-        requireValue(id(p.callId) && !this.calls.has(p.callId) && id(p.name)
-          && this.contextIds.has(p.messageId) && ["observed", "admitted", "blocked"].includes(p.admission));
+        const message = this.contextInfo.get(p.messageId);
+        requireValue(id(p.callId) && !this.calls.has(callKey) && id(p.name)
+          && message?.role === "assistant" && message.calls?.get(p.callId) === p.name
+          && ["observed", "admitted", "blocked"].includes(p.admission));
       } else if (record.kind === "tool_result") {
-        const call = this.calls.get(p.callId);
-        requireValue(call && call.name === p.name && this.contextIds.has(p.messageId)
-          && ["success", "error", "unknown", "cancelled", "skipped"].includes(p.outcome));
+        const call = this.calls.get(callKey), message = this.contextInfo.get(p.messageId);
+        requireValue(call && !call.result && call.name === p.name && message?.role === "toolResult"
+          && message.callId === p.callId && message.name === p.name
+          && (p.outcome === "success" ? message.isError === false
+            : ["error", "cancelled", "skipped"].includes(p.outcome) ? message.isError === true : p.outcome === "unknown"));
       } else if (record.kind === "interruption") {
         requireValue(typeof p.cause === "string" && ids(p.operationIds)
           && p.operationIds.every((i) => this.operations.get(i)?.turnId === record.turnId));
@@ -97,10 +118,13 @@ export class JournalValidator {
         requireValue(object(p.from) && object(p.to) && typeof p.source === "string"
           && (p.checkpointId === null || this.contextIds.has(p.checkpointId)));
       } else if (record.kind === "input_queued") {
-        requireValue(id(p.inputId) && !this.inputs.has(p.inputId) && ["queued", "cancelled"].includes(p.state)
-          && typeof p.placement === "string");
+        const input = this.inputs.get(p.inputId);
+        requireValue(id(p.inputId) && typeof p.placement === "string"
+          && (p.state === "queued" ? !input : p.state === "cancelled" && input?.state === "queued"));
       } else if (record.kind === "input_consumed") {
-        requireValue(id(p.inputId) && !turn.inputs.has(p.inputId) && this.contextIds.has(p.messageId));
+        const message = this.contextInfo.get(p.messageId);
+        requireValue(id(p.inputId) && !turn.inputs.has(p.inputId) && message?.role === "user"
+          && message.inputId === p.inputId && this.inputs.get(p.inputId)?.state !== "cancelled");
       } else if (record.kind === "owner_binding") {
         requireValue(p.kind === "unbound" || (["host", "instance"].includes(p.kind)
           && id(p.ownerKey) && (p.historyBucket === null || id(p.historyBucket))));
@@ -126,11 +150,22 @@ export class JournalValidator {
       this.turns.get(record.turnId).finalOperationId = record.operationId;
     }
     if (record.kind === "turn_end") this.turns.get(record.turnId).end = record;
-    if (["message", "compaction"].includes(record.kind)) { this.contextIds.add(record.id); this.tip = record.id; }
+    if (["message", "compaction"].includes(record.kind)) {
+      this.contextIds.add(record.id); this.tip = record.id;
+      const message = p.message;
+      this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
+        role: message?.role, inputId: p.input?.id, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
+        calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part) => part?.type === "toolCall").map((call) => [call.id, call.name])) });
+    }
     if (record.kind === "rewind") this.tip = p.tipId;
-    if (record.kind === "tool_call") this.calls.set(p.callId, { name: p.name });
-    if (record.kind === "input_queued") this.inputs.add(p.inputId);
-    if (record.kind === "input_consumed") this.turns.get(record.turnId).inputs.add(p.inputId);
+    const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
+    if (record.kind === "tool_call") this.calls.set(callKey, { name: p.name, result: false });
+    if (record.kind === "tool_result") this.calls.get(callKey).result = true;
+    if (record.kind === "input_queued") this.inputs.set(p.inputId, { state: p.state, placement: p.placement });
+    if (record.kind === "input_consumed") {
+      this.turns.get(record.turnId).inputs.add(p.inputId);
+      if (this.inputs.has(p.inputId)) this.inputs.get(p.inputId).state = "consumed";
+    }
     if (record.kind === "handle_binding") this.handles.add(p.handleId);
     if (record.kind === "handle_retired") this.handles.delete(p.handleId);
     this.ids.add(record.id); this.seq = record.seq; this.parentId = record.id;

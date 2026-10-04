@@ -302,3 +302,10 @@ it("does not sweep corrupt legacy exact-name files or paths outside the root", a
   await expect(repo.delete({ id: "fixture-session", path: other, legacy: true })).rejects.toThrow("Invalid");
   expect(await stat(other)).toBeTruthy();
 });
+
+it("concurrent close releases a retired writer and reclaims its lock exactly once", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "concurrent-close" });
+  await repo.retire(session.metadata);
+  await Promise.all([session.close(), session.close(), repo.close()]);
+  expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+});

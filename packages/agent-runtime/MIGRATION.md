@@ -29,7 +29,11 @@ Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoo
 The immutable journal ID is independent of the epoch-bound provider handle;
 logical ownership remains explicitly unbound until a host descriptor binds it. Idle
 legacy v3/v4 files import their effective main-branch context only. After the
-new store is fsynced, the source is renamed to `*.jsonl.migrated`; other branches
+new store and publication directories are fsynced, the source is identity-checked
+and renamed to `*.jsonl.migrated`, then its directory/root are synced. Source
+fingerprints and import IDs make valid staging/publication/archive phases
+restartable. Archival failures preserve the published destination; duplicate IDs,
+source replacement and corrupt complete records fail closed. Other branches
 and upstream operation internals are not imported. Files with open operations
 remain untouched and start a new native transcript using the host's cold replay.
 That preserves canonical chat history, not exact interrupted native context.

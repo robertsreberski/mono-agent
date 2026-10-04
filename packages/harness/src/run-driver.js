@@ -80,7 +80,7 @@ export function createRunDriver(store, options) {
         for (const call of event.message.content.filter((part) => part?.type === "toolCall")) {
           await store.write("tool_call", { callId: call.id, name: call.name, messageId: entryId, admission: "observed" }, { operationId: runId });
         }
-      } else if (event.message.role === "toolResult" && store.validator.calls.has(event.message.toolCallId)) {
+      } else if (event.message.role === "toolResult" && store.validator.calls.has(`${runId ?? turnId}\0${event.message.toolCallId}`)) {
         await store.write("tool_result", { callId: event.message.toolCallId, name: event.message.toolName, messageId: entryId,
           outcome: event.message.isError ? "error" : "success" }, { operationId: runId });
       }

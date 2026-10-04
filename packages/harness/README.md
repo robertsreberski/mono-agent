@@ -59,6 +59,16 @@ locks never hold that mutex over model execution. Torn owned tails are repaired
 and fsynced before reuse; complete corruption and resource failures are explicit.
 Native records above 2 MiB and journals above 32 MiB are supported.
 
+Idle legacy Pi v3/v4 imports retain a source inode/content fingerprint and import
+ID in owned staging. Complete context is sealed and fsynced before publication;
+publication directories are synced before the source is identity-checked and
+archived. Process-crash retries resume validated stages or rebuild incomplete
+unpublished context from that unchanged source. Published context is never
+removed merely because archival or a later sync failed. Duplicate IDs, replaced
+sources, corrupt complete records and incomplete ownership headers fail closed.
+Open legacy operations instead create a clean break without replay or source
+mutation. No unreleased mono-v1 converter or mixed-binary writer mode exists.
+
 P1a preserves abort-on-reopen and destructive model-change retirement. Native
 interruption repair, host crash adoption, handoffs and durable live-input queues
 are not implemented by the schema alone.
@@ -91,14 +101,6 @@ buildHarnessSessionContext
 createRunDriver
 projectContext
 validateJournalHeader
-```
-
-**`@mono-agent/harness/bounded-jsonl.js`**
-
-```text
-MAX_FILE
-MAX_LINE
-readBoundedJsonl
 ```
 
 **`@mono-agent/harness/compaction-kit/compaction.js`**
@@ -152,13 +154,19 @@ JOURNAL_VERSION
 JournalEntry
 JournalHeader
 JournalKind
+LegacyImport
 Provenance
+SourceIdentity
 ```
 
 **`@mono-agent/harness/legacy-import.js`**
 
 ```text
 archiveLegacySession
+assertLegacyIdentity
+importDescriptor
+importSourceMetadata
+legacyJournalId
 listLegacySessions
 readLegacySession
 ```

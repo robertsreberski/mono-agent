@@ -1,7 +1,9 @@
 // One-way idle MAIN branch import only. Never schedule or replay old operations.
+import { constants } from "node:fs";
 import { lstat, readdir, rename, open } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { readBoundedJsonl } from "./bounded-jsonl.js";
+import { createHash } from "node:crypto";
+import { dirname, join, relative, resolve } from "node:path";
+import { JournalReader } from "./journal-reader.js";
 import { buildHarnessSessionContext } from "./session-context.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -17,22 +19,30 @@ export async function listLegacySessions(root) {
       if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
       const path = join(root, dir.name, file.name);
       try {
-        const { records } = await readBoundedJsonl(path, root);
-        const h = records[0];
+        const reader = await JournalReader.open(path, root, { ownerOnly: false });
+        let h; try { h = await reader.readHeader(); } finally { await reader.close(); }
         if (h?.v === 4 && h.kind === "header" && h.storageVersion === 1) {
           result.push({ id: h.id, cwd: h.cwd, createdAt: h.createdAt, path, legacy: true });
         } else if (h?.type === "session" && h.version === 3) {
           result.push({ id: h.id, cwd: h.cwd, createdAt: Date.parse(h.timestamp), path, legacy: true });
         }
-      } catch { /* malformed files are not resumable */ }
+      } catch { fail(); }
     }
   }
   return result;
 }
 
 export async function readLegacySession(metadata, root) {
-  const evidence = await readBoundedJsonl(metadata.path, root);
-  const [header, ...records] = evidence.records;
+  const reader = await JournalReader.open(metadata.path, root, { ownerOnly: false });
+  let evidence;
+  /** @type {any} */ let header;
+  const records = [];
+  try {
+    evidence = await reader.scan((record) => { if (!header) header = record; else records.push(record); });
+    const identity = await reader.fingerprint();
+    if (!["dev", "ino", "size", "mtimeMs"].every((key) => evidence.identity[key] === identity[key])) fail();
+    evidence.identity = identity;
+  } finally { await reader.close(); }
   if (header?.id !== metadata.id) fail();
   const entries = new Map();
   const values = new Map();
@@ -92,14 +102,44 @@ export async function readLegacySession(metadata, root) {
   return { status: "import", messages: buildHarnessSessionContext(branch), evidence };
 }
 
-export async function archiveLegacySession(metadata, root, evidence) {
-  // Detect changes after the read; only a successful NEW-store fsync may call this.
-  const stat = await lstat(metadata.path);
-  if (stat.dev !== evidence.identity.dev || stat.ino !== evidence.identity.ino
-    || stat.size !== evidence.identity.size || stat.mtimeMs !== evidence.identity.mtimeMs) fail();
-  await rename(metadata.path, `${metadata.path}.migrated`);
+export function legacyJournalId(metadata, root) {
+  return createHash("sha256").update(`legacy\0${relative(resolve(root), resolve(metadata.path))}\0${metadata.id}`).digest("hex");
+}
+export function importDescriptor(metadata, root, projected) {
+  const source = { path: relative(resolve(root), resolve(metadata.path)), id: metadata.id, identity: projected.evidence.identity };
+  return { version: 1, importId: createHash("sha256").update(JSON.stringify(source)).digest("hex"), source,
+    mode: projected.status, messageCount: projected.messages?.length ?? 0,
+    contextHash: createHash("sha256").update(JSON.stringify(projected.messages ?? [])).digest("hex") };
+}
+export function importSourceMetadata(info, root) {
+  if (typeof info?.source?.path !== "string" || info.source.path.split(/[\\/]/).length !== 2
+    || info.source.path.split(/[\\/]/).some((part) => !part || part === "." || part === "..")
+    || !info.source.path.endsWith(".jsonl")) fail();
+  return { id: info.source.id, path: join(resolve(root), info.source.path), legacy: true };
+}
+export async function assertLegacyIdentity(path, root, identity) {
+  const reader = await JournalReader.open(path, root, { ownerOnly: false });
+  try {
+    const current = await reader.fingerprint();
+    if (!["dev", "ino", "size", "mtimeMs", "sha256"].every((key) => current[key] === identity[key])) fail();
+  } finally { await reader.close(); }
+}
+async function exists(path) { try { await lstat(path); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; } }
+export async function archiveLegacySession(metadata, root, evidence, phase = async (_name) => {}) {
+  const archive = `${metadata.path}.migrated`;
+  const originalExists = await exists(metadata.path), archiveExists = await exists(archive);
+  if (originalExists && archiveExists) fail(); // never overwrite an earlier archive
+  if (!originalExists && !archiveExists) fail();
+  if (originalExists) {
+    await assertLegacyIdentity(metadata.path, root, evidence.identity);
+    await rename(metadata.path, archive);
+    await assertLegacyIdentity(archive, root, evidence.identity);
+    await phase("archive_renamed");
+  } else await assertLegacyIdentity(archive, root, evidence.identity);
   for (const path of new Set([dirname(metadata.path), resolve(root)])) {
-    const handle = await open(path, "r");
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try { await handle.sync(); } finally { await handle.close(); }
   }
+  await assertLegacyIdentity(archive, root, evidence.identity);
+  await phase("archive_synced");
 }

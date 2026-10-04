@@ -13,6 +13,8 @@
   Import idle legacy Pi main-branch context; reopen still aborts old operations
   and model-change retirement remains destructive. Support large native records
   and journals with kernel-backed writer exclusion and safe retired-lock cleanup.
+  Resume interrupted idle legacy imports without deleting published context
+  when source archival fails.
 
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth
