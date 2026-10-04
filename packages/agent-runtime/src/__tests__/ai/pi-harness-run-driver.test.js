@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { MemorySessionRepo } from "../../ai/providers/pi-native/harness/session-store.js";
 import { createPiHarnessAdapter, createPiSessionAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
 
-async function harness(responses, retry) {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture" }], tokensPerSecond: undefined });
+async function harness(responses, retry, modelDef = {}) {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture", ...modelDef }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider); faux.setResponses(responses);
   const repo = new MemorySessionRepo(); const raw = await repo.create();
   const adapter = await createPiHarnessAdapter(createPiSessionAdapter(raw), {
@@ -65,5 +65,25 @@ it("preserves deferred admission without polling or replaying provider work", as
     await adapter.abortOpenOperations();
     expect(await raw.getOpenTurns()).toHaveLength(0);
     expect(faux.state.callCount).toBe(1);
+  } finally { await adapter.close(); }
+});
+
+it.each([
+  ["premature length", fauxAssistantMessage([fauxText("OK")], { stopReason: "length" }), { maxTokens: 64, contextWindow: 4096 }, "failed"],
+  ["genuine output cap", fauxAssistantMessage([fauxText("four token reply")], { stopReason: "length" }), { maxTokens: 4, contextWindow: 4096 }, "completed"],
+  ["silent overflow", fauxAssistantMessage([fauxText("OK")]), { maxTokens: 64, contextWindow: 1 }, "failed"],
+  ["premature length with a tool call", fauxAssistantMessage([fauxToolCall("NeverExecute", {}, { id: "fictional-truncated-call" })], { stopReason: "length" }), { maxTokens: 64, contextWindow: 4096 }, "failed"],
+])("preserves removed-harness response classification: %s", async (_name, response, modelDef, status) => {
+  const { adapter, raw, faux } = await harness([response], undefined, modelDef);
+  const events = []; adapter.subscribe((event) => events.push(event));
+  try {
+    expect((await adapter.prompt("Fictional request.")).status).toBe(status);
+    expect(faux.state.callCount).toBe(1); // Overflow is not a transient retry.
+    const final = (await raw.getEntries()).at(-1).message;
+    expect(final.content).toEqual(response.content);
+    expect(final.stopReason).toBe(status === "failed" ? "error" : "length");
+    if (status === "failed") expect(final.errorMessage).toBe("Assistant request exceeded the context window");
+    expect(events.some((event) => event.type === "tool_execution_start")).toBe(false);
+    expect(events.find((event) => event.type === "turn_end").message).toMatchObject({ stopReason: final.stopReason, usage: final.usage });
   } finally { await adapter.close(); }
 });

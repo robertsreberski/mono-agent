@@ -5,6 +5,9 @@
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 
+- Fix provider readiness probes accepting premature or context-limited output
+  as successful.
+
 - Keep Pi-native execution on Pi 1.x with an owned session store; import idle
   legacy main-branch context and cold-replay interrupted sessions.
 

@@ -1,4 +1,4 @@
-import { retryAssistantCall } from "@earendil-works/pi-ai";
+import { isContextOverflow, isRecoverableLength, retryAssistantCall } from "@earendil-works/pi-ai";
 
 export const BACKOFF_ABORT = Symbol("mono-pi-backoff-abort");
 
@@ -27,6 +27,11 @@ function eventChannel() {
 
 /** Retry one conversational provider request, not tools or the whole agent run. */
 export function createRetryStream(models, model, context, options, policy, emit) {
+  // The old harness re-resolved identity through Models before dispatch and
+  // classification. Host policy metadata may differ from the transport catalog;
+  // use the same facade (including probe caps/context-1M) as the actual request.
+  const requestModel = models.getModel(model.provider, model.id);
+  if (!requestModel) throw new Error("Configured Pi model is unavailable");
   const channel = eventChannel();
   let resolveResult = (_value) => {}, rejectResult = (_error) => {};
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
@@ -39,7 +44,7 @@ export function createRetryStream(models, model, context, options, policy, emit)
   void (async () => {
     try {
       const final = await retryAssistantCall(async () => {
-        const stream = await models.streamSimple(model, context, options);
+        const stream = await models.streamSimple(requestModel, context, options);
         ordinal += 1;
         for await (const event of stream) {
           if (event.type === "done" || event.type === "error") continue;
@@ -49,6 +54,15 @@ export function createRetryStream(models, model, context, options, policy, emit)
           } else await channel.push(event);
         }
         last = await stream.result();
+        // The removed harness classified silent overflow and a premature length
+        // stop before tool dispatch/settlement. The low-level loop does not: a
+        // length response without calls is otherwise a successful final answer.
+        // Keep the original model cap (before provider context clamping), usage
+        // and content, and leave real provider errors/cancellation unchanged.
+        if (last.stopReason !== "error" && (isContextOverflow(last, requestModel.contextWindow)
+          || isRecoverableLength(last, requestModel.maxTokens))) {
+          last = { ...last, stopReason: "error", errorMessage: last.errorMessage ?? "Assistant request exceeded the context window" };
+        }
         return last;
       }, policy, options.signal, {
         onRetryScheduled: async (attempt, maxRetries, delayMs, errorMessage) => {
