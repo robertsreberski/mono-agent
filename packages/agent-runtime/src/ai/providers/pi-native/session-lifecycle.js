@@ -120,6 +120,7 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
   if (!repo) {
     repo = new JsonlSessionRepo({
       sessionsRoot: root,
+      onRootPermissionsTightened: () => { repo.rootPermissionWarningPending = true; },
     });
     durableNativeSessionRepos.set(root, repo);
   }

@@ -5,7 +5,7 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonlSessionRepo, MemorySessionRepo, SessionStore } from "../session-store.js";
-import { readLegacySession } from "../legacy-import.js";
+import { readLegacySession, listLegacySessions } from "../legacy-import.js";
 const roots = [];
 async function root() { const r = await mkdtemp(join(tmpdir(), "mono-pi-store-")); roots.push(r); return r; }
 afterEach(async () => { for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true }); });
@@ -357,4 +357,45 @@ it("publishes concurrent same-handle creations under one catalogue reservation",
   expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
   for (const outcome of outcomes) if (outcome.status === "fulfilled") await outcome.value.close();
   expect(await repos[0].listOwned()).toHaveLength(1);
+});
+
+it.each(["stage_created", "stage_synced"].flatMap((phase) => ["native", "legacy"].map((next) => [phase, next])))("reclaims SIGKILLed native %s creation and its writer before %s reuse", async (phase, next) => {
+  const r = await root();
+  const child = fork(new URL("./fixtures/native-create-worker.mjs", import.meta.url), [r, phase], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  try {
+    const notice = await Promise.race([once(child, "message"), once(child, "exit").then(([code]) => { throw new Error(`Native creator exited: ${code}`); })]);
+    expect(notice[0]).toEqual({ phase }); const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+  const directory = join(r, "mono-v2", "journals"); const [abandoned] = await readdir(directory);
+  expect(abandoned).toMatch(/\.jsonl\.creating$/); const journalId = abandoned.slice(0, -".jsonl.creating".length);
+  const lock = join(r, "mono-v2", "locks", `${journalId}.sqlite`); expect((await stat(lock)).isFile()).toBe(true);
+  const bytes = await readFile(join(directory, abandoned), "utf8");
+  if (phase === "stage_created") expect(bytes).toBe("");
+  else expect(JSON.parse(bytes)).toMatchObject({ id: "fixture-session", journalId });
+  const repo = new JsonlSessionRepo({ sessionsRoot: r }); let resumed;
+  if (next === "native") resumed = await repo.create({ id: "fixture-session" });
+  else { await fixture(r, 4); resumed = await repo.open((await listLegacySessions(r))[0]); expect(await resumed.getEntries()).toHaveLength(2); }
+  await resumed.close(); await expect(stat(join(directory, abandoned))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await repo.list()).map((metadata) => metadata.id)).toEqual(["fixture-session"]);
+});
+
+it("does not reclaim a native creation whose writer is still held", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const locks = await repo.ensureDirectory();
+  const journalId = "11111111-2222-4333-8444-555555555555"; const writer = await locks.acquireWriter(journalId);
+  const path = join(r, "mono-v2", "journals", `${journalId}.jsonl.creating`);
+  try {
+    await writeFile(path, "", { mode: 0o600 }); expect(await repo.list()).toEqual([]);
+    expect((await stat(path)).size).toBe(0); expect((await stat(writer.path)).isFile()).toBe(true);
+  } finally { writer.release(); }
+  expect(await repo.list()).toEqual([]); await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(writer.path)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("does not reclaim context-bearing or future native creation artifacts", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "context-preserved" });
+  await session.appendMessage(message); const metadata = session.metadata; await session.close();
+  const path = `${metadata.path}.creating`; await rename(metadata.path, path); const bytes = await readFile(path);
+  await expect(repo.list()).rejects.toThrow("Invalid"); expect((await readFile(path)).equals(bytes)).toBe(true);
+  expect((await stat(join(r, "mono-v2", "locks", `${metadata.journalId}.sqlite`))).isFile()).toBe(true);
 });

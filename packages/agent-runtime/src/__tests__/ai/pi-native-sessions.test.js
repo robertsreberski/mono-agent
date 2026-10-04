@@ -894,19 +894,42 @@ describe("pi-native sessions", () => {
     const source = join(directory, "fixture_fixture-session.jsonl");
     await fsPromises.copyFile(new URL(`../../../../harness/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
     await fsPromises.chmod(root, 0o755);
-    let context;
-    faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }]);
+    let context; const warnings = [];
+    faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }, fauxAssistantMessage([fauxText("Next fictional reply.")])]);
     try {
       const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Continue the fictional project." }],
         sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+        onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
       }));
       expect(result.error).toBeNull(); expect(transcriptOf(context)).toHaveLength(3);
       expect(transcriptOf(context)[0]).toContain("Summarize the fictional project.");
       expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
       for (const path of [join(root, "mono-v2"), join(root, "mono-v2", "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
       expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../harness/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
+      const resumed = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+        messages: [{ role: "user", content: "Continue again." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+        onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
+      })); expect(resumed.error).toBeNull();
+      const tightened = warnings.filter((warning) => warning.warning_kind === "pi_sessions_root_permissions_tightened");
+      expect(tightened).toHaveLength(1); expect(tightened[0]).toMatchObject({ source: "pi", message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." });
+      expect(JSON.stringify(tightened)).not.toContain(root);
     } finally { await disposeProviderSession("fixture-session").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("warns about tightened root access even when later storage setup fails", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "failed-permissions-")); const warnings = [];
+    await fsPromises.chmod(root, 0o755); mkdirSync(join(root, "mono-v2")); await fsPromises.chmod(join(root, "mono-v2"), 0o755);
+    try {
+      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+        messages: [{ role: "user", content: "Fictional input." }], sessionKeepAlive: true, sessionId: "failed-permissions", piSessionsRoot: root,
+        onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
+      }));
+      expect(result.error).toBeTruthy(); expect(faux.state.callCount).toBe(0);
+      expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
+      const tightened = warnings.filter((warning) => warning.warning_kind === "pi_sessions_root_permissions_tightened");
+      expect(tightened).toHaveLength(1); expect(JSON.stringify(tightened)).not.toContain(root);
+    } finally { await disposeProviderSession("failed-permissions").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
   });
 
   it.each(["provider", "throw", "abort"].flatMap((failure) => [true, false].map((seed) => [failure, seed])))("rolls back the seeded clean-break legacy epoch after %s failure (seed=%s)", async (failure, seed) => {

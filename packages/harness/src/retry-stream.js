@@ -38,7 +38,10 @@ export function createRetryStream(models, model, context, options, policy, emit)
   const abort = () => controller.abort(options.signal?.reason);
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
-  const channel = eventChannel(() => controller.abort());
+  let consumerClosed = false;
+  const assertConsumerOpen = () => { if (consumerClosed) throw new Error("Retry stream consumer closed"); };
+  const emitIfOpen = (event) => { assertConsumerOpen(); return emit(event); };
+  const channel = eventChannel(() => { consumerClosed = true; controller.abort(); });
   let resolveResult = (_value) => {}, rejectResult = (_error) => {};
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   // The iterator carries errors too; don't manufacture an unhandled rejection
@@ -50,16 +53,18 @@ export function createRetryStream(models, model, context, options, policy, emit)
   void (async () => {
     try {
       const final = await retryAssistantCall(async () => {
+        assertConsumerOpen();
         const stream = await models.streamSimple(requestModel, context, { ...options, signal: controller.signal });
         ordinal += 1;
         for await (const event of stream) {
           if (event.type === "done" || event.type === "error") continue;
           if (event.type === "start") {
             if (!hasStart) { hasStart = true; await channel.push(event); }
-            else await emit({ type: "message_start", message: event.partial });
+            else await emitIfOpen({ type: "message_start", message: event.partial });
           } else await channel.push(event);
         }
         last = await stream.result();
+        assertConsumerOpen();
         // The removed harness classified silent overflow and a premature length
         // stop before tool dispatch/settlement. The low-level loop does not: a
         // length response without calls is otherwise a successful final answer.
@@ -72,18 +77,20 @@ export function createRetryStream(models, model, context, options, policy, emit)
         return last;
       }, policy, controller.signal, {
         onRetryScheduled: async (attempt, maxRetries, delayMs, errorMessage) => {
+          assertConsumerOpen();
           // Old harness persisted and billed failed attempts, but did not emit
           // turn_end until a request settled. Keep that stream/accounting shape.
           if (!hasStart) { hasStart = true; await channel.push({ type: "start", partial: last }); }
-          await emit({ type: "message_end", message: last });
-          await emit({ type: "retry_scheduled", attempt: attempt + 1, maxAttempts: maxRetries + 1, delayMs, errorMessage });
+          await emitIfOpen({ type: "message_end", message: last });
+          await emitIfOpen({ type: "retry_scheduled", attempt: attempt + 1, maxAttempts: maxRetries + 1, delayMs, errorMessage });
         },
-        onRetryAttemptStart: () => emit({ type: "retry_start", attempt: ordinal + 1 }),
-        onRetryFinished: (success, attempt, finalError) => emit({ type: "retry_end", success, attempt: attempt + 1, finalError }),
+        onRetryAttemptStart: () => emitIfOpen({ type: "retry_start", attempt: ordinal + 1 }),
+        onRetryFinished: (success, attempt, finalError) => emitIfOpen({ type: "retry_end", success, attempt: attempt + 1, finalError }),
       });
       if (final.stopReason === "aborted" && last?.stopReason === "error") {
         Object.defineProperty(final, BACKOFF_ABORT, { value: true });
       }
+      assertConsumerOpen();
       resolveResult(final);
       await channel.push(final.stopReason === "error" || final.stopReason === "aborted"
         ? { type: "error", reason: final.stopReason, error: final }

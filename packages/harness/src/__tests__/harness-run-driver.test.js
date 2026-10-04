@@ -125,16 +125,30 @@ it("gives standalone manual compaction an explicitly synthetic promptless turn",
   } finally { await adapter.close(); await raw.close(); }
 });
 
-it("settles retry producer and aborts its transport when the consumer exits early", async () => {
+it.each([0, 3])("settles retry producer without scheduling retries after early consumer exit (maxRetries=%s)", async (maxRetries) => {
   const message = { role: "assistant", content: [], stopReason: "stop", usage: { input: 1, output: 1, totalTokens: 2 } };
-  let signal, closed = false;
+  let signal, closed = false, calls = 0; const events = [];
   const model = { provider: "faux", id: "closed", contextWindow: 100000, maxTokens: 1000 };
   const models = { getModel: () => model, streamSimple: async (_model, _context, options) => {
-    signal = options.signal;
+    signal = options.signal; calls += 1;
     return { async *[Symbol.asyncIterator]() { try { yield { type: "start", partial: message }; yield { type: "text_delta", delta: "Fictional text." }; } finally { closed = true; } }, result: async () => message };
   } };
-  const stream = createRetryStream(models, model, { messages: [] }, {}, { maxRetries: 0 }, async () => {});
+  const stream = createRetryStream(models, model, { messages: [] }, {}, { enabled: true, maxRetries, baseDelayMs: 0 }, async (event) => { events.push(event); });
   const iterator = stream[Symbol.asyncIterator](); expect((await iterator.next()).value.type).toBe("start");
   await iterator.return(); await expect(stream.result()).rejects.toThrow("consumer closed");
-  expect(signal.aborted).toBe(true); expect(closed).toBe(true);
+  expect(signal.aborted).toBe(true); expect(closed).toBe(true); expect(calls).toBe(1); expect(events).toEqual([]);
+});
+
+it("does not emit retry lifecycle after consumer exit while a retryable result settles", async () => {
+  const model = { provider: "faux", id: "closed-result", contextWindow: 100000, maxTokens: 1000 };
+  const message = error("503 service unavailable"); let resolveResult, resultEntered; let calls = 0;
+  const pending = new Promise((resolve) => { resolveResult = resolve; }); const entered = new Promise((resolve) => { resultEntered = resolve; });
+  const events = []; const models = { getModel: () => model, streamSimple: async () => {
+    calls += 1; return { async *[Symbol.asyncIterator]() { yield { type: "start", partial: message }; }, result: () => { resultEntered(); return pending; } };
+  } };
+  const stream = createRetryStream(models, model, { messages: [] }, {}, { enabled: true, maxRetries: 3, baseDelayMs: 0 }, async (event) => { events.push(event); });
+  const iterator = stream[Symbol.asyncIterator](); expect((await iterator.next()).value.type).toBe("start");
+  const next = iterator.next(); await entered; const returned = iterator.return(); resolveResult(message);
+  await next; await returned; await expect(stream.result()).rejects.toThrow("consumer closed");
+  expect(calls).toBe(1); expect(events).toEqual([]);
 });

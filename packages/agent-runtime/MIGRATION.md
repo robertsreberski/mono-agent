@@ -49,7 +49,9 @@ still deletes native evidence. No public runtime-adapter descriptor is added.
 
 An existing current-uid-owned Pi 0.99 root such as 0755 is tightened to 0700
 through a pinned no-follow descriptor before creating v2 data. Group/other-writable
-roots are rejected, not adopted. Version directories, journals and locks remain
+roots are rejected, not adopted. The runtime emits one bounded, path-free
+`runtime_warning` with kind `pi_sessions_root_permissions_tightened` when access
+is tightened, including if later session setup fails. Version directories, journals and locks remain
 strictly owner-private;
 symlinked/replaced components and complete corrupt records fail closed. Native
 headers publish through synced `.creating` files; incomplete unpublished creations

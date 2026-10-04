@@ -25,7 +25,7 @@ export class JournalLocks {
     this.catalogPath = join(this.directory, "catalog.sqlite");
   }
   /** @param {string} sessionsRoot */
-  static async open(sessionsRoot) {
+  static async open(sessionsRoot, onRootPermissionsTightened = () => {}) {
     const root = resolve(sessionsRoot);
     // Validate each existing parent under the supplied trust boundary before
     // creating its child; recursive mkdir would follow an existing symlink.
@@ -42,7 +42,7 @@ export class JournalLocks {
         const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
         try {
           if (!same(stat, await handle.stat())) fail();
-          await handle.chmod(0o700); await handle.sync();
+          await handle.chmod(0o700); onRootPermissionsTightened(); await handle.sync();
           const current = await lstat(path); if (!same(stat, current)) fail(); stat = current;
         } finally { await handle.close(); }
       }

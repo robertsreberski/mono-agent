@@ -194,7 +194,7 @@ async function syncPath(path) {
 const sameIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino;
 async function absent(path) { try { await lstat(path); return false; } catch (error) { if (error.code === "ENOENT") return true; throw error; } }
 export class JsonlSessionRepo {
-  constructor({ sessionsRoot, onImportPhase = async (_phase) => {} }) {
+  constructor({ sessionsRoot, onImportPhase = async (_phase) => {}, onRootPermissionsTightened = () => {} }) {
     this.root = resolve(sessionsRoot);
     this.directory = join(this.root, "mono-v2", "journals");
     this.openSessions = new Map();
@@ -202,9 +202,10 @@ export class JsonlSessionRepo {
     this.directoryIdentity = null;
     this.retiredHandles = new Set();
     this.onImportPhase = onImportPhase;
+    this.onRootPermissionsTightened = onRootPermissionsTightened;
   }
   async ensureDirectory() {
-    this.locksPromise ??= JournalLocks.open(this.root);
+    this.locksPromise ??= JournalLocks.open(this.root, this.onRootPermissionsTightened);
     const locks = await this.locksPromise;
     await locks.assertRoot();
     try { await mkdir(this.directory, { mode: 0o700 }); }
@@ -536,18 +537,47 @@ export class JsonlSessionRepo {
     if (this.directoryIdentity) await this.assertDirectory();
     const result = [];
     for (const file of files) {
-      if (!file.name.endsWith(".jsonl") && !(includeStaging && (file.name.endsWith(".jsonl.importing") || file.name.endsWith(".jsonl.creating")))) continue;
+      const creating = file.name.endsWith(".jsonl.creating");
+      if (!file.name.endsWith(".jsonl") && !creating && !(includeStaging && file.name.endsWith(".jsonl.importing"))) continue;
       if (!file.isFile()) fail();
       const path = join(this.directory, file.name);
       const reader = await JournalReader.open(path, this.root);
       try {
         const header = await reader.readHeader({ allowIncomplete: file.name.endsWith(".jsonl.creating") });
-        if (!header) continue; // unpublished creation is not another session's corruption
+        // Native create uses UUIDs; imports use deterministic SHA-256 IDs. An
+        // incomplete import header must remain available to source-bound recovery.
+        const journalId = file.name.slice(0, -".jsonl.creating".length);
+        if (creating && (!header || !header.import) && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(journalId)) {
+          if (header) {
+            validateJournalHeader(header); this.checkMetadata({ ...header, path });
+            let count = 0; const scan = await reader.scan(() => { count += 1; });
+            if (count !== 1 || scan.torn) fail(); // never discard context or future phase data
+          }
+          await this.#reclaimNativeCreation(reader, { journalId });
+          continue; // a busy failed creator's unpublished header is not a live session
+        }
+        if (!header || (creating && !includeStaging)) continue;
         validateJournalHeader(header);
         const metadata = { ...header, path }; this.checkMetadata(metadata); result.push(metadata);
       } finally { await reader.close(); }
     }
     return result;
+  }
+  // Caller holds catalogue: every native creating->rename transaction holds it
+  // too. Try the writer, never wait under catalogue or reclaim a live owner.
+  async #reclaimNativeCreation(reader, metadata) {
+    const locks = await this.locksPromise;
+    const lockPath = join(locks.directory, `${metadata.journalId}.sqlite`);
+    await locks.ensureFile(lockPath);
+    const writer = await locks.tryLock(lockPath);
+    if (!writer) return;
+    try {
+      await reader.assertIdentity(); await unlink(reader.path); await this.syncDirectories();
+      if (!await this.journalDataGone(metadata)) return;
+      await locks.assertRoot();
+      if (!sameIdentity(await lstat(writer.path), writer.identity)) fail();
+      writer.release(); await unlink(writer.path); await locks.syncDirectory();
+    } finally { writer.release(); }
   }
   async list() {
     const owned = await this.listOwned();

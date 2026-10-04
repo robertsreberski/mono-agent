@@ -71,7 +71,10 @@ completion turn makes later opens independent of the optional archive; retiremen
 removes matching archived evidence as well as publication/staging. Duplicate IDs, replaced
 sources and corrupt complete records fail closed. Headers publish atomically
 through synced `.creating` files. Incomplete unpublished creations do not poison
-the catalogue; source-bound imports rebuild them under ownership.
+the catalogue; source-bound imports rebuild them under ownership. Abandoned
+native UUID `.creating` headers (including empty headers) are reclaimed with
+their writer-lock files under the catalogue, only after nonblocking writer
+acquisition and identity validation; context-bearing/unknown artifacts pin state.
 Open legacy operations instead create a clean break without replay or source
 mutation. No unreleased mono-v1 converter or mixed-binary writer mode exists.
 

@@ -15,7 +15,9 @@
   and journals with kernel-backed writer exclusion and safe retired-lock cleanup.
   Resume interrupted idle legacy imports without deleting published context
   when source archival fails. Adopt owned legacy 0755 roots safely, retain only
-  selected v3 parent context, and retire matching archived evidence.
+  selected v3 parent context, and retire matching archived evidence. Reclaim crashed
+  native creations and warn once when legacy root access is tightened; fail closed
+  rather than salvage stale legacy evidence behind unreadable native state.
 
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth

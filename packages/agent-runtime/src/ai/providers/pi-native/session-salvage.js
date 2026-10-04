@@ -30,22 +30,26 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
     }
   }
   const owned = [];
+  let skippedJournal = false;
   const journals = join(root, "mono-v2", "journals");
   let journalFiles = [];
   try { journalFiles = await readdir(journals, { withFileTypes: true }); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   for (const file of journalFiles) {
     if (!file.name.endsWith(".jsonl")) continue;
-    if (!file.isFile()) continue;
+    if (!file.isFile()) { skippedJournal = true; continue; }
     const path = join(journals, file.name);
     let reader;
     try {
       reader = await JournalReader.open(path, root);
       const header = await reader.readHeader(); validateJournalHeader(header);
       if (header?.format === "mono-harness" && header.version === 2 && header.id === sessionId) owned.push(path);
-    } catch { /* Best-effort discovery: an unrelated bad header is not this ID. */ }
+    } catch { skippedJournal = true; }
     finally { await reader?.close(); }
   }
+  // An unreadable journal may be the requested clean-break successor. Never
+  // silently return its stale legacy source when ownership is uncertain.
+  if (owned.length > 1 || (skippedJournal && owned.length === 0)) fail();
   if (owned.length === 1) matches.splice(0, matches.length, owned[0]);
   if (matches.length !== 1) fail();
   const path = matches[0];

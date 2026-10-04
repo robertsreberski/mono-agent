@@ -508,20 +508,29 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation, F4 cold-reopen re-read) are await-free by construction. A
     // session miss stays cheap: no tool/MCP/harness init runs before this
     // fast-fail.
-    const resolvedSession = await resolveSession(runState, {
-      requestedSessionId,
-      providerSessionId,
-      durableRepo,
-      sessionTtlMs,
-      cwd: options.cwd,
-      resolved,
-      options,
-      events,
-      runtimeWarnings,
-      start,
-      piTransport,
-    });
-    if (resolvedSession.done) return resolvedSession.result;
+    try {
+      const resolvedSession = await resolveSession(runState, {
+        requestedSessionId,
+        providerSessionId,
+        durableRepo,
+        sessionTtlMs,
+        cwd: options.cwd,
+        resolved,
+        options,
+        events,
+        runtimeWarnings,
+        start,
+        piTransport,
+      });
+      if (resolvedSession.done) return resolvedSession.result;
+    } finally {
+      if (durableRepo?.rootPermissionWarningPending) {
+        durableRepo.rootPermissionWarningPending = false;
+        const warning = { warning_kind: "pi_sessions_root_permissions_tightened", source: "pi",
+          message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." };
+        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
+      }
+    }
 
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
