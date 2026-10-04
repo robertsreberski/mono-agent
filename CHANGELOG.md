@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep answer text before reply-presentation tools in the final reply across
+  channels, without repeating it in the web console’s settled Activity.
+
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth
   files and writable/foreign auth parents, and preserve budget-exhaustion codes

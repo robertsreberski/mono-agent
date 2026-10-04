@@ -8926,10 +8926,11 @@ function separatesAssistantMessages(part: WebMessagePart): boolean {
 /**
  * Settle the streamed transcript against the turn's authoritative final text.
  *
- * `finalText` is the LAST assistant message's text plus whatever the harness
+ * `finalText` is the trailing answer (including presentation-tool prose) plus
+ * whatever the harness
  * composed around it (a prepended rollover notice, an appended failover line) —
  * NOT the concatenation of everything streamed. Prose the model writes BETWEEN
- * tool calls lives in earlier text parts and is no part of it. Re-slicing
+ * ordinary tool calls lives in earlier text parts and is no part of it. Re-slicing
  * `finalText` across every text part by character length therefore smeared one
  * answer over that prose: each slot kept its own length and received a
  * contiguous piece of the answer, usually cut mid-word, while the prose it held
@@ -8968,15 +8969,17 @@ function reconcileFinalText(parts: WebMessagePart[], finalText: string): void {
     parts[lastIndex] = { type: "text", text: `${textAt(lastIndex)}${finalText.slice(streamed.length)}` };
     return;
   }
-  // How many trailing text parts did this answer stream into? Reasoning between
-  // two of them keeps them one answer; a tool call makes the earlier one another
-  // message's prose, which stays exactly as it streamed.
+  // Match the authoritative answer back to its trailing streamed prose. Within
+  // a message text joins directly; across tool messages the runtime joins
+  // promoted reply text with a blank line. Absorb only an exact matching chain,
+  // leaving unrelated narration and all non-text activity untouched.
   let first = textIndexes.length - 1;
   let tail = textAt(lastIndex);
   while (first > 0) {
     const previous = textIndexes[first - 1] as number;
-    if (parts.slice(previous + 1, textIndexes[first] as number).some(separatesAssistantMessages)) break;
-    const candidate = `${textAt(previous)}${tail}`;
+    const separator = parts.slice(previous + 1, textIndexes[first] as number).some(separatesAssistantMessages)
+      ? "\n\n" : "";
+    const candidate = `${textAt(previous)}${separator}${tail}`;
     if (!finalText.includes(candidate)) break;
     tail = candidate;
     first -= 1;

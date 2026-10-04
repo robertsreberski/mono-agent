@@ -1121,6 +1121,28 @@ describe("convertWebMessage", () => {
     ]);
   });
 
+  it("keeps reconciled presentation prose in the settled answer, not Activity", () => {
+    const answer = "Approve option A\n\nSaved.";
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "complete",
+      // WebStore removes promoted prose from its earlier streamed slots.
+      parts: [
+        { type: "text", text: "Checking options." },
+        { type: "tool-call", toolCallId: "read-1", toolName: "Read", args: {}, status: "complete" },
+        { type: "tool-call", toolCallId: "choices-1", toolName: "SuggestReplies", args: {}, status: "complete" },
+        { type: "text", text: answer },
+        { type: "reply_options", id: "choices", options: ["Approve option A", "Review option B"] },
+      ],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.filter((part) => part.type === "data-note"))
+      .toEqual([{ type: "data-note", data: { text: "Checking options." } }]);
+    expect(converted.content.filter((part) => part.type === "text"))
+      .toEqual([{ type: "text", text: answer }]);
+    expect(converted.content.at(-1)?.type).toBe("data-reply-options");
+  });
+
   it("drops blank interim prose rather than folding an empty note into the log", () => {
     const converted = convertWebMessage(
       message({

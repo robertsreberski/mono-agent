@@ -93,6 +93,12 @@ eviction closes the client, transport, and sandbox cleanup.
 Successful app-owned `SuggestReplies` calls also count as visible content for
 Pi-native silent-turn admission: a web reply with choices cannot finish silently.
 
+Final reply text includes the trailing chain of assistant messages whose earlier
+messages call only `SuggestReplies`, `PublishReplyFile`, or `ProposeRestart`
+(including MCP-qualified names), joined with blank lines. Ordinary tool narration
+is not promoted. If that chain has no text, the existing whole-run streamed-text
+fallback still applies. This reply selection is shared by all channels.
+
 See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ### Anthropic cache retention

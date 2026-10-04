@@ -37,7 +37,6 @@ import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../run
 import { withContext1M, withContext1MModels } from "../context-1m.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
 import {
-  textFromContent,
   thinkingFromContent,
   toAgentMessages,
 } from "./pi-messages.js";
@@ -87,6 +86,7 @@ import {
   startLiveInput,
   thinkingLevelForEffort,
 } from "./pi-native/turn-runner.js";
+import { finalReplyText } from "./pi-native/reply-text.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
 
@@ -863,7 +863,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         assistantMessages,
         lastAssistant,
         stopReason: lastAssistant?.stopReason || null,
-        finalText: textFromContent(lastAssistant?.content) || runState.assistantTexts.join(""),
+        finalText: finalReplyText(assistantMessages, runState.assistantTexts),
         finalThinking: thinkingFromContent(lastAssistant?.content) || runState.assistantThinking.join(""),
       };
     };

@@ -2515,6 +2515,40 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it.each(["Saved.", ""])("settles promoted presentation prose once, preserving activity (final: %j)", async (finalText) => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Compare the options", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "Checking options." },
+      { kind: "event", event: { type: "tool_call_started", id: "read-1", name: "Read", arguments: {} } },
+      { kind: "append", delta: "Approve option A" },
+      { kind: "event", event: { type: "tool_call_started", id: "choices-1", name: "mcp__reply__SuggestReplies", arguments: {} } },
+      { kind: "append", delta: "File attached." },
+      { kind: "event", event: { type: "tool_call_started", id: "file-1", name: "PublishReplyFile", arguments: {} } },
+      ...(finalText ? [{ kind: "append" as const, delta: finalText }] : []),
+    ]);
+    const answer = ["Approve option A", "File attached.", finalText].filter(Boolean).join("\n\n");
+    const detail = store.completeTurn(turn.turnId, answer);
+    const expected = [
+      { type: "text", text: "Checking options." },
+      { type: "text", text: answer },
+    ];
+    // The webapp folds every text part except the last into Activity notes.
+    // Only genuine narration remains there; promoted prose lives once in reply.
+    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "text")).toEqual(expected);
+    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "tool-call")).toHaveLength(3);
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts.filter((part) => part.type === "text"))
+      .toEqual(expected);
+    reopened.close();
+  });
+
   it("appends only the text the runtime added after the stream closed", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
