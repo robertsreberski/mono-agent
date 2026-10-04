@@ -274,3 +274,31 @@ it("waits for foreign writer ownership before retirement and reclaims its releas
     expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
   } finally { spy?.mockRestore(); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 }, 10000);
+
+it("retirement removes staging and published phases under one writer lock", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "two-phases" }); await s.close();
+  const staging = `${s.metadata.path}.importing`; await copyFile(s.metadata.path, staging);
+  await repo.retireByHandle(s.metadata.id);
+  await expect(stat(s.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(staging)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+});
+
+it("unknown aliases pin ownership and make retirement fail closed", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "alias-guard" }); await s.close();
+  await mkdir(join(r, "mono-v2", "aliases"), { mode: 0o700 });
+  await writeFile(join(r, "mono-v2", "aliases", "future.json"), JSON.stringify({ journalId: s.metadata.journalId }), { mode: 0o600 });
+  await expect(repo.retireByHandle(s.metadata.id)).rejects.toThrow("Invalid");
+  expect(await stat(s.metadata.path)).toBeTruthy();
+  expect(await repo.journalDataGone(s.metadata)).toBe(false);
+});
+
+it("does not sweep corrupt legacy exact-name files or paths outside the root", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
+  await mkdir(join(r, "legacy")); const path = join(r, "legacy", "fictional_corrupt.jsonl"); await writeFile(path, "{bad}\n");
+  await expect(repo.retireByHandle("corrupt")).rejects.toThrow("Invalid");
+  expect(await readFile(path, "utf8")).toBe("{bad}\n");
+  const outside = await root(); const other = await fixture(outside, 4);
+  await expect(repo.delete({ id: "fixture-session", path: other, legacy: true })).rejects.toThrow("Invalid");
+  expect(await stat(other)).toBeTruthy();
+});

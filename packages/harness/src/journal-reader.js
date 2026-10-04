@@ -6,8 +6,8 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 const fail = () => { throw new Error("Harness journal read unavailable"); };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const secure = (stat, directory) => {
-  if (!(directory ? stat.isDirectory() : stat.isFile()) || (stat.mode & 0o077) !== 0
+const secure = (stat, directory, ownerOnly = true) => {
+  if (!(directory ? stat.isDirectory() : stat.isFile()) || (ownerOnly && (stat.mode & 0o077) !== 0)
     || (typeof process.getuid === "function" && stat.uid !== process.getuid())) fail();
 };
 function parse(bytes) {
@@ -16,37 +16,37 @@ function parse(bytes) {
   return JSON.parse(decoder.decode(bytes));
 }
 export class JournalReader {
-  constructor(path, root, handle, identity, directories) {
+  constructor(path, root, handle, identity, directories, ownerOnly = true) {
     this.path = path; this.root = root; this.handle = handle;
-    this.identity = identity; this.directories = directories;
+    this.identity = identity; this.directories = directories; this.ownerOnly = ownerOnly;
   }
-  /** @param {string} filename @param {string} sessionsRoot */
-  static async open(filename, sessionsRoot) {
+  /** @param {string} filename @param {string} sessionsRoot @param {{ownerOnly?:boolean}} [options] */
+  static async open(filename, sessionsRoot, { ownerOnly = true } = {}) {
     const path = resolve(filename), root = resolve(sessionsRoot);
     if (!path.startsWith(`${root}${sep}`)) fail();
     const directories = new Map();
     for (let directory = dirname(path);;) {
-      const identity = await lstat(directory); secure(identity, true); directories.set(directory, identity);
+      const identity = await lstat(directory); secure(identity, true, ownerOnly); directories.set(directory, identity);
       if (directory === root) break;
       directory = dirname(directory);
       if (directory.length < root.length) fail();
     }
-    const before = await lstat(path); secure(before, false);
+    const before = await lstat(path); secure(before, false, ownerOnly);
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      const identity = await handle.stat(); secure(identity, false);
+      const identity = await handle.stat(); secure(identity, false, ownerOnly);
       const canonicalRoot = await realpath(root);
       if (!same(before, identity) || await realpath(path) !== join(canonicalRoot, relative(root, path))) fail();
-      const reader = new JournalReader(path, root, handle, identity, directories);
+      const reader = new JournalReader(path, root, handle, identity, directories, ownerOnly);
       await reader.assertIdentity(); return reader;
     } catch (error) { await handle.close(); throw error; }
   }
   async assertIdentity() {
     for (const [path, identity] of this.directories) {
-      const current = await lstat(path); secure(current, true); if (!same(current, identity)) fail();
+      const current = await lstat(path); secure(current, true, this.ownerOnly); if (!same(current, identity)) fail();
     }
-    const current = await lstat(this.path); secure(current, false);
-    const opened = await this.handle.stat(); secure(opened, false);
+    const current = await lstat(this.path); secure(current, false, this.ownerOnly);
+    const opened = await this.handle.stat(); secure(opened, false, this.ownerOnly);
     if (!same(current, this.identity) || !same(opened, this.identity)) fail();
     return opened;
   }

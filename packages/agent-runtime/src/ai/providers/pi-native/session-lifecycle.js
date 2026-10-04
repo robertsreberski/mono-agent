@@ -13,8 +13,8 @@
 import { JsonlSessionRepo, MemorySessionRepo } from "@mono-agent/harness/session-store.js";
 import { validRecoveryProjection } from "./terminal-recovery.js";
 import { createHash } from "node:crypto";
-import { access, open, readdir, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { access, open } from "node:fs/promises";
+import { dirname } from "node:path";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
 import { buildHarnessSessionContext, createPiSessionAdapter, HARNESS_CONTEXT } from "./harness-adapter.js";
@@ -130,8 +130,8 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
  * Retire every currently materialized durable Pi transcript with this exact
  * logical id. This is intentionally stronger than live-session invalidation:
  * history rotation and retention can retire an epoch after its registry entry
- * was already evicted or after a process restart. When an active old run later
- * recreates its pathname, its post-runtime caller retries this operation. The
+ * was already evicted or after a process restart. Active writers reject late
+ * append admission and retain kernel ownership until close. The
  * canonical epoch has already rotated, so that old id is never resumable in the
  * interim. Absence is success; cleanup or verification uncertainty rejects.
  */
@@ -147,79 +147,15 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
   // A cancellation can rotate canonical history while a provider unwinds. The
   // repository marks a local writer retired, drains storage I/O and removes
   // evidence under its already-held lock; late append admission fails closed.
-  const liveEntry = nativeSessions.get(providerSessionId);
-  const providerStillUnwinding = liveEntry?.busy === true;
-  // Other processes are serialized by the history coordinator and must pass
-  // the same cold-refresh barrier before their next turn.
   await nativeSessions.refresh(providerSessionId);
-
   const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
   if (!repo) throw new Error("Durable Pi session repository is unavailable");
-  repo.retireHandle(providerSessionId);
-  try {
-  const matches = (await repo.list(undefined, HARNESS_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
-  const changedDirectories = new Set();
-  for (const metadata of matches) {
-    if (typeof metadata?.path !== "string" || !metadata.path) {
-      throw new Error(`Durable Pi session ${providerSessionId} has invalid metadata`);
-    }
-    await repo.retire(metadata, HARNESS_CONTEXT);
-    changedDirectories.add(dirname(metadata.path));
-  }
-  // A prior active-session unlink can be followed by Pi recreating the same
-  // pathname with a transaction line but no header. JsonlSessionRepo.list()
-  // intentionally ignores that invalid file, so scan only Pi's fixed
-  // root/directory/filename layout to make the later retirement retry reclaim
-  // it. Safe ids are single filename components and symlink directories/files
-  // are ignored.
-  for (const path of await exactDurableSessionFiles(piSessionsRoot, providerSessionId)) {
-    try {
-      await unlink(path);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    changedDirectories.add(dirname(path));
-  }
-  for (const directory of changedDirectories) await syncPath(directory);
-  if (changedDirectories.size > 0) await syncPath(resolve(piSessionsRoot));
-
-  const remaining = (await repo.list(undefined, HARNESS_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
-  const remainingPaths = await exactDurableSessionFiles(piSessionsRoot, providerSessionId);
-  if (!providerStillUnwinding && (remaining.length > 0 || remainingPaths.length > 0)) {
-    throw new Error(`Durable Pi session ${providerSessionId} could not be retired completely`);
-  }
-  } finally { repo.finishRetirement(providerSessionId); }
-  // Local admission stays retired until its owning writer closes. A later
-  // explicit fresh incarnation may reuse a stable subagent handle.
-}
-
-async function exactDurableSessionFiles(piSessionsRoot, providerSessionId) {
-  const root = resolve(piSessionsRoot);
-  const suffix = `_${encodeURIComponent(providerSessionId)}.jsonl`;
-  let rootEntries;
-  try {
-    rootEntries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return [];
-    throw error;
-  }
-  const paths = [];
-  for (const directory of rootEntries) {
-    if (!directory.isDirectory()) continue;
-    const directoryPath = join(root, directory.name);
-    const entries = await readdir(directoryPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith(suffix)) {
-        paths.push(join(directoryPath, entry.name));
-      }
-    }
-  }
-  return paths;
+  await repo.retireByHandle(providerSessionId);
 }
 
 // Defense in depth (R4): create-on-miss passes the caller-controlled session id
 // straight to durableRepo.create({ id }), and JsonlSessionRepo writes
-// `${createdAt}_${id}.jsonl` — so an id like "../../../../tmp/pwn" would escape
+// `<journalId>.jsonl` — so an id like "../../../../tmp/pwn" would escape
 // piSessionsRoot and name a file anywhere on disk. The harness-derived id is a
 // sha256 hex (always safe), but the public runtime API is caller-controlled.
 // Only an id that is a single safe filename component may CREATE a session;

@@ -251,7 +251,7 @@ export class JsonlSessionRepo {
       const local = this.openSessions.get(id);
       if (local) await local.close().catch(() => {});
       try {
-        if (!published) await locks.releaseWriter(writer, () => absent(metadata.path));
+        if (!published) await locks.releaseWriter(writer, () => this.journalDataGone(metadata));
       } finally { writer.release(); }
       throw error;
     }
@@ -267,7 +267,7 @@ export class JsonlSessionRepo {
       if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
       return await this.openLocked(metadata, writer);
     } catch (error) {
-      try { await locks.releaseWriter(writer, () => absent(metadata.path)); } finally { writer.release(); }
+      try { await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }
       throw error;
     }
   }
@@ -310,7 +310,7 @@ export class JsonlSessionRepo {
         this.retiredHandles.delete(metadata.id);
         try { await reader.close(); } finally {
           try { await handle.close(); } finally {
-            try { await locks.releaseWriter(writer, store.retired ? () => absent(storeMetadata.path) : undefined); }
+            try { await locks.releaseWriter(writer, store.retired ? () => this.journalDataGone(storeMetadata) : undefined); }
             finally { writer.release(); }
           }
         }
@@ -359,14 +359,14 @@ export class JsonlSessionRepo {
     const locks = await this.ensureDirectory();
     return locks.withCatalog(() => this.listOwnedUnlocked());
   }
-  async listOwnedUnlocked() {
+  async listOwnedUnlocked(includeStaging = false) {
     let files;
     try { files = await readdir(this.directory, { withFileTypes: true }); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
     if (this.directoryIdentity) await this.assertDirectory();
     const result = [];
     for (const file of files) {
-      if (!file.name.endsWith(".jsonl")) continue;
+      if (!file.name.endsWith(".jsonl") && !(includeStaging && file.name.endsWith(".jsonl.importing"))) continue;
       if (!file.isFile()) fail();
       const path = join(this.directory, file.name);
       const reader = await JournalReader.open(path, this.root);
@@ -382,16 +382,84 @@ export class JsonlSessionRepo {
     const legacy = await listLegacySessions(this.root);
     return [...owned, ...legacy.filter((m) => !owned.some((n) => n.id === m.id))];
   }
+  journalPaths(metadata) {
+    return [join(this.directory, `${metadata.journalId}.jsonl`), join(this.directory, `${metadata.journalId}.jsonl.importing`)];
+  }
+  async journalDataGone(metadata) {
+    await this.assertDirectory();
+    const files = await readdir(this.directory);
+    if (files.some((name) => name.startsWith(`${metadata.journalId}.`))) return false;
+    // P1a emits no aliases. Adding projections must extend this same predicate
+    // and removal transaction; unknown future aliases conservatively pin locks.
+    const aliases = join(this.root, "mono-v2", "aliases");
+    if (!await absent(aliases)) {
+      const stat = await lstat(aliases); if (!stat.isDirectory()) fail();
+      if ((await readdir(aliases)).length) return false;
+    }
+    return true;
+  }
   async removeOwned(metadata) {
     await this.assertDirectory();
-    if (await absent(metadata.path)) return;
-    const reader = await JournalReader.open(metadata.path, this.root);
+    const paths = this.journalPaths(metadata);
+    const files = await readdir(this.directory);
+    if (files.some((name) => name.startsWith(`${metadata.journalId}.`) && !paths.some((path) => path.endsWith(`/${name}`)))) fail();
+    const aliases = join(this.root, "mono-v2", "aliases");
+    if (!await absent(aliases) && (!(await lstat(aliases)).isDirectory() || (await readdir(aliases)).length)) fail();
+    // Validate all matching evidence before removing either publication phase.
+    const readers = [];
     try {
-      const header = await reader.readHeader(); validateJournalHeader(header);
-      if (header.journalId !== metadata.journalId || header.id !== metadata.id) fail();
-      await reader.assertIdentity(); await unlink(metadata.path);
-    } finally { await reader.close(); }
+      for (const path of paths) {
+        if (await absent(path)) continue;
+        const reader = await JournalReader.open(path, this.root); readers.push(reader);
+        const header = await reader.readHeader(); validateJournalHeader(header);
+        if (header.journalId !== metadata.journalId || header.id !== metadata.id) fail();
+      }
+      for (const reader of readers) { await reader.assertIdentity(); await unlink(reader.path); }
+    } finally { for (const reader of readers) await reader.close(); }
     await this.syncDirectories();
+  }
+  async removeLegacy(metadata) {
+    const path = resolve(metadata.path), parent = dirname(path);
+    if (dirname(parent) !== this.root || parent === join(this.root, "mono-v2")) fail();
+    await this.assertDirectory();
+    if (await absent(path)) return;
+    const reader = await JournalReader.open(path, this.root, { ownerOnly: false });
+    try {
+      const header = await reader.readHeader();
+      if (header.id !== metadata.id || !((header.type === "session" && header.version === 3)
+        || (header.kind === "header" && header.v === 4 && header.storageVersion === 1))) fail();
+      await reader.assertIdentity(); await unlink(path);
+    } finally { await reader.close(); }
+    await syncPath(parent); await syncPath(this.root); await this.assertDirectory();
+  }
+  async retireByHandle(id) {
+    if (!safeId(id)) throw new TypeError("Unsafe harness session id");
+    this.retireHandle(id);
+    try {
+      if (await absent(this.root)) return;
+      const locks = await this.ensureDirectory();
+      const matches = await locks.withCatalog(async () => {
+        const owned = await this.listOwnedUnlocked(true);
+        const legacy = await listLegacySessions(this.root);
+        // A headerless/corrupt legacy exact-name candidate is uncertainty, not
+        // authority to unlink it outside ownership or acknowledge complete loss.
+        for (const dir of await readdir(this.root, { withFileTypes: true })) {
+          if (dir.name === "mono-v2") continue;
+          if (dir.isSymbolicLink()) fail();
+          if (!dir.isDirectory()) continue;
+          for (const file of await readdir(join(this.root, dir.name), { withFileTypes: true })) {
+            if (!file.name.endsWith(`_${id}.jsonl`)) continue;
+            if (!file.isFile() || !legacy.some((m) => m.path === join(this.root, dir.name, file.name) && m.id === id)) fail();
+          }
+        }
+        return [...owned, ...legacy].filter((m) => m.id === id);
+      });
+      const local = this.openSessions.get(id);
+      if (local && !matches.some((m) => m.journalId === local.metadata.journalId)) matches.push(local.metadata);
+      for (const metadata of matches) await this.retire(metadata);
+      const remaining = await locks.withCatalog(() => this.listOwnedUnlocked(true));
+      if (remaining.some((m) => m.id === id)) fail();
+    } finally { this.finishRetirement(id); }
   }
   retireHandle(id) { this.retiredHandles.add(id); }
   finishRetirement(id) { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
@@ -410,17 +478,14 @@ export class JsonlSessionRepo {
   async delete(metadata) {
     const locks = await this.ensureDirectory();
     if (metadata.legacy) {
-      await locks.withCatalog(async () => {
-        try { await unlink(metadata.path); } catch (error) { if (error.code !== "ENOENT") throw error; }
-        await syncPath(dirname(metadata.path)); await syncPath(this.root);
-      }); return;
+      await locks.withCatalog(() => this.removeLegacy(metadata)); return;
     }
     this.checkMetadata(metadata);
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is open");
     const writer = await locks.acquireWriter(metadata.journalId);
     try { await locks.withCatalog(() => this.removeOwned(metadata)); }
     finally {
-      try { await locks.releaseWriter(writer, () => absent(metadata.path)); } finally { writer.release(); }
+      try { await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }
     }
   }
   async sync(metadata) {

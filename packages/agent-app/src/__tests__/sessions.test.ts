@@ -111,6 +111,35 @@ describe("purgeConversationState session accounting", () => {
     await expect(stat(root)).rejects.toThrow();
   });
 
+  it.each([false, true])("purges all v2 artifacts but counts only published journals (quarantine recovery=%s)", async (recover) => {
+    const { JsonlSessionRepo } = await import("../../../harness/dist/index.js");
+    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
+    const root = join(dir, ".mono-agent", "sessions");
+    const repo = new JsonlSessionRepo({ sessionsRoot: root });
+    const session = await repo.create({ id: "fictional-published" });
+    await session.appendMessage({ role: "user", content: "Fictional request.", timestamp: 1 });
+    await session.sync(); await session.close();
+    const v2 = join(root, "mono-v2");
+    await mkdir(join(v2, "aliases"), { mode: 0o700 });
+    await writeFile(join(v2, "aliases", "fictional.json"), '{"journalId":"fictional-staging"}', { mode: 0o600 });
+    await writeFile(join(v2, "journals", "fictional-staging.jsonl.importing"), "Fictional staging.", { mode: 0o600 });
+    await writeFile(join(v2, "journals", "fictional-staging.jsonl.creating"), "Fictional incomplete header.", { mode: 0o600 });
+    let quarantine = "";
+    if (recover) {
+      await expect(purgeConversationState(inputFor(configPath), { hooks: { afterRootQuarantined: (path) => {
+        quarantine = path; throw new Error("fictional quarantine interruption");
+      } } })).rejects.toThrow("quarantine interruption");
+      expect(await readdir(join(quarantine, "mono-v2", "locks"))).toContain("catalog.sqlite");
+      expect(await readdir(join(quarantine, "mono-v2", "journals"))).toContain("fictional-staging.jsonl.importing");
+    }
+    const result = await purgeConversationState(inputFor(configPath));
+    expect(result.sessions.files).toBe(recover ? 0 : 1);
+    await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    if (recover) await expect(stat(quarantine)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(repo.create({ id: "fictional-late" })).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("is a no-op when the configured store does not exist on disk yet", async () => {
     const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
     const result = (await purgeConversationState(inputFor(configPath))).sessions;
