@@ -58,6 +58,13 @@ run id, conversation id, workspace, or artifact path. The tool is removed by
 the host's sealed tool policy and is not installed on a route that
 cannot safely receive its MCP server.
 
+Answer text written immediately before reply-presentation calls (`PublishReplyFile`,
+`SuggestReplies`, or `ProposeRestart`, including MCP-qualified names) remains part
+of the final reply. A trailing chain of presentation-only assistant messages is
+joined with blank lines, followed by any final assistant text. Ordinary tool calls
+break the chain; their interim narration is not promoted. The settled web console
+shows promoted text in the answer, not again in Activity.
+
 ## Web-only quick replies
 
 `SuggestReplies` is an app-owned, request-scoped MCP tool on web-console

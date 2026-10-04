@@ -8,6 +8,7 @@ import { effectiveContextWindow } from "./compaction-driver.js";
 // turn-counting + maxTurns stop. All mutable counters and dedup keys live on the
 // caller-owned `runState`; no module-level mutable state here.
 
+import { isReplyPresentationTool } from "./reply-text.js";
 import { toolResultContent } from "../pi-messages.js";
 import {
   compactToolRawResult,
@@ -222,7 +223,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       if (!event.isError && runState.silentTurn
         && /^(?:AskUser|mcp__[^\s]+__AskUser)$/.test(event.toolName ?? "")) runState.silentTurn.visibleContent = true;
       if (!event.isError && runState.silentTurn
-        && /^(?:PublishReplyFile|ProposeRestart|SuggestReplies|mcp__[^\s]+__(?:PublishReplyFile|ProposeRestart|SuggestReplies))$/.test(event.toolName ?? "")) {
+        && isReplyPresentationTool(event.toolName)) {
         runState.silentTurn.visibleContent = true;
       }
       if (event.toolName === "FinishSilently" && !event.isError

@@ -1539,6 +1539,29 @@ describe("pi-native AgentHarness bridge", () => {
       part.type === "tool_result" && part.is_error && part.content.includes("not_sole_call")))).toBe(true);
   });
 
+  it.each(["Saved.", ""])("returns presentation-tool answer text through the real harness (final: %j)", async (finalText) => {
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "SuggestReplies", description: "Present choices", inputSchema: { type: "object", properties: {} } }],
+    });
+    const call = vi.spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "Choices attached" }] });
+    try {
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxText("Approve option A"), fauxToolCall("SuggestReplies", {}, { id: "choices-1" })]),
+        fauxAssistantMessage(finalText ? [fauxText(finalText)] : []),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Compare the options" }],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+      }));
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ error: null, text: finalText ? `Approve option A\n\n${finalText}` : "Approve option A" });
+    } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+  });
+
   it.each(["PublishReplyFile", "AskUser"])("refuses FinishSilently after a successful %s round trip", async (toolName) => {
     const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
     const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
