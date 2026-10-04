@@ -112,7 +112,7 @@ export function createRunDriver(store, options) {
     publish({ type: "run_start" });
     // Start synchronously owning the promise before the first storage await.
     running = (async () => {
-      let opened = false, status = "failed", error;
+      let opened = false, status = "failed", error, deferred;
       try {
         await store.openTurn(id, { model: { provider: options.model.provider, id: options.model.id } }); opened = true;
         const messages = buildPiSessionContext(await store.getEntries());
@@ -152,17 +152,23 @@ export function createRunDriver(store, options) {
         const final = [...entries].reverse().find((e) => e.type === "message" && e.message.role === "assistant")?.message;
         status = controller.signal.aborted || final?.stopReason === "aborted" ? "aborted"
           : final?.stopReason === "error" ? "failed" : "completed";
-        if (final?.stopReason === "deferred") { status = "failed"; error = { code: "assistant_deferred", message: "Provider deferred the response" }; }
+        if (final?.stopReason === "deferred") {
+          const handle = final.deferred;
+          if (handle?.id && handle.provider === options.model.provider && handle.modelId === options.model.id && handle.api === final.api) {
+            status = "suspended"; deferred = handle;
+          } else { status = "failed"; error = { code: "assistant_error", message: "Provider returned an invalid deferred handle" }; }
+        }
         if (status === "failed" && !error) error = { code: "assistant_error", message: final?.errorMessage || "Pi assistant failed" };
       } catch (cause) {
         controller.abort(cause);
         error = { code: "run_failed", message: cause?.message || String(cause) };
         throw cause;
       } finally {
-        if (opened) await store.closeTurn(id, status);
-        publish({ type: "run_end", status, error });
+        if (opened && status !== "suspended") await store.closeTurn(id, status);
+        if (status === "suspended") publish({ type: "run_suspend", reason: "deferred", deferred });
+        else publish({ type: "run_end", status, error });
       }
-      return { operationId: id, status, error, tipId: await store.getLeafId() };
+      return { operationId: id, status, error, ...(deferred ? { deferred } : {}), tipId: await store.getLeafId() };
     })();
     try { return await running; } finally { running = null; }
   }

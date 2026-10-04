@@ -69,19 +69,20 @@ runtime bridges behind a dispatch table; it now runs only its Pi implementation.
 Read the whole section before upgrading a live agent, and migrate its config
 before restarting one.
 
-### Pi 0.86 dependency migration
+### Pi 1.x dependency migration
 
-The runtime exact-pins Pi AI and Pi Agent Core at `0.99.2` (the terminal TUI
-renderer is retired, so no Pi TUI pin remains). Pi's harness is now created asynchronously and exposes
-prompt, navigation, compaction, abort, event, and transcript operations through
-its `main` lane with an explicit operation context. mono-agent absorbs that API
-change in its Pi compatibility adapter; hosts do not need a config migration.
+The runtime exact-pins Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI
+renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
+harness. The Pi compatibility adapter now owns admission, steering and session
+storage over the upstream `runAgentLoop`; provider code remains Pi-owned.
 
-Pi's JSONL store now writes v4 transcripts. Existing v3 transcripts are
-upgraded by Pi when opened and retain their conversation context. An unfinished
-durable operation is aborted before mono-agent accepts a new prompt because
-mono-agent tools do not yet use Pi's replay-memo contract; this prevents an
-interrupted side-effecting tool from being executed twice.
+Native transcripts use the `mono-v1` subdirectory of `piSessionsRoot`. Idle
+legacy v3/v4 files import their effective main-branch context only. After the
+new store is fsynced, the source is renamed to `*.jsonl.migrated`; other branches
+and upstream operation internals are not imported. Files with open operations
+remain untouched and start a new native transcript using the host's cold replay.
+That preserves canonical chat history, not exact interrupted native context.
+Never exercise import/archival against live session directories during testing.
 
 ### Deleted runtime bridges
 
@@ -725,7 +726,7 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Current dependency pins: **`@earendil-works/pi-ai` and
-`@earendil-works/pi-agent-core` are both `0.99.2`** (the initial Pi 0.80
+`@earendil-works/pi-agent-core` are both `1.0.1`** (the initial Pi 0.80
 migration landed at `0.80.5`, from `^0.79.1`). Pi 0.85's durable lane harness is
 adapted behind the runtime's existing public API. Pi 0.86 folds request prompts
 and tool declarations into the transcript's leading system message (providers
@@ -735,8 +736,8 @@ backfill), and adds static `meta` and `radius` provider catalogs. Compaction
 remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
 request-wide pricing tiers are preserved.
 
-Packed npm consumers resolve the runtime-owned exact Pi AI 0.99.2 copy for both
-the runtime and Agent Core's `^0.99.2` dependency. The release guard verifies
+Packed npm consumers resolve the runtime-owned exact Pi AI 1.0.1 copy for both
+the runtime and Agent Core's `^1.0.1` dependency. The release guard verifies
 both resolution paths independently.
 
 Pi 0.87.0 removes `shouldStopAfterTurn` from the low-level loop config,
@@ -823,7 +824,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `0.99.2` and Pi Agent Core `0.99.2` compatibility pins
+  to the exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -831,7 +832,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-  exact Pi AI `0.99.2` and Pi Agent Core `0.99.2` compatibility pins inside the runtime. OAuth login adapters
+  exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins inside the runtime. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

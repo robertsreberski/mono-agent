@@ -51,3 +51,19 @@ describe("owned run driver", () => {
     } finally { await adapter.close(); }
   });
 });
+
+it("preserves deferred admission without polling or replaying provider work", async () => {
+  const { adapter, raw, faux } = await harness([]);
+  const model = faux.getModel();
+  const handle = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
+  faux.setResponses([fauxAssistantMessage([], { stopReason: "deferred", deferred: handle })]);
+  const events = []; adapter.subscribe((e) => events.push(e));
+  try {
+    expect(await adapter.prompt("Fictional request.")).toMatchObject({ status: "suspended", deferred: handle });
+    expect(await raw.getOpenTurns()).toHaveLength(1);
+    expect(events.some((e) => e.type === "run_suspend")).toBe(true);
+    await adapter.abortOpenOperations();
+    expect(await raw.getOpenTurns()).toHaveLength(0);
+    expect(faux.state.callCount).toBe(1);
+  } finally { await adapter.close(); }
+});
