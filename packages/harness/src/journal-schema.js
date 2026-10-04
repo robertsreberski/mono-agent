@@ -29,6 +29,16 @@ export function validateJournalHeader(header) {
   }
 }
 
+/** Validate the protected descriptor independently of recovery opt-in. */
+export function validateSessionTurn(descriptor, handleId) {
+  if (!object(descriptor) || !["host", "instance"].includes(descriptor.kind)
+    || !id(descriptor.ownerKey) || !id(descriptor.turnId) || !id(descriptor.handleId)
+    || descriptor.handleId !== handleId || !(descriptor.baseRevision === null || time(descriptor.baseRevision))
+    || (descriptor.kind === "host" ? !id(descriptor.historyBucket) : descriptor.historyBucket !== null)) {
+    throw new TypeError("Invalid host-owned sessionTurn descriptor");
+  }
+}
+
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
 export class JournalValidator {
   constructor() {
@@ -45,6 +55,8 @@ export class JournalValidator {
     this.calls = new Map();
     this.inputs = new Map();
     this.handles = new Set();
+    this.handleBindings = new Map();
+    /** @type {any} */ this.owner = { kind: "unbound" };
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
   validate(record) {
@@ -56,7 +68,7 @@ export class JournalValidator {
     const turn = this.turns.get(record.turnId);
     if (record.kind === "turn_start") {
       requireValue(!turn && this.openTurns.size === 0
-        && ["host", "synthetic"].includes(p.identitySource) && object(p.config)
+        && ["host", "instance", "synthetic"].includes(p.identitySource) && object(p.config)
         && p.baselineTipId === this.tip && record.operationId === undefined);
       return;
     }
@@ -128,10 +140,11 @@ export class JournalValidator {
         requireValue(id(p.inputId) && !turn.inputs.has(p.inputId) && message?.role === "user"
           && message.inputId === p.inputId && this.inputs.get(p.inputId)?.state !== "cancelled");
       } else if (record.kind === "owner_binding") {
-        requireValue(p.kind === "unbound" || (["host", "instance"].includes(p.kind)
-          && id(p.ownerKey) && (p.historyBucket === null || id(p.historyBucket))));
+        requireValue((p.kind === "unbound" && this.owner.kind === "unbound") || (["host", "instance"].includes(p.kind)
+          && id(p.ownerKey) && (p.kind === "host" ? id(p.historyBucket) : p.historyBucket === null)
+          && (this.owner.kind === "unbound" || this.owner.kind === p.kind && this.owner.ownerKey === p.ownerKey && this.owner.historyBucket === p.historyBucket)));
       } else if (record.kind === "handle_binding") {
-        requireValue(id(p.handleId) && !this.handles.has(p.handleId)
+        requireValue(id(p.handleId) && (!this.handles.has(p.handleId) || (p.authoritative === true && this.owner.kind !== "unbound"))
           && (p.baseRevision === null || time(p.baseRevision)) && (p.model === null || object(p.model)));
       } else if (record.kind === "handle_retired") {
         requireValue(this.handles.has(p.handleId) && typeof p.cause === "string");
@@ -171,7 +184,8 @@ export class JournalValidator {
       this.turns.get(record.turnId).inputs.add(p.inputId);
       if (this.inputs.has(p.inputId)) this.inputs.get(p.inputId).state = "consumed";
     }
-    if (record.kind === "handle_binding") this.handles.add(p.handleId);
+    if (record.kind === "owner_binding") this.owner = p;
+    if (record.kind === "handle_binding") { this.handles.add(p.handleId); this.handleBindings.set(p.handleId, p); }
     if (record.kind === "handle_retired") this.handles.delete(p.handleId);
     this.ids.add(record.id); this.seq = record.seq; this.parentId = record.id;
   }

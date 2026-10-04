@@ -155,3 +155,14 @@ it("accounts queue cancellation without permitting later input consumption", () 
     provenance: { provider: "faux", api: "faux", model: "fictional" }, input: { id: "cancelled", complete: true } });
   expect(() => append("input_consumed", { inputId: "cancelled", messageId: message.id })).toThrow("Invalid");
 });
+
+it("rejects malformed protected descriptors independently of recovery capability", async () => {
+  const { validateSessionTurn } = await import("../journal-schema.js");
+  const descriptor = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0 };
+  expect(() => validateSessionTurn(descriptor, "handle")).not.toThrow();
+  for (const bad of [null, {}, { ...descriptor, kind: "synthetic" }, { ...descriptor, turnId: "x".repeat(513) },
+    { ...descriptor, historyBucket: null }, { ...descriptor, kind: "instance" }, { ...descriptor, baseRevision: -1 },
+    { ...descriptor, handleId: "other" }, { ...descriptor, ownerKey: "" }]) {
+    expect(() => validateSessionTurn(bad, "handle")).toThrow("sessionTurn");
+  }
+});

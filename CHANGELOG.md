@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add protected host and persistent-subagent native turn descriptors; bind journal
+  ownership append-only without granting terminal recovery or host crash adoption.
+
+
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 

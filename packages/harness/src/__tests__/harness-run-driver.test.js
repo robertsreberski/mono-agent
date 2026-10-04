@@ -152,3 +152,22 @@ it("does not emit retry lifecycle after consumer exit while a retryable result s
   await next; await returned; await expect(stream.result()).rejects.toThrow("consumer closed");
   expect(calls).toBe(1); expect(events).toEqual([]);
 });
+
+it.each(["host", "instance"])("binds authoritative %s ownership append-only without enabling recovery", async (kind) => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")])]);
+  const descriptor = { kind, ownerKey: "fictional-owner", historyBucket: kind === "host" ? "fictional-bucket" : null,
+    turnId: "descriptor-turn", handleId: raw.metadata.id, baseRevision: kind === "host" ? 3 : null };
+  try {
+    await adapter.beginTurn(descriptor.turnId, kind, descriptor); await adapter.prompt("Fictional input."); await adapter.endTurn("completed");
+    expect(raw.validator.owner).toEqual({ kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket });
+    expect(raw.validator.turns.get(descriptor.turnId).start.payload.identitySource).toBe(kind);
+    expect(raw.validator.handleBindings.get(raw.metadata.id)).toMatchObject({ baseRevision: descriptor.baseRevision, authoritative: true });
+    const bindings = raw.records.filter((record) => record.kind === "owner_binding"); expect(bindings.map((record) => record.payload.kind)).toEqual(["unbound", kind]);
+    expect(raw.metadata.ownership).toBeUndefined(); // immutable header is not rewritten
+    const seq = raw.seq;
+    await expect(adapter.beginTurn("wrong-owner-turn", kind, { ...descriptor, turnId: "wrong-owner-turn", ownerKey: "other-owner" })).rejects.toThrow("ownership");
+    expect(raw.seq).toBe(seq); expect(await raw.getOpenTurns()).toEqual([]);
+    await expect(adapter.beginTurn("wrong-logical-turn", kind, descriptor)).rejects.toThrow("sessionTurn");
+    expect(raw.seq).toBe(seq);
+  } finally { await adapter.close(); await raw.close(); }
+});

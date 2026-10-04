@@ -777,6 +777,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const sessionKeys = {
       sessionId: "host-session", providerSessionId: "provider-session",
       sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+      sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "host-session", baseRevision: 1 },
     };
     await router.run("sys", { messages: [], ...sessionKeys, providerAttributionSessionId: "epoch" });
     expect(executeMock).toHaveBeenCalledTimes(4);
@@ -1378,4 +1379,12 @@ it("attributes a primary user cancellation without changing its result or trying
   expect(result.failoverHistory).toEqual([expect.objectContaining({ model, failureKind: "cancelled" })]);
   expect(executeMock).toHaveBeenCalledTimes(1);
   expect(events.filter((event) => event.type.startsWith("provider_failover") || event.type === "provider_retry_started")).toEqual([]);
+});
+
+it("rejects an attempt resolver overriding the protected native turn descriptor", async () => {
+  const primary = modelRef("openai-codex", "primary");
+  const descriptor = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "run", handleId: "owned", baseRevision: 0 };
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { sessionTurn: descriptor } }) });
+  const result = await router.run("sys", { model: primary, messages: [], sessionTurn: descriptor });
+  expect(result.error).toContain("cannot override sessionTurn"); expect(executeMock).not.toHaveBeenCalled();
 });

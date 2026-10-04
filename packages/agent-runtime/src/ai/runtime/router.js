@@ -97,7 +97,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -296,6 +296,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // attempt may have appended to; backup routes never inherit that session.
           const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
           if (!sessionEligibleAttempt) {
+            delete callOptions.sessionTurn;
             delete callOptions.sessionRecovery;
             delete callOptions.sessionId;
             delete callOptions.providerSessionId;

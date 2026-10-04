@@ -1,3 +1,4 @@
+import { validateSessionTurn } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -445,6 +446,13 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     || options.providerAttributionSessionId
     || options.runId
     || randomUUID();
+  if (options.sessionTurn !== undefined) {
+    validateSessionTurn(options.sessionTurn, providerSessionId);
+    if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
+      || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
+      throw new TypeError("sessionTurn and sessionRecovery identities disagree");
+    }
+  }
   const providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
   // Prefer the explicit sessionId, but fall back to providerSessionId so a caller
   // that only supplies providerSessionId still resumes the prior session instead
@@ -666,12 +674,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     }
 
     // One logical turn encompasses proactive/manual compaction and every prompt
-    // operation, including reactive overflow re-prompts. Ownership remains unbound
-    // until the protected descriptor arrives in P1b.
+    // operation, including reactive overflow re-prompts. Bind ownership only from
+    // the protected descriptor; recovery opt-in alone never binds an owner.
     const recoveryIdentity = options.sessionRecovery;
     const hasHostIdentity = typeof recoveryIdentity?.runId === "string" && recoveryIdentity.runId.length > 0
       && recoveryIdentity.runId.length <= 512 && Number.isSafeInteger(recoveryIdentity.revision) && recoveryIdentity.revision >= 0;
-    await harness.beginTurn(hasHostIdentity ? recoveryIdentity.runId : undefined, hasHostIdentity ? "host" : "synthetic");
+    const descriptor = options.sessionTurn;
+    await harness.beginTurn(descriptor?.turnId ?? (options.manualCompaction ? undefined : hasHostIdentity ? recoveryIdentity.runId : undefined),
+      options.manualCompaction ? "synthetic" : descriptor?.kind ?? (hasHostIdentity ? "host" : "synthetic"), descriptor);
 
     if (options.manualCompaction === true) {
       // The same resolve/reopen/seed path as a turn, but without a user prompt,

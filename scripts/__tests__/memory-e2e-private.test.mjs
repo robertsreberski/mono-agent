@@ -295,7 +295,7 @@ describe("private memory evaluation privacy boundary", () => {
     expect(() => validatePrivateRoute("openai:another-model", ["openai:another-model"], r, runtime)).toThrow();
     expect(validatePrivateRoute("openai:fictional-model", ["openai:fictional-model"], r, runtime)).toMatchObject({ provider: "agent-host", trace: false });
     expect(validatePrivateRoute("ollama:fictional", [], r, runtime).endpoint).toBe("http://127.0.0.1:11434");
-    for (const options of [{ piSessionsRoot: sentinel }, { onEvent() {} }, { observers: [{}] }, { persistArtifact() {} }]) expect(() => assertPrivateRuntimeOptions(options)).toThrow("private_isolation_required");
+    for (const options of [{ piSessionsRoot: sentinel }, { onEvent() {} }, { observers: [{}] }, { persistArtifact() {} }, { sessionTurn: { kind: "host", ownerKey: "fictional", historyBucket: "fictional", turnId: "turn", handleId: "handle", baseRevision: 0 } }, { sessionTurn: null }]) expect(() => assertPrivateRuntimeOptions(options)).toThrow("private_isolation_required");
     expect(parseArguments(["--private", "--allow-private-provider-route", "openai:fictional-model", "--allow-private-provider-route", "ollama:fictional"])["allow-private-provider-route"]).toHaveLength(2);
   });
 });

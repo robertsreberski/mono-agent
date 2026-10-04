@@ -1880,3 +1880,29 @@ describe("stable native replay with host envelopes", () => {
     }
   });
 });
+
+it("validates sessionTurn independently before native session/model dispatch", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "descriptor-validation-"));
+  try {
+    await expect(generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      messages: [{ role: "user", content: "Fictional input." }], sessionId: "owned", sessionKeepAlive: true, piSessionsRoot: root,
+      sessionTurn: { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "wrong", baseRevision: 0 },
+    }))).rejects.toThrow("sessionTurn");
+    expect(faux.state.callCount).toBe(0); expect(readdirSync(root)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("uses a protected descriptor without opting into terminal recovery", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "descriptor-owned-"));
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer.")])]);
+  try {
+    const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+      messages: [{ role: "user", content: "Fictional input." }], sessionId: "descriptor-handle", sessionKeepAlive: true, piSessionsRoot: root,
+      sessionTurn: { kind: "host", ownerKey: "logical-fictional", historyBucket: "physical-fictional", turnId: "host-turn", handleId: "descriptor-handle", baseRevision: 4 },
+    })); expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeUndefined();
+    const repo = resolveDurableNativeSessionRepo(root); const session = await repo.open((await repo.list())[0]);
+    expect(session.validator.owner).toEqual({ kind: "host", ownerKey: "logical-fictional", historyBucket: "physical-fictional" });
+    expect(await session.getTurn("host-turn")).toMatchObject({ payload: { status: "completed" } });
+    const bytes = readFileSync(session.metadata.path, "utf8"); expect(JSON.parse(bytes.split("\n")[0]).ownership).toEqual({ kind: "unbound" }); await session.close();
+  } finally { await disposeProviderSession("descriptor-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});

@@ -2509,6 +2509,9 @@ describe("coordinated terminal recovery", () => {
       Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
       await f.run("cancelled", "cancelled ask");
       expect(f.fake.calls[0]!.options.sessionRecovery).toBeUndefined();
+      expect(f.fake.calls[0]!.options.sessionTurn).toMatchObject({ kind: "host", historyBucket: "recovery",
+        handleId: f.fake.calls[0]!.options.sessionId, baseRevision: 0 });
+      expect(f.fake.calls[0]!.options.sessionTurn!.turnId).toEqual(expect.any(String));
       expect(f.receipts).toHaveLength(0);
       expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
     } finally { await f.close(); }

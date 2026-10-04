@@ -101,7 +101,7 @@ export async function createHarnessAdapter(session, options) {
     async setCompactionSettings(settings) { driver.setCompactionSettings(settings); },
     setMidRunCompactionArmed(value) { driver.setMidRunCompactionArmed(value); },
     appendMessage: (message) => session.appendMessage(message),
-    beginTurn: (id, source) => driver.beginTurn(id, source),
+    beginTurn: (id, source, descriptor) => driver.beginTurn(id, source, descriptor),
     endTurn: (status) => driver.endTurn(status),
     async prompt(text, promptOptions) {
       if (closed) throw new Error("mono-agent harness is closed");

@@ -202,6 +202,7 @@
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
+ * @property {{kind: "host"|"instance", ownerKey: string, historyBucket: string|null, turnId: string, handleId: string, baseRevision: number|null}} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {boolean} [manualCompaction] Internal promptless Pi compaction mode; never sent to fallback routes.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.

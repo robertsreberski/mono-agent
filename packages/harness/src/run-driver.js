@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { buildHarnessSessionContext } from "./session-context.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
+import { validateSessionTurn } from "./journal-schema.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
 export function createRunDriver(store, options) {
@@ -15,9 +16,27 @@ export function createRunDriver(store, options) {
   let runId, controller, running;
   let turnId = null, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
-  async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic") {
+  async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
     if (turnId) throw new Error("Pi logical turn is already open");
+    if (descriptor) {
+      validateSessionTurn(descriptor, store.metadata.id);
+      if (source !== "synthetic" && (source !== descriptor.kind || id !== descriptor.turnId)) {
+        throw new TypeError("Logical turn does not match sessionTurn descriptor");
+      }
+      const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
+      if (store.validator.owner.kind !== "unbound" && (store.validator.owner.kind !== owner.kind
+        || store.validator.owner.ownerKey !== owner.ownerKey || store.validator.owner.historyBucket !== owner.historyBucket)) {
+        throw new Error("Native journal ownership does not match sessionTurn");
+      }
+    }
     await store.beginTurn(id, modelConfig(), source); turnId = id; promptCount = 0; initialInputKey = undefined;
+    if (descriptor) {
+      const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
+      if (store.validator.owner.kind === "unbound") await store.write("owner_binding", owner);
+      await store.write("handle_binding", { handleId: descriptor.handleId, baseRevision: descriptor.baseRevision,
+        model: modelConfig().model, authoritative: true });
+      await store.sync();
+    }
   }
   async function endTurn(status) {
     if (!turnId) return;

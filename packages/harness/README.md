@@ -110,6 +110,7 @@ buildHarnessSessionContext
 createRunDriver
 projectContext
 validateJournalHeader
+validateSessionTurn
 ```
 
 **`@mono-agent/harness/compaction-kit/compaction.js`**
@@ -152,6 +153,7 @@ JournalReader
 ```text
 JournalValidator
 validateJournalHeader
+validateSessionTurn
 ```
 
 **`@mono-agent/harness/journal-types.js`**
