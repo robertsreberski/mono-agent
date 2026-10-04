@@ -7,7 +7,7 @@
 // takes its inputs explicitly and returns the verbatim runtime-result contract
 // (diagnostics key spellings, error fields, and shape unchanged — I9).
 
-import { calculateContextTokens } from "@earendil-works/pi-agent-core";
+import { calculateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { isContextLimitError } from "../pi-errors.js";
 import { isLikelyContextTermination } from "../../../agent/compaction.js";
 import { isProviderAuthFailureText } from "../../failure.js";

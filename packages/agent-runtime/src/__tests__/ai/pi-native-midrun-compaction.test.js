@@ -21,7 +21,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { shouldCompact } from "@earendil-works/pi-agent-core";
+import { shouldCompact } from "../../ai/providers/pi-native/harness/compaction-kit/compaction.js";
 import { runReactiveCompaction } from "../../ai/providers/pi-native/compaction-driver.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {

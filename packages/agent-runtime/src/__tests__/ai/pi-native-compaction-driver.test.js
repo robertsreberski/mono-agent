@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { estimateTokens } from "@earendil-works/pi-agent-core";
+import { estimateTokens } from "../../ai/providers/pi-native/harness/compaction-kit/compaction.js";
 import {
   estimateCurrentContextTokens,
   piSummaryReserveTokens,

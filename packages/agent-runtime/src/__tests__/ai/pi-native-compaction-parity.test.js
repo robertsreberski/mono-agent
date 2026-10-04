@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldCompact } from "@earendil-works/pi-agent-core";
+import { shouldCompact } from "../../ai/providers/pi-native/harness/compaction-kit/compaction.js";
 import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 import { piCompactionSettings } from "../../ai/providers/pi-native/compaction-driver.js";
 

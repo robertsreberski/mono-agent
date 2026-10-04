@@ -25,7 +25,7 @@ import {
   getLastAssistantUsage,
   prepareCompaction,
   shouldCompact,
-} from "@earendil-works/pi-agent-core";
+} from "./harness/compaction-kit/compaction.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {

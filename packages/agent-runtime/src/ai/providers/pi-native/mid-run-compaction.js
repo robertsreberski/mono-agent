@@ -49,7 +49,7 @@
 // previous attempt.
 
 import { randomUUID } from "node:crypto";
-import { estimateTokens, shouldCompact } from "@earendil-works/pi-agent-core";
+import { estimateTokens, shouldCompact } from "./harness/compaction-kit/compaction.js";
 import { buildPiSessionContext } from "./harness-adapter.js";
 import {
   createCompactionAccounting,

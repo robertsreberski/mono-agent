@@ -5,7 +5,7 @@ import { resolvePiRuntimeModel } from "../../ai/providers/pi-models.js";
 import { createModels, fauxProvider, fauxText, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
-import { shouldCompact } from "@earendil-works/pi-agent-core";
+import { shouldCompact } from "../../ai/providers/pi-native/harness/compaction-kit/compaction.js";
 import { effectiveContextWindow, resolveLiveCompactionPolicy, piCompactionSettings } from "../../ai/providers/pi-native/compaction-driver.js";
 
 const reference = "openai-codex:gpt-6.1-sol";
