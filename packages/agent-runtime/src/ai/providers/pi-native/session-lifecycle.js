@@ -10,9 +10,8 @@
 // createSessionLiveness primitives so the await-free spans are enforced by
 // construction rather than by inline sequencing.
 
-import { JsonlSessionRepo, MemorySessionRepo, laneConfig, laneState, operationMeta, operationResult, operationState } from "@earendil-works/pi-agent-core";
+import { JsonlSessionRepo, MemorySessionRepo } from "./harness/session-store.js";
 import { validRecoveryProjection } from "./terminal-recovery.js";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createHash } from "node:crypto";
 import { access, open, readdir, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -122,7 +121,6 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
   let repo = durableNativeSessionRepos.get(root);
   if (!repo) {
     repo = new JsonlSessionRepo({
-      fileSystem: new NodeExecutionEnv({ cwd: process.cwd() }),
       sessionsRoot: root,
     });
     durableNativeSessionRepos.set(root, repo);
@@ -451,10 +449,12 @@ export async function resolveSession(runState, {
       runState.sessionEntry = claimed.entry;
       delete claimed.entry.recovery;
       try {
-        runState.session = createPiSessionAdapter(await claimed.entry.repo.open(
-          claimed.entry.metadata,
-          PI_CONTEXT,
-        ));
+        const raw = await claimed.entry.repo.open(claimed.entry.metadata, PI_CONTEXT);
+        runState.session = createPiSessionAdapter(raw);
+        // Import publishes a new versioned pathname; the registry must sync and
+        // retire that file, never the archived legacy pathname.
+        claimed.entry.metadata = raw.metadata;
+        if (raw.continuity === "clean_break") runState.createdOnMiss = true;
       } catch (error) {
         // The claim made this registry entry busy. An open failure means the
         // entry cannot be driven, so remove its liveness record before
@@ -690,18 +690,14 @@ export async function recoverDurableNativeSession(receipt, context) {
     const matches = (await entry.repo.list(undefined, PI_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
     if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
     raw = await entry.repo.open(matches[0], PI_CONTEXT);
-    const branch = await raw.branch("main", PI_CONTEXT);
-    if (!branch || await branch.getTipId(PI_CONTEXT) !== receipt.tipId) return false;
-    const state = (await raw.getValue(laneState("main"), PI_CONTEXT))?.value;
-    const config = (await raw.getValue(laneConfig("main"), PI_CONTEXT))?.value;
-    const terminal = (await raw.getValue(operationResult(proof.operationId), PI_CONTEXT))?.value;
-    const meta = (await raw.getValue(operationMeta(proof.operationId), PI_CONTEXT))?.value;
-    if (!state || state.currentOperationId !== null || state.lastOperationId !== proof.operationId || state.inbox.length !== 0
-      || config?.model.provider !== proof.model.provider || config?.model.modelId !== proof.model.id
-      || !terminal || !["completed", "failed", "aborted"].includes(terminal.status) || terminal.tipId !== receipt.tipId
-      || meta !== undefined || terminal.kind !== "run" || terminal.fromTipId !== proof.baselineTipId
-      || await raw.getValue(operationState(proof.operationId), PI_CONTEXT)) return false;
-    const entries = await branch.findEntries({ order: "oldestFirst" }, PI_CONTEXT);
+    if (await raw.getLeafId() !== receipt.tipId) return false;
+    const terminal = await raw.getTerminal(proof.operationId);
+    if ((await raw.getOpenTurns()).length !== 0
+      || terminal?.kind !== "turn_close"
+      || terminal.config?.model.provider !== proof.model.provider || terminal.config?.model.id !== proof.model.id
+      || !["completed", "failed", "aborted"].includes(terminal.status) || terminal.tipId !== receipt.tipId
+      || terminal.fromTipId !== proof.baselineTipId) return false;
+    const entries = await raw.getEntries();
     if (createHash("sha256").update(JSON.stringify(entries)).digest("hex") !== proof.ancestry) return false;
     const baseline = proof.baselineTipId === null ? -1 : entries.findIndex((item) => item.id === proof.baselineTipId);
     if (proof.baselineTipId !== null && baseline < 0) return false;
@@ -709,6 +705,7 @@ export async function recoverDurableNativeSession(receipt, context) {
     if (tail[0]?.type !== "message" || tail[0].message.role !== "user"
       || tail.filter((item) => item.type === "message" && item.message.role === "user").length !== 1 + proof.inputIds.length) return false;
     if (!validRecoveryProjection(buildPiSessionContext(entries), proof.model)) return false;
+    await raw.sync();
     await raw.close(PI_CONTEXT);
     raw = undefined;
     // Pending is cleared only after persistence is certain. Bypass the ordinary

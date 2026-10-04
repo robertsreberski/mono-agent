@@ -2,124 +2,41 @@
 // Compatibility boundary between mono-agent's Pi-native bridge and the
 // lane-based AgentHarness API introduced in pi-agent-core 0.85.
 
-import {
-  AgentHarness,
-  BACKGROUND_CONTEXT,
-  createBranchSummaryMessage,
-  createCompactionSummaryMessage,
-  getOrThrow,
-} from "@earendil-works/pi-agent-core";
+import { AgentHarness, getOrThrow } from "@earendil-works/pi-agent-core";
+import { PI_CONTEXT } from "./harness/context.js";
+import { buildPiSessionContext } from "./harness/session-context.js";
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
+export { PI_CONTEXT, buildPiSessionContext };
 
-export const PI_CONTEXT = BACKGROUND_CONTEXT;
+/** @param {any} rawSession */
+export function createPiSessionAdapter(rawSession) {
+  let driver = null;
+  let closePromise = null;
+  return {
+    rawSession,
+    get metadata() { return rawSession.metadata; },
+    attach(nextDriver) { driver = nextDriver; },
+    async buildContext() { return { messages: buildPiSessionContext(await rawSession.getEntries(), { includeFailed: true }) }; },
+    getEntries: () => rawSession.getEntries(),
+    getLeafId: () => rawSession.getLeafId(),
+    appendMessage: (message) => rawSession.appendMessage(message),
+    moveTo: (targetId) => rawSession.moveTo(targetId),
+    getMetadata: () => Promise.resolve(rawSession.metadata),
+    close() {
+      if (!closePromise) closePromise = (async () => {
+        if (driver) { await driver.abort(); await driver.waitForIdle(); }
+        await rawSession.close();
+      })();
+      return closePromise;
+    },
+  };
+}
 
 function operationError(record, fallback) {
   const error = new Error(record?.error?.message || fallback);
   if (record?.error?.code) /** @type {any} */ (error).code = record.error.code;
   return error;
-}
-
-function isContextMessage(message) {
-  return message?.role !== "assistant"
-    || !["error", "aborted", "deferred"].includes(message.stopReason);
-}
-
-/**
- * Pi 0.85 no longer exports its session-context projector. Reproduce the
- * public entry contract here so transcript accounting uses the same latest-
- * compaction and failed-assistant filtering rules as the harness.
- * @param {any[]} pathEntries
- * @param {{includeFailed?: boolean}} [options]
- */
-export function buildPiSessionContext(pathEntries, { includeFailed = false } = {}) {
-  let start = 0;
-  for (let index = pathEntries.length - 1; index >= 0; index -= 1) {
-    if (pathEntries[index]?.type === "compaction") {
-      start = index;
-      break;
-    }
-  }
-  const entries = start > 0 ? pathEntries.slice(start) : pathEntries;
-  const messages = [];
-  for (const entry of entries) {
-    if (entry?.type === "message") {
-      if (includeFailed || isContextMessage(entry.message)) messages.push(entry.message);
-    } else if (entry?.type === "compaction") {
-      messages.push(createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp));
-      messages.push(...(includeFailed
-        ? (entry.retainedTail || [])
-        : (entry.retainedTail || []).filter(isContextMessage)));
-    } else if (entry?.type === "branch_summary" && entry.summary) {
-      messages.push(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
-    }
-  }
-  return messages;
-}
-
-/**
- * Give the surrounding bridge the small session surface it used before Pi
- * moved branch operations onto AgentLane. The raw session remains available to
- * AgentHarness.create(), while all transcript reads and writes use the attached
- * main lane once the harness exists.
- * @param {any} rawSession
- */
-export function createPiSessionAdapter(rawSession) {
-  let lane = null;
-  let harness = null;
-  let closePromise = null;
-
-  const requireLane = () => {
-    if (!lane) throw new Error("Pi session lane is not attached");
-    return lane;
-  };
-
-  return {
-    rawSession,
-    get metadata() { return rawSession.metadata; },
-    attach(nextHarness, nextLane) {
-      harness = nextHarness;
-      lane = nextLane;
-    },
-    async buildContext() {
-      const entries = await requireLane().findEntries({ order: "oldestFirst" }, PI_CONTEXT);
-      // This bridge-facing transcript includes terminal error/abort messages so
-      // result classification can observe them. Pi filters those only when it
-      // constructs the next provider request.
-      return { messages: buildPiSessionContext(entries, { includeFailed: true }) };
-    },
-    getEntries() {
-      return requireLane().findEntries({ order: "oldestFirst" }, PI_CONTEXT);
-    },
-    getLeafId() {
-      return requireLane().getTipId(PI_CONTEXT);
-    },
-    appendMessage(message) {
-      return requireLane().appendMessage(message, PI_CONTEXT);
-    },
-    async moveTo(targetId) {
-      const result = getOrThrow(await requireLane().navigateTree(
-        targetId,
-        { summarize: false },
-        PI_CONTEXT,
-      ));
-      const record = result.navigation;
-      if (record.status === "failed") throw operationError(record, "Pi session navigation failed");
-      if (record.status !== "completed") throw operationError(record, "Pi session navigation was not completed");
-      return record.tipId;
-    },
-    getMetadata() {
-      return Promise.resolve(rawSession.metadata);
-    },
-    close() {
-      if (!closePromise) {
-        closePromise = (harness
-          ? harness.close(PI_CONTEXT)
-          : rawSession.close(PI_CONTEXT));
-      }
-      return closePromise;
-    },
-  };
 }
 
 function adaptTool(tool, gate, questionState, runState) {
