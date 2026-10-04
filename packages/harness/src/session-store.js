@@ -159,6 +159,7 @@ async function initializeSession(session) {
 
 export class MemorySessionRepo {
   constructor() { this.sessions = new Map(); this.openSessions = new Map(); }
+  /** @param {{id?: string, cwd?: string}} [options] */
   async create({ id = randomUUID(), cwd = process.cwd() } = {}) {
     if (this.sessions.has(id)) throw new Error("Harness session already exists");
     const metadata = { id, cwd, createdAt: Date.now(), journalId: randomUUID() };
@@ -225,6 +226,7 @@ export class JsonlSessionRepo {
       || dirname(resolve(metadata.path)) !== this.directory
       || ![`${metadata.journalId}.jsonl`, `${metadata.journalId}.jsonl.importing`, `${metadata.journalId}.jsonl.creating`].includes(metadata.path.split(/[\\/]/).at(-1))) fail();
   }
+  /** @param {{id?: string, cwd?: string, staging?: boolean}} [options] */
   async create({ id = randomUUID(), cwd = process.cwd(), staging = false } = {}) {
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
