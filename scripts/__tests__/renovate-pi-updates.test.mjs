@@ -42,15 +42,14 @@ describe("Pi dependency update automation", () => {
       rangeStrategy: "pin",
       respectLatest: true,
       ignoreUnstable: true,
-      // Pi 1.0 removed the Agent Core harness this runtime is built on; hold
-      // the stack on 0.x until a deliberate harness migration lands.
-      allowedVersions: "<1.0.0",
       minimumReleaseAge: "0 days",
       prCreation: "immediate",
       draftPR: true,
       automerge: false,
       reviewers: ["robertsreberski"],
     });
+    // The owned harness supports Pi 1.x; do not retain the former 0.x cap.
+    expect(piRule.allowedVersions).toBeUndefined();
     expect([...piRule.matchPackageNames].sort()).toEqual(expectedPiPackages);
   });
 
@@ -97,6 +96,7 @@ describe("Pi dependency update automation", () => {
     // agent-app (pi-ai), agent-runtime (pi-agent-core, pi-ai), plus agent-harness's
     // devDependency on pi-ai for its real-Pi session fixtures (#829).
     expect(directPiDependencies).toHaveLength(4);
+    expect([...new Set(directPiDependencies.map(({ version }) => version))]).toEqual(["1.0.1"]);
     for (const dependency of directPiDependencies) {
       expect(dependency.version, `${dependency.path} ${dependency.name}`).toMatch(
         /^\d+\.\d+\.\d+$/,
