@@ -8,7 +8,7 @@ import { buildHarnessSessionContext } from "./session-context.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const fail = () => { throw new Error("Invalid legacy Pi session"); };
-export async function listLegacySessions(root) {
+export async function listLegacySessions(root, { includeArchives = false } = {}) {
   const result = [];
   let dirs;
   try { dirs = await readdir(root, { withFileTypes: true }); }
@@ -16,7 +16,7 @@ export async function listLegacySessions(root) {
   for (const dir of dirs) {
     if (!dir.isDirectory() || dir.name === "mono-v2") continue;
     for (const file of await readdir(join(root, dir.name), { withFileTypes: true })) {
-      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+      if (!file.isFile() || !(file.name.endsWith(".jsonl") || (includeArchives && file.name.endsWith(".jsonl.migrated")))) continue;
       const path = join(root, dir.name, file.name);
       try {
         const reader = await JournalReader.open(path, root, { ownerOnly: false });
@@ -50,17 +50,27 @@ export async function readLegacySession(metadata, root) {
   let seq = 0;
   if (header.type === "session" && header.version === 3) {
     for (const entry of records) {
-      // v3 labels/config records are not model-facing; keep only native entries.
-      if (!["message", "compaction", "branch_summary", "custom"].includes(entry?.type)) continue;
-      if (entry.type === "compaction" && !Array.isArray(entry.retainedTail)) {
-        // v3 cuts are entry-id based; reconstruct its retained branch contribution.
-        const all = [...entries.values()];
-        const cut = all.findIndex((e) => e.id === entry.firstKeptEntryId);
-        if (cut < 0) fail();
-        entry.retainedTail = buildHarnessSessionContext(all.slice(cut));
-      }
+      // Pi 0.99.2 keeps physical ancestry through configuration/label nodes.
+      if (!["message", "compaction", "branch_summary", "custom", "custom_message", "model_change",
+        "thinking_level_change", "active_tools_change", "session_info", "label"].includes(entry?.type)) fail();
       if (typeof entry.id !== "string" || entries.has(entry.id) || (entry.parentId !== null && !entries.has(entry.parentId))) fail();
-      entries.set(entry.id, { ...entry, timestamp: Date.parse(entry.timestamp) });
+      if (entry.type === "compaction" && !Array.isArray(entry.retainedTail)) {
+        const tail = []; let id = entry.parentId; let found = false;
+        while (id !== null) {
+          const ancestor = entries.get(id); if (!ancestor) fail();
+          // A previous compaction contributes its summary, not its own tail.
+          const messages = buildHarnessSessionContext([{ ...ancestor, retainedTail: [] }]);
+          if (messages[0]) tail.push(messages[0]);
+          if (id === entry.firstKeptEntryId) { found = true; break; }
+          id = ancestor.parentId;
+        }
+        if (!found) fail(); entry.retainedTail = tail.reverse();
+      }
+      const normalized = entry.type === "custom_message" ? { ...entry, type: "message", message: {
+        role: "custom", customType: entry.customType, content: entry.content, details: entry.details,
+        display: entry.display, timestamp: Date.parse(entry.timestamp),
+      } } : entry;
+      entries.set(entry.id, { ...normalized, timestamp: Date.parse(entry.timestamp) });
       tip = entry.id;
     }
   } else if (header.v === 4 && header.kind === "header" && header.storageVersion === 1) {

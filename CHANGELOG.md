@@ -14,7 +14,8 @@
   and model-change retirement remains destructive. Support large native records
   and journals with kernel-backed writer exclusion and safe retired-lock cleanup.
   Resume interrupted idle legacy imports without deleting published context
-  when source archival fails.
+  when source archival fails. Adopt owned legacy 0755 roots safely, retain only
+  selected v3 parent context, and retire matching archived evidence.
 
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth

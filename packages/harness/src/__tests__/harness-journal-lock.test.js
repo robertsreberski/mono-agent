@@ -62,7 +62,7 @@ it("rejects insecure or symlinked roots and lock files", async () => {
   await expect(locks.acquireWriter("symlink")).rejects.toThrow("ownership unavailable");
   await chmod(locks.catalogPath, 0o644);
   await expect(locks.acquireWriter("blocked")).rejects.toThrow("ownership unavailable");
-  await chmod(r, 0o755); await expect(JournalLocks.open(r)).rejects.toThrow("ownership unavailable");
+  await chmod(r, 0o775); await expect(JournalLocks.open(r)).rejects.toThrow("ownership unavailable");
 });
 
 it("pins the root identity and never recreates a purged root", async () => {

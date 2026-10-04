@@ -53,7 +53,9 @@ Node.js 24.15.0 or newer is required. Hosts normally use the provider glue in
 | `src/session-context.js` | Adapter-shaped native context projection |
 | `src/compaction-kit/` | Attributed summary/cut/estimator helpers |
 
-Durable roots and owned files are owner-private. One permanent catalogue mutex
+Owned, non-group/other-writable legacy roots (including 0755) are tightened to
+0700 through a pinned no-follow descriptor. V2 directories/files remain strictly
+owner-private; writable or foreign-owned roots are rejected. One permanent catalogue mutex
 serializes acquisition and retired-writer lock reclamation; per-journal writer
 locks never hold that mutex over model execution. Torn owned tails are repaired
 and fsynced before reuse; complete corruption and resource failures are explicit.
@@ -64,8 +66,12 @@ ID in owned staging. Complete context is sealed and fsynced before publication;
 publication directories are synced before the source is identity-checked and
 archived. Process-crash retries resume validated stages or rebuild incomplete
 unpublished context from that unchanged source. Published context is never
-removed merely because archival or a later sync failed. Duplicate IDs, replaced
-sources, corrupt complete records and incomplete ownership headers fail closed.
+removed merely because archival or a later sync failed. A synced archival
+completion turn makes later opens independent of the optional archive; retirement
+removes matching archived evidence as well as publication/staging. Duplicate IDs, replaced
+sources and corrupt complete records fail closed. Headers publish atomically
+through synced `.creating` files. Incomplete unpublished creations do not poison
+the catalogue; source-bound imports rebuild them under ownership.
 Open legacy operations instead create a clean break without replay or source
 mutation. No unreleased mono-v1 converter or mixed-binary writer mode exists.
 

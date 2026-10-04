@@ -53,7 +53,7 @@ describe("mono-agent harness session store", () => {
       const s = await repo.open(metadata);
       expect(s.continuity).toBe("import");
       expect((await s.getEntries()).map((e) => e.message.role)).toEqual(["user", "assistant"]);
-      expect(sync).toHaveBeenCalledTimes(2);
+      expect(sync).toHaveBeenCalledTimes(3);
       expect(await readFile(`${old}.migrated`)).toEqual(original);
       await expect(stat(old)).rejects.toMatchObject({ code: "ENOENT" });
       await s.close(); sync.mockRestore();
@@ -308,4 +308,53 @@ it("concurrent close releases a retired writer and reclaims its lock exactly onc
   await repo.retire(session.metadata);
   await Promise.all([session.close(), session.close(), repo.close()]);
   expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+});
+
+it("cleans its O_EXCL partial header after failure, and ignores orphan incomplete creations", async () => {
+  const r = await root(); let failOnce = true;
+  const repo = new JsonlSessionRepo({ sessionsRoot: r, onImportPhase: async (phase) => {
+    if (phase === "stage_created" && failOnce) {
+      failOnce = false; const [name] = await readdir(join(r, "mono-v2", "journals"));
+      await appendFile(join(r, "mono-v2", "journals", name), '{"format":'); throw new Error("Fictional header write failure");
+    }
+  } });
+  await expect(repo.create({ id: "first" })).rejects.toThrow("header write failure");
+  expect(await readdir(join(r, "mono-v2", "journals"))).toEqual([]);
+  await writeFile(join(r, "mono-v2", "journals", "orphan.jsonl.creating"), '{"format":', { mode: 0o600 });
+  const good = await repo.create({ id: "unrelated" }); await good.appendMessage(message); await good.close();
+  expect((await repo.list()).map((m) => m.id)).toEqual(["unrelated"]);
+  await repo.retireByHandle("unrelated"); expect(await repo.list()).toEqual([]);
+});
+
+it.each([".importing", ".creating"])("rejects opening non-published %s metadata without touching publication", async (suffix) => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "published" });
+  await session.appendMessage(message); const metadata = session.metadata; await session.close();
+  const before = await readFile(metadata.path); await copyFile(metadata.path, metadata.path + suffix);
+  await expect(repo.open({ ...metadata, path: metadata.path + suffix })).rejects.toThrow("Invalid");
+  expect((await readFile(metadata.path)).equals(before)).toBe(true);
+});
+
+it("tracks active scopes without iterating complete historical turn/operation maps", async () => {
+  const store = await new MemorySessionRepo().create();
+  for (const history of [store.validator.turns, store.validator.operations]) {
+    history.values = () => { throw new Error("Historical values scan forbidden"); };
+    history[Symbol.iterator] = () => { throw new Error("Historical iterator forbidden"); };
+  }
+  for (let i = 0; i < 1000; i++) {
+    const turn = `turn-${i}`, op = `op-${i}`;
+    await store.beginTurn(turn); await store.openOperation(op, {});
+    expect(store.activeTurnId()).toBe(turn); expect(store.activeOperationId()).toBe(op);
+    await store.closeOperation(op, "completed"); await store.endTurn(turn, "completed");
+  }
+  expect(await store.getOpenTurns()).toEqual([]); expect(await store.getOpenOperations()).toEqual([]);
+  expect(store.validator.turns.size).toBe(1001); await store.close();
+});
+
+it("publishes concurrent same-handle creations under one catalogue reservation", async () => {
+  const r = await root(); const repos = [new JsonlSessionRepo({ sessionsRoot: r }), new JsonlSessionRepo({ sessionsRoot: r })];
+  const outcomes = await Promise.allSettled(repos.map((repo) => repo.create({ id: "one-handle" })));
+  expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+  expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+  for (const outcome of outcomes) if (outcome.status === "fulfilled") await outcome.value.close();
+  expect(await repos[0].listOwned()).toHaveLength(1);
 });

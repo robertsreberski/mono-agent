@@ -105,7 +105,7 @@ export async function createHarnessAdapter(session, options) {
     endTurn: (status) => driver.endTurn(status),
     async prompt(text, promptOptions) {
       if (closed) throw new Error("mono-agent harness is closed");
-      runState.stopping = false; questionState.awaiting = false; gate?.resume();
+      runState.stopping = false; gate?.resume();
       return driver.prompt(text, promptOptions);
     },
     steer: (message) => driver.steer(message),

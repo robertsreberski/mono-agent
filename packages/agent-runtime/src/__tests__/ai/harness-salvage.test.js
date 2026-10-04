@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, expect, afterEach } from "vitest";
@@ -35,4 +35,15 @@ it("salvages large v2 journals read-only with bounded result excerpts", async ()
   expect(evidence.completed).toEqual([{ name: "Read", result: "y".repeat(4096) }]);
   expect(evidence.additionalOutcomesUnknown).toBe(true);
   expect((await readFile(s.metadata.path)).equals(bytes)).toBe(true);
+});
+
+it("salvages the requested v2 ID despite unrelated malformed, insecure and non-file journals", async () => {
+  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "requested" });
+  await session.close(); const bytes = await readFile(session.metadata.path); const directory = join(r, "mono-v2", "journals");
+  await writeFile(join(directory, "malformed.jsonl"), "not-json\n", { mode: 0o600 });
+  await writeFile(join(directory, "insecure.jsonl"), bytes, { mode: 0o644 }); await mkdir(join(directory, "directory.jsonl"));
+  expect((await salvageDurableNativeSession("requested", r)).completed).toEqual([]);
+  await expect(salvageDurableNativeSession("missing", r)).rejects.toThrow();
+  expect((await readFile(session.metadata.path)).equals(bytes)).toBe(true);
 });

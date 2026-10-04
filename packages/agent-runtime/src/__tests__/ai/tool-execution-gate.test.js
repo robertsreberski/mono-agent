@@ -2,6 +2,7 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCal
 import { MemorySessionRepo } from "@mono-agent/harness/session-store.js";
 import { describe, expect, it, vi } from "vitest";
 import { createHarnessAdapter, createPiSessionAdapter, HARNESS_CONTEXT } from "../../ai/providers/pi-native/harness-adapter.js";
+import { shouldRetryStructuredOutputFinalization } from "../../ai/providers/pi-native/structured-output.js";
 import { createToolExecutionGate, isSharedTool } from "../../ai/providers/pi-native/tool-execution-gate.js";
 
 function deferred() {
@@ -286,4 +287,24 @@ describe("run-local gate cancellation and hand-off", () => {
       release();
     }
   });
+});
+
+it("does not execute structured finalization retry after a durable AskParent", async () => {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "question-finalization" }], tokensPerSecond: undefined });
+  const models = createModels(); models.setProvider(faux.provider);
+  faux.setResponses([fauxAssistantMessage([fauxToolCall("AskParent", {})]), fauxAssistantMessage([fauxToolCall("StructuredOutput", {})])]);
+  const repo = new MemorySessionRepo(); const session = createPiSessionAdapter(await repo.create());
+  const submit = vi.fn(async () => ({ content: [] })); const schema = { type: "object", properties: {} };
+  const harness = await createHarnessAdapter(session, { models, model: faux.getModel(), systemPrompt: "Fictional question.", outputSchema: schema, tools: [
+    { name: "AskParent", description: "Ask", parameters: schema, execute: async () => ({ content: [], details: { tool: "AskParent" } }) },
+    { name: "StructuredOutput", description: "Submit", parameters: schema, execute: submit },
+  ], retry: { maxRetries: 0 } });
+  try {
+    await harness.prompt("Ask a fictional question.");
+    expect(shouldRetryStructuredOutputFinalization({ outputSchema: schema, structuredResult: null, finalText: "", stopReason: "toolUse", externalAbort: false, maxTurnsHit: false })).toBe(true);
+    await harness.prompt("Finalize the structured object.");
+    expect(submit).not.toHaveBeenCalled();
+    const results = (await session.buildContext()).messages.filter((message) => message.role === "toolResult");
+    expect(results.at(-1).isError).toBe(true); expect(JSON.stringify(results.at(-1))).toContain("awaiting a parent reply");
+  } finally { await harness.close(); await repo.close(); }
 });

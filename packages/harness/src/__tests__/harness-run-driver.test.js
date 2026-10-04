@@ -1,3 +1,4 @@
+import { createRetryStream } from "../retry-stream.js";
 import { describe, expect, it } from "vitest";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { MemorySessionRepo } from "../session-store.js";
@@ -122,4 +123,18 @@ it("gives standalone manual compaction an explicitly synthetic promptless turn",
     expect((await raw.getTurn(start.turnId)).payload.status).toBe("completed");
     expect(faux.state.callCount).toBe(0);
   } finally { await adapter.close(); await raw.close(); }
+});
+
+it("settles retry producer and aborts its transport when the consumer exits early", async () => {
+  const message = { role: "assistant", content: [], stopReason: "stop", usage: { input: 1, output: 1, totalTokens: 2 } };
+  let signal, closed = false;
+  const model = { provider: "faux", id: "closed", contextWindow: 100000, maxTokens: 1000 };
+  const models = { getModel: () => model, streamSimple: async (_model, _context, options) => {
+    signal = options.signal;
+    return { async *[Symbol.asyncIterator]() { try { yield { type: "start", partial: message }; yield { type: "text_delta", delta: "Fictional text." }; } finally { closed = true; } }, result: async () => message };
+  } };
+  const stream = createRetryStream(models, model, { messages: [] }, {}, { maxRetries: 0 }, async () => {});
+  const iterator = stream[Symbol.asyncIterator](); expect((await iterator.next()).value.type).toBe("start");
+  await iterator.return(); await expect(stream.result()).rejects.toThrow("consumer closed");
+  expect(signal.aborted).toBe(true); expect(closed).toBe(true);
 });

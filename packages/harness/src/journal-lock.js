@@ -33,7 +33,20 @@ export class JournalLocks {
     for (const path of [root, join(root, "mono-v2"), join(root, "mono-v2", "locks")]) {
       try { await mkdir(path, { mode: 0o700, recursive: path === root }); }
       catch (error) { if (error.code !== "EEXIST") throw error; }
-      const stat = await lstat(path); secure(stat, true); identities.set(path, stat);
+      let stat = await lstat(path);
+      if (path === root && (stat.mode & 0o077) !== 0) {
+        // Pi 0.99 created owned roots as 0755. Tighten only a non-writable
+        // owned directory through a no-follow descriptor, never a swapped path.
+        if (!stat.isDirectory() || (stat.mode & 0o022) !== 0
+          || (process.getuid && stat.uid !== process.getuid())) fail();
+        const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try {
+          if (!same(stat, await handle.stat())) fail();
+          await handle.chmod(0o700); await handle.sync();
+          const current = await lstat(path); if (!same(stat, current)) fail(); stat = current;
+        } finally { await handle.close(); }
+      }
+      secure(stat, true); identities.set(path, stat);
     }
     const locks = new JournalLocks(root, identities);
     await locks.ensureFile(locks.catalogPath);

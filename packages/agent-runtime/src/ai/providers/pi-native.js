@@ -434,6 +434,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // (host/runtime-side throws after the session mutated) can roll back too, not
     // just the success path.
     baselineLeafId: null,
+    hasBaselineLeaf: false,
     recoveryOperationId: undefined,
     recoveryInputIds: null,
     retainRecoveryTail: false,
@@ -651,8 +652,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // the last good transcript via the session tree's moveTo primitive. Only a
     // TRUE resume needs this: a create-on-miss session is fresh, so a failure
     // drops it entirely via the fresh-run path (no leaf to roll back to).
-    if (requestedSessionId && !runState.createdOnMiss) {
-      try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
+    if (requestedSessionId && (!runState.createdOnMiss || runState.sessionEntry)) {
+      try { runState.baselineLeafId = await runState.session.getLeafId(); runState.hasBaselineLeaf = true; } catch { /* best-effort */ }
     }
 
     // One logical turn encompasses proactive/manual compaction and every prompt
@@ -1051,6 +1052,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       && !runState.maxTurnsHit
       && (!errorMessage || failureKindForPiError(errorMessage, diagnostics) === "provider_unavailable")
       && typeof options.sessionRecovery?.runId === "string" && options.sessionRecovery.runId.length > 0
+      && options.sessionRecovery.runId.length <= 512
       && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
       && typeof runState.recoveryOperationId === "string";
     await harness.endTurn(runState.externalAbort ? "aborted" : errorMessage ? "failed" : "completed");

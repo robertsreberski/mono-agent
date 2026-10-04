@@ -36,13 +36,15 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   catch (error) { if (error.code !== "ENOENT") throw error; }
   for (const file of journalFiles) {
     if (!file.name.endsWith(".jsonl")) continue;
-    if (!file.isFile()) fail();
+    if (!file.isFile()) continue;
     const path = join(journals, file.name);
-    const reader = await JournalReader.open(path, root);
+    let reader;
     try {
+      reader = await JournalReader.open(path, root);
       const header = await reader.readHeader(); validateJournalHeader(header);
       if (header?.format === "mono-harness" && header.version === 2 && header.id === sessionId) owned.push(path);
-    } finally { await reader.close(); }
+    } catch { /* Best-effort discovery: an unrelated bad header is not this ID. */ }
+    finally { await reader?.close(); }
   }
   if (owned.length === 1) matches.splice(0, matches.length, owned[0]);
   if (matches.length !== 1) fail();

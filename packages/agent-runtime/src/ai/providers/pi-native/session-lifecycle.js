@@ -492,7 +492,7 @@ export async function commitSession(runState, {
     // the leaf captured before this turn so the failed turn never leaks into a
     // later resume. The next resume then sees the last good transcript. The
     // entry stays live (busy is cleared in finally) and its idle TTL re-arms.
-    if (baselineLeafId && (errorMessage || externalAbort)) {
+    if ((runState.hasBaselineLeaf || baselineLeafId) && (errorMessage || externalAbort)) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
@@ -521,7 +521,7 @@ export async function commitSession(runState, {
 export async function rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo }) {
   const { session, sessionEntry, baselineLeafId } = runState;
   if (sessionEntry) {
-    if (baselineLeafId) {
+    if (runState.hasBaselineLeaf || baselineLeafId) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     nativeSessions.delete(requestedSessionId);
@@ -569,7 +569,7 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
   // may land before the baseline was readable, but that handle must still be
   // released without deleting the user-owned transcript.
   if (sessionEntry && session) {
-    if (baselineLeafId) {
+    if (runState.hasBaselineLeaf || baselineLeafId) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     try { await session.close(); } catch { /* best-effort */ }
@@ -617,6 +617,7 @@ export async function recoverDurableNativeSession(receipt, context) {
     raw = await entry.repo.open(matches[0], HARNESS_CONTEXT);
     if (await raw.getLeafId() !== receipt.tipId) return false;
     const terminal = await raw.getTerminal(proof.operationId);
+    if ([...raw.validator.inputs.values()].some((input) => input.state === "queued")) return false;
     if ((await raw.getOpenTurns()).length !== 0
       || terminal?.kind !== "operation_end"
       || terminal.config?.model.provider !== proof.model.provider || terminal.config?.model.id !== proof.model.id

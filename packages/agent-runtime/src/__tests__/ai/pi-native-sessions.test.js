@@ -888,6 +888,89 @@ describe("pi-native sessions", () => {
     ]);
   });
 
+  it.each([3, 4])("imports and runs legacy v%s from an owned Pi 0.99 0755 root", async (version) => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "legacy-permissions-"));
+    const directory = join(root, "legacy"); mkdirSync(directory);
+    const source = join(directory, "fixture_fixture-session.jsonl");
+    await fsPromises.copyFile(new URL(`../../../../harness/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
+    await fsPromises.chmod(root, 0o755);
+    let context;
+    faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }]);
+    try {
+      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+        messages: [{ role: "user", content: "Continue the fictional project." }],
+        sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+      }));
+      expect(result.error).toBeNull(); expect(transcriptOf(context)).toHaveLength(3);
+      expect(transcriptOf(context)[0]).toContain("Summarize the fictional project.");
+      expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
+      for (const path of [join(root, "mono-v2"), join(root, "mono-v2", "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
+      expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../harness/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
+    } finally { await disposeProviderSession("fixture-session").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["provider", "throw", "abort"].flatMap((failure) => [true, false].map((seed) => [failure, seed])))("rolls back the seeded clean-break legacy epoch after %s failure (seed=%s)", async (failure, seed) => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "legacy-clean-break-"));
+    const directory = join(root, "legacy"); mkdirSync(directory);
+    const source = join(directory, "fixture_fixture-session.jsonl");
+    await fsPromises.copyFile(new URL("../../../../harness/src/__tests__/fixtures/legacy-v4.jsonl", import.meta.url), source);
+    await fsPromises.appendFile(source, JSON.stringify({ kind: "value", op: "set", seq: 6, namespace: "pi.op.meta", key: "open", value: {} }) + "\n");
+    const original = readFileSync(source); const controller = new AbortController();
+    faux.setResponses([failure === "provider" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional failure" }) : fauxAssistantMessage([fauxText("Failed turn draft.")])]);
+    try {
+      const failed = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+        messages: [...(seed ? [{ role: "user", content: "Canonical seed." }, { role: "assistant", content: "Canonical reply." }] : []), { role: "user", content: "Failed first turn." }],
+        sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root, piMaxRetries: 0,
+        ...(failure === "throw" ? { resolveCustomPricing: () => { throw new Error("Fictional post-turn throw"); } } : {}),
+        ...(failure === "abort" ? { abortSignal: controller.signal, onEvent: (event) => { if (event.type === "capabilities_resolved") controller.abort(); } } : {}),
+      }));
+      expect(failure === "abort" ? failed.cancelled : Boolean(failed.error)).toBe(true);
+      await disposeProviderSession("fixture-session"); let context;
+      faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Successful retry.")]); }]);
+      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
+        messages: [{ role: "user", content: "Next clean turn." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
+      }));
+      expect(result.error).toBeNull(); expect(transcriptOf(context)).toEqual([...(seed ? ["user:Canonical seed.", "assistant:Canonical reply."] : []), "user:Next clean turn."]);
+      expect(readFileSync(source)).toEqual(original); // clean break never archived or changed the open-operation source
+    } finally { await disposeProviderSession("fixture-session").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("does not issue a recovery receipt for an over-512 host run ID", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "bounded-recovery-")); faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
+    try {
+      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "bounded-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "x".repeat(513), revision: 0 } }));
+      expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeUndefined();
+      expect(readFileSync(findJsonlFiles(root)[0], "utf8")).toContain("synthetic:runtime:");
+    } finally { await disposeProviderSession("bounded-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("refuses duplicate host logical run IDs without dispatching or changing native context", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "unique-host-turn-"));
+    const base = runOptions(model, { sessionId: "unique-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "host-run", revision: 0 } });
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("First reply.")])]);
+      expect((await generatePiNativeResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "First input." }] })).error).toBeNull();
+      const dispatch = vi.fn(() => fauxAssistantMessage([fauxText("Must not dispatch.")])); faux.setResponses([dispatch]);
+      const duplicate = await generatePiNativeResponse("Fictional verification.", { ...base, messages: [{ role: "user", content: "Duplicate input." }] });
+      expect(duplicate.error).toContain("Invalid mono-agent harness journal"); expect(dispatch).not.toHaveBeenCalled(); expect(duplicate.providerSessionRecovery).toBeUndefined();
+      let context; faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("Next reply.")]); }]);
+      const next = await generatePiNativeResponse("Fictional verification.", { ...base, sessionRecovery: { runId: "next-host-run", revision: 1 }, messages: [{ role: "user", content: "Next input." }] });
+      expect(next.error).toBeNull(); expect(transcriptOf(context)).toEqual(["user:First input.", "assistant:First reply.", "user:Next input."]);
+    } finally { await disposeProviderSession("unique-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects settlement if durable queued input evidence is still pending", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "pending-recovery-")); faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
+    try {
+      const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "pending-handle", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "pending-run", revision: 0 } }));
+      expect(result.error).toBeNull(); expect(result.providerSessionRecovery).toBeDefined();
+      const repo = resolveDurableNativeSessionRepo(root); const raw = await repo.open((await repo.list())[0]);
+      await raw.beginTurn("synthetic:pending-input-proof"); await raw.write("input_queued", { inputId: "unplaced", state: "queued", placement: "next" });
+      await raw.endTurn("synthetic:pending-input-proof", "completed"); await raw.sync(); await raw.close();
+      expect(await recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).toBe(false);
+    } finally { await disposeProviderSession("pending-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("imports idle Pi v3 JSONL into the versioned store and archives the source", async () => {
     const model = setup();
     const root = mkdtempSync(join(tmpdir(), "pi-native-v3-upgrade-"));

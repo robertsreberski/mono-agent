@@ -22,7 +22,7 @@ export function validateJournalHeader(header) {
       && /^[a-f0-9]{64}$/.test(info.contextHash) && source?.id === header.id
       && typeof source.path === "string" && source.path.split(/[\\/]/).length === 2
       && source.path.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
-      && source.path.split(/[\/]/)[0] !== "mono-v2"
+      && source.path.split(/[\\/]/)[0] !== "mono-v2"
       && source.path.endsWith(".jsonl") && object(identity)
       && ["dev", "ino", "size"].every((key) => time(identity[key]))
       && Number.isFinite(identity.mtimeMs) && /^[a-f0-9]{64}$/.test(identity.sha256));
@@ -39,6 +39,8 @@ export class JournalValidator {
     this.contextInfo = new Map();
     /** @type {string|null} */ this.tip = null;
     this.turns = new Map();
+    this.openTurns = new Set();
+    this.openOperations = new Set();
     this.operations = new Map();
     this.calls = new Map();
     this.inputs = new Map();
@@ -53,7 +55,7 @@ export class JournalValidator {
     const p = record.payload;
     const turn = this.turns.get(record.turnId);
     if (record.kind === "turn_start") {
-      requireValue(!turn && ![...this.turns.values()].some((t) => !t.end)
+      requireValue(!turn && this.openTurns.size === 0
         && ["host", "synthetic"].includes(p.identitySource) && object(p.config)
         && p.baselineTipId === this.tip && record.operationId === undefined);
       return;
@@ -64,19 +66,19 @@ export class JournalValidator {
     const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
     if (record.kind === "operation_start") {
       requireValue(id(record.operationId) && !op
-        && (![...this.operations.values()].some((o) => !o.end)
+        && (this.openOperations.size === 0
           || (p.type === "compaction" && this.operations.get(p.parentOperationId)?.start.payload.type === "prompt"
             && this.operations.get(p.parentOperationId)?.turnId === record.turnId
-            && [...this.operations.values()].filter((o) => !o.end).length === 1
+            && this.openOperations.size === 1
             && !this.operations.get(p.parentOperationId)?.end))
         && ["prompt", "compaction"].includes(p.type) && typeof p.cause === "string"
         && p.baselineTipId === this.tip && object(p.config));
     } else if (record.kind === "operation_end") {
       requireValue(op && !op.end && op.turnId === record.turnId && status(p.status) && p.tipId === this.tip
-        && ![...this.operations.values()].some((o) => !o.end && o.start.payload.parentOperationId === record.operationId));
+        && ![...this.openOperations].some((id) => this.operations.get(id).start.payload.parentOperationId === record.operationId));
     } else if (record.kind === "turn_end") {
       requireValue(record.operationId === undefined && status(p.status) && ids(p.consumedInputIds)
-        && ![...this.operations.values()].some((o) => o.turnId === record.turnId && !o.end)
+        && ![...this.openOperations].some((id) => this.operations.get(id).turnId === record.turnId)
         && (p.finalOperationId === null || (this.operations.get(p.finalOperationId)?.end
           && this.operations.get(p.finalOperationId)?.turnId === record.turnId))
         && p.finalOperationId === (turn.finalOperationId ?? null) && p.tipId === this.tip
@@ -140,16 +142,19 @@ export class JournalValidator {
   apply(record) {
     this.validate(record);
     const p = record.payload;
+    if (record.kind === "turn_start") this.openTurns.add(record.turnId);
     if (record.kind === "turn_start") this.turns.set(record.turnId, { start: record, operations: [], inputs: new Set(), end: null });
     if (record.kind === "operation_start") {
+      this.openOperations.add(record.operationId);
       this.operations.set(record.operationId, { start: record, turnId: record.turnId, end: null });
       this.turns.get(record.turnId).operations.push(record.operationId);
     }
     if (record.kind === "operation_end") {
+      this.openOperations.delete(record.operationId);
       this.operations.get(record.operationId).end = record;
       this.turns.get(record.turnId).finalOperationId = record.operationId;
     }
-    if (record.kind === "turn_end") this.turns.get(record.turnId).end = record;
+    if (record.kind === "turn_end") { this.openTurns.delete(record.turnId); this.turns.get(record.turnId).end = record; }
     if (["message", "compaction"].includes(record.kind)) {
       this.contextIds.add(record.id); this.tip = record.id;
       const message = p.message;

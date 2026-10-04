@@ -69,8 +69,8 @@ export class SessionStore {
       this.apply(record, address);
       return record;
   }
-  activeTurnId() { return [...this.validator.turns].find(([, t]) => !t.end)?.[0]; }
-  activeOperationId() { return [...this.validator.operations].reverse().find(([, o]) => !o.end)?.[0]; }
+  activeTurnId() { return this.validator.openTurns.values().next().value; }
+  activeOperationId() { return [...this.validator.openOperations].at(-1); }
   beginTurn(turnId, config = {}, identitySource = "synthetic") {
     return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip }), { turnId });
   }
@@ -129,8 +129,8 @@ export class SessionStore {
   }
   async getAllEntries() { await this.line; if (this.failure) throw this.failure; return Promise.all([...this.entries.values()].map((e) => this.materialize(e))); }
   async getEntry(id) { await this.line; if (this.failure) throw this.failure; return this.materialize(this.entries.get(id)); }
-  async getOpenTurns() { await this.line; return [...this.validator.turns.values()].filter((t) => !t.end).map((t) => clone(t.start)); }
-  async getOpenOperations() { await this.line; return [...this.validator.operations.values()].filter((o) => !o.end).map((o) => clone(o.start)); }
+  async getOpenTurns() { await this.line; return [...this.validator.openTurns].map((id) => clone(this.validator.turns.get(id).start)); }
+  async getOpenOperations() { await this.line; return [...this.validator.openOperations].map((id) => clone(this.validator.operations.get(id).start)); }
   async getTurn(turnId) { await this.line; return clone(this.validator.turns.get(turnId)?.end); }
   async getTerminal(operationId) {
     await this.line;
@@ -240,14 +240,8 @@ export class JsonlSessionRepo {
         await this.assertDirectory();
         if (this.openSessions.has(id) || (await this.listOwnedUnlocked(true)).some((m) => m.id === id)) throw new Error("Harness session already exists");
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
-        const handle = await open(metadata.path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-        try {
-          await handle.writeFile(`${JSON.stringify({ format: FORMAT, version: 2, ownershipSchemaVersion: 1,
-            ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, path: undefined })}\n`);
-          await handle.sync();
-        } finally { await handle.close(); }
+        await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata }, true);
         published = true;
-        await this.syncDirectories();
       });
       const session = await this.openLocked(metadata, writer);
       await initializeSession(session);
@@ -265,6 +259,7 @@ export class JsonlSessionRepo {
   async open(metadata) {
     if (metadata.legacy) return this.importLegacy(metadata);
     this.checkMetadata(metadata);
+    if (metadata.path !== join(this.directory, `${metadata.journalId}.jsonl`)) fail();
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
     const locks = await this.ensureDirectory();
@@ -343,20 +338,29 @@ export class JsonlSessionRepo {
       return session;
     } catch (error) { await reader.close(); await handle?.close(); throw error; }
   }
-  async writeImportHeader(metadata) {
+  async writeImportHeader(metadata, catalogOwned = false) {
     const locks = await this.locksPromise;
     const creating = join(this.directory, `${metadata.journalId}.jsonl.creating`);
-    await locks.withCatalog(async () => {
+    const publish = async () => {
       await this.assertDirectory();
       const handle = await open(creating, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      let identity;
       try {
+        identity = await handle.stat();
+        await this.onImportPhase("stage_created");
         await handle.writeFile(`${JSON.stringify({ ...metadata, path: undefined })}\n`);
         await this.onImportPhase("stage_written");
         await handle.sync(); await this.onImportPhase("stage_synced");
+      } catch (error) {
+        // This unpublished inode is ours (O_EXCL + writer + catalogue). Do not
+        // leave a torn header after an ordinary write/sync failure.
+        if (identity && !await absent(creating) && sameIdentity(identity, await lstat(creating))) { await unlink(creating); await this.syncDirectories(); }
+        throw error;
       } finally { await handle.close(); }
       await rename(creating, metadata.path); await this.syncDirectories();
       await this.onImportPhase("stage_ready");
-    });
+    };
+    return catalogOwned ? publish() : locks.withCatalog(publish);
   }
   async importSealed(session) {
     const info = session.metadata.import;
@@ -384,6 +388,9 @@ export class JsonlSessionRepo {
     if (info.mode === "clean_break") {
       if (session.entries.size === 0) session.continuity = "clean_break";
     }
+    const archiveTurnId = `synthetic:legacy-archived:${info.importId}`;
+    const archiveTurn = session.validator.turns.get(archiveTurnId);
+    const archived = archiveTurn?.end?.payload.status === "completed";
     const locks = await this.locksPromise;
     await locks.withCatalog(async () => {
       await this.assertDirectory();
@@ -399,9 +406,22 @@ export class JsonlSessionRepo {
           await reader.assertIdentity(); await unlink(path); await this.syncDirectories();
         } finally { await reader.close(); }
       }
-      if (info.mode === "import") await archiveLegacySession(importSourceMetadata(info, this.root), this.root, { identity: info.source.identity }, this.onImportPhase);
+      if (info.mode === "import" && !archived) await archiveLegacySession(importSourceMetadata(info, this.root), this.root, { identity: info.source.identity }, this.onImportPhase);
       await this.assertDirectory();
     });
+    if (info.mode === "import" && !archived) {
+      // Earlier v2 imports may already contain interrupted user operations.
+      // P1a still aborts on reopen; settle them before the administrative marker.
+      for (const turn of await session.getOpenTurns()) {
+        if (turn.turnId === archiveTurnId) continue;
+        for (const op of (await session.getOpenOperations()).reverse()) {
+          if (op.turnId === turn.turnId) await session.closeOperation(op.operationId, "aborted");
+        }
+        await session.endTurn(turn.turnId, "aborted");
+      }
+      if (!archiveTurn) await session.beginTurn(archiveTurnId, { cause: "legacy_archive", importId: info.importId });
+      await session.endTurn(archiveTurnId, "completed"); await session.sync();
+    }
   }
   async importLegacy(metadata) {
     const projected = await readLegacySession(metadata, this.root);
@@ -439,7 +459,12 @@ export class JsonlSessionRepo {
         await locks.withCatalog(async () => {
           const reader = await JournalReader.open(creatingPath, this.root);
           try {
-            const header = await reader.readHeader(); validateJournalHeader(header);
+            const header = await reader.readHeader({ allowIncomplete: true });
+            if (!header) {
+              await assertLegacyIdentity(metadata.path, this.root, info.source.identity);
+              await reader.assertIdentity(); await unlink(creatingPath); await this.syncDirectories(); return;
+            }
+            validateJournalHeader(header);
             if (header.journalId !== journalId || header.import?.importId !== info.importId || !await absent(stage.path)) fail();
             await reader.assertIdentity(); await rename(creatingPath, stage.path); await this.syncDirectories();
           } finally { await reader.close(); }
@@ -516,7 +541,9 @@ export class JsonlSessionRepo {
       const path = join(this.directory, file.name);
       const reader = await JournalReader.open(path, this.root);
       try {
-        const header = await reader.readHeader(); validateJournalHeader(header);
+        const header = await reader.readHeader({ allowIncomplete: file.name.endsWith(".jsonl.creating") });
+        if (!header) continue; // unpublished creation is not another session's corruption
+        validateJournalHeader(header);
         const metadata = { ...header, path }; this.checkMetadata(metadata); result.push(metadata);
       } finally { await reader.close(); }
     }
@@ -551,14 +578,19 @@ export class JsonlSessionRepo {
     const aliases = join(this.root, "mono-v2", "aliases");
     if (!await absent(aliases) && (!(await lstat(aliases)).isDirectory() || (await readdir(aliases)).length)) fail();
     // Validate all matching evidence before removing either publication phase.
-    const readers = [];
+    const readers = [], archives = [];
     try {
       for (const path of paths) {
         if (await absent(path)) continue;
         const reader = await JournalReader.open(path, this.root); readers.push(reader);
         const header = await reader.readHeader(); validateJournalHeader(header);
         if (header.journalId !== metadata.journalId || header.id !== metadata.id) fail();
+        if (header.import) {
+          const source = importSourceMetadata(header.import, this.root);
+          archives.push({ ...source, path: `${source.path}.migrated` });
+        }
       }
+      for (const archive of archives) await this.removeLegacy(archive);
       for (const reader of readers) { await reader.assertIdentity(); await unlink(reader.path); }
     } finally { for (const reader of readers) await reader.close(); }
     await this.syncDirectories();
@@ -585,7 +617,7 @@ export class JsonlSessionRepo {
       const locks = await this.ensureDirectory();
       const matches = await locks.withCatalog(async () => {
         const owned = await this.listOwnedUnlocked(true);
-        const legacy = await listLegacySessions(this.root);
+        const legacy = await listLegacySessions(this.root, { includeArchives: true });
         // A headerless/corrupt legacy exact-name candidate is uncertainty, not
         // authority to unlink it outside ownership or acknowledge complete loss.
         for (const dir of await readdir(this.root, { withFileTypes: true })) {
@@ -593,7 +625,7 @@ export class JsonlSessionRepo {
           if (dir.isSymbolicLink()) fail();
           if (!dir.isDirectory()) continue;
           for (const file of await readdir(join(this.root, dir.name), { withFileTypes: true })) {
-            if (!file.name.endsWith(`_${id}.jsonl`)) continue;
+            if (!file.name.endsWith(`_${id}.jsonl`) && !file.name.endsWith(`_${id}.jsonl.migrated`)) continue;
             if (!file.isFile() || !legacy.some((m) => m.path === join(this.root, dir.name, file.name) && m.id === id)) fail();
           }
         }

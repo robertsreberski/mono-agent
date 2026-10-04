@@ -4,14 +4,16 @@ export const BACKOFF_ABORT = Symbol("mono-pi-backoff-abort");
 
 // Single-item, acknowledged channel: retry callbacks cannot overtake streamed
 // deltas. The loop acknowledges a yielded event only after its awaited sink ran.
-function eventChannel() {
+function eventChannel(onClose) {
   let item, wake, failure;
   let ended = false;
   return {
     async push(value) {
+      if (ended) throw new Error("Retry stream consumer closed");
       await new Promise((ack) => { item = { value, ack }; wake?.(); });
     },
     end(error) { ended = true; failure = error; wake?.(); },
+    cancel() { ended = true; item?.ack(); item = undefined; wake?.(); onClose(); },
     async *[Symbol.asyncIterator]() {
       while (true) {
         if (!item && !ended) await new Promise((r) => { wake = r; });
@@ -32,7 +34,11 @@ export function createRetryStream(models, model, context, options, policy, emit)
   // use the same facade (including probe caps/context-1M) as the actual request.
   const requestModel = models.getModel(model.provider, model.id);
   if (!requestModel) throw new Error("Configured Pi model is unavailable");
-  const channel = eventChannel();
+  const controller = new AbortController();
+  const abort = () => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  const channel = eventChannel(() => controller.abort());
   let resolveResult = (_value) => {}, rejectResult = (_error) => {};
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
   // The iterator carries errors too; don't manufacture an unhandled rejection
@@ -44,7 +50,7 @@ export function createRetryStream(models, model, context, options, policy, emit)
   void (async () => {
     try {
       const final = await retryAssistantCall(async () => {
-        const stream = await models.streamSimple(requestModel, context, options);
+        const stream = await models.streamSimple(requestModel, context, { ...options, signal: controller.signal });
         ordinal += 1;
         for await (const event of stream) {
           if (event.type === "done" || event.type === "error") continue;
@@ -64,7 +70,7 @@ export function createRetryStream(models, model, context, options, policy, emit)
           last = { ...last, stopReason: "error", errorMessage: last.errorMessage ?? "Assistant request exceeded the context window" };
         }
         return last;
-      }, policy, options.signal, {
+      }, policy, controller.signal, {
         onRetryScheduled: async (attempt, maxRetries, delayMs, errorMessage) => {
           // Old harness persisted and billed failed attempts, but did not emit
           // turn_end until a request settled. Keep that stream/accounting shape.
@@ -84,6 +90,13 @@ export function createRetryStream(models, model, context, options, policy, emit)
         : { type: "done", reason: final.stopReason, message: final });
       channel.end();
     } catch (error) { rejectResult(error); channel.end(error); }
+    finally { options.signal?.removeEventListener("abort", abort); }
   })();
-  return { [Symbol.asyncIterator]: () => channel[Symbol.asyncIterator](), result: () => result };
+  return { [Symbol.asyncIterator]: () => {
+    const iterator = channel[Symbol.asyncIterator]();
+    return { [Symbol.asyncIterator]() { return this; }, next: () => iterator.next(),
+      return: async () => { channel.cancel(); return iterator.return(undefined); },
+      throw: async (error) => { channel.cancel(); return iterator.throw(error); },
+    };
+  }, result: () => result };
 }

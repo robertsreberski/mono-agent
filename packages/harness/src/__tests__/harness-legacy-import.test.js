@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, copyFile, readFile, readdir, rm, stat, rename, writeFile, appendFile } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, readFile, readdir, rm, stat, rename, writeFile, appendFile, utimes, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork } from "node:child_process";
@@ -34,7 +34,7 @@ async function assertImported(root, source, original) {
     return session.metadata;
   } finally { await session.close(); }
 }
-const phases = ["stage_written", "stage_synced", "stage_ready", "message_written", "context_synced", "published", "publication_synced", "archive_renamed", "archive_synced"];
+const phases = ["stage_created", "stage_written", "stage_synced", "stage_ready", "message_written", "context_synced", "published", "publication_synced", "archive_renamed", "archive_synced"];
 describe("restartable legacy Pi import", () => {
   for (const version of [3, 4]) for (const phase of phases) {
     it(`resumes v${version} after SIGKILL at ${phase} with one destination and byte-stable source evidence`, async () => {
@@ -105,4 +105,61 @@ describe("restartable legacy Pi import", () => {
     const [name] = await readdir(join(root, "mono-v2", "journals")); const path = join(root, "mono-v2", "journals", name);
     await copyFile(path, `${path}.importing`); await assertImported(root, source, original);
   });
+});
+
+it.each(["delete", "touch", "replace", "restore-root"])("completed import is independent of optional archive (%s)", async (action) => {
+  const { root, source } = await fixture(); const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const first = await repo.open((await repo.list())[0]); await first.close();
+  if (action === "delete") await rm(`${source}.migrated`);
+  if (action === "touch") await utimes(`${source}.migrated`, 1, 1);
+  if (action === "replace") { const bytes = await readFile(`${source}.migrated`); await rm(`${source}.migrated`); await writeFile(`${source}.migrated`, bytes); }
+  let target = root;
+  if (action === "restore-root") { target = await mkdtemp(join(tmpdir(), "restored-import-")); roots.push(target); await cp(root, target, { recursive: true }); }
+  const fresh = new JsonlSessionRepo({ sessionsRoot: target }); const session = await fresh.open((await fresh.list())[0]);
+  expect(await session.getEntries()).toHaveLength(2); await session.close();
+});
+
+it.each([3, 4])("retirement removes matching v%s archive even after import root restoration", async (version) => {
+  const { root, source } = await fixture(version); const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const session = await repo.open((await repo.list())[0]); await session.close();
+  const restored = await mkdtemp(join(tmpdir(), "retired-import-")); roots.push(restored); await cp(root, restored, { recursive: true });
+  const fresh = new JsonlSessionRepo({ sessionsRoot: restored }); await fresh.retireByHandle("fixture-session");
+  expect(await readdir(join(restored, "legacy"))).toEqual([]); expect(await fresh.list()).toEqual([]);
+  expect((await readFile(`${source}.migrated`)).length).toBeGreaterThan(0); // unrelated original root untouched
+});
+
+it("projects v3 physical parent ancestry and custom messages without abandoned compaction siblings", async () => {
+  const { root, source } = await fixture(3); const timestamp = "2023-11-14T22:13:20.000Z";
+  const header = JSON.parse((await readFile(source, "utf8")).split("\n")[0]);
+  const entry = (id, parentId, type, payload) => ({ id, parentId, type, timestamp, ...payload });
+  const user = (id, parentId, text) => entry(id, parentId, "message", { message: { role: "user", content: text, timestamp: 1700000000000 } });
+  const records = [header, user("root", null, "Root fictional message."),
+    entry("model", "root", "model_change", { provider: "faux", modelId: "fictional" }),
+    entry("thinking", "model", "thinking_level_change", { thinkingLevel: "off" }),
+    entry("label", "thinking", "label", { targetId: "root", label: "Fictional label" }),
+    user("abandoned", "label", "Abandoned branch must not be imported."),
+    entry("custom", "label", "custom_message", { customType: "fictional", content: "Fictional custom context.", details: {}, display: true }),
+    user("kept", "custom", "Retained parent branch."),
+    entry("cut", "kept", "compaction", { summary: "Fictional summary.", firstKeptEntryId: "label", tokensBefore: 100 })];
+  await writeFile(source, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  const repo = new JsonlSessionRepo({ sessionsRoot: root }); const session = await repo.open((await repo.list())[0]);
+  const messages = (await session.getEntries()).map((e) => e.message);
+  expect(messages.map((m) => m.role)).toEqual(["compactionSummary", "custom", "user"]);
+  expect(messages[1].content).toBe("Fictional custom context."); expect(messages[2].content).toBe("Retained parent branch.");
+  expect(JSON.stringify(messages)).not.toContain("Abandoned branch"); await session.close();
+});
+
+it("completes archival of earlier v2 imports with interrupted user scopes without executing them", async () => {
+  const { root, source } = await fixture(); const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const first = await repo.open((await repo.list())[0]); const metadata = first.metadata; const tip = await first.getLeafId(); await first.close();
+  const lines = (await readFile(metadata.path, "utf8")).trim().split("\n");
+  const rows = lines.map((line) => JSON.parse(line)); rows.splice(-2); // simulate pre-completion-marker v2 writer
+  const last = rows.at(-1); const turnId = "synthetic:earlier-interrupted";
+  rows.push({ schemaVersion: 2, id: "older-start", parentId: last.id, seq: last.seq + 1, timestamp: 1, turnId, kind: "turn_start", payload: { identitySource: "synthetic", config: {}, baselineTipId: tip } });
+  rows.push({ schemaVersion: 2, id: "older-operation", parentId: "older-start", seq: last.seq + 2, timestamp: 1, turnId, operationId: "earlier-op", kind: "operation_start", payload: { type: "prompt", cause: "prompt", config: {}, baselineTipId: tip, parentOperationId: null } });
+  await writeFile(metadata.path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const reopened = await repo.open(metadata); expect(await reopened.getEntries()).toHaveLength(2);
+  expect((await reopened.getTerminal("earlier-op")).status).toBe("aborted"); expect(await reopened.getOpenTurns()).toEqual([]);
+  await reopened.close(); await rm(`${source}.migrated`);
+  const again = await repo.open(metadata); expect(await again.getEntries()).toHaveLength(2); await again.close();
 });

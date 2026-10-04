@@ -94,7 +94,8 @@ export class JournalReader {
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail();
     return { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs, sha256: hash.digest("hex") };
   }
-  async readHeader() {
+  /** @param {{allowIncomplete?: boolean}} [options] */
+  async readHeader({ allowIncomplete = false } = {}) {
     const before = await this.assertIdentity();
     let offset = 0, parts = [];
     while (offset < before.size) {
@@ -108,6 +109,7 @@ export class JournalReader {
       }
       parts.push(chunk.subarray(0, bytesRead)); offset += bytesRead;
     }
+    if (allowIncomplete) { await this.assertIdentity(); return undefined; }
     fail();
   }
   /** @param {{offset:number,length:number}} address */

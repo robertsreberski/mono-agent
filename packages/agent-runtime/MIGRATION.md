@@ -32,7 +32,10 @@ legacy v3/v4 files import their effective main-branch context only. After the
 new store and publication directories are fsynced, the source is identity-checked
 and renamed to `*.jsonl.migrated`, then its directory/root are synced. Source
 fingerprints and import IDs make valid staging/publication/archive phases
-restartable. Archival failures preserve the published destination; duplicate IDs,
+restartable. A synced completion record makes a successful import independent of
+its optional archive thereafter (including archive deletion/touch or a copied root).
+Exact-handle retirement removes matching archives as well as the owned journal.
+Archival failures preserve the published destination; duplicate IDs,
 source replacement and corrupt complete records fail closed. Other branches
 and upstream operation internals are not imported. Files with open operations
 remain untouched and start a new native transcript using the host's cold replay.
@@ -44,8 +47,14 @@ Reopening still aborts old operations without running models or tools. This is
 not native interruption repair or host crash adoption. Model-change retirement
 still deletes native evidence. No public runtime-adapter descriptor is added.
 
-The durable root, version directories, journals and locks must be owner-private;
-symlinked/replaced components and complete corrupt records fail closed. Incomplete
+An existing current-uid-owned Pi 0.99 root such as 0755 is tightened to 0700
+through a pinned no-follow descriptor before creating v2 data. Group/other-writable
+roots are rejected, not adopted. Version directories, journals and locks remain
+strictly owner-private;
+symlinked/replaced components and complete corrupt records fail closed. Native
+headers publish through synced `.creating` files; incomplete unpublished creations
+do not block unrelated sessions and import can rebuild them under source/writer
+ownership. Incomplete
 owned final records are repaired under a kernel-backed writer lock and fsynced
 before reuse. Large native records and journals use incremental validation and
 offset-backed lookup rather than fixed 2 MiB/32 MiB limits.
