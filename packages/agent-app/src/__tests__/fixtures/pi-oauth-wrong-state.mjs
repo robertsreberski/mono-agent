@@ -14,6 +14,7 @@ let fallbackPrompts = 0;
 let interceptedBinds = 0;
 let isolatedPort;
 let manualInputs = 0;
+let methodSelections = 0;
 let tokenExchangeAttempts = 0;
 
 // Pi owns the callback server and hard-codes its port. Keep its real server
@@ -62,6 +63,17 @@ try {
       signal: new AbortController().signal,
       notify: () => undefined,
       prompt: async (prompt) => {
+        // Pi AI 1.0.1 offers browser/copy-code methods before starting login.
+        // Select the original browser flow; keep the real callback parser and
+        // every wrong-state/no-token-exchange assertion below unchanged.
+        if (prompt.type === "select") {
+          methodSelections += 1;
+          if (!prompt.options.some((option) => option.id === "browser")
+            || !prompt.options.some((option) => option.id === "copy_code")) {
+            throw new Error("Pi did not offer the expected Anthropic login methods");
+          }
+          return "browser";
+        }
         if (prompt.type === "manual_code") {
           manualInputs += 1;
           return WRONG_STATE_REDIRECT;
@@ -82,7 +94,7 @@ try {
   if (interceptedBinds !== 1 || isolatedPort === undefined) {
     throw new Error("Pi did not use the isolated fixed-port callback bind exactly once");
   }
-  if (fallbackPrompts !== 0 || manualInputs !== 1 || tokenExchangeAttempts !== 0) {
+  if (methodSelections !== 1 || fallbackPrompts !== 0 || manualInputs !== 1 || tokenExchangeAttempts !== 0) {
     throw new Error("Pi did not reject the pasted redirect on the manual wrong-state path");
   }
 } finally {
@@ -99,6 +111,7 @@ process.stdout.write(`${REPORT_PREFIX}${JSON.stringify({
   interceptedBinds,
   isolatedPort,
   manualInputs,
+  methodSelections,
   occupation: occupation.owner,
   tokenExchangeAttempts,
 })}\n`);
