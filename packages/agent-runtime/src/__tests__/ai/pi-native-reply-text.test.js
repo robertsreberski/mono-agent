@@ -48,6 +48,15 @@ describe("final reply text", () => {
     expect(select([assistant("Excluded", "SuggestReplies", "Bash"), assistant("Saved.")])).toBe("Saved.");
   });
 
+  it("does not extend a terminal message that calls an ordinary tool", () => {
+    expect(select([assistant("Excluded", "SuggestReplies"), assistant("Saved.", "Bash")])).toBe("Saved.");
+  });
+
+  it("extends a terminal message that only calls presentation tools", () => {
+    expect(select([assistant("Approve option A", "SuggestReplies"), assistant("Saved.", "PublishReplyFile")]))
+      .toBe("Approve option A\n\nSaved.");
+  });
+
   it("stops at an earlier message without tools", () => {
     expect(select([assistant("Excluded"), assistant("Saved.")])).toBe("Saved.");
   });
