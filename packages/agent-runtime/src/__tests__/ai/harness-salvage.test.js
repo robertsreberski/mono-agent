@@ -19,5 +19,20 @@ it("salvages owned paired tool evidence without executing an unfinished turn", a
   expect(evidence.completed).toEqual([{ name: "Read", result: "Fictional evidence." }]);
   expect(evidence.outcomeUnknown).toEqual([]);
   expect(evidence.additionalOutcomesUnknown).toBe(true);
-  expect(await readFile(s.metadata.path)).toEqual(bytes);
+  expect((await readFile(s.metadata.path)).equals(bytes)).toBe(true);
+});
+
+it("salvages large v2 journals read-only with bounded result excerpts", async () => {
+  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "large-salvage" });
+  await s.beginTurn("synthetic:large-salvage");
+  for (let i = 0; i < 12; i++) await s.appendMessage({ role: "user", content: "x".repeat(3 * 1024 * 1024), timestamp: i });
+  await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], timestamp: 13 });
+  await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "y".repeat(5000) }], isError: false, timestamp: 14 });
+  await s.close();
+  const bytes = await readFile(s.metadata.path);
+  const evidence = await salvageDurableNativeSession("large-salvage", r);
+  expect(evidence.completed).toEqual([{ name: "Read", result: "y".repeat(4096) }]);
+  expect(evidence.additionalOutcomesUnknown).toBe(true);
+  expect((await readFile(s.metadata.path)).equals(bytes)).toBe(true);
 });

@@ -35,12 +35,9 @@ async function syncDurableTranscript(entry) {
   if (typeof path !== "string" || !path) {
     throw new Error("Durable Pi session metadata is missing its JSONL path");
   }
-  // pi-core appends through short-lived file descriptors. Re-open the live
-  // JSONL and fsync it, then fsync its containing directory so both transcript
-  // bytes and the directory entry are stable before host history commits.
-  await syncPath(path);
-  await syncPath(dirname(path));
-  await syncPath(dirname(dirname(path)));
+  // The harness owns a pinned descriptor and writer lock across this barrier.
+  // Fsync both the journal and its complete publication-directory chain.
+  await entry.repo.sync(entry.metadata);
 }
 
 async function invalidateNativeSession(entry) {
@@ -147,12 +144,9 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
   }
 
   // First guarantee this process cannot resume through a stale registry entry.
-  // A host cancellation can rotate canonical history while the provider is
-  // still unwinding an open Pi session. The Pi repo deliberately refuses to
-  // delete an open session, so detach the registry and unlink its current file.
-  // Pi appends by pathname and can recreate a headerless orphan if the old run
-  // writes later; the raw exact-name sweep below removes those files on the
-  // post-runtime retry. The rotated canonical epoch never refers to this id.
+  // A cancellation can rotate canonical history while a provider unwinds. The
+  // repository marks a local writer retired, drains storage I/O and removes
+  // evidence under its already-held lock; late append admission fails closed.
   const liveEntry = nativeSessions.get(providerSessionId);
   const providerStillUnwinding = liveEntry?.busy === true;
   // Other processes are serialized by the history coordinator and must pass
@@ -161,21 +155,15 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
 
   const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
   if (!repo) throw new Error("Durable Pi session repository is unavailable");
+  repo.retireHandle(providerSessionId);
+  try {
   const matches = (await repo.list(undefined, HARNESS_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
   const changedDirectories = new Set();
   for (const metadata of matches) {
     if (typeof metadata?.path !== "string" || !metadata.path) {
       throw new Error(`Durable Pi session ${providerSessionId} has invalid metadata`);
     }
-    if (providerStillUnwinding) {
-      try {
-        await unlink(metadata.path);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-    } else {
-      await repo.delete(metadata, HARNESS_CONTEXT);
-    }
+    await repo.retire(metadata, HARNESS_CONTEXT);
     changedDirectories.add(dirname(metadata.path));
   }
   // A prior active-session unlink can be followed by Pi recreating the same
@@ -200,9 +188,9 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
   if (!providerStillUnwinding && (remaining.length > 0 || remainingPaths.length > 0)) {
     throw new Error(`Durable Pi session ${providerSessionId} could not be retired completely`);
   }
-  // An active Pi write can race the final exact-name check after the sweep.
-  // Canonical history is already preparing a fresh epoch, so the retired id is
-  // unreachable; the harness retries retirement when that old run returns.
+  } finally { repo.finishRetirement(providerSessionId); }
+  // Local admission stays retired until its owning writer closes. A later
+  // explicit fresh incarnation may reuse a stable subagent handle.
 }
 
 async function exactDurableSessionFiles(piSessionsRoot, providerSessionId) {

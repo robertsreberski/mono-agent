@@ -58,6 +58,10 @@
     "./bounded-jsonl.js": {
       "types": "./dist/bounded-jsonl.d.ts",
       "default": "./dist/bounded-jsonl.js"
+    },
+    "./journal-reader.js": {
+      "types": "./dist/journal-reader.d.ts",
+      "default": "./dist/journal-reader.js"
     }
   },
   "scripts": {

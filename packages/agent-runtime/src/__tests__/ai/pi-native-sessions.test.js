@@ -325,6 +325,7 @@ describe("pi-native sessions", () => {
     let listSpy;
     let openSpy;
     let fileOpenSpy;
+    let nativeSyncSpy;
     try {
       faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
       const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
@@ -336,21 +337,24 @@ describe("pi-native sessions", () => {
       openSpy = vi.spyOn(repo, "open");
       fileOpenSpy = vi.mocked(fsPromises.open);
       fileOpenSpy.mockClear();
+      const { SessionStore } = await import("@mono-agent/harness");
+      nativeSyncSpy = vi.spyOn(SessionStore.prototype, "sync");
       const bytes = readFileSync(findJsonlFiles(root)[0], "utf8");
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
       expect(listSpy).toHaveBeenCalledTimes(1);
       expect(openSpy).toHaveBeenCalledTimes(1);
-      // Bounded catalog/open reads are additional descriptors. The barrier
-      // syncs transcript, version directory and the root publication directory.
-      expect(fileOpenSpy.mock.calls.filter(([, mode]) => mode === "r")).toHaveLength(3);
-      listSpy.mockClear(); openSpy.mockClear(); fileOpenSpy.mockClear();
+      // The native sync barrier reuses its locked transcript descriptor; its
+      // storage tests cover transcript and all publication-directory fsyncs.
+      expect(nativeSyncSpy).toHaveBeenCalledTimes(1);
+      listSpy.mockClear(); openSpy.mockClear(); fileOpenSpy.mockClear(); nativeSyncSpy.mockClear();
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
       expect(listSpy).not.toHaveBeenCalled();
       expect(openSpy).not.toHaveBeenCalled();
-      expect(fileOpenSpy).not.toHaveBeenCalled(); // fsync requires syncPath's open
+      expect(fileOpenSpy).not.toHaveBeenCalled();
+      expect(nativeSyncSpy).not.toHaveBeenCalled();
       expect(readFileSync(findJsonlFiles(root)[0], "utf8")).toBe(bytes);
     } finally {
-      listSpy?.mockRestore(); openSpy?.mockRestore(); fileOpenSpy?.mockClear();
+      listSpy?.mockRestore(); openSpy?.mockRestore(); fileOpenSpy?.mockClear(); nativeSyncSpy?.mockRestore();
       if (sessionId) await disposeProviderSession(sessionId);
       rmSync(root, { recursive: true, force: true });
     }

@@ -47,10 +47,17 @@ Node.js 24.15.0 or newer is required. Hosts normally use the provider glue in
 | --- | --- |
 | `src/journal-types.js`, `src/journal-schema.js` | Versioned wire contract and incremental reference validation |
 | `src/session-store.js` | Memory and durable journal repositories |
+| `src/journal-reader.js`, `src/journal-lock.js` | Offset-backed incremental validation and SQLite kernel locks |
 | `src/legacy-import.js` | Idle effective-main legacy Pi v3/v4 import |
 | `src/run-driver.js`, `src/retry-stream.js` | Model operations over Pi's loop |
 | `src/session-context.js` | Adapter-shaped native context projection |
 | `src/compaction-kit/` | Attributed summary/cut/estimator helpers |
+
+Durable roots and owned files are owner-private. One permanent catalogue mutex
+serializes acquisition and retired-writer lock reclamation; per-journal writer
+locks never hold that mutex over model execution. Torn owned tails are repaired
+and fsynced before reuse; complete corruption and resource failures are explicit.
+Native records above 2 MiB and journals above 32 MiB are supported.
 
 P1a preserves abort-on-reopen and destructive model-change retirement. Native
 interruption repair, host crash adoption, handoffs and durable live-input queues
@@ -121,6 +128,12 @@ shouldCompact
 
 ```text
 HARNESS_CONTEXT
+```
+
+**`@mono-agent/harness/journal-reader.js`**
+
+```text
+JournalReader
 ```
 
 **`@mono-agent/harness/journal-schema.js`**

@@ -16,6 +16,43 @@ the configuration schema.
 
 ---
 
+## Unreleased mono-agent harness
+
+The runtime exact-pins Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI
+renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
+harness. The Pi provider glue now uses `@mono-agent/harness` for model-run admission,
+steering, journal/storage and compaction over upstream `runAgentLoop`; provider
+code remains Pi-owned. The existing `@mono-agent/agent-harness` package still
+owns host conversation/history orchestration.
+
+Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoot`.
+The immutable journal ID is independent of the epoch-bound provider handle;
+logical ownership remains explicitly unbound until a host descriptor binds it. Idle
+legacy v3/v4 files import their effective main-branch context only. After the
+new store is fsynced, the source is renamed to `*.jsonl.migrated`; other branches
+and upstream operation internals are not imported. Files with open operations
+remain untouched and start a new native transcript using the host's cold replay.
+That preserves canonical chat history, not exact interrupted native context.
+Never exercise import/archival against live session directories during testing.
+
+Journal records separate one logical turn from its prompt/compaction operations.
+Reopening still aborts old operations without running models or tools. This is
+not native interruption repair or host crash adoption. Model-change retirement
+still deletes native evidence. No public runtime-adapter descriptor is added.
+
+The durable root, version directories, journals and locks must be owner-private;
+symlinked/replaced components and complete corrupt records fail closed. Incomplete
+owned final records are repaired under a kernel-backed writer lock and fsynced
+before reuse. Large native records and journals use incremental validation and
+offset-backed lookup rather than fixed 2 MiB/32 MiB limits.
+
+**Rollback:** old binaries cannot read v2, and cannot reliably retire orphaned v2
+journals. They may cold-replay canonical history after a legacy source has been
+archived. Stop all writers and preserve a consistent backup before cleanup under
+the new storage protocol or an approved offline cleanup. Restore legacy sources
+only from that backup; never blindly rename `.migrated` files back or run mixed
+binaries against the same root.
+
 ## Unreleased framework simplification
 
 - `runtime.permissionMode` / `RuntimeRunOptions.permissionMode` are removed.
@@ -68,23 +105,6 @@ historical migrations; this section supersedes the removed compatibility paths.
 runtime bridges behind a dispatch table; it now runs only its Pi implementation.
 Read the whole section before upgrading a live agent, and migrate its config
 before restarting one.
-
-### Pi 1.x dependency migration
-
-The runtime exact-pins Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI
-renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
-harness. The Pi compatibility adapter now owns admission, steering and session
-storage over the upstream `runAgentLoop`; provider code remains Pi-owned.
-
-Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoot`.
-The immutable journal ID is independent of the epoch-bound provider handle;
-logical ownership remains explicitly unbound until a host descriptor binds it. Idle
-legacy v3/v4 files import their effective main-branch context only. After the
-new store is fsynced, the source is renamed to `*.jsonl.migrated`; other branches
-and upstream operation internals are not imported. Files with open operations
-remain untouched and start a new native transcript using the host's cold replay.
-That preserves canonical chat history, not exact interrupted native context.
-Never exercise import/archival against live session directories during testing.
 
 ### Deleted runtime bridges
 

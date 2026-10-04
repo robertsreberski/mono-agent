@@ -11,7 +11,8 @@
 - Keep Pi-native execution on Pi 1.x through the mono-agent harness, with
   versioned native journals and distinct logical turns/execution operations.
   Import idle legacy Pi main-branch context; reopen still aborts old operations
-  and model-change retirement remains destructive.
+  and model-change retirement remains destructive. Support large native records
+  and journals with kernel-backed writer exclusion and safe retired-lock cleanup.
 
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth

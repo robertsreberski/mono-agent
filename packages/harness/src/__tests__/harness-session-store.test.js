@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, copyFile, readFile, writeFile, appendFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, readFile, writeFile, appendFile, rm, stat, open, rename, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork } from "node:child_process";
@@ -154,3 +154,123 @@ it("projects only the legacy main branch through its latest compaction", async (
   await s.close();
 });
 
+
+it("reopens a journal above 32 MiB with records above 2 MiB using offset-backed storage", async () => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
+  const session = await repo.create({ id: "large-session" });
+  await session.beginTurn("synthetic:large");
+  const native = { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(3 * 1024 * 1024), thinkingSignature: "opaque" }], additive: { opaque: true } };
+  for (let i = 0; i < 12; i++) await session.appendMessage(native);
+  await session.endTurn("synthetic:large", "completed"); await session.sync(); await session.close();
+  expect((await stat(session.metadata.path)).size).toBeGreaterThan(32 * 1024 * 1024);
+  const reopened = await repo.open(session.metadata);
+  try {
+    expect(reopened.records).toBeNull();
+    expect([...reopened.entries.values()].every((entry) => entry.address && entry.message === undefined)).toBe(true);
+    expect((await reopened.getEntries()).at(-1).message).toEqual(native);
+  } finally { await reopened.close(); }
+});
+
+it("completes short writes instead of publishing a partial record", async () => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "short-write" });
+  const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
+  const original = prototype.write;
+  const spy = vi.spyOn(prototype, "write").mockImplementationOnce(function (buffer, offset, length, position) {
+    return original.call(this, buffer, offset, Math.min(7, length), position);
+  });
+  try { await session.appendMessage(message); expect(spy.mock.calls.length).toBeGreaterThan(1); }
+  finally { spy.mockRestore(); await session.close(); }
+  const reopened = await repo.open(session.metadata); expect(await reopened.getEntries()).toHaveLength(1); await reopened.close();
+});
+
+it("poisons ENOSPC writes, releases ownership on close, and fsync-repairs only the incomplete owned tail", async () => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "no-space" });
+  const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
+  const original = prototype.write;
+  const spy = vi.spyOn(prototype, "write").mockImplementationOnce(async function (buffer, offset, length, position) {
+    await original.call(this, buffer, offset, Math.min(7, length), position);
+    throw Object.assign(new Error("Fictional no space"), { code: "ENOSPC" });
+  });
+  try {
+    await expect(session.appendMessage(message)).rejects.toMatchObject({ code: "ENOSPC" });
+    await expect(session.sync()).rejects.toMatchObject({ code: "ENOSPC" });
+    await expect(session.appendMessage(message)).rejects.toMatchObject({ code: "ENOSPC" });
+  } finally { spy.mockRestore(); await expect(session.close()).rejects.toMatchObject({ code: "ENOSPC" }); }
+  const reopened = await repo.open(session.metadata); expect(await reopened.getEntries()).toEqual([]);
+  await reopened.appendMessage(message); await reopened.sync(); await reopened.close();
+  expect((await readFile(session.metadata.path, "utf8")).endsWith("\n")).toBe(true);
+});
+
+it("poisons fsync failures and never acknowledges a later host commit", async () => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "sync-fault" });
+  await session.appendMessage(message);
+  const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
+  const spy = vi.spyOn(prototype, "sync").mockRejectedValueOnce(new Error("Fictional fsync failure"));
+  let committed = false;
+  try {
+    await expect(session.sync().then(() => { committed = true; })).rejects.toThrow("fsync failure");
+    await expect(session.appendMessage(message)).rejects.toThrow("fsync failure"); expect(committed).toBe(false);
+  } finally { spy.mockRestore(); await expect(session.close()).rejects.toThrow("fsync failure"); }
+  const reopened = await repo.open(session.metadata); expect(await reopened.getEntries()).toHaveLength(1); await reopened.close();
+});
+
+it("rejects complete corrupt records without repairing them", async () => {
+  const repo = new JsonlSessionRepo({ sessionsRoot: await root() }); const session = await repo.create({ id: "corrupt" });
+  await session.close(); await appendFile(session.metadata.path, '{"schemaVersion":9}\n');
+  const original = await readFile(session.metadata.path);
+  await expect(repo.open(session.metadata)).rejects.toThrow("Invalid");
+  expect(await readFile(session.metadata.path)).toEqual(original);
+});
+
+it("rejects replaced roots and symlink files without recreating or mutating them", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "replaced" });
+  await rename(join(r, "mono-v2"), join(r, "quarantined"));
+  await expect(session.appendMessage(message)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(session.close()).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(repo.create({ id: "late" })).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(join(r, "mono-v2"))).rejects.toMatchObject({ code: "ENOENT" });
+  const other = new JsonlSessionRepo({ sessionsRoot: await root() }); const victim = await other.create({ id: "symlink" }); await victim.close();
+  const target = `${victim.metadata.path}.target`; await rename(victim.metadata.path, target); const bytes = await readFile(target);
+  await symlink(target, victim.metadata.path);
+  await expect(other.open(victim.metadata)).rejects.toThrow("read unavailable");
+  expect(await readFile(target)).toEqual(bytes);
+});
+
+it("retires a local writer only after draining storage and holds its lock until close", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "retiring" });
+  await session.beginTurn("synthetic:retire");
+  let release, started; const gate = new Promise((resolve) => { release = resolve; }); const admitted = new Promise((resolve) => { started = resolve; });
+  const append = session.io.append; session.io.append = async (text) => { started(); await gate; return append(text); };
+  const pending = session.appendMessage(message); await admitted;
+  const retired = repo.retire(session.metadata); expect(await stat(session.metadata.path)).toBeTruthy();
+  release(); await pending; await retired;
+  await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(session.appendMessage(message)).rejects.toThrow("retired");
+  expect((await readdir(join(r, "mono-v2", "locks"))).length).toBe(2);
+  await expect(repo.create({ id: "retiring" })).rejects.toThrow("retired");
+  await expect(session.close()).rejects.toThrow("retired");
+  expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+  expect(await repo.listOwned()).toEqual([]);
+  const fresh = await repo.create({ id: "retiring" }); await fresh.close(); await repo.delete(fresh.metadata);
+});
+
+it("waits for foreign writer ownership before retirement and reclaims its released lock", async () => {
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "foreign-owner" });
+  await session.appendMessage(message); await session.close();
+  const child = fork(new URL("./fixtures/store-owner-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  let spy;
+  try {
+    const [notice] = await once(child, "message"); expect(notice.phase).toBe("opened");
+    const locks = await repo.locksPromise; const original = locks.tryLock.bind(locks);
+    let signal; const blocked = new Promise((resolve) => { signal = resolve; });
+    spy = vi.spyOn(locks, "tryLock").mockImplementation(async (path) => {
+      const result = await original(path); if (!result && path.endsWith(`${session.metadata.journalId}.sqlite`)) signal(); return result;
+    });
+    const retirement = repo.retire(session.metadata); await blocked;
+    expect(await stat(session.metadata.path)).toBeTruthy();
+    const closed = once(child, "message"); const exit = once(child, "exit"); child.send({ close: true });
+    expect((await closed)[0].phase).toBe("closed"); await exit; await retirement;
+    await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(r, "mono-v2", "locks"))).toEqual(["catalog.sqlite"]);
+  } finally { spy?.mockRestore(); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+}, 10000);
