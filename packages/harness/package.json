@@ -1,0 +1,82 @@
+{
+  "name": "@mono-agent/harness",
+  "version": "0.25.1",
+  "description": "Model-run loop, native journal storage and compaction for mono-agent",
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robertsreberski/mono-agent.git",
+    "directory": "packages/harness"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./session-store.js": {
+      "types": "./dist/session-store.d.ts",
+      "default": "./dist/session-store.js"
+    },
+    "./legacy-import.js": {
+      "types": "./dist/legacy-import.d.ts",
+      "default": "./dist/legacy-import.js"
+    },
+    "./journal-types.js": {
+      "types": "./dist/journal-types.d.ts",
+      "default": "./dist/journal-types.js"
+    },
+    "./journal-schema.js": {
+      "types": "./dist/journal-schema.d.ts",
+      "default": "./dist/journal-schema.js"
+    },
+    "./run-driver.js": {
+      "types": "./dist/run-driver.d.ts",
+      "default": "./dist/run-driver.js"
+    },
+    "./retry-stream.js": {
+      "types": "./dist/retry-stream.d.ts",
+      "default": "./dist/retry-stream.js"
+    },
+    "./session-context.js": {
+      "types": "./dist/session-context.d.ts",
+      "default": "./dist/session-context.js"
+    },
+    "./context.js": {
+      "types": "./dist/context.d.ts",
+      "default": "./dist/context.js"
+    },
+    "./compaction-kit/compaction.js": {
+      "types": "./dist/compaction-kit/compaction.d.ts",
+      "default": "./dist/compaction-kit/compaction.js"
+    },
+    "./journal-reader.js": {
+      "types": "./dist/journal-reader.d.ts",
+      "default": "./dist/journal-reader.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "test": "vitest run",
+    "prepack": "pnpm run build"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.0.1",
+    "@earendil-works/pi-agent-core": "1.0.1"
+  }
+}

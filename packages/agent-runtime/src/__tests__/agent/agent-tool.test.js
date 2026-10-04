@@ -38,7 +38,7 @@ describe("Agent tool registration", () => {
 
   it("leaves Agent shareable for the harness's per-invocation gate", () => {
     // Other offered tools do not make Agent exclusive. Invoked exclusive calls
-    // remain FIFO barriers in the Pi harness adapter.
+    // remain FIFO barriers in the mono-agent harness adapter.
     expect(createAgentTool(subagentOptions()).executionMode).toBeUndefined();
   });
 

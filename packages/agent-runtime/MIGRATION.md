@@ -16,6 +16,58 @@ the configuration schema.
 
 ---
 
+## Unreleased mono-agent harness
+
+The runtime exact-pins Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI
+renderer is retired, so no Pi TUI pin remains). Pi Core removed its high-level
+harness. The Pi provider glue now uses `@mono-agent/harness` for model-run admission,
+steering, journal/storage and compaction over upstream `runAgentLoop`; provider
+code remains Pi-owned. The existing `@mono-agent/agent-harness` package still
+owns host conversation/history orchestration.
+
+Native transcripts use `mono-v2/journals/<journalId>.jsonl` under `piSessionsRoot`.
+The immutable journal ID is independent of the epoch-bound provider handle;
+logical ownership remains explicitly unbound until a host descriptor binds it. Idle
+legacy v3/v4 files import their effective main-branch context only. After the
+new store and publication directories are fsynced, the source is identity-checked
+and renamed to `*.jsonl.migrated`, then its directory/root are synced. Source
+fingerprints and import IDs make valid staging/publication/archive phases
+restartable. A synced completion record makes a successful import independent of
+its optional archive thereafter (including archive deletion/touch or a copied root).
+Exact-handle retirement removes matching archives as well as the owned journal.
+Archival failures preserve the published destination; duplicate IDs,
+source replacement and corrupt complete records fail closed. Other branches
+and upstream operation internals are not imported. Files with open operations
+remain untouched and start a new native transcript using the host's cold replay.
+That preserves canonical chat history, not exact interrupted native context.
+Never exercise import/archival against live session directories during testing.
+
+Journal records separate one logical turn from its prompt/compaction operations.
+Reopening still aborts old operations without running models or tools. This is
+not native interruption repair or host crash adoption. Model-change retirement
+still deletes native evidence. No public runtime-adapter descriptor is added.
+
+An existing current-uid-owned Pi 0.99 root such as 0755 is tightened to 0700
+through a pinned no-follow descriptor before creating v2 data. Group/other-writable
+roots are rejected, not adopted. The runtime emits one bounded, path-free
+`runtime_warning` with kind `pi_sessions_root_permissions_tightened` when access
+is tightened, including if later session setup fails. Version directories, journals and locks remain
+strictly owner-private;
+symlinked/replaced components and complete corrupt records fail closed. Native
+headers publish through synced `.creating` files; incomplete unpublished creations
+do not block unrelated sessions and import can rebuild them under source/writer
+ownership. Incomplete
+owned final records are repaired under a kernel-backed writer lock and fsynced
+before reuse. Large native records and journals use incremental validation and
+offset-backed lookup rather than fixed 2 MiB/32 MiB limits.
+
+**Rollback:** old binaries cannot read v2, and cannot reliably retire orphaned v2
+journals. They may cold-replay canonical history after a legacy source has been
+archived. Stop all writers and preserve a consistent backup before cleanup under
+the new storage protocol or an approved offline cleanup. Restore legacy sources
+only from that backup; never blindly rename `.migrated` files back or run mixed
+binaries against the same root.
+
 ## Unreleased framework simplification
 
 - `runtime.permissionMode` / `RuntimeRunOptions.permissionMode` are removed.
@@ -68,20 +120,6 @@ historical migrations; this section supersedes the removed compatibility paths.
 runtime bridges behind a dispatch table; it now runs only its Pi implementation.
 Read the whole section before upgrading a live agent, and migrate its config
 before restarting one.
-
-### Pi 0.86 dependency migration
-
-The runtime exact-pins Pi AI and Pi Agent Core at `0.99.2` (the terminal TUI
-renderer is retired, so no Pi TUI pin remains). Pi's harness is now created asynchronously and exposes
-prompt, navigation, compaction, abort, event, and transcript operations through
-its `main` lane with an explicit operation context. mono-agent absorbs that API
-change in its Pi compatibility adapter; hosts do not need a config migration.
-
-Pi's JSONL store now writes v4 transcripts. Existing v3 transcripts are
-upgraded by Pi when opened and retain their conversation context. An unfinished
-durable operation is aborted before mono-agent accepts a new prompt because
-mono-agent tools do not yet use Pi's replay-memo contract; this prevents an
-interrupted side-effecting tool from being executed twice.
 
 ### Deleted runtime bridges
 
@@ -725,7 +763,7 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Current dependency pins: **`@earendil-works/pi-ai` and
-`@earendil-works/pi-agent-core` are both `0.99.2`** (the initial Pi 0.80
+`@earendil-works/pi-agent-core` are both `1.0.1`** (the initial Pi 0.80
 migration landed at `0.80.5`, from `^0.79.1`). Pi 0.85's durable lane harness is
 adapted behind the runtime's existing public API. Pi 0.86 folds request prompts
 and tool declarations into the transcript's leading system message (providers
@@ -735,8 +773,8 @@ backfill), and adds static `meta` and `radius` provider catalogs. Compaction
 remains owned by mono-agent policy, and model-native `max` reasoning plus Pi's
 request-wide pricing tiers are preserved.
 
-Packed npm consumers resolve the runtime-owned exact Pi AI 0.99.2 copy for both
-the runtime and Agent Core's `^0.99.2` dependency. The release guard verifies
+Packed npm consumers resolve the runtime-owned exact Pi AI 1.0.1 copy for both
+the runtime and Agent Core's `^1.0.1` dependency. The release guard verifies
 both resolution paths independently.
 
 Pi 0.87.0 removes `shouldStopAfterTurn` from the low-level loop config,
@@ -823,7 +861,7 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only dependencies
-  to the exact Pi AI `0.99.2` and Pi Agent Core `0.99.2` compatibility pins
+  to the exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
@@ -831,7 +869,7 @@ Worklab's runtime fork:
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
-  exact Pi AI `0.99.2` and Pi Agent Core `0.99.2` compatibility pins inside the runtime. OAuth login adapters
+  exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins inside the runtime. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

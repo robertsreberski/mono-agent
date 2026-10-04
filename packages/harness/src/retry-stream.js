@@ -1,0 +1,109 @@
+import { isContextOverflow, isRecoverableLength, retryAssistantCall } from "@earendil-works/pi-ai";
+
+export const BACKOFF_ABORT = Symbol("mono-pi-backoff-abort");
+
+// Single-item, acknowledged channel: retry callbacks cannot overtake streamed
+// deltas. The loop acknowledges a yielded event only after its awaited sink ran.
+function eventChannel(onClose) {
+  let item, wake, failure;
+  let ended = false;
+  return {
+    async push(value) {
+      if (ended) throw new Error("Retry stream consumer closed");
+      await new Promise((ack) => { item = { value, ack }; wake?.(); });
+    },
+    end(error) { ended = true; failure = error; wake?.(); },
+    cancel() { ended = true; item?.ack(); item = undefined; wake?.(); onClose(); },
+    async *[Symbol.asyncIterator]() {
+      while (true) {
+        if (!item && !ended) await new Promise((r) => { wake = r; });
+        if (item) {
+          const next = item; item = undefined;
+          try { yield next.value; } finally { next.ack(); }
+        } else if (failure) throw failure;
+        else if (ended) return;
+      }
+    },
+  };
+}
+
+/** Retry one conversational provider request, not tools or the whole agent run. */
+export function createRetryStream(models, model, context, options, policy, emit) {
+  // The old harness re-resolved identity through Models before dispatch and
+  // classification. Host policy metadata may differ from the transport catalog;
+  // use the same facade (including probe caps/context-1M) as the actual request.
+  const requestModel = models.getModel(model.provider, model.id);
+  if (!requestModel) throw new Error("Configured Pi model is unavailable");
+  const controller = new AbortController();
+  const abort = () => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  let consumerClosed = false;
+  const assertConsumerOpen = () => { if (consumerClosed) throw new Error("Retry stream consumer closed"); };
+  const emitIfOpen = (event) => { assertConsumerOpen(); return emit(event); };
+  const channel = eventChannel(() => { consumerClosed = true; controller.abort(); });
+  let resolveResult = (_value) => {}, rejectResult = (_error) => {};
+  const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+  // The iterator carries errors too; don't manufacture an unhandled rejection
+  // when a caller exits through the iterator rather than calling result().
+  void result.catch(() => {});
+  /** @type {any} */
+  let last;
+  let ordinal = 0, hasStart = false;
+  void (async () => {
+    try {
+      const final = await retryAssistantCall(async () => {
+        assertConsumerOpen();
+        const stream = await models.streamSimple(requestModel, context, { ...options, signal: controller.signal });
+        ordinal += 1;
+        for await (const event of stream) {
+          if (event.type === "done" || event.type === "error") continue;
+          if (event.type === "start") {
+            if (!hasStart) { hasStart = true; await channel.push(event); }
+            else await emitIfOpen({ type: "message_start", message: event.partial });
+          } else await channel.push(event);
+        }
+        last = await stream.result();
+        assertConsumerOpen();
+        // The removed harness classified silent overflow and a premature length
+        // stop before tool dispatch/settlement. The low-level loop does not: a
+        // length response without calls is otherwise a successful final answer.
+        // Keep the original model cap (before provider context clamping), usage
+        // and content, and leave real provider errors/cancellation unchanged.
+        if (last.stopReason !== "error" && (isContextOverflow(last, requestModel.contextWindow)
+          || isRecoverableLength(last, requestModel.maxTokens))) {
+          last = { ...last, stopReason: "error", errorMessage: last.errorMessage ?? "Assistant request exceeded the context window" };
+        }
+        return last;
+      }, policy, controller.signal, {
+        onRetryScheduled: async (attempt, maxRetries, delayMs, errorMessage) => {
+          assertConsumerOpen();
+          // Old harness persisted and billed failed attempts, but did not emit
+          // turn_end until a request settled. Keep that stream/accounting shape.
+          if (!hasStart) { hasStart = true; await channel.push({ type: "start", partial: last }); }
+          await emitIfOpen({ type: "message_end", message: last });
+          await emitIfOpen({ type: "retry_scheduled", attempt: attempt + 1, maxAttempts: maxRetries + 1, delayMs, errorMessage });
+        },
+        onRetryAttemptStart: () => emitIfOpen({ type: "retry_start", attempt: ordinal + 1 }),
+        onRetryFinished: (success, attempt, finalError) => emitIfOpen({ type: "retry_end", success, attempt: attempt + 1, finalError }),
+      });
+      if (final.stopReason === "aborted" && last?.stopReason === "error") {
+        Object.defineProperty(final, BACKOFF_ABORT, { value: true });
+      }
+      assertConsumerOpen();
+      resolveResult(final);
+      await channel.push(final.stopReason === "error" || final.stopReason === "aborted"
+        ? { type: "error", reason: final.stopReason, error: final }
+        : { type: "done", reason: final.stopReason, message: final });
+      channel.end();
+    } catch (error) { rejectResult(error); channel.end(error); }
+    finally { options.signal?.removeEventListener("abort", abort); }
+  })();
+  return { [Symbol.asyncIterator]: () => {
+    const iterator = channel[Symbol.asyncIterator]();
+    return { [Symbol.asyncIterator]() { return this; }, next: () => iterator.next(),
+      return: async () => { channel.cancel(); return iterator.return(undefined); },
+      throw: async (error) => { channel.cancel(); return iterator.throw(error); },
+    };
+  }, result: () => result };
+}

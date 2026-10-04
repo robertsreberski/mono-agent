@@ -145,6 +145,10 @@ provider overflow ceilings lower it across toggles. OFF preserves catalog behavi
 
 ## Architecture
 
+The provider bridge imports the model-run loop, native journal/storage and
+compaction kit from `@mono-agent/harness`. The separate `agent-harness` host
+package owns conversation/history orchestration.
+
 The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
 HTML engine) with per-request policy/admission and fail-closed robots. No
 external service or Python runtime is used; retired endpoint settings
@@ -232,7 +236,7 @@ Without an outer abort, a trusted `cancelled` hint retains a known cancellation
 failure kind and otherwise falls back to `cancelled`.
 
 This outer-abort rule matches the harness run-level classifier. The standalone
-runtime keeps its zero-`@mono-agent/*` dependency boundary by recognizing the
+runtime keeps host contracts out of the low-level harness boundary by recognizing the
 shared brand structurally rather than importing `@mono-agent/agent-contracts`.
 Its deliberate extra fidelity is tool-level only: a trusted bridge hint can
 retain a cancellation subtype when no outer abort exists. The run-level harness
@@ -825,8 +829,8 @@ Returns:
 - `configureTools(next)` — update the tool runtime context after construction.
 - `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
 - `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
-- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts; retries/backups strip that option and every returned receipt. Pending recovery blocks native resume. Failed/aborted assistant messages stay on disk and are filtered by Pi; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
-- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation or failure, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
+- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts (the run ID must be nonempty, at most 512 characters, and unique within its journal); retries/backups strip that option and every returned receipt. Root adoption tightens owned legacy permissions to 0700 and emits one path-free `pi_sessions_root_permissions_tightened` runtime warning. Pending recovery blocks native resume. Failed/aborted assistant messages stay on disk and are filtered by Pi; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
+- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. Retirement refreshes the matching registry entry, rejects later append admission, and drains admitted storage I/O before removing validated published/staged journals and matching legacy archives under catalogue/writer ownership. The writer lock survives until provider unwind; late appends cannot recreate deleted journals. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`

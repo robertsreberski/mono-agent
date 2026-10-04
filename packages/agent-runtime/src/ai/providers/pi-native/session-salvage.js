@@ -1,5 +1,7 @@
 // Read-only, best-effort evidence from Pi v4 JSONL. Never open through the Pi repo:
 // its cold-open path repairs torn transactions by rewriting the source file.
+import { SessionStore, validateJournalHeader } from "@mono-agent/harness";
+import { JournalReader } from "@mono-agent/harness/journal-reader.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, stat as statPath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -25,11 +27,33 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       if (!file.name.endsWith(suffix)) continue;
       if (!file.isFile()) fail();
       matches.push(join(parent, file.name));
-      if (matches.length > 1) fail();
     }
   }
+  const owned = [];
+  let skippedJournal = false;
+  const journals = join(root, "mono-v2", "journals");
+  let journalFiles = [];
+  try { journalFiles = await readdir(journals, { withFileTypes: true }); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  for (const file of journalFiles) {
+    if (!file.name.endsWith(".jsonl")) continue;
+    if (!file.isFile()) { skippedJournal = true; continue; }
+    const path = join(journals, file.name);
+    let reader;
+    try {
+      reader = await JournalReader.open(path, root);
+      const header = await reader.readHeader(); validateJournalHeader(header);
+      if (header?.format === "mono-harness" && header.version === 2 && header.id === sessionId) owned.push(path);
+    } catch { skippedJournal = true; }
+    finally { await reader?.close(); }
+  }
+  // An unreadable journal may be the requested clean-break successor. Never
+  // silently return its stale legacy source when ownership is uncertain.
+  if (owned.length > 1 || (skippedJournal && owned.length === 0)) fail();
+  if (owned.length === 1) matches.splice(0, matches.length, owned[0]);
   if (matches.length !== 1) fail();
   const path = matches[0];
+  if (owned.includes(path)) return salvageOwnedJournal(path, root, sessionId);
   const before = await lstat(path);
   if (!before.isFile() || before.size > MAX_FILE) fail();
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -60,11 +84,12 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   const lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, finalNewline)).split("\n");
   if (lines.some((line) => Buffer.byteLength(line) > MAX_LINE || !line)) fail();
   const header = JSON.parse(lines.shift());
-  if (!valid(header) || header.kind !== "header" || header.v !== 4 || header.storageVersion !== 1 || header.id !== sessionId) fail();
   const entries = new Map();
   const ids = new Set();
   const values = new Map();
   const pending = new Map();
+  let openTurn = false;
+  if (!valid(header) || header.kind !== "header" || header.v !== 4 || header.storageVersion !== 1 || header.id !== sessionId) fail();
   let seq = 0;
   for (const line of lines) {
     const transaction = JSON.parse(line);
@@ -94,8 +119,12 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       } else fail();
     }
   }
+  return collectEvidence(entries, values, pending, openTurn, torn);
+}
+
+async function collectEvidence(entries, values, pending, openTurn, torn, materialize = async (entry) => entry) {
   const tip = values.get("main");
-  if (tip !== undefined && (typeof tip !== "string" || !entries.has(tip))) fail();
+  if (tip !== undefined && tip !== null && (typeof tip !== "string" || !entries.has(tip))) fail();
   const branch = [];
   const seen = new Set();
   for (let id = tip; id !== undefined && id !== null;) {
@@ -110,13 +139,14 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   const calls = new Map();
   const results = new Map();
   let draftText;
-  for (const entry of branch) {
+  for (const reference of branch) {
+    const entry = await materialize(reference);
     if (entry.type !== "message" || !valid(entry.message)) continue;
     const message = entry.message;
     if (message.role === "assistant" && Array.isArray(message.content)) {
       if (message.stopReason !== "aborted" && message.stopReason !== "error") {
         const text = message.content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n");
-        if (text) draftText = text;
+        if (text) draftText = text.slice(-4096);
       }
       for (const block of message.content) if (block?.type === "toolCall") {
         if (typeof block.id !== "string" || typeof block.name !== "string" || calls.has(block.id)) fail();
@@ -124,7 +154,9 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       }
     } else if (message.role === "toolResult") {
       if (typeof message.toolCallId !== "string" || results.has(message.toolCallId)) fail();
-      results.set(message.toolCallId, { message, seq: entry.seq });
+      const excerpt = Array.isArray(message.content) ? message.content.filter((part) => part?.type === "text" && typeof part.text === "string")
+        .map((part) => part.text.slice(-4096)).join("\n").slice(-4096) : "";
+      results.set(message.toolCallId, { message: { toolName: message.toolName, content: [{ type: "text", text: excerpt }] }, seq: entry.seq });
     }
   }
   // Pi can durably stage an assistant message before placing it on a branch.
@@ -169,8 +201,9 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       id = entry.parentId;
     }
   }
-  for (const [id, entry] of entries) {
-    if (attached.has(id) || entry.type !== "message") continue;
+  for (const [id, reference] of entries) {
+    if (attached.has(id) || reference.type !== "message") continue;
+    const entry = await materialize(reference);
     if (!valid(entry.message)) { unclassifiedPending = true; continue; }
     if (entry.message.role === "assistant") stageAssistant(entry.message);
     else if (entry.message.role === "toolResult") unclassifiedPending = true;
@@ -182,12 +215,28 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
     const result = placed?.message;
     if (result && placed.seq > call.seq && result.toolName === call.name) {
       const content = Array.isArray(result.content) ? result.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : "";
-      completed.push({ name: call.name, result: content });
+      completed.push({ name: call.name, result: content.slice(-4096) });
     } else outcomeUnknown.push({ name: call.name });
   }
   for (const name of stagedCalls.values()) outcomeUnknown.push({ name });
   // Orphaned or mismatched results cannot attest to a call's outcome.
   return { completed: completed.slice(-8), outcomeUnknown: outcomeUnknown.slice(-8),
     omittedCompleted: Math.max(0, completed.length - 8), omittedUnknown: Math.max(0, outcomeUnknown.length - 8),
-    ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || unclassifiedPending || results.size > completed.length || tip === undefined };
+    ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || openTurn || unclassifiedPending || results.size > completed.length || tip === undefined };
+}
+
+async function salvageOwnedJournal(path, root, sessionId) {
+  const reader = await JournalReader.open(path, root);
+  try {
+    const header = await reader.readHeader(); validateJournalHeader(header);
+    if (header.id !== sessionId || header.format !== "mono-harness" || header.version !== 2) fail();
+    const store = new SessionStore(header, [], { read: (address) => reader.read(address) });
+    let first = true;
+    const evidence = await reader.scan((record, address) => {
+      if (first) { first = false; return; }
+      store.apply(record, address);
+    });
+    return await collectEvidence(store.entries, new Map([["main", store.tip]]), new Map(),
+      (await store.getOpenTurns()).length > 0, evidence.torn, (entry) => store.getEntry(entry.id));
+  } finally { await reader.close(); }
 }

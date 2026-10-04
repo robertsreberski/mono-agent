@@ -434,6 +434,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // (host/runtime-side throws after the session mutated) can roll back too, not
     // just the success path.
     baselineLeafId: null,
+    hasBaselineLeaf: false,
     recoveryOperationId: undefined,
     recoveryInputIds: null,
     retainRecoveryTail: false,
@@ -507,20 +508,29 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation, F4 cold-reopen re-read) are await-free by construction. A
     // session miss stays cheap: no tool/MCP/harness init runs before this
     // fast-fail.
-    const resolvedSession = await resolveSession(runState, {
-      requestedSessionId,
-      providerSessionId,
-      durableRepo,
-      sessionTtlMs,
-      cwd: options.cwd,
-      resolved,
-      options,
-      events,
-      runtimeWarnings,
-      start,
-      piTransport,
-    });
-    if (resolvedSession.done) return resolvedSession.result;
+    try {
+      const resolvedSession = await resolveSession(runState, {
+        requestedSessionId,
+        providerSessionId,
+        durableRepo,
+        sessionTtlMs,
+        cwd: options.cwd,
+        resolved,
+        options,
+        events,
+        runtimeWarnings,
+        start,
+        piTransport,
+      });
+      if (resolvedSession.done) return resolvedSession.result;
+    } finally {
+      if (durableRepo?.rootPermissionWarningPending) {
+        durableRepo.rootPermissionWarningPending = false;
+        const warning = { warning_kind: "pi_sessions_root_permissions_tightened", source: "pi",
+          message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." };
+        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
+      }
+    }
 
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
@@ -651,9 +661,17 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // the last good transcript via the session tree's moveTo primitive. Only a
     // TRUE resume needs this: a create-on-miss session is fresh, so a failure
     // drops it entirely via the fresh-run path (no leaf to roll back to).
-    if (requestedSessionId && !runState.createdOnMiss) {
-      try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
+    if (requestedSessionId && (!runState.createdOnMiss || runState.sessionEntry)) {
+      try { runState.baselineLeafId = await runState.session.getLeafId(); runState.hasBaselineLeaf = true; } catch { /* best-effort */ }
     }
+
+    // One logical turn encompasses proactive/manual compaction and every prompt
+    // operation, including reactive overflow re-prompts. Ownership remains unbound
+    // until the protected descriptor arrives in P1b.
+    const recoveryIdentity = options.sessionRecovery;
+    const hasHostIdentity = typeof recoveryIdentity?.runId === "string" && recoveryIdentity.runId.length > 0
+      && recoveryIdentity.runId.length <= 512 && Number.isSafeInteger(recoveryIdentity.revision) && recoveryIdentity.revision >= 0;
+    await harness.beginTurn(hasHostIdentity ? recoveryIdentity.runId : undefined, hasHostIdentity ? "host" : "synthetic");
 
     if (options.manualCompaction === true) {
       // The same resolve/reopen/seed path as a turn, but without a user prompt,
@@ -691,6 +709,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
         throw new Error("Manual compaction failed or was cancelled.");
       }
+      await harness.endTurn("completed");
       await commitSession(runState, {
         options,
         requestedSessionId,
@@ -738,6 +757,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // deleted; the finally clears sessionEntry.busy, removes the abort handler,
       // and closes MCP clients. For a resume no transcript was appended yet
       // (prompt never ran), so the live session needs no rollback.
+      await harness.endTurn("aborted");
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -792,6 +812,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // accept is ordered after it, so Pi cancels the admitted operation itself.
     // The finally below disarms mid-run compaction.
     if (options.abortSignal?.aborted) {
+      await harness.endTurn("aborted");
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -1040,8 +1061,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       && !runState.maxTurnsHit
       && (!errorMessage || failureKindForPiError(errorMessage, diagnostics) === "provider_unavailable")
       && typeof options.sessionRecovery?.runId === "string" && options.sessionRecovery.runId.length > 0
+      && options.sessionRecovery.runId.length <= 512
       && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
       && typeof runState.recoveryOperationId === "string";
+    await harness.endTurn(runState.externalAbort ? "aborted" : errorMessage ? "failed" : "completed");
     await commitSession(runState, {
       options,
       requestedSessionId,
@@ -1101,6 +1124,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
+    try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen aborts unsealed work */ }
     await cleanupSessionOnThrow(runState, { durableRepo });
     // The throw path still holds the original Error, so its cause chain is the
     // authoritative source here — no correlation guesswork needed.

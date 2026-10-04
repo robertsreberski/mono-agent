@@ -17,7 +17,6 @@
 // on the caller-owned runState.compaction.
 
 import {
-  BACKGROUND_CONTEXT,
   calculateContextTokens,
   compact as compactPreparedContext,
   estimateContextTokens,
@@ -25,7 +24,8 @@ import {
   getLastAssistantUsage,
   prepareCompaction,
   shouldCompact,
-} from "@earendil-works/pi-agent-core";
+} from "@mono-agent/harness/compaction-kit/compaction.js";
+import { HARNESS_CONTEXT as BACKGROUND_CONTEXT } from "@mono-agent/harness/context.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -39,7 +39,7 @@ import {
   parseContextLimitFromError,
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
-import { buildPiSessionContext } from "./harness-adapter.js";
+import { buildHarnessSessionContext } from "./harness-adapter.js";
 import { runHarnessPrompt } from "./turn-runner.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow
@@ -154,7 +154,7 @@ export async function estimateSessionMessageTokens(session) {
 
 async function estimateBuiltContextTokens(branchEntries) {
   try {
-    const messages = buildPiSessionContext(branchEntries);
+    const messages = buildHarnessSessionContext(branchEntries);
     return messages.reduce(
       (total, message) => total + (Number(estimateTokens(message)) || 0),
       0,

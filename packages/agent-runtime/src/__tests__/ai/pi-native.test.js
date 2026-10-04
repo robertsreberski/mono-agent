@@ -26,7 +26,7 @@ import {
   fauxToolCall,
   getCurrentTools,
 } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
+import { MemorySessionRepo } from "@mono-agent/harness/session-store.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -36,9 +36,9 @@ import {
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
 import {
-  createPiHarnessAdapter,
+  createHarnessAdapter,
   createPiSessionAdapter,
-  PI_CONTEXT,
+  HARNESS_CONTEXT,
 } from "../../ai/providers/pi-native/harness-adapter.js";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
 import {
@@ -948,7 +948,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("closes a partially constructed harness when adapter setup fails", async () => {
     const model = setup();
     const repo = new MemorySessionRepo();
-    const rawSession = await repo.create({ id: "adapter-setup-failure" }, PI_CONTEXT);
+    const rawSession = await repo.create({ id: "adapter-setup-failure" }, HARNESS_CONTEXT);
     const metadata = rawSession.metadata;
     const session = createPiSessionAdapter(rawSession);
     const attach = session.attach.bind(session);
@@ -957,7 +957,7 @@ describe("pi-native AgentHarness bridge", () => {
       throw new Error("attach failed");
     };
 
-    await expect(createPiHarnessAdapter(session, {
+    await expect(createHarnessAdapter(session, {
       models: fauxModels,
       model,
       thinkingLevel: "off",
@@ -968,9 +968,9 @@ describe("pi-native AgentHarness bridge", () => {
       followUpMode: "one-at-a-time",
     })).rejects.toThrow("attach failed");
 
-    const reopened = await repo.open(metadata, PI_CONTEXT);
-    await reopened.close(PI_CONTEXT);
-    await repo.close(PI_CONTEXT);
+    const reopened = await repo.open(metadata, HARNESS_CONTEXT);
+    await reopened.close(HARNESS_CONTEXT);
+    await repo.close(HARNESS_CONTEXT);
   });
 
   it("forwards the requested transport to Pi and reports it in diagnostics", async () => {
@@ -1083,7 +1083,7 @@ describe("pi-native AgentHarness bridge", () => {
   // (before the next provider request), not when the whole run settles. The
   // second faux response therefore blocks until acknowledge() has fired; on
   // the end-of-run-only behaviour that wait times out and the run errors.
-  it("acknowledges a live input steered through the real Pi harness as consumed by the run", async () => {
+  it("acknowledges a live input steered through the real mono-agent harness as consumed by the run", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-live-input-"));
     try {
       writeFileSync(join(root, "notes.txt"), "important context\n");
@@ -1922,7 +1922,7 @@ describe("pi-native typed policy objects", () => {
     }
   }
 
-  it.each([undefined, 900_000, 30_000])("preserves the typed command budget through the real Pi harness: %s", async (bashTimeoutMs) => {
+  it.each([undefined, 900_000, 30_000])("preserves the typed command budget through the real mono-agent harness: %s", async (bashTimeoutMs) => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-command-budget-"));
     const timer = vi.spyOn(globalThis, "setTimeout");
     try {

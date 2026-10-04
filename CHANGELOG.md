@@ -5,6 +5,20 @@
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 
+- Fix provider readiness probes accepting premature or context-limited output
+  as successful.
+
+- Keep Pi-native execution on Pi 1.x through the mono-agent harness, with
+  versioned native journals and distinct logical turns/execution operations.
+  Import idle legacy Pi main-branch context; reopen still aborts old operations
+  and model-change retirement remains destructive. Support large native records
+  and journals with kernel-backed writer exclusion and safe retired-lock cleanup.
+  Resume interrupted idle legacy imports without deleting published context
+  when source archival fails. Adopt owned legacy 0755 roots safely, retain only
+  selected v3 parent context, and retire matching archived evidence. Reclaim crashed
+  native creations and warn once when legacy root access is tightened; fail closed
+  rather than salvage stale legacy evidence behind unreadable native state.
+
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth
   files and writable/foreign auth parents, and preserve budget-exhaustion codes

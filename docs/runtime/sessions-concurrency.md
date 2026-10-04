@@ -288,7 +288,9 @@ Recovery is opt-in through the built-in coordinator's `providerSessionRecovery:
 without the capability retain retirement. Clear-sessions, retention removal,
 host-only appends, model changes and unreconciled dirty fences still reseed.
 If retirement races an abort-ignoring provider, the late result cleans only its
-captured old id, including any recreated headerless JSONL. Retirement uncertainty
+captured old id. Owned journals reject late append admission and retain the writer
+lock through unwind; retirement removes validated publication/staging and matching
+legacy archives without recreating headerless files. Retirement uncertainty
 keeps the publication barrier closed until a later turn republishes the lost
 retirement (or a reset discards it).
 
