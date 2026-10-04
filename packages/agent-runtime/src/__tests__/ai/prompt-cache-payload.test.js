@@ -220,8 +220,8 @@ it.each([
 ])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
   vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
   const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
-  const { AgentHarness } = await import('@earendil-works/pi-agent-core');
-  const create = vi.spyOn(AgentHarness, 'create');
+  const driverModule = await import('../../ai/providers/pi-native/harness/run-driver.js');
+  const create = vi.spyOn(driverModule, 'createRunDriver');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });
   const model = { ...base.getModel(), api, baseUrl: 'https://fixture.invalid/v1', compat: { supportsLongCacheRetention: supported } };
@@ -242,7 +242,7 @@ it.each([
   expect(payloads).toHaveLength(1);
   if (api === 'anthropic-messages') expect(streamOptions[0].cacheRetention).toBe(resolvedRetention);
   else {
-    expect(create.mock.calls[0][0].streamOptions).not.toHaveProperty('cacheRetention');
+    expect(create.mock.calls[0][1].streamOptions).not.toHaveProperty('cacheRetention');
     // Pi itself materializes an undefined option in its downstream projection.
     expect(streamOptions[0].cacheRetention).toBeUndefined();
   }

@@ -26,7 +26,7 @@ import {
   fauxToolCall,
   getCurrentTools,
 } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
+import { MemorySessionRepo } from "../../ai/providers/pi-native/harness/session-store.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {

@@ -40,6 +40,7 @@ async function syncDurableTranscript(entry) {
   // bytes and the directory entry are stable before host history commits.
   await syncPath(path);
   await syncPath(dirname(path));
+  await syncPath(dirname(dirname(path)));
 }
 
 async function invalidateNativeSession(entry) {
@@ -710,8 +711,6 @@ export async function recoverDurableNativeSession(receipt, context) {
     raw = undefined;
     // Pending is cleared only after persistence is certain. Bypass the ordinary
     // sync guard while keeping the public busy reservation throughout the fsync.
-    await syncPath(entry.metadata.path);
-    await syncPath(dirname(entry.metadata.path));
     entry.recoveryPending = false;
     delete entry.recovery;
     return true;

@@ -17,7 +17,6 @@
 // on the caller-owned runState.compaction.
 
 import {
-  BACKGROUND_CONTEXT,
   calculateContextTokens,
   compact as compactPreparedContext,
   estimateContextTokens,
@@ -26,6 +25,7 @@ import {
   prepareCompaction,
   shouldCompact,
 } from "./harness/compaction-kit/compaction.js";
+import { PI_CONTEXT as BACKGROUND_CONTEXT } from "./harness/context.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {

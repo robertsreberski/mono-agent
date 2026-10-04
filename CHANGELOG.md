@@ -5,6 +5,9 @@
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 
+- Keep Pi-native execution on Pi 1.x with an owned session store; import idle
+  legacy main-branch context and cold-replay interrupted sessions.
+
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth
   files and writable/foreign auth parents, and preserve budget-exhaustion codes

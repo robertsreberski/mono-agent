@@ -248,8 +248,7 @@ describe("pi-native sessions", () => {
       const { PI_CONTEXT } = await import("../../ai/providers/pi-native/harness-adapter.js");
       const repo = resolveDurableNativeSessionRepo(root);
       const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
-      const branch = await raw.branch("main", PI_CONTEXT);
-      await branch.appendMessage({ role: "user", content: "unexpected append", timestamp: Date.now() }, PI_CONTEXT);
+      await raw.appendMessage({ role: "user", content: "unexpected append", timestamp: Date.now() });
       await raw.close(PI_CONTEXT);
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
     } finally {
@@ -275,7 +274,7 @@ describe("pi-native sessions", () => {
         const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm ask" }] }));
         expect(warm.error).toBeNull();
         const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
-        baseline = await (await raw.branch("main", PI_CONTEXT)).getTipId(PI_CONTEXT);
+        baseline = await raw.getLeafId();
         await raw.close(PI_CONTEXT);
       }
       // Reject at the adapter boundary before upstream closes. The outer catch
@@ -298,7 +297,7 @@ describe("pi-native sessions", () => {
       expect(closeSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // capture and legacy cleanup
       if (resumed) {
         const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
-        expect(await (await raw.branch("main", PI_CONTEXT)).getTipId(PI_CONTEXT)).toBe(baseline);
+        expect(await raw.getLeafId()).toBe(baseline);
         await raw.close(PI_CONTEXT);
       } else {
         expect(countJsonlFiles(root)).toBe(0);
@@ -341,7 +340,9 @@ describe("pi-native sessions", () => {
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
       expect(listSpy).toHaveBeenCalledTimes(1);
       expect(openSpy).toHaveBeenCalledTimes(1);
-      expect(fileOpenSpy).toHaveBeenCalledTimes(2); // transcript and directory fsync
+      // Bounded catalog/open reads are additional descriptors. The barrier
+      // syncs transcript, version directory and the root publication directory.
+      expect(fileOpenSpy.mock.calls.filter(([, mode]) => mode === "r")).toHaveLength(3);
       listSpy.mockClear(); openSpy.mockClear(); fileOpenSpy.mockClear();
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
       expect(listSpy).not.toHaveBeenCalled();
@@ -469,7 +470,7 @@ describe("pi-native sessions", () => {
     }
   });
 
-  it("reclaims an exact-id JSONL recreated by a provider that was still unwinding", async () => {
+  it("does not recreate a retired pathname while the provider unwinds", async () => {
     const model = setup();
     const root = mkdtempSync(join(tmpdir(), "pi-native-retire-active-"));
     const id = "c".repeat(64);
@@ -506,7 +507,7 @@ describe("pi-native sessions", () => {
       expect(countJsonlFiles(root)).toBe(0);
       release();
       await expect(unwinding).resolves.toMatchObject({ text: "late answer" });
-      expect(countJsonlFiles(root)).toBe(1);
+      expect(countJsonlFiles(root)).toBe(0);
 
       await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
       expect(countJsonlFiles(root)).toBe(0);
@@ -883,7 +884,7 @@ describe("pi-native sessions", () => {
     ]);
   });
 
-  it("resumes a Pi 0.84 legacy v3 JSONL and lets Pi upgrade it atomically to v4", async () => {
+  it("imports idle Pi v3 JSONL into the versioned store and archives the source", async () => {
     const model = setup();
     const root = mkdtempSync(join(tmpdir(), "pi-native-v3-upgrade-"));
     const directory = join(root, "legacy-workspace");
@@ -950,11 +951,10 @@ describe("pi-native sessions", () => {
         "assistant:legacy-reply",
         "user:new-turn",
       ]);
-      expect(JSON.parse(readFileSync(path, "utf8").split("\n", 1)[0])).toMatchObject({
-        v: 4,
-        kind: "header",
-        id: sessionId,
-      });
+      expect(JSON.parse(readFileSync(`${path}.migrated`, "utf8").split("\n", 1)[0])).toMatchObject({ type: "session", version: 3, id: sessionId });
+      const imported = findJsonlFiles(root);
+      expect(imported).toHaveLength(1);
+      expect(JSON.parse(readFileSync(imported[0], "utf8").split("\n", 1)[0])).toMatchObject({ format: "mono-pi-session", version: 1, id: sessionId });
     } finally {
       await invalidateProviderSession(sessionId).catch(() => {});
       rmSync(root, { recursive: true, force: true });

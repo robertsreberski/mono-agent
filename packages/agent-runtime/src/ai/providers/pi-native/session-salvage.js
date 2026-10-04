@@ -1,5 +1,6 @@
 // Read-only, best-effort evidence from Pi v4 JSONL. Never open through the Pi repo:
 // its cold-open path repairs torn transactions by rewriting the source file.
+import { SessionStore } from "./harness/session-store.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, stat as statPath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -25,9 +26,10 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       if (!file.name.endsWith(suffix)) continue;
       if (!file.isFile()) fail();
       matches.push(join(parent, file.name));
-      if (matches.length > 1) fail();
     }
   }
+  const owned = matches.filter((path) => path.includes(`${sep}mono-v1${sep}`));
+  if (owned.length === 1) matches.splice(0, matches.length, owned[0]);
   if (matches.length !== 1) fail();
   const path = matches[0];
   const before = await lstat(path);
@@ -60,11 +62,18 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   const lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, finalNewline)).split("\n");
   if (lines.some((line) => Buffer.byteLength(line) > MAX_LINE || !line)) fail();
   const header = JSON.parse(lines.shift());
-  if (!valid(header) || header.kind !== "header" || header.v !== 4 || header.storageVersion !== 1 || header.id !== sessionId) fail();
   const entries = new Map();
   const ids = new Set();
   const values = new Map();
   const pending = new Map();
+  let openTurn = false;
+  if (header?.format === "mono-pi-session" && header.version === 1 && header.id === sessionId) {
+    const store = new SessionStore(header, lines.map((line) => JSON.parse(line)), null);
+    for (const [id, entry] of store.entries) entries.set(id, entry);
+    values.set("main", store.tip);
+    openTurn = (await store.getOpenTurns()).length > 0;
+  } else {
+  if (!valid(header) || header.kind !== "header" || header.v !== 4 || header.storageVersion !== 1 || header.id !== sessionId) fail();
   let seq = 0;
   for (const line of lines) {
     const transaction = JSON.parse(line);
@@ -94,8 +103,9 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       } else fail();
     }
   }
+  }
   const tip = values.get("main");
-  if (tip !== undefined && (typeof tip !== "string" || !entries.has(tip))) fail();
+  if (tip !== undefined && tip !== null && (typeof tip !== "string" || !entries.has(tip))) fail();
   const branch = [];
   const seen = new Set();
   for (let id = tip; id !== undefined && id !== null;) {
@@ -189,5 +199,5 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   // Orphaned or mismatched results cannot attest to a call's outcome.
   return { completed: completed.slice(-8), outcomeUnknown: outcomeUnknown.slice(-8),
     omittedCompleted: Math.max(0, completed.length - 8), omittedUnknown: Math.max(0, outcomeUnknown.length - 8),
-    ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || unclassifiedPending || results.size > completed.length || tip === undefined };
+    ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || openTurn || unclassifiedPending || results.size > completed.length || tip === undefined };
 }

@@ -51,7 +51,7 @@ describe("owned Pi session store", () => {
       const s = await repo.open(metadata);
       expect(s.continuity).toBe("import");
       expect((await s.getEntries()).map((e) => e.message.role)).toEqual(["user", "assistant"]);
-      expect(sync).toHaveBeenCalledTimes(1);
+      expect(sync).toHaveBeenCalledTimes(2);
       expect(await readFile(`${old}.migrated`)).toEqual(original);
       await expect(stat(old)).rejects.toMatchObject({ code: "ENOENT" });
       await s.close(); sync.mockRestore();
@@ -130,4 +130,40 @@ describe("owned Pi session store", () => {
       await s.close();
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   }, 10000);
+});
+
+it("projects only the legacy main branch through its latest compaction", async () => {
+  const r = await root(); const path = await fixture(r, 4);
+  const lines = (await readFile(path, "utf8")).trim().split("\n");
+  const writes = lines.slice(1).flatMap((line) => { const w = JSON.parse(line); return Array.isArray(w) ? w : [w]; });
+  let seq = Math.max(...writes.map((w) => w.seq));
+  const tip = writes.filter((w) => w.namespace === "pi.branch.tip" && w.key === "main").at(-1).value;
+  const transaction = [
+    { kind: "entry", seq: ++seq, id: "summary", parentId: tip, timestamp: 1700000000002, type: "compaction", summary: "Fictional earlier work.", tokensBefore: 200, retainedTail: [message] },
+    { kind: "value", seq: ++seq, namespace: "pi.branch.tip", key: "main", op: "set", value: "summary" },
+    { kind: "entry", seq: ++seq, id: "sibling", parentId: tip, timestamp: 1700000000003, type: "message", message: { ...message, content: "Sibling context must not import." } },
+    { kind: "value", seq: ++seq, namespace: "pi.branch.tip", key: "sibling", op: "set", value: "sibling" },
+  ];
+  await appendFile(path, `${JSON.stringify(transaction)}\n`);
+  const repo = new JsonlSessionRepo({ sessionsRoot: r });
+  const s = await repo.open((await repo.list())[0]);
+  expect((await s.getEntries()).map((e) => e.message.role)).toEqual(["compactionSummary", "user"]);
+  expect(JSON.stringify(await s.getEntries())).not.toContain("Sibling context");
+  await s.close();
+});
+
+it("salvages owned paired tool evidence without executing an unfinished turn", async () => {
+  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
+  const s = await repo.create({ id: "salvage-fixture" });
+  await s.openTurn("interrupted", {});
+  await s.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1700000000000 });
+  await s.appendMessage({ role: "toolResult", toolCallId: "call", toolName: "Read", content: [{ type: "text", text: "Fictional evidence." }], isError: false, timestamp: 1700000000001 });
+  await s.close();
+  const bytes = await readFile(s.metadata.path);
+  const evidence = await salvageDurableNativeSession("salvage-fixture", r);
+  expect(evidence.completed).toEqual([{ name: "Read", result: "Fictional evidence." }]);
+  expect(evidence.outcomeUnknown).toEqual([]);
+  expect(evidence.additionalOutcomesUnknown).toBe(true);
+  expect(await readFile(s.metadata.path)).toEqual(bytes);
 });

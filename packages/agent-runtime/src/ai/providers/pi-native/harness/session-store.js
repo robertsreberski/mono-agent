@@ -1,6 +1,6 @@
 // Mono-owned append-only single-main-branch store. No provider execution here.
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { readBoundedJsonl, MAX_LINE } from "./bounded-jsonl.js";
@@ -26,26 +26,29 @@ export class SessionStore {
     this.failure = null;
     for (const record of records) this.apply(record);
   }
-  apply(record) {
+  validateRecord(record) {
     if (!Number.isSafeInteger(record.seq) || record.seq !== this.seq + 1) fail();
     if (record.kind === "entry") {
       const e = record.entry;
       if (!e || typeof e.id !== "string" || this.entries.has(e.id) || e.parentId !== this.tip
-        || !["message", "compaction", "branch_summary"].includes(e.type)) fail();
-      this.entries.set(e.id, clone(e)); this.tip = e.id;
+        || !Number.isSafeInteger(e.timestamp) || !["message", "compaction", "branch_summary"].includes(e.type)) fail();
     } else if (record.kind === "rollback") {
       if (record.tipId !== null && !this.entries.has(record.tipId)) fail();
-      this.tip = record.tipId;
     } else if (record.kind === "turn_open") {
       if (typeof record.runId !== "string" || this.turns.has(record.runId)
         || [...this.turns.values()].some((t) => t.kind === "turn_open") || record.fromTipId !== this.tip) fail();
-      this.turns.set(record.runId, clone(record));
     } else if (record.kind === "turn_close") {
-      const prior = this.turns.get(record.runId);
-      if (prior?.kind !== "turn_open" || record.tipId !== this.tip
+      if (this.turns.get(record.runId)?.kind !== "turn_open" || record.tipId !== this.tip
         || !["completed", "failed", "aborted"].includes(record.status)) fail();
-      this.turns.set(record.runId, { ...clone(prior), ...clone(record) });
     } else fail();
+  }
+  apply(record) {
+    this.validateRecord(record);
+    if (record.kind === "entry") {
+      this.entries.set(record.entry.id, clone(record.entry)); this.tip = record.entry.id;
+    } else if (record.kind === "rollback") this.tip = record.tipId;
+    else if (record.kind === "turn_open") this.turns.set(record.runId, clone(record));
+    else this.turns.set(record.runId, { ...clone(this.turns.get(record.runId)), ...clone(record) });
     this.seq = record.seq;
     this.records.push(clone(record));
   }
@@ -63,6 +66,7 @@ export class SessionStore {
       const record = { ...makeRecord(), seq: this.seq + 1 };
       const text = `${JSON.stringify(record)}\n`;
       if (Buffer.byteLength(text) > MAX_LINE) throw new Error("Pi session record is too large");
+      this.validateRecord(record);
       await this.io?.append(text);
       this.apply(record);
       return record;
@@ -143,12 +147,12 @@ export class JsonlSessionRepo {
     await mkdir(this.directory, { recursive: true });
     if (!(await lstat(this.root)).isDirectory() || !(await lstat(this.directory)).isDirectory()) fail();
   }
-  async create({ id = randomUUID(), cwd = process.cwd() } = {}) {
+  async create({ id = randomUUID(), cwd = process.cwd(), staging = false } = {}) {
     if (!safeId(id)) throw new TypeError("Unsafe Pi session id");
     await this.ensureDirectory();
     if (this.openSessions.has(id) || (await this.listOwned()).some((m) => m.id === id)) throw new Error("Pi session already exists");
     const createdAt = Date.now();
-    const path = join(this.directory, `${new Date(createdAt).toISOString().replace(/[:.]/g, "-")}_${id}.jsonl`);
+    const path = join(this.directory, `${new Date(createdAt).toISOString().replace(/[:.]/g, "-")}_${id}.jsonl${staging ? ".importing" : ""}`);
     const metadata = { id, cwd, createdAt, path };
     const handle = await open(path, "wx", 0o600);
     try { await handle.writeFile(`${JSON.stringify({ format: FORMAT, version: 1, ...metadata, path: undefined })}\n`); }
@@ -162,13 +166,14 @@ export class JsonlSessionRepo {
     const evidence = await readBoundedJsonl(metadata.path, this.root);
     const [header, ...records] = evidence.records;
     if (header?.format !== FORMAT || header.version !== 1 || header.id !== metadata.id) fail();
-    const session = new SessionStore({ ...header, path: metadata.path }, records, {
+    const storeMetadata = { ...header, path: metadata.path };
+    const session = new SessionStore(storeMetadata, records, {
       append: async (text) => {
-        const handle = await open(metadata.path, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+        const handle = await open(storeMetadata.path, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
         try { await handle.writeFile(text); } finally { await handle.close(); }
       },
       sync: async () => {
-        await syncPath(metadata.path);
+        await syncPath(storeMetadata.path);
         await syncPath(this.directory);
         await syncPath(this.root);
       },
@@ -188,11 +193,15 @@ export class JsonlSessionRepo {
   }
   async importLegacy(metadata) {
     const projected = await readLegacySession(metadata, this.root);
-    const session = await this.create({ id: metadata.id, cwd: metadata.cwd });
+    const session = await this.create({ id: metadata.id, cwd: metadata.cwd, staging: projected.status === "import" });
     session.continuity = projected.status;
     if (projected.status === "clean_break") return session;
     try {
       for (const message of projected.messages) await session.appendMessage(message);
+      await session.sync();
+      const publishedPath = session.metadata.path.replace(/\.importing$/, "");
+      await rename(session.metadata.path, publishedPath);
+      session.metadata.path = publishedPath;
       await session.sync();
       await archiveLegacySession(metadata, this.root, projected.evidence);
       return session;

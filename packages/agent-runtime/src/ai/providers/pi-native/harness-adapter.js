@@ -1,8 +1,8 @@
 // @ts-check
 // Compatibility boundary between mono-agent's Pi-native bridge and the
-// lane-based AgentHarness API introduced in pi-agent-core 0.85.
+// mono-owned harness built on the pinned Pi agent loop.
 
-import { AgentHarness, getOrThrow } from "@earendil-works/pi-agent-core";
+import { createRunDriver } from "./harness/run-driver.js";
 import { PI_CONTEXT } from "./harness/context.js";
 import { buildPiSessionContext } from "./harness/session-context.js";
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
@@ -33,343 +33,101 @@ export function createPiSessionAdapter(rawSession) {
   };
 }
 
-function operationError(record, fallback) {
-  const error = new Error(record?.error?.message || fallback);
-  if (record?.error?.code) /** @type {any} */ (error).code = record.error.code;
-  return error;
-}
-
-function adaptTool(tool, gate, questionState, runState) {
-  return {
-    ...tool,
-    async execute(toolCallId, params, onUpdate, _toolContext, _invocation, context) {
-      const signal = context.abortSignal;
-      const release = gate ? await gate.acquire(isSharedTool(tool), signal) : () => {};
-      try {
-        if (runState.stopping || signal?.aborted) throw new Error("tool execution aborted");
-        // Pi prepares/publishes every invocation before execute. Its before_tool
-        // hook may therefore already have run while this call waited behind a
-        // successful AskParent. Never enter a later tool after that question.
-        if (questionState.awaiting) {
-          // Pi classifies a thrown tool error as isError; the after_tool hook
-          // still supplies terminate, matching the old before_tool block.
-          throw new Error("Child turn ended awaiting a parent reply.");
-        }
-        const result = await tool.execute(toolCallId, params, signal, onUpdate);
-        if (tool.name === "AskParent" && result?.details?.tool === "AskParent") {
-          questionState.awaiting = true;
-        }
-        return result;
-      } finally {
-        release();
-      }
-    },
-  };
-}
-
-const FORWARDED_EVENT_TYPES = [
-  "run_start",
-  "run_resume",
-  "run_suspend",
-  "operation_abort",
-  "run_end",
-  "fault",
-  "handler_error",
-  "turn_start",
-  "turn_end",
-  "retry_scheduled",
-  "retry_start",
-  "retry_end",
-  "message_start",
-  "message_update",
-  "message_end",
-  "tool_start",
-  "tool_update",
-  "tool_end",
-  "entry_added",
-  "queue_update",
-  "value_update",
-  "config_update",
-  "compaction_start",
-  "compaction_end",
-  "navigation_start",
-  "navigation_end",
-  "lane_created",
-  "usage",
-];
-
-function legacyEvent(event) {
-  // appendMessage() emits runless lifecycle events for transcript seeding.
-  // They are persistence notifications, not output from the active provider
-  // run, and forwarding them would manufacture assistant boundaries/usage for
-  // prior history. Real run-owned message events always carry runId in Pi 0.85.
-  if ((event.type === "message_start" || event.type === "message_end") && !event.runId) {
-    return null;
-  }
-  if (event.type === "message_update") {
-    return { ...event, assistantMessageEvent: event.event };
-  }
-  if (event.type === "tool_start") return { ...event, type: "tool_execution_start" };
-  if (event.type === "tool_update") return { ...event, type: "tool_execution_update" };
-  if (event.type === "tool_end") return { ...event, type: "tool_execution_end" };
-  return event;
-}
-
-/**
- * Attach Pi 0.85's harness to one session and expose the intentionally small
- * surface consumed by mono-agent's turn runner.
- * @param {any} session
- * @param {any} options
- */
+/** @param {any} session @param {any} options */
 export async function createPiHarnessAdapter(session, options) {
   const originalTools = Array.isArray(options.tools) ? options.tools : [];
   const toolExecution = options.toolExecutionMode === "sequential" ? "sequential" : "parallel";
-  // Pi's harness branches only on the run's global setting. In parallel mode
-  // the wrapper gates *invoked* calls, not the set of offered tools.
   const gate = toolExecution === "parallel" ? createToolExecutionGate() : null;
   const questionState = { awaiting: false };
   const runState = { stopping: false, stopEpoch: 0 };
-  const stopTools = () => {
-    runState.stopping = true;
-    runState.stopEpoch += 1;
-    gate?.stop();
-  };
-  const adaptedTools = originalTools.map((tool) => adaptTool(tool, gate, questionState, runState));
-  const activeToolNames = originalTools.map((tool) => tool.name);
-
-  // Flipped by the bridge's mid-run compaction controller for the lifetime of a
-  // single prompt; read by the permanent compaction-owner hook below.
-  let midRunCompactionArmed = false;
-  /** @type {any} */
-  let created;
-  /** @type {any} */
-  let rawHarness;
-  /** @type {any} */
-  let lane;
-  let removePromptCacheDiagnostics = () => {};
+  const stopTools = () => { runState.stopping = true; runState.stopEpoch += 1; gate?.stop(); };
+  const adaptedTools = originalTools.map((tool) => ({
+    ...tool,
+    // The FIFO host gate, not a static loadout-wide scheduling override, owns
+    // shared/exclusive admission for dynamically invoked calls.
+    executionMode: toolExecution,
+    async execute(toolCallId, params, signal, onUpdate) {
+      const release = gate ? await gate.acquire(isSharedTool(tool), signal) : () => {};
+      try {
+        if (runState.stopping || signal?.aborted) throw new Error("tool execution aborted");
+        if (questionState.awaiting) throw new Error("Child turn ended awaiting a parent reply.");
+        const result = await tool.execute(toolCallId, params, signal, onUpdate);
+        if (tool.name === "AskParent" && result?.details?.tool === "AskParent") questionState.awaiting = true;
+        return result;
+      } finally { release(); }
+    },
+  }));
+  let driver;
+  let removeDiagnostics = () => {};
+  let currentActiveToolNames = originalTools.map((tool) => tool.name);
+  let closed = false;
   try {
-    created = await AgentHarness.create({
-      ...options,
-      session: session.rawSession,
-      tools: adaptedTools,
-      activeToolNames,
-      toolExecution,
-      // mono-agent owns proactive/reactive compaction policy. The permanent hook
-      // below also declines Pi's overflow recovery so one bridge never runs two
-      // competing policies.
-      compaction: { enabled: false, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-    }, PI_CONTEXT);
-    rawHarness = created.harness;
-    // Attach the harness before lane/configuration awaits so any later failure
-    // can close the partially constructed handle instead of wedging the repo.
-    session.attach(rawHarness, null);
-    lane = await rawHarness.lane("main", PI_CONTEXT);
-    session.attach(rawHarness, lane);
-
-    // A restored lane carries its prior configuration, so explicitly bind it to
-    // this run's model, effort, and available tools. Legacy v3 transcripts import
-    // with an empty active-tool list and are upgraded atomically by Pi on write.
-    await rawHarness.setTools(adaptedTools, PI_CONTEXT);
-    await lane.setModel({ provider: options.model.provider, modelId: options.model.id }, PI_CONTEXT);
-    await lane.setThinkingLevel(options.thinkingLevel ?? "off", PI_CONTEXT);
-    await lane.setActiveTools(activeToolNames, PI_CONTEXT);
-
-    // mono-agent owns compaction policy, so every compaction Pi proposes on its
-    // own is declined here — EXCEPT the in-run `threshold` task while the bridge
-    // has explicitly armed mid-run compaction and installed its guarded
-    // `session_before_compact` decision (see mid-run-compaction.js). Declining
-    // is safe for both: a declined threshold task resumes the run, and overflow
-    // recovery stays with the bridge's reactive path. `undefined` defers to the
-    // next registration rather than accepting (pi-agent-core hooks.js
-    // `firstStructural`), which is what lets the bridge's own hook decide.
-    rawHarness.hooks.on("before_compaction", (event) => {
-      if (event.reason === "manual") return undefined;
-      if (event.reason === "threshold" && midRunCompactionArmed) return undefined;
-      return { decline: true };
-    }, { id: "mono-agent-compaction-owner" });
-    // The only accepted silent call is a sole-call batch. Record the provider's
-    // actual batch, not a model-supplied argument; sequential execution ensures
-    // a later rich-output call cannot race an accepted termination.
-    if (activeToolNames.includes("FinishSilently") && options.silentTurnState) {
-      rawHarness.hooks.on("after_response", (event) => {
+    driver = createRunDriver(session.rawSession, { ...options, tools: adaptedTools, toolExecution });
+    session.attach(driver);
+    if (currentActiveToolNames.includes("FinishSilently") && options.silentTurnState) {
+      driver.hooks.on("after_response", (event) => {
         const calls = event.message.content.filter((part) => part.type === "toolCall");
         options.silentTurnState.soleCall = calls.length === 1 && calls[0].name === "FinishSilently";
-        if (event.message.content.some((part) => part.type === "text" && part.text?.trim())) {
-          options.silentTurnState.visibleContent = true;
-        }
-      }, { id: "mono-agent-silent-batch" });
+        if (event.message.content.some((part) => part.type === "text" && part.text?.trim())) options.silentTurnState.visibleContent = true;
+      });
     }
-    // Pi terminates only when every result in a batch carries the hint. Keep
-    // mixed batches closed too, and never execute calls after a durable question.
-    if (activeToolNames.includes("AskParent")) {
+    if (currentActiveToolNames.includes("AskParent")) {
       let questionBatch = false;
-      rawHarness.hooks.on("after_response", (event) => {
+      driver.hooks.on("after_response", (event) => {
         questionBatch = event.message.content.some((part) => part.type === "toolCall" && part.name === "AskParent");
-      }, { id: "mono-agent-ask-parent-batch" });
-      rawHarness.hooks.on("before_tool", () => questionState.awaiting
-        ? { block: { reason: "Child turn ended awaiting a parent reply.", terminate: true } } : undefined,
-      { id: "mono-agent-ask-parent-stop" });
-      rawHarness.hooks.on("after_tool", (event) => {
+      });
+      driver.hooks.on("before_tool", () => questionState.awaiting
+        ? { block: { reason: "Child turn ended awaiting a parent reply.", terminate: true } } : undefined);
+      driver.hooks.on("after_tool", (event) => {
         if (event.toolName === "AskParent" && !event.isError && event.details?.tool === "AskParent") questionState.awaiting = true;
         return questionState.awaiting || (questionBatch && event.toolName !== "AskParent") ? { terminate: true } : undefined;
-      }, { id: "mono-agent-ask-parent-terminate" });
+      });
     }
-    removePromptCacheDiagnostics = installPromptCacheDiagnostics(rawHarness, options);
+    removeDiagnostics = installPromptCacheDiagnostics(driver, options);
   } catch (error) {
-    try { await session.close(); } catch { /* preserve the construction error */ }
+    try { await session.close(); } catch { /* preserve construction error */ }
     throw error;
   }
-
-  let closed = false;
-  let currentModel = options.model;
-  let currentThinkingLevel = options.thinkingLevel ?? "off";
-  let currentActiveToolNames = [...activeToolNames];
-  const manuallyAppendedEntryIds = new Set();
-
-  const adapter = {
-    getPromptCacheRequest: () => promptCacheRequest(rawHarness),
+  return {
     models: options.models,
-    getModel: () => currentModel,
-    getThinkingLevel: () => currentThinkingLevel,
+    getPromptCacheRequest: () => promptCacheRequest(driver),
+    getModel: () => options.model,
+    getThinkingLevel: () => options.thinkingLevel ?? "off",
     getActiveTools: () => originalTools.filter((tool) => currentActiveToolNames.includes(tool.name)),
     async setActiveTools(names) {
-      await lane.setActiveTools(names, PI_CONTEXT);
       currentActiveToolNames = [...names];
+      driver.setTools(adaptedTools.filter((tool) => names.includes(tool.name)));
     },
-    async setCompactionSettings(settings) {
-      await rawHarness.setCompactionSettings(settings, PI_CONTEXT);
-    },
-    // Admit Pi's own in-run `threshold` compaction task while the bridge has a
-    // guarded decision installed. Pi captures the lane's compaction settings
-    // into the operation at accept time, so this must be armed before prompt().
-    setMidRunCompactionArmed(value) {
-      midRunCompactionArmed = value === true;
-    },
-    async appendMessage(message) {
-      const entryId = await lane.appendMessage(message, PI_CONTEXT);
-      manuallyAppendedEntryIds.add(entryId);
-      return entryId;
-    },
-    // Mirror pi's own lane.prompt() (accept → drive) rather than calling it,
-    // so the operation id is known the moment Pi admits the run instead of
-    // only when it settles. The live-input epoch needs it up front: without
-    // it every steer consumed mid-run stays "pending" until the whole run
-    // ends and is only acknowledged in one batch at the end.
+    async setCompactionSettings(settings) { driver.setCompactionSettings(settings); },
+    setMidRunCompactionArmed(value) { driver.setMidRunCompactionArmed(value); },
+    appendMessage: (message) => session.appendMessage(message),
     async prompt(text, promptOptions) {
-      const stopEpoch = runState.stopEpoch;
-      const images = promptOptions?.images;
-      const admission = getOrThrow(await lane.accept({
-        kind: "prompt",
-        prompt: text,
-        ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
-      }, PI_CONTEXT));
-      const { operationId } = admission;
-      if (typeof operationId !== "string" || operationId.length === 0) {
-        throw new Error("Pi run was admitted without an operation id");
-      }
-      // A restored adapter may run another prompt after an earlier abort.
-      // Never reopen if an abort/close began while this accept was pending.
-      if (stopEpoch === runState.stopEpoch && !closed) {
-        runState.stopping = false;
-        gate?.resume();
-      }
-      promptOptions?.onOperationAdmitted?.(operationId);
-      const driven = getOrThrow(await lane.drive({ operationId, waitForRetry: true }, PI_CONTEXT));
-      if (driven.kind === "settled") return driven.outcome;
-      if (driven.kind === "waiting" && driven.reason === "deferred") {
-        return { operationId, status: "suspended", deferred: driven.deferred };
-      }
-      throw new Error(`Pi run ${operationId} returned an unwaited retry`);
+      if (closed) throw new Error("Pi harness is closed");
+      runState.stopping = false; questionState.awaiting = false; gate?.resume();
+      return driver.prompt(text, promptOptions);
     },
-    // Pi's QueueResult carries `{ entryId }`; the live-input runner keys prompt
-    // epoch registration, `cancelQueued` and `message_end` correlation on the
-    // bare entry id, so unwrap it here (as appendMessage does) rather than hand
-    // the runner an object it would settle as "uncertain" without ever
-    // registering the steer.
-    async steer(message) {
-      const { entryId } = getOrThrow(await lane.steer(message, undefined, PI_CONTEXT));
-      if (typeof entryId !== "string" || entryId.length === 0) {
-        throw new Error("Pi steer settled without a queue entry id");
-      }
-      return entryId;
-    },
-    async cancelQueued(entryId) {
-      return getOrThrow(await lane.cancelQueued(entryId, PI_CONTEXT));
-    },
-    async abort() {
-      // Pi's effect gate can be aborting before its abortSignal fires (and a
-      // failed durable commit may never fire it). Close our admission first.
-      stopTools();
-      const result = await lane.abort(PI_CONTEXT);
-      // Aborting an already-idle lane is a benign race with prompt settlement.
-      if (!result.ok) {
-        const error = /** @type {{error: any}} */ (result).error;
-        if (error?._tag !== "NoActiveOperation") throw error;
-      }
-    },
-    waitForIdle() {
-      return lane.waitForIdle(PI_CONTEXT);
-    },
-    async compact() {
-      const value = getOrThrow(await lane.compact(undefined, PI_CONTEXT));
-      const record = value.compaction;
-      if (record.status === "failed") throw operationError(record, "Pi compaction failed");
-      if (record.status !== "completed") throw operationError(record, "Pi compaction cancelled");
-      const entry = record.tipId
-        ? await session.rawSession.getEntry(record.tipId, PI_CONTEXT)
-        : undefined;
-      if (!entry || entry.type !== "compaction") {
-        throw new Error("Pi compaction completed without a compaction entry");
-      }
-      return entry;
-    },
+    steer: (message) => driver.steer(message),
+    cancelQueued: (entryId) => driver.cancelQueued(entryId),
+    async abort() { stopTools(); await driver.abort(); },
+    waitForIdle: () => driver.waitForIdle(),
+    compact: () => driver.compact(),
     on(type, handler) {
-      if (type === "tool_result") {
-        return rawHarness.hooks.on("after_tool", (event) => handler(event));
-      }
-      if (type === "session_before_compact") {
-        return rawHarness.hooks.on("before_compaction", async (event, context) => {
-          const branchEntries = await lane.findEntries({ order: "oldestFirst" }, context);
-          const result = await handler({
-            ...event,
-            branchEntries,
-            signal: context.abortSignal,
-            context,
-          });
-          if (result?.cancel) return { decline: true };
-          return result?.compaction === undefined ? undefined : { compaction: result.compaction };
-        });
-      }
+      if (type === "tool_result") return driver.hooks.on("after_tool", handler);
+      if (type === "session_before_compact") return driver.hooks.on("before_compaction", async (event) => {
+        const result = await handler(event);
+        if (result?.cancel) return { decline: true };
+        return result?.compaction === undefined ? undefined : { compaction: result.compaction };
+      });
       throw new Error(`Unsupported Pi harness hook: ${String(type)}`);
     },
-    subscribe(listener) {
-      const removes = FORWARDED_EVENT_TYPES.map((type) => rawHarness.events.on(
-        /** @type {any} */ (type),
-        (event) => {
-          if (event.type === "message_end" && manuallyAppendedEntryIds.has(event.entryId)) return;
-          const converted = legacyEvent(event);
-          if (converted) listener(converted);
-        },
-      ));
-      return () => removes.forEach((remove) => remove());
-    },
-    async abortOpenOperations() {
-      if (!created.open.some((operation) => operation.lane === "main")) return;
-      stopTools();
-      // mono-agent tools predate Pi's invocation memo/checkpoint API, so replaying
-      // an interrupted durable operation could repeat an external side effect.
-      // Fail closed by settling it as aborted before admitting a new prompt.
-      getOrThrow(await lane.abort(PI_CONTEXT));
-      await lane.waitForIdle(PI_CONTEXT);
-    },
+    subscribe: (listener) => driver.subscribe(listener),
+    async abortOpenOperations() { await driver.abortOpenOperations(); },
     async close() {
       stopTools();
-      if (closed) return;
-      closed = true;
-      removePromptCacheDiagnostics();
+      if (closed) return; closed = true;
+      removeDiagnostics();
+      await driver.close();
       await session.close();
     },
   };
-
-  return adapter;
 }

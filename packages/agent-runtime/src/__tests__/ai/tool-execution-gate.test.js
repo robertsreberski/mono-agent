@@ -1,5 +1,5 @@
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "@earendil-works/pi-agent-core";
+import { MemorySessionRepo } from "../../ai/providers/pi-native/harness/session-store.js";
 import { describe, expect, it, vi } from "vitest";
 import { createPiHarnessAdapter, createPiSessionAdapter, PI_CONTEXT } from "../../ai/providers/pi-native/harness-adapter.js";
 import { createToolExecutionGate, isSharedTool } from "../../ai/providers/pi-native/tool-execution-gate.js";
@@ -22,20 +22,22 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
   const repo = new MemorySessionRepo();
   const rawSession = await repo.create({ id: `gate-${Math.random()}` }, PI_CONTEXT);
   const session = createPiSessionAdapter(rawSession);
-  let lane;
+  let driver;
   const originalAttach = session.attach.bind(session);
   session.attach = (harness, nextLane) => {
     originalAttach(harness, nextLane);
-    if (nextLane) lane = nextLane;
+    driver = harness;
   };
   const events = [];
+  const signals = new Map();
   const blockers = names.map(() => deferred());
   const tools = [...new Set([...names, "Bash"])].map((name) => ({
     name, label: name, description: name,
     parameters: { type: "object", properties: {} },
     ...(["Agent", "Read", "AgentManage", "Monitor", "Unknown"].includes(name)
       ? {} : { executionMode: "sequential" }),
-    async execute(id) {
+    async execute(id, _args, signal) {
+      signals.set(id, signal);
       events.push(`enter:${id}`);
       await blockers[Number(id.slice(5))].promise;
       events.push(`exit:${id}`);
@@ -53,7 +55,7 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
     blockers.forEach((blocker) => blocker.resolve());
     try { return await run; } finally { await harness.close(); await repo.close(PI_CONTEXT); }
   };
-  return { events, blockers, run, finish, harness, session, lane };
+  return { events, blockers, run, finish, harness, session, driver, signals };
 }
 
 const enter = (i) => `enter:call-${i}`;
@@ -164,40 +166,31 @@ describe("Pi harness invoked-call admission", () => {
     } finally { await repo.close(PI_CONTEXT); }
   });
 
-  it("stops queued execution between Pi beginAbort and signalAbort", async () => {
+  it("stops queued execution before the run driver signals abort", async () => {
     const state = await batch(["Bash", "Agent"]);
-    const pendingCommit = deferred();
-    const abortReachedCommit = deferred();
-    const originalRequestAbort = state.lane.requestAbort.bind(state.lane);
-    const originalCommand = state.lane.command.bind(state.lane);
-    state.lane.requestAbort = (...args) => {
-      state.lane.command = (...commandArgs) => {
-        // The first command inside requestOperationAbort occurs *after*
-        // beginAbort, but before the commit materializes signalAbort.
-        state.lane.command = originalCommand;
-        abortReachedCommit.resolve();
-        return pendingCommit.promise.then(() => originalCommand(...commandArgs));
-      };
-      return originalRequestAbort(...args);
+    const pendingAbort = deferred();
+    const abortReachedDriver = deferred();
+    const originalAbort = state.driver.abort.bind(state.driver);
+    state.driver.abort = async () => {
+      abortReachedDriver.resolve();
+      await pendingAbort.promise;
+      await originalAbort();
     };
     try {
       await wait(() => expect(state.events).toContain(enter(0)));
       const cancelling = state.harness.abort();
-      await abortReachedCommit.promise;
+      await abortReachedDriver.promise;
       state.blockers[0].resolve();
       await wait(() => expect(state.events).toContain(exit(0)));
-      // Let the wrapper's finally release admission before checking. The
-      // delayed Pi commit has not signalled abort at this point.
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(state.lane.activeDrive.gate.signal.aborted).toBe(false);
+      expect(state.signals.get("call-0").aborted).toBe(false);
       expect(state.events).not.toContain(enter(1));
-      pendingCommit.resolve();
+      pendingAbort.resolve();
       await cancelling;
       await state.run;
       expect(state.events).not.toContain(enter(1));
     } finally {
-      pendingCommit.resolve();
-      state.lane.command = originalCommand;
+      pendingAbort.resolve(); state.driver.abort = originalAbort;
       await state.finish();
     }
   });

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, monoRuntimeSupportsLiveInput } from "@mono-agent/runtime-adapter";
 import { buildSubagentsOptions } from "../dist/configured-agent.js";
 import { createSubagentInstanceRegistry } from "../dist/subagent-instances.js";
@@ -51,9 +51,11 @@ try {
   });
   const instances = await registry.open(origin.conversationId);
   await writeFile(resolve(root, "evidence.txt"), "smoke retained tool evidence");
-  const config = loadMonoAgentConfig({ cwd: root, env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: registryRoot } }),
+  const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: resolve(root, "IDENTITY.md") },
+    tools: { allowedTools: ["Agent", "AgentManage"] },
+    subagents: { enabled: true, instances: { root: registryRoot } },
   } });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
