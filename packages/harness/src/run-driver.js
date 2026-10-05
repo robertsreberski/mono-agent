@@ -326,7 +326,8 @@ export function createRunDriver(store, options) {
     setCompactionSettings(value) { settings = { ...settings, ...value }; },
     async repairOpenOperations() { await repairInterruptedSession(store); turnId = null; ownsTurn = false; },
     async abortOpenOperations() {
-      for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", store.validator.turns.get(turn.turnId).operations);
+      const open = await store.getOpenOperations();
+      for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", open.filter((op) => op.turnId === turn.turnId).map((op) => op.operationId));
       for (const op of (await store.getOpenOperations()).reverse()) await store.closeOperation(op.operationId, "aborted");
       for (const turn of await store.getOpenTurns()) await store.endTurn(turn.turnId, "aborted");
       await barrier(); turnId = null; ownsTurn = false;

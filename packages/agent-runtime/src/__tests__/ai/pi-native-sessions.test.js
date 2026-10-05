@@ -1949,3 +1949,47 @@ it.each([true, false])("cleans suspended keep-alive liveness and reopens as susp
     }
   } finally { await disposeProviderSession("suspended").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
+
+it.each([[false, false], [false, true], [true, false], [true, true]])("rolls a live resumed suspension back like an unreceipted failed turn (durable=%s recovery=%s)", async (durable, recovery) => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "suspended-rollback-")); const id = "resumed-suspension-rollback";
+  const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api }; let baseline, resumed;
+  faux.setResponses([(context) => { baseline = structuredClone(context.messages); return fauxAssistantMessage([fauxText("Fictional approved baseline.")]); },
+    fauxAssistantMessage([], { stopReason: "deferred", deferred }),
+    (context) => { resumed = structuredClone(context.messages); return fauxAssistantMessage([fauxText("Fictional safe next turn.")]); }]);
+  const options = runOptions(model, { providerAttributionSessionId: id, sessionKeepAlive: true, ...(durable ? { sessionId: id, piSessionsRoot: root } : {}) });
+  try {
+    const first = await generatePiNativeResponse("Fictional verification.", { ...options, messages: [{ role: "user", content: "Fictional original user." }] }); expect(first.error).toBeNull();
+    const suspended = await generatePiNativeResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional suspended user." }], ...(recovery ? { sessionRecovery: { runId: "suspended-attempt", revision: 1 } } : {}) });
+    expect(suspended.failureKind).toBe("safety_native_suspended"); expect(suspended.providerSessionRecovery).toBeUndefined();
+    if (durable) {
+      const repo = resolveDurableNativeSessionRepo(root); const raw = await repo.open((await repo.list())[0]);
+      expect((await raw.getEntries()).some((entry) => entry.message?.stopReason === "deferred")).toBe(false);
+      expect(await raw.getOpenTurns()).toEqual([]); expect(await raw.getOpenOperations()).toEqual([]); expect(await raw.getRepairEntries()).toEqual([]);
+      if (recovery) expect((await raw.getTurn("suspended-attempt")).payload.status).toBe("failed"); await raw.close();
+    }
+    const next = await generatePiNativeResponse("Fictional verification.", { ...options, sessionId: id, messages: [{ role: "user", content: "Fictional next user." }] }); expect(next.error).toBeNull();
+    expect(resumed.slice(0, baseline.length)).toEqual(baseline); expect(JSON.stringify(resumed)).toContain("Fictional approved baseline.");
+    expect(JSON.stringify(resumed)).not.toContain("Fictional suspended user."); expect(JSON.stringify(resumed)).not.toContain("suspended, not resumed");
+    expect(resumed.filter((message) => message.role === "user")).toHaveLength(2); expect(faux.state.callCount).toBe(3);
+  } finally { await disposeProviderSession(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("classifies a resumed suspension sealing fsync failure terminally rather than throwing into provider retry", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "suspended-storage-")); const id = "suspended-storage";
+  const original = sessionAdapter.createHarnessAdapter;
+  const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")]), fauxAssistantMessage([], { stopReason: "deferred", deferred })]);
+  let spy;
+  try {
+    const options = runOptions(model, { sessionId: id, sessionKeepAlive: true, piSessionsRoot: root, messages: [{ role: "user", content: "Fictional input." }] });
+    expect((await generatePiNativeResponse("Fictional verification.", options)).error).toBeNull();
+    spy = vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
+      const raw = session.rawSession; const append = raw.io.append, sync = raw.io.sync; let failedSeal = false;
+      raw.io.append = async (text) => { const record = JSON.parse(text); if (record.kind === "turn_end" && record.payload.status === "failed") failedSeal = true; return append(text); };
+      raw.io.sync = async () => { if (failedSeal) throw Object.assign(new Error("503 timeout in fictional failed-seal fsync"), { code: "ENOSPC" }); return sync(); };
+      return original(session, config);
+    });
+    const failed = await generatePiNativeResponse("Fictional verification.", options);
+    expect(failed).toMatchObject({ failureKind: "safety_journal_storage_failed", retryable: false }); expect(failed.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(2);
+  } finally { spy?.mockRestore(); await disposeProviderSession(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});

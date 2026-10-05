@@ -1145,11 +1145,27 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
     if (err instanceof NativeSuspendedError) {
-      // Suspension is not completion, but keep-alive liveness still needs an
-      // owner reachable by disposal/reopen. Reopen will account for it as
-      // suspended-not-resumed, with no deferred continuation or tool replay.
-      await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
-        externalAbort: false, errorMessage: undefined, onEvent });
+      // Fresh suspension keeps disposal/reopen ownership without completion.
+      // A resumed suspension has no host receipt: use failed-turn rollback,
+      // not a retained recovery tail or deferred continuation.
+      try {
+        if (runState.sessionEntry) {
+          // A resumed suspension is a failed unreceipted host turn: seal it
+          // without projecting completion, then let normal commit roll back.
+          runState.retainRecoveryTail = false;
+          runState.sessionEntry.recoveryPending = false; delete runState.sessionEntry.recovery;
+          const raw = runState.session.rawSession;
+          for (const operation of (await raw.getOpenOperations()).reverse()) await raw.closeOperation(operation.operationId, "failed");
+          for (const turn of await raw.getOpenTurns()) await raw.endTurn(turn.turnId, "failed");
+          await raw.sync();
+        }
+        await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
+          externalAbort: false, errorMessage: runState.sessionEntry ? "Native provider suspended without a recovery receipt" : undefined, onEvent });
+
+      } catch (cleanupError) {
+        err = cleanupError;
+        await cleanupSessionOnThrow(runState, { durableRepo });
+      }
     } else {
       try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen repairs unsealed work */ }
       await cleanupSessionOnThrow(runState, { durableRepo });

@@ -81,6 +81,14 @@ mutation. No unreleased mono-v1 converter or mixed-binary writer mode exists.
 The driver fsyncs logical turn/input admission before provider dispatch,
 assistant/call evidence before tools, started admission before host invocation,
 and observed outcomes before tool execution resolves (including parallel batches).
+Existing published journals keep each file-fsync barrier; directory fsync is
+reserved for create/rename/unlink and incomplete-publication recovery. Immutable
+parsed envelopes have an 8 MiB/512-record LRU cache (large records still stream).
+Read batches serialize with appends and validate pinned path/fd/version before
+and after cache use. A single bounded closed-store index can be reused only for
+an exact unchanged inode/size/mtime/ctime and matching header identity; otherwise
+reopen fully scans and validates. Rewind, retirement and identity/version changes
+invalidate the appropriate caches. The writer lock is still released at close.
 A poisoned journal aborts admission and is terminal, never provider failover.
 Pre-write schema rejection fails the attempt without poisoning the healthy writer;
 I/O, fsync and post-write identity/application faults remain terminal.

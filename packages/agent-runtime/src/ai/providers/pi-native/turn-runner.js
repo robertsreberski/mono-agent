@@ -325,7 +325,8 @@ export async function buildTurnHarness(runState, {
   harness.on("tool_result", (event) => toolResultErrorOverride(event?.details));
   // Reconcile native evidence without executing a provider/tool or claiming a
   // successful receipt. Do this before subscription: repair is old evidence,
-  // not output or spend from the next user turn. Deferred handles stay distinct.
+  // not output or spend from the next user turn. Deferred suspension is
+  // accounted as suspended-not-resumed, never continued.
   try {
     await harness.repairOpenOperations();
   } catch (error) {

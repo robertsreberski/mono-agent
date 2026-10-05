@@ -120,3 +120,15 @@ it.each(["error", "aborted", "deferred"])("excludes legacy non-executable %s dra
   const compacted = transformMessages(buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() }), model);
   expect(compacted.filter((message) => message.role === "toolResult")).toEqual([]); expect(JSON.stringify(compacted)).not.toContain('"toolCall"'); await store.close();
 });
+
+it("does not retroactively change an unaccounted old failed transcript when an unrelated interruption appears", async () => {
+  const store = await new MemorySessionRepo().create(); await store.beginTurn("old-failed"); await startedCall(store, "old-op", "old-call");
+  await store.write("tool_result", { callId: "old-call", name: "Effect", messageId: null, phase: "returned", message: { role: "toolResult", toolCallId: "old-call", toolName: "Effect", content: [{ type: "text", text: "Old fictional outcome" }], isError: false }, outcome: "success" }, { operationId: "old-op" });
+  await store.closeOperation("old-op", "failed"); await store.endTurn("old-failed", "failed");
+  const earlier = buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() }); expect(earlier.filter((message) => message.role === "toolResult")).toEqual([]);
+  await store.beginTurn("later-interrupted"); await store.openOperation("later-op", {}); await store.appendMessage({ role: "user", content: "Later fictional user input." });
+  await repairInterruptedSession(store);
+  const next = buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() });
+  expect(next.slice(0, earlier.length)).toEqual(earlier); expect(next.filter((message) => message.role === "toolResult")).toEqual([]);
+  expect(JSON.stringify(next)).not.toContain("Old fictional outcome"); expect(next.at(-1).interruptionCause).toBe("crashed"); await store.close();
+});

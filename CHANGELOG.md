@@ -10,6 +10,10 @@
   Exclude aborted draft calls from provider repair pairs, account interruptions
   per operation and suspended work without resuming it, preserve validation/host
   contract classification, and cache repair projection for long sessions.
+  Preserve every file-fsync effect barrier while avoiding repeated directory
+  fsyncs, immutable-envelope reads and unchanged-journal scans; invalidate cached
+  identity/state on mutations and roll resumed provider suspensions back as
+  unreceipted failures.
 
 
 - Keep answer text before reply-presentation tools in the final reply across

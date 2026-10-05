@@ -300,3 +300,14 @@ it("guards nested Pi runToolCall before any unjournaled effect with an explicit 
     expect(nested.result.content[0].text).not.toContain("messageId"); expect([...raw.validator.calls.values()].map((call) => call.callId)).toEqual(["outer"]);
   } finally { spy.mockRestore(); await adapter.close(); await raw.close(); }
 });
+
+it("abortOpenOperations accounts only for open operations, not earlier completed model work", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional complete operation.")])]);
+  try {
+    await adapter.beginTurn("abort-host-turn", "host"); await adapter.prompt("Fictional completed input.");
+    const completed = raw.validator.turns.get("abort-host-turn").operations[0];
+    await raw.openOperation("abort-open", {}); await adapter.abortOpenOperations();
+    const repairs = await raw.getRepairEntries(); expect(repairs).toHaveLength(1); expect(repairs[0].operationIds).toEqual(["abort-open"]);
+    expect(raw.validator.operations.get(completed).end.payload.status).toBe("completed"); expect(await raw.getOpenOperations()).toEqual([]);
+  } finally { await adapter.close(); await raw.close(); }
+});

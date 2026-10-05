@@ -274,7 +274,10 @@ aborted/error/deferred assistant drafts never supply tool-call repair pairs.
 Missing results for executable admitted calls are explicit prompt-only accounts,
 not successful native receipts; crashed started work says to check whether it
 took effect. Provider suspension is accounted as suspended, not resumed, without
-a deferred continuation. This native repair is not P2 adoption of dirty host turns. Canonical history keeps
+a deferred continuation. A live suspension on a resumed session is an
+unreceipted failure: the native branch rolls back to its baseline, and no retained
+recovery-pending tail or successful receipt is created. This native repair is not
+P2 adoption of dirty host turns. Canonical history keeps
 the existing continuity account, including bounded partial prose and error detail;
 SessionHistory retains the same tool evidence. No cancelled/failed memory capture occurs.
 

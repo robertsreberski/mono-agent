@@ -159,7 +159,8 @@ it("completes archival of earlier v2 imports with interrupted user scopes withou
   rows.push({ schemaVersion: 2, id: "older-operation", parentId: "older-start", seq: last.seq + 2, timestamp: 1, turnId, operationId: "earlier-op", kind: "operation_start", payload: { type: "prompt", cause: "prompt", config: {}, baselineTipId: tip, parentOperationId: null } });
   await writeFile(metadata.path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
   const reopened = await repo.open(metadata); expect(await reopened.getEntries()).toHaveLength(2);
-  expect((await reopened.getTerminal("earlier-op")).status).toBe("aborted"); expect(await reopened.getOpenTurns()).toEqual([]);
+  expect((await reopened.getTerminal("earlier-op")).status).toBe("interrupted"); expect(await reopened.getOpenTurns()).toEqual([]);
+  expect(await reopened.getRepairEntries()).toMatchObject([{ cause: "crashed", operationIds: ["earlier-op"], calls: [] }]);
   await reopened.close(); await rm(`${source}.migrated`);
   const again = await repo.open(metadata); expect(await again.getEntries()).toHaveLength(2); await again.close();
 });
