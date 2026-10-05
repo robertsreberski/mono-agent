@@ -311,3 +311,34 @@ it("abortOpenOperations accounts only for open operations, not earlier completed
     expect(raw.validator.operations.get(completed).end.payload.status).toBe("completed"); expect(await raw.getOpenOperations()).toEqual([]);
   } finally { await adapter.close(); await raw.close(); }
 });
+
+it("durably binds opted-in ownership in the first start and seals the actual final native reply", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional final reply.")])]);
+  const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "protected-first-start", handleId: raw.metadata.id, baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "host-initial" } };
+  const sync = raw.sync.bind(raw); const starts = [];
+  raw.sync = async () => { starts.push(raw.records.at(-1)); return sync(); };
+  try {
+    await adapter.beginTurn(descriptor.turnId, "host", descriptor);
+    expect(starts[0]).toMatchObject({ kind: "turn_start", payload: { binding: { ownerKey: descriptor.ownerKey, reconciliation: descriptor.reconciliation } } });
+    expect(starts[1].kind).toBe("handle_binding");
+    const terminal = await adapter.prompt("Fictional request.");
+    const result = { text: "Fictional final reply.", error: null, failureKind: null, cancelled: false, stopReason: "stop" };
+    await adapter.endTurn("completed", result);
+    expect((await raw.getTurn(descriptor.turnId)).payload).toMatchObject({ finalOperationId: terminal.operationId, consumedInputIds: ["host-initial"], seal: { version: 1, outcome: "completed", result } });
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("consumes the original protected input once across reactive replay and internal finalization prompts", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("First fictional reply.")]), fauxAssistantMessage([fauxText("Second fictional reply.")]), fauxAssistantMessage([fauxText("Final fictional reply.")])]);
+  const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "replay-input", handleId: raw.metadata.id, baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "host-initial" } };
+  try {
+    await adapter.beginTurn(descriptor.turnId, "host", descriptor);
+    await adapter.prompt("Fictional original request."); await adapter.prompt("Fictional original request."); await adapter.prompt("Fictional internal finalization.");
+    await adapter.endTurn("completed", { text: "Final fictional reply.", error: null, failureKind: null, cancelled: false, stopReason: "stop" });
+    expect((await raw.getTurn(descriptor.turnId)).payload.consumedInputIds).toEqual(["host-initial"]);
+    expect(raw.records.filter((record) => record.turnId === descriptor.turnId && record.kind === "input_consumed")).toHaveLength(1);
+    expect(raw.records.filter((record) => record.turnId === descriptor.turnId && record.kind === "message" && record.payload.message.role === "user").map((record) => record.payload.input.id)).toEqual(["host-initial", "host-initial", null]);
+  } finally { await adapter.close(); await raw.close(); }
+});

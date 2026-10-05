@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add explicitly opted-in native turn bindings, minimal final-result seals and
+  indexed evidence matching for host reconciliation, without changing legacy
+  host history policy. Share import/reopen interruption accounting so suspended
+  and last-closed operations retain accurate evidence without replay.
+
 - Add protected host and persistent-subagent native turn descriptors; bind journal
   ownership append-only without granting terminal recovery or host crash adoption.
   Fsync native admission/outcome boundaries before effects, fail terminally on

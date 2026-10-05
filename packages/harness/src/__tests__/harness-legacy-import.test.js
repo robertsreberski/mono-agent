@@ -164,3 +164,30 @@ it("completes archival of earlier v2 imports with interrupted user scopes withou
   await reopened.close(); await rm(`${source}.migrated`);
   const again = await repo.open(metadata); expect(await again.getEntries()).toHaveLength(2); await again.close();
 });
+
+it.each([["import", false], ["import", true], ["clean_break", false], ["clean_break", true]])("shares ordinary repair account selection for an older %s publication (lastClosed=%s)", async (mode, lastClosed) => {
+  const { root, source } = await fixture();
+  if (mode === "clean_break") await appendFile(source, JSON.stringify({ kind: "value", op: "set", seq: 6, namespace: "pi.op.state", key: "legacy-open", value: { status: "running" } }) + "\n");
+  const repo = new JsonlSessionRepo({ sessionsRoot: root }); const raw = await repo.open((await repo.list())[0]); const metadata = raw.metadata;
+  expect(metadata.import.mode).toBe(mode);
+  const turnId = "synthetic:publication-upgrade", operationId = "publication-last";
+  await raw.beginTurn(turnId); await raw.openOperation(operationId, {});
+  const messageId = await raw.appendMessage({ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "fictional-call", name: "Read", arguments: {} }] });
+  for (const admission of ["observed", "admitted", "started"]) await raw.write("tool_call", { callId: "fictional-call", name: "Read", messageId, admission }, { operationId });
+  if (lastClosed) await raw.closeOperation(operationId, "failed");
+  else await raw.appendMessage({ role: "assistant", content: [], stopReason: "deferred" });
+  await raw.sync(); await raw.close();
+  // Earlier publication had no durable administrative completion marker.
+  const rows = (await readFile(metadata.path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const kept = rows.filter((row) => !row.turnId?.startsWith(mode === "import" ? "synthetic:legacy-archived:" : "synthetic:legacy-published:"));
+  for (let index = 1; index < kept.length; index += 1) { kept[index].seq = index; kept[index].parentId = index === 1 ? null : kept[index - 1].id; }
+  await writeFile(metadata.path, kept.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const reopened = await new JsonlSessionRepo({ sessionsRoot: root }).open(metadata);
+  const cause = lastClosed ? "crashed" : "suspended_not_resumed";
+  const repairs = await reopened.getRepairEntries(); expect(repairs).toHaveLength(1);
+  expect(repairs[0]).toMatchObject({ cause, operationIds: [operationId], calls: [{ callId: "fictional-call", cause, admission: "started" }] });
+  expect(await reopened.getOpenTurns()).toEqual([]); expect((await reopened.getTerminal(operationId)).status).toBe(lastClosed ? "failed" : "interrupted");
+  await reopened.close(); const bytes = await readFile(metadata.path);
+  const again = await new JsonlSessionRepo({ sessionsRoot: root }).open(metadata); expect(await again.getRepairEntries()).toEqual(repairs); await again.close();
+  expect((await readFile(metadata.path)).equals(bytes)).toBe(true);
+});

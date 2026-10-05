@@ -105,7 +105,27 @@ rebuilt by the host, not historical prose.
 Compaction persists the exact summary envelope, ordered preserved message IDs,
 explicit derived messages, count/model/coverage/version metadata and syncs before
 completion/use. Process reopen replays that checkpoint with no summary call or
-new summary timestamp. P2 host dirty-turn adoption, P3 non-destructive model
+new summary timestamp.
+
+Protected host descriptors can explicitly opt in with `reconciliation: { version:
+1, purpose: "execution" | "compaction", fenceDigest, initialInputId }`. Execution
+requires a host-owned input ID; compaction requires null and cannot start a prompt
+operation. The first durable start carries the owner/bucket/handle/revision/model
+binding; later binding records remain. Opted-in ends carry a versioned minimal
+runtime-result seal, or an unavailable-result interruption account, never success
+inferred from an earlier operation. `readTurnEvidence` reads ordered per-turn
+references and `matchTurnEvidence` checks ownership, purpose, model, fence,
+baseline and exact consumed input digests before callers repair. Repositories
+support `open(metadata, { repair: false })` for matched-owner inspection without
+accounting or torn-tail truncation; after a match, `prepareReconciliation()`
+syncs the validated prefix and permits storage-only repair. Mismatches close
+without mutating native bytes, including a torn tail. Input digests
+are SHA-256 of JSON-serialized native content (plain strings normalize to a
+single text part); only original/live host inputs are consumed, not internal
+finalization prompts. Import and ordinary reopen share final-operation and
+suspension account selection, excluding administrative completion scopes.
+These native contracts do not change host history/fence formats or enable host
+adoption by themselves. P2 host dirty-turn adoption, P3 non-destructive model
 switch/handoffs, P4 further loop policy, P5 durable live queues and P6 delegation
 coordination remain separate work. Model-change retirement is still destructive.
 
@@ -137,11 +157,16 @@ NativeSuspendedError
 SessionStore
 buildHarnessSessionContext
 createRunDriver
+createTurnBinding
+digestTurnInput
 isJournalStorageError
+matchTurnEvidence
 projectContext
 projectInterruptions
+readTurnEvidence
 recordInterruption
 repairInterruptedSession
+selectTurnInterruptionAccounts
 validateJournalHeader
 validateSessionTurn
 ```
@@ -185,8 +210,10 @@ JournalReader
 
 ```text
 JournalValidator
+digestTurnInput
 validateJournalHeader
 validateSessionTurn
+validateTurnSeal
 ```
 
 **`@mono-agent/harness/journal-types.js`**

@@ -1,4 +1,5 @@
 // @ts-check
+import { createHash } from "node:crypto";
 import { JOURNAL_FORMAT, JOURNAL_KINDS, JOURNAL_VERSION } from "./journal-types.js";
 const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
@@ -7,6 +8,11 @@ const ids = (v) => Array.isArray(v) && v.every(id) && new Set(v).size === v.leng
 const status = (v) => ["completed", "failed", "aborted", "interrupted"].includes(v);
 const fail = () => { throw new Error("Invalid mono-agent harness journal v2"); };
 const requireValue = (v) => { if (!v) fail(); };
+
+/** Digest only the actual native input content, never controllers or timestamps. */
+export function digestTurnInput(content) {
+  return createHash("sha256").update(JSON.stringify(typeof content === "string" ? [{ type: "text", text: content }] : content)).digest("hex");
+}
 
 /** @param {any} header */
 export function validateJournalHeader(header) {
@@ -37,6 +43,34 @@ export function validateSessionTurn(descriptor, handleId) {
     || (descriptor.kind === "host" ? !id(descriptor.historyBucket) : descriptor.historyBucket !== null)) {
     throw new TypeError("Invalid host-owned sessionTurn descriptor");
   }
+  if (descriptor.reconciliation !== undefined) {
+    const opt = descriptor.reconciliation;
+    if (descriptor.kind !== "host" || descriptor.baseRevision === null
+      || !keys(opt, ["version", "purpose", "fenceDigest", "initialInputId"]) || opt.version !== 1
+      || !["execution", "compaction"].includes(opt.purpose) || !digest(opt.fenceDigest)
+      || (opt.purpose === "execution" ? !id(opt.initialInputId) : opt.initialInputId !== null)) {
+      throw new TypeError("Invalid protected sessionTurn reconciliation contract");
+    }
+  }
+}
+
+const digest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const keys = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
+const model = (value) => keys(value, ["provider", "id", "api"]) && id(value.provider) && id(value.id) && id(value.api);
+
+/** Versioned minimal final result. Unknown/private fields cannot enter seals. */
+export function validateTurnSeal(seal, terminalStatus) {
+  requireValue(keys(seal, ["version", "outcome", "result"]) && seal.version === 1
+    && seal.outcome === ({ completed: "completed", failed: "failed", aborted: "cancelled", interrupted: "interrupted" })[terminalStatus]);
+  const result = seal.result;
+  if (result === null) { requireValue(terminalStatus !== "completed"); return; }
+  requireValue(keys(result, ["text", "error", "failureKind", "cancelled", "stopReason", "turnDisposition"])
+    && typeof result.text === "string" && (result.error === null || typeof result.error === "string")
+    && (result.failureKind === null || id(result.failureKind)) && typeof result.cancelled === "boolean"
+    && (result.stopReason === null || id(result.stopReason))
+    && (result.turnDisposition === undefined || result.turnDisposition === "silent")
+    && (terminalStatus !== "completed" || result.error === null && result.failureKind === null && !result.cancelled)
+    && (terminalStatus !== "aborted" || result.cancelled));
 }
 
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
@@ -70,6 +104,15 @@ export class JournalValidator {
       requireValue(!turn && this.openTurns.size === 0
         && ["host", "instance", "synthetic"].includes(p.identitySource) && object(p.config)
         && p.baselineTipId === this.tip && record.operationId === undefined);
+      if (p.binding !== undefined) {
+        const binding = p.binding;
+        requireValue(keys(binding, ["version", "kind", "ownerKey", "historyBucket", "turnId", "handleId", "baseRevision", "reconciliation", "model"]) && binding.version === 1);
+        try { validateSessionTurn(binding, binding.handleId); } catch { fail(); }
+        requireValue(binding.reconciliation && binding.turnId === record.turnId && model(binding.model)
+          && model(p.config.model) && ["provider", "id", "api"].every((key) => binding.model[key] === p.config.model[key])
+          && (binding.reconciliation.purpose === "execution" ? p.identitySource === "host" : p.identitySource === "synthetic")
+          && (this.owner.kind === "unbound" || ["kind", "ownerKey", "historyBucket"].every((key) => this.owner[key] === binding[key])));
+      }
       return;
     }
     // Even administrative writes have an explicitly synthetic execution scope.
@@ -85,6 +128,7 @@ export class JournalValidator {
             && !this.operations.get(p.parentOperationId)?.end))
         && ["prompt", "compaction"].includes(p.type) && typeof p.cause === "string"
         && p.baselineTipId === this.tip && object(p.config));
+      if (turn.start.payload.binding?.reconciliation.purpose === "compaction") requireValue(p.type === "compaction");
     } else if (record.kind === "operation_end") {
       requireValue(op && !op.end && op.turnId === record.turnId && status(p.status) && p.tipId === this.tip
         && ![...this.openOperations].some((id) => this.operations.get(id).start.payload.parentOperationId === record.operationId));
@@ -95,6 +139,15 @@ export class JournalValidator {
           && this.operations.get(p.finalOperationId)?.turnId === record.turnId))
         && p.finalOperationId === (turn.finalOperationId ?? null) && p.tipId === this.tip
         && JSON.stringify([...p.consumedInputIds].sort()) === JSON.stringify([...turn.inputs].sort()));
+      if (p.seal !== undefined) validateTurnSeal(p.seal, p.status);
+      if (turn.start.payload.binding) {
+        requireValue(p.seal !== undefined);
+        const purpose = turn.start.payload.binding.reconciliation.purpose;
+        if (p.status === "completed" && purpose === "execution") requireValue(turn.inputs.has(turn.start.payload.binding.reconciliation.initialInputId)
+          && p.finalOperationId !== null && this.operations.get(p.finalOperationId).start.payload.type === "prompt"
+          && this.operations.get(p.finalOperationId).end.payload.status === "completed");
+        if (purpose === "compaction") requireValue(turn.inputs.size === 0 && turn.operations.every((id) => this.operations.get(id).start.payload.type === "compaction"));
+      }
     } else {
       if (record.operationId !== undefined) requireValue(op && !op.end && op.turnId === record.turnId);
       if (["message", "compaction"].includes(record.kind)) {
@@ -104,6 +157,9 @@ export class JournalValidator {
             && id(p.provenance.provider) && id(p.provenance.api) && id(p.provenance.model)
             && object(p.input) && typeof p.input.complete === "boolean"
             && (p.input.id === null || id(p.input.id)));
+          if (turn.start.payload.binding && p.input.id !== null) requireValue(p.input.complete && digest(p.input.requestDigest)
+            && p.input.requestDigest === digestTurnInput(p.message.content)
+            && ["initial", "live", "replay"].includes(p.input.placement));
         } else {
           // Legacy v2 cuts remain readable; new cuts additionally carry an exact
           // checkpoint envelope and positively validated ordered coverage.
@@ -150,7 +206,7 @@ export class JournalValidator {
           && (p.calls === undefined || Array.isArray(p.calls) && p.calls.every((call) => {
             const known = this.calls.get(`${call.operationId}\0${call.callId}`);
             return known?.turnId === record.turnId && known.name === call.name && known.messageId === call.messageId
-              && known.admission === call.admission && ["crashed", "user_interrupted", "skipped", "superseded", "observed_outcome"].includes(call.cause)
+              && known.admission === call.admission && ["crashed", "user_interrupted", "skipped", "superseded", "suspended_not_resumed", "observed_outcome"].includes(call.cause)
               && (call.cause !== "observed_outcome" || known.result);
           })));
       } else if (record.kind === "model_change") {
@@ -160,17 +216,24 @@ export class JournalValidator {
         const input = this.inputs.get(p.inputId);
         requireValue(id(p.inputId) && typeof p.placement === "string"
           && (p.state === "queued" ? !input : p.state === "cancelled" && input?.state === "queued"));
+        if (turn.start.payload.binding) requireValue(digest(p.requestDigest) && p.placement === "live");
       } else if (record.kind === "input_consumed") {
         const message = this.contextInfo.get(p.messageId);
         requireValue(id(p.inputId) && !turn.inputs.has(p.inputId) && message?.role === "user"
           && message.inputId === p.inputId && this.inputs.get(p.inputId)?.state !== "cancelled");
+        if (turn.start.payload.binding && this.inputs.has(p.inputId)) requireValue(this.inputs.get(p.inputId).turnId === record.turnId
+          && this.inputs.get(p.inputId).requestDigest === message.requestDigest && this.inputs.get(p.inputId).placement === message.placement);
       } else if (record.kind === "owner_binding") {
         requireValue((p.kind === "unbound" && this.owner.kind === "unbound") || (["host", "instance"].includes(p.kind)
           && id(p.ownerKey) && (p.kind === "host" ? id(p.historyBucket) : p.historyBucket === null)
           && (this.owner.kind === "unbound" || this.owner.kind === p.kind && this.owner.ownerKey === p.ownerKey && this.owner.historyBucket === p.historyBucket)));
+        if (turn.start.payload.binding) requireValue(["kind", "ownerKey", "historyBucket"].every((key) => p[key] === turn.start.payload.binding[key]));
       } else if (record.kind === "handle_binding") {
         requireValue(id(p.handleId) && (!this.handles.has(p.handleId) || (p.authoritative === true && this.owner.kind !== "unbound"))
           && (p.baseRevision === null || time(p.baseRevision)) && (p.model === null || object(p.model)));
+        if (turn.start.payload.binding) requireValue(p.authoritative === true && p.handleId === turn.start.payload.binding.handleId
+          && p.baseRevision === turn.start.payload.binding.baseRevision && model(p.model)
+          && ["provider", "id", "api"].every((key) => p.model[key] === turn.start.payload.binding.model[key]));
       } else if (record.kind === "handle_retired") {
         requireValue(this.handles.has(p.handleId) && typeof p.cause === "string");
       }
@@ -180,11 +243,19 @@ export class JournalValidator {
   apply(record) {
     this.validate(record);
     const p = record.payload;
-    if (record.kind === "turn_start") this.openTurns.add(record.turnId);
-    if (record.kind === "turn_start") this.turns.set(record.turnId, { start: record, operations: [], inputs: new Set(), end: null });
+    if (record.kind === "turn_start") {
+      this.openTurns.add(record.turnId);
+      if (p.binding) {
+        this.owner = { kind: p.binding.kind, ownerKey: p.binding.ownerKey, historyBucket: p.binding.historyBucket };
+        this.handles.add(p.binding.handleId);
+        this.handleBindings.set(p.binding.handleId, { handleId: p.binding.handleId, baseRevision: p.binding.baseRevision,
+          model: structuredClone(p.binding.model), authoritative: true });
+      }
+    }
+    if (record.kind === "turn_start") this.turns.set(record.turnId, { start: record, operations: [], inputs: new Set(), inputEvidence: new Map(), admittedInputIds: new Set(), contextIds: [], interruptionIds: [], end: null });
     if (record.kind === "operation_start") {
       this.openOperations.add(record.operationId);
-      this.operations.set(record.operationId, { start: record, turnId: record.turnId, end: null });
+      this.operations.set(record.operationId, { start: record, turnId: record.turnId, end: null, suspended: false });
       this.turns.get(record.turnId).operations.push(record.operationId);
     }
     if (record.kind === "operation_end") {
@@ -196,8 +267,11 @@ export class JournalValidator {
     if (["message", "compaction"].includes(record.kind)) {
       this.contextIds.add(record.id); this.tip = record.id;
       const message = p.message;
+      this.turns.get(record.turnId).contextIds.push(record.id);
+      if (message?.role === "assistant" && message.stopReason === "deferred" && record.operationId) this.operations.get(record.operationId).suspended = true;
       this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
-        operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
+        operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id,
+        requestDigest: p.input?.requestDigest, placement: p.input?.placement, inputComplete: p.input?.complete, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
         calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part) => part?.type === "toolCall").map((call) => [call.id, call.name])) });
     }
     if (record.kind === "rewind") this.tip = p.tipId;
@@ -209,9 +283,16 @@ export class JournalValidator {
       const call = this.calls.get(callKey); call.result = true; call.outcome = p.outcome;
       if (p.phase !== "returned") call.placed = true;
     }
-    if (record.kind === "input_queued") this.inputs.set(p.inputId, { state: p.state, placement: p.placement });
+    if (record.kind === "interruption") this.turns.get(record.turnId).interruptionIds.push(record.id);
+    if (record.kind === "input_queued") {
+      this.inputs.set(p.inputId, { state: p.state, placement: p.placement, requestDigest: p.requestDigest, turnId: record.turnId });
+      this.turns.get(record.turnId).admittedInputIds.add(p.inputId);
+    }
     if (record.kind === "input_consumed") {
       this.turns.get(record.turnId).inputs.add(p.inputId);
+      const message = this.contextInfo.get(p.messageId);
+      this.turns.get(record.turnId).inputEvidence.set(p.inputId, { id: p.inputId, messageId: p.messageId,
+        requestDigest: message.requestDigest, placement: message.placement, complete: message.inputComplete });
       if (this.inputs.has(p.inputId)) this.inputs.get(p.inputId).state = "consumed";
     }
     if (record.kind === "owner_binding") this.owner = p;

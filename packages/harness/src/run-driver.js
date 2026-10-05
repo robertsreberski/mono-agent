@@ -7,6 +7,7 @@ import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
 import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
 import { validateSessionTurn } from "./journal-schema.js";
+import { createTurnBinding, digestTurnInput } from "./turn-evidence.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
 export function createRunDriver(store, options) {
@@ -16,7 +17,7 @@ export function createRunDriver(store, options) {
   const messageIds = new WeakMap();
   const executions = new Set();
   let runId, controller, running;
-  let turnId = null, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
+  let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
   async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
     if (turnId) throw new Error("Pi logical turn is already open");
@@ -31,18 +32,20 @@ export function createRunDriver(store, options) {
         throw new Error("Native journal ownership does not match sessionTurn");
       }
     }
-    await store.beginTurn(id, modelConfig(), source); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined;
+    const needsOwnerBinding = store.validator.owner.kind === "unbound";
+    turnBinding = descriptor ? createTurnBinding(descriptor, modelConfig().model) : undefined;
+    await store.beginTurn(id, modelConfig(), source, turnBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined;
     if (descriptor) {
       const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
-      if (store.validator.owner.kind === "unbound") await store.write("owner_binding", owner);
+      if (needsOwnerBinding) await store.write("owner_binding", owner);
       await store.write("handle_binding", { handleId: descriptor.handleId, baseRevision: descriptor.baseRevision,
         model: modelConfig().model, authoritative: true });
       await store.sync();
     }
   }
-  async function endTurn(status) {
+  async function endTurn(status, result) {
     if (!turnId) return;
-    const id = turnId; await store.endTurn(id, status); await store.sync(); turnId = null; ownsTurn = false;
+    const id = turnId; await store.endTurn(id, status, result); await store.sync(); turnId = null; turnBinding = undefined; ownsTurn = false;
   }
   async function ensureTurn(cause) {
     if (turnId) return false;
@@ -135,9 +138,10 @@ export function createRunDriver(store, options) {
       }
       const id = messageIds.get(event.message) || randomUUID();
       const isInput = event.message.role === "user" && !queue.has(id);
-      const inputId = isInput ? currentInputId : (queue.has(id) ? id : null);
+      const inputId = isInput ? currentInputId : (queue.has(id) ? queue.get(id).inputId ?? id : null);
       const entryId = await store.appendMessage(event.message, id, { id: inputId, complete: true,
-        ...(isInput ? { placement: promptCount === 1 ? "initial" : "replay" } : {}) });
+        ...(isInput ? { placement: promptCount === 1 ? "initial" : "replay" } : turnBinding && inputId ? { placement: "live" } : {}),
+        ...(turnBinding && inputId ? { requestDigest: digestTurnInput(event.message.content) } : {}) });
       if (inputId && !store.validator.turns.get(turnId)?.inputs.has(inputId)) {
         await store.write("input_consumed", { inputId, messageId: entryId }, { operationId: runId });
       }
@@ -225,7 +229,8 @@ export function createRunDriver(store, options) {
         promptCount += 1;
         const inputKey = JSON.stringify([text, promptOptions?.images ?? []]);
         initialInputKey ??= inputKey;
-        currentInputId = inputKey === initialInputKey ? `input:${createHash("sha256").update(turnId).digest("hex")}` : `synthetic:input:${randomUUID()}`;
+        currentInputId = turnBinding ? (inputKey === initialInputKey ? turnBinding.reconciliation.initialInputId : null)
+          : inputKey === initialInputKey ? `input:${createHash("sha256").update(turnId).digest("hex")}` : `synthetic:input:${randomUUID()}`;
         await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
         const messages = buildHarnessSessionContext(await store.getEntries());
         /** @type {any[]} */
@@ -300,17 +305,24 @@ export function createRunDriver(store, options) {
     emit,
     prompt: drive,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async steer(message) {
+    async steer(message, identity) {
       if (closed) throw new Error("mono-agent harness is closed");
       const entryId = randomUUID(); const copy = typeof message === "string"
         ? { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now() }
         : structuredClone(message);
-      messageIds.set(copy, entryId); queue.set(entryId, { message: copy, state: "queued" });
+      const inputId = turnBinding ? identity?.inputId : entryId;
+      if (turnBinding) {
+        await store.write("input_queued", { inputId, placement: "live", requestDigest: digestTurnInput(copy.content), state: "queued" }); await barrier();
+      }
+      messageIds.set(copy, entryId); queue.set(entryId, { message: copy, inputId, state: "queued" });
       return entryId;
     },
     async cancelQueued(entryId) {
       const item = queue.get(entryId);
-      if (item?.state === "queued") { queue.delete(entryId); return { kind: "cancelled", entryId }; }
+      if (item?.state === "queued") {
+        if (turnBinding) { await store.write("input_queued", { inputId: item.inputId, placement: "live", requestDigest: digestTurnInput(item.message.content), state: "cancelled" }); await barrier(); }
+        queue.delete(entryId); return { kind: "cancelled", entryId };
+      }
       return { kind: item ? "already_placed" : "not_found", entryId };
     },
     async abort() { controller?.abort(); },
