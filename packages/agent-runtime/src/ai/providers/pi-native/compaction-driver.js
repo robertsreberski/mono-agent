@@ -39,7 +39,7 @@ import {
   parseContextLimitFromError,
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
-import { buildHarnessSessionContext } from "./harness-adapter.js";
+import { projectContext } from "./harness-adapter.js";
 import { runHarnessPrompt } from "./turn-runner.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow
@@ -154,7 +154,7 @@ export async function estimateSessionMessageTokens(session) {
 
 async function estimateBuiltContextTokens(branchEntries) {
   try {
-    const messages = buildHarnessSessionContext(branchEntries);
+    const messages = projectContext(branchEntries).messages;
     return messages.reduce(
       (total, message) => total + (Number(estimateTokens(message)) || 0),
       0,

@@ -1,6 +1,6 @@
 // Read-only, best-effort evidence from Pi v4 JSONL. Never open through the Pi repo:
 // its cold-open path repairs torn transactions by rewriting the source file.
-import { SessionStore, validateJournalHeader } from "@mono-agent/harness";
+import { SessionStore, validateJournalHeader, inspectCurrentEvidence } from "@mono-agent/harness";
 import { JournalReader } from "@mono-agent/harness/journal-reader.js";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, stat as statPath } from "node:fs/promises";
@@ -238,7 +238,7 @@ async function salvageOwnedJournal(path, root, sessionId) {
     });
     const result = await collectEvidence(store.entries, new Map([["main", store.tip]]), new Map(),
       (await store.getOpenTurns()).length > 0, evidence.torn, (entry) => store.getEntry(entry.id));
-    const visible = new Set((await store.getEntries()).map((entry) => entry.id));
+    const visible = new Set((await inspectCurrentEvidence(store)).entries.map((entry) => entry.id));
     for (const call of store.validator.calls.values()) {
       if (!call.result || call.placed || !visible.has(call.messageId)) continue;
       const returned = await store.getReturnedOutcome(call.operationId, call.callId);

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add opt-in native evidence-chain projection, structured handoff proposals,
+  explicit context budgets, no-tools summary production and preserving session
+  detachment. Keep default session payloads and host switching policy unchanged;
+  native switch reuse requires positive provider/API/account provenance.
+
 - Wire owner-held, storage-only recovery for coordinated native host turns and
   manual compaction. Durably admit canonical inputs before dispatch/steering,
   preserve cancellation and detached-attempt claims, and commit whole matched

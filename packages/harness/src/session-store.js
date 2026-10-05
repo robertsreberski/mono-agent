@@ -10,6 +10,7 @@ import { JournalReader } from "./journal-reader.js";
 import { JournalLocks } from "./journal-lock.js";
 import { archiveLegacySession, listLegacySessions, readLegacySession, legacyJournalId, importDescriptor, importSourceMetadata, assertLegacyIdentity } from "./legacy-import.js";
 
+import { assertEvidenceView } from "./evidence-view.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 const clone = (v) => structuredClone(v);
@@ -75,13 +76,13 @@ export class SessionStore {
     this.line = result.catch(() => {});
     return result;
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string}} [identity] */
+  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3}} [identity] */
   write(kind, payload, identity = {}) {
     return this.enqueue(() => this.writeRecord(kind, payload, identity));
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string}} [identity] */
-  async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID() } = {}) {
-      const record = { schemaVersion: 2, id, parentId: this.validator.parentId,
+  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3}} [identity] */
+  async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2 } = {}) {
+      const record = { schemaVersion, id, parentId: this.validator.parentId,
         seq: this.seq + 1, timestamp: Date.now(), turnId, kind,
         ...(operationId ? { operationId } : {}), payload: typeof payload === "function" ? payload() : clone(payload) };
       const text = `${JSON.stringify(record)}\n`;
@@ -111,8 +112,9 @@ export class SessionStore {
     return this.write("operation_start", () => ({ config: clone(config), type, cause, baselineTipId: this.tip, parentOperationId: this.activeOperationId() ?? null }), { operationId });
   }
   closeOperation(operationId, status) { return this.write("operation_end", () => ({ status, tipId: this.tip }), { operationId }); }
-  scopedWrite(fn, cause) {
+  scopedWrite(fn, cause, before = undefined) {
     return this.enqueue(async () => {
+    before?.();
     const synthetic = !this.activeTurnId();
     const turnId = synthetic ? `synthetic:${cause}:${randomUUID()}` : this.activeTurnId();
     if (synthetic) await this.writeRecord("turn_start", { config: { cause }, identitySource: "synthetic", baselineTipId: this.tip }, { turnId });
@@ -131,7 +133,19 @@ export class SessionStore {
       return record.id;
     }, "seed");
   }
-  async appendCompaction(data) {
+  async appendComposedCompaction(data, view) {
+    assertEvidenceView(view);
+    const inheritedMessages = new Set(view.segments.slice(0, -1).flatMap((s) => s.entries.filter((e) => e.type === "message").map((e) => JSON.stringify(e.message))));
+    if ((data.retainedTail ?? []).some((message) => inheritedMessages.has(JSON.stringify(message)))) throw new TypeError("Inherited native tail must remain in predecessor evidence");
+    const current = view.segments.at(-1).descriptor;
+    if (current.journalId !== this.metadata.journalId || current.handleId !== this.metadata.id
+      || current.sourceTipId !== this.tip || current.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
+    return this.appendCompaction(data, { version: 1, sources: view.segments.slice(0, -1).map((s) => ({
+      journalId: s.descriptor.journalId, sourceTipId: s.descriptor.sourceTipId,
+      sourceSeq: s.descriptor.sourceSeq, sourceDigest: s.descriptor.sourceDigest,
+    })) }, current);
+  }
+  async appendCompaction(data, inheritedCoverage = undefined, source = undefined) {
     // Prepare outside the admitted write queue; getEntries itself drains it.
     const branch = await this.getEntries(); const preservedMessageIds = [], derivedMessages = [];
     let cursor = 0;
@@ -144,10 +158,18 @@ export class SessionStore {
     const checkpoint = { version: 1, summaryMessage: createCompactionSummaryMessage(data.summary, data.tokensBefore, timestamp),
       preservedMessageIds, derivedMessages, tokensBefore: data.tokensBefore ?? null, tokensAfter: data.tokensAfter ?? null,
       model: this.validator.operations.get(this.activeOperationId())?.start.payload.config?.model ?? null,
-      coverage: { version: 1, sourceTipId: this.tip, sourceEntryCount: branch.length }, projectionVersion: 1 };
+      coverage: { version: 1, sourceTipId: this.tip, sourceEntryCount: branch.length }, projectionVersion: 1, ...(inheritedCoverage ? { inheritedCoverage: clone(inheritedCoverage) } : {}) };
     return this.scopedWrite(async () => (await this.writeRecord("compaction", () => ({
       compaction: { ...clone(data), checkpoint }, contextParentId: this.tip, preservedMessageIds,
-      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId() })).id, "compaction");
+      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId(), schemaVersion: inheritedCoverage ? 3 : 2 })).id, "compaction", inheritedCoverage ? () => {
+      if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
+    } : undefined);
+  }
+  /** Opt-in reference only: host artifacts are the sole content authority. */
+  appendModelChangeReference({ switchId, from, to, artifactRef }) {
+    return this.scopedWrite(() => this.writeRecord("model_change", {
+      version: 1, switchId, from, to, source: "host-handoff", checkpointId: null, artifactRef,
+    }, { schemaVersion: 3 }), "model-change");
   }
   async moveTo(tipId) { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
   async verifyRead() { try { await this.io?.verify?.(); } catch (error) { throw this.poison(error); } }

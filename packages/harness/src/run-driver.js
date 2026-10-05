@@ -2,7 +2,7 @@
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
 import { randomUUID, createHash } from "node:crypto";
-import { buildHarnessSessionContext } from "./session-context.js";
+import { projectContext } from "./request-projection.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
 import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
@@ -211,10 +211,7 @@ export function createRunDriver(store, options) {
       await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
       let decision;
       const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
-      const branchEntries = repairs.length ? buildHarnessSessionContext(nativeEntries, { repairs }).map((message, index) => ({
-        type: "message", message, id: nativeEntries.find((entry) => entry.type === "message" && entry.message === message)?.id ?? `derived:repair:${index}`,
-        parentId: null, timestamp: message.timestamp, seq: index,
-      })) : nativeEntries;
+      const branchEntries = projectContext(nativeEntries, { repairs, mode: "compaction" }).entries;
       for (const handler of registrations.get("before_compaction") || []) {
         decision = await handler({ reason, branchEntries, signal: context.abortSignal, context }, context);
         if (decision !== undefined) break;
@@ -244,7 +241,7 @@ export function createRunDriver(store, options) {
     }
   }
   async function requestContext() {
-    const messages = buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() });
+    const messages = projectContext(await store.getEntries(), { repairs: await store.getRepairEntries() }).messages;
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
     return { messages: normalizeContext({ systemPrompt: options.systemPrompt,
@@ -267,7 +264,7 @@ export function createRunDriver(store, options) {
         currentInputId = turnBinding ? (inputKey === initialInputKey ? turnBinding.reconciliation.initialInputId : null)
           : inputKey === initialInputKey ? `input:${createHash("sha256").update(turnId).digest("hex")}` : `synthetic:input:${randomUUID()}`;
         await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
-        const messages = buildHarnessSessionContext(await store.getEntries());
+        const messages = projectContext(await store.getEntries()).messages;
         /** @type {any[]} */
         const prompts = [{ role: "user", content: [{ type: "text", text }, ...(promptOptions?.images || [])], timestamp: Date.now() }];
         await runAgentLoop(prompts, { messages, tools }, {
@@ -281,7 +278,7 @@ export function createRunDriver(store, options) {
           getFollowUpMessages: async () => [],
           prepareRequest: async () => {
             if (compactionArmed && settings.enabled) {
-              const messages = buildHarnessSessionContext(await store.getEntries());
+              const messages = projectContext(await store.getEntries()).messages;
               if (shouldCompact(estimateContextTokens(messages).tokens, options.model.contextWindow, settings)) await performCompaction("threshold");
             }
             return { context: await requestContext() };

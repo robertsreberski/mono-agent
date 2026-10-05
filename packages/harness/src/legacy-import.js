@@ -4,7 +4,7 @@ import { lstat, readdir, rename, open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { JournalReader } from "./journal-reader.js";
-import { buildHarnessSessionContext } from "./session-context.js";
+import { projectContext } from "./request-projection.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const fail = () => { throw new Error("Invalid legacy Pi session"); };
@@ -59,7 +59,7 @@ export async function readLegacySession(metadata, root) {
         while (id !== null) {
           const ancestor = entries.get(id); if (!ancestor) fail();
           // A previous compaction contributes its summary, not its own tail.
-          const messages = buildHarnessSessionContext([{ ...ancestor, retainedTail: [] }]);
+          const messages = projectContext([{ ...ancestor, retainedTail: [] }]).messages;
           if (messages[0]) tail.push(messages[0]);
           if (id === entry.firstKeptEntryId) { found = true; break; }
           id = ancestor.parentId;
@@ -109,7 +109,7 @@ export async function readLegacySession(metadata, root) {
     branch.push(entry); id = entry.parentId;
   }
   branch.reverse();
-  return { status: "import", messages: buildHarnessSessionContext(branch), evidence };
+  return { status: "import", messages: projectContext(branch).messages, evidence };
 }
 
 export function legacyJournalId(metadata, root) {
