@@ -257,3 +257,85 @@ it("keeps observed successful outcomes from rewound calls as ledger evidence, no
   await a.store.closeOperation("returned-op", "failed"); await a.store.endTurn("returned-turn", "failed"); await a.store.moveTo(baseline);
   expect(buildOpenWorkLedger(view([refreshed(a)])).find((r) => r.callId === "known-return")).toMatchObject({ rewound: true, outcome: "success", returned: true, placed: true, result: renderHandoffMessage(returned) });
 });
+
+it("sheds only optional complete groups duplicated in an exact checkpoint suffix, without a producer", async () => {
+  const a = await segment("checkpoint-shedding", 0);
+  await a.store.appendCompaction({ summary: "Exact fictional older context", tokensBefore: 100, retainedTail: [] });
+  for (let i = 0; i < 4; i++) {
+    await a.store.beginTurn(`suffix-turn-${i}`);
+    await a.store.appendMessage(text(`${i}:` + "f".repeat(6000)), `suffix-id-${i}`);
+    await a.store.endTurn(`suffix-turn-${i}`, "completed");
+  }
+  const evidence = view([refreshed(a)]);
+  const local = { ...options, producer: "checkpoint", budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
+  const prepared = prepareHandoff(evidence, local);
+  expect(prepared.recent).toHaveLength(3);
+  const built = buildHandoff(evidence, local);
+  expect(built.status).toBe("ready");
+  expect(built.artifact.summary).toBeNull();
+  expect(built.artifact.recent.length).toBeLessThan(3);
+  expect(built.artifact.recent.at(-1)).toEqual(prepared.recent.at(-1));
+  expect(built.artifact.ledger).toEqual(prepared.ledger);
+  expect(built.artifact.checkpoint.suffix.map((message) => message.id)).toEqual(["suffix-id-0", "suffix-id-1", "suffix-id-2", "suffix-id-3"]);
+  expect(built.artifact.retainedIds).toEqual(built.artifact.recent.flatMap((group) => group.messages.map((message) => message.id)));
+  expect(prepareHandoff(evidence, local)).toEqual(prepared);
+  expect(buildHandoff(evidence, local)).toEqual(built);
+});
+
+it("does not shed a group only partly retained by the checkpoint", async () => {
+  const a = await segment("partial-checkpoint-shedding", 0, null, [text("mandatory original fact " + "p".repeat(600)), text("retained portion " + "r".repeat(6000))]);
+  const retained = (await a.store.getEntries())[1].message;
+  await a.store.appendCompaction({ summary: "Exact fictional checkpoint " + "c".repeat(12000), tokensBefore: 100, retainedTail: [retained] });
+  await a.store.beginTurn("complete-suffix-turn");
+  await a.store.appendMessage(text("optional suffix " + "s".repeat(4000)), "optional-suffix-id");
+  await a.store.endTurn("complete-suffix-turn", "completed");
+  await a.store.beginTurn("latest-suffix-turn");
+  await a.store.appendMessage(text("required latest " + "l".repeat(4000)), "required-latest-id");
+  await a.store.endTurn("latest-suffix-turn", "completed");
+  const evidence = view([refreshed(a)]);
+  const local = { ...options, budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
+  const prepared = prepareHandoff(evidence, local);
+  expect(prepared.recent).toHaveLength(3);
+  // The optional suffix may disappear, but the partially retained group cannot:
+  // the original fact must remain verbatim, not be inferred from summary prose.
+  expect(buildHandoff(evidence, local)).toMatchObject({ status: "budget_failure" });
+});
+
+it("allows shedding a whole group exactly represented by checkpoint retained IDs and content", async () => {
+  const a = await segment("retained-checkpoint-shedding", 0, null, [text("exact retained fact " + "r".repeat(6000))]);
+  const retained = (await a.store.getEntries())[0].message;
+  await a.store.appendCompaction({ summary: "Exact checkpoint " + "c".repeat(8000), tokensBefore: 100, retainedTail: [retained] });
+  for (let i = 0; i < 2; i++) {
+    await a.store.beginTurn(`retained-suffix-${i}`);
+    await a.store.appendMessage(text(`${i}:` + "s".repeat(4000)), `retained-suffix-message-${i}`);
+    await a.store.endTurn(`retained-suffix-${i}`, "completed");
+  }
+  const evidence = view([refreshed(a)]);
+  const local = { ...options, budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
+  expect(prepareHandoff(evidence, local).recent).toHaveLength(3);
+  const built = buildHandoff(evidence, local);
+  expect(built.status).toBe("ready");
+  expect(built.artifact.recent.some((group) => group.messages.some((message) => message.id === "retained-checkpoint-shedding-message-0"))).toBe(false);
+  expect(built.artifact.checkpoint.retained).toEqual([renderHandoffMessage(retained)]);
+  expect(built.artifact.recent.at(-1).messages[0].id).toBe("retained-suffix-message-1");
+});
+
+it("qualifies suffix message identities by journal and never sheds a prefix-only group", async () => {
+  const a = await segment("prefix-checkpoint-shedding", 0, null, [text("prefix-only fact " + "p".repeat(6000))]);
+  const b = await segment("middle-checkpoint-shedding", 1, a.header.journalId, []);
+  await b.store.appendCompaction({ summary: "Exact checkpoint " + "c".repeat(8000), tokensBefore: 100, retainedTail: [] });
+  await b.store.beginTurn("middle-suffix");
+  await b.store.appendMessage(text("middle suffix " + "s".repeat(4000)), "middle-suffix-message");
+  await b.store.endTurn("middle-suffix", "completed");
+  const c = await segment("last-checkpoint-shedding", 2, b.header.journalId, []);
+  await c.store.beginTurn("last-suffix");
+  await c.store.appendMessage(text("last suffix " + "l".repeat(4000)), "prefix-checkpoint-shedding-message-0");
+  await c.store.endTurn("last-suffix", "completed");
+  const evidence = view([a, refreshed(b), refreshed(c)]);
+  const local = { ...options, budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
+  expect(prepareHandoff(evidence, local).recent).toHaveLength(3);
+  const built = buildHandoff(evidence, local);
+  expect(built.status).toBe("ready");
+  expect(built.artifact.recent.map((group) => group.journalId)).toEqual([a.header.journalId, c.header.journalId]);
+  expect(built.artifact.recent.at(-1).messages[0].data[0].text).toContain("last suffix");
+});

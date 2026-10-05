@@ -167,7 +167,11 @@ uncovered predecessors. Historical tool calls are labelled data, never executabl
 calls or recovery receipts. Visible text is preserved; opaque reasoning is
 referenced rather than invented. The latest turn and ledger are mandatory.
 Recent selection is frozen before summary production; an oversized artifact
-never drops authoritative recent turns after receiving prose. Malformed
+never drops authoritative recent turns after receiving prose. Without summary
+production, an exact-checkpoint fallback may shed optional whole groups only
+when every message is also present in its complete suffix or exact retained
+content, with identities qualified by journal. It preserves the latest group
+and complete ledger, never a partially covered group. Malformed
 summaries and unfit mandatory history fail explicitly; there is no
 chunked summarization or clipping. Returned artifacts are proposals: the host
 publishes the sole immutable content authority and caches its exact bytes/hash.

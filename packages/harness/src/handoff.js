@@ -154,27 +154,53 @@ export function prepareHandoff(view, options) {
 export function buildHandoff(view, options) {
   const prepared = prepareHandoff(view, options); if (prepared.status !== "prepared") return prepared;
   let summary = null; let checkpoint = null;
+  // Identity, not text similarity, proves optional groups are duplicated by the
+  // exact checkpoint fallback. Journal IDs qualify message IDs across epochs.
+  const checkpointMessages = new Set();
+  const messageKey = (journalId, id) => JSON.stringify([journalId, id]);
   if (options.summary !== undefined) {
     try { summary = validateHandoffSummary(options.summary); } catch { return { status: "summary_rejected", reason: "malformed_summary" }; }
   } else if (prepared.older.length || prepared.checkpoints.length) {
     const candidates = view.segments.flatMap((s, index) => s.entries.filter((e) => e.type === "compaction" && e.checkpoint).map((entry) => ({ entry, index })));
     const latest = candidates.at(-1); if (!latest) return { status: "summary_required", prepared };
     // Checkpoint fallback retains every later message across all following epochs.
+    const source = view.segments[latest.index];
+    const suffix = view.segments.slice(latest.index).flatMap((s, index) =>
+      (index === 0 ? s.entries.slice(s.entries.indexOf(latest.entry) + 1) : s.entries)
+        .filter((e) => e.type === "message").map((entry) => ({ journalId: s.descriptor.journalId, entry })));
+    for (const { journalId, entry } of suffix) checkpointMessages.add(messageKey(journalId, entry.id));
+    for (const id of latest.entry.checkpoint.preservedMessageIds) {
+      const message = source.records.find((r) => r.kind === "message" && r.id === id)?.payload.message;
+      if (message && (latest.entry.retainedTail ?? []).some((retained) => JSON.stringify(retained) === JSON.stringify(message))) {
+        checkpointMessages.add(messageKey(source.descriptor.journalId, id));
+      }
+    }
     checkpoint = { journalId: view.segments[latest.index].descriptor.journalId, id: latest.entry.id, envelope: latest.entry.checkpoint,
       retained: (latest.entry.retainedTail ?? []).map(renderHandoffMessage),
       prefix: latest.entry.checkpoint.inheritedCoverage ? [] : view.segments.slice(0, latest.index).flatMap((s) => s.entries
         .map((e) => e.type === "message" ? { id: e.id, ...renderHandoffMessage(e.message) } : { id: e.id, label: "exact_prior_checkpoint_data", checkpoint: e.checkpoint ?? { summary: e.summary, timestamp: e.timestamp } })),
-      suffix: view.segments.slice(latest.index).flatMap((s, index) => (index === 0 ? s.entries.slice(s.entries.indexOf(latest.entry) + 1) : s.entries)
-        .filter((e) => e.type === "message").map((e) => ({ id: e.id, ...renderHandoffMessage(e.message) }))) };
+      suffix: suffix.map(({ entry }) => ({ id: entry.id, ...renderHandoffMessage(entry.message) })) };
   }
   const artifact = { version: 1, policy: HANDOFF_POLICY, coverage: prepared.coverage, summary, checkpoint,
     recent: prepared.recent, ledger: prepared.ledger, retainedIds: prepared.recent.flatMap((t) => t.messages.map((m) => m.id)),
     producer: options.producer ?? "checkpoint", timestamp: options.timestamp, target: options.target, budget: options.budget };
   if (!Number.isSafeInteger(artifact.timestamp) || artifact.timestamp < 0 || !artifact.target) throw new TypeError("Handoff requires frozen timestamp/target");
-  const messages = handoffMessages(artifact);
-  const fit = checkHandoffDispatch({ ...options.hostContext, messages }, options.budget);
-  // Selection is frozen before production. Never remove authoritative recent
-  // evidence after receiving prose; an oversized artifact refuses explicitly.
+  let messages = handoffMessages(artifact);
+  let fit = checkHandoffDispatch({ ...options.hostContext, messages }, options.budget);
+  // No prose producer ran in this branch. Only wholly duplicated, complete,
+  // optional groups may be shed; retain the latest group and the entire ledger.
+  // Received summaries still cannot change the pre-production selection.
+  if (summary === null && checkpoint !== null) {
+    while (fit.status !== "ready") {
+      const index = artifact.recent.findIndex((group, index) => index < artifact.recent.length - 1 && group.complete
+        && group.messages.every((message) => checkpointMessages.has(messageKey(group.journalId, message.id))));
+      if (index < 0) break;
+      artifact.recent = artifact.recent.filter((_, at) => at !== index);
+      artifact.retainedIds = artifact.recent.flatMap((group) => group.messages.map((message) => message.id));
+      messages = handoffMessages(artifact);
+      fit = checkHandoffDispatch({ ...options.hostContext, messages }, options.budget);
+    }
+  }
   if (fit.status !== "ready") return fit;
   return { status: "ready", artifact, contentHash: evidenceDigest(artifact), messages, coverage: prepared.coverage };
 }

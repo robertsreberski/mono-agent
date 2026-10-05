@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix exact-checkpoint handoffs refusing when optional recent turns duplicate
+  the complete suffix or retained evidence. Shed only whole, fully represented
+  groups without summary production; preserve the latest turn and work ledger.
+
 - Add opt-in native evidence-chain projection, structured handoff proposals,
   explicit context budgets, no-tools summary production and preserving session
   detachment. Keep default session payloads and host switching policy unchanged;
