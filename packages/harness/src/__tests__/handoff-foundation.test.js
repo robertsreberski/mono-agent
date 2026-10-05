@@ -28,7 +28,7 @@ function refreshed(segment) { return { ...segment, records: segment.store.record
 
 describe("positive native compatibility", () => {
   it.each(["provider", "api", "account"])("rejects missing, unknown and different %s", (key) => {
-    for (const value of [undefined, "", "unknown", "different"]) expect(nativeCompatibility({ ...provenance, [key]: value }, target).compatible).toBe(false);
+    for (const value of [undefined, "", "unknown", " UNKNOWN ", "different"]) expect(nativeCompatibility({ ...provenance, [key]: value }, target).compatible).toBe(false);
     expect(nativeCompatibility(provenance, target).compatible).toBe(true);
   });
 });
@@ -109,7 +109,7 @@ it("enforces one context-builder seam in production source (definition and compa
   async function scan(path) { const files = []; for (const e of await readdir(path, { withFileTypes: true })) { if (e.name === "__tests__") continue; const child = `${path}/${e.name}`; if (e.isDirectory()) files.push(...await scan(child)); else if (e.name.endsWith(".js")) files.push(child); } return files; }
   const files = [...await scan(`${root}packages/harness/src`), ...await scan(`${root}packages/agent-runtime/src`)];
   for (const file of files) {
-    if (file.endsWith("/session-context.js") || file.endsWith("/request-projection.js") || file.endsWith("/harness/src/index.js")) continue;
+    if (file.endsWith("/session-context.js") || file.endsWith("/request-projection.js")) continue;
     expect((await readFile(file, "utf8")).replace(/export \{ buildHarnessSessionContext \} from [^;]+;/g, ""), file).not.toMatch(/\bbuildHarnessSessionContext\b/);
   }
 });
@@ -125,4 +125,22 @@ it("opt-in model-change records carry only an artifact reference; canonical gaps
   ] });
   expect(projectContext(evidence, { ...options, switching: true })).toMatchObject({ status: "handoff_required", reason: "canonical_only_gap" });
   expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Canonical-only fictional fact");
+});
+
+it("retains imported summary-only envelopes and checkpoint evidence even without older raw turns", async () => {
+  const a = await segment("summary-only", 0, null, [{ role: "compactionSummary", summary: "Fictional retained older fact", tokensBefore: 10, timestamp: 1 }]);
+  expect(JSON.stringify(buildHandoff(view([a]), options))).toContain("Fictional retained older fact");
+  await a.store.appendCompaction({ summary: "Fictional checkpoint-only fact", tokensBefore: 10, retainedTail: [] });
+  const evidence = view([refreshed(a)]);
+  expect(JSON.stringify(prepareHandoff(evidence, options).checkpoints)).toContain("Fictional checkpoint-only fact");
+  expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Fictional checkpoint-only fact");
+});
+
+it("evidence inspection never hides rewound current-journal contradictions", async () => {
+  const a = await segment("raw-evidence", 0);
+  await a.store.appendMessage(text("Rewound native evidence"), "rewound-message");
+  await a.store.moveTo("raw-evidence-message-0");
+  const evidence = projectContext(view([refreshed(a)]), { mode: "evidence" });
+  expect(evidence.records.some((r) => r.id === "rewound-message")).toBe(true);
+  expect(evidence.entries.some((r) => r.id === "rewound-message")).toBe(false);
 });

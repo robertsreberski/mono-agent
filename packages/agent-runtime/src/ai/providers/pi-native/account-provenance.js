@@ -10,7 +10,7 @@ export function probeNativeAccountProvenance(input) {
   const unknown = { supported: false, reason: "account_not_established" };
   const credential = input?.credential;
   if (input?.provider !== "openai-codex" || input.api !== "openai-codex-responses" || credential?.type !== "oauth"
-    || typeof credential.accountId !== "string" || !credential.accountId.trim() || credential.accountId === "unknown"
+    || typeof credential.accountId !== "string" || !credential.accountId.trim() || credential.accountId.trim().toLowerCase() === "unknown"
     || typeof credential.access !== "string" || credential.access !== input.dispatchApiKey) return unknown;
   try {
     const parts = credential.access.split(".");

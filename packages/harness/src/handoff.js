@@ -43,7 +43,9 @@ export function validateHandoffSummary(value) {
 
 /** Neutral history data, never native executable calls, reasoning or receipts. */
 export function renderHandoffMessage(message) {
-  const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content ?? [];
+  const summaryParts = ["compactionSummary", "branchSummary"].includes(message.role) && typeof message.summary === "string"
+    ? [{ type: "text", text: message.summary }] : null;
+  const parts = summaryParts ?? (typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content ?? []);
   return { role: message.role, ...(message.toolCallId ? { callId: message.toolCallId, name: message.toolName, isError: message.isError } : {}),
     data: parts.map((part) => part.type === "text" ? { label: "visible_text", text: part.text }
       : part.type === "toolCall" ? { label: "historical_tool_call_data", id: part.id, name: part.name, arguments: part.arguments }
@@ -90,7 +92,11 @@ export function prepareHandoff(view, options) {
   if (fit.status !== "ready") return fit;
   const older = turns.slice(0, turns.length - recent.length);
   while (recent.length > 1 && estimateHandoffTokens({ ledger, recent }) > options.budget.historyAllowance / 2) older.push(recent.shift());
-  return { status: "prepared", ledger, recent, older, coverage: view.segments.map((s) => s.descriptor) };
+  const checkpoints = view.segments.flatMap((s) => s.entries.filter((e) => e.type === "compaction").map((e) => ({
+    journalId: s.descriptor.journalId, id: e.id, summary: renderHandoffMessage(e.checkpoint?.summaryMessage ?? { role: "compactionSummary", summary: e.summary }),
+    coverage: e.checkpoint?.coverage ?? null, inheritedCoverage: e.checkpoint?.inheritedCoverage ?? null,
+  })));
+  return { status: "prepared", checkpoints, ledger, recent, older, coverage: view.segments.map((s) => s.descriptor) };
 }
 
 /** Pure artifact proposal. The host publishes the sole immutable content authority.
@@ -103,7 +109,7 @@ export function buildHandoff(view, options) {
   let summary = null; let checkpoint = null;
   if (options.summary !== undefined) {
     try { summary = validateHandoffSummary(options.summary); } catch { return { status: "summary_rejected", reason: "malformed_summary" }; }
-  } else if (prepared.older.length) {
+  } else if (prepared.older.length || prepared.checkpoints.length) {
     const candidates = view.segments.flatMap((s, index) => s.entries.filter((e) => e.type === "compaction" && e.checkpoint).map((entry) => ({ entry, index })));
     const latest = candidates.at(-1); if (!latest) return { status: "summary_required", prepared };
     // Checkpoint fallback retains every later message across all following epochs.

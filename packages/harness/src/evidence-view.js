@@ -57,10 +57,10 @@ export function createEvidenceView(input) {
             returned: records.find((r) => r.kind === "tool_result" && r.payload.phase === "returned" && r.operationId === call.operationId && r.payload.callId === call.callId)?.payload.message });
       }
     }
-    const selectedRecords = records.filter((r) => !["message", "compaction"].includes(r.kind) || visible.has(r.id));
-    return { descriptor, header, records: selectedRecords, entries,
+    return { descriptor, header, records, entries,
       repairs: repairs.filter((r) => r.tipId === null ? !entries.length : visible.has(r.tipId)),
       turns: [...validator.turns.values()].map((t) => ({ id: t.start.turnId, start: t.start, end: t.end })),
+      allCalls: [...validator.calls.values()],
       calls: [...validator.calls.values()].filter((call) => visible.has(call.messageId)),
       inputs: [...validator.inputs].map(([id, data]) => ({ id, ...data })) };
   });
@@ -81,8 +81,8 @@ export function assertEvidenceView(view) { if (!views.has(view)) fail("unvalidat
 /** Positive account matching is ONLY a switch rule, never a same-model reopen rule. */
 export function nativeCompatibility(source, target) {
   for (const key of ["provider", "api", "account"]) {
-    if (typeof source?.[key] !== "string" || !source[key].trim() || source[key] === "unknown"
-      || typeof target?.[key] !== "string" || !target[key].trim() || target[key] === "unknown") return { compatible: false, reason: `unknown_${key}` };
+    if (typeof source?.[key] !== "string" || !source[key].trim() || source[key].trim().toLowerCase() === "unknown"
+      || typeof target?.[key] !== "string" || !target[key].trim() || target[key].trim().toLowerCase() === "unknown") return { compatible: false, reason: `unknown_${key}` };
     if (source[key] !== target[key]) return { compatible: false, reason: `different_${key}` };
   }
   return { compatible: true, reason: "matching_provenance" };

@@ -21,7 +21,7 @@ export function projectContext(source, options = {}) {
     coverage: { source: "native", repair: options.repairs?.length ? "prompt-only" : "none", entryCount: source.length } };
   assertEvidenceView(source);
   const current = source.segments.at(-1);
-  if (options.mode === "evidence") return { entries: current.entries, records: current.records, turns: current.turns, calls: current.calls };
+  if (options.mode === "evidence") return { entries: current.entries, records: current.records, turns: current.turns, calls: current.allCalls };
   if (source.gaps.length) return { status: "handoff_required", reason: "canonical_only_gap", gaps: source.gaps.map((g) => g.reference) };
   if (!options.target || options.switching !== true) throw new TypeError("Chain projection requires an explicit switch target");
   for (const segment of source.segments) {

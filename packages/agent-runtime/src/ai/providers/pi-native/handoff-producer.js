@@ -11,7 +11,7 @@ export async function produceNativeHandoffSummary(input) {
   if (input.prepared?.status !== "prepared" || !Number.isSafeInteger(input.outputReserve) || input.outputReserve <= 0
     || !Number.isSafeInteger(input.model?.contextWindow) || input.model.contextWindow <= 0) throw new TypeError("Invalid handoff producer input");
   const context = { systemPrompt: HANDOFF_SUMMARY_PROMPT, tools: [], messages: [{ role: "user", content: [{ type: "text", text: JSON.stringify({
-    older: input.prepared.older, recent: input.prepared.recent, ledger: input.prepared.ledger, coverage: input.prepared.coverage,
+    checkpoints: input.prepared.checkpoints ?? [], older: input.prepared.older, recent: input.prepared.recent, ledger: input.prepared.ledger, coverage: input.prepared.coverage,
   }) }], timestamp: 0 }] };
   if (estimateHandoffTokens(context) + input.outputReserve + Math.max(4096, Math.ceil(input.model.contextWindow * 0.05)) > input.model.contextWindow) return { status: "budget_failure", reason: "producer_input" };
   if (input.signal?.aborted) return { status: "summary_rejected", reason: "aborted" };
