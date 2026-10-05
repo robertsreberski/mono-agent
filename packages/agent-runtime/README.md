@@ -162,6 +162,32 @@ never silently creates an empty missing native transcript; it fails before
 dispatch so the host can establish a cold boundary. Canonical adoption is owned
 by the separate host history transaction, not the raw runtime.
 
+### Opt-in handoff foundation
+
+`produceNativeHandoffSummary` performs exactly one no-tools completion on the
+selected model, without router fallback or automatic retry (`maxRetries: 0`
+overrides caller completion options). It checks producer input bounds, enforces
+the provider output-token ceiling, rejects empty/malformed/truncated/error/aborted
+responses, and returns usage accounting. It never invokes manual compaction or writes a
+session. Hosts own durable attempt admission, fallback ordering (outgoing,
+checkpoint plus complete suffix, incoming), accepted-output caching and billing
+limits. A lost completion is explicitly outcome-unknown, not permission to retry.
+
+`detachDurableNativeSession` drops an idle local handle without deleting native
+bytes. Busy/recovery-pending handles, cold opens and create reservations must be
+settled first. It is deliberately separate from destructive retirement/invalidation and does not establish
+cross-process canonical authority. Host switching/retention policy is unchanged.
+
+`probeNativeAccountProvenance` reads only caller-supplied selected credential
+metadata, with no file access, refresh, writes or paid requests. Pi 1.0.1 Codex
+OAuth login and refresh expose `accountId` from the access-token auth claim.
+The probe requires that claim to match the credential metadata **and** the exact
+dispatch token, returning an opaque nonsecret account reference. Other credentials
+remain explicitly unknown; token hashes and credential paths are not proof.
+Positive provider/API/account matching applies only to switch/switch-back native
+reuse, never ordinary same-model reopen. These APIs are opt-in foundations;
+there is no host switch transaction or live native switch-back guarantee yet.
+
 ## Architecture
 
 The provider bridge imports the model-run loop, native journal/storage and
@@ -331,6 +357,7 @@ BINARY_BLOAT_TOOLS
 CONTEXT_1M_TOKENS
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
+HANDOFF_SUMMARY_PROMPT
 MAX_TOOL_RESULT_BYTES
 PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
@@ -364,6 +391,7 @@ createRuntime
 createSessionRegistry
 describePiBuiltinProvider
 describePiProviderAuth
+detachDurableNativeSession
 disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
@@ -383,6 +411,8 @@ normalizeRuntimeModelReference
 parseRuntimeModelReference
 parseStoredAllowlist
 piNativeRuntimeBridge
+probeNativeAccountProvenance
+produceNativeHandoffSummary
 reasoningLevelsForPiModel
 refreshProviderSession
 renderResumeSnapshot

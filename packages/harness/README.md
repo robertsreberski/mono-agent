@@ -144,7 +144,60 @@ suspension account selection, excluding administrative completion scopes.
 These native contracts do not change host history/fence formats or enable host
 adoption by themselves. P2 host dirty-turn adoption, P3 non-destructive model
 switch/handoffs, P4 further loop policy, P5 durable live queues and P6 delegation
-coordination remain separate work. Model-change retirement is still destructive.
+coordination remain separate work. Host model-change retirement is still
+  destructive; these additive projection APIs do not enable host switching.
+
+### Opt-in evidence projection and handoffs
+
+`createEvidenceView` validates host-supplied ordered epoch descriptors, journal
+headers, frozen record digests/tips, ownership bindings and composed coverage.
+It does not authorize ancestry: the host must obtain descriptors from its
+canonical state. Missing evidence is an error or an explicit canonical-only gap,
+never an empty successful native resume. Predecessors are read-only evidence.
+`projectContext` retains its original array contract unchanged. A validated view
+requires an explicit switch target and frozen budget; native reuse positively
+matches provider, API and opaque account provenance across **every** segment,
+including intervening turns on switch-back. Missing/unknown provenance takes a
+handoff. This rule does not apply to ordinary same-model reopening.
+
+`prepareHandoff` selects up to three whole recent logical turns and a complete
+mechanical open-work/outcome-unknown ledger (including started rewound effects). `buildHandoff` accepts a strict
+structured summary or the latest exact checkpoint plus its complete suffix and
+uncovered predecessors. Historical tool calls are labelled data, never executable
+calls or recovery receipts. Visible text is preserved; opaque reasoning is
+referenced rather than invented. The latest turn and ledger are mandatory.
+Recent selection is frozen before summary production; an oversized artifact
+never drops authoritative recent turns after receiving prose. Malformed
+summaries and unfit mandatory history fail explicitly; there is no
+chunked summarization or clipping. Returned artifacts are proposals: the host
+publishes the sole immutable content authority and caches its exact bytes/hash.
+
+`createHandoffBudget` reserves `max(16384, estimated host tokens + 4096)` for the
+frozen host context (including resolved tool declarations), current input,
+output and `max(4096, 5% of the target window)` safety. The deterministic estimate
+is conservative, not a provider-tokenizer guarantee. Hosts must call
+`checkHandoffDispatch` on the complete normalized request before dispatch;
+late host/input overruns refuse rather than repair a cached handoff.
+
+Before invoking a version-3 writer, stop/prohibit **all older binaries** for the
+root and explicitly call `SessionStore.enableVersion3Writes({ exclusiveWriters:
+true })` on each open writer. This acknowledges an operational prerequisite;
+it does not establish cross-process/canonical authority or technically exclude
+an old process. Without it, v3 writes reject before writing an administrative
+scope. No default caller enables it.
+
+`SessionStore.appendComposedCompaction` explicitly writes schemaVersion-3
+composed coverage, rejecting changed sources and predecessor-native tail copies.
+Its summary must cover the entire inherited prefix; its retained native tail is
+current-journal evidence only. `appendModelChangeReference` explicitly writes a
+schemaVersion-3 artifact reference, not another summary copy. Ordinary journals,
+checkpoints and imports remain v2. Mixed old/new writers are unsupported; an old
+reader rejects a **complete** opt-in v3 record without changing journal bytes.
+However, an old default cold-open treats an unterminated v3 fragment as a torn
+tail and can truncate it; old direct deletion is also not blocked. That is why
+exclusive upgraded binaries are required before enabling v3 writes.
+Neither API supplies a switch transaction, canonical binding, retention authority
+or replay permission.
 
 ## Public API
 
@@ -153,7 +206,12 @@ coordination remain separate work. Model-change retirement is still destructive.
 - `MemorySessionRepo` / `JsonlSessionRepo`: native storage, not canonical history.
 - `createRunDriver`: operations inside logical turns, using host-owned tools.
 - `JournalValidator`: validate versioned journal records without stripping native metadata.
-- `buildHarnessSessionContext`: derive native request context from adapter entries.
+- `projectContext` / `createEvidenceView`: the validated native projection seam;
+  `buildHarnessSessionContext` remains a compatibility primitive.
+- `prepareHandoff` / `buildHandoff`: pure structured artifact proposals.
+- `createHandoffBudget` / `checkHandoffDispatch`: explicit fit/refusal contracts.
+- `inspectCurrentEvidence` / `inspectCurrentLifecycle`: unfiltered current-journal
+  inspection; lifecycle-only reads are synchronous and perform no payload I/O.
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -163,6 +221,8 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/harness`**
 
 ```text
+HANDOFF_POLICY
+HANDOFF_SUMMARY_FIELDS
 JOURNAL_FORMAT
 JOURNAL_KINDS
 JOURNAL_VERSION
@@ -172,18 +232,32 @@ JsonlSessionRepo
 MemorySessionRepo
 NativeSuspendedError
 SessionStore
+buildHandoff
 buildHarnessSessionContext
+buildOpenWorkLedger
+checkHandoffDispatch
+createEvidenceView
+createHandoffBudget
 createRunDriver
 createTurnBinding
 digestTurnInput
+estimateHandoffTokens
+evidenceDigest
+inspectCurrentEvidence
+inspectCurrentLifecycle
 isJournalStorageError
 matchTurnEvidence
+nativeCompatibility
+prepareHandoff
 projectContext
 projectInterruptions
 readTurnEvidence
 recordInterruption
+renderHandoffMessage
 repairInterruptedSession
 selectTurnInterruptionAccounts
+validateComposedCoverage
+validateHandoffSummary
 validateJournalHeader
 validateSessionTurn
 ```

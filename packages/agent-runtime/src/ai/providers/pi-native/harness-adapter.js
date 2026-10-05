@@ -2,12 +2,13 @@
 // Compatibility boundary between mono-agent's Pi-native bridge and the
 // mono-owned harness built on the pinned Pi agent loop.
 
-import { createRunDriver, projectContext } from "@mono-agent/harness";
+import { createRunDriver, projectContext, inspectCurrentEvidence } from "@mono-agent/harness";
 import { HARNESS_CONTEXT } from "@mono-agent/harness/context.js";
-import { buildHarnessSessionContext } from "@mono-agent/harness/session-context.js";
+
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
-export { HARNESS_CONTEXT, buildHarnessSessionContext };
+export { HARNESS_CONTEXT, projectContext };
+export { buildHarnessSessionContext } from "@mono-agent/harness/session-context.js";
 
 /** @param {any} rawSession */
 export function createPiSessionAdapter(rawSession) {
@@ -18,7 +19,7 @@ export function createPiSessionAdapter(rawSession) {
     get metadata() { return rawSession.metadata; },
     attach(nextDriver) { driver = nextDriver; },
     async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true, repairs: await rawSession.getRepairEntries() }); },
-    getEntries: () => rawSession.getEntries(),
+    getEntries: async () => (await inspectCurrentEvidence(rawSession)).entries,
     getLeafId: () => rawSession.getLeafId(),
     appendMessage: (message) => rawSession.appendMessage(message),
     moveTo: (targetId) => rawSession.moveTo(targetId),

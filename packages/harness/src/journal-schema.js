@@ -94,7 +94,7 @@ export class JournalValidator {
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
   validate(record) {
-    requireValue(object(record) && record.schemaVersion === JOURNAL_VERSION
+    requireValue(object(record) && (record.schemaVersion === JOURNAL_VERSION || record.schemaVersion === 3 && ["compaction", "model_change"].includes(record.kind))
       && id(record.id) && !this.ids.has(record.id) && record.parentId === this.parentId
       && record.seq === this.seq + 1 && time(record.timestamp) && id(record.turnId)
       && JOURNAL_KINDS.includes(record.kind) && object(record.payload));
@@ -168,6 +168,12 @@ export class JournalValidator {
               && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
             && Array.isArray(p.derivedMessages) && Number.isSafeInteger(p.coverageVersion) && p.coverageVersion > 0);
           const checkpoint = p.compaction.checkpoint;
+          if (record.schemaVersion === 3) {
+            const inherited = checkpoint?.inheritedCoverage;
+            requireValue(inherited?.version === 1 && Array.isArray(inherited.sources)
+              && inherited.sources.every((s) => id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
+              && new Set(inherited.sources.map((s) => s.journalId)).size === inherited.sources.length);
+          } else requireValue(checkpoint?.inheritedCoverage === undefined);
           if (checkpoint !== undefined) requireValue(object(checkpoint) && checkpoint.version === 1
             && checkpoint.projectionVersion === 1 && checkpoint.summaryMessage?.role === "compactionSummary"
             && checkpoint.summaryMessage.summary === p.compaction.summary && time(checkpoint.summaryMessage.timestamp)
@@ -210,6 +216,8 @@ export class JournalValidator {
               && (call.cause !== "observed_outcome" || known.result);
           })));
       } else if (record.kind === "model_change") {
+        if (record.schemaVersion === 3) requireValue(keys(p, ["version", "switchId", "from", "to", "source", "checkpointId", "artifactRef"])
+          && p.version === 1 && id(p.switchId) && keys(p.artifactRef, ["id", "hash"]) && id(p.artifactRef.id) && digest(p.artifactRef.hash));
         requireValue(object(p.from) && object(p.to) && typeof p.source === "string"
           && (p.checkpointId === null || this.contextIds.has(p.checkpointId)));
       } else if (record.kind === "input_queued") {
