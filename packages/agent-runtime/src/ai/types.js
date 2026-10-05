@@ -534,6 +534,7 @@
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {"v1"} [sessionTurnReconciliation] Explicit native evidence ownership capability.
  * @property {(request: {sessionsRoot: string, descriptor: any, purpose: "execution"|"compaction", expectedModel: {provider: string, id: string, api?: string}, expectedInputs: ReadonlyArray<{id: string, requestDigest: string, placement: "initial"|"live"}>, expectedBaseTip?: string|null}) => Promise<any>} reconcileSessionTurn Storage-only protected native reconciliation.
  * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession

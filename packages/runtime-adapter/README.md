@@ -92,6 +92,14 @@ be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.providerAttributionSessionId` is a host-owned continuity key
 for provider attribution, not permission to resume provider transcript state.
+`MonoRuntimeLike.sessionTurnReconciliation: "v1"` explicitly certifies native
+evidence ownership; a `reconcileSessionTurn` method alone does not. Custom
+`resolveAttempt` routers are uncertified by default. Hosts whose resolver only
+changes endpoint options and preserves the native owner may explicitly set
+`CreateMonoRuntimeOptions.sessionTurnReconciliation: "v1"`. The configured host
+sets this assertion for its native options-only router. A different custom
+session owner must implement both the capability and the matching method.
+
 `MonoRuntimeLike.recoverSession(receipt, { appliedInputIds })` forwards optional
 host-coordinated durable terminal recovery. `RuntimeRunOptions.sessionRecovery`
 opts in with run id and canonical revision; `RuntimeResult.providerSessionRecovery`
@@ -159,6 +167,13 @@ even when its first durable consumption is in a native `replay` operation;
 matching still requires the bound original ID and exact content digest. Live
 inputs must match `live` placement exactly. `endTurn` durably cancels remaining
 unconsumed native offers before sealing; none carries into the next turn.
+
+Hosts preparing durable admissions can use `digestNativeTurnInput` and
+`formatLiveInputGuidance` from this facade. They delegate to the same native
+codec/formatter used by Pi. Hash actual decorated original content; live input
+hashes the formatted guidance (including prompt overrides), not raw body.
+Canonical payload builders must keep runtime-only decoration out of persisted
+input text; digests do not grant native execution or canonical adoption.
 
 Routed opted-in requests must provide the protected awaited
 `onSessionTurnDetached` host hook before any stateless retry/backup. It receives
@@ -368,9 +383,11 @@ createSrtSandboxEngine
 describeMonoRuntimeSupport
 describePiBuiltinProvider
 describeSandboxEffectiveState
+digestNativeTurnInput
 discoverLocalProviderModels
 discoverLocalProviders
 failClosedSandboxPolicy
+formatLiveInputGuidance
 inspectCodexSubscriptionSearch
 isAutodiscoverableProviderId
 isCodedError

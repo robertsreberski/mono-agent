@@ -90,6 +90,9 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
 // Review every history capability when the shared store contract grows: this
 // decorator must preserve durable provider-session operations even for non-Slack turns.
 const forwardedHistoryKeys = {
+  providerSessionReconciliation: true,
+  recoverProviderSessionTurn: true,
+  drainPendingProviderSessionTurns: true,
   providerSessionRecovery: true,
   providerSessionModelBinding: true,
   providerSessionRetirement: true,
@@ -112,6 +115,9 @@ function wrapHistoryStore(
   const providerSessionRetirement = store.providerSessionRetirement;
   const contextImport = store.contextImport;
   return {
+    ...(store.providerSessionReconciliation === undefined ? {} : { providerSessionReconciliation: store.providerSessionReconciliation }),
+    ...(store.drainPendingProviderSessionTurns === undefined ? {} : { drainPendingProviderSessionTurns: store.drainPendingProviderSessionTurns.bind(store) }),
+    ...(store.recoverProviderSessionTurn === undefined ? {} : { recoverProviderSessionTurn: store.recoverProviderSessionTurn.bind(store) }),
     ...(store.providerSessionRecovery === undefined ? {} : { providerSessionRecovery: store.providerSessionRecovery }),
     ...(store.providerSessionModelBinding === undefined ? {} : { providerSessionModelBinding: store.providerSessionModelBinding }),
     ...(providerSessionRetirement === undefined

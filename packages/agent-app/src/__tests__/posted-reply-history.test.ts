@@ -604,3 +604,15 @@ it("forwards provider-session binding capability arguments and returned ownershi
   expect(begin).toHaveBeenCalledWith("c", "run", binding);
   expect(wrap({ load: original.load, append: original.append }).providerSessionModelBinding).toBeUndefined();
 });
+
+it("posted-reply store returns all reconciliation capabilities and bound recovery/drain methods", async () => {
+  const recovery = { status: "interrupted" as const, turnId: "fictional-turn", outcome: "interrupted" as const };
+  const draining = { settled: 1, busy: 0, unresolved: 1, remaining: false };
+  const store: ConversationHistoryStore = { providerSessionReconciliation: "v1", async load() { return []; }, async append() {},
+    async recoverProviderSessionTurn(id) { expect(this).toBe(store); expect(id).toBe("fictional-owner"); return recovery; },
+    async drainPendingProviderSessionTurns(options) { expect(this).toBe(store); expect(options).toEqual({ limit: 3 }); return draining; } };
+  const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+  expect(wrapped.providerSessionReconciliation).toBe("v1");
+  expect(await wrapped.recoverProviderSessionTurn!("fictional-owner")).toBe(recovery);
+  expect(await wrapped.drainPendingProviderSessionTurns!({ limit: 3 })).toBe(draining);
+});

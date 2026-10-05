@@ -266,6 +266,14 @@ export async function resolveSession(runState, {
       }
     }
     if (!entry) {
+      if (durableRepo && options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision > 0) {
+        // P2 canonical revision proves an earlier native turn existed. Missing
+        // bytes cannot become an empty warm transcript. Fail before dispatch;
+        // the host must establish a cold boundary, never silently lose context.
+        return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is not live`,
+          failureKind: "session_not_found", piErrorCode: "pi_session_not_found", piTransport }) };
+      }
       if (durableRepo && isSafeSessionId(providerSessionId)) {
         // Create-on-miss (durable resume only): the requested id has no live
         // registry entry AND no JSONL on disk under piSessionsRoot. This is

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../durable-turn-contract.js";
 import { sessionModelKey } from "../session-runtime.js";
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import {
@@ -17,6 +19,7 @@ import type {
   AgentHarnessProgressCapability,
   AgentHarnessRequest,
   AgentHarnessRuntimeOptionsExtension,
+  ConversationHistoryTurnReconciliation,
 } from "../types.js";
 import type { SessionRuntimeResolver } from "../session-runtime.js";
 import type { LiveInputMailbox } from "../live-input.js";
@@ -42,6 +45,7 @@ interface HarnessRuntimeRouting {
   readonly runtimeForSession: SessionRuntimeResolver;
   readonly recoveryRevision?: number | undefined;
   readonly turnRevision?: number | undefined;
+  readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -181,6 +185,7 @@ export async function runHarnessRuntime(
       delete merged.sessionId;
       delete merged.providerSessionId;
       delete merged.sessionTurn;
+      delete merged.onSessionTurnDetached;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
       delete merged.toolLifecycleSink;
@@ -303,11 +308,17 @@ export async function runHarnessRuntime(
           memory,
         )),
       };
-      const runtimeOptions: RuntimeRunOptions = {
+      const reconciliation = routing.reconciliation;
+      if (reconciliation !== undefined && routing.turnRevision !== undefined && durablePiSessionsRoot !== undefined) {
+        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
+        // Replace the provisional pre-context digest before any native dispatch.
+        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+      }
+      let runtimeOptions: RuntimeRunOptions = {
         ...merged,
         ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
           && durablePiSessionsRoot !== undefined && (resumeSessionId ?? providerAttributionSessionId) !== undefined
-          ? { sessionTurn: { kind: "host" as const, ownerKey: options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
+          ? { sessionTurn: reconciliation?.descriptor ?? { kind: "host" as const, ownerKey: options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
               historyBucket: request.conversationId, turnId: runId,
               handleId: (resumeSessionId ?? providerAttributionSessionId)!, baseRevision: routing.turnRevision } } : {}),
         sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
@@ -422,9 +433,34 @@ export async function runHarnessRuntime(
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).
+      if (reconciliation !== undefined) {
+        const nativeOptions = runtimeOptions, live = nativeOptions.liveInput;
+        runtimeOptions = { ...nativeOptions,
+          onSessionTurnDetached: async (attempt) => {
+            assertDetachedTurnDescriptor(attempt.descriptor, reconciliation.descriptor);
+            await reconciliation.claim("detached");
+          },
+          ...(live === undefined ? {} : { liveInput: { async *[Symbol.asyncIterator]() {
+            for await (const message of live) {
+              const input = useManagedLiveInput && liveInputMailbox ? liveInputMailbox.durableAdmission(message, nativeOptions.prompts)
+                : createPendingLiveInput({ id: message.id ?? `wake:${randomUUID()}`, persistText: "", receivedAt: message.receivedAt ?? new Date().toISOString() }, message.body, "wake", nativeOptions.prompts);
+              try { await reconciliation.admit(input); } // Durable before yielding to native bridge.
+              catch (error) { try { message.reject?.(); } catch { /* No native handoff occurred. */ } throw error; }
+              yield { ...message, id: input.id };
+            }
+          } } }),
+        };
+      }
       const bridgeStartMs = Date.now();
       try {
         const result = await runtime.run(context.systemPrompt, runtimeOptions);
+        if (reconciliation !== undefined) {
+          const outcome = result.cancelled ? "cancelled" : result.error || result.failureKind ? "failed" : "completed";
+          await reconciliation.claim(outcome, outcome !== "completed" ? undefined : { outcome, text: result.text ?? null, timestamp: new Date().toISOString(),
+            error: null, failureKind: null,
+            ...(result.turnDisposition === "silent" ? { silent: "finish_silently" as const } : {}),
+            consumedInputIds: liveInputMailbox?.applied().map((input) => input.id) ?? [] });
+        }
         // Prepared context is not evidence of dispatch. Only a successful
         // invocation with a retained provider session can establish receipts.
         if (sessionsEnabled && !sessionIsolated && !result.cancelled && !result.error && !result.failureKind

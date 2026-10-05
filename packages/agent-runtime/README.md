@@ -143,6 +143,11 @@ metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
 A positive compaction window override replaces the declared window, and learned
 provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
 
+Native runtimes expose the explicit `sessionTurnReconciliation: "v1"` ownership
+capability. Custom routing resolvers are not certified from the presence of the
+default inner matcher's method; an options-only native router may explicitly
+attest the same owner. Private completion-only wrappers strip the capability.
+
 Hosts may opt into native evidence preservation with
 `sessionTurn.reconciliation` (version1, execution/compaction purpose, fence digest
 and original input ID). These durable kept-alive turns seal their actual final
@@ -152,7 +157,10 @@ terminal and never advertises a resumable receipt. Legacy callers are unchanged.
 `reconcileSessionTurn` is storage-only and matches protected identity and input
 evidence before idempotent repair. Native inline binding closes the pre-binding
 crash window. Router detachment requires an awaited protected host acknowledgement
-before stateless retry/fallback. Canonical dirty-turn adoption remains separate.
+before stateless retry/fallback. An opted-in positive canonical base revision
+never silently creates an empty missing native transcript; it fails before
+dispatch so the host can establish a cold boundary. Canonical adoption is owned
+by the separate host history transaction, not the raw runtime.
 
 ## Architecture
 
@@ -616,6 +624,7 @@ statsForCompletedChange
 **`@mono-agent/agent-runtime/ai/live-input-prompt.js`**
 
 ```text
+digestNativeTurnInput
 formatLiveInputGuidance
 ```
 

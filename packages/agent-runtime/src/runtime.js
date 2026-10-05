@@ -277,6 +277,7 @@ export function createRuntime(host = {}) {
     configureTools(next = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));
     },
+    sessionTurnReconciliation: "v1",
     async reconcileSessionTurn(request) { return reconcileNativeSessionTurn(request); },
     async recoverSession(receipt, context) {
       return recoverDurableNativeSession(receipt, context);

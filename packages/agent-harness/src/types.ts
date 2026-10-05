@@ -1,3 +1,4 @@
+import type { PendingTurnInput, PendingTurnCandidate, PendingTurnPayload } from "./durable-turn-contract.js";
 import type {
   AgentLiveInputOffer,
   AgentLiveInputOwnership,
@@ -20,6 +21,8 @@ import type {
   MonoRuntimeLike,
   RuntimeModelReference,
   RuntimeRunOptions,
+  RuntimeSessionTurnDescriptor,
+  RuntimeSessionTurnReconciliationResult,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 
@@ -43,14 +46,45 @@ export interface ProviderSessionTurnCommitOptions {
   readonly providerSessionSynced: boolean;
 }
 
+/** Storage-only native inspection request. The configured owner supplies its root/model. */
+export interface ConversationHistoryTurnInspection {
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  readonly purpose: "execution" | "compaction";
+  readonly modelKey: string;
+  readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
+}
+export interface ConversationHistoryTurnRecovery {
+  readonly status: "clean" | "recovered" | "interrupted";
+  readonly turnId?: string;
+  readonly outcome?: "completed" | "failed" | "cancelled" | "interrupted";
+  readonly providerSessionId?: string;
+  readonly providerSessionRevision?: number;
+}
+export interface ConversationHistoryTurnReconciliation {
+  /** Native fsync/matching proof populated by prepareCommit; canonical commit still required. */
+  readonly settlement?: { readonly nativeReusable: boolean } | undefined;
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  /** Immutable generation durable before dispatch/native live admission. */
+  admit(input: PendingTurnInput): Promise<void>;
+  claim(disposition: PendingTurnPayload["disposition"], candidate?: PendingTurnCandidate): Promise<void>;
+}
+export type ConversationHistoryTurnInspector = (request: ConversationHistoryTurnInspection) => Promise<RuntimeSessionTurnReconciliationResult>;
+
 export interface ProviderSessionTurnBinding {
   readonly modelKey: string;
   /** Manual compaction only: reject an existing different binding without retiring it. */
   readonly skipModelRotation?: boolean;
+  readonly reconciliation?: {
+    readonly ownerKey: string;
+    readonly purpose: "execution" | "compaction";
+    readonly initial?: { readonly persistText: string; readonly timestamp: string; readonly senderLabel?: string };
+  };
 }
 
 /** A conversation-exclusive provider turn owned by durable history state. */
 export interface ConversationHistoryProviderSessionTurn {
+  readonly reconciliation?: ConversationHistoryTurnReconciliation;
+  readonly recovery?: ConversationHistoryTurnRecovery;
   readonly modelKey?: string;
   readonly previousModelKey?: string;
   /** A pre-model-binding provider record was replaced without guessing its model owner. */
@@ -98,7 +132,24 @@ export interface ConversationHistoryContextImport {
   }>;
 }
 
+export interface ConversationHistoryTurnDrainOptions {
+  /** Per-pass inactive physical-owner bound; defaults to and never exceeds 32. */
+  readonly limit?: number;
+  readonly cursor?: { readonly mtimeMs: number; readonly conversationKey: string };
+}
+export interface ConversationHistoryTurnDrainResult {
+  readonly settled: number;
+  readonly busy: number;
+  readonly unresolved: number;
+  readonly remaining: boolean;
+  readonly cursor?: { readonly mtimeMs: number; readonly conversationKey: string };
+}
+
 export interface ConversationHistoryStore {
+  /** Opted-in owner-held, storage-only native turn settlement. load() stays read-only. */
+  readonly providerSessionReconciliation?: "v1" | undefined;
+  recoverProviderSessionTurn?(conversationId: string): Promise<ConversationHistoryTurnRecovery>;
+  drainPendingProviderSessionTurns?(options?: ConversationHistoryTurnDrainOptions): Promise<ConversationHistoryTurnDrainResult>;
   /** Checks, persists and retires requested-primary model bindings. */
   readonly providerSessionModelBinding?: "v1";
   /** Accepts synced terminal continuity without changing the durable record shape. */

@@ -4449,3 +4449,20 @@ describe("composite failure recording", () => {
     }
   });
 });
+
+it.each([false, true])("does not admit P2 evidence for an uncertified selected session owner (alternate=%s)", async (alternate) => {
+  const dir = await tempDir(), identityPath = join(dir, "IDENTITY.md"); await writeFile(identityPath, "You are Mono.");
+  const inspect = vi.fn(async () => ({ status: "absent" as const })), matcher = vi.fn(async () => ({ status: "absent" as const }));
+  const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => {}, reconcileProviderSessionTurn: inspect });
+  const fake = createFakeRuntime(async () => ({ text: "Fictional custom owner answer." }));
+  const uncertified = { ...fake.runtime, reconcileSessionTurn: matcher, async refreshSession() {}, async syncSession() { return true; } };
+  const harness = createAgentHarness({ identityPath, model, cwd: dir, piSessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
+    runtime: alternate ? { ...uncertified, sessionTurnReconciliation: "v1" } : uncertified, runtimeForModel: () => uncertified,
+    ...(alternate ? { runtimeOptionsForRequest: () => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("openai:fictional-alternate") } }) } : {}) });
+  expect(await harness.run({ conversationId: "fictional-owner", userMessage: "Fictional input.", abortSignal: new AbortController().signal,
+    ...(alternate ? { metadata: { web: { model: "openai:fictional-alternate" } } } : {}) })).toMatchObject({ text: "Fictional custom owner answer." });
+  expect(fake.calls[0]!.options.sessionTurn?.kind).toBe("host");
+  expect(fake.calls[0]!.options.sessionTurn?.reconciliation).toBeUndefined();
+  expect(inspect).not.toHaveBeenCalled(); expect(matcher).not.toHaveBeenCalled();
+  expect((await historyStore.load("fictional-owner")).at(-1)?.content).toBe("Fictional custom owner answer."); await harness.dispose?.();
+});

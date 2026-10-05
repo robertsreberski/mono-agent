@@ -694,6 +694,8 @@ export interface MonoRuntimeLike {
   configureTools?(next?: RuntimeToolOptions): void;
   /** Flush provider-owned durable transcript state before host history commit. */
   syncSession?(providerSessionId: string): Promise<boolean>;
+  /** Explicit native evidence ownership, never inferred from method presence. */
+  readonly sessionTurnReconciliation?: "v1" | undefined;
   reconcileSessionTurn?(request: RuntimeSessionTurnReconciliationRequest): Promise<RuntimeSessionTurnReconciliationResult>;
   recoverSession?(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: { appliedInputIds: readonly string[] }): Promise<boolean>;
   /**

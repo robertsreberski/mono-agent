@@ -35,7 +35,11 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const contractsUrl = new URL("../../../agent-contracts/dist/index.js", import.meta.url).href;
   const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
     .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl))
-    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href));
+    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href))
+    .replace('"./durable-turn-payloads.js"', JSON.stringify(new URL("../../dist/durable-turn-payloads.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-settlement.js"', JSON.stringify(new URL("../../dist/durable-turn-settlement.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-history.js"', JSON.stringify(new URL("../../dist/durable-turn-history.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",
@@ -561,7 +565,7 @@ describe("DurableConversationHistoryStore", () => {
     const filePath = join(root, files[0] as string);
     expect((await lstat(filePath)).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(filePath, "utf8"))).toMatchObject({
-      version: 2,
+      version: 3,
       conversationId: "slack:D123:1700.1#2026-07-14",
       providerSession: { epoch: expect.stringMatching(/^[a-f0-9]{64}$/u) },
     });
@@ -620,7 +624,7 @@ describe("DurableConversationHistoryStore", () => {
       .resolves.toEqual([{ role: "user", content: "fresh after truncation" }]);
     const recoveredRecord = JSON.parse(await readFile(recordPath, "utf8")) as TestHistoryRecord;
     expect(recoveredRecord).toMatchObject({
-      version: 2,
+      version: 3,
       conversationId: "conversation",
       providerSession: { revision: 1 },
     });
@@ -960,7 +964,7 @@ describe("DurableConversationHistoryStore", () => {
 
     expect(await dirtyFenceKeys(root)).toEqual([]);
     expect(await readHistoryRecord(root, "conversation")).toMatchObject({
-      version: 2,
+      version: 3,
       messages: [{ content: "kept canonical" }, { content: "cleanly committed" }],
       providerSession: { revision: 1 },
     });
