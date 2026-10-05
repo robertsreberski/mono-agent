@@ -158,11 +158,12 @@ export async function renderWithAgentBrowser(
     await run(["wait", "--load", "domcontentloaded"], remainingRenderMs());
     const finalUrlOutput = await run(["get", "url"], remainingRenderMs());
     const finalUrl = validateFinalUrl(extractBrowserText(finalUrlOutput), parsed, sandbox, policy);
+    const title = extractBrowserText(await run(["get", "title"], remainingRenderMs()));
     const output = await run(["read"], remainingRenderMs());
     const text = extractBrowserText(output);
-    if (!text) throw new Error("agent-browser returned no readable rendered content");
+    if (!text) throw Object.assign(new Error("agent-browser returned no readable rendered content"), { code: "unusable_content" });
     assertNoWebAccessInterstitial({ url: finalUrl, text });
-    return { text, finalUrl };
+    return { text, finalUrl, title };
   } finally {
     await closeSession();
   }

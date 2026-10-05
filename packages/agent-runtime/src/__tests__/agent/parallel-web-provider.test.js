@@ -217,6 +217,26 @@ describe("Parallel Search MCP", () => {
 });
 
 describe("Parallel WebFetch", () => {
+  it.each([
+    ["url", "unusable_content"], ["title", "unusable_content"], ["empty", "unusable_content"],
+    ["challenge", "access_challenge"],
+  ])("rejects remote %s non-evidence", async (kind, code) => {
+    const remoteUrl = "https://example.test/hotel/harbor-lodge";
+    const title = "Harbor Lodge";
+    const full_content = kind === "url" ? remoteUrl : kind === "title" ? `# ${title}` : kind === "empty" ? " "
+      : "Show us your human side. We can't tell if you're a human or a bot.";
+    const { fetchImpl } = transport({ structuredContent: { extract_id: "fixture", errors: [],
+      results: [{ url: remoteUrl, title, full_content, excerpts: [] }] } });
+    const result = await performWebFetch({ url: remoteUrl }, { ctx, fetchImpl, fetchConfig: { provider: "parallel" } });
+    expect(result).toMatchObject({ error: true, outcome: { code } });
+  });
+  it("advances after total HTML parser failure with render disabled", async () => {
+    const remote = transport({ structuredContent: extract });
+    const fetchImpl = vi.fn((url, init) => String(url) === PARALLEL_MCP_URL ? remote.fetchImpl(url, init)
+      : Promise.resolve(new Response('<html><body><script>hydrate()</script></body></html>', { headers: { "content-type": "text/html" } })));
+    const result = await performWebFetch({ url: target, render: "never" }, { ctx, fetchImpl, fetchConfig: { provider: ["local", "parallel"] } });
+    expect(result.outcome).toMatchObject({ backend: "parallel", attemptedProviders: ["local", "parallel"], fallbackUsed: true });
+  });
   it.each([true, false])("prefers full content or explicitly marks excerpts (full=%s)", async (full) => {
     const data = { ...extract, results: [{ ...extract.results[0], full_content: full ? "# Complete\nFull content evidence" : null }] };
     const { fetchImpl, calls } = transport({ structuredContent: data });

@@ -559,7 +559,8 @@ local provider. In a chain, incompatible options skip Parallel and are handled
 by local extraction; they are never silently discarded or sent remotely.
 
 Fetch advances to the next selected provider only for ordinary `unusable_content`
-(sparse loading shell), `backend_unavailable`, non-refusal HTTP errors, or
+(no readable evidence, including total HTML parser failure),
+`backend_unavailable`, non-refusal HTTP errors, or
 retryable `request_failed`/`timeout`. Ordinary local transient retries complete
 first. Access challenges, 401/403/407/429, robots refusal,
 sandbox, invalid parameters, unsupported content, byte limits, cancellation,
@@ -607,8 +608,9 @@ Request headers are limited to `Accept`, `Accept-Language`, `Range`, and
 `User-Agent`. Cookie, authorization, proxy, forwarding, and arbitrary custom
 headers are rejected, as are credentials embedded in a URL.
 
-Transient transport failures and HTTP 408/425/429/5xx responses receive up to
-two bounded retries. `Retry-After` is honored up to five seconds. Non-success
+Transient transport failures and ordinary HTTP 408/425/5xx responses receive up to
+two bounded retries. HTTP 429 never retries; its `Retry-After` is reported without
+shortening it. Other retry waits honor `Retry-After` up to five seconds. Non-success
 HTTP responses, unsupported content, and policy denials are returned as
 structured tool failures; browser rendering never runs for those responses.
 
@@ -675,19 +677,42 @@ agent config is the authority:
   rendering.
 - Call `always` is browser-first and strict: Node static fetch is not attempted, and a rendering failure is a tool error.
 - Call `auto` escalates only after a successful HTML response is classified as
-  a sparse application shell. If rendering then fails, the loading shell is not
-  returned as success; cancellation is never returned as static success.
+  a sparse application shell, or after every HTML parser fails. If rendering then
+  fails without usable static evidence, the result is `unusable_content`, not
+  `extraction_failed` or success; cancellation never returns static success.
 
 Automatic rendering is attempted only for successful HTML whose extracted text
-is sparse and whose markup looks like a client-rendered application. JSON,
+is sparse and whose markup looks like a client-rendered application, or whose
+static HTML parsers all fail. With `render: "never"`, total HTML parser failure
+also reports `unusable_content` with parser-failure metadata and may advance to
+the next selected provider. Decoding, size-limit and non-HTML parser failures
+retain their specific failure codes. JSON,
 PDFs, feeds, plain text, and HTTP errors never launch a browser.
 
 Each render uses one 20-second budget, a random `agent-browser` namespace and session, an empty locked
 config file, origin-scoped `--allowed-domains`, untrusted-content boundaries,
 and no profile, restore state, remote CDP attachment, auto-connect, or state autosave. It opens the
-requested URL, waits for `DOMContentLoaded`, validates the browser's final URL against the sandbox and domain policy, reads agent-oriented page content, then
+requested URL, waits for `DOMContentLoaded`, validates the browser's final URL against the sandbox and domain policy, reads its title and agent-oriented page content, then
 closes the browser and removes its temporary config. The executable is invoked
 directly—`browserCommand` is not evaluated by a shell.
+
+Every successful HTML, rendered, or remote Markdown document must contain
+readable evidence before it can return `ok`. Empty/punctuation-only text, fewer
+than two letters or numbers, or a normalized URL/title echo returns
+`unusable_content` (eligible for provider advance). This conservative minimum
+preserves genuinely short HTML such as `OK`; plain text, locally served Markdown,
+JSON, XML and PDF are
+not subject to it. Sparse static application shells remain unusable even if
+they contain a loading label. The check precedes output slicing and focus filters.
+
+Challenge classification combines explicit challenge artifacts, mitigation or
+challenge page-id headers, generic human-check phrasing, and short-page
+captcha/bot/human/verification vocabulary. Tiny bodies on HTTP 202/403/429/503
+need corroborating vocabulary or headers: status and size alone do not turn a
+normal quota response or service outage into a challenge. Human-check phrasing
+and vocabulary alone do not classify long articles discussing bot protection.
+A challenge-header 429 reports `access_challenge`, but remains terminal: no
+retry, browser escalation, or provider advance.
 
 Clear authentication pages and CAPTCHA/access challenges return
 `authentication_required` or `access_challenge`. The renderer does not click,
