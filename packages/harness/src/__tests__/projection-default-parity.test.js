@@ -1,6 +1,6 @@
 import { it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdir, writeFile, rm, symlink, copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -21,10 +21,13 @@ it("is byte-identical to P2b for default journals/checkpoints/imports/ancestry/c
     const worker = fileURLToPath(new URL("./fixtures/projection-parity-worker.mjs", import.meta.url));
     const legacy = fileURLToPath(new URL("./fixtures/legacy-v4.jsonl", import.meta.url));
     const storage = join(root, "node_modules", `.p3a-parity-storage-${process.pid}`);
+    await mkdir(`${storage}-import/legacy`, { recursive: true, mode: 0o700 });
+    await copyFile(legacy, `${storage}-import/legacy/fixture_fixture-session.jsonl`);
     const capture = (src) => JSON.parse(execFileSync(process.execPath, ["--no-warnings", worker, src, storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000 }));
     const before = capture(baseline); const after = capture(join(root, source));
     expect(after.wirePayloads).toHaveLength(2);
     for (const key of Object.keys(before)) expect(after[key], key).toEqual(before[key]);
+    await rm(`${storage}-import`, { recursive: true, force: true });
     expect(after.bytes).not.toContain('"schemaVersion":3');
   } finally { await rm(baseline, { recursive: true, force: true }); }
 }, 60000);

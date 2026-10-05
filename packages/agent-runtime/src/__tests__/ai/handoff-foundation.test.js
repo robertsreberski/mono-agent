@@ -1,3 +1,5 @@
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
+import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { it, expect, vi, afterEach } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,4 +56,20 @@ it("preserving detach leaves exact journal bytes, missing-current detach never d
   await detachDurableNativeSession("missing-current", root); expect(await readFile(session.metadata.path)).toEqual(original);
   await retireDurableNativeSession("fictional-predecessor", root);
   await expect(readFile(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("refuses preserving detach during real native dispatch, then detaches the idle registry without changing bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-detach-busy-fixture-")); roots.push(root);
+  const faux = fauxProvider({ provider: "detach-fixture", models: [{ id: "fixture" }] }); const models = createModels(); let attempt;
+  models.setProvider({ ...faux.provider, streamSimple(selected, context, options) {
+    attempt = detachDurableNativeSession("busy-fixture", root).then((result) => ({ result }), (error) => ({ error }));
+    return faux.provider.streamSimple(selected, context, options);
+  } });
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional complete response")])]);
+  const result = await generatePiNativeResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
+    piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", piSessionsRoot: root,
+    sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
+  expect(result.error).toBeNull(); expect((await attempt).error.code).toBe("ERR_HARNESS_WRITER_BUSY");
+  const metadata = (await resolveDurableNativeSessionRepo(root).list())[0]; const before = await readFile(metadata.path);
+  await detachDurableNativeSession("busy-fixture", root); expect(await readFile(metadata.path)).toEqual(before);
 });
