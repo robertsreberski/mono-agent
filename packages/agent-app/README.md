@@ -1291,6 +1291,22 @@ modes remain operator-owned and external MCP tools bypass built-in allow/deny
 policy. See [Computer use](../../docs/tools/computer-use.md) for installation,
 OS grants, privacy, and safe unattended-operation limits.
 
+The public `createConfiguredAgentRuntime` now exposes the backend's optional
+legacy `recoverSession` capability (previously not forwarded), so embedders
+building a host harness on it can use existing receipt recovery. Both it and
+native reconciliation are root-attested, leased storage-settlement operations;
+absence of backend support remains explicit. Private per-run memory-completion
+runtimes deliberately strip both recovery methods instead of exposing an
+unleased storage seam.
+
+Configured raw runtimes forward `reconcileSessionTurn` and legacy
+`recoverSession` through the same attested root-generation request-lease boundary
+as `run`. The lease remains held until storage settlement, even during disposal;
+no provider execution is needed for reconciliation. Internal configured responder
+construction keeps its existing root ownership and does not acquire a second
+lease wrapper. These native capabilities do not yet alter host history fences,
+receipts, retirement policy or enable automatic dirty-turn adoption.
+
 ## Architecture
 
 BuJo can opt in to default-off `memory.profile.enabled` (deterministic

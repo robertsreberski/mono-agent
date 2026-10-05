@@ -31,6 +31,23 @@ pnpm add @mono-agent/harness
 Node.js 24.15.0 or newer is required. Hosts normally use the provider glue in
 `@mono-agent/agent-runtime`, rather than driving this low-level package directly.
 
+For execution reconciliation, `expectedInputs` must contain exactly one
+`initial` entry for the descriptor's original input, even when it was never
+consumed. Include **every native live admission** for this turn: queued,
+cancelled (including end-of-turn cancellation), and consumed. Omitting a
+cancelled/unconsumed native admission is an `admitted_inputs` mismatch. A host
+may also list durably fenced offers not yet admitted by native storage; those
+extra expectations do not prove native consumption, dispatch or completion.
+Digests cover the exact serialized native content: original prompt content and,
+for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
+follow-up body. Expected placement for the original input remains `initial`
+even when its first durable consumption is in a native `replay` operation;
+matching still requires the bound original ID and exact content digest. Live
+inputs must match `live` placement exactly. Steering requires a fully admitted,
+active logical turn; offers before/between turns or during `beginTurn` reject,
+and polling selects only offers admitted to the current turn. `endTurn` durably cancels remaining
+unconsumed native offers before sealing; none carries into the next turn.
+
 ## Architecture
 
 ### Data flow
@@ -105,7 +122,27 @@ rebuilt by the host, not historical prose.
 Compaction persists the exact summary envelope, ordered preserved message IDs,
 explicit derived messages, count/model/coverage/version metadata and syncs before
 completion/use. Process reopen replays that checkpoint with no summary call or
-new summary timestamp. P2 host dirty-turn adoption, P3 non-destructive model
+new summary timestamp.
+
+Protected host descriptors can explicitly opt in with `reconciliation: { version:
+1, purpose: "execution" | "compaction", fenceDigest, initialInputId }`. Execution
+requires a host-owned input ID; compaction requires null and cannot start a prompt
+operation. The first durable start carries the owner/bucket/handle/revision/model
+binding; later binding records remain. Opted-in ends carry a versioned minimal
+runtime-result seal, or an unavailable-result interruption account, never success
+inferred from an earlier operation. `readTurnEvidence` reads ordered per-turn
+references and `matchTurnEvidence` checks ownership, purpose, model, fence,
+baseline and exact consumed input digests before callers repair. Repositories
+support `open(metadata, { repair: false })` for matched-owner inspection without
+accounting or torn-tail truncation; after a match, `prepareReconciliation()`
+syncs the validated prefix and permits storage-only repair. Mismatches close
+without mutating native bytes, including a torn tail. Input digests
+are SHA-256 of JSON-serialized native content (plain strings normalize to a
+single text part); only original/live host inputs are consumed, not internal
+finalization prompts. Import and ordinary reopen share final-operation and
+suspension account selection, excluding administrative completion scopes.
+These native contracts do not change host history/fence formats or enable host
+adoption by themselves. P2 host dirty-turn adoption, P3 non-destructive model
 switch/handoffs, P4 further loop policy, P5 durable live queues and P6 delegation
 coordination remain separate work. Model-change retirement is still destructive.
 
@@ -137,11 +174,16 @@ NativeSuspendedError
 SessionStore
 buildHarnessSessionContext
 createRunDriver
+createTurnBinding
+digestTurnInput
 isJournalStorageError
+matchTurnEvidence
 projectContext
 projectInterruptions
+readTurnEvidence
 recordInterruption
 repairInterruptedSession
+selectTurnInterruptionAccounts
 validateJournalHeader
 validateSessionTurn
 ```
@@ -185,8 +227,10 @@ JournalReader
 
 ```text
 JournalValidator
+digestTurnInput
 validateJournalHeader
 validateSessionTurn
+validateTurnSeal
 ```
 
 **`@mono-agent/harness/journal-types.js`**

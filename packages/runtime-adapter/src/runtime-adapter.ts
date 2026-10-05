@@ -338,6 +338,10 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
           : (withoutCallerSandbox(next) as unknown as KernelToolOptions),
       );
     },
+    async reconcileSessionTurn(request) {
+      if (!runtime.reconcileSessionTurn) throw new RuntimeAdapterError("runtime_backend_unavailable", "Native turn reconciliation unavailable.");
+      return await runtime.reconcileSessionTurn(request);
+    },
     async recoverSession(receipt, context): Promise<boolean> {
       return await runtime.recoverSession?.(receipt, context) === true;
     },

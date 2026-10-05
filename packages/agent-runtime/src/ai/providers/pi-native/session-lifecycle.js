@@ -11,6 +11,7 @@
 // construction rather than by inline sequencing.
 
 import { JsonlSessionRepo, MemorySessionRepo } from "@mono-agent/harness/session-store.js";
+import { JournalStorageError, isJournalStorageError } from "@mono-agent/harness";
 import { validRecoveryProjection } from "./terminal-recovery.js";
 import { createHash } from "node:crypto";
 import { access, open } from "node:fs/promises";
@@ -410,7 +411,19 @@ export async function resolveSession(runState, {
  * @param {any} runState
  * @param {{durableRepo: any}} params
  */
+/** Detach opted-in state without rewind/deletion, even after poison or cancellation. */
+export async function preserveNativeTurnEvidence(runState) {
+  try { await runState.session?.close(); }
+  catch (error) { throw isJournalStorageError(error) ? error : new JournalStorageError(error); }
+  finally {
+    runState.reservation?.release();
+    const id = runState.session?.metadata?.id;
+    if (id) nativeSessions.delete(id);
+  }
+}
+
 export async function discardUncommittedSession(runState, { durableRepo }) {
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   // Drop a freshly-created non-keep-alive session so an aborted-before-run turn
   // does not leave an orphan jsonl on disk. Guarded `session && !sessionEntry`
   // so a resumed (user-owned) session is NEVER deleted. For a resume no
@@ -448,6 +461,7 @@ export async function commitSession(runState, {
   onEvent,
 }) {
   const { session, sessionEntry, baselineLeafId, reservation } = runState;
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   if (options.sessionKeepAlive === true && ((!externalAbort && !errorMessage) || runState.retainRecoveryTail)) {
     try {
       if (sessionEntry) {
@@ -520,6 +534,7 @@ export async function commitSession(runState, {
  * @param {{requestedSessionId: string|null, providerSessionId: string, durableRepo: any}} params
  */
 export async function rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo }) {
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   const { session, sessionEntry, baselineLeafId } = runState;
   if (sessionEntry) {
     if (runState.hasBaselineLeaf || baselineLeafId) {
@@ -543,6 +558,7 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
  * @param {{durableRepo: any}} params
  */
 export async function cleanupSessionOnThrow(runState, { durableRepo }) {
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   const { session, sessionEntry, reservation, baselineLeafId } = runState;
   // Drop a just-created FRESH durable session so a setup/run failure does not
   // leave a resumable orphan jsonl on disk (the success path drops it via the
@@ -649,4 +665,40 @@ export async function recoverDurableNativeSession(receipt, context) {
     try { await raw?.close(HARNESS_CONTEXT); } catch { /* already failed closed */ }
     entry.busy = false;
   }
+}
+
+/** Storage-only P2 seam: match while holding nonblocking native ownership, then repair. */
+export async function reconcileNativeSessionTurn(request) {
+  const { validateSessionTurn, readTurnEvidence, matchTurnEvidence, repairInterruptedSession } = await import("@mono-agent/harness");
+  validateSessionTurn(request?.descriptor, request?.descriptor?.handleId);
+  if (!request.descriptor.reconciliation || typeof request.sessionsRoot !== "string" || !request.sessionsRoot.trim()
+    || request.purpose !== request.descriptor.reconciliation.purpose) throw new TypeError("Invalid native turn reconciliation request");
+  const id = request.descriptor.handleId;
+  if (nativeSessions.get(id)?.busy || nativeSessions.get(id)?.recoveryPending) throw Object.assign(new Error("Native turn ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+  await nativeSessions.refresh(id);
+  const repo = resolveDurableNativeSessionRepo(request.sessionsRoot);
+  let raw;
+  try {
+    const records = await repo.listOwned({ wait: false });
+    const metadata = records.find((record) => record.id === id);
+    if (!metadata) return { status: "absent" };
+    raw = await repo.open(metadata, { repair: false, wait: false });
+    const initial = await readTurnEvidence(raw, request.descriptor.turnId);
+    const match = matchTurnEvidence(initial, request);
+    if (match.status !== "matched") return match;
+    if (raw.validator.openTurns.size && !raw.validator.openTurns.has(request.descriptor.turnId)) return { status: "mismatch", reason: "active_turn" };
+    if ([...raw.validator.turns.values()].some((turn) => turn.start.seq > raw.validator.turns.get(request.descriptor.turnId).start.seq
+      && (turn.start.payload.binding || turn.operations.length))) return { status: "mismatch", reason: "turn_advanced" };
+    if (initial.tipId !== initial.currentTipId) return { status: "mismatch", reason: "tip" };
+    await raw.prepareReconciliation();
+    await repairInterruptedSession(raw);
+    const evidence = await readTurnEvidence(raw, request.descriptor.turnId);
+    const outcome = evidence.seal?.outcome ?? "interrupted";
+    return { ...evidence, status: "matched", outcome,
+      ...(outcome === "completed" && request.purpose === "execution" && evidence.seal?.result ? { commitCandidate: evidence.seal.result } : {}) };
+  } catch (error) {
+    if (error instanceof SyntaxError) Object.assign(error, { code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+    else if (!error.code) error.code = "ERR_HARNESS_RECONCILIATION_UNCERTAIN";
+    throw error;
+  } finally { if (raw) await raw.close(); }
 }

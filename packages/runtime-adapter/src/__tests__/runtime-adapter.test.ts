@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -712,4 +715,18 @@ describe("a model reference is bounded where it is rendered, never where it is p
     }
     expect(disagreements).toEqual([]);
   });
+});
+
+it.each([false, true])("forwards storage-only turn reconciliation through the typed facade (routed=%s)", async (routed) => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-turn-contract-"));
+  const model = parseMonoRuntimeModelReference("openai:fictional-model");
+  const runtime = createMonoRuntime({ workspace: root, ...(routed ? { chain: [model] } : {}) });
+  const request = { sessionsRoot: join(root, "uncreated-native"), purpose: "execution" as const,
+    descriptor: { kind: "host" as const, ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "fictional-turn", handleId: "fictional-handle", baseRevision: 0,
+      reconciliation: { version: 1 as const, purpose: "execution" as const, fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } },
+    expectedModel: { provider: "openai", id: "fictional-model" }, expectedInputs: [{ id: "fictional-input", requestDigest: "b".repeat(64), placement: "initial" as const }] };
+  try {
+    expect(await runtime.reconcileSessionTurn!(request)).toEqual({ status: "absent" });
+    await expect(runtime.reconcileSessionTurn!({ ...request, descriptor: { ...request.descriptor, baseRevision: null } })).rejects.toThrow("reconciliation");
+  } finally { await runtime.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
 });

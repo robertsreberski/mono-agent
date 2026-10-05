@@ -36,7 +36,7 @@ import {
 } from "./ai/runtime/sessions.js";
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
-import { recoverDurableNativeSession, retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
 import { salvageDurableNativeSession } from "./ai/providers/pi-native/session-salvage.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
@@ -277,6 +277,7 @@ export function createRuntime(host = {}) {
     configureTools(next = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));
     },
+    async reconcileSessionTurn(request) { return reconcileNativeSessionTurn(request); },
     async recoverSession(receipt, context) {
       return recoverDurableNativeSession(receipt, context);
     },

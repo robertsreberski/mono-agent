@@ -1,3 +1,4 @@
+import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
@@ -513,6 +514,17 @@ function wrapOwnedConfiguredRuntime(
       await releaseAgentRootOwnershipWhenIdle(ownership);
     }
   };
+  const withReconciliationLease = async <T>(action: () => Promise<T>): Promise<T> => {
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const { ownership } = await secured();
+    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    try { await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace); return await action(); }
+    finally { lease.releaseAfterSettlement(); }
+  };
   return {
     async run(systemPrompt, runOptions) {
       if (disposed) throw new Error("Configured runtime has been disposed.");
@@ -563,6 +575,8 @@ function wrapOwnedConfiguredRuntime(
     ...(runtime.configureTools === undefined
       ? {}
       : { configureTools: runtime.configureTools.bind(runtime) }),
+    ...(runtime.reconcileSessionTurn === undefined ? {} : { reconcileSessionTurn: (request) => withReconciliationLease(() => runtime.reconcileSessionTurn!(request)) }),
+    ...(runtime.recoverSession === undefined ? {} : { recoverSession: (receipt, context) => withReconciliationLease(() => runtime.recoverSession!(receipt, context)) }),
     ...(runtime.syncSession === undefined ? {} : { syncSession: runtime.syncSession.bind(runtime) }),
     ...(runtime.refreshSession === undefined ? {} : { refreshSession: runtime.refreshSession.bind(runtime) }),
     ...(runtime.retireDurableSession === undefined
@@ -2273,8 +2287,11 @@ function wrapPerRunOwnedConfiguredRuntime(
   agentRoot: string | undefined,
   protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): MonoRuntimeLike {
+  // Memory completion has no storage-settlement caller. Do not advertise
+  // inherited recovery methods that would bypass this per-run ownership lease.
+  const completionRuntime = completionOnlyRuntime(runtime);
   return {
-    ...runtime,
+    ...completionRuntime,
     async run(systemPrompt, runOptions) {
       const ownership = await acquireAgentRootOwnership(agentRoot);
       let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;

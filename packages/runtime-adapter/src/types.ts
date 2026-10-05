@@ -312,6 +312,7 @@ export interface RuntimeResult {
   readonly error?: string | null;
   readonly errorDetails?: unknown;
   readonly failureKind?: string | null;
+  readonly retryable?: boolean;
   readonly providerSessionId?: string | null;
   readonly providerSessionRecovery?: { runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string };
   readonly runtimeWarnings?: unknown;
@@ -456,6 +457,78 @@ export interface RuntimeSessionTurnDescriptor {
   readonly turnId: string;
   readonly handleId: string;
   readonly baseRevision: number | null;
+  /** Explicit native evidence preservation; host adoption is separately coordinated. */
+  readonly reconciliation?: {
+    readonly version: 1;
+    readonly purpose: "execution" | "compaction";
+    readonly fenceDigest: string;
+    readonly initialInputId: string | null;
+  };
+}
+
+export interface RuntimeSessionTurnReconciliationRequest {
+  readonly sessionsRoot: string;
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  readonly purpose: "execution" | "compaction";
+  readonly expectedModel: { readonly provider: string; readonly id: string; readonly api?: string };
+  readonly expectedBaseTip?: string | null;
+  /** Exactly one original initial input, plus every native live admission,
+   * including cancelled/unconsumed entries; additional fenced host offers are
+   * permitted but do not prove native execution. Digests use native formatted
+   * content (live guidance, not raw body); replay of the original is initial. */
+  readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
+}
+
+export interface RuntimeSessionTurnResultSeal {
+  readonly text: string | null;
+  readonly error: string | null;
+  readonly failureKind: string | null;
+  readonly cancelled: boolean;
+  readonly stopReason: string | null;
+  readonly turnDisposition?: "silent";
+}
+
+export type RuntimeSessionTurnReconciliationResult =
+  | { readonly status: "absent" }
+  | { readonly status: "mismatch"; readonly reason: string }
+  | {
+      readonly status: "matched";
+      readonly journalId: string;
+      readonly handleId: string;
+      readonly turnId: string;
+      readonly baselineTipId: string | null;
+      readonly tipId: string | null;
+      readonly currentTipId: string | null;
+      readonly outcome: "completed" | "failed" | "cancelled" | "interrupted";
+      readonly seal: { readonly version: 1; readonly outcome: "completed" | "failed" | "cancelled" | "interrupted"; readonly result: RuntimeSessionTurnResultSeal | null } | null;
+      readonly binding: RuntimeSessionTurnDescriptor & { readonly version: 1; readonly model: { readonly provider: string; readonly id: string; readonly api: string } };
+      readonly inputs: readonly { readonly id: string; readonly messageId: string; readonly requestDigest: string; readonly placement: "initial" | "replay" | "live"; readonly complete: boolean }[];
+      readonly admittedInputs: readonly { readonly id: string; readonly state: "queued" | "cancelled" | "consumed"; readonly placement: "live"; readonly requestDigest: string }[];
+      readonly finalOperationId: string | null;
+      readonly consumedInputIds: readonly string[];
+      readonly operations: readonly {
+        readonly operationId: string; readonly type: "prompt" | "compaction";
+        readonly cause: string; readonly parentOperationId: string | null;
+        readonly baselineTipId: string | null; readonly tipId: string | null;
+        readonly startSeq: number; readonly endSeq: number | null;
+        readonly status: "completed" | "failed" | "aborted" | "interrupted" | null;
+        readonly suspended: boolean;
+      }[];
+      readonly commitCandidate?: RuntimeSessionTurnResultSeal;
+      readonly interruptionEvidence: readonly {
+        readonly cause: string; readonly operationIds: readonly string[];
+        readonly calls: readonly { readonly callId: string; readonly name: string; readonly operationId: string; readonly messageId: string; readonly admission: string; readonly cause: string }[];
+        readonly tipId: string | null; readonly timestamp: number;
+      }[];
+    };
+
+/** Awaited host claim before a router may detach a protected native attempt. */
+export interface RuntimeSessionTurnDetachedAttempt {
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  readonly model: RuntimeModelReference;
+  readonly attemptIndex: number;
+  readonly retryIndex: number;
+  readonly result: RuntimeResult;
 }
 
 export interface RuntimeRunOptions {
@@ -471,6 +544,7 @@ export interface RuntimeRunOptions {
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   /** Protected host-owned journal/turn binding, not permission to recover canonical history. */
   readonly sessionTurn?: RuntimeSessionTurnDescriptor | undefined;
+  readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
@@ -620,6 +694,7 @@ export interface MonoRuntimeLike {
   configureTools?(next?: RuntimeToolOptions): void;
   /** Flush provider-owned durable transcript state before host history commit. */
   syncSession?(providerSessionId: string): Promise<boolean>;
+  reconcileSessionTurn?(request: RuntimeSessionTurnReconciliationRequest): Promise<RuntimeSessionTurnReconciliationResult>;
   recoverSession?(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: { appliedInputIds: readonly string[] }): Promise<boolean>;
   /**
    * Guarantee that the next resume cannot reuse process-local provider state.

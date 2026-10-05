@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { selectTurnInterruptionAccounts } from "./turn-evidence.js";
 
 export class NativeSuspendedError extends Error {
   constructor() { super("Native provider suspended this operation; it has not been resumed"); this.name = "NativeSuspendedError"; }
@@ -22,25 +23,23 @@ export async function recordInterruption(store, turnId, cause, operationIds) {
   }
 }
 
-/** Storage-only reopen: no model/tool execution and no inferred completion. */
-export async function repairInterruptedSession(store, cause = "crashed") {
-  if (!["crashed", "user_interrupted", "skipped", "superseded"].includes(cause)) throw new TypeError("Invalid native interruption cause");
-  const turns = await store.getOpenTurns();
-  if (!turns.length) return { repaired: false };
-  const suspended = new Set([...store.validator.contextInfo.values()].filter((entry) => entry.stopReason === "deferred").map((entry) => entry.operationId));
-  for (const turn of turns) {
-    const operationIds = store.validator.turns.get(turn.turnId).operations;
-    const openIds = operationIds.filter((id) => !store.validator.operations.get(id)?.end);
-    const accounts = openIds.length ? openIds : operationIds.slice(-1);
-    for (const id of accounts.length ? accounts : [null]) {
-      await recordInterruption(store, turn.turnId, suspended.has(id) ? "suspended_not_resumed" : cause, id === null ? [] : [id]);
-    }
-    for (const op of (await store.getOpenOperations()).reverse()) {
-      if (op.turnId === turn.turnId) await store.closeOperation(op.operationId, "interrupted");
-    }
-    await store.endTurn(turn.turnId, "interrupted"); await store.sync();
+/** Account and seal one turn. Administrative completion scopes are caller-excluded. */
+export async function repairInterruptedTurn(store, turnId, cause = "crashed") {
+  for (const account of selectTurnInterruptionAccounts(store, turnId, cause)) {
+    await recordInterruption(store, turnId, account.cause, account.operationId === null ? [] : [account.operationId]);
   }
-  return { repaired: true };
+  const operations = store.validator.turns.get(turnId).operations;
+  for (const id of [...operations].reverse()) if (!store.validator.operations.get(id).end) await store.closeOperation(id, "interrupted");
+  await store.endTurn(turnId, "interrupted"); await store.sync();
+}
+
+/** Storage-only reopen: no model/tool execution and no inferred completion. */
+export async function repairInterruptedSession(store, cause = "crashed", excludedTurnIds = []) {
+  if (!["crashed", "user_interrupted", "skipped", "superseded"].includes(cause)) throw new TypeError("Invalid native interruption cause");
+  const excluded = new Set(excludedTurnIds);
+  const turns = (await store.getOpenTurns()).filter((turn) => !excluded.has(turn.turnId));
+  for (const turn of turns) await repairInterruptedTurn(store, turn.turnId, cause);
+  return { repaired: turns.length > 0 };
 }
 
 const causeText = {

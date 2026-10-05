@@ -10,6 +10,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 
 const runtimeState = vi.hoisted(() => ({
   run: vi.fn(),
+  reconcileSessionTurn: vi.fn(),
+  recoverSession: vi.fn(),
   disposeAllSessions: vi.fn(async () => undefined),
 }));
 const processIdentity = vi.hoisted(() => ({
@@ -24,6 +26,8 @@ vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => ({
   ...await importOriginal<typeof import("@mono-agent/runtime-adapter")>(),
   createMonoRuntime: () => ({
     run: runtimeState.run,
+    reconcileSessionTurn: runtimeState.reconcileSessionTurn,
+    recoverSession: runtimeState.recoverSession,
     disposeAllSessions: runtimeState.disposeAllSessions,
   }),
 }));
@@ -77,6 +81,7 @@ afterEach(async () => {
     }, { timeout: 2_000, interval: 10 });
   }));
   runtimeState.run.mockReset();
+  runtimeState.reconcileSessionTurn.mockReset(); runtimeState.recoverSession.mockReset();
   runtimeState.disposeAllSessions.mockReset();
   runtimeState.disposeAllSessions.mockResolvedValue(undefined);
   await Promise.all(temporaryDirectories.splice(0).map(async (path) =>
@@ -316,3 +321,26 @@ function processExists(pid: number): boolean {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
+
+describe("configured native reconciliation ownership", () => {
+  it.each(["reconcileSessionTurn", "recoverSession"] as const)("forwards %s while keeping an attested request lease until settlement through disposal", async (method) => {
+    const fixture = await runtimeFixture(`native-${method}`); const owner = await seededOwnership(fixture);
+    let settle!: (value: never) => void; const completion = new Promise((resolve) => { settle = resolve; });
+    runtimeState[method].mockImplementation(async () => completion);
+    runtimeState.disposeAllSessions.mockRejectedValue(new Error("Fictional disposal timeout."));
+    const runtime = createConfiguredAgentRuntime({ config: configFor(fixture.root, fixture.workspace), cwd: fixture.root });
+    const args = [{ fictional: "request" }] as never;
+    const running = method === "reconcileSessionTurn" ? runtime.reconcileSessionTurn!(args) : runtime.recoverSession!(args, { appliedInputIds: [] });
+    await vi.waitFor(() => expect(runtimeState[method]).toHaveBeenCalledOnce()); expect(runtimeState[method].mock.calls[0]?.[0]).toBe(args);
+    owner.release(); await expect(runtime.disposeAllSessions?.()).rejects.toThrow("Fictional disposal timeout.");
+    expect(await childAttempt(fixture.root, fixture.home)).toBe("conflict"); settle((method === "recoverSession" ? true : { status: "absent" }) as never); await running;
+    await vi.waitFor(async () => expect(await childAttempt(fixture.root, fixture.home)).toBe("owned"), { timeout: 5000, interval: 25 });
+    await expect(method === "reconcileSessionTurn" ? runtime.reconcileSessionTurn!(args) : runtime.recoverSession!(args, { appliedInputIds: [] })).rejects.toThrow("disposed");
+  });
+  it.each(["reconcileSessionTurn", "recoverSession"] as const)("rejects %s without agent-root attestation before touching the backend", async (method) => {
+    const fixture = await runtimeFixture(`unowned-${method}`); const runtime = createConfiguredAgentRuntime(configFor(fixture.root, fixture.workspace));
+    const args = {} as never;
+    await expect(method === "reconcileSessionTurn" ? runtime.reconcileSessionTurn!(args) : runtime.recoverSession!(args, { appliedInputIds: [] })).rejects.toThrow(AGENT_ROOT_REQUIRED_ERROR);
+    expect(runtimeState[method]).not.toHaveBeenCalled();
+  });
+});

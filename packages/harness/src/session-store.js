@@ -4,7 +4,7 @@ import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { createCompactionSummaryMessage } from "./compaction-kit/messages.js";
-import { repairInterruptedSession, recordInterruption } from "./interruption.js";
+import { repairInterruptedSession } from "./interruption.js";
 import { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 import { JournalReader } from "./journal-reader.js";
 import { JournalLocks } from "./journal-lock.js";
@@ -14,6 +14,7 @@ import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 const clone = (v) => structuredClone(v);
 const fail = () => { throw new Error("Invalid mono-agent harness session"); };
+const corruptBinding = () => { throw Object.assign(new Error("Invalid mono-agent harness session binding"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const safeId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
 
 export class SessionStore {
@@ -37,8 +38,12 @@ export class SessionStore {
     /** @type {Promise<void>|null} */ this.closePromise = null;
     for (const record of records) this.apply(record);
   }
-  validateRecord(record) { this.validator.validate(record); }
+  validateRecord(record) {
+    if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
+    this.validator.validate(record);
+  }
   apply(record, address) {
+    if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.apply(record);
     this.io?.remember?.(address, record);
     if (record.kind === "rewind") this.io?.invalidate?.();
@@ -91,13 +96,16 @@ export class SessionStore {
   poison(error) { this.failure ??= isJournalStorageError(error) ? error : new JournalStorageError(error); return this.failure; }
   activeTurnId() { return this.validator.openTurns.values().next().value; }
   activeOperationId() { return [...this.validator.openOperations].at(-1); }
-  beginTurn(turnId, config = {}, identitySource = "synthetic") {
-    return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip }), { turnId });
+  beginTurn(turnId, config = {}, identitySource = "synthetic", binding) {
+    return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip,
+      ...(binding ? { binding: clone(binding) } : {}) }), { turnId });
   }
-  endTurn(turnId, status) {
+  endTurn(turnId, status, result = null) {
     return this.write("turn_end", () => ({ status, tipId: this.tip,
       finalOperationId: this.validator.turns.get(turnId)?.finalOperationId ?? null,
-      consumedInputIds: [...(this.validator.turns.get(turnId)?.inputs ?? [])] }), { turnId });
+      consumedInputIds: [...(this.validator.turns.get(turnId)?.inputs ?? [])],
+      ...(this.validator.turns.get(turnId)?.start.payload.binding ? { seal: { version: 1,
+        outcome: ({ completed: "completed", failed: "failed", aborted: "cancelled", interrupted: "interrupted" })[status], result: clone(result) } } : {}) }), { turnId });
   }
   openOperation(operationId, config, type = "prompt", cause = "prompt") {
     return this.write("operation_start", () => ({ config: clone(config), type, cause, baselineTipId: this.tip, parentOperationId: this.activeOperationId() ?? null }), { operationId });
@@ -231,6 +239,12 @@ export class SessionStore {
       catch (error) { throw this.poison(error); }
     });
   }
+  prepareReconciliation() {
+    return this.enqueue(async () => {
+      try { await this.io?.prepareReconciliation?.(); this.durableSeq = this.seq; }
+      catch (error) { throw this.poison(error); }
+    });
+  }
   sync() { return this.enqueue(async () => { try { await this.io?.sync(); this.durableSeq = this.seq; } catch (error) { throw this.poison(error); } }); }
   close() {
     this.closePromise ??= (async () => {
@@ -262,7 +276,7 @@ export class MemorySessionRepo {
     await initializeSession(session);
     return session;
   }
-  async open(metadata) {
+  async open(metadata, { repair = true } = {}) {
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
     const data = this.sessions.get(metadata.id);
     if (!data) throw new Error("Harness session not found");
@@ -270,7 +284,7 @@ export class MemorySessionRepo {
       data.records = clone(store.records); this.openSessions.delete(metadata.id);
     });
     this.openSessions.set(metadata.id, session);
-    try { await repairInterruptedSession(session); return session; }
+    try { if (repair) await repairInterruptedSession(session); return session; }
     catch (error) { await session.close().catch(() => {}); throw error; }
   }
   async list() { return [...this.sessions.values()].map((s) => clone(s.metadata)); }
@@ -351,19 +365,22 @@ export class JsonlSessionRepo {
       throw error;
     }
   }
-  async open(metadata) {
-    if (metadata.legacy) return this.importLegacy(metadata);
+  async open(metadata, { repair = true, wait = repair } = {}) {
+    if (metadata.legacy) {
+      if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
+      return this.importLegacy(metadata);
+    }
     this.checkMetadata(metadata);
     if (metadata.path !== join(this.directory, `${metadata.journalId}.jsonl`)) fail();
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
-    if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
+    if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
     const locks = await this.ensureDirectory();
-    const writer = await locks.acquireWriter(metadata.journalId);
+    const writer = await locks.acquireWriter(metadata.journalId, { wait });
     let session;
     try {
-      if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
-      session = await this.openLocked(metadata, writer);
-      try { await this.reconcileImport(session); await repairInterruptedSession(session); return session; }
+      if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
+      session = await this.openLocked(metadata, writer, { repair });
+      try { if (repair) { await this.reconcileImport(session); await repairInterruptedSession(session); } return session; }
       catch (error) { await session.close().catch(() => {}); throw error; }
     } catch (error) {
       try { if (!session?.closed) await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }
@@ -375,7 +392,7 @@ export class JsonlSessionRepo {
     await syncPath(this.directory); await syncPath(join(this.root, "mono-v2")); await syncPath(this.root);
     await this.assertDirectory();
   }
-  async openLocked(metadata, writer) {
+  async openLocked(metadata, writer, { repair = true } = {}) {
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
     const locks = await this.locksPromise;
     await this.assertDirectory();
@@ -385,7 +402,7 @@ export class JsonlSessionRepo {
       handle = await open(metadata.path, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW);
       const identity = await handle.stat();
       if (!sameIdentity(identity, reader.identity)) fail();
-      let expectedSize = identity.size, expectedStat = identity;
+      let expectedSize = identity.size, expectedStat = identity, pendingTornTail = null;
       const unchanged = (a, b) => sameIdentity(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
       const warm = this.warm?.metadata.id === metadata.id && this.warm.metadata.journalId === metadata.journalId
         && this.warm.metadata.path === metadata.path && unchanged(this.warm.identity, identity) ? this.warm : null;
@@ -405,7 +422,16 @@ export class JsonlSessionRepo {
           if (!sameIdentity(stat, expectedStat) || stat.size !== expectedSize || stat.mtimeMs !== expectedStat.mtimeMs) fail();
           expectedStat = stat; reader.cacheVersion = stat;
         },
+        prepareReconciliation: async () => {
+          await verify();
+          if (pendingTornTail !== null) {
+            await handle.truncate(pendingTornTail); expectedSize = pendingTornTail; expectedStat = await handle.stat();
+            pendingTornTail = null; reader.clearCache(); this.warm = null;
+          }
+          await handle.sync();
+        },
         append: async (text) => {
+          if (pendingTornTail !== null) throw new Error("Native torn tail requires matched reconciliation before mutation");
           reader.path = storeMetadata.path;
           await this.assertDirectory(); await reader.assertIdentity();
           const stat = await handle.stat(); if (!unchanged(stat, expectedStat) || stat.size !== expectedSize) fail();
@@ -421,7 +447,7 @@ export class JsonlSessionRepo {
         },
         sync: async () => { await verify(); await handle.sync(); },
       }, async (store) => {
-        if (!store.retired && !store.failure && store.entries.size <= 2048 && store.seq <= 8192 && storeMetadata.path.endsWith(".jsonl")) {
+        if (pendingTornTail === null && !store.retired && !store.failure && store.entries.size <= 2048 && store.seq <= 8192 && storeMetadata.path.endsWith(".jsonl")) {
           try {
             await verify(); const closedIdentity = await handle.stat();
             if (!unchanged(closedIdentity, expectedStat)) fail();
@@ -453,10 +479,11 @@ export class JsonlSessionRepo {
         if (evidence.torn) {
           await reader.assertIdentity(); const current = await handle.stat();
           if (!sameIdentity(current, evidence.identity) || current.size !== evidence.identity.size) fail();
-          await handle.truncate(evidence.completeBytes); expectedSize = evidence.completeBytes; expectedStat = await handle.stat();
+          if (repair) { await handle.truncate(evidence.completeBytes); expectedSize = evidence.completeBytes; expectedStat = await handle.stat(); }
+          else pendingTornTail = evidence.completeBytes;
         }
       }
-      if (!warm || session.durableSeq !== session.seq) { await handle.sync(); session.durableSeq = session.seq; }
+      if (repair && (!warm || session.durableSeq !== session.seq)) { await handle.sync(); session.durableSeq = session.seq; }
       this.openSessions.set(metadata.id, session);
       return session;
     } catch (error) { await reader.close(); await handle?.close(); throw error; }
@@ -541,16 +568,8 @@ export class JsonlSessionRepo {
     const completionId = info.mode === "import" ? archiveTurnId : publicationTurnId;
     const completion = info.mode === "import" ? archiveTurn : publicationTurn;
     if ((info.mode === "import" && !archived) || (info.mode === "clean_break" && !publicationComplete)) {
-      // Account interrupted user work before the administrative publication seal.
-      for (const turn of await session.getOpenTurns()) {
-        if (turn.turnId === completionId) continue;
-        const openIds = (await session.getOpenOperations()).filter((op) => op.turnId === turn.turnId).map((op) => op.operationId);
-        await recordInterruption(session, turn.turnId, "crashed", openIds);
-        for (const op of (await session.getOpenOperations()).reverse()) {
-          if (op.turnId === turn.turnId) await session.closeOperation(op.operationId, "interrupted");
-        }
-        await session.endTurn(turn.turnId, "interrupted");
-      }
+      // Import and ordinary reopen use the same final-operation/suspension selection.
+      await repairInterruptedSession(session, "crashed", [completionId]);
       if (!completion) await session.beginTurn(completionId, { cause: info.mode === "import" ? "legacy_archive" : "legacy_publication", importId: info.importId });
       await session.endTurn(completionId, "completed"); await session.sync();
     }
@@ -656,10 +675,10 @@ export class JsonlSessionRepo {
       } else if (session.closed) writer.release();
     }
   }
-  async listOwned() {
+  async listOwned({ wait = true } = {}) {
     if (await absent(this.directory)) return [];
     const locks = await this.ensureDirectory();
-    return locks.withCatalog(() => this.listOwnedUnlocked());
+    return locks.withCatalog(() => this.listOwnedUnlocked(), { wait });
   }
   async listOwnedUnlocked(includeStaging = false) {
     let files;

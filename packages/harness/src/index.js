@@ -8,3 +8,5 @@ export { projectContext } from "./request-projection.js";
 
 export { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 export { NativeSuspendedError, recordInterruption, repairInterruptedSession, projectInterruptions } from "./interruption.js";
+
+export { digestTurnInput, createTurnBinding, selectTurnInterruptionAccounts, readTurnEvidence, matchTurnEvidence } from "./turn-evidence.js";

@@ -102,13 +102,13 @@ export async function createHarnessAdapter(session, options) {
     setMidRunCompactionArmed(value) { driver.setMidRunCompactionArmed(value); },
     appendMessage: (message) => session.appendMessage(message),
     beginTurn: (id, source, descriptor) => driver.beginTurn(id, source, descriptor),
-    endTurn: (status) => driver.endTurn(status),
+    endTurn: (status, result) => driver.endTurn(status, result),
     async prompt(text, promptOptions) {
       if (closed) throw new Error("mono-agent harness is closed");
       runState.stopping = false; gate?.resume();
       return driver.prompt(text, promptOptions);
     },
-    steer: (message) => driver.steer(message),
+    steer: (message, identity) => driver.steer(message, identity),
     cancelQueued: (entryId) => driver.cancelQueued(entryId),
     async abort() { stopTools(); await driver.abort(); },
     waitForIdle: () => driver.waitForIdle(),

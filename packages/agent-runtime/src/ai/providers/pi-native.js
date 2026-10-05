@@ -1,4 +1,4 @@
-import { validateSessionTurn, isJournalStorageError, NativeSuspendedError } from "@mono-agent/harness";
+import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, repairInterruptedSession } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -449,6 +449,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   if (options.sessionTurn !== undefined) {
     try {
       validateSessionTurn(options.sessionTurn, providerSessionId);
+      if (options.sessionTurn.reconciliation && (typeof options.piSessionsRoot !== "string" || !options.piSessionsRoot.trim()
+        || options.sessionKeepAlive !== true || options.sessionTurn.reconciliation.purpose !== (options.manualCompaction ? "compaction" : "execution"))) {
+        throw new TypeError("Reconciliation requires a durable kept-alive turn of matching purpose");
+      }
+      runState.preserveTurnEvidence = !!options.sessionTurn.reconciliation;
       if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
         || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
         throw new TypeError("sessionTurn and sessionRecovery identities disagree");
@@ -725,7 +730,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
         throw new Error("Manual compaction failed or was cancelled.");
       }
-      await harness.endTurn("completed");
+      await harness.endTurn("completed", { text: "", error: null, failureKind: null, cancelled: false, stopReason: "compaction" });
       await commitSession(runState, {
         options,
         requestedSessionId,
@@ -773,7 +778,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // deleted; the finally clears sessionEntry.busy, removes the abort handler,
       // and closes MCP clients. For a resume no transcript was appended yet
       // (prompt never ran), so the live session needs no rollback.
-      await harness.endTurn("aborted");
+      await harness.endTurn("aborted", { text: null, error: null, failureKind: null, cancelled: true, stopReason: "aborted_before_prompt" });
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -828,7 +833,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // accept is ordered after it, so Pi cancels the admitted operation itself.
     // The finally below disarms mid-run compaction.
     if (options.abortSignal?.aborted) {
-      await harness.endTurn("aborted");
+      await harness.endTurn("aborted", { text: null, error: null, failureKind: null, cancelled: true, stopReason: "aborted_before_prompt" });
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -1077,14 +1082,45 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // tracks LIVENESS so disposeProviderSession / idle-TTL eviction can reach
     // native sessions, keep-alive registers the session, and a failed/aborted
     // resumed turn rolls back to its pre-turn leaf.
-    runState.retainRecoveryTail = !!durableRepo && options.sessionKeepAlive === true
+    runState.retainRecoveryTail = !runState.preserveTurnEvidence && !!durableRepo && options.sessionKeepAlive === true
       && !runState.maxTurnsHit
       && (!errorMessage || failureKindForPiError(errorMessage, diagnostics) === "provider_unavailable")
       && typeof options.sessionRecovery?.runId === "string" && options.sessionRecovery.runId.length > 0
       && options.sessionRecovery.runId.length <= 512
       && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
       && typeof runState.recoveryOperationId === "string";
-    await harness.endTurn(runState.externalAbort ? "aborted" : errorMessage ? "failed" : "completed");
+    const silentAtSeal = runState.preserveTurnEvidence && runState.silentTurn.completed && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
+      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
+      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+    const buildFinalResult = () => buildSuccessResult({
+      finalText,
+      finalThinking,
+      events,
+      usage,
+      estimatedCost,
+      start,
+      turnCount: runState.turnCount,
+      runAssistantCount,
+      resolved,
+      options,
+      externalAbort: runState.externalAbort,
+      errorMessage,
+      errorDetails,
+      diagnostics,
+      maxTurnsHit: runState.maxTurnsHit,
+      providerSessionId,
+      runtimeWarnings,
+      capabilitiesUsed,
+      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
+      structuredResult: runState.structuredResult,
+      effectiveEffort: providerEffectiveEffort,
+    });
+    const finalResult = buildFinalResult();
+    await harness.endTurn(runState.externalAbort ? "aborted" : finalResult.error || finalResult.failureKind ? "failed" : "completed", {
+      text: finalResult.text, error: finalResult.error ?? null, failureKind: finalResult.failureKind ?? null,
+      cancelled: finalResult.cancelled === true, stopReason: diagnostics.pi_stop_reason ?? null,
+      ...(silentAtSeal ? { turnDisposition: "silent" } : {}),
+    });
     await commitSession(runState, {
       options,
       requestedSessionId,
@@ -1110,33 +1146,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? await captureSessionRecovery(runState, { options, providerSessionId, modelKey: `${resolved.provider}:${resolved.model}`, model: runtime.model, pending: !!errorMessage || runState.externalAbort })
       : undefined;
     if (runState.retainRecoveryTail) runState.externalAbort ||= !!options.abortSignal?.aborted;
-    const silentCertified = runState.silentTurn.completed
-      && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
-      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
-      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
-    return { ...buildSuccessResult({
-      finalText,
-      finalThinking,
-      events,
-      usage,
-      estimatedCost,
-      start,
-      turnCount: runState.turnCount,
-      runAssistantCount,
-      resolved,
-      options,
-      externalAbort: runState.externalAbort,
-      errorMessage,
-      errorDetails,
-      diagnostics,
-      maxTurnsHit: runState.maxTurnsHit,
-      providerSessionId,
-      runtimeWarnings,
-      capabilitiesUsed,
-      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
-      structuredResult: runState.structuredResult,
-      effectiveEffort: providerEffectiveEffort,
-    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
+    const silentCertified = runState.preserveTurnEvidence ? silentAtSeal && !runState.externalAbort
+      : runState.silentTurn.completed && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
+        && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
+        && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+    return { ...(runState.preserveTurnEvidence ? finalResult : buildFinalResult()), cancelled: runState.externalAbort, ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
     ...(silentCertified ? { turnDisposition: "silent" } : {}) };
   } catch (err) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
@@ -1144,7 +1158,22 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
-    if (err instanceof NativeSuspendedError) {
+    if (runState.preserveTurnEvidence) {
+      try {
+        if (err instanceof NativeSuspendedError) await repairInterruptedSession(runState.session.rawSession);
+        else await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed", {
+          text: runState.assistantTexts.join("") || null, error: runState.externalAbort ? null : normalizePiErrorMessage(err?.message || String(err)),
+          failureKind: runState.externalAbort ? null : isJournalStorageError(err) ? "safety_journal_storage_failed"
+            : failureKindForPiError(normalizePiErrorMessage(err?.message || String(err)), {}, { maxTurnsHit: runState.maxTurnsHit }),
+          cancelled: runState.externalAbort, stopReason: "error",
+        });
+      } catch (sealError) {
+        if (isJournalStorageError(sealError)) err = sealError;
+        // Unsealed evidence is preserved; storage uncertainty is always terminal.
+      }
+      try { await cleanupSessionOnThrow(runState, { durableRepo }); }
+      catch (closeError) { if (isJournalStorageError(closeError)) err = closeError; }
+    } else if (err instanceof NativeSuspendedError) {
       // Fresh suspension keeps disposal/reopen ownership without completion.
       // A resumed suspension has no host receipt: use failed-turn rollback,
       // not a retained recovery tail or deferred continuation.
@@ -1198,8 +1227,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
-    return isJournalStorageError(err) ? { ...failure, failureKind: "safety_journal_storage_failed",
-      retryable: false, providerSessionRecovery: undefined } : err instanceof NativeSuspendedError
+    if (isJournalStorageError(err)) {
+      return { ...failure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined,
+        ...(runState.preserveTurnEvidence ? { providerSessionId: undefined } : {}) };
+    }
+    return err instanceof NativeSuspendedError
       ? { ...failure, failureKind: "safety_native_suspended", retryable: false, providerSessionRecovery: undefined } : failure;
   } finally {
     // Safety net for a throw between arming and the prompt: disarm is

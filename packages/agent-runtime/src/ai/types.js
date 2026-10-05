@@ -202,7 +202,8 @@
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
- * @property {{kind: "host"|"instance", ownerKey: string, historyBucket: string|null, turnId: string, handleId: string, baseRevision: number|null}} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
+ * @property {(attempt: {descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}) => Promise<void>} [onSessionTurnDetached] Protected awaited host claim before stateless replay.
+ * @property {{kind: "host"|"instance", ownerKey: string, historyBucket: string|null, turnId: string, handleId: string, baseRevision: number|null, reconciliation?: {version: 1, purpose: "execution"|"compaction", fenceDigest: string, initialInputId: string|null}}} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {boolean} [manualCompaction] Internal promptless Pi compaction mode; never sent to fallback routes.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
@@ -394,6 +395,7 @@
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
  * @property {string|null} [failureKind]
+ * @property {boolean} [retryable] Explicit terminal safety rejection overrides route retryability.
  * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
  * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
@@ -532,6 +534,7 @@
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {(request: {sessionsRoot: string, descriptor: any, purpose: "execution"|"compaction", expectedModel: {provider: string, id: string, api?: string}, expectedInputs: ReadonlyArray<{id: string, requestDigest: string, placement: "initial"|"live"}>, expectedBaseTip?: string|null}) => Promise<any>} reconcileSessionTurn Storage-only protected native reconciliation.
  * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.

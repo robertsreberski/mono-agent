@@ -274,12 +274,57 @@ aborted/error/deferred assistant drafts never supply tool-call repair pairs.
 Missing results for executable admitted calls are explicit prompt-only accounts,
 not successful native receipts; crashed started work says to check whether it
 took effect. Provider suspension is accounted as suspended, not resumed, without
-a deferred continuation. A live suspension on a resumed session is an
-unreceipted failure: the native branch rolls back to its baseline, and no retained
+a deferred continuation. For legacy callers, a live suspension on a resumed
+session is an unreceipted failure: the native branch rolls back to its baseline, and no retained
 recovery-pending tail or successful receipt is created. This native repair is not
 P2 adoption of dirty host turns. Canonical history keeps
 the existing continuity account, including bounded partial prose and error detail;
 SessionHistory retains the same tool evidence. No cancelled/failed memory capture occurs.
+
+### Explicit native reconciliation contracts
+
+Protected `sessionTurn.reconciliation` is a separate opt-in from the legacy
+receipt path above. It requires a durable kept-alive host turn, version1,
+execution or compaction purpose, fence digest and original input identity (null
+for compaction). The first fsynced native start contains its binding; final seals
+carry exact pre-presentation reply text and terminal classification. Failed,
+usage-limited, context-limited, cancelled or suspended execution preserves native
+bytes instead of rolling back/deleting them. Poisoned storage remains terminal
+and offers no resumability proof.
+
+`reconcileSessionTurn` acquires ownership nonblockingly, validates the exact
+binding/model/turn/fence/input evidence before any account or torn-tail repair,
+fsyncs and closes. Matching returns ordered operation/tip references and only a
+validated completed execution result can become a commit candidate. Absence and
+mismatch are explicit; busy ownership, corruption and I/O uncertainty reject.
+Recovery invokes no model, tool, summary or deferred continuation. Interrupted
+manual checkpoints replay exact persisted envelopes, not new summaries.
+
+For execution reconciliation, `expectedInputs` must contain exactly one
+`initial` entry for the descriptor's original input, even when it was never
+consumed. Include **every native live admission** for this turn: queued,
+cancelled (including end-of-turn cancellation), and consumed. Omitting a
+cancelled/unconsumed native admission is an `admitted_inputs` mismatch. A host
+may also list durably fenced offers not yet admitted by native storage; those
+extra expectations do not prove native consumption, dispatch or completion.
+Digests cover the exact serialized native content: original prompt content and,
+for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
+follow-up body. Expected placement for the original input remains `initial`
+even when its first durable consumption is in a native `replay` operation;
+matching still requires the bound original ID and exact content digest. Live
+inputs must match `live` placement exactly. `endTurn` durably cancels remaining
+unconsumed native offers before sealing; none carries into the next turn.
+
+Routers await protected detached-attempt acknowledgement before stateless retries
+or backups, removing that authority and the descriptor from those attempts.
+Configured raw runtime reconciliation and legacy recovery hold attested
+root-generation request leases through settlement. This is **native capability
+only**: canonical history/fence/receipt formats, read-only history loading and
+host retirement/adoption policy are unchanged. Automatic host dirty-turn
+reconciliation is a subsequent host-transaction phase, not a guarantee of this
+native contract. No durable queue, continuation or effect-exactly-once promise is
+added. Older native writers must not be mixed with opted-in journals: they cannot
+provide or validate these new binding/seal/input proofs.
 
 User cancellation does not spend the failure budget. One `provider_unavailable`
 failure, including single-primary exhaustion with matching proof, may recover per

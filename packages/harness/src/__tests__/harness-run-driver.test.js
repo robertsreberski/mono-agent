@@ -311,3 +311,148 @@ it("abortOpenOperations accounts only for open operations, not earlier completed
     expect(raw.validator.operations.get(completed).end.payload.status).toBe("completed"); expect(await raw.getOpenOperations()).toEqual([]);
   } finally { await adapter.close(); await raw.close(); }
 });
+
+it("durably binds opted-in ownership in the first start and seals the actual final native reply", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional final reply.")])]);
+  const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "protected-first-start", handleId: raw.metadata.id, baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "host-initial" } };
+  const sync = raw.sync.bind(raw); const starts = [];
+  raw.sync = async () => { starts.push(raw.records.at(-1)); return sync(); };
+  try {
+    await adapter.beginTurn(descriptor.turnId, "host", descriptor);
+    expect(starts[0]).toMatchObject({ kind: "turn_start", payload: { binding: { ownerKey: descriptor.ownerKey, reconciliation: descriptor.reconciliation } } });
+    expect(starts[1].kind).toBe("handle_binding");
+    const terminal = await adapter.prompt("Fictional request.");
+    const result = { text: "Fictional final reply.", error: null, failureKind: null, cancelled: false, stopReason: "stop" };
+    await adapter.endTurn("completed", result);
+    expect((await raw.getTurn(descriptor.turnId)).payload).toMatchObject({ finalOperationId: terminal.operationId, consumedInputIds: ["host-initial"], seal: { version: 1, outcome: "completed", result } });
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("consumes the original protected input once across reactive replay and internal finalization prompts", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("First fictional reply.")]), fauxAssistantMessage([fauxText("Second fictional reply.")]), fauxAssistantMessage([fauxText("Final fictional reply.")])]);
+  const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "replay-input", handleId: raw.metadata.id, baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "host-initial" } };
+  try {
+    await adapter.beginTurn(descriptor.turnId, "host", descriptor);
+    await adapter.prompt("Fictional original request."); await adapter.prompt("Fictional original request."); await adapter.prompt("Fictional internal finalization.");
+    await adapter.endTurn("completed", { text: "Final fictional reply.", error: null, failureKind: null, cancelled: false, stopReason: "stop" });
+    expect((await raw.getTurn(descriptor.turnId)).payload.consumedInputIds).toEqual(["host-initial"]);
+    expect(raw.records.filter((record) => record.turnId === descriptor.turnId && record.kind === "input_consumed")).toHaveLength(1);
+    expect(raw.records.filter((record) => record.turnId === descriptor.turnId && record.kind === "message" && record.payload.message.role === "user").map((record) => record.payload.input.id)).toEqual(["host-initial", "host-initial", null]);
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+function protectedTurn(raw, turnId = "queue-turn", initialInputId = "initial-input") {
+  return { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId, handleId: raw.metadata.id, baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId } };
+}
+const queueSeal = { text: "Fictional reply.", error: null, failureKind: null, cancelled: false, stopReason: "stop" };
+it.each([false, true])("excludes cancelling input from poll during durable cancellation and restores on failure (reject=%s)", async (reject) => {
+  const real = agentCore.runAgentLoop; let poll;
+  const loop = vi.spyOn(agentCore, "runAgentLoop").mockImplementation((prompts, context, config, ...rest) => { poll = config.getSteeringMessages; return real(prompts, context, config, ...rest); });
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")])]); let release;
+  try {
+    const descriptor = protectedTurn(raw); await adapter.beginTurn(descriptor.turnId, "host", descriptor); await adapter.prompt("Fictional initial.");
+    const queuedId = await adapter.steer("Fictional cancelled follow-up.", { inputId: "live-input" }); const write = raw.write.bind(raw);
+    const gate = new Promise((resolve) => { release = resolve; }); let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    raw.write = async (kind, payload, identity) => {
+      if (kind === "input_queued" && payload.state === "cancelled") { entered(); await gate; if (reject) throw new Error("Fictional pre-write rejection"); }
+      return write(kind, payload, identity);
+    };
+    const cancel = adapter.cancelQueued(queuedId); await started;
+    expect(await poll()).toEqual([]); expect((await raw.getEntries()).some((entry) => entry.message?.content?.[0]?.text === "Fictional cancelled follow-up.")).toBe(false);
+    release();
+    if (reject) { await expect(cancel).rejects.toThrow("pre-write rejection"); expect(raw.failure).toBeNull(); expect(await poll()).toMatchObject([{ content: [{ text: "Fictional cancelled follow-up." }] }]); }
+    else { expect(await cancel).toEqual({ kind: "cancelled", entryId: queuedId }); expect(await poll()).toEqual([]); }
+    raw.write = write; await adapter.endTurn("completed", queueSeal);
+    expect(raw.records.filter((record) => record.kind === "input_consumed").map((record) => record.payload.inputId)).toEqual(["initial-input"]);
+    expect(raw.validator.inputs.get("live-input").state).toBe("cancelled");
+  } finally { release?.(); loop.mockRestore(); await adapter.close(); await raw.close(); }
+});
+it.each(["cancel", "place"])("durably cancels leftover turn-A input before turn-B can %s it", async (action) => {
+  const { adapter, raw, faux } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")]), fauxAssistantMessage([fauxText("Fictional reply.")])]);
+  try {
+    const a = protectedTurn(raw, "turn-a", "initial-a"), b = protectedTurn(raw, "turn-b", "initial-b");
+    await adapter.beginTurn(a.turnId, "host", a); await adapter.prompt("Fictional A.");
+    const queuedId = await adapter.steer("Fictional leftover A.", { inputId: "leftover-a" });
+    await adapter.endTurn("completed", queueSeal); expect(raw.validator.inputs.get("leftover-a").state).toBe("cancelled");
+    expect(raw.records.filter((record) => record.kind === "input_queued" && record.payload.state === "cancelled")).toMatchObject([{ turnId: a.turnId, payload: { inputId: "leftover-a" } }]);
+    await adapter.beginTurn(b.turnId, "host", b);
+    if (action === "cancel") expect(await adapter.cancelQueued(queuedId)).toEqual({ kind: "not_found", entryId: queuedId });
+    await adapter.prompt("Fictional B."); await adapter.endTurn("completed", queueSeal);
+    expect([...raw.validator.turns.get(b.turnId).admittedInputIds]).toEqual([]);
+    expect(raw.records.filter((record) => record.kind === "message").some((record) => record.payload.message.content?.[0]?.text === "Fictional leftover A.")).toBe(false);
+    expect(raw.records.filter((record) => record.kind === "input_consumed").map((record) => record.payload.inputId)).toEqual(["initial-a", "initial-b"]); expect(faux.state.callCount).toBe(2);
+  } finally { await adapter.close(); await raw.close(); }
+});
+it("matches first original consumption on replay after a healthy pre-write failure", async () => {
+  const { readTurnEvidence, matchTurnEvidence, digestTurnInput } = await import("../turn-evidence.js");
+  const { adapter, raw, faux } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")])]);
+  try {
+    const descriptor = protectedTurn(raw, "first-consumption-replay"); await adapter.beginTurn(descriptor.turnId, "host", descriptor);
+    const append = raw.appendMessage.bind(raw); const failed = vi.spyOn(raw, "appendMessage").mockRejectedValueOnce(new Error("Fictional healthy pre-write failure"));
+    await expect(adapter.prompt("Fictional original.")).rejects.toThrow("healthy pre-write failure"); failed.mockRestore(); raw.appendMessage = append;
+    expect(raw.failure).toBeNull(); expect(raw.validator.turns.get(descriptor.turnId).inputs.size).toBe(0);
+    await adapter.prompt("Fictional original."); await adapter.endTurn("completed", queueSeal);
+    const evidence = await readTurnEvidence(raw, descriptor.turnId); expect(evidence.inputs).toMatchObject([{ id: "initial-input", placement: "replay" }]);
+    expect(matchTurnEvidence(evidence, { descriptor, purpose: "execution", expectedModel: { provider: "faux", id: "retry-fixture" }, expectedInputs: [{ id: "initial-input", placement: "initial", requestDigest: digestTurnInput("Fictional original.") }] }).status).toBe("matched"); expect(faux.state.callCount).toBe(1);
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("waits for an in-flight live admission and cancels it before sealing the ending turn", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")])]); let release;
+  try {
+    const descriptor = protectedTurn(raw, "admission-ending"); await adapter.beginTurn(descriptor.turnId, "host", descriptor); await adapter.prompt("Fictional initial.");
+    const write = raw.write.bind(raw); let entered; const started = new Promise((resolve) => { entered = resolve; }); const gate = new Promise((resolve) => { release = resolve; });
+    raw.write = async (kind, payload, identity) => { if (kind === "input_queued" && payload.state === "queued") { entered(); await gate; } return write(kind, payload, identity); };
+    const admission = adapter.steer("Fictional late offer.", { inputId: "late-live" }); await started;
+    let sealed = false; const ending = adapter.endTurn("completed", queueSeal).then(() => { sealed = true; });
+    await expect(adapter.steer("Fictional further offer.", { inputId: "forbidden-late" })).rejects.toThrow("ending");
+    await expect(adapter.prompt("Fictional premature next prompt.")).rejects.toThrow("ending");
+    await expect(adapter.compact()).rejects.toThrow("ending");
+    await expect(adapter.endTurn("completed", queueSeal)).rejects.toThrow("ending"); expect(sealed).toBe(false);
+    release(); await admission; await ending; expect(raw.validator.inputs.get("late-live").state).toBe("cancelled");
+    const records = raw.records.filter((record) => record.turnId === descriptor.turnId); expect(records.findIndex((record) => record.kind === "input_queued" && record.payload.state === "cancelled")).toBeLessThan(records.findIndex((record) => record.kind === "turn_end"));
+  } finally { release?.(); await adapter.close(); await raw.close(); }
+});
+
+it.each(["first-start", "handle-sync"])("rejects steering throughout the in-flight bound beginTurn window (%s)", async (phase) => {
+  const { adapter, raw, faux } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")])]); let release;
+  try {
+    const descriptor = protectedTurn(raw, "begin-admission"); let entered;
+    const started = new Promise((resolve) => { entered = resolve; }), gate = new Promise((resolve) => { release = resolve; });
+    if (phase === "first-start") {
+      const begin = raw.beginTurn.bind(raw); raw.beginTurn = async (...args) => { entered(); await gate; return begin(...args); };
+    } else {
+      const sync = raw.sync.bind(raw); let count = 0; raw.sync = async () => { if (++count === 2) { entered(); await gate; } return sync(); };
+    }
+    const beginning = adapter.beginTurn(descriptor.turnId, "host", descriptor); await started;
+    await expect(adapter.steer("Fictional premature live offer.", { inputId: "premature" })).rejects.toThrow("beginning");
+    await expect(adapter.beginTurn("overlapping-begin")).rejects.toThrow("already open"); expect(raw.failure).toBeNull(); expect(raw.records.filter((record) => record.kind === "input_queued")).toEqual([]);
+    release(); await beginning; await adapter.prompt("Fictional original.");
+    const liveId = await adapter.steer("Fictional valid live offer.", { inputId: "valid-live" }); expect(liveId).toEqual(expect.any(String));
+    await adapter.endTurn("completed", queueSeal);
+    expect(raw.records.filter((record) => record.kind === "input_queued")).toMatchObject([{ turnId: descriptor.turnId, payload: { inputId: "valid-live", state: "queued" } }, { turnId: descriptor.turnId, payload: { inputId: "valid-live", state: "cancelled" } }]); expect(faux.state.callCount).toBe(1);
+  } finally { release?.(); await adapter.close(); await raw.close(); }
+});
+it("rejects unbound steering before and between turns so the next bound prompt places only its own inputs", async () => {
+  const { adapter, raw, faux } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")]), fauxAssistantMessage([fauxText("Fictional reply.")])]);
+  try {
+    await expect(adapter.steer("Fictional pre-turn offer.", { inputId: "before-turn" })).rejects.toThrow("no active turn");
+    const a = protectedTurn(raw, "gap-a", "initial-a"), b = protectedTurn(raw, "gap-b", "initial-b");
+    await adapter.beginTurn(a.turnId, "host", a); await adapter.prompt("Fictional A."); await adapter.endTurn("completed", queueSeal);
+    await expect(adapter.steer("Fictional between-turn offer.", { inputId: "between-turn" })).rejects.toThrow("no active turn");
+    await adapter.beginTurn(b.turnId, "host", b); await adapter.steer("Fictional B live input.", { inputId: "live-b" });
+    await adapter.prompt("Fictional B."); await adapter.endTurn("completed", queueSeal);
+    expect([...raw.validator.turns.get(b.turnId).admittedInputIds]).toEqual(["live-b"]);
+    const live = raw.records.filter((record) => record.kind === "message" && record.payload.input?.placement === "live");
+    expect(live).toHaveLength(1); expect(live[0]).toMatchObject({ turnId: b.turnId, payload: { input: { id: "live-b", placement: "live" } } });
+    expect(raw.records.filter((record) => record.kind === "input_consumed").map((record) => record.payload.inputId)).toEqual(["initial-a", "initial-b", "live-b"]); expect(raw.failure).toBeNull(); expect(faux.state.callCount).toBe(2);
+    const { readTurnEvidence, matchTurnEvidence, digestTurnInput } = await import("../turn-evidence.js");
+    expect(matchTurnEvidence(await readTurnEvidence(raw, b.turnId), { descriptor: b, purpose: "execution", expectedModel: { provider: "faux", id: "retry-fixture" }, expectedInputs: [
+      { id: "initial-b", placement: "initial", requestDigest: digestTurnInput("Fictional B.") }, { id: "live-b", placement: "live", requestDigest: digestTurnInput("Fictional B live input.") },
+    ] }).status).toBe("matched");
+  } finally { await adapter.close(); await raw.close(); }
+});

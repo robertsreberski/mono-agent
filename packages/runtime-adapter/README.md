@@ -134,6 +134,38 @@ The facade re-exports `CONTEXT_1M_TOKENS` and `supportsPiContext1M()`.
 boolean policy; omitted entries are off. Hosts should derive it from validated
 model declarations, not use it to override custom-provider metadata.
 
+Protected `sessionTurn.reconciliation` opt-in preserves native terminal evidence
+separately from legacy `sessionRecovery` receipts. `reconcileSessionTurn(request)`
+acquires native ownership without waiting on a live writer, validates the exact
+owner/bucket/handle/revision/model/fence/purpose and input digests before repair,
+and returns matched ordered operations, an absent result, or a mismatch. Busy
+ownership, corruption and I/O errors reject rather than becoming provider failures.
+No model, tool or deferred continuation runs during reconciliation. Only a sealed
+completed execution may return a minimal `commitCandidate`; compaction cannot
+produce an execution-history answer. This capability does not enable canonical
+host adoption or change history/fence formats by itself.
+
+For execution reconciliation, `expectedInputs` must contain exactly one
+`initial` entry for the descriptor's original input, even when it was never
+consumed. Include **every native live admission** for this turn: queued,
+cancelled (including end-of-turn cancellation), and consumed. Omitting a
+cancelled/unconsumed native admission is an `admitted_inputs` mismatch. A host
+may also list durably fenced offers not yet admitted by native storage; those
+extra expectations do not prove native consumption, dispatch or completion.
+Digests cover the exact serialized native content: original prompt content and,
+for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
+follow-up body. Expected placement for the original input remains `initial`
+even when its first durable consumption is in a native `replay` operation;
+matching still requires the bound original ID and exact content digest. Live
+inputs must match `live` placement exactly. `endTurn` durably cancels remaining
+unconsumed native offers before sealing; none carries into the next turn.
+
+Routed opted-in requests must provide the protected awaited
+`onSessionTurnDetached` host hook before any stateless retry/backup. It receives
+primary attempt evidence; failure to acknowledge is terminal. Neither that hook
+nor the turn descriptor is forwarded to detached attempts; private attempt
+resolvers cannot replace them. Backup success never certifies primary success.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -285,6 +317,10 @@ RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
 RuntimeSessionTurnDescriptor
+RuntimeSessionTurnDetachedAttempt
+RuntimeSessionTurnReconciliationRequest
+RuntimeSessionTurnReconciliationResult
+RuntimeSessionTurnResultSeal
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity
