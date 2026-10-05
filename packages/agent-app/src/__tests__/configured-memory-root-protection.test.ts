@@ -1,3 +1,4 @@
+import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
 import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -314,3 +315,13 @@ function memoryConfig(
       : {}),
   } as unknown as MonoAgentConfig;
 }
+
+it("strips both inherited storage recovery methods from the per-run completion capability", async () => {
+  const run = vi.fn(async () => ({ text: "Fictional completion", events: [] }));
+  const recoverSession = vi.fn(async () => true), reconcileSessionTurn = vi.fn(async () => ({ status: "absent" as const }));
+  const runtime = { run, recoverSession, reconcileSessionTurn };
+  const completion = completionOnlyRuntime(runtime);
+  expect(completion).not.toHaveProperty("recoverSession"); expect(completion).not.toHaveProperty("reconcileSessionTurn");
+  expect(await completion.run("Fictional prompt", { model: { provider: "openai", model: "fictional", reference: "openai:fictional" }, messages: [], abortSignal: new AbortController().signal })).toMatchObject({ text: "Fictional completion" });
+  expect(runtime.recoverSession).toBe(recoverSession); expect(runtime.reconcileSessionTurn).toBe(reconcileSessionTurn); expect(recoverSession).not.toHaveBeenCalled(); expect(reconcileSessionTurn).not.toHaveBeenCalled();
+});

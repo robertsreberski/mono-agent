@@ -1227,8 +1227,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
-    return isJournalStorageError(err) ? { ...failure, failureKind: "safety_journal_storage_failed",
-      retryable: false, providerSessionRecovery: undefined, providerSessionId: undefined } : err instanceof NativeSuspendedError
+    if (isJournalStorageError(err)) {
+      const { providerSessionId: _failedHandle, ...storageFailure } = failure;
+      return { ...storageFailure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined };
+    }
+    return err instanceof NativeSuspendedError
       ? { ...failure, failureKind: "safety_native_suspended", retryable: false, providerSessionRecovery: undefined } : failure;
   } finally {
     // Safety net for a throw between arming and the prompt: disarm is

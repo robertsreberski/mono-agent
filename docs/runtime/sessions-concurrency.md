@@ -300,6 +300,21 @@ mismatch are explicit; busy ownership, corruption and I/O uncertainty reject.
 Recovery invokes no model, tool, summary or deferred continuation. Interrupted
 manual checkpoints replay exact persisted envelopes, not new summaries.
 
+For execution reconciliation, `expectedInputs` must contain exactly one
+`initial` entry for the descriptor's original input, even when it was never
+consumed. Include **every native live admission** for this turn: queued,
+cancelled (including end-of-turn cancellation), and consumed. Omitting a
+cancelled/unconsumed native admission is an `admitted_inputs` mismatch. A host
+may also list durably fenced offers not yet admitted by native storage; those
+extra expectations do not prove native consumption, dispatch or completion.
+Digests cover the exact serialized native content: original prompt content and,
+for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
+follow-up body. Expected placement for the original input remains `initial`
+even when its first durable consumption is in a native `replay` operation;
+matching still requires the bound original ID and exact content digest. Live
+inputs must match `live` placement exactly. `endTurn` durably cancels remaining
+unconsumed native offers before sealing; none carries into the next turn.
+
 Routers await protected detached-attempt acknowledgement before stateless retries
 or backups, removing that authority and the descriptor from those attempts.
 Configured raw runtime reconciliation and legacy recovery hold attested

@@ -419,6 +419,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           });
           if (result.failureKind === "skipped_capability_mismatch") {
             lastRouteSkip = result;
+            if (sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
+              descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result,
+            };
             // A bridge-level mismatch is about this route, not the logical run.
             // Try the next entry and do not derive a transcript snapshot from it.
             break;

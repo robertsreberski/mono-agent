@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { MemorySessionRepo, JsonlSessionRepo } from "../session-store.js";
+import { MemorySessionRepo, JsonlSessionRepo, SessionStore } from "../session-store.js";
 import { createTurnBinding, digestTurnInput, readTurnEvidence, matchTurnEvidence, selectTurnInterruptionAccounts } from "../turn-evidence.js";
 import { repairInterruptedSession } from "../interruption.js";
 import { validateSessionTurn } from "../journal-schema.js";
@@ -146,3 +146,24 @@ it("survives SIGKILL at first bound-start fsync and reconciles idempotently in e
   expect(first.evidence).toEqual(second.evidence); expect(first.evidence).toMatchObject({ status: "interrupted", operations: [], consumedInputIds: [],
     binding: { ownerKey: "fictional-owner" }, seal: { outcome: "interrupted", result: null }, interruptionEvidence: [{ cause: "crashed", operationIds: [] }] });
 }, 10000);
+
+it("requires every live admission including cancelled/unconsumed offers, while allowing not-yet-native host offers", async () => {
+  const raw = await fixture();
+  try {
+    await raw.write("input_queued", { inputId: "cancelled-live", placement: "live", requestDigest: digestTurnInput("Fictional cancelled offer."), state: "queued" });
+    await raw.write("input_queued", { inputId: "cancelled-live", placement: "live", requestDigest: digestTurnInput("Fictional cancelled offer."), state: "cancelled" });
+    await raw.write("input_queued", { inputId: "queued-live", placement: "live", requestDigest: digestTurnInput("Fictional queued offer."), state: "queued" });
+    const evidence = await readTurnEvidence(raw, descriptor.turnId), base = request();
+    expect(matchTurnEvidence(evidence, base)).toMatchObject({ status: "mismatch", reason: "admitted_inputs" });
+    const live = [{ id: "cancelled-live", placement: "live", requestDigest: digestTurnInput("Fictional cancelled offer.") }, { id: "queued-live", placement: "live", requestDigest: digestTurnInput("Fictional queued offer.") }];
+    expect(matchTurnEvidence(evidence, { ...base, expectedInputs: [...base.expectedInputs, ...live, { id: "host-only-offer", placement: "live", requestDigest: digestTurnInput("Fictional pending host offer.") }] }).status).toBe("matched");
+  } finally { await raw.close(); }
+});
+it("codes metadata/inline binding handle mismatch as journal corruption on cold and pre-write validation", async () => {
+  const raw = await fixture();
+  try {
+    expect(() => new SessionStore({ ...raw.metadata, id: "foreign-handle" }, raw.records)).toThrow(expect.objectContaining({ code: "ERR_HARNESS_JOURNAL_CORRUPT" }));
+    const other = await new MemorySessionRepo().create();
+    await expect(other.beginTurn(descriptor.turnId, { model }, "host", createTurnBinding(descriptor, model))).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" }); expect(other.failure).toBeNull(); await other.close();
+  } finally { await raw.close(); }
+});

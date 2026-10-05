@@ -1924,7 +1924,7 @@ it("classifies native journal fsync failure terminally instead of provider-unava
   try {
     const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }],
       sessionId: "storage-failed", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "storage-run", revision: 0 } }));
-    expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
+    expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result).not.toHaveProperty("providerSessionId"); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
   } finally { spy.mockRestore(); await disposeProviderSession("storage-failed").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -2105,4 +2105,20 @@ describe("protected native turn reconciliation", () => {
     } finally { spy?.mockRestore(); await disposeProviderSession(first.options.sessionId); rmSync(root, { recursive: true, force: true }); }
   });
 
+});
+
+it("refuses reconciliation of a legacy recovery-pending handle without evicting its recovery proof", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-recovery-pending-")); const id = "pending-handle";
+  try {
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")])]);
+    const common = { piSessionsRoot: root, sessionId: id, sessionKeepAlive: true, messages: [{ role: "user", content: "Fictional request." }] };
+    await generatePiNativeResponse("Fictional instructions.", runOptions(model, common));
+    faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional provider failure" })]);
+    const failed = await generatePiNativeResponse("Fictional instructions.", runOptions(model, { ...common, sessionResume: true, sessionRecovery: { runId: "legacy-pending", revision: 0 } }));
+    expect(failed.providerSessionRecovery).toBeDefined();
+    const request = { sessionsRoot: root, purpose: "execution", descriptor: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "native-query", handleId: id, baseRevision: 0,
+      reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } }, expectedModel: { provider: model.provider, id: model.id, api: model.api }, expectedInputs: [{ id: "fictional-input", placement: "initial", requestDigest: digestTurnInput("Fictional request.") }] };
+    await expect(reconcileNativeSessionTurn(request)).rejects.toMatchObject({ code: "ERR_HARNESS_WRITER_BUSY" });
+    expect(await recoverDurableNativeSession(failed.providerSessionRecovery, { appliedInputIds: [] })).toBe(true); expect(faux.state.callCount).toBe(2);
+  } finally { await disposeProviderSession(id); rmSync(root, { recursive: true, force: true }); }
 });

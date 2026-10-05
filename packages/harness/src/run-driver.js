@@ -17,10 +17,12 @@ export function createRunDriver(store, options) {
   const messageIds = new WeakMap();
   const executions = new Set();
   let runId, controller, running;
+  let turnEnding = false;
+  const inputAdmissions = new Set();
   let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
   async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
-    if (turnId) throw new Error("Pi logical turn is already open");
+    if (turnId || turnEnding) throw new Error("Pi logical turn is already open");
     if (descriptor) {
       validateSessionTurn(descriptor, store.metadata.id);
       if (source !== "synthetic" && (source !== descriptor.kind || id !== descriptor.turnId)) {
@@ -45,7 +47,37 @@ export function createRunDriver(store, options) {
   }
   async function endTurn(status, result) {
     if (!turnId) return;
-    const id = turnId; await store.endTurn(id, status, result); await store.sync(); turnId = null; turnBinding = undefined; ownsTurn = false;
+    if (turnEnding) throw new Error("Pi logical turn is already ending");
+    if ([...store.validator.openOperations].some((id) => store.validator.operations.get(id).turnId === turnId)) {
+      throw new Error("Cannot end a logical turn with open operations");
+    }
+    turnEnding = true;
+    try {
+      await Promise.allSettled([...inputAdmissions]);
+      // A live offer belongs to exactly one turn. Unconsumed offers (including
+      // selections abandoned by an aborted loop) are cancelled before its seal.
+      for (const [entryId, item] of queue) {
+        if (item.state === "queued" || item.state === "selected") await cancelInput(entryId, item);
+        else if (item.state === "cancelling") await item.cancellation;
+      }
+      const id = turnId; await store.endTurn(id, status, result); await store.sync();
+      queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false;
+    } finally { turnEnding = false; }
+  }
+  function cancelInput(entryId, item) {
+    const previous = item.state;
+    // Synchronous exclusion from poll and retention of message identity are
+    // necessary while journal I/O yields. Never delete a selected message early.
+    item.state = "cancelling";
+    item.cancellation = (async () => {
+      try {
+        if (item.bound) {
+          await store.write("input_queued", { inputId: item.inputId, placement: "live", requestDigest: digestTurnInput(item.message.content), state: "cancelled" }, { turnId: item.turnId }); await barrier();
+        }
+        queue.delete(entryId); return { kind: "cancelled", entryId };
+      } catch (error) { item.state = previous; throw error; }
+    })();
+    return item.cancellation;
   }
   async function ensureTurn(cause) {
     if (turnId) return false;
@@ -216,7 +248,7 @@ export function createRunDriver(store, options) {
       tools: tools.map(toToolDeclaration), messages: messages.filter((m) => m.role !== "system") }).messages, tools };
   }
   async function drive(text, promptOptions) {
-    if (closed || running) throw new Error("mono-agent harness is closed or busy");
+    if (closed || running || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
     runId = randomUUID(); controller = new AbortController();
     const id = runId;
     promptOptions?.onOperationAdmitted?.(id);
@@ -306,29 +338,32 @@ export function createRunDriver(store, options) {
     prompt: drive,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async steer(message, identity) {
-      if (closed) throw new Error("mono-agent harness is closed");
+      if (closed || turnEnding) throw new Error("mono-agent harness is closed or ending its turn");
       const entryId = randomUUID(); const copy = typeof message === "string"
         ? { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now() }
         : structuredClone(message);
-      const inputId = turnBinding ? identity?.inputId : entryId;
-      if (turnBinding) {
-        await store.write("input_queued", { inputId, placement: "live", requestDigest: digestTurnInput(copy.content), state: "queued" }); await barrier();
-      }
-      messageIds.set(copy, entryId); queue.set(entryId, { message: copy, inputId, state: "queued" });
-      return entryId;
+      const bound = !!turnBinding; const admittedTurnId = turnId;
+      const inputId = bound ? identity?.inputId : entryId;
+      const admission = (async () => {
+        if (bound) {
+          await store.write("input_queued", { inputId, placement: "live", requestDigest: digestTurnInput(copy.content), state: "queued" }, { turnId: admittedTurnId }); await barrier();
+        }
+        messageIds.set(copy, entryId); queue.set(entryId, { message: copy, inputId, state: "queued", bound, turnId: admittedTurnId });
+        return entryId;
+      })();
+      inputAdmissions.add(admission);
+      try { return await admission; } finally { inputAdmissions.delete(admission); }
     },
     async cancelQueued(entryId) {
       const item = queue.get(entryId);
-      if (item?.state === "queued") {
-        if (turnBinding) { await store.write("input_queued", { inputId: item.inputId, placement: "live", requestDigest: digestTurnInput(item.message.content), state: "cancelled" }); await barrier(); }
-        queue.delete(entryId); return { kind: "cancelled", entryId };
-      }
+      if (item?.state === "queued") return await cancelInput(entryId, item);
+      if (item?.state === "cancelling") return await item.cancellation;
       return { kind: item ? "already_placed" : "not_found", entryId };
     },
     async abort() { controller?.abort(); },
     async waitForIdle() { await running; },
     async compact() {
-      if (running || closed) throw new Error("mono-agent harness is closed or busy");
+      if (running || closed || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
       controller = new AbortController();
       running = performCompaction();
       try { return await running; } finally { running = null; }
@@ -336,12 +371,15 @@ export function createRunDriver(store, options) {
     setTools(value) { tools = wrapTools(value); },
     setMidRunCompactionArmed(value) { compactionArmed = value === true; },
     setCompactionSettings(value) { settings = { ...settings, ...value }; },
-    async repairOpenOperations() { await repairInterruptedSession(store); turnId = null; ownsTurn = false; },
+    async repairOpenOperations() { await repairInterruptedSession(store); queue.clear(); turnId = null; turnBinding = undefined; ownsTurn = false; },
     async abortOpenOperations() {
       const open = await store.getOpenOperations();
       for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", open.filter((op) => op.turnId === turn.turnId).map((op) => op.operationId));
       for (const op of (await store.getOpenOperations()).reverse()) await store.closeOperation(op.operationId, "aborted");
-      for (const turn of await store.getOpenTurns()) await store.endTurn(turn.turnId, "aborted");
+      for (const turn of await store.getOpenTurns()) {
+        if (turn.turnId === turnId) await endTurn("aborted");
+        else await store.endTurn(turn.turnId, "aborted");
+      }
       await barrier(); turnId = null; ownsTurn = false;
     },
     async close() { closed = true; controller?.abort(); await running; },

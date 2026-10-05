@@ -9,7 +9,10 @@
   opted-in failed/cancelled/limited native turns without destructive rollback;
   expose storage-only reconciliation through owned runtime wrappers and require
   protected host acknowledgement before routed stateless detachment. Canonical
-  dirty-turn adoption remains a separate host-transaction capability.
+  dirty-turn adoption remains a separate host-transaction capability. Public
+  `createConfiguredAgentRuntime` now forwards optional legacy `recoverSession`
+  under its ownership lease, enabling existing receipt recovery for embedders;
+  private per-run memory completion runtimes expose neither recovery seam.
 
 - Add protected host and persistent-subagent native turn descriptors; bind journal
   ownership append-only without granting terminal recovery or host crash adoption.

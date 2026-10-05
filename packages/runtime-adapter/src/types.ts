@@ -472,6 +472,10 @@ export interface RuntimeSessionTurnReconciliationRequest {
   readonly purpose: "execution" | "compaction";
   readonly expectedModel: { readonly provider: string; readonly id: string; readonly api?: string };
   readonly expectedBaseTip?: string | null;
+  /** Exactly one original initial input, plus every native live admission,
+   * including cancelled/unconsumed entries; additional fenced host offers are
+   * permitted but do not prove native execution. Digests use native formatted
+   * content (live guidance, not raw body); replay of the original is initial. */
   readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
 }
 
@@ -498,7 +502,7 @@ export type RuntimeSessionTurnReconciliationResult =
       readonly outcome: "completed" | "failed" | "cancelled" | "interrupted";
       readonly seal: { readonly version: 1; readonly outcome: "completed" | "failed" | "cancelled" | "interrupted"; readonly result: RuntimeSessionTurnResultSeal | null } | null;
       readonly binding: RuntimeSessionTurnDescriptor & { readonly version: 1; readonly model: { readonly provider: string; readonly id: string; readonly api: string } };
-      readonly inputs: readonly { readonly id: string; readonly messageId: string; readonly requestDigest: string; readonly placement: "initial" | "live"; readonly complete: boolean }[];
+      readonly inputs: readonly { readonly id: string; readonly messageId: string; readonly requestDigest: string; readonly placement: "initial" | "replay" | "live"; readonly complete: boolean }[];
       readonly admittedInputs: readonly { readonly id: string; readonly state: "queued" | "cancelled" | "consumed"; readonly placement: "live"; readonly requestDigest: string }[];
       readonly finalOperationId: string | null;
       readonly consumedInputIds: readonly string[];

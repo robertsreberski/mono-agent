@@ -80,7 +80,8 @@ export function matchTurnEvidence(evidence, request) {
   if (request.purpose === "compaction" && (expected.size || evidence.consumedInputIds.length)) return mismatch("compaction_inputs");
   if (request.purpose === "execution" && (expected.get(binding.reconciliation.initialInputId)?.placement !== "initial" || request.expectedInputs.filter((input) => input.placement === "initial").length !== 1)) return mismatch("initial_input");
   if (evidence.inputs.some((input) => !input.complete || !expected.has(input.id)
-    || input.requestDigest !== expected.get(input.id).requestDigest || input.placement !== expected.get(input.id).placement)) return mismatch("consumed_inputs");
+    || input.requestDigest !== expected.get(input.id).requestDigest || (input.placement !== expected.get(input.id).placement
+      && !(input.placement === "replay" && input.id === binding.reconciliation.initialInputId && expected.get(input.id).placement === "initial")))) return mismatch("consumed_inputs");
   if (evidence.admittedInputs.some((input) => !expected.has(input.id)
     || input.requestDigest !== expected.get(input.id).requestDigest || input.placement !== expected.get(input.id).placement)) return mismatch("admitted_inputs");
   return { status: "matched", evidence };

@@ -31,6 +31,21 @@ pnpm add @mono-agent/harness
 Node.js 24.15.0 or newer is required. Hosts normally use the provider glue in
 `@mono-agent/agent-runtime`, rather than driving this low-level package directly.
 
+For execution reconciliation, `expectedInputs` must contain exactly one
+`initial` entry for the descriptor's original input, even when it was never
+consumed. Include **every native live admission** for this turn: queued,
+cancelled (including end-of-turn cancellation), and consumed. Omitting a
+cancelled/unconsumed native admission is an `admitted_inputs` mismatch. A host
+may also list durably fenced offers not yet admitted by native storage; those
+extra expectations do not prove native consumption, dispatch or completion.
+Digests cover the exact serialized native content: original prompt content and,
+for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
+follow-up body. Expected placement for the original input remains `initial`
+even when its first durable consumption is in a native `replay` operation;
+matching still requires the bound original ID and exact content digest. Live
+inputs must match `live` placement exactly. `endTurn` durably cancels remaining
+unconsumed native offers before sealing; none carries into the next turn.
+
 ## Architecture
 
 ### Data flow

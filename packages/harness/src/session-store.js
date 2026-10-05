@@ -14,6 +14,7 @@ import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 const clone = (v) => structuredClone(v);
 const fail = () => { throw new Error("Invalid mono-agent harness session"); };
+const corruptBinding = () => { throw Object.assign(new Error("Invalid mono-agent harness session binding"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const safeId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
 
 export class SessionStore {
@@ -38,11 +39,11 @@ export class SessionStore {
     for (const record of records) this.apply(record);
   }
   validateRecord(record) {
-    if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) fail();
+    if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.validate(record);
   }
   apply(record, address) {
-    if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) fail();
+    if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.apply(record);
     this.io?.remember?.(address, record);
     if (record.kind === "rewind") this.io?.invalidate?.();

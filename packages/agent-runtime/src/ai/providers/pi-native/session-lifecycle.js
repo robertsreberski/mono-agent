@@ -674,7 +674,7 @@ export async function reconcileNativeSessionTurn(request) {
   if (!request.descriptor.reconciliation || typeof request.sessionsRoot !== "string" || !request.sessionsRoot.trim()
     || request.purpose !== request.descriptor.reconciliation.purpose) throw new TypeError("Invalid native turn reconciliation request");
   const id = request.descriptor.handleId;
-  if (nativeSessions.get(id)?.busy) throw Object.assign(new Error("Native turn ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+  if (nativeSessions.get(id)?.busy || nativeSessions.get(id)?.recoveryPending) throw Object.assign(new Error("Native turn ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
   await nativeSessions.refresh(id);
   const repo = resolveDurableNativeSessionRepo(request.sessionsRoot);
   let raw;

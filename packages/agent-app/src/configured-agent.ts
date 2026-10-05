@@ -1,3 +1,4 @@
+import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
@@ -2286,8 +2287,11 @@ function wrapPerRunOwnedConfiguredRuntime(
   agentRoot: string | undefined,
   protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): MonoRuntimeLike {
+  // Memory completion has no storage-settlement caller. Do not advertise
+  // inherited recovery methods that would bypass this per-run ownership lease.
+  const completionRuntime = completionOnlyRuntime(runtime);
   return {
-    ...runtime,
+    ...completionRuntime,
     async run(systemPrompt, runOptions) {
       const ownership = await acquireAgentRootOwnership(agentRoot);
       let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;

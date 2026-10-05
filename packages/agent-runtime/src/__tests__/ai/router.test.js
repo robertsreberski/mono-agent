@@ -1434,3 +1434,16 @@ it("acknowledges an absent/skipped primary before a stateless backup can answer"
     reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
   const result = await router.run("sys", { messages: [], sessionTurn, onSessionTurnDetached }); expect(result.text).toBe("Fictional backup answer."); expect(onSessionTurnDetached).toHaveBeenCalledOnce();
 });
+
+it("awaits detachment when an eligible injected primary itself returns capability mismatch", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"); let acknowledge;
+  const barrier = new Promise((resolve) => { acknowledge = resolve; });
+  const primaryRun = vi.fn(async () => ({ text: null, error: "Fictional capability mismatch", failureKind: "skipped_capability_mismatch", events: [] }));
+  const backupRun = vi.fn(async () => ({ text: "Fictional backup answer", events: [] }));
+  const onSessionTurnDetached = vi.fn(async (attempt) => { expect(attempt.result.failureKind).toBe("skipped_capability_mismatch"); await barrier; });
+  const router = createRouterRuntime({ chain: [{ model: primary }, { model: backup }], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex === 0 ? primaryRun : backupRun, configureTools: vi.fn() } }) });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0, reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const running = router.run("sys", { messages: [], sessionTurn, onSessionTurnDetached });
+  await vi.waitFor(() => expect(onSessionTurnDetached).toHaveBeenCalledOnce()); expect(backupRun).not.toHaveBeenCalled(); acknowledge();
+  expect((await running).text).toBe("Fictional backup answer"); expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun.mock.calls[0][1].sessionTurn).toBeUndefined(); expect(backupRun.mock.calls[0][1].onSessionTurnDetached).toBeUndefined();
+});
