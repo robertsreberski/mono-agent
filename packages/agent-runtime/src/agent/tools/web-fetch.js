@@ -360,7 +360,9 @@ async function performFetch(
     // Charset/size failures and non-HTML parse errors keep their original codes.
     if (responseKind === "html" && error?.code === "extraction_failed") {
       htmlExtractionFailed = true;
-      extracted = { body: "", readableText: "", title: "", extractionStage: "failed", ...decoding,
+      extracted = { body: "", readableText: "", title: "", extractionStage: "failed",
+        charset: decoding?.charset, charsetSource: decoding?.charsetSource,
+        hadDecodingReplacement: decoding?.hadDecodingReplacement,
         parserFailureCount: error.parserFailures?.length ?? 0, parserFailures: error.parserFailures ?? [] };
       if (requestedRender === "never") {
         return failure(`Error extracting URL: ${error.message}`, "unusable_content", startedAt, {

@@ -705,12 +705,15 @@ JSON, XML and PDF are
 not subject to it. Sparse static application shells remain unusable even if
 they contain a loading label. The check precedes output slicing and focus filters.
 
-Challenge classification combines explicit challenge artifacts, mitigation or
-challenge page-id headers, generic human-check phrasing, and short-page
-captcha/bot/human/verification vocabulary. Tiny bodies on HTTP 202/403/429/503
-need corroborating vocabulary or headers: status and size alone do not turn a
-normal quota response or service outage into a challenge. Human-check phrasing
-and vocabulary alone do not classify long articles discussing bot protection.
+Challenge classification preserves the original conclusive access-gate signals
+regardless of document length and combines them with mitigation or challenge
+page-id headers. Broader new human-check phrasing applies only to pages with at
+most 500 visible characters, excluding script/style/noscript/template contents.
+Vocabulary
+requires a tiny body (at most 256 characters) on HTTP 202/403/429/503; it alone
+never classifies ordinary successful responses. Status and size alone do not
+turn a normal quota response or service outage into a challenge. Explanatory
+articles mentioning captcha/bot/human vocabulary remain readable evidence.
 A challenge-header 429 reports `access_challenge`, but remains terminal: no
 retry, browser escalation, or provider advance.
 

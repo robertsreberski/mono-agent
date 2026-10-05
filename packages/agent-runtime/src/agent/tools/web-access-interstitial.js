@@ -1,6 +1,7 @@
 // @ts-check
 
 const MAX_INTERSTITIAL_SAMPLE_CHARS = 32 * 1024;
+const MAX_BROAD_HUMAN_CHECK_CHARS = 500;
 
 /**
  * Classify access and authentication interstitials without treating incidental
@@ -15,20 +16,26 @@ export function classifyWebAccessInterstitial({ url, text, statusCode, headers }
   const sample = normalizedSample(text);
 
   const challengeArtifact = /\b(?:cf-chl-[\w-]+|cloudflare ray id|challenge-platform)\b/iu.test(sample);
-  // Human-check wording and vocabulary are only conclusive on short pages,
-  // never on an article discussing bot protection.
-  const shortContent = sample.length <= 2000;
+  // Keep the original conclusive signals independent of document length.
+  const humanCheck = /\bverify (?:you are|that you are)(?: a)? human\b/iu.test(sample);
+  // Only the broader new wording is limited to short visible content. Inline
+  // scripts/styles must not inflate that length or contribute vocabulary.
+  const visibleSample = normalizedSample(String(text || "")
+    .replace(/<(script|style|noscript|template)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, " "));
+  const shortContent = visibleSample.length <= MAX_BROAD_HUMAN_CHECK_CHARS;
   const tinyBody = String(text || "").length <= 256;
-  const humanCheck = /\bverify (?:you are|that you are)(?: a)? human\b|\bhuman or a bot\b|\bprove (?:you are|you're) human\b|\bare you a robot\b|\bshow us your human side\b/iu.test(sample);
+  const broadHumanCheck = /\bhuman or a bot\b|\bprove (?:you are|you're) human\b|\bare you a robot\b|\bshow us your human side\b/iu.test(visibleSample);
   const verificationVocabulary = /\b(?:verify|verification|prove|check|checking|security)\b/iu;
   const vocabularyScore = [/\b(?:captcha|challenge)\b/iu, /\b(?:bot|robot)\b/iu,
     /\bhuman\b/iu, verificationVocabulary]
-    .filter((pattern) => pattern.test(sample)).length;
+    .filter((pattern) => pattern.test(visibleSample)).length;
   const challengeHeader = headers && [...headers.entries()].some(([name, value]) =>
     /(?:cf-mitigated|page-id|challenge|captcha)/iu.test(name) && /challenge|captcha/iu.test(value));
+  // Vocabulary alone is not a refusal: ordinary 2xx glossaries can contain
+  // every category. A tiny challenge-status response supplies corroboration.
   const structuralChallenge = challengeHeader
-    || (tinyBody && [403, 429, 202, 503].includes(statusCode ?? 0) && verificationVocabulary.test(sample) && vocabularyScore >= 2)
-    || (shortContent && verificationVocabulary.test(sample) && vocabularyScore >= 3);
+    || (tinyBody && [403, 429, 202, 503].includes(statusCode ?? 0)
+      && verificationVocabulary.test(visibleSample) && vocabularyScore >= 2);
   const browserCheck = /\bchecking your browser before accessing\b|\bunusual traffic from (?:your computer|this computer) network\b/iu.test(sample);
   const securityVerification = /\bperforming security verification\b/iu.test(sample);
   const javascriptCookieGate = /\benable javascript and cookies to continue\b/iu.test(sample);
@@ -38,9 +45,12 @@ export function classifyWebAccessInterstitial({ url, text, statusCode, headers }
   if (/\/(?:captcha|challenge)(?:\/|$)/iu.test(pathname)
     || challengeArtifact
     || structuralChallenge
-    || (shortContent && (humanCheck || browserCheck || blockedAccess
-      || (securityVerification && javascriptCookieGate)
-      || (waitHeading && (securityVerification || javascriptCookieGate))))) {
+    || humanCheck
+    || browserCheck
+    || blockedAccess
+    || (securityVerification && javascriptCookieGate)
+    || (waitHeading && (securityVerification || javascriptCookieGate))
+    || (shortContent && broadHumanCheck)) {
     return {
       code: "access_challenge",
       message: "Page presented an access challenge; no bypass was attempted.",
