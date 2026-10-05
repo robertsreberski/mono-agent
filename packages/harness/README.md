@@ -167,7 +167,11 @@ uncovered predecessors. Historical tool calls are labelled data, never executabl
 calls or recovery receipts. Visible text is preserved; opaque reasoning is
 referenced rather than invented. The latest turn and ledger are mandatory.
 Recent selection is frozen before summary production; an oversized artifact
-never drops authoritative recent turns after receiving prose. Malformed
+never drops authoritative recent turns after receiving prose. Without summary
+production, an exact-checkpoint fallback may shed optional whole groups only
+when every message is also present in its complete suffix or exact retained
+content, with identities qualified by journal. It preserves the latest group
+and complete ledger, never a partially covered group. Malformed
 summaries and unfit mandatory history fail explicitly; there is no
 chunked summarization or clipping. Returned artifacts are proposals: the host
 publishes the sole immutable content authority and caches its exact bytes/hash.
@@ -180,24 +184,71 @@ is conservative, not a provider-tokenizer guarantee. Hosts must call
 late host/input overruns refuse rather than repair a cached handoff.
 
 Before invoking a version-3 writer, stop/prohibit **all older binaries** for the
-root and explicitly call `SessionStore.enableVersion3Writes({ exclusiveWriters:
-true })` on each open writer. This acknowledges an operational prerequisite;
-it does not establish cross-process/canonical authority or technically exclude
-an old process. Without it, v3 writes reject before writing an administrative
-scope. No default caller enables it.
+root. A caller acknowledgement alone cannot enable it. Coordinated journals must
+first publish an ownership-schema-2 header carrying a nonsecret `hostAuthority`
+reference (`version: 1`, `canonicalVersion: 4`, opaque SHA-256 `rootId` and
+`authorityId`, `ownerKey`, `historyBucket`). The host, not native storage, owns
+and validates the root/canonical authority and holds the drained conversation
+claim throughout the awaited operation; its `assertOwned` callback must reject
+lost ownership or contradictory authority.
+
+For an existing closed, settled journal, use
+`JsonlSessionRepo.upgradeHeader(metadata, { hostAuthority, assertOwned })`.
+It acquires the native writer and catalogue locks, copies only the upgraded
+header plus byte-identical native records to private staging, fsyncs, renames
+at the **same** journal path, and syncs publication directories. It refuses
+unsettled lifecycle, torn source bytes, contradictory ownership and unknown
+staging evidence instead of repairing or deleting them. An in-process failure
+before publication removes its own stage only after a dev/inode identity match
+under the held locks, then syncs the directory. Authority fields use canonical
+key order, so equal references produce identical staged/publication bytes even
+when callers reorder their keys. Restart validates any
+abandoned stage as an exact prefix of the pinned source copy before rebuilding;
+an already-published matching header is synced idempotently. New coordinated
+journals use `create({ hostAuthority, assertOwned, ... })` and start guarded.
+Default callers, paths, record bytes and legacy imports remain unchanged.
+
+Each reopened guarded writer starts disabled. Explicitly call
+`SessionStore.enableVersion3Writes({ exclusiveWriters: true, hostAuthority })`;
+it requires the validated native header's matching reference, not caller-mutated
+metadata. Guarded opens re-establish file/directory publication barriers before
+returning a writer, including after a prior rename-only crash. The guarded
+header also rejects contradictory host/instance binding. Evidence views require
+its owner to match their host owner.
+
+Old native binaries reject the upgraded header **before** record scan/torn-tail
+repair and direct deletion, even with an unterminated first v3 record. That
+direct-open/delete protection is per upgraded journal. Once **any** journal
+under a root is upgraded, an older binary's catalogue `list()` and legacy import
+reject the **whole root** when they encounter that header. This root-wide
+catalogue failure is intentional, not a partial listing or permission to discard
+unknown evidence. It is not universal root admission: a direct open using cached
+metadata for an untouched legacy journal is not technically excluded, and
+arbitrary direct filesystem access is not fenced. Draining/stopping old binaries
+before upgrade, refusing
+mixed writers and keeping the host claim remain operational prerequisites.
+Rollback means stopping writers and restoring consistent host/native backups;
+there is no downgrade/strip tool or permission to migrate real roots.
+
+Guarded native deletion requires matching `hostAuthority`, `assertOwned` and
+`disposition: "C" | "D"` options on `delete`, `retire` or `retireByHandle`.
+For C, the host assertion proves an eligible unreferenced current/retirement
+target; for D, it proves membership in the host's restartable whole-chain
+reset/retention transaction. P uses preserving detach, never deletion; U cannot
+target guarded host evidence. These primitives do not discover chain membership
+or authorize reset themselves. Any explicitly supplied deletion disposition is
+validated even for an unguarded journal: only C/D may delete, while P/U/unknown
+values reject. Unguarded/stateless/subagent callers passing no disposition keep
+their existing behavior. Memory repositories clone caller metadata and retain a
+private validated header so metadata mutation cannot forge or demote authority.
 
 `SessionStore.appendComposedCompaction` explicitly writes schemaVersion-3
 composed coverage, rejecting changed sources and predecessor-native tail copies.
 Its summary must cover the entire inherited prefix; its retained native tail is
 current-journal evidence only. `appendModelChangeReference` explicitly writes a
-schemaVersion-3 artifact reference, not another summary copy. Ordinary journals,
-checkpoints and imports remain v2. Mixed old/new writers are unsupported; an old
-reader rejects a **complete** opt-in v3 record without changing journal bytes.
-However, an old default cold-open treats an unterminated v3 fragment as a torn
-tail and can truncate it; old direct deletion is also not blocked. That is why
-exclusive upgraded binaries are required before enabling v3 writes.
-Neither API supplies a switch transaction, canonical binding, retention authority
-or replay permission.
+schemaVersion-3 artifact reference, not another summary copy. Neither API nor the
+header guard enables host switching, supplies canonical history/retention
+transactions, or grants replay permission. No default host enables v3 writes.
 
 ## Public API
 
