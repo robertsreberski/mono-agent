@@ -27,11 +27,13 @@ import {
   getCurrentSystemPrompt,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { digestTurnInput, createTurnBinding } from "@mono-agent/harness";
 import * as sessionAdapter from "../../ai/providers/pi-native/harness-adapter.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 import {
   recoverDurableNativeSession,
+  reconcileNativeSessionTurn,
   cleanupSessionOnThrow,
   commitSession,
   discardUncommittedSession,
@@ -1992,4 +1994,115 @@ it("classifies a resumed suspension sealing fsync failure terminally rather than
     const failed = await generatePiNativeResponse("Fictional verification.", options);
     expect(failed).toMatchObject({ failureKind: "safety_journal_storage_failed", retryable: false }); expect(failed.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(2);
   } finally { spy?.mockRestore(); await disposeProviderSession(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});
+
+describe("protected native turn reconciliation", () => {
+  function protectedOptions(model, root, suffix = "turn") {
+    const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: `protected-${suffix}`, handleId: "protected-handle", baseRevision: 0,
+      reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "initial-input" } };
+    const options = runOptions(model, { piSessionsRoot: root, sessionId: descriptor.handleId, sessionKeepAlive: true, sessionTurn: descriptor,
+      messages: [{ role: "user", content: "Fictional request." }] });
+    const request = { sessionsRoot: root, descriptor, purpose: "execution", expectedModel: { provider: model.provider, id: model.id, api: model.api },
+      expectedInputs: [{ id: "initial-input", requestDigest: digestTurnInput("Fictional request."), placement: "initial" }] };
+    return { options, request };
+  }
+  it.each(["completed", "failed", "suspended", "cancelled"])("preserves %s evidence, matches it storage-only and recovers repeatedly without dispatch", async (outcome) => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-seal-")); const { options, request } = protectedOptions(model, root);
+    const abort = new AbortController(); if (outcome === "cancelled") options.abortSignal = abort.signal;
+    const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
+    faux.setResponses([outcome === "failed" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional deterministic error." })
+      : outcome === "suspended" ? fauxAssistantMessage([], { stopReason: "deferred", deferred }) : fauxAssistantMessage([fauxText("Fictional answer.")])]);
+    if (outcome === "cancelled") options.onEvent = (event) => { if (event.type === "capabilities_resolved") abort.abort(); };
+    try {
+      const result = await generatePiNativeResponse("Fictional instructions.", options);
+      if (outcome === "suspended") expect(result.failureKind).toBe("safety_native_suspended");
+      expect(result.providerSessionRecovery).toBeUndefined(); expect((await resolveDurableNativeSessionRepo(root).listOwned()).length).toBe(1);
+      const before = faux.state.callCount; const matched = await reconcileNativeSessionTurn(request);
+      expect(matched).toMatchObject({ status: "matched", outcome: outcome === "suspended" ? "interrupted" : outcome, consumedInputIds: ["initial-input"] });
+      if (outcome === "completed") expect(matched.commitCandidate).toMatchObject({ text: result.text, error: null, failureKind: null });
+      else expect(matched.commitCandidate).toBeUndefined();
+      if (outcome === "suspended") expect(matched.interruptionEvidence).toMatchObject([{ cause: "suspended_not_resumed" }]);
+      expect(await reconcileNativeSessionTurn(request)).toEqual(matched); expect(faux.state.callCount).toBe(before);
+    } finally { await disposeProviderSession(options.sessionId); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("returns absent/mismatch without native writes and refuses live local ownership", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-match-")); const { options, request } = protectedOptions(model, root);
+    try {
+      expect(await reconcileNativeSessionTurn(request)).toEqual({ status: "absent" });
+      faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer.")])]); await generatePiNativeResponse("Fictional instructions.", options);
+      const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0], bytes = readFileSync(metadata.path);
+      expect(await reconcileNativeSessionTurn({ ...request, descriptor: { ...request.descriptor, ownerKey: "foreign-owner" } })).toMatchObject({ status: "mismatch", reason: "ownerKey" });
+      expect(readFileSync(metadata.path).equals(bytes)).toBe(true);
+      const held = await repo.open(metadata, { repair: false });
+      await expect(reconcileNativeSessionTurn(request)).rejects.toMatchObject({ code: "ERR_HARNESS_WRITER_BUSY" }); await held.close();
+    } finally { await disposeProviderSession(options.sessionId); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("keeps failing resumed native context rather than the legacy rewind and preserves fsync-poisoned bytes", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-fault-")); const first = protectedOptions(model, root, "one"), second = protectedOptions(model, root, "two");
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")]), fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional deterministic error." })]);
+    try {
+      await generatePiNativeResponse("Fictional instructions.", first.options); await generatePiNativeResponse("Fictional instructions.", second.options);
+      const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0];
+      expect(await reconcileNativeSessionTurn(second.request)).toMatchObject({ status: "matched", outcome: "failed" });
+      expect(await reconcileNativeSessionTurn(first.request)).toMatchObject({ status: "mismatch", reason: "turn_advanced" });
+      const raw = await repo.open(metadata, { repair: false }); expect((await raw.getEntries()).filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(2); await raw.close();
+      const third = protectedOptions(model, root, "poison"); let spy; const original = sessionAdapter.createHarnessAdapter;
+      spy = vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
+        const adapter = await original(session, config);
+        session.rawSession.io.sync = async () => { throw Object.assign(new Error("Fictional fsync failure"), { code: "ENOSPC" }); }; return adapter;
+      });
+      const poisoned = await generatePiNativeResponse("Fictional instructions.", third.options); spy.mockRestore();
+      expect(poisoned).toMatchObject({ failureKind: "safety_journal_storage_failed", retryable: false }); expect(poisoned.providerSessionId).toBeUndefined();
+      expect((await repo.listOwned()).map((item) => item.journalId)).toEqual([metadata.journalId]);
+    } finally { await disposeProviderSession(first.options.sessionId); rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(["usage_limit", "context_limit"])("seals %s terminally with retained native inputs/tools instead of disposal", async (kind) => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-terminal-")); const { options, request } = protectedOptions(model, root);
+    if (kind === "usage_limit") {
+      writeFileSync(join(root, "evidence.txt"), "Fictional counted evidence."); options.allowedTools = ["Read"]; options.cwd = root; options.toolContext = { workspace: root, repoRoot: root }; options.maxTurns = 1;
+      faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "limit-read" })], { stopReason: "toolUse" })]);
+    } else {
+      options.compaction = { enabled: false };
+      faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "maximum context length exceeded" })]);
+    }
+    try {
+      const result = await generatePiNativeResponse("Fictional instructions.", options); expect(result.failureKind).toBe(kind);
+      const count = faux.state.callCount; const recovered = await reconcileNativeSessionTurn(request);
+      expect(recovered).toMatchObject({ status: "matched", outcome: "failed" }); expect(recovered.commitCandidate).toBeUndefined(); expect(recovered.seal.result.failureKind).toBe(kind);
+      expect(await reconcileNativeSessionTurn(request)).toEqual(recovered); expect(faux.state.callCount).toBe(count);
+    } finally { await disposeProviderSession(options.sessionId); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("recovers an interrupted manual checkpoint exactly with no summary call and no execution candidate", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-checkpoint-")); const first = protectedOptions(model, root, "seed");
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional context.")])]);
+    try {
+      await generatePiNativeResponse("Fictional instructions.", first.options);
+      const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0]; const raw = await repo.open(metadata, { repair: false });
+      const descriptor = { ...first.request.descriptor, turnId: "manual-checkpoint", reconciliation: { ...first.request.descriptor.reconciliation, purpose: "compaction", initialInputId: null } };
+      const config = { model: first.request.expectedModel }; await raw.beginTurn(descriptor.turnId, config, "synthetic", createTurnBinding(descriptor, config.model));
+      await raw.openOperation("manual-cut", config, "compaction", "manual");
+      const retainedTail = [(await raw.getEntries()).at(-1).message]; const checkpointId = await raw.appendCompaction({ summary: "Fictional checkpoint.", tokensBefore: 12, tokensAfter: 4, retainedTail }); await raw.sync();
+      const expected = await raw.getEntry(checkpointId); await raw.close(); const calls = faux.state.callCount;
+      const request = { ...first.request, descriptor, purpose: "compaction", expectedInputs: [] };
+      const recovered = await reconcileNativeSessionTurn(request); expect(recovered).toMatchObject({ status: "matched", outcome: "interrupted", finalOperationId: "manual-cut" }); expect(recovered.commitCandidate).toBeUndefined();
+      expect(await reconcileNativeSessionTurn(request)).toEqual(recovered); const reopened = await repo.open(metadata, { repair: false }); expect(await reopened.getEntry(checkpointId)).toEqual(expected); await reopened.close(); expect(faux.state.callCount).toBe(calls);
+    } finally { await disposeProviderSession(first.options.sessionId); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects native corruption and reconciliation fsync uncertainty distinctly without creating a candidate", async () => {
+    const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-reconcile-fault-")); const first = protectedOptions(model, root);
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional reply.")])]);
+    let spy;
+    try {
+      await generatePiNativeResponse("Fictional instructions.", first.options); const repo = resolveDurableNativeSessionRepo(root), metadata = (await repo.listOwned())[0];
+      const bytes = readFileSync(metadata.path); writeFileSync(metadata.path, Buffer.concat([bytes, Buffer.from("{ invalid complete record }\n")]));
+      await expect(reconcileNativeSessionTurn(first.request)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+      expect(readFileSync(metadata.path).equals(Buffer.concat([bytes, Buffer.from("{ invalid complete record }\n")]))).toBe(true); writeFileSync(metadata.path, bytes);
+      const open = repo.open.bind(repo);
+      spy = vi.spyOn(repo, "open").mockImplementation(async (...args) => { const raw = await open(...args); raw.io.prepareReconciliation = async () => { throw Object.assign(new Error("Fictional reconciliation ENOSPC."), { code: "ENOSPC" }); }; return raw; });
+      await expect(reconcileNativeSessionTurn(first.request)).rejects.toMatchObject({ code: "ENOSPC", name: "JournalStorageError" }); spy.mockRestore();
+      expect(readFileSync(metadata.path).equals(bytes)).toBe(true); expect(faux.state.callCount).toBe(1);
+    } finally { spy?.mockRestore(); await disposeProviderSession(first.options.sessionId); rmSync(root, { recursive: true, force: true }); }
+  });
+
 });

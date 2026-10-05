@@ -134,6 +134,23 @@ The facade re-exports `CONTEXT_1M_TOKENS` and `supportsPiContext1M()`.
 boolean policy; omitted entries are off. Hosts should derive it from validated
 model declarations, not use it to override custom-provider metadata.
 
+Protected `sessionTurn.reconciliation` opt-in preserves native terminal evidence
+separately from legacy `sessionRecovery` receipts. `reconcileSessionTurn(request)`
+acquires native ownership without waiting on a live writer, validates the exact
+owner/bucket/handle/revision/model/fence/purpose and input digests before repair,
+and returns matched ordered operations, an absent result, or a mismatch. Busy
+ownership, corruption and I/O errors reject rather than becoming provider failures.
+No model, tool or deferred continuation runs during reconciliation. Only a sealed
+completed execution may return a minimal `commitCandidate`; compaction cannot
+produce an execution-history answer. This capability does not enable canonical
+host adoption or change history/fence formats by itself.
+
+Routed opted-in requests must provide the protected awaited
+`onSessionTurnDetached` host hook before any stateless retry/backup. It receives
+primary attempt evidence; failure to acknowledge is terminal. Neither that hook
+nor the turn descriptor is forwarded to detached attempts; private attempt
+resolvers cannot replace them. Backup success never certifies primary success.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -285,6 +302,10 @@ RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
 RuntimeSessionTurnDescriptor
+RuntimeSessionTurnDetachedAttempt
+RuntimeSessionTurnReconciliationRequest
+RuntimeSessionTurnReconciliationResult
+RuntimeSessionTurnResultSeal
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity

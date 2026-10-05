@@ -1395,3 +1395,42 @@ it.each(["safety_journal_storage_failed", "safety_session_turn_contract"])("neve
   const result = await router.run("sys", { model: primary, messages: [] });
   expect(result.failureKind).toBe(failureKind); expect(executeMock).toHaveBeenCalledTimes(1);
 });
+
+it.each(["retry", "backup"])("awaits protected detached-turn acknowledgement before %s and strips its authority", async (kind) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  const failure = { text: "Fictional partial.", error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false };
+  executeMock.mockResolvedValueOnce(failure).mockResolvedValueOnce({ text: "Fictional stateless answer.", events: [] });
+  let release, entered; const acknowledged = new Promise((resolve) => { release = resolve; }); const waiting = new Promise((resolve) => { entered = resolve; });
+  const onSessionTurnDetached = vi.fn(async (attempt) => { expect(attempt.result).toMatchObject(failure); entered(); await acknowledged; });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const router = createRouterRuntime({ chain: [{ model: primary, attempts: kind === "retry" ? 2 : 1 }, { model: backup }], retry: { backoffMs: 0, maxBackoffMs: 0 } });
+  const run = router.run("Fictional system.", { messages: [], sessionId: "handle", sessionKeepAlive: true, sessionTurn, onSessionTurnDetached });
+  await waiting; expect(executeMock).toHaveBeenCalledTimes(1); release(); expect((await run).text).toBe("Fictional stateless answer.");
+  expect(onSessionTurnDetached).toHaveBeenCalledOnce(); expect(onSessionTurnDetached.mock.calls[0][0]).toMatchObject({ descriptor: sessionTurn, attemptIndex: 0, retryIndex: 0 });
+  for (const [, options] of executeMock.mock.calls) expect(options.onSessionTurnDetached).toBeUndefined();
+  expect(executeMock.mock.calls[1][1].sessionTurn).toBeUndefined(); expect(executeMock.mock.calls[1][1].sessionId).toBeUndefined();
+});
+it.each([false, true])("fails closed if the protected detached acknowledgement is unavailable or rejects (throws=%s)", async (throws) => {
+  executeMock.mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false });
+  const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const result = await router.run("sys", { messages: [], sessionId: "handle", sessionTurn,
+    ...(throws ? { onSessionTurnDetached: async () => { throw new Error("Fictional host persistence failure."); } } : {}) });
+  expect(result).toMatchObject({ failureKind: "safety_session_turn_reconciliation", retryable: false }); expect(executeMock).toHaveBeenCalledTimes(1);
+});
+it("rejects private provider injection of detached acknowledgement authority", async () => {
+  const primary = modelRef("openai-codex", "primary"); const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { onSessionTurnDetached: async () => {} } }) });
+  expect((await router.run("sys", { model: primary, messages: [] })).error).toContain("cannot override onSessionTurnDetached"); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("acknowledges an absent/skipped primary before a stateless backup can answer", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  executeMock.mockResolvedValueOnce({ text: "Fictional backup answer.", events: [] });
+  const onSessionTurnDetached = vi.fn(async (attempt) => { expect(executeMock).not.toHaveBeenCalled(); expect(attempt.result.failureKind).toBe("skipped_capability_mismatch"); });
+  const router = createRouterRuntime({ chain: [{ model: primary, requires: { supports_native_subagents: true } }, { model: backup }] });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const result = await router.run("sys", { messages: [], sessionTurn, onSessionTurnDetached }); expect(result.text).toBe("Fictional backup answer."); expect(onSessionTurnDetached).toHaveBeenCalledOnce();
+});

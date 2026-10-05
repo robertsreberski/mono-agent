@@ -6,7 +6,7 @@ const id = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
 const time = (v) => Number.isSafeInteger(v) && v >= 0;
 const ids = (v) => Array.isArray(v) && v.every(id) && new Set(v).size === v.length;
 const status = (v) => ["completed", "failed", "aborted", "interrupted"].includes(v);
-const fail = () => { throw new Error("Invalid mono-agent harness journal v2"); };
+const fail = () => { throw Object.assign(new Error("Invalid mono-agent harness journal v2"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const requireValue = (v) => { if (!v) fail(); };
 
 /** Digest only the actual native input content, never controllers or timestamps. */
@@ -65,7 +65,7 @@ export function validateTurnSeal(seal, terminalStatus) {
   const result = seal.result;
   if (result === null) { requireValue(terminalStatus !== "completed"); return; }
   requireValue(keys(result, ["text", "error", "failureKind", "cancelled", "stopReason", "turnDisposition"])
-    && typeof result.text === "string" && (result.error === null || typeof result.error === "string")
+    && (typeof result.text === "string" || result.text === null) && (result.error === null || typeof result.error === "string")
     && (result.failureKind === null || id(result.failureKind)) && typeof result.cancelled === "boolean"
     && (result.stopReason === null || id(result.stopReason))
     && (result.turnDisposition === undefined || result.turnDisposition === "silent")

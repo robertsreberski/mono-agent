@@ -364,7 +364,7 @@ export class JsonlSessionRepo {
       throw error;
     }
   }
-  async open(metadata, { repair = true } = {}) {
+  async open(metadata, { repair = true, wait = repair } = {}) {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
       return this.importLegacy(metadata);
@@ -372,12 +372,12 @@ export class JsonlSessionRepo {
     this.checkMetadata(metadata);
     if (metadata.path !== join(this.directory, `${metadata.journalId}.jsonl`)) fail();
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
-    if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
+    if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
     const locks = await this.ensureDirectory();
-    const writer = await locks.acquireWriter(metadata.journalId);
+    const writer = await locks.acquireWriter(metadata.journalId, { wait });
     let session;
     try {
-      if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
+      if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
       session = await this.openLocked(metadata, writer, { repair });
       try { if (repair) { await this.reconcileImport(session); await repairInterruptedSession(session); } return session; }
       catch (error) { await session.close().catch(() => {}); throw error; }
@@ -674,10 +674,10 @@ export class JsonlSessionRepo {
       } else if (session.closed) writer.release();
     }
   }
-  async listOwned() {
+  async listOwned({ wait = true } = {}) {
     if (await absent(this.directory)) return [];
     const locks = await this.ensureDirectory();
-    return locks.withCatalog(() => this.listOwnedUnlocked());
+    return locks.withCatalog(() => this.listOwnedUnlocked(), { wait });
   }
   async listOwnedUnlocked(includeStaging = false) {
     let files;

@@ -5,7 +5,11 @@
 - Add explicitly opted-in native turn bindings, minimal final-result seals and
   indexed evidence matching for host reconciliation, without changing legacy
   host history policy. Share import/reopen interruption accounting so suspended
-  and last-closed operations retain accurate evidence without replay.
+  and last-closed operations retain accurate evidence without replay. Preserve
+  opted-in failed/cancelled/limited native turns without destructive rollback;
+  expose storage-only reconciliation through owned runtime wrappers and require
+  protected host acknowledgement before routed stateless detachment. Canonical
+  dirty-turn adoption remains a separate host-transaction capability.
 
 - Add protected host and persistent-subagent native turn descriptors; bind journal
   ownership append-only without granting terminal recovery or host crash adoption.

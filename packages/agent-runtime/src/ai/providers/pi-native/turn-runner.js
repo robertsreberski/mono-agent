@@ -401,7 +401,8 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch }) {
         ]);
         if (next.done || runComplete || options.abortSignal?.aborted) break;
         try {
-          const entryId = await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
+          const entryId = await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts),
+            options.sessionTurn?.reconciliation ? { inputId: next.value.id } : undefined);
           if (typeof entryId !== "string" || entryId.length === 0) {
             next.value.accepted?.();
             next.value.uncertain?.({ reason: "delivery_uncertain" });

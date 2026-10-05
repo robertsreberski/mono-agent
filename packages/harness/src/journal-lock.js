@@ -98,23 +98,30 @@ export class JournalLocks {
       throw error;
     }
   }
-  async withCatalog(callback) {
+  async withCatalog(callback, { wait = true } = {}) {
     for (;;) {
       const lock = await this.tryLock(this.catalogPath);
-      if (!lock) { await delay(10); continue; }
+      if (!lock) {
+        if (!wait) throw Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+        await delay(10); continue;
+      }
       try { return await callback(); } finally { lock.release(); }
     }
   }
   /** @param {string} journalId */
-  async acquireWriter(journalId) {
+  async acquireWriter(journalId, { wait = true } = {}) {
     if (!/^[A-Za-z0-9_-]+$/.test(journalId)) throw new TypeError("Unsafe harness journal ID");
     const path = join(this.directory, `${journalId}.sqlite`);
     for (;;) {
-      const lock = await this.withCatalog(async () => {
-        await this.ensureFile(path);
-        return this.tryLock(path);
-      });
+      let lock;
+      if (wait) lock = await this.withCatalog(async () => { await this.ensureFile(path); return this.tryLock(path); });
+      else {
+        const catalog = await this.tryLock(this.catalogPath);
+        if (!catalog) throw Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+        try { await this.ensureFile(path); lock = await this.tryLock(path); } finally { catalog.release(); }
+      }
       if (lock) return lock;
+      if (!wait) throw Object.assign(new Error("Native journal writer ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
       // Release catalogue before waiting for a provider-owned writer.
       await delay(10);
     }

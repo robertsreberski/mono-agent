@@ -513,6 +513,17 @@ function wrapOwnedConfiguredRuntime(
       await releaseAgentRootOwnershipWhenIdle(ownership);
     }
   };
+  const withReconciliationLease = async <T>(action: () => Promise<T>): Promise<T> => {
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const { ownership } = await secured();
+    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    try { await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace); return await action(); }
+    finally { lease.releaseAfterSettlement(); }
+  };
   return {
     async run(systemPrompt, runOptions) {
       if (disposed) throw new Error("Configured runtime has been disposed.");
@@ -563,6 +574,8 @@ function wrapOwnedConfiguredRuntime(
     ...(runtime.configureTools === undefined
       ? {}
       : { configureTools: runtime.configureTools.bind(runtime) }),
+    ...(runtime.reconcileSessionTurn === undefined ? {} : { reconcileSessionTurn: (request) => withReconciliationLease(() => runtime.reconcileSessionTurn!(request)) }),
+    ...(runtime.recoverSession === undefined ? {} : { recoverSession: (receipt, context) => withReconciliationLease(() => runtime.recoverSession!(receipt, context)) }),
     ...(runtime.syncSession === undefined ? {} : { syncSession: runtime.syncSession.bind(runtime) }),
     ...(runtime.refreshSession === undefined ? {} : { refreshSession: runtime.refreshSession.bind(runtime) }),
     ...(runtime.retireDurableSession === undefined

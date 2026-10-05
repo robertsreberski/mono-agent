@@ -97,7 +97,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "sessionTurn", "onSessionTurnDetached", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -203,6 +203,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       const failoverHistory = [];
       /** @type {RuntimeResult|null} */
       let lastResult = null;
+      let pendingDetach;
       /** @type {RuntimeResult|null} */
       let lastRouteSkip = null;
       const promptBase = systemPrompt;
@@ -219,6 +220,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             events: [],
             cancelled: false,
             usage: {},
+          };
+          if (i === 0 && options.sessionTurn?.reconciliation) pendingDetach = {
+            descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex: 0, result: lastRouteSkip,
           };
           // A settled user abort may have no provider failure. Preserve that
           // distinction in attempt evidence used by strict native-tail recovery.
@@ -281,6 +285,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             const failure = attemptResolutionFailureResult(error);
             lastResult = failure;
+            if (i === 0 && retryIndex === 0 && options.sessionTurn?.reconciliation) pendingDetach = {
+              descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result: failure,
+            };
             failoverHistory.push({
               model: entry.model,
               failureKind: failure.failureKind || null,
@@ -295,6 +302,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // replay the logical turn and must not resume a transcript the failed
           // attempt may have appended to; backup routes never inherit that session.
           const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
+          if (i === 0 && retryIndex === 0 && !sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
+            descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex,
+            result: { text: null, error: "Primary route cannot own the protected native session", failureKind: "skipped_capability_mismatch", events: [], cancelled: false, usage: {} },
+          };
+          delete callOptions.onSessionTurnDetached;
           if (!sessionEligibleAttempt) {
             delete callOptions.sessionTurn;
             delete callOptions.sessionRecovery;
@@ -302,6 +314,17 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             delete callOptions.providerSessionId;
             delete callOptions.sessionKeepAlive;
             delete callOptions.sessionIdleTimeoutMs;
+          }
+          if (pendingDetach && !sessionEligibleAttempt) {
+            try {
+              if (typeof options.onSessionTurnDetached !== "function") throw new Error("Detached native turn acknowledgement unavailable");
+              await options.onSessionTurnDetached(pendingDetach);
+              pendingDetach = undefined;
+            } catch {
+              try { await attemptCleanup?.(); } catch { /* retain native evidence */ }
+              return { ...(lastResult || lastRouteSkip || pendingDetach.result), error: "Protected native turn could not be durably detached", failureKind: "safety_session_turn_reconciliation",
+                retryable: false, providerSessionRecovery: undefined, failoverHistory };
+            }
           }
           let attemptSystemPrompt = promptBase;
           if (pendingSnapshot) {
@@ -412,6 +435,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             terminalResult = result;
             break;
           }
+          if (sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
+            descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result,
+          };
 
           // Build a transcript-tail snapshot from this run's events so the next
           // attempt — same model or next route — can continue. A run that
@@ -479,6 +505,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
     configureTools(next = {}) {
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
+    },
+    async reconcileSessionTurn(request) {
+      if (!inner.reconcileSessionTurn) throw new Error("Native turn reconciliation unavailable");
+      return inner.reconcileSessionTurn(request);
     },
     async recoverSession(receipt, context) {
       return await inner.recoverSession?.(receipt, context) === true;

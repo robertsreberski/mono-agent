@@ -1291,6 +1291,14 @@ modes remain operator-owned and external MCP tools bypass built-in allow/deny
 policy. See [Computer use](../../docs/tools/computer-use.md) for installation,
 OS grants, privacy, and safe unattended-operation limits.
 
+Configured raw runtimes forward `reconcileSessionTurn` and legacy
+`recoverSession` through the same attested root-generation request-lease boundary
+as `run`. The lease remains held until storage settlement, even during disposal;
+no provider execution is needed for reconciliation. Internal configured responder
+construction keeps its existing root ownership and does not acquire a second
+lease wrapper. These native capabilities do not yet alter host history fences,
+receipts, retirement policy or enable automatic dirty-turn adoption.
+
 ## Architecture
 
 BuJo can opt in to default-off `memory.profile.enabled` (deterministic

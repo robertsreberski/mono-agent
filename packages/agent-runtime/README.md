@@ -143,6 +143,17 @@ metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
 A positive compaction window override replaces the declared window, and learned
 provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
 
+Hosts may opt into native evidence preservation with
+`sessionTurn.reconciliation` (version1, execution/compaction purpose, fence digest
+and original input ID). These durable kept-alive turns seal their actual final
+runtime result before close; failures, usage/context limits, cancellation and
+suspension do not rewind or delete recoverable bytes. Storage failure remains
+terminal and never advertises a resumable receipt. Legacy callers are unchanged.
+`reconcileSessionTurn` is storage-only and matches protected identity and input
+evidence before idempotent repair. Native inline binding closes the pre-binding
+crash window. Router detachment requires an awaited protected host acknowledgement
+before stateless retry/fallback. Canonical dirty-turn adoption remains separate.
+
 ## Architecture
 
 The provider bridge imports the model-run loop, native journal/storage and

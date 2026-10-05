@@ -72,13 +72,13 @@ export function matchTurnEvidence(evidence, request) {
     || (model.api !== undefined && model.api !== binding.model.api)) return mismatch("model");
   if (evidence.operations.some((op) => !op.model || ["provider", "id", "api"].some((key) => op.model[key] !== binding.model[key]))) return mismatch("operation_model");
   if (request.expectedBaseTip !== undefined && evidence.baselineTipId !== request.expectedBaseTip) return mismatch("baseline_tip");
-  if (!Array.isArray(request.expectedInputs) || request.expectedInputs.some((input) => typeof input?.id !== "string" || !/^[a-f0-9]{64}$/.test(input.requestDigest)
+  if (!Array.isArray(request.expectedInputs) || request.expectedInputs.some((input) => typeof input?.id !== "string" || !input.id.length || input.id.length > 512 || !/^[a-f0-9]{64}$/.test(input.requestDigest)
     || !["initial", "live"].includes(input.placement)) || new Set(request.expectedInputs.map((input) => input.id)).size !== request.expectedInputs.length) {
     throw new TypeError("Invalid expected turn inputs");
   }
   const expected = new Map(request.expectedInputs.map((input) => [input.id, input]));
   if (request.purpose === "compaction" && (expected.size || evidence.consumedInputIds.length)) return mismatch("compaction_inputs");
-  if (request.purpose === "execution" && expected.get(binding.reconciliation.initialInputId)?.placement !== "initial") return mismatch("initial_input");
+  if (request.purpose === "execution" && (expected.get(binding.reconciliation.initialInputId)?.placement !== "initial" || request.expectedInputs.filter((input) => input.placement === "initial").length !== 1)) return mismatch("initial_input");
   if (evidence.inputs.some((input) => !input.complete || !expected.has(input.id)
     || input.requestDigest !== expected.get(input.id).requestDigest || input.placement !== expected.get(input.id).placement)) return mismatch("consumed_inputs");
   if (evidence.admittedInputs.some((input) => !expected.has(input.id)
