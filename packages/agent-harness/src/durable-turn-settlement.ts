@@ -44,7 +44,12 @@ export function assertWholeTurnMatch(payload: PendingTurnPayload, result: Extrac
     operations.add(operation.operationId); startSeq = operation.startSeq;
   }
   if (result.finalOperationId !== (result.operations.at(-1)?.operationId ?? null)) throw new Error("Native final operation mismatch");
-  if (result.outcome === "completed" && (result.operations.at(-1)?.status !== "completed" || !result.seal
+  const finalOperation = result.operations.at(-1);
+  // Manual compaction can close without an operation when the retained tail
+  // is already too small. Its completed turn seal still proves the no-op;
+  // execution always requires the final completed prompt operation.
+  if (result.outcome === "completed" && ((!finalOperation && payload.identity.purpose !== "compaction")
+    || (finalOperation && finalOperation.status !== "completed") || !result.seal
     || result.seal.outcome !== "completed")) throw new Error("Native completion is not sealed");
 }
 

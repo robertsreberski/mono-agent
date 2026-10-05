@@ -366,11 +366,13 @@ export class MonoAgentHarness implements AgentHarness {
         mcpServers: {},
         manualCompaction: true,
       } as Parameters<typeof runtime.run>[1]) as Promise<RuntimeResult & { manualCompaction?: AgentManualCompactionResult }>;
-      // An aborted run is abandoned (not awaited): the catch below retires the
-      // epoch fail-closed before any lease or slot is released.
+      // An aborted run is abandoned (not awaited). P2 persists cancellation
+      // before releasing ownership; recovery waits for the native writer.
       void run.catch(() => undefined);
       const manual = await raceAbort(run, controller.signal);
       const outcome = manual.manualCompaction;
+      if (manual.cancelled) await providerTurn.reconciliation?.claim("cancelled");
+      else if (manual.error || manual.failureKind || outcome?.status === "failed") await providerTurn.reconciliation?.claim("failed");
       const accepted = (manual.error === undefined || manual.error === null)
         && outcome !== undefined && outcome.status !== "failed" && manual.providerSessionId === sessionId;
       let synced = false;
@@ -401,12 +403,16 @@ export class MonoAgentHarness implements AgentHarness {
       };
     } catch (error) {
       if (providerTurn !== undefined) {
-        // Canonical history is untouched; leave the durable session dirty and
-        // retire any live handle so the next turn reseeds fail-closed.
-        await prepared?.abort().catch(() => undefined);
-        await providerTurn.abort().catch(() => undefined);
-        if (providerTurn.reconciliation !== undefined) await providerTurn.reconciliation.claim(controller.signal.aborted ? "cancelled" : "failed");
-        else await retire({ providerSessionId: providerTurn.providerSessionId, modelKey });
+        // A terminal claim must be durable while ownership is still held,
+        // including after preparation. P2 leaves native evidence for recovery;
+        // legacy compaction retains its fail-closed retirement behavior.
+        try {
+          await providerTurn.reconciliation?.claim(controller.signal.aborted ? "cancelled" : "failed");
+        } finally {
+          await prepared?.abort().catch(() => undefined);
+          await providerTurn.abort().catch(() => undefined);
+        }
+        if (providerTurn.reconciliation === undefined) await retire({ providerSessionId: providerTurn.providerSessionId, modelKey });
       }
       throw error instanceof AgentHarnessError && error.failureKind.startsWith("compaction_")
         ? error

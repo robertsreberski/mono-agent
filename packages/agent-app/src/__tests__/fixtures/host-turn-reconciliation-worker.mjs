@@ -29,6 +29,7 @@ process.once("message", async ({ mode, crash }) => {
       keepRecentTokens: 4_000, minSavingsTokens: 500, summaryMaxTokens: 2_000, contextWindowOverride: 100_000 };
     await writeFile(join(root, "IDENTITY.md"), "You are Mono. Use only the requested harmless fixture.");
     let context, runtimeCalls = 0, nativeInspections = 0;
+    const manualAbort = new AbortController();
     if (mode === "recover") {
       runtime = createConfiguredAgentRuntime({ config, cwd: root, sandboxEngine });
       const store = createDurableHistoryStore({ root: historyRoot,
@@ -48,6 +49,7 @@ process.once("message", async ({ mode, crash }) => {
       runtime: { ...base, async reconcileSessionTurn(request) { nativeInspections += 1; return base.reconcileSessionTurn(request); }, async run(prompt, options) {
         runtimeCalls += 1; const result = await base.run(prompt, crash === "legacy-unbound"
           ? { ...options, sessionTurn: { ...options.sessionTurn, reconciliation: undefined } } : options);
+        if (crash === "manual-cancelled" && options.manualCompaction) manualAbort.abort();
         if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => {}); }
         return result;
       } }, runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, piMaxRetries: 0, effort: "none" } });
@@ -83,9 +85,13 @@ process.once("message", async ({ mode, crash }) => {
       const overflow = await harness.run({ conversationId: bucket, userMessage: "Fictional overflow request.", abortSignal: new AbortController().signal });
       if (overflow.failure) throw new Error(JSON.stringify(overflow.failure));
     }
-    if (mode === "produce" && crash === "manual-start") {
+    if (mode === "produce" && (crash === "manual-start" || crash === "manual-cancelled")) {
       faux.setResponses([fauxAssistantMessage([fauxText("Fictional checkpoint summary.")])]);
-      await harness.compactConversation(bucket);
+      try { await harness.compactConversation(bucket, undefined, manualAbort.signal); }
+      catch (error) { if (crash !== "manual-cancelled" || error.failureKind !== "compaction_failed") throw error; }
+      if (crash === "manual-cancelled") {
+        process.send({ phase: crash, counter: await counter() }); await new Promise(() => {});
+      }
     }
     await harness.dispose(); harness = undefined;
     process.send({ record: await readRecord(), counter: await counter(), context, runtimeCalls, providerCalls: faux.state.callCount }, () => process.exit(0));

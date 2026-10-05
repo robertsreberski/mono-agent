@@ -270,3 +270,18 @@ it("rejects late detachment acknowledgement after ownership release while late r
   await turn.reconciliation!.claim("completed", { outcome: "completed", text: "Fictional late reply.", timestamp, error: null, failureKind: null });
   await f.store.recoverProviderSessionTurn(bucket); expect((await f.record()).messages.at(-1).content).toBe("Fictional final reply.");
 });
+
+it.each(["execution", "compaction"] as const)("only manual %s may seal completed with no native operation", async (purpose) => {
+  const f = await fixture(); const turn = await f.begin(purpose); await turn.abort();
+  f.inspect.mockImplementationOnce(async (request) => {
+    const result = evidence(request); if (result.status !== "matched") throw new Error("fixture");
+    return { ...result, operations: [], finalOperationId: null, inputs: [], consumedInputIds: [] };
+  });
+  if (purpose === "execution") {
+    await expect(f.store.recoverProviderSessionTurn(bucket)).rejects.toThrow("not sealed");
+    expect(await f.store.load(bucket)).toEqual([]); expect(await readFile(f.fencePath)).toBeTruthy();
+  } else {
+    await expect(f.store.recoverProviderSessionTurn(bucket)).resolves.toMatchObject({ outcome: "completed" });
+    expect((await f.record()).messages).toEqual([]); expect((await f.record()).providerSession.revision).toBe(1);
+  }
+});

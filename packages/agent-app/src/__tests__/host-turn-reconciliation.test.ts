@@ -193,3 +193,20 @@ it("known native deletion after a committed turn fails before dispatch and uses 
     if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
   }
 }, 60_000);
+
+it("manual host cancellation survives release and overrides a completed native compaction seal", async () => {
+  const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: "manual-cancelled" });
+    expect(await ready).toMatchObject({ phase: "manual-cancelled", counter: 1 });
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.record.lastCommit).toMatchObject({ outcome: "cancelled" });
+    expect(first.record.lastCommit.turnId).toMatch(/^synthetic:manual:/u);
+    expect(first.record.messages).toHaveLength(2); expect(first.record.messages[1]!.content).toBe("Fictional verbatim final reply.");
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.counter).toBe(1);
+    expect(first.pending).toEqual([]); expect(second.nativeInspections).toBe(0); expect(second.record).toEqual(first.record);
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
