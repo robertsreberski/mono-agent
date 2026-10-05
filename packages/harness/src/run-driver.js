@@ -17,33 +17,36 @@ export function createRunDriver(store, options) {
   const messageIds = new WeakMap();
   const executions = new Set();
   let runId, controller, running;
-  let turnEnding = false;
+  let turnBeginning = false, turnEnding = false;
   const inputAdmissions = new Set();
   let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
   async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
-    if (turnId || turnEnding) throw new Error("Pi logical turn is already open");
-    if (descriptor) {
-      validateSessionTurn(descriptor, store.metadata.id);
-      if (source !== "synthetic" && (source !== descriptor.kind || id !== descriptor.turnId)) {
-        throw new TypeError("Logical turn does not match sessionTurn descriptor");
+    if (turnId || turnBeginning || turnEnding) throw new Error("Pi logical turn is already open");
+    turnBeginning = true;
+    try {
+      if (descriptor) {
+        validateSessionTurn(descriptor, store.metadata.id);
+        if (source !== "synthetic" && (source !== descriptor.kind || id !== descriptor.turnId)) {
+          throw new TypeError("Logical turn does not match sessionTurn descriptor");
+        }
+        const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
+        if (store.validator.owner.kind !== "unbound" && (store.validator.owner.kind !== owner.kind
+          || store.validator.owner.ownerKey !== owner.ownerKey || store.validator.owner.historyBucket !== owner.historyBucket)) {
+          throw new Error("Native journal ownership does not match sessionTurn");
+        }
       }
-      const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
-      if (store.validator.owner.kind !== "unbound" && (store.validator.owner.kind !== owner.kind
-        || store.validator.owner.ownerKey !== owner.ownerKey || store.validator.owner.historyBucket !== owner.historyBucket)) {
-        throw new Error("Native journal ownership does not match sessionTurn");
+      const needsOwnerBinding = store.validator.owner.kind === "unbound";
+      turnBinding = descriptor ? createTurnBinding(descriptor, modelConfig().model) : undefined;
+      await store.beginTurn(id, modelConfig(), source, turnBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined;
+      if (descriptor) {
+        const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
+        if (needsOwnerBinding) await store.write("owner_binding", owner);
+        await store.write("handle_binding", { handleId: descriptor.handleId, baseRevision: descriptor.baseRevision,
+          model: modelConfig().model, authoritative: true });
+        await store.sync();
       }
-    }
-    const needsOwnerBinding = store.validator.owner.kind === "unbound";
-    turnBinding = descriptor ? createTurnBinding(descriptor, modelConfig().model) : undefined;
-    await store.beginTurn(id, modelConfig(), source, turnBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined;
-    if (descriptor) {
-      const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
-      if (needsOwnerBinding) await store.write("owner_binding", owner);
-      await store.write("handle_binding", { handleId: descriptor.handleId, baseRevision: descriptor.baseRevision,
-        model: modelConfig().model, authoritative: true });
-      await store.sync();
-    }
+    } finally { turnBeginning = false; }
   }
   async function endTurn(status, result) {
     if (!turnId) return;
@@ -192,8 +195,8 @@ export function createRunDriver(store, options) {
     } else publish(event);
   }
   async function poll() {
-    if (controller?.signal.aborted || closed) return [];
-    const pending = [...queue.values()].filter((q) => q.state === "queued");
+    if (controller?.signal.aborted || closed || turnBeginning || !turnId) return [];
+    const pending = [...queue.values()].filter((q) => q.state === "queued" && q.turnId === turnId);
     const selected = options.steeringMode === "all" ? pending : pending.slice(0, 1);
     for (const q of selected) q.state = "selected";
     return selected.map((q) => q.message);
@@ -338,7 +341,7 @@ export function createRunDriver(store, options) {
     prompt: drive,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async steer(message, identity) {
-      if (closed || turnEnding) throw new Error("mono-agent harness is closed or ending its turn");
+      if (closed || turnEnding || turnBeginning || !turnId) throw new Error("mono-agent harness has no active turn or is closed, beginning or ending its turn");
       const entryId = randomUUID(); const copy = typeof message === "string"
         ? { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now() }
         : structuredClone(message);

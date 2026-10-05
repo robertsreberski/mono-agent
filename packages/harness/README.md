@@ -43,7 +43,9 @@ for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
 follow-up body. Expected placement for the original input remains `initial`
 even when its first durable consumption is in a native `replay` operation;
 matching still requires the bound original ID and exact content digest. Live
-inputs must match `live` placement exactly. `endTurn` durably cancels remaining
+inputs must match `live` placement exactly. Steering requires a fully admitted,
+active logical turn; offers before/between turns or during `beginTurn` reject,
+and polling selects only offers admitted to the current turn. `endTurn` durably cancels remaining
 unconsumed native offers before sealing; none carries into the next turn.
 
 ## Architecture

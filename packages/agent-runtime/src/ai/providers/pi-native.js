@@ -1228,8 +1228,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
     if (isJournalStorageError(err)) {
-      const { providerSessionId: _failedHandle, ...storageFailure } = failure;
-      return { ...storageFailure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined };
+      return { ...failure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined,
+        ...(runState.preserveTurnEvidence ? { providerSessionId: undefined } : {}) };
     }
     return err instanceof NativeSuspendedError
       ? { ...failure, failureKind: "safety_native_suspended", retryable: false, providerSessionRecovery: undefined } : failure;

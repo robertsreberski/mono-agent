@@ -1924,7 +1924,7 @@ it("classifies native journal fsync failure terminally instead of provider-unava
   try {
     const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }],
       sessionId: "storage-failed", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "storage-run", revision: 0 } }));
-    expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result).not.toHaveProperty("providerSessionId"); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
+    expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result.providerSessionId).toBe("storage-failed"); expect(result.retryable).toBe(false); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
   } finally { spy.mockRestore(); await disposeProviderSession("storage-failed").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
 
