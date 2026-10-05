@@ -230,6 +230,16 @@ describe("Parallel WebFetch", () => {
     const result = await performWebFetch({ url: remoteUrl }, { ctx, fetchImpl, fetchConfig: { provider: "parallel" } });
     expect(result).toMatchObject({ error: true, outcome: { code } });
   });
+  it.each(["&nbsp;&nbsp;", "&#160;&#xA0;", "title-url", "url-title"])("rejects remote encoded or combined non-evidence: %s", async (content) => {
+    const remoteUrl = "https://example.test/hotel/harbor-lodge";
+    const title = "Harbor Lodge";
+    const full_content = content === "title-url" ? `${title} ${remoteUrl}`
+      : content === "url-title" ? `${remoteUrl} ... ${title}` : content;
+    const { fetchImpl } = transport({ structuredContent: { extract_id: "fixture", errors: [],
+      results: [{ url: remoteUrl, title, full_content, excerpts: [] }] } });
+    const result = await performWebFetch({ url: remoteUrl }, { ctx, fetchImpl, fetchConfig: { provider: "parallel" } });
+    expect(result).toMatchObject({ error: true, outcome: { code: "unusable_content" } });
+  });
   it("advances after total HTML parser failure with render disabled", async () => {
     const remote = transport({ structuredContent: extract });
     const fetchImpl = vi.fn((url, init) => String(url) === PARALLEL_MCP_URL ? remote.fetchImpl(url, init)

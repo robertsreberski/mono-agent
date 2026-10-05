@@ -697,12 +697,12 @@ closes the browser and removes its temporary config. The executable is invoked
 directly—`browserCommand` is not evaluated by a shell.
 
 Every successful HTML, rendered, or remote Markdown document must contain
-readable evidence before it can return `ok`. Empty/punctuation-only text, fewer
-than two letters or numbers, or a normalized URL/title echo returns
-`unusable_content` (eligible for provider advance). This conservative minimum
-preserves genuinely short HTML such as `OK`; plain text, locally served Markdown,
-JSON, XML and PDF are
-not subject to it. Sparse static application shells remain unusable even if
+readable evidence before it can return `ok`. After HTML-entity decoding and
+removal of normalized URL/title echoes (including combined echoes), fewer than
+two letters or numbers returns `unusable_content` (eligible for provider advance).
+This rejects empty/punctuation-only text while preserving genuinely short HTML
+such as `OK`; plain text, locally served Markdown, JSON, XML and PDF are not
+subject to it. Sparse static application shells remain unusable even if
 they contain a loading label. The check precedes output slicing and focus filters.
 
 Challenge classification preserves the original conclusive access-gate signals

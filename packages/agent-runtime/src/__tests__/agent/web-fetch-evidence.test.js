@@ -24,6 +24,9 @@ describe("WebFetch readable evidence", () => {
     ["   ", undefined, "unusable_content"],
     ["...", undefined, "unusable_content"],
     ["x", undefined, "unusable_content"],
+    ["&nbsp;&nbsp;", undefined, "unusable_content"],
+    [`Harbor Lodge ${url}`, "Harbor Lodge", "unusable_content"],
+    ["Prove that you are human", undefined, "access_challenge"],
   ])("rejects explicit rendered non-evidence %s", async (text, title, code) => {
     const browserRenderer = vi.fn(async () => ({ text, title, finalUrl: url }));
     const fetchImpl = vi.fn();
@@ -100,6 +103,25 @@ describe("WebFetch readable evidence", () => {
     expect(() => assertWebReadableEvidence({ kind, text: "# HARBOR   Lodge", title: "Harbor Lodge" })).toThrow(/readable document evidence/);
   });
 
+  it.each(["html", "rendered", "remote-markdown"])("decodes entities before judging %s evidence", (kind) => {
+    for (const text of ["&nbsp;&nbsp;", "&amp;&lt;&gt;&quot;&#39;", "&#160;&#xA0;&#x26;&#38;"]) {
+      expect(() => assertWebReadableEvidence({ kind, text, url })).toThrow(/readable document evidence/);
+    }
+    // Encoded substantive text is still real evidence, not a markup artifact.
+    expect(() => assertWebReadableEvidence({ kind, text: "&#79;&#x4B;", url })).not.toThrow();
+  });
+
+  it.each(["html", "rendered", "remote-markdown"])("requires body evidence beyond combined title/URL echoes for %s", (kind) => {
+    const title = "Harbor Lodge";
+    for (const text of [`${title} ${url}`, `${url}\n# ${title}`, `(${title}) : ${url} ...`, `${url}&nbsp;&amp;${title}`]) {
+      expect(() => assertWebReadableEvidence({ kind, text, url, title })).toThrow(/readable document evidence/);
+    }
+    expect(() => assertWebReadableEvidence({ kind, text: `${title} ${url} - OK`, url, title })).not.toThrow();
+    expect(() => assertWebReadableEvidence({ kind, text: `${title}: Rooms overlook the harbor.`, url, title })).not.toThrow();
+    expect(() => assertWebReadableEvidence({ kind, text: "Hotels", url, title: "Hotel" })).not.toThrow();
+    expect(() => assertWebReadableEvidence({ kind, text: "OK", url })).not.toThrow();
+  });
+
   it.each(["text", "markdown", "json", "xml", "pdf"])("does not impose HTML evidence thresholds on %s", (kind) => {
     expect(() => assertWebReadableEvidence({ kind, text: "x", title: "x" })).not.toThrow();
   });
@@ -113,7 +135,7 @@ describe("general structural access signals", () => {
   it("recognizes mitigation headers without requiring phrases", () => {
     expect(classifyWebAccessInterstitial({ text: "", headers: new Headers({ "cf-mitigated": "challenge" }) })?.code).toBe("access_challenge");
   });
-  it.each(["Prove you're human", "Are you a robot?"])("recognizes generic short challenge %s", (text) => {
+  it.each(["Prove you're human", "Prove that you are human", "Are you a robot?"])("recognizes generic short challenge %s", (text) => {
     expect(classifyWebAccessInterstitial({ text })?.code).toBe("access_challenge");
   });
   it("does not classify incidental short words or long explanatory phrases", () => {

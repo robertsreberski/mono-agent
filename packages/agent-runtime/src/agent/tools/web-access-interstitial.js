@@ -24,7 +24,7 @@ export function classifyWebAccessInterstitial({ url, text, statusCode, headers }
     .replace(/<(script|style|noscript|template)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, " "));
   const shortContent = visibleSample.length <= MAX_BROAD_HUMAN_CHECK_CHARS;
   const tinyBody = String(text || "").length <= 256;
-  const broadHumanCheck = /\bhuman or a bot\b|\bprove (?:you are|you're) human\b|\bare you a robot\b|\bshow us your human side\b/iu.test(visibleSample);
+  const broadHumanCheck = /\bhuman or a bot\b|\bprove (?:that )?(?:you are|you're) human\b|\bare you a robot\b|\bshow us your human side\b/iu.test(visibleSample);
   const verificationVocabulary = /\b(?:verify|verification|prove|check|checking|security)\b/iu;
   const vocabularyScore = [/\b(?:captcha|challenge)\b/iu, /\b(?:bot|robot)\b/iu,
     /\bhuman\b/iu, verificationVocabulary]
