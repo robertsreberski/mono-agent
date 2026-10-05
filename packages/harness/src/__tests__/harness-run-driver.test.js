@@ -4,12 +4,12 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCal
 import { MemorySessionRepo } from "../session-store.js";
 import { createRunDriver } from "../run-driver.js";
 
-async function harness(responses, retry, modelDef = {}) {
+async function harness(responses, retry, modelDef = {}, tools = []) {
   const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture", ...modelDef }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider); faux.setResponses(responses);
   const repo = new MemorySessionRepo(); const raw = await repo.create();
   const adapter = createRunDriver(raw, {
-    models, model: faux.getModel(), tools: [], systemPrompt: "Fictional test.", thinkingLevel: "off",
+    models, model: faux.getModel(), tools, systemPrompt: "Fictional test.", thinkingLevel: "off",
     retry: { enabled: true, maxRetries: 2, baseDelayMs: 0, ...retry },
   });
   return { adapter, raw, faux };
@@ -170,4 +170,57 @@ it.each(["host", "instance"])("binds authoritative %s ownership append-only with
     await expect(adapter.beginTurn("wrong-logical-turn", kind, descriptor)).rejects.toThrow("sessionTurn");
     expect(raw.seq).toBe(seq);
   } finally { await adapter.close(); await raw.close(); }
+});
+
+const fictionalTool = (name, execute) => ({ name, description: "Fictional effect", parameters: { type: "object", properties: {} }, execute });
+it("fsyncs logical input, assistant calls, started admission and parallel outcomes before dispatch/return", async () => {
+  let raw, durableSeq = 0, effects = 0;
+  const tools = ["One", "Two"].map((name) => fictionalTool(name, async (callId) => {
+    expect(raw.validator.calls.get(`${raw.activeOperationId()}\0${callId}`).admission).toBe("started");
+    expect(durableSeq).toBe(raw.seq); effects += 1;
+    return { content: [{ type: "text", text: `${name} fictional outcome` }] };
+  }));
+  const fixture = await harness([(context) => {
+    expect([...raw.validator.turns.values()].at(-1).inputs.size).toBe(1); expect(durableSeq).toBe(raw.seq);
+    return fauxAssistantMessage([fauxToolCall("One", {}, { id: "one" }), fauxToolCall("Two", {}, { id: "two" })]);
+  }, () => {
+    expect(raw.outcomes.size).toBe(2); expect(durableSeq).toBe(raw.seq); return fauxAssistantMessage([fauxText("done")]);
+  }], undefined, {}, tools); raw = fixture.raw;
+  raw.io = { append: async () => {}, sync: async () => { durableSeq = raw.seq; } };
+  try { expect((await fixture.adapter.prompt("Fictional input.")).status).toBe("completed"); expect(effects).toBe(2);
+    expect(raw.records.filter((record) => record.kind === "tool_result" && record.payload.phase === "returned")).toHaveLength(2);
+    expect([...raw.validator.calls.values()].every((call) => call.placed)).toBe(true);
+  } finally { await fixture.adapter.close(); await raw.close(); }
+});
+
+it.each(["input", "assistant", "admitted", "started", "returned"])("fails terminally at the %s fsync barrier without another effect/provider request", async (phase) => {
+  let effects = 0;
+  const { adapter, raw, faux } = await harness([fauxAssistantMessage([fauxToolCall("Effect", {}, { id: "effect" })]), fauxAssistantMessage([fauxText("must not dispatch")])], undefined, {},
+    [fictionalTool("Effect", async () => { effects += 1; return { content: [{ type: "text", text: "observed" }] }; })]);
+  raw.io = { append: async () => {}, sync: async () => {
+    const record = raw.records.at(-1); const matches = phase === "input" ? record.kind === "input_consumed"
+      : phase === "assistant" ? record.kind === "tool_call" && record.payload.admission === "observed"
+      : phase === "returned" ? record.kind === "tool_result" && record.payload.phase === "returned"
+      : record.kind === "tool_call" && record.payload.admission === phase;
+    if (matches) throw Object.assign(new Error("Fictional barrier failure"), { code: "ENOSPC" });
+  } };
+  try { await expect(adapter.prompt("Fictional input.")).rejects.toMatchObject({ name: "JournalStorageError", code: "ENOSPC" });
+    expect(effects).toBe(phase === "returned" ? 1 : 0); expect(faux.state.callCount).toBe(phase === "input" ? 0 : 1);
+  } finally { await adapter.close().catch(() => {}); await raw.close().catch(() => {}); }
+});
+
+it("drains already admitted parallel effects after a poisoned outcome barrier before releasing the driver", async () => {
+  let started = 0, releaseSecond, bothStarted; const waitBoth = new Promise((resolve) => { bothStarted = resolve; });
+  const waitSecond = new Promise((resolve) => { releaseSecond = resolve; });
+  const tools = ["First", "Second"].map((name) => fictionalTool(name, async () => {
+    started += 1; if (started === 2) bothStarted(); await waitBoth; if (name === "Second") await waitSecond;
+    return { content: [{ type: "text", text: "Fictional completed effect" }] };
+  }));
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxToolCall("First", {}, { id: "first" }), fauxToolCall("Second", {}, { id: "second" })])], undefined, {}, tools);
+  raw.io = { append: async () => {}, sync: async () => { if (raw.records.at(-1).kind === "tool_result") throw new Error("Fictional poisoned outcome"); } };
+  let settled = false; const pending = adapter.prompt("Fictional input."); void pending.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    await waitBoth; await new Promise((resolve) => setImmediate(resolve)); expect(raw.failure).toBeTruthy(); expect(settled).toBe(false);
+    releaseSecond(); await expect(pending).rejects.toMatchObject({ name: "JournalStorageError" }); expect(started).toBe(2);
+  } finally { releaseSecond(); await adapter.close().catch(() => {}); await raw.close().catch(() => {}); }
 });

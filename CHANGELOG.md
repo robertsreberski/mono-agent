@@ -4,6 +4,9 @@
 
 - Add protected host and persistent-subagent native turn descriptors; bind journal
   ownership append-only without granting terminal recovery or host crash adoption.
+  Fsync native admission/outcome boundaries before effects, fail terminally on
+  poisoned storage, project idempotent interruption evidence without tool replay,
+  and replay exact durable compaction checkpoints without new summary calls.
 
 
 - Keep answer text before reply-presentation tools in the final reply across

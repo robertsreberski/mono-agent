@@ -176,7 +176,9 @@ describe("pi-native sessions", () => {
       }));
       expect(resumed.error).toBeNull();
       expect(JSON.stringify(next.slice(0, beforeCancel.length))).toBe(JSON.stringify(beforeCancel));
-      expect(next).toHaveLength(beforeCancel.length + 1);
+      expect(next).toHaveLength(beforeCancel.length + 2);
+      expect(next[beforeCancel.length]).toMatchObject({ role: "user", projectionOnly: true, interruptionCause: "user_interrupted" });
+      expect(JSON.stringify(next[beforeCancel.length])).toContain("no tool was replayed");
       expect(JSON.stringify(next)).not.toMatch(/interrupted prose|MUST-NOT-RESEED/);
       expect(next.filter((message) => message.role === "toolResult")).toHaveLength(1);
     } finally {
@@ -1905,4 +1907,36 @@ it("uses a protected descriptor without opting into terminal recovery", async ()
     expect(await session.getTurn("host-turn")).toMatchObject({ payload: { status: "completed" } });
     const bytes = readFileSync(session.metadata.path, "utf8"); expect(JSON.parse(bytes.split("\n")[0]).ownership).toEqual({ kind: "unbound" }); await session.close();
   } finally { await disposeProviderSession("descriptor-handle").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("classifies native journal fsync failure terminally instead of provider-unavailable", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "storage-terminal-")); const original = sessionAdapter.createHarnessAdapter;
+  const spy = vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, options) => {
+    const raw = session.rawSession; const append = raw.io.append, sync = raw.io.sync; let fail = false;
+    raw.io.append = async (text) => { if (JSON.parse(text).kind === "input_consumed") fail = true; return append(text); };
+    raw.io.sync = async () => { if (fail) throw Object.assign(new Error("503 network timeout in fictional fsync"), { code: "ENOSPC" }); return sync(); };
+    return original(session, options);
+  });
+  try {
+    const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, { messages: [{ role: "user", content: "Fictional input." }],
+      sessionId: "storage-failed", sessionKeepAlive: true, piSessionsRoot: root, sessionRecovery: { runId: "storage-run", revision: 0 } }));
+    expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(result.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(0);
+  } finally { spy.mockRestore(); await disposeProviderSession("storage-failed").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("preserves provider suspension distinctly without sealing or repairing it as completion", async () => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-suspended-"));
+  const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
+  faux.setResponses([fauxAssistantMessage([], { stopReason: "deferred", deferred })]);
+  try {
+    const options = runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "suspended", sessionKeepAlive: true, piSessionsRoot: root });
+    const first = await generatePiNativeResponse("Fictional verification.", options);
+    expect(first.failureKind).toBe("safety_native_suspended"); expect(first.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(1);
+    const directory = join(root, "mono-v2", "journals"); const path = join(directory, readdirSync(directory)[0]); const bytes = readFileSync(path);
+    const second = await generatePiNativeResponse("Fictional verification.", options);
+    expect(second.failureKind).toBe("safety_native_suspended"); expect(faux.state.callCount).toBe(1); expect(readFileSync(path).equals(bytes)).toBe(true);
+    const records = bytes.toString("utf8").trim().split("\n").map(JSON.parse).slice(1);
+    expect(records.filter((record) => record.kind === "interruption")).toEqual([]);
+    expect(records.filter((record) => record.kind === "operation_end")).toEqual([]);
+  } finally { await disposeProviderSession("suspended").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });

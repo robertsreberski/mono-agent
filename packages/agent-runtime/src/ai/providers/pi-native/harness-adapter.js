@@ -17,7 +17,7 @@ export function createPiSessionAdapter(rawSession) {
     rawSession,
     get metadata() { return rawSession.metadata; },
     attach(nextDriver) { driver = nextDriver; },
-    async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true }); },
+    async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true, repairs: await rawSession.getRepairEntries() }); },
     getEntries: () => rawSession.getEntries(),
     getLeafId: () => rawSession.getLeafId(),
     appendMessage: (message) => rawSession.appendMessage(message),
@@ -124,6 +124,7 @@ export async function createHarnessAdapter(session, options) {
     },
     subscribe: (listener) => driver.subscribe(listener),
     async abortOpenOperations() { await driver.abortOpenOperations(); },
+    async repairOpenOperations() { await driver.repairOpenOperations(); },
     async close() {
       stopTools();
       if (closed) return; closed = true;

@@ -93,14 +93,16 @@ describe("mono-agent harness session store", () => {
     await s.close();
     expect(await repo.list()).toHaveLength(1);
   });
-  it("repairs only a torn owned line, leaving the complete turn-open marker pending", async () => {
+  it("repairs a torn owned tail and seals the surviving turn as interrupted without changing native context", async () => {
     const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
     const s = await repo.create({ id: "torn-session" });
     await s.beginTurn("interrupted", {}); await s.appendMessage(message);
     await s.close(); await appendFile(s.metadata.path, '{"kind":"turn_close"');
     const reopened = await repo.open(s.metadata);
     expect(await reopened.getEntries()).toHaveLength(1);
-    expect(await reopened.getOpenTurns()).toHaveLength(1);
+    expect(await reopened.getOpenTurns()).toEqual([]);
+    expect(await reopened.getTurn("interrupted")).toMatchObject({ payload: { status: "interrupted" } });
+    expect(reopened.interruptions.get("interrupted")).toMatchObject({ cause: "crashed", draftLossPossible: true });
     await reopened.close();
     expect((await readFile(s.metadata.path, "utf8")).endsWith("\n")).toBe(true);
   });
@@ -118,7 +120,7 @@ describe("mono-agent harness session store", () => {
     expect(order).toEqual(["append", "file+directory-sync", "host-history-commit"]);
     await s.close();
   });
-  it("detects an unfinished turn after killing a child between append and sync", async () => {
+  it("accounts for an unfinished turn after SIGKILL without claiming it completed", async () => {
     const r = await root();
     const child = fork(new URL("./fixtures/append-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
     try {
@@ -127,7 +129,9 @@ describe("mono-agent harness session store", () => {
       const exit = once(child, "exit"); child.kill("SIGKILL"); await exit;
       const repo = new JsonlSessionRepo({ sessionsRoot: r });
       const s = await repo.open((await repo.list())[0]);
-      expect(await s.getOpenTurns()).toHaveLength(1);
+      expect(await s.getOpenTurns()).toEqual([]);
+      expect([...s.interruptions.values()]).toHaveLength(1);
+      expect([...s.validator.turns.values()].at(-1).end.payload.status).toBe("interrupted");
       expect(await s.getEntries()).toHaveLength(1);
       await s.close();
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }

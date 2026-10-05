@@ -323,12 +323,11 @@ export async function buildTurnHarness(runState, {
   // every resolved execute(), so without this the model would be told a failed,
   // timed-out, or empty delegation succeeded.
   harness.on("tool_result", (event) => toolResultErrorOverride(event?.details));
-  // Pi 0.85 records in-flight work durably. mono-agent tools do not yet use the
-  // new replay-memo contract, so abort an interrupted operation instead of
-  // risking a duplicate external effect. Do this before subscribing so stale
-  // recovery events cannot contaminate the new run's transcript counters.
+  // Reconcile native evidence without executing a provider/tool or claiming a
+  // successful receipt. Do this before subscription: repair is old evidence,
+  // not output or spend from the next user turn. Deferred handles stay distinct.
   try {
-    await harness.abortOpenOperations();
+    await harness.repairOpenOperations();
   } catch (error) {
     try { await harness.close(); } catch { /* best-effort */ }
     throw error;
@@ -656,11 +655,11 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
  * @param {{onOperationAdmitted?: (operationId: string) => void}} [hooks]
  *   `onOperationAdmitted` fires as soon as Pi admits the run, before any
  *   provider request, so the live-input epoch can own the operation up front.
- * @returns {Promise<{runError: any, operationId?: string}>}
+ * @returns {Promise<{runError: any, operationId?: string, suspended?: boolean}>}
  */
 export async function runHarnessPrompt(harness, promptText, promptImages, hooks) {
   let runError = null;
-  let operationId;
+  let operationId, suspended = false;
   try {
     // Pass structured images (when present) so multimodal input reaches the
     // model as image blocks rather than stringified text. AgentHarness.prompt
@@ -675,10 +674,10 @@ export async function runHarnessPrompt(harness, promptText, promptImages, hooks)
     const result = Object.keys(promptOptions).length > 0
       ? await harness.prompt(promptText, promptOptions)
       : await harness.prompt(promptText);
-    operationId = result?.operationId;
+    operationId = result?.operationId; suspended = result?.status === "suspended";
   } catch (err) {
     runError = err;
   }
   await harness.waitForIdle();
-  return { runError, ...(operationId === undefined ? {} : { operationId }) };
+  return { runError, ...(operationId === undefined ? {} : { operationId }), ...(suspended ? { suspended: true } : {}) };
 }

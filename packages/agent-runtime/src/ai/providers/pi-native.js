@@ -1,4 +1,4 @@
-import { validateSessionTurn } from "@mono-agent/harness";
+import { validateSessionTurn, isJournalStorageError, NativeSuspendedError } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -861,6 +861,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           liveInputEpoch.confirm(operationId);
         },
       });
+      if (promptResult.suspended) {
+        await runState.session.rawSession.sync();
+        throw new NativeSuspendedError();
+      }
       runError = promptResult.runError;
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
@@ -1134,8 +1138,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
-    try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen aborts unsealed work */ }
-    await cleanupSessionOnThrow(runState, { durableRepo });
+    if (err instanceof NativeSuspendedError) {
+      runState.reservation?.release(); runState.reservation = null;
+    } else {
+      try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen repairs unsealed work */ }
+      await cleanupSessionOnThrow(runState, { durableRepo });
+    }
     // The throw path still holds the original Error, so its cause chain is the
     // authoritative source here — no correlation guesswork needed.
     const errorMessage = annotateProviderErrorMessage(
@@ -1146,7 +1154,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       errorText: errorMessage,
       failureKind: "provider_unavailable",
     }).retryable;
-    return buildErrorResult({
+    const failure = buildErrorResult({
       assistantTexts: runState.assistantTexts,
       events,
       start,
@@ -1164,6 +1172,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
+    return isJournalStorageError(err) ? { ...failure, failureKind: "safety_journal_storage_failed",
+      retryable: false, providerSessionRecovery: undefined } : err instanceof NativeSuspendedError
+      ? { ...failure, failureKind: "safety_native_suspended", retryable: false, providerSessionRecovery: undefined } : failure;
   } finally {
     // Safety net for a throw between arming and the prompt: disarm is
     // idempotent, and it must run before the harness closes so the session's

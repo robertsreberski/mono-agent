@@ -3,6 +3,9 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
+import { createCompactionSummaryMessage } from "./compaction-kit/messages.js";
+import { repairInterruptedSession } from "./interruption.js";
+import { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 import { JournalReader } from "./journal-reader.js";
 import { JournalLocks } from "./journal-lock.js";
 import { archiveLegacySession, listLegacySessions, readLegacySession, legacyJournalId, importDescriptor, importSourceMetadata, assertLegacyIdentity } from "./legacy-import.js";
@@ -22,6 +25,8 @@ export class SessionStore {
     this.retired = false;
     /** @type {string|undefined} */ this.continuity = undefined;
     this.entries = new Map();
+    this.outcomes = new Map();
+    this.interruptions = new Map();
     this.validator = new JournalValidator();
     this.tip = null;
     this.seq = 0;
@@ -41,6 +46,10 @@ export class SessionStore {
       this.entries.set(record.id, { ...(this.io?.read ? { address, type: data.type } : clone(data)),
         id: record.id, parentId: p.contextParentId, timestamp: record.timestamp, seq: record.seq });
     }
+    if (record.kind === "interruption") this.interruptions.set(record.turnId, { ...clone(record.payload), timestamp: record.timestamp });
+    if (record.kind === "tool_result" && record.payload.phase === "returned") {
+      this.outcomes.set(`${record.operationId}\0${record.payload.callId}`, this.io?.read ? { address } : { record: clone(record) });
+    }
     this.tip = this.validator.tip;
     this.seq = record.seq;
     this.records?.push(clone(record));
@@ -49,9 +58,10 @@ export class SessionStore {
     const result = this.line.then(async () => {
       if (this.closed || this.retired) throw new Error("Harness session is closed or retired");
       if (this.failure) throw this.failure;
-      return fn();
+      try { return await fn(); }
+      catch (error) { this.failure = isJournalStorageError(error) ? error : new JournalStorageError(error); throw this.failure; }
     });
-    this.line = result.catch((error) => { this.failure = error; });
+    this.line = result.catch((error) => { this.failure ??= error; });
     return result;
   }
   /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string}} [identity] */
@@ -104,9 +114,22 @@ export class SessionStore {
     }, "seed");
   }
   async appendCompaction(data) {
-    return this.scopedWrite(async () => (await this.writeRecord("compaction", () => ({ compaction: clone(data), contextParentId: this.tip,
-      preservedMessageIds: [], derivedMessages: clone(data.retainedTail ?? []), coverageVersion: 1 }),
-      { operationId: this.activeOperationId() })).id, "compaction");
+    // Prepare outside the admitted write queue; getEntries itself drains it.
+    const branch = await this.getEntries(); const preservedMessageIds = [], derivedMessages = [];
+    let cursor = 0;
+    for (const message of data.retainedTail ?? []) {
+      const index = branch.findIndex((entry, at) => at >= cursor && entry.type === "message" && JSON.stringify(entry.message) === JSON.stringify(message));
+      if (index >= 0) { preservedMessageIds.push(branch[index].id); cursor = index + 1; }
+      else derivedMessages.push(clone(message));
+    }
+    const timestamp = Date.now();
+    const checkpoint = { version: 1, summaryMessage: createCompactionSummaryMessage(data.summary, data.tokensBefore, timestamp),
+      preservedMessageIds, derivedMessages, tokensBefore: data.tokensBefore ?? null, tokensAfter: data.tokensAfter ?? null,
+      model: this.validator.operations.get(this.activeOperationId())?.start.payload.config?.model ?? null,
+      coverage: { version: 1, sourceTipId: this.tip, sourceEntryCount: branch.length }, projectionVersion: 1 };
+    return this.scopedWrite(async () => (await this.writeRecord("compaction", () => ({
+      compaction: { ...clone(data), checkpoint }, contextParentId: this.tip, preservedMessageIds,
+      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId() })).id, "compaction");
   }
   async moveTo(tipId) { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
   async getEntries() {
@@ -122,7 +145,9 @@ export class SessionStore {
   async getLeafId() { await this.line; if (this.failure) throw this.failure; return this.tip; }
   async materialize(entry) {
     if (!entry || !this.io?.read) return clone(entry);
-    const record = await this.io.read(entry.address);
+    let record;
+    try { record = await this.io.read(entry.address); }
+    catch (error) { this.failure = isJournalStorageError(error) ? error : new JournalStorageError(error); throw this.failure; }
     return { ...(record.kind === "message" ? { type: "message", message: record.payload.message }
       : { ...record.payload.compaction, type: "compaction" }), id: entry.id, parentId: entry.parentId,
       timestamp: entry.timestamp, seq: entry.seq };
@@ -137,6 +162,18 @@ export class SessionStore {
     const op = this.validator.operations.get(operationId);
     return op?.end ? { ...clone(op.end), config: clone(op.start.payload.config), fromTipId: op.start.payload.baselineTipId,
       tipId: op.end.payload.tipId, status: op.end.payload.status } : undefined;
+  }
+  async getRepairEntries() {
+    await this.line; if (this.failure) throw this.failure;
+    const visible = new Set((await this.getEntries()).map((entry) => entry.id));
+    return Promise.all([...this.interruptions.values()].filter((repair) => repair.tipId === null ? this.tip === null : visible.has(repair.tipId)).map(async (repair) => ({ ...clone(repair), calls: await Promise.all((repair.calls ?? []).map(async (call) => ({
+      ...call, timestamp: repair.timestamp, returned: await this.getReturnedOutcome(call.operationId, call.callId),
+    }))) })));
+  }
+  async getReturnedOutcome(operationId, callId) {
+    await this.line; if (this.failure) throw this.failure;
+    const outcome = this.outcomes.get(`${operationId}\0${callId}`);
+    return outcome?.record ? clone(outcome.record.payload.message) : outcome ? (await this.io.read(outcome.address)).payload.message : undefined;
   }
   sync() { return this.enqueue(() => this.io?.sync()); }
   close() {
@@ -177,7 +214,8 @@ export class MemorySessionRepo {
       data.records = clone(store.records); this.openSessions.delete(metadata.id);
     });
     this.openSessions.set(metadata.id, session);
-    return session;
+    try { await repairInterruptedSession(session); return session; }
+    catch (error) { await session.close().catch(() => {}); throw error; }
   }
   async list() { return [...this.sessions.values()].map((s) => clone(s.metadata)); }
   async delete(metadata) {
@@ -269,7 +307,7 @@ export class JsonlSessionRepo {
     try {
       if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
       session = await this.openLocked(metadata, writer);
-      try { await this.reconcileImport(session); return session; }
+      try { await this.reconcileImport(session); await repairInterruptedSession(session); return session; }
       catch (error) { await session.close().catch(() => {}); throw error; }
     } catch (error) {
       try { if (!session?.closed) await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }

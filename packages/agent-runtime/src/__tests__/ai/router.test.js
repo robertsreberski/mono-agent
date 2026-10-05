@@ -1388,3 +1388,10 @@ it("rejects an attempt resolver overriding the protected native turn descriptor"
   const result = await router.run("sys", { model: primary, messages: [], sessionTurn: descriptor });
   expect(result.error).toContain("cannot override sessionTurn"); expect(executeMock).not.toHaveBeenCalled();
 });
+
+it("never retries or fails over a terminal native journal storage failure", async () => {
+  executeMock.mockResolvedValue({ error: "503 network timeout while persisting evidence", failureKind: "safety_journal_storage_failed", events: [] });
+  const primary = modelRef("openai-codex", "primary"); const router = createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, modelRef("anthropic", "backup")] });
+  const result = await router.run("sys", { model: primary, messages: [] });
+  expect(result.failureKind).toBe("safety_journal_storage_failed"); expect(executeMock).toHaveBeenCalledTimes(1);
+});
