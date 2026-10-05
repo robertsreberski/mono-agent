@@ -165,16 +165,17 @@ by the separate host history transaction, not the raw runtime.
 ### Opt-in handoff foundation
 
 `produceNativeHandoffSummary` performs exactly one no-tools completion on the
-selected model, without router fallback or automatic retry. It checks producer
-input/output bounds, rejects empty/malformed/truncated/error/aborted responses,
-and returns usage accounting. It never invokes manual compaction or writes a
+selected model, without router fallback or automatic retry (`maxRetries: 0`
+overrides caller completion options). It checks producer input bounds, enforces
+the provider output-token ceiling, rejects empty/malformed/truncated/error/aborted
+responses, and returns usage accounting. It never invokes manual compaction or writes a
 session. Hosts own durable attempt admission, fallback ordering (outgoing,
 checkpoint plus complete suffix, incoming), accepted-output caching and billing
 limits. A lost completion is explicitly outcome-unknown, not permission to retry.
 
 `detachDurableNativeSession` drops an idle local handle without deleting native
-bytes. Busy or recovery-pending handles must be settled first. It is deliberately
-separate from destructive retirement/invalidation and does not establish
+bytes. Busy/recovery-pending handles, cold opens and create reservations must be
+settled first. It is deliberately separate from destructive retirement/invalidation and does not establish
 cross-process canonical authority. Host switching/retention policy is unchanged.
 
 `probeNativeAccountProvenance` reads only caller-supplied selected credential

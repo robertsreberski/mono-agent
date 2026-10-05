@@ -59,5 +59,12 @@ export function validateComposedCoverage(coverage, descriptors) {
  * @param {any} store
  */
 export async function inspectCurrentEvidence(store) {
-  return { entries: await store.getEntries(), turns: [...store.validator.turns.values()], calls: [...store.validator.calls.values()] };
+  return { entries: await store.getEntries(), ...inspectCurrentLifecycle(store) };
+}
+
+/** Synchronous current-journal lifecycle references; deliberately no payload I/O.
+ * @param {any} store
+ */
+export function inspectCurrentLifecycle(store) {
+  return { turns: [...store.validator.turns.values()], calls: [...store.validator.calls.values()] };
 }

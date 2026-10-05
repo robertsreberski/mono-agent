@@ -1,4 +1,5 @@
 // @ts-check
+import { planRepairEntries } from "./repair-entries.js";
 import { createHash } from "node:crypto";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 
@@ -44,21 +45,14 @@ export function createEvidenceView(input) {
       const entry = context.get(id); if (!entry) fail("ancestry"); entries.unshift(entry); id = entry.parentId;
     }
     const visible = new Set(entries.map((e) => e.id));
-    for (const repair of repairs) {
-      repair.calls = (repair.calls ?? []).filter((call) => !["error", "aborted", "deferred"].includes(validator.contextInfo.get(call.messageId)?.stopReason))
-        .map((call) => ({ ...call, timestamp: repair.timestamp, returned: records.find((r) => r.kind === "tool_result" && r.payload.phase === "returned"
-          && r.operationId === call.operationId && r.payload.callId === call.callId)?.payload.message }));
-      for (const call of validator.calls.values()) {
-        const end = validator.operations.get(call.operationId)?.end;
-        if (!call.placed && call.admission === "started" && end && visible.has(call.messageId) && repair.operationIds.includes(call.operationId)
-          && !["error", "aborted", "deferred"].includes(validator.contextInfo.get(call.messageId)?.stopReason)
-          && !repair.calls.some((c) => c.operationId === call.operationId && c.callId === call.callId)) repair.calls.push({ ...call,
-            timestamp: repair.timestamp, cause: end.payload.status === "aborted" ? "user_interrupted" : "crashed",
-            returned: records.find((r) => r.kind === "tool_result" && r.payload.phase === "returned" && r.operationId === call.operationId && r.payload.callId === call.callId)?.payload.message });
-      }
-    }
+    const plan = planRepairEntries({ tip: validator.tip, visible, interruptions: repairs, validator,
+      timestamp: (id) => context.get(id).timestamp });
+    const outcome = (call) => records.find((r) => r.kind === "tool_result" && r.payload.phase === "returned"
+      && r.operationId === call.operationId && r.payload.callId === call.callId)?.payload.message;
+    for (const repair of plan.repairs) repair.calls = repair.calls.map((call) => ({ ...call, returned: outcome(call) }));
+    for (const addition of plan.additions) addition.account.calls.push({ ...addition.call, returned: outcome(addition.call) });
     return { descriptor, header, records, entries,
-      repairs: repairs.filter((r) => r.tipId === null ? !entries.length : visible.has(r.tipId)),
+      repairs: plan.repairs,
       turns: [...validator.turns.values()].map((t) => ({ id: t.start.turnId, start: t.start, end: t.end })),
       allCalls: [...validator.calls.values()],
       calls: [...validator.calls.values()].filter((call) => visible.has(call.messageId)),

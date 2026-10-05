@@ -18,7 +18,7 @@ export async function produceNativeHandoffSummary(input) {
   let response;
   const started = performance.now();
   try {
-    response = await input.completeSimple(input.model, context, { ...input.completionOptions, signal: input.signal, maxTokens: input.outputReserve });
+    response = await input.completeSimple(input.model, context, { ...input.completionOptions, maxRetries: 0, signal: input.signal, maxTokens: input.outputReserve });
   } catch {
     return { status: "summary_rejected", reason: "request_outcome_unknown", durationMs: Math.round(performance.now() - started) };
   }
@@ -27,7 +27,6 @@ export async function produceNativeHandoffSummary(input) {
   if (!Array.isArray(response.content) || response.content.some((part) => part.type !== "text")) return { status: "summary_rejected", reason: "invalid_content", ...accounting };
   try {
     const summary = validateHandoffSummary(JSON.parse(response.content.map((part) => part.text).join("")));
-    if (estimateHandoffTokens(summary) > input.outputReserve) return { status: "budget_failure", reason: "producer_output", ...accounting };
     return { status: "ready", summary, ...accounting };
   } catch { return { status: "summary_rejected", reason: "malformed_summary", ...accounting }; }
 }

@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { createCompactionSummaryMessage } from "./compaction-kit/messages.js";
+import { planRepairEntries } from "./repair-entries.js";
 import { repairInterruptedSession } from "./interruption.js";
 import { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 import { JournalReader } from "./journal-reader.js";
@@ -25,6 +26,7 @@ export class SessionStore {
     this.onClose = onClose;
     this.records = io?.read ? null : [];
     this.retired = false;
+    this.version3WritesEnabled = false;
     /** @type {string|undefined} */ this.continuity = undefined;
     this.entries = new Map();
     this.outcomes = new Map();
@@ -82,6 +84,7 @@ export class SessionStore {
   }
   /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3}} [identity] */
   async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2 } = {}) {
+      if (schemaVersion === 3) this.assertVersion3WritesEnabled();
       const record = { schemaVersion, id, parentId: this.validator.parentId,
         seq: this.seq + 1, timestamp: Date.now(), turnId, kind,
         ...(operationId ? { operationId } : {}), payload: typeof payload === "function" ? payload() : clone(payload) };
@@ -133,7 +136,21 @@ export class SessionStore {
       return record.id;
     }, "seed");
   }
+  /** Explicit operational acknowledgement, per open writer. Complete v3 records
+   * reject in old readers, but old cold-open repair can truncate a torn v3 tail.
+   * Stop/prohibit all older readers/writers for this root before enabling.
+   * This is not canonical or cross-process authorization.
+   * @param {{exclusiveWriters:true}} options
+   */
+  enableVersion3Writes(options) {
+    if (options?.exclusiveWriters !== true) throw new TypeError("Version-3 writes require exclusive upgraded writers");
+    this.version3WritesEnabled = true;
+  }
+  assertVersion3WritesEnabled() {
+    if (!this.version3WritesEnabled) throw new TypeError("Version-3 writes require enableVersion3Writes with exclusive upgraded writers");
+  }
   async appendComposedCompaction(data, view) {
+    this.assertVersion3WritesEnabled();
     assertEvidenceView(view);
     const inheritedMessages = new Set(view.segments.slice(0, -1).flatMap((s) => s.entries.filter((e) => e.type === "message").map((e) => JSON.stringify(e.message))));
     if ((data.retainedTail ?? []).some((message) => inheritedMessages.has(JSON.stringify(message)))) throw new TypeError("Inherited native tail must remain in predecessor evidence");
@@ -146,6 +163,7 @@ export class SessionStore {
     })) }, current);
   }
   async appendCompaction(data, inheritedCoverage = undefined, source = undefined) {
+    if (inheritedCoverage) this.assertVersion3WritesEnabled();
     // Prepare outside the admitted write queue; getEntries itself drains it.
     const branch = await this.getEntries(); const preservedMessageIds = [], derivedMessages = [];
     let cursor = 0;
@@ -166,7 +184,8 @@ export class SessionStore {
     } : undefined);
   }
   /** Opt-in reference only: host artifacts are the sole content authority. */
-  appendModelChangeReference({ switchId, from, to, artifactRef }) {
+  async appendModelChangeReference({ switchId, from, to, artifactRef }) {
+    this.assertVersion3WritesEnabled();
     return this.scopedWrite(() => this.writeRecord("model_change", {
       version: 1, switchId, from, to, source: "host-handoff", checkpointId: null, artifactRef,
     }, { schemaVersion: 3 }), "model-change");
@@ -230,24 +249,16 @@ export class SessionStore {
       // Branch membership uses indexed ancestry, not a second full payload read.
       const visible = new Set();
       for (let id = this.tip; id !== null; id = this.entries.get(id).parentId) visible.add(id);
-      this.repairCache = Promise.all([...this.interruptions.values()].filter((repair) => repair.tipId === null ? this.tip === null : visible.has(repair.tipId)).map(async (repair) => ({ ...clone(repair), calls: await Promise.all((repair.calls ?? []).filter((call) =>
-        !["error", "aborted", "deferred"].includes(this.validator.contextInfo.get(call.messageId)?.stopReason)).map(async (call) => ({
-        ...call, timestamp: repair.timestamp, returned: await this.getReturnedOutcome(call.operationId, call.callId),
+      const plan = planRepairEntries({ tip: this.tip, visible, interruptions: this.interruptions.values(),
+        validator: this.validator, timestamp: (id) => this.entries.get(id).timestamp });
+      this.repairCache = Promise.all(plan.repairs.map(async (repair) => ({ ...repair, calls: await Promise.all(repair.calls.map(async (call) => ({
+        ...call, returned: await this.getReturnedOutcome(call.operationId, call.callId),
       }))) }))).then(async (repairs) => {
-        const covered = new Set(repairs.flatMap((repair) => repair.calls.map((call) => `${call.operationId}\0${call.callId}`)));
-        const byOperation = new Map(); for (const repair of repairs) for (const id of repair.operationIds) byOperation.set(id, repair);
-        // Older per-turn accounts may omit a later interrupted operation. A
-        // closed started call without a receipt is conservatively unknown.
-        for (const call of this.validator.calls.values()) {
-          const end = this.validator.operations.get(call.operationId)?.end;
-          if (call.placed || call.admission !== "started" || !end || !visible.has(call.messageId)
-            || ["error", "aborted", "deferred"].includes(this.validator.contextInfo.get(call.messageId)?.stopReason)
-            || !byOperation.has(call.operationId) || covered.has(`${call.operationId}\0${call.callId}`)) continue;
-          const cause = end.payload.status === "aborted" ? "user_interrupted" : "crashed";
-          const timestamp = this.entries.get(call.messageId).timestamp;
-          const evidence = { ...call, cause, timestamp, returned: await this.getReturnedOutcome(call.operationId, call.callId) };
-          const account = byOperation.get(call.operationId);
-          account.calls.push(evidence);
+        // Preserve original I/O admission order: initial calls in parallel,
+        // inferred additions sequentially after them, attached to the last account.
+        for (const addition of plan.additions) {
+          const account = repairs[plan.repairs.indexOf(addition.account)];
+          account.calls.push({ ...addition.call, returned: await this.getReturnedOutcome(addition.call.operationId, addition.call.callId) });
         }
         return repairs;
       });

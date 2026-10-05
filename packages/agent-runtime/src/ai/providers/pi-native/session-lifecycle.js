@@ -1,4 +1,4 @@
-import { inspectCurrentEvidence } from "@mono-agent/harness";
+import { inspectCurrentEvidence, inspectCurrentLifecycle } from "@mono-agent/harness";
 // @ts-check
 // Session lifecycle for the pi-native bridge.
 //
@@ -114,6 +114,9 @@ const nativeSessions = createSessionRegistry({
 const liveness = createSessionLiveness(nativeSessions);
 
 const durableNativeSessionRepos = new Map();
+// Cold catalogue lookup happens before registry adoption/reservation. Track the
+// whole await window so preserving detach cannot claim that handle is idle.
+const coldOpenCounts = new Map();
 
 export function resolveDurableNativeSessionRepo(piSessionsRoot) {
   if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) return null;
@@ -163,7 +166,7 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
 export async function detachDurableNativeSession(providerSessionId, piSessionsRoot) {
   if (!isSafeSessionId(providerSessionId) || typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) throw new TypeError("Invalid durable detach identity");
   const entry = nativeSessions.get(providerSessionId);
-  if (entry?.busy || entry?.recoveryPending) throw Object.assign(new Error("Native turn must be settled before detach"), { code: "ERR_HARNESS_WRITER_BUSY" });
+  if (coldOpenCounts.has(providerSessionId) || entry?.busy || entry?.recoveryPending) throw Object.assign(new Error("Native turn must be settled before detach"), { code: "ERR_HARNESS_WRITER_BUSY" });
   if (entry && (!entry.durable || entry.repo !== resolveDurableNativeSessionRepo(piSessionsRoot))) throw new TypeError("Native detach owner mismatch");
   // Sessions are closed after each idle turn. Removal deliberately bypasses
   // onEvict: invalidation deletes, while ordinary disposal syncs unnecessarily.
@@ -264,21 +267,27 @@ export async function resolveSession(runState, {
   if (requestedSessionId) {
     let entry = liveness.adoptIfPresent(requestedSessionId);
     if (!entry && durableRepo) {
-      entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
-      if (entry) {
-        // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
-        // cold resume could have reopened+inserted its own entry in this
-        // window. Re-read the registry and adopt any entry already present so
-        // the busy-claim below collapses back to the warm path's synchronous
-        // semantics (the loser sees the winner's shared entry with busy===true
-        // and returns session_busy). The discarded reopen is just an in-memory
-        // jsonl handle (no subprocess/socket), so dropping it is safe.
-        const concurrent = liveness.adoptIfPresent(requestedSessionId);
-        if (concurrent) {
-          entry = concurrent;
-        } else {
-          nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+      coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
+      try {
+        entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
+        if (entry) {
+          // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
+          // cold resume could have reopened+inserted its own entry in this
+          // window. Re-read the registry and adopt any entry already present so
+          // the busy-claim below collapses back to the warm path's synchronous
+          // semantics (the loser sees the winner's shared entry with busy===true
+          // and returns session_busy). The discarded reopen is just an in-memory
+          // jsonl handle (no subprocess/socket), so dropping it is safe.
+          const concurrent = liveness.adoptIfPresent(requestedSessionId);
+          if (concurrent) {
+            entry = concurrent;
+          } else {
+            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+          }
         }
+      } finally {
+        const remaining = coldOpenCounts.get(requestedSessionId) - 1;
+        if (remaining) coldOpenCounts.set(requestedSessionId, remaining); else coldOpenCounts.delete(requestedSessionId);
       }
     }
     if (!entry) {
@@ -711,7 +720,7 @@ export async function reconcileNativeSessionTurn(request) {
     const match = matchTurnEvidence(initial, request);
     if (match.status !== "matched") return match;
     if (raw.validator.openTurns.size && !raw.validator.openTurns.has(request.descriptor.turnId)) return { status: "mismatch", reason: "active_turn" };
-    if ((await inspectCurrentEvidence(raw)).turns.some((turn) => turn.start.seq > raw.validator.turns.get(request.descriptor.turnId).start.seq
+    if (inspectCurrentLifecycle(raw).turns.some((turn) => turn.start.seq > raw.validator.turns.get(request.descriptor.turnId).start.seq
       && (turn.start.payload.binding || turn.operations.length))) return { status: "mismatch", reason: "turn_advanced" };
     if (initial.tipId !== initial.currentTipId) return { status: "mismatch", reason: "tip" };
     await raw.prepareReconciliation();

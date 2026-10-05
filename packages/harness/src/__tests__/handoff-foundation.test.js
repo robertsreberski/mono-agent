@@ -1,9 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { readFile, readdir } from "node:fs/promises";
+import { describe, it, expect, vi } from "vitest";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { findContextBuilderBypasses } from "./projection-source-check.js";
 import { fileURLToPath } from "node:url";
 import { MemorySessionRepo } from "../session-store.js";
 import { createEvidenceView, evidenceDigest, nativeCompatibility } from "../evidence-view.js";
-import { projectContext } from "../request-projection.js";
+import { buildHarnessSessionContext } from "../session-context.js";
+import { projectContext, inspectCurrentLifecycle } from "../request-projection.js";
 import { createHandoffBudget, buildHandoff, buildOpenWorkLedger, renderHandoffMessage, prepareHandoff, checkHandoffDispatch, validateHandoffSummary } from "../handoff.js";
 
 const provenance = { provider: "fictional", api: "fictional-api", account: "fixture-account" };
@@ -53,6 +56,7 @@ it("rejects fabricated views, cycles, foreign owners, changed frozen tips/digest
 });
 it("persists opt-in composed coverage and replays inherited material exactly once", async () => {
   const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId);
+  b.store.enableVersion3Writes({ exclusiveWriters: true });
   const frozen = view([a, b]);
   await b.store.appendComposedCompaction({ summary: "A and B checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, frozen);
   expect(b.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
@@ -106,16 +110,12 @@ it("refuses mandatory latest/ledger overflow, host-cap extensions and oversized 
 });
 it("enforces one context-builder seam in production source (definition and compatibility export remain)", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
-  async function scan(path) { const files = []; for (const e of await readdir(path, { withFileTypes: true })) { if (e.name === "__tests__") continue; const child = `${path}/${e.name}`; if (e.isDirectory()) files.push(...await scan(child)); else if (e.name.endsWith(".js")) files.push(child); } return files; }
-  const files = [...await scan(`${root}packages/harness/src`), ...await scan(`${root}packages/agent-runtime/src`)];
-  for (const file of files) {
-    if (file.endsWith("/session-context.js") || file.endsWith("/request-projection.js")) continue;
-    expect((await readFile(file, "utf8")).replace(/export \{ buildHarnessSessionContext \} from [^;]+;/g, ""), file).not.toMatch(/\bbuildHarnessSessionContext\b/);
-  }
+  expect(await findContextBuilderBypasses(root)).toEqual([]);
 });
 
 it("opt-in model-change records carry only an artifact reference; canonical gaps cannot masquerade as native evidence", async () => {
   const a = await segment("A", 0);
+  a.store.enableVersion3Writes({ exclusiveWriters: true });
   await a.store.appendModelChangeReference({ switchId: "fictional-switch", from: provenance, to: target, artifactRef: { id: "fictional-artifact", hash: "0".repeat(64) } });
   const event = a.store.records.find((r) => r.kind === "model_change");
   expect(event.schemaVersion).toBe(3); expect(event.payload.artifactRef).toEqual({ id: "fictional-artifact", hash: "0".repeat(64) });
@@ -143,4 +143,117 @@ it("evidence inspection never hides rewound current-journal contradictions", asy
   const evidence = projectContext(view([refreshed(a)]), { mode: "evidence" });
   expect(evidence.records.some((r) => r.id === "rewound-message")).toBe(true);
   expect(evidence.entries.some((r) => r.id === "rewound-message")).toBe(false);
+});
+
+it("checkpoint fallback carries nonempty preserved tail content as neutral history", async () => {
+  const call = { role: "assistant", content: [{ type: "toolCall", id: "retained-call", name: "Read", arguments: { file_path: "/fictional/retained" } }], stopReason: "toolUse", timestamp: 1 };
+  const result = { role: "toolResult", toolCallId: "retained-call", toolName: "Read", isError: false, content: [{ type: "text", text: "Retained fixture fact outside summary" }], timestamp: 2 };
+  const a = await segment("nonempty-tail", 0, null, [text("Older fixture intent"), call, result]);
+  await a.store.appendCompaction({ summary: "Older intent only", tokensBefore: 100, retainedTail: [call, result] });
+  for (let i = 0; i < 4; i++) { await a.store.beginTurn(`after-${i}`); await a.store.appendMessage(text(`later-${i}`)); await a.store.endTurn(`after-${i}`, "completed"); }
+  const built = buildHandoff(view([refreshed(a)]), options);
+  expect(built.status).toBe("ready"); expect(built.artifact.recent).toHaveLength(3);
+  expect(built.artifact.checkpoint.retained).toEqual([renderHandoffMessage(call), renderHandoffMessage(result)]);
+  expect(built.artifact.checkpoint.retained[0].data[0].label).toBe("historical_tool_call_data");
+  expect(JSON.stringify(built.artifact.recent)).not.toContain("Retained fixture fact outside summary");
+  expect(JSON.stringify(built.messages)).toContain("Retained fixture fact outside summary");
+});
+it("groups cold-boundary seeded user/call/result/reply scopes as whole logical turns", async () => {
+  const a = await segment("seeded", 0);
+  const messages = [text("seed user one"), { role: "assistant", stopReason: "toolUse", timestamp: 1, content: [{ type: "toolCall", id: "seed-call", name: "Read", arguments: { file_path: "/fictional" } }] },
+    { role: "toolResult", toolCallId: "seed-call", toolName: "Read", isError: false, timestamp: 1, content: [{ type: "text", text: "seed result" }] },
+    { role: "assistant", stopReason: "stop", timestamp: 1, content: [{ type: "text", text: "seed final one" }] }, text("seed user two"),
+    { role: "assistant", stopReason: "stop", timestamp: 1, content: [{ type: "text", text: "seed final two" }] }];
+  for (let i = 0; i < messages.length; i++) await a.store.appendMessage(messages[i], `seed-${i}`);
+  await a.store.beginTurn("native-latest"); await a.store.appendMessage(text("native latest"), "native-latest-message"); await a.store.endTurn("native-latest", "completed");
+  const prepared = prepareHandoff(view([refreshed(a)]), options);
+  expect(prepared.recent.map((t) => t.messages.map((m) => m.id))).toEqual([["seed-0", "seed-1", "seed-2", "seed-3"], ["seed-4", "seed-5"], ["native-latest-message"]]);
+  expect(prepared.recent[0].sourceTurnIds).toHaveLength(4);
+  expect(buildHandoff(view([refreshed(a)]), { ...options, summary }).artifact.recent).toEqual(prepared.recent);
+});
+it("keeps a seeded tool result with its call even when a user boundary intervenes", async () => {
+  const a = await segment("seed-pair", 0);
+  await a.store.appendMessage(text("first seed user"), "first-seed");
+  await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "seed-cross", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1 }, "seed-call-message");
+  await a.store.appendMessage(text("intervening seed user"), "intervening-seed");
+  await a.store.appendMessage({ role: "toolResult", toolCallId: "seed-cross", toolName: "Read", content: [], isError: false, timestamp: 1 }, "seed-result-message");
+  const prepared = prepareHandoff(view([refreshed(a)]), options);
+  expect(prepared.recent.find((t) => t.messages.some((m) => m.id === "seed-call-message")).messages.map((m) => m.id)).toEqual(["first-seed", "seed-call-message", "seed-result-message"]);
+});
+it("never drops authoritative recent turns after summary production to force a fit", async () => {
+  const a = await segment("frozen-recent", 0, null, [text("earlier".repeat(600))]);
+  for (let i = 0; i < 3; i++) { await a.store.beginTurn(`retained-${i}`); await a.store.appendMessage(text(`${i}`.repeat(4000))); await a.store.endTurn(`retained-${i}`, "completed"); }
+  const local = { ...options, budget: createHandoffBudget({ contextWindow: 30000, outputReserve: 1000, inputTokens: 0, hostContext }) };
+  const evidence = view([refreshed(a)]); const prepared = prepareHandoff(evidence, local);
+  expect(prepared.recent).toHaveLength(3);
+  expect(buildHandoff(evidence, { ...local, summary: { ...summary, intent: ["summary ".repeat(2000)] } })).toMatchObject({ status: "budget_failure" });
+  expect(prepareHandoff(evidence, local).recent).toEqual(prepared.recent);
+});
+it("retains started rewound effects and their arguments in the unknown ledger", async () => {
+  const a = await segment("rewound-effect", 0); const baseline = a.store.tip;
+  await a.store.beginTurn("rewound-turn"); await a.store.openOperation("rewound-op", {});
+  await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rewound-write", name: "Write", arguments: { file_path: "/fictional/effect", content: "fictional" } }], stopReason: "toolUse", timestamp: 1 }, "rewound-call-message");
+  for (const admission of ["observed", "admitted", "started"]) await a.store.write("tool_call", { callId: "rewound-write", name: "Write", messageId: "rewound-call-message", admission }, { operationId: "rewound-op" });
+  await a.store.write("interruption", { cause: "user_interrupted", operationIds: ["rewound-op"], tipId: a.store.tip, calls: [] });
+  await a.store.closeOperation("rewound-op", "failed"); await a.store.endTurn("rewound-turn", "failed"); await a.store.moveTo(baseline);
+  const row = buildOpenWorkLedger(view([refreshed(a)])).find((r) => r.callId === "rewound-write");
+  expect(row).toMatchObject({ outcome: "unknown", admission: "started", rewound: true, cause: "user_interrupted", messageId: "rewound-call-message", arguments: { file_path: "/fictional/effect", content: "fictional" } });
+});
+it("view and store share exact repair projection timestamps and last-account selection", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+  try {
+    const a = await segment("repair-differential", 0); const store = a.store;
+    await store.beginTurn("repair-turn"); await store.openOperation("repair-op", {});
+    clock.mockReturnValue(1700000000010);
+    await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "repair-call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 10 }, "repair-call-message");
+    for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "repair-call", name: "Read", messageId: "repair-call-message", admission }, { operationId: "repair-op" });
+    clock.mockReturnValue(1700000000020); await store.write("interruption", { cause: "crashed", operationIds: ["repair-op"], tipId: store.tip, calls: [] });
+    clock.mockReturnValue(1700000000030); await store.write("interruption", { cause: "crashed", operationIds: ["repair-op"], tipId: store.tip, calls: [] });
+    await store.closeOperation("repair-op", "interrupted"); await store.endTurn("repair-turn", "interrupted");
+    const evidence = view([refreshed(a)]); const repairs = await store.getRepairEntries();
+    expect(evidence.segments[0].repairs).toEqual(repairs);
+    expect(repairs.map((r) => r.calls.length)).toEqual([0, 1]); expect(repairs[1].calls[0].timestamp).toBe(1700000000010);
+    expect(projectContext(evidence, { ...options, switching: true }).messages).toEqual(buildHarnessSessionContext(await store.getEntries(), { repairs }));
+  } finally { clock.mockRestore(); }
+});
+it("lifecycle inspection is synchronous and performs no context payload reads", () => {
+  const turn = { start: { turnId: "fixture" } }; const getEntries = vi.fn(() => { throw new Error("must not read"); });
+  const result = inspectCurrentLifecycle({ validator: { turns: new Map([["fixture", turn]]), calls: new Map() }, getEntries });
+  expect(result.turns[0]).toBe(turn); expect(result).not.toBeInstanceOf(Promise); expect(getEntries).not.toHaveBeenCalled();
+});
+
+it("source enforcement catches JS/TS imports and re-exports in other packages and apps", async () => {
+  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  const fake = await mkdtemp(join(root, "node_modules", ".p3a-source-check-"));
+  try {
+    const paths = ["packages/other/src/bypass.ts", "packages/other/src/session-context.js", "packages/another/src/index.js", "apps/chat/src/bypass.tsx"];
+    for (const path of paths) { const directory = path.slice(0, path.lastIndexOf("/")); await mkdir(join(fake, directory), { recursive: true }); await writeFile(join(fake, path), 'import { buildHarnessSessionContext as bypass } from "@mono-agent/harness";'); }
+    await writeFile(join(fake, paths[2]), 'export { buildHarnessSessionContext } from "@mono-agent/harness";');
+    expect(await findContextBuilderBypasses(fake)).toEqual(paths.sort());
+  } finally { await rm(fake, { recursive: true, force: true }); }
+});
+
+it("gates every opt-in v3 writer on an explicit exclusive-upgraded-writers acknowledgement", async () => {
+  const a = await segment("v3-gate", 0); const before = structuredClone(a.store.records);
+  const change = { switchId: "fictional-switch", from: provenance, to: target, artifactRef: { id: "fixture", hash: "0".repeat(64) } };
+  await expect(a.store.appendModelChangeReference(change)).rejects.toThrow("exclusive upgraded writers");
+  await expect(a.store.appendComposedCompaction({ summary: "fixture", retainedTail: [] }, view([a]))).rejects.toThrow("exclusive upgraded writers");
+  await expect(a.store.write("model_change", {}, { schemaVersion: 3 })).rejects.toThrow("exclusive upgraded writers");
+  expect(() => a.store.enableVersion3Writes({ exclusiveWriters: false })).toThrow("exclusive upgraded writers");
+  expect(a.store.records).toEqual(before);
+  a.store.enableVersion3Writes({ exclusiveWriters: true }); await a.store.appendModelChangeReference(change);
+  expect(a.store.records.some((r) => r.kind === "model_change" && r.schemaVersion === 3)).toBe(true);
+});
+
+it("keeps observed successful outcomes from rewound calls as ledger evidence, not active receipts", async () => {
+  const a = await segment("rewound-return", 0); const baseline = a.store.tip;
+  await a.store.beginTurn("returned-turn"); await a.store.openOperation("returned-op", {});
+  await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "known-return", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1 }, "known-call-message");
+  for (const admission of ["observed", "admitted", "started"]) await a.store.write("tool_call", { callId: "known-return", name: "Read", messageId: "known-call-message", admission }, { operationId: "returned-op" });
+  const returned = { role: "toolResult", toolCallId: "known-return", toolName: "Read", content: [{ type: "text", text: "Fictional observed result" }], isError: false, timestamp: 1 };
+  await a.store.write("tool_result", { callId: "known-return", name: "Read", messageId: null, phase: "returned", outcome: "success", message: returned }, { operationId: "returned-op" });
+  await a.store.appendMessage(returned, "known-result-message");
+  await a.store.write("tool_result", { callId: "known-return", name: "Read", messageId: "known-result-message", phase: "placed", outcome: "success" }, { operationId: "returned-op" });
+  await a.store.closeOperation("returned-op", "failed"); await a.store.endTurn("returned-turn", "failed"); await a.store.moveTo(baseline);
+  expect(buildOpenWorkLedger(view([refreshed(a)])).find((r) => r.callId === "known-return")).toMatchObject({ rewound: true, outcome: "success", returned: true, placed: true, result: renderHandoffMessage(returned) });
 });
