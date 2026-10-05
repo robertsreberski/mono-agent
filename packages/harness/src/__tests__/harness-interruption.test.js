@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { MemorySessionRepo } from "../session-store.js";
-import { repairInterruptedSession, NativeSuspendedError } from "../interruption.js";
+import { repairInterruptedSession, recordInterruption } from "../interruption.js";
 import { buildHarnessSessionContext } from "../session-context.js";
 const roots = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -49,9 +49,74 @@ it.each(["crashed", "user_interrupted", "skipped", "superseded"])("projects a mi
   await store.close();
 });
 
-it("leaves provider-deferred suspension distinct and never fabricates interrupted completion", async () => {
-  const store = await new MemorySessionRepo().create(); await store.beginTurn("deferred-turn"); await store.openOperation("deferred-op", {});
-  await store.appendMessage({ role: "assistant", content: [], stopReason: "deferred", deferred: { id: "deferred", provider: "faux" }, timestamp: 1 });
-  const seq = store.seq; await expect(repairInterruptedSession(store)).rejects.toBeInstanceOf(NativeSuspendedError);
-  expect(store.seq).toBe(seq); expect(await store.getOpenOperations()).toHaveLength(1); expect(await store.getTurn("deferred-turn")).toBeNull(); await store.close();
+it("repairs provider suspension as suspended-not-resumed, with no continuation or successful native receipt", async () => {
+  const repo = new MemorySessionRepo(); const store = await repo.create(); await store.beginTurn("deferred-turn"); await store.openOperation("deferred-op", {});
+  await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "deferred-call", name: "Effect", arguments: {} }], stopReason: "deferred", deferred: { id: "deferred", provider: "faux" }, timestamp: 1 });
+  // Legacy observed evidence on a non-executable envelope must also be excluded.
+  await store.write("tool_call", { callId: "deferred-call", name: "Effect", messageId: store.tip, admission: "observed" }, { operationId: "deferred-op" });
+  await repairInterruptedSession(store); const seq = store.seq;
+  expect(await store.getOpenOperations()).toEqual([]); expect((await store.getTurn("deferred-turn")).payload.status).toBe("interrupted");
+  const context = buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() });
+  expect(context.filter((message) => message.role === "toolResult")).toEqual([]);
+  expect(context.at(-1)).toMatchObject({ projectionOnly: true, interruptionCause: "suspended_not_resumed" });
+  expect(JSON.stringify(context)).toContain("suspended, not resumed");
+  await repairInterruptedSession(store); expect(store.seq).toBe(seq); expect([...store.validator.calls.values()].every((call) => !call.result)).toBe(true);
+  await store.beginTurn("next-turn"); await store.endTurn("next-turn", "completed"); await store.close();
+});
+
+async function startedCall(store, operationId, callId) {
+  await store.openOperation(operationId, {});
+  const id = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: callId, name: "Effect", arguments: {} }], stopReason: "toolUse", timestamp: 1 });
+  for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId, name: "Effect", messageId: id, admission }, { operationId });
+}
+it("accounts independently for an aborted operation then a crashed started call in the same host turn", async () => {
+  const store = await new MemorySessionRepo().create(); await store.beginTurn("same-host-turn", {}, "host");
+  await startedCall(store, "first", "same-call-id"); await recordInterruption(store, "same-host-turn", "user_interrupted", ["first"]); await store.closeOperation("first", "aborted");
+  await startedCall(store, "second", "same-call-id"); await repairInterruptedSession(store);
+  expect(store.interruptions.size).toBe(2); const repairs = await store.getRepairEntries();
+  expect(repairs.map((repair) => repair.operationIds)).toEqual([["first"], ["second"]]);
+  const context = buildHarnessSessionContext(await store.getEntries(), { repairs }); const results = context.filter((message) => message.role === "toolResult");
+  expect(results.map((message) => message.interruptionCause)).toEqual(["user_interrupted", "crashed"]);
+  expect(results[1].content[0].text).toContain("check whether it took effect"); const seq = store.seq; await repairInterruptedSession(store); expect(store.seq).toBe(seq); await store.close();
+});
+it("supplies a conservative cause for a closed started call omitted by older interruption evidence", async () => {
+  const store = await new MemorySessionRepo().create(); await store.beginTurn("fallback-turn"); await startedCall(store, "fallback-op", "fallback-call");
+  await store.write("interruption", { cause: "user_interrupted", operationIds: ["fallback-op"], calls: [], tipId: store.tip });
+  await store.closeOperation("fallback-op", "interrupted"); await store.endTurn("fallback-turn", "interrupted");
+  const context = buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() });
+  expect(context.find((message) => message.role === "toolResult")).toMatchObject({ interruptionCause: "crashed", projectionOnly: true, isError: true });
+  expect(JSON.stringify(context)).toContain("check whether it took effect"); await store.close();
+});
+it("caches repair payload reads and uses indexed ancestry without rematerializing the branch", async () => {
+  const store = await new MemorySessionRepo().create(); let reads = 0;
+  const original = store.getEntries.bind(store); store.getEntries = async () => { reads += 1; return original(); };
+  expect(await store.getRepairEntries()).toEqual([]); expect(reads).toBe(0);
+  await store.beginTurn("cache-turn"); await startedCall(store, "cache-op", "cache-call");
+  await store.write("tool_result", { callId: "cache-call", name: "Effect", messageId: null, phase: "returned", message: { role: "toolResult", toolCallId: "cache-call", toolName: "Effect", content: [], isError: false }, outcome: "success" }, { operationId: "cache-op" });
+  await repairInterruptedSession(store); let outcomeReads = 0; const getOutcome = store.getReturnedOutcome.bind(store);
+  store.getReturnedOutcome = async (...args) => { outcomeReads += 1; return getOutcome(...args); };
+  const first = await store.getRepairEntries(); expect(await store.getRepairEntries()).toEqual(first);
+  expect(outcomeReads).toBe(1); expect(reads).toBe(0);
+  await store.beginTurn("cache-next-turn"); await startedCall(store, "cache-next-op", "cache-next-call");
+  await repairInterruptedSession(store);
+  const updated = await store.getRepairEntries(); expect(updated).toHaveLength(2);
+  expect(updated.flatMap((repair) => repair.calls).map((call) => call.callId)).toEqual(["cache-call", "cache-next-call"]);
+  expect(await store.getRepairEntries()).toEqual(updated); expect(outcomeReads).toBe(3); expect(reads).toBe(0);
+  await store.moveTo(null); expect(await store.getRepairEntries()).toEqual([]); await store.close();
+});
+
+it.each(["error", "aborted", "deferred"])("excludes legacy non-executable %s draft calls from repair and provider-facing projection", async (stopReason) => {
+  const { transformMessages } = await import("@earendil-works/pi-ai/api/transform-messages");
+  const { fauxProvider } = await import("@earendil-works/pi-ai"); const model = fauxProvider({ provider: "faux", models: [{ id: "draft" }] }).getModel();
+  const store = await new MemorySessionRepo().create(); await store.beginTurn("draft-turn"); await store.openOperation("draft-op", {});
+  await store.appendMessage({ role: "user", content: "Fictional input." });
+  const draft = { role: "assistant", content: [{ type: "toolCall", id: "draft", name: "Effect", arguments: {} }], stopReason, timestamp: 1 };
+  const messageId = await store.appendMessage(draft);
+  await store.write("tool_call", { callId: "draft", name: "Effect", messageId, admission: "observed" }, { operationId: "draft-op" });
+  await repairInterruptedSession(store); const repairs = await store.getRepairEntries(); expect(repairs[0].calls).toEqual([]);
+  const projected = transformMessages(buildHarnessSessionContext(await store.getEntries(), { repairs }), model);
+  expect(projected.filter((message) => message.role === "toolResult")).toEqual([]); expect(JSON.stringify(projected)).not.toContain('"toolCall"');
+  await store.appendCompaction({ summary: "Fictional draft excluded.", retainedTail: [draft, { role: "toolResult", toolName: "Effect", toolCallId: "draft", content: [], isError: true, projectionOnly: true }], tokensBefore: 100 });
+  const compacted = transformMessages(buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() }), model);
+  expect(compacted.filter((message) => message.role === "toolResult")).toEqual([]); expect(JSON.stringify(compacted)).not.toContain('"toolCall"'); await store.close();
 });

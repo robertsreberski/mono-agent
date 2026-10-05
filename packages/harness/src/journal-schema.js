@@ -197,7 +197,7 @@ export class JournalValidator {
       this.contextIds.add(record.id); this.tip = record.id;
       const message = p.message;
       this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
-        operationId: record.operationId, role: message?.role, inputId: p.input?.id, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
+        operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
         calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part) => part?.type === "toolCall").map((call) => [call.id, call.name])) });
     }
     if (record.kind === "rewind") this.tip = p.tipId;

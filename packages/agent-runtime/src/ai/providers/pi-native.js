@@ -447,10 +447,16 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     || options.runId
     || randomUUID();
   if (options.sessionTurn !== undefined) {
-    validateSessionTurn(options.sessionTurn, providerSessionId);
-    if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
-      || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
-      throw new TypeError("sessionTurn and sessionRecovery identities disagree");
+    try {
+      validateSessionTurn(options.sessionTurn, providerSessionId);
+      if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
+        || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
+        throw new TypeError("sessionTurn and sessionRecovery identities disagree");
+      }
+    } catch {
+      return { ...buildErrorResult({ assistantTexts: [], events, start, turnCount: 0, resolved, options,
+        externalAbort: false, errorMessage: "Invalid protected sessionTurn host contract", providerSessionId,
+        runtimeWarnings, isRetryable: false }), failureKind: "safety_session_turn_contract", retryable: false };
     }
   }
   const providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
@@ -1139,7 +1145,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
     if (err instanceof NativeSuspendedError) {
-      runState.reservation?.release(); runState.reservation = null;
+      // Suspension is not completion, but keep-alive liveness still needs an
+      // owner reachable by disposal/reopen. Reopen will account for it as
+      // suspended-not-resumed, with no deferred continuation or tool replay.
+      await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
+        externalAbort: false, errorMessage: undefined, onEvent });
     } else {
       try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen repairs unsealed work */ }
       await cleanupSessionOnThrow(runState, { durableRepo });

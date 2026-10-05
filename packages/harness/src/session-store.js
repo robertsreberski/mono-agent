@@ -27,12 +27,13 @@ export class SessionStore {
     this.entries = new Map();
     this.outcomes = new Map();
     this.interruptions = new Map();
+    this.interruptedOperations = new Set(); this.repairCache = null;
     this.validator = new JournalValidator();
     this.tip = null;
     this.seq = 0;
     this.line = Promise.resolve();
     this.closed = false;
-    this.failure = null;
+    /** @type {Error|null} */ this.failure = null;
     /** @type {Promise<void>|null} */ this.closePromise = null;
     for (const record of records) this.apply(record);
   }
@@ -46,7 +47,11 @@ export class SessionStore {
       this.entries.set(record.id, { ...(this.io?.read ? { address, type: data.type } : clone(data)),
         id: record.id, parentId: p.contextParentId, timestamp: record.timestamp, seq: record.seq });
     }
-    if (record.kind === "interruption") this.interruptions.set(record.turnId, { ...clone(record.payload), timestamp: record.timestamp });
+    if (record.kind === "interruption") {
+      this.interruptions.set(record.id, { ...clone(record.payload), turnId: record.turnId, timestamp: record.timestamp });
+      for (const op of p.operationIds.length ? p.operationIds : [null]) this.interruptedOperations.add(`${record.turnId}\0${op ?? ""}`);
+    }
+    if (["interruption", "tool_result", "message", "compaction", "rewind", "operation_end"].includes(record.kind)) this.repairCache = null;
     if (record.kind === "tool_result" && record.payload.phase === "returned") {
       this.outcomes.set(`${record.operationId}\0${record.payload.callId}`, this.io?.read ? { address } : { record: clone(record) });
     }
@@ -56,12 +61,11 @@ export class SessionStore {
   }
   enqueue(fn) {
     const result = this.line.then(async () => {
-      if (this.closed || this.retired) throw new Error("Harness session is closed or retired");
+      if (this.closed || this.retired) { this.failure ??= new Error("Harness session is closed or retired"); throw this.failure; }
       if (this.failure) throw this.failure;
-      try { return await fn(); }
-      catch (error) { this.failure = isJournalStorageError(error) ? error : new JournalStorageError(error); throw this.failure; }
+      return await fn();
     });
-    this.line = result.catch((error) => { this.failure ??= error; });
+    this.line = result.catch(() => {});
     return result;
   }
   /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string}} [identity] */
@@ -75,10 +79,13 @@ export class SessionStore {
         ...(operationId ? { operationId } : {}), payload: typeof payload === "function" ? payload() : clone(payload) };
       const text = `${JSON.stringify(record)}\n`;
       this.validateRecord(record);
-      const address = await this.io?.append(text);
-      this.apply(record, address);
+      try {
+        const address = await this.io?.append(text);
+        this.apply(record, address);
+      } catch (error) { throw this.poison(error); }
       return record;
   }
+  poison(error) { this.failure ??= isJournalStorageError(error) ? error : new JournalStorageError(error); return this.failure; }
   activeTurnId() { return this.validator.openTurns.values().next().value; }
   activeOperationId() { return [...this.validator.openOperations].at(-1); }
   beginTurn(turnId, config = {}, identitySource = "synthetic") {
@@ -165,17 +172,43 @@ export class SessionStore {
   }
   async getRepairEntries() {
     await this.line; if (this.failure) throw this.failure;
-    const visible = new Set((await this.getEntries()).map((entry) => entry.id));
-    return Promise.all([...this.interruptions.values()].filter((repair) => repair.tipId === null ? this.tip === null : visible.has(repair.tipId)).map(async (repair) => ({ ...clone(repair), calls: await Promise.all((repair.calls ?? []).map(async (call) => ({
-      ...call, timestamp: repair.timestamp, returned: await this.getReturnedOutcome(call.operationId, call.callId),
-    }))) })));
+    if (!this.interruptions.size) return [];
+    if (!this.repairCache) {
+      // Branch membership uses indexed ancestry, not a second full payload read.
+      const visible = new Set();
+      for (let id = this.tip; id !== null; id = this.entries.get(id).parentId) visible.add(id);
+      this.repairCache = Promise.all([...this.interruptions.values()].filter((repair) => repair.tipId === null ? this.tip === null : visible.has(repair.tipId)).map(async (repair) => ({ ...clone(repair), calls: await Promise.all((repair.calls ?? []).filter((call) =>
+        !["error", "aborted", "deferred"].includes(this.validator.contextInfo.get(call.messageId)?.stopReason)).map(async (call) => ({
+        ...call, timestamp: repair.timestamp, returned: await this.getReturnedOutcome(call.operationId, call.callId),
+      }))) }))).then(async (repairs) => {
+        const covered = new Set(repairs.flatMap((repair) => repair.calls.map((call) => `${call.operationId}\0${call.callId}`)));
+        const byOperation = new Map(); for (const repair of repairs) for (const id of repair.operationIds) byOperation.set(id, repair);
+        // Older per-turn accounts may omit a later interrupted operation. A
+        // closed started call without a receipt is conservatively unknown.
+        for (const call of this.validator.calls.values()) {
+          const end = this.validator.operations.get(call.operationId)?.end;
+          if (call.placed || call.admission !== "started" || !end || !visible.has(call.messageId)
+            || ["error", "aborted", "deferred"].includes(this.validator.contextInfo.get(call.messageId)?.stopReason)
+            || covered.has(`${call.operationId}\0${call.callId}`)) continue;
+          const cause = end.payload.status === "aborted" ? "user_interrupted" : "crashed";
+          const timestamp = this.entries.get(call.messageId).timestamp;
+          const evidence = { ...call, cause, timestamp, returned: await this.getReturnedOutcome(call.operationId, call.callId) };
+          const account = byOperation.get(call.operationId);
+          if (account) account.calls.push(evidence);
+          else repairs.push({ cause, tipId: call.messageId, timestamp, operationIds: [call.operationId], calls: [evidence] });
+        }
+        return repairs;
+      });
+    }
+    return clone(await this.repairCache);
   }
   async getReturnedOutcome(operationId, callId) {
     await this.line; if (this.failure) throw this.failure;
     const outcome = this.outcomes.get(`${operationId}\0${callId}`);
-    return outcome?.record ? clone(outcome.record.payload.message) : outcome ? (await this.io.read(outcome.address)).payload.message : undefined;
+    try { return outcome?.record ? clone(outcome.record.payload.message) : outcome ? (await this.io.read(outcome.address)).payload.message : undefined; }
+    catch (error) { throw this.poison(error); }
   }
-  sync() { return this.enqueue(() => this.io?.sync()); }
+  sync() { return this.enqueue(async () => { try { await this.io?.sync(); } catch (error) { throw this.poison(error); } }); }
   close() {
     this.closePromise ??= (async () => {
       await this.line;

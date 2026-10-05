@@ -102,7 +102,7 @@ describe("mono-agent harness session store", () => {
     expect(await reopened.getEntries()).toHaveLength(1);
     expect(await reopened.getOpenTurns()).toEqual([]);
     expect(await reopened.getTurn("interrupted")).toMatchObject({ payload: { status: "interrupted" } });
-    expect(reopened.interruptions.get("interrupted")).toMatchObject({ cause: "crashed", draftLossPossible: true });
+    expect([...reopened.interruptions.values()].find((repair) => repair.turnId === "interrupted")).toMatchObject({ cause: "crashed", draftLossPossible: true });
     await reopened.close();
     expect((await readFile(s.metadata.path, "utf8")).endsWith("\n")).toBe(true);
   });
@@ -402,4 +402,16 @@ it("does not reclaim context-bearing or future native creation artifacts", async
   const path = `${metadata.path}.creating`; await rename(metadata.path, path); const bytes = await readFile(path);
   await expect(repo.list()).rejects.toThrow("Invalid"); expect((await readFile(path)).equals(bytes)).toBe(true);
   expect((await stat(join(r, "mono-v2", "locks", `${metadata.journalId}.sqlite`))).isFile()).toBe(true);
+});
+
+it("rejects pre-write schema validation without I/O or poison and can close the failed operation", async () => {
+  const store = await new MemorySessionRepo().create(); await store.beginTurn("validation-turn"); await store.openOperation("validation-op", {});
+  const messageId = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Effect", arguments: {} }], stopReason: "toolUse" });
+  let appends = 0; store.io = { append: async () => { appends += 1; }, sync: async () => {} };
+  const payload = { callId: "call", name: "Effect", messageId, admission: "observed" };
+  await store.write("tool_call", payload, { operationId: "validation-op" }); const seq = store.seq;
+  await expect(store.write("tool_call", payload, { operationId: "validation-op" })).rejects.toThrow("Invalid mono-agent harness journal");
+  expect(store.failure).toBeNull(); expect(store.seq).toBe(seq); expect(appends).toBe(1);
+  await store.closeOperation("validation-op", "failed"); await store.endTurn("validation-turn", "failed"); await store.sync();
+  await store.beginTurn("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();
 });

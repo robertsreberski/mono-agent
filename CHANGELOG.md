@@ -7,6 +7,9 @@
   Fsync native admission/outcome boundaries before effects, fail terminally on
   poisoned storage, project idempotent interruption evidence without tool replay,
   and replay exact durable compaction checkpoints without new summary calls.
+  Exclude aborted draft calls from provider repair pairs, account interruptions
+  per operation and suspended work without resuming it, preserve validation/host
+  contract classification, and cache repair projection for long sessions.
 
 
 - Keep answer text before reply-presentation tools in the final reply across

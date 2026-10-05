@@ -46,7 +46,7 @@ Journal records separate one logical turn from its prompt/compaction operations.
 Reopening deterministically seals old unsealed work as interrupted, without
 running a model/tool; missing results are prompt-only accounts and observed
 returned outcomes remain evidence. Repeated repair is idempotent. Deferred
-suspension is not fabricated completion. Streamed non-durable drafts may be lost.
+suspension is accounted as suspended, not resumed, with no fabricated completion. Streamed non-durable drafts may be lost.
 This native repair is not host crash adoption or a successful terminal receipt.
 Logical input/assistant/tool admission/outcome barriers fail terminally on journal
 storage errors, preventing retry/fallback effects. Exact compaction checkpoints

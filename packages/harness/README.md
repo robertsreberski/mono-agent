@@ -82,13 +82,15 @@ The driver fsyncs logical turn/input admission before provider dispatch,
 assistant/call evidence before tools, started admission before host invocation,
 and observed outcomes before tool execution resolves (including parallel batches).
 A poisoned journal aborts admission and is terminal, never provider failover.
+Pre-write schema rejection fails the attempt without poisoning the healthy writer;
+I/O, fsync and post-write identity/application faults remain terminal.
 
 Reopen appends an idempotent interruption account and interrupted scope ends,
 without running any provider or tool. Prompt-only missing-result evidence
 separates crashed outcome-unknown (check whether it took effect), user-interrupted,
 skipped and superseded work. Returned outcomes survive before native envelope
 placement; synthetic projection never becomes a successful recovery receipt.
-Deferred provider suspension stays distinct and requires its continuation protocol.
+Provider suspension stays distinct: reopen accounts for it as suspended, not resumed, without invoking its deferred continuation.
 Non-durable streamed drafts may have been lost. Current instructions/tools are
 rebuilt by the host, not historical prose.
 

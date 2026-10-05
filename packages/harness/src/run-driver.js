@@ -5,7 +5,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { buildHarnessSessionContext } from "./session-context.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
-import { recordInterruption, repairInterruptedSession } from "./interruption.js";
+import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
 import { validateSessionTurn } from "./journal-schema.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
@@ -56,6 +56,9 @@ export function createRunDriver(store, options) {
   function wrapTools(loadout) { return loadout.map((tool) => ({ ...tool,
     async execute(toolCallId, args, signal, onUpdate) {
       const operationId = runId; const call = toolCall(toolCallId);
+      if (!call || call.name !== tool.name || call.admission !== "admitted") {
+        throw new Error("Tool call has no durable model-issued admission; nested calls are unsupported");
+      }
       const execution = (async () => {
         assertHealthy();
         await store.write("tool_call", { callId: toolCallId, name: tool.name, messageId: call.messageId, admission: "started" }, { operationId });
@@ -68,7 +71,13 @@ export function createRunDriver(store, options) {
         // ordinary hook catch must not swallow a journal admission/outcome fault.
         try {
           const after = await hooks("after_tool", { toolName: tool.name, toolCallId, ...result, isError });
-          if (after) { result = { ...result, ...after }; isError = after.isError ?? isError; }
+          if (after) {
+            const structuredContent = after.structuredContent ?? (after.content ? undefined : result?.structuredContent);
+            for (const key of ["content", "details", "usage", "terminate"]) if (after[key] != null) result = { ...result, [key]: after[key] };
+            if (structuredContent === undefined) delete result.structuredContent;
+            else result = { ...result, structuredContent };
+            isError = after.isError ?? isError;
+          }
         } catch (error) { result = { content: [{ type: "text", text: error?.message || String(error) }], details: {} }; isError = true; }
         const message = { role: "toolResult", toolCallId, toolName: tool.name, content: result?.content ?? [],
           details: result?.details, usage: result?.usage, isError, timestamp: Date.now() };
@@ -120,6 +129,10 @@ export function createRunDriver(store, options) {
       || ((event.type === "message_start" || event.type === "message_end") && event.message.role === "system")) return;
     if (event.type === "message_end") {
       if (event.message.role === "assistant") await hooks("after_response", { message: event.message });
+      if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
+        const calls = event.message.content.filter((part) => part.type === "toolCall");
+        if (new Set(calls.map((call) => call.id)).size !== calls.length) throw new TypeError("Invalid provider tool-call evidence: duplicate ID");
+      }
       const id = messageIds.get(event.message) || randomUUID();
       const isInput = event.message.role === "user" && !queue.has(id);
       const inputId = isInput ? currentInputId : (queue.has(id) ? id : null);
@@ -128,7 +141,7 @@ export function createRunDriver(store, options) {
       if (inputId && !store.validator.turns.get(turnId)?.inputs.has(inputId)) {
         await store.write("input_consumed", { inputId, messageId: entryId }, { operationId: runId });
       }
-      if (event.message.role === "assistant" && Array.isArray(event.message.content)) {
+      if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
         for (const call of event.message.content.filter((part) => part?.type === "toolCall")) {
           await store.write("tool_call", { callId: call.id, name: call.name, messageId: entryId, admission: "observed" }, { operationId: runId });
         }

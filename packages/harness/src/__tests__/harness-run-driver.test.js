@@ -1,11 +1,15 @@
 import { createRetryStream } from "../retry-stream.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+vi.mock("@earendil-works/pi-agent-core", { spy: true });
+import * as agentCore from "@earendil-works/pi-agent-core";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import { buildHarnessSessionContext } from "../session-context.js";
 import { MemorySessionRepo } from "../session-store.js";
 import { createRunDriver } from "../run-driver.js";
 
-async function harness(responses, retry, modelDef = {}, tools = []) {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture", ...modelDef }], tokensPerSecond: undefined });
+async function harness(responses, retry, modelDef = {}, tools = [], tokensPerSecond = undefined) {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture", ...modelDef }], tokensPerSecond });
   const models = createModels(); models.setProvider(faux.provider); faux.setResponses(responses);
   const repo = new MemorySessionRepo(); const raw = await repo.create();
   const adapter = createRunDriver(raw, {
@@ -223,4 +227,76 @@ it("drains already admitted parallel effects after a poisoned outcome barrier be
     await waitBoth; await new Promise((resolve) => setImmediate(resolve)); expect(raw.failure).toBeTruthy(); expect(settled).toBe(false);
     releaseSecond(); await expect(pending).rejects.toMatchObject({ name: "JournalStorageError" }); expect(started).toBe(2);
   } finally { releaseSecond(); await adapter.close().catch(() => {}); await raw.close().catch(() => {}); }
+});
+
+it("does not project an orphan result after abort mid tool-call stream, including provider transformation after compaction", async () => {
+  let effects = 0; const fixture = await harness([fauxAssistantMessage([fauxToolCall("Effect", { note: "Fictional streamed arguments repeated to exercise mid-stream cancellation" }, { id: "draft-call" })])], { enabled: false }, {},
+    [{ ...fictionalTool("Effect", async () => { effects += 1; return { content: [] }; }), parameters: { type: "object", properties: { note: { type: "string" } } } }], 1000);
+  const { adapter, raw, faux } = fixture; let midStream = false;
+  adapter.subscribe((event) => { if (event.type === "message_update" && event.message.content.some((part) => part.type === "toolCall")) { midStream = true; void adapter.abort(); } });
+  try {
+    expect((await adapter.prompt("Fictional tool request.")).status).toBe("aborted"); expect(midStream).toBe(true); expect(effects).toBe(0);
+    const entries = await raw.getEntries(); const draft = entries.findLast((entry) => entry.message?.role === "assistant").message;
+    expect(draft.stopReason).toBe("aborted"); expect(draft.content.some((part) => part.type === "toolCall")).toBe(true);
+    expect([...raw.validator.calls.values()]).toEqual([]);
+    const repairs = await raw.getRepairEntries(); expect(repairs).toHaveLength(1); expect(repairs[0].calls).toEqual([]);
+    const assertTranscript = async () => {
+      const context = buildHarnessSessionContext(await raw.getEntries(), { repairs: await raw.getRepairEntries() });
+      const provider = transformMessages(context, faux.getModel());
+      expect(provider.filter((message) => message.role === "toolResult")).toEqual([]);
+      expect(provider.filter((message) => message.role === "assistant")).toEqual([]);
+      expect(JSON.stringify(provider)).not.toContain("draft-call");
+    };
+    await assertTranscript();
+    // Even a legacy checkpoint that retained the draft and its old synthetic
+    // result must not send a tool_result whose tool_use Pi discards.
+    await raw.appendCompaction({ summary: "Fictional summary.", retainedTail: [draft,
+      { role: "toolResult", toolCallId: "draft-call", toolName: "Effect", content: [], isError: true, projectionOnly: true, timestamp: 2 }], tokensBefore: 100 });
+    await assertTranscript();
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("rejects provider schema evidence before append without poisoning or preventing the next turn", async () => {
+  let effects = 0; const { adapter, raw, faux } = await harness([
+    fauxAssistantMessage([fauxToolCall("Effect", {}, { id: "duplicate" }), fauxToolCall("Effect", {}, { id: "duplicate" })]),
+    fauxAssistantMessage([fauxText("Fictional next turn.")]),
+  ], { enabled: false }, {}, [fictionalTool("Effect", async () => { effects += 1; return { content: [] }; })]);
+  try {
+    await expect(adapter.prompt("Fictional invalid calls.")).rejects.toThrow("Invalid provider tool-call evidence");
+    expect(raw.failure).toBeNull(); expect(effects).toBe(0); expect([...raw.validator.calls.values()]).toEqual([]); expect(await raw.getOpenOperations()).toEqual([]);
+    expect((await raw.getTurn(raw.records.findLast((record) => record.kind === "turn_start").turnId)).payload.status).toBe("failed");
+    expect((await adapter.prompt("Fictional next input.")).status).toBe("completed"); expect(faux.state.callCount).toBe(2); await raw.sync();
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("limits after_tool merging to Pi's supported result keys", async () => {
+  const original = { content: [{ type: "text", text: "Fictional original" }], details: { original: true }, custom: "keep-original" };
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxToolCall("Effect", {}, { id: "merged" })]), fauxAssistantMessage([fauxText("done")])], undefined, {}, [fictionalTool("Effect", async () => original)]);
+  let executionResult; adapter.subscribe((event) => { if (event.type === "tool_execution_end") executionResult = event.result; });
+  adapter.hooks.on("after_tool", () => ({ content: [{ type: "text", text: "Fictional override" }], details: { updated: true }, usage: { output: 3 }, terminate: false, isError: true, custom: "must-not-merge", unrelated: true }));
+  try {
+    expect((await adapter.prompt("Fictional input.")).status).toBe("completed");
+    const returned = [...raw.outcomes.values()][0].record.payload.message;
+    expect(returned).toMatchObject({ content: [{ type: "text", text: "Fictional override" }], details: { updated: true }, usage: { output: 3 }, isError: true });
+    expect(executionResult).toMatchObject({ content: [{ type: "text", text: "Fictional override" }], details: { updated: true }, usage: { output: 3 }, terminate: false, custom: "keep-original" });
+    expect(executionResult.unrelated).toBeUndefined();
+    // Foreign hook keys must not enter host finalization or the returned SDK result.
+    expect(original.custom).toBe("keep-original"); expect(returned.unrelated).toBeUndefined();
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("guards nested Pi runToolCall before any unjournaled effect with an explicit error, not a TypeError", async () => {
+  let wrappedTools, nested, innerEffects = 0;
+  const real = (await vi.importActual("@earendil-works/pi-agent-core")).runAgentLoop; const spy = vi.spyOn(agentCore, "runAgentLoop").mockImplementation((prompts, context, ...rest) => { wrappedTools = context.tools; return real(prompts, context, ...rest); });
+  const tools = [fictionalTool("Outer", async (_id, _args, signal) => {
+    nested = await agentCore.runToolCall({ type: "toolCall", id: "nested", name: "Inner", arguments: {} }, {
+      assistantMessage: fauxAssistantMessage([]), context: { messages: [], tools: wrappedTools }, tools: wrappedTools, signal,
+    }); return { content: [{ type: "text", text: "Outer fictional result" }] };
+  }), fictionalTool("Inner", async () => { innerEffects += 1; return { content: [] }; })];
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxToolCall("Outer", {}, { id: "outer" })]), fauxAssistantMessage([fauxText("done")])], undefined, {}, tools);
+  try {
+    expect((await adapter.prompt("Fictional nested request.")).status).toBe("completed"); expect(innerEffects).toBe(0);
+    expect(nested.isError).toBe(true); expect(nested.result.content[0].text).toContain("nested calls are unsupported");
+    expect(nested.result.content[0].text).not.toContain("messageId"); expect([...raw.validator.calls.values()].map((call) => call.callId)).toEqual(["outer"]);
+  } finally { spy.mockRestore(); await adapter.close(); await raw.close(); }
 });

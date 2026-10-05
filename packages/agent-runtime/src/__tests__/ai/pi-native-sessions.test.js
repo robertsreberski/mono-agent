@@ -1886,10 +1886,12 @@ describe("stable native replay with host envelopes", () => {
 it("validates sessionTurn independently before native session/model dispatch", async () => {
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "descriptor-validation-"));
   try {
-    await expect(generatePiNativeResponse("Fictional verification.", runOptions(model, {
+    const result = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
       messages: [{ role: "user", content: "Fictional input." }], sessionId: "owned", sessionKeepAlive: true, piSessionsRoot: root,
       sessionTurn: { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "wrong", baseRevision: 0 },
-    }))).rejects.toThrow("sessionTurn");
+    }));
+    expect(result).toMatchObject({ failureKind: "safety_session_turn_contract", retryable: false });
+    expect(result.providerSessionRecovery).toBeUndefined();
     expect(faux.state.callCount).toBe(0); expect(readdirSync(root)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -1924,19 +1926,26 @@ it("classifies native journal fsync failure terminally instead of provider-unava
   } finally { spy.mockRestore(); await disposeProviderSession("storage-failed").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
 
-it("preserves provider suspension distinctly without sealing or repairing it as completion", async () => {
+it.each([true, false])("cleans suspended keep-alive liveness and reopens as suspended-not-resumed (durable=%s)", async (durable) => {
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-suspended-"));
   const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
-  faux.setResponses([fauxAssistantMessage([], { stopReason: "deferred", deferred })]);
+  faux.setResponses([fauxAssistantMessage([], { stopReason: "deferred", deferred }), (context) => {
+    expect(JSON.stringify(context)).toContain("suspended, not resumed");
+    expect(context.messages.some((message) => message.role === "assistant" && message.stopReason === "deferred")).toBe(false);
+    return fauxAssistantMessage([fauxText("Fictional next user response.")]);
+  }]);
   try {
-    const options = runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], sessionId: "suspended", sessionKeepAlive: true, piSessionsRoot: root });
+    const options = runOptions(model, { messages: [{ role: "user", content: "Fictional input." }], providerAttributionSessionId: "suspended", sessionKeepAlive: true, ...(durable ? { sessionId: "suspended", piSessionsRoot: root } : {}) });
     const first = await generatePiNativeResponse("Fictional verification.", options);
     expect(first.failureKind).toBe("safety_native_suspended"); expect(first.providerSessionRecovery).toBeUndefined(); expect(faux.state.callCount).toBe(1);
-    const directory = join(root, "mono-v2", "journals"); const path = join(directory, readdirSync(directory)[0]); const bytes = readFileSync(path);
-    const second = await generatePiNativeResponse("Fictional verification.", options);
-    expect(second.failureKind).toBe("safety_native_suspended"); expect(faux.state.callCount).toBe(1); expect(readFileSync(path).equals(bytes)).toBe(true);
-    const records = bytes.toString("utf8").trim().split("\n").map(JSON.parse).slice(1);
-    expect(records.filter((record) => record.kind === "interruption")).toEqual([]);
-    expect(records.filter((record) => record.kind === "operation_end")).toEqual([]);
+    const second = await generatePiNativeResponse("Fictional verification.", { ...options, sessionId: "suspended", messages: [{ role: "user", content: "Fictional next message." }] });
+    expect(second.error).toBeNull(); expect(second.providerSessionId).toBe("suspended"); expect(faux.state.callCount).toBe(2);
+    await disposeProviderSession("suspended");
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional clean fresh response.")])]);
+    const third = await generatePiNativeResponse("Fictional verification.", options); expect(third.error).toBeNull(); expect(third.providerSessionId).toBe("suspended");
+    if (durable) {
+      const repo = resolveDurableNativeSessionRepo(root); const session = await repo.open((await repo.list())[0]);
+      expect(await session.getOpenOperations()).toEqual([]); await session.close();
+    }
   } finally { await disposeProviderSession("suspended").catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
