@@ -196,9 +196,10 @@ configuration-file setting.
 The ordinary successful-turn boundary remains atomic. Once success claims that
 boundary, a later abort or exception does not replace it with a continuity
 account. A process signal that unwinds through the harness is covered by the
-ordinary cancellation/failure paths. A hard process death that never unwinds is
-not: startup reconciliation can mark the run artifact and web projection
-`interrupted`, but cannot synthesize canonical history from lost process state.
+ordinary cancellation/failure paths. Without coordinated native reconciliation,
+a hard process death can only mark run artifacts/web projections `interrupted`,
+not reconstruct canonical history from lost process state. Opted-in durable
+turns instead use the owner-held recovery contract below.
 
 ### Per-channel scope gotcha
 
@@ -328,7 +329,10 @@ Configured raw runtime reconciliation and legacy recovery hold attested
 root-generation request leases through settlement. The raw runtime does not
 write canonical history: the configured harness wires its matcher into the
 durable store's `reconcileProviderSessionTurn` option and opts coordinated host
-turns/compaction in through `providerSessionReconciliation: "v1"`.
+turns/compaction in through `providerSessionReconciliation: "v1"` only when the
+selected runtime owner explicitly declares `sessionTurnReconciliation: "v1"`
+and implements the matcher. Method presence alone never grants this capability;
+custom routed owners are uncertified unless explicitly attested.
 
 `recoverProviderSessionTurn()` is explicit and owner-held; admission, plain
 append (including verbatim delivery), exclusive capture and context import also
@@ -337,17 +341,25 @@ adopts the whole ordered operation set; native fsync precedes canonical rename,
 directory sync, then fence/payload cleanup. Rename commits a bounded receipt, so
 repeated recovery recognizes the commit before inspecting native storage again,
 even when retained messages have been evicted. New requests use new turn IDs.
-Host cancellation overrides native completion. A detached attempt without a
+Live commits preserve host enrichment, silent-completion annotations and capture
+timestamps in a durable candidate; recovery never reruns enrichment. Host
+cancellation/failure overriding a native completed seal forces a cold epoch.
+A positively absent native turn with a host failure claim retains the failure
+category instead of inventing unknown effects. A detached attempt without a
 final host candidate is interrupted, never inferred successful from its primary
-seal. Unknown/absent/unbound evidence establishes an interrupted gap and cold
+seal. Otherwise unknown/absent/unbound evidence establishes an interrupted gap and cold
 epoch. An advanced protected native revision never silently creates a missing
 empty warm transcript. Interrupted work waits for a new message; compaction
 recovery changes metadata/receipt, not canonical answers or new summaries.
 
-Immutable private pending generations are capped at 16 MiB, with 1 KiB fences;
+Immutable private pending generations publish through temp write, file fsync,
+rename and directory fsync before fence replacement. They are capped at 16 MiB,
+with 1 KiB fences;
 old/new/orphan generations count toward staged bytes and physical-owner limits.
 `drainPendingProviderSessionTurns()` tries at most 32 inactive owners per pass,
-oldest first, and returns a continuation cursor. It does not wait for foreign
+oldest first, and returns a continuation cursor. Poisoned owners count as
+unresolved without blocking later healthy owners; root/lock identity changes
+remain fatal to the pass. It does not wait for foreign
 logical/exact owners. Busy/unresolved evidence stays charged and protected;
 insufficient capacity rejects, never quota-deletes execution. Reset and
 post-settlement authorized retention remove matching generations. Unattributable

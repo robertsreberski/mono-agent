@@ -1311,6 +1311,13 @@ construction keeps its existing root ownership and does not acquire a second
 lease wrapper. These native capabilities do not yet alter host history fences,
 receipts, retirement policy or enable automatic dirty-turn adoption.
 
+Custom durable runtimes must explicitly expose
+`sessionTurnReconciliation: "v1"` alongside `reconcileSessionTurn` to opt into
+host adoption. Method presence alone is not proof of session ownership. The
+host checks the selected model's owner before admission; uncertified owners
+retain legacy canonical commit behavior rather than projecting missing native
+evidence as interrupted answers.
+
 ## Architecture
 
 BuJo can opt in to default-off `memory.profile.enabled` (deterministic

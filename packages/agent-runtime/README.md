@@ -143,6 +143,11 @@ metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
 A positive compaction window override replaces the declared window, and learned
 provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
 
+Native runtimes expose the explicit `sessionTurnReconciliation: "v1"` ownership
+capability. Custom routing resolvers are not certified from the presence of the
+default inner matcher's method; an options-only native router may explicitly
+attest the same owner. Private completion-only wrappers strip the capability.
+
 Hosts may opt into native evidence preservation with
 `sessionTurn.reconciliation` (version1, execution/compaction purpose, fence digest
 and original input ID). These durable kept-alive turns seal their actual final

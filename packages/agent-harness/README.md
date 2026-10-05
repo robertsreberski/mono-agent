@@ -152,10 +152,19 @@ provider, tool, summary or deferred continuation. Manual compaction changes
 metadata/receipt only, not canonical user/assistant messages. This does not make
 external tool effects exactly-once or introduce a durable queue.
 
+Live successful commits retain the host-built enriched text, silent-completion
+annotation and capture timestamps. Recovery uses the durable candidate if
+available and never reruns enrichment. A host failure before native admission
+retains its failure category; a host cancellation/failure overriding native
+completion establishes a cold epoch so native-only answer text cannot resume.
+Native cold retirement also runs outside the root transaction under the exact
+owner, followed by canonical revalidation and cleanup.
+
 Physical/logical reset clears receipts and all matching pending generations,
 including validated dirty-only/orphan-only buckets, while preserving siblings.
-Malformed or unstable unattributable orphan evidence is preserved; logical reset
-fails closed rather than guessing an owner. Post-rename cleanup failures remain
+Malformed unattributable orphan evidence remains charged and preserved, but
+cannot prevent resetting unrelated validated logical owners. Exact reset clears
+its known physical coordinates; discovery never guesses an owner. Post-rename cleanup failures remain
 visible in store diagnostics. Retention protects unsettled execution fences and
 clears generations only after authorized settlement/deletion.
 `drainPendingProviderSessionTurns()` visits at most 32 inactive physical owners

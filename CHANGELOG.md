@@ -11,7 +11,12 @@
   inactive pending owners without deleting unresolved evidence. Keep private
   wake bodies, delivery keys and memory-only owner text out of pending inputs;
   reset and authorized retention clear matching generations. Older binaries
-  must not share upgraded roots; rollback restores a pre-upgrade backup.
+  must not share upgraded roots; rollback restores a pre-upgrade backup. Keep
+  host enrichment, silent-completion annotations and capture times on live
+  commits. Require explicit runtime ownership before enabling reconciliation,
+  preserve pre-dispatch failure categories and rotate overridden native success
+  to a cold epoch. Publish pending inputs atomically and let poisoned owners
+  remain protected without blocking unrelated draining or reset.
 
 - Add explicitly opted-in native turn bindings, minimal final-result seals and
   indexed evidence matching for host reconciliation, without changing legacy
@@ -20,13 +25,14 @@
   opted-in failed/cancelled/limited native turns without destructive rollback;
   expose storage-only reconciliation through owned runtime wrappers and require
   protected host acknowledgement before routed stateless detachment. Canonical
-  dirty-turn adoption remains a separate host-transaction capability. Public
+  dirty-turn adoption uses the owner-held host transaction described above;
+  custom runtime owners opt in through an explicit reconciliation capability. Public
   `createConfiguredAgentRuntime` now forwards optional legacy `recoverSession`
   under its ownership lease, enabling existing receipt recovery for embedders;
   private per-run memory completion runtimes expose neither recovery seam.
 
 - Add protected host and persistent-subagent native turn descriptors; bind journal
-  ownership append-only without granting terminal recovery or host crash adoption.
+  ownership append-only as the foundation for the opted-in recovery above.
   Fsync native admission/outcome boundaries before effects, fail terminally on
   poisoned storage, project idempotent interruption evidence without tool replay,
   and replay exact durable compaction checkpoints without new summary calls.

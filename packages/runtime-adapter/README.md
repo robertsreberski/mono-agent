@@ -92,6 +92,14 @@ be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.providerAttributionSessionId` is a host-owned continuity key
 for provider attribution, not permission to resume provider transcript state.
+`MonoRuntimeLike.sessionTurnReconciliation: "v1"` explicitly certifies native
+evidence ownership; a `reconcileSessionTurn` method alone does not. Custom
+`resolveAttempt` routers are uncertified by default. Hosts whose resolver only
+changes endpoint options and preserves the native owner may explicitly set
+`CreateMonoRuntimeOptions.sessionTurnReconciliation: "v1"`. The configured host
+sets this assertion for its native options-only router. A different custom
+session owner must implement both the capability and the matching method.
+
 `MonoRuntimeLike.recoverSession(receipt, { appliedInputIds })` forwards optional
 host-coordinated durable terminal recovery. `RuntimeRunOptions.sessionRecovery`
 opts in with run id and canonical revision; `RuntimeResult.providerSessionRecovery`
