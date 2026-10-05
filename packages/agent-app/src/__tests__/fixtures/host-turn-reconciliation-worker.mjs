@@ -23,13 +23,14 @@ const sandboxEngine = { id: "host-turn-smoke-fixture", async isAvailable() { ret
 const readRecord = async () => JSON.parse(await readFile(join(historyRoot, `${historyKey}.history.json`), "utf8"));
 const counter = async () => { try { return (await readFile(join(root, "effect-count.txt"), "utf8")).trim().split("\n").length; } catch (error) { if (error.code === "ENOENT") return 0; throw error; } };
 process.once("message", async ({ mode, crash }) => {
+  if (mode === "produce-cancelled") { mode = "produce"; crash = "host-cancelled"; }
   let harness, runtime;
   try {
     if (crash === "overflow-compaction") config.runtime.compaction = { enabled: true, triggerRatio: 0.95,
       keepRecentTokens: 4_000, minSavingsTokens: 500, summaryMaxTokens: 2_000, contextWindowOverride: 100_000 };
     await writeFile(join(root, "IDENTITY.md"), "You are Mono. Use only the requested harmless fixture.");
     let context, runtimeCalls = 0, nativeInspections = 0;
-    const manualAbort = new AbortController();
+    const manualAbort = new AbortController(), turnAbort = new AbortController();
     if (mode === "recover") {
       runtime = createConfiguredAgentRuntime({ config, cwd: root, sandboxEngine });
       const store = createDurableHistoryStore({ root: historyRoot,
@@ -50,7 +51,8 @@ process.once("message", async ({ mode, crash }) => {
         runtimeCalls += 1; const result = await base.run(prompt, crash === "legacy-unbound"
           ? { ...options, sessionTurn: { ...options.sessionTurn, reconciliation: undefined } } : options);
         if (crash === "manual-cancelled" && options.manualCompaction) manualAbort.abort();
-        if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => {}); }
+        if (crash === "host-cancelled") turnAbort.abort();
+        if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound" || crash === "live-input")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => {}); }
         return result;
       } }, runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, piMaxRetries: 0, effort: "none" } });
     if (mode === "verbatim") {
@@ -71,8 +73,17 @@ process.once("message", async ({ mode, crash }) => {
     ]);
     else faux.setResponses([(value) => { context = structuredClone(value.messages); return fauxAssistantMessage([fauxText("Fictional explicit next reply.")]); }]);
     const result = await harness.run({ conversationId: bucket, userMessage: mode === "produce" ? crash === "overflow-compaction" ? "Fictional prior context. ".repeat(1_800).slice(0, 40_000) : "Fictional counted effect request." : "Fictional explicit next request.",
-      abortSignal: new AbortController().signal });
-    if (result.failure) throw new Error(JSON.stringify(result.failure));
+      abortSignal: turnAbort.signal,
+      ...(crash !== "live-input" ? {} : { onLiveInputOwnership: (event) => {
+        if (event.status !== "ready") return;
+        for (const [id, text, delivery] of [["fictional-human", "Fictional ordinary follow-up.", false],
+          ["fictional-wake", "Fictional private wake body.", true]]) {
+          const offer = harness.offerLiveInput({ conversationId: bucket, id, text, receivedAt: "2026-01-01T00:00:00.000Z",
+            ...(delivery ? { deliveryKey: "fictional-private-delivery-key", ownerText: "Fictional memory-only body." } : {}) });
+          if (offer.status !== "accepted") throw new Error(`Fixture live offer rejected: ${offer.status}`);
+        }
+      } }) });
+    if (result.failure && !(crash === "host-cancelled" && result.failure.kind === "cancelled")) throw new Error(JSON.stringify(result.failure));
     if (mode === "produce" && crash === "native-deleted") {
       for (const name of await readdir(piSessionsRoot, { recursive: true })) if (name.endsWith(".jsonl")) await rm(join(piSessionsRoot, name));
       faux.setResponses([fauxAssistantMessage([fauxText("Fictional explicit reseeded reply.")])]);

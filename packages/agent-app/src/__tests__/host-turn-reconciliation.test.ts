@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -209,4 +209,37 @@ it("manual host cancellation survives release and overrides a completed native c
   } finally {
     if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
   }
+}, 60_000);
+
+it("built host persists live admissions before native consumption and excludes private wake fields after a crash", async () => {
+  const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: "live-input" });
+    expect(await ready).toMatchObject({ phase: "live-input" });
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const pendingRoot = join(root, ".mono-agent", "history", ".pending-turns");
+    const pending = (await Promise.all((await readdir(pendingRoot)).map((name) => readFile(join(pendingRoot, name), "utf8")))).join("\n");
+    expect(pending).toContain("fictional-human"); expect(pending).toContain("fictional-wake");
+    for (const excluded of ["private wake body", "private-delivery-key", "memory-only body"]) expect(pending).not.toContain(excluded);
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.record.lastCommit.outcome).toBe("completed");
+    expect(first.record.messages).toHaveLength(3);
+    expect(first.record.messages[1]).toMatchObject({ role: "user", content: "Fictional ordinary follow-up." });
+    for (const excluded of ["private wake body", "private-delivery-key", "memory-only body"]) expect(JSON.stringify(first.record)).not.toContain(excluded);
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.counter).toBe(1);
+    expect(first.pending).toEqual([]); expect(second.nativeInspections).toBe(0); expect(second.record).toEqual(first.record);
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
+
+it("ordinary host cancellation overrides native completion and never promotes its draft to a completed answer", async () => {
+  const root = await fixtureRoot(); const first = await run(root, "produce-cancelled");
+  expect(first.record.lastCommit.outcome).toBe("cancelled");
+  expect(first.record.messages).toHaveLength(2); expect(first.record.messages[1]!.content).toContain("cancelled");
+  expect(first.record.messages[1]!.content).not.toBe("Fictional verbatim final reply.");
+  expect(first.record.messages[1]!.content).toContain("do not present partial assistant output as a completed answer");
+  const second = await run(root, "recover");
+  expect(second.record).toEqual(first.record); expect(second.nativeInspections).toBe(0);
+  expect(second.providerCalls).toBe(0); expect(second.runtimeCalls).toBe(0); expect(second.counter).toBe(1);
 }, 60_000);
