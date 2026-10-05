@@ -9,7 +9,7 @@ import { createMonoRuntime, parseMonoRuntimeModelReference } from "@mono-agent/r
 const root = process.argv[2], bucket = "fictional-reconcile-bucket";
 const historyRoot = join(root, ".mono-agent", "history"), piSessionsRoot = join(root, "pi");
 const historyKey = createHash("sha256").update("mono-agent-history-v1\0").update(bucket).digest("hex");
-const faux = fauxProvider({ provider: "faux", models: [{ id: "reconcile-fixture", reasoning: true, contextWindow: 100_000, maxTokens: 8_000 }], tokensPerSecond: undefined });
+const faux = fauxProvider({ provider: "faux", models: [{ id: "reconcile-fixture", reasoning: true, contextWindow: 100_000, maxTokens: 8_000 }], tokensPerSecond: process.env.MONO_AGENT_FIXTURE_CRASH_PHASE === "mid-stream" ? 100 : undefined });
 const models = createModels(); models.setProvider(faux.provider);
 const config = {
   runtime: { model: { provider: "faux", model: "reconcile-fixture", reference: "faux:reconcile-fixture" }, workspace: root,
@@ -29,7 +29,7 @@ process.once("message", async ({ mode, crash }) => {
     if (crash === "overflow-compaction") config.runtime.compaction = { enabled: true, triggerRatio: 0.95,
       keepRecentTokens: 4_000, minSavingsTokens: 500, summaryMaxTokens: 2_000, contextWindowOverride: 100_000 };
     await writeFile(join(root, "IDENTITY.md"), "You are Mono. Use only the requested harmless fixture.");
-    let context, runtimeCalls = 0, nativeInspections = 0;
+    let context, runtimeCalls = 0, nativeInspections = 0, draftReported = false;
     const manualAbort = new AbortController(), turnAbort = new AbortController();
     if (mode === "recover") {
       runtime = createConfiguredAgentRuntime({ config, cwd: root, sandboxEngine });
@@ -48,7 +48,17 @@ process.once("message", async ({ mode, crash }) => {
     const base = createMonoRuntime({ workspace: root });
     harness = await createConfiguredAgentHarness({ cwd: root, config, sandboxEngine,
       runtime: { ...base, async reconcileSessionTurn(request) { nativeInspections += 1; return base.reconcileSessionTurn(request); }, async run(prompt, options) {
-        runtimeCalls += 1; const result = await base.run(prompt, crash === "legacy-unbound"
+        runtimeCalls += 1;
+        if (crash === "mid-stream") {
+          const observe = options.onEvent;
+          options = { ...options, onEvent(event) {
+            observe?.(event);
+            if (!draftReported && event.type === "assistant" && event.message?.content?.some((part) => part.type === "text" && part.text)) {
+              draftReported = true; process.send({ phase: "mid-stream", counter: 0 });
+            }
+          } };
+        }
+        const result = await base.run(prompt, crash === "legacy-unbound"
           ? { ...options, sessionTurn: { ...options.sessionTurn, reconciliation: undefined } } : options);
         if (crash === "manual-cancelled" && options.manualCompaction) manualAbort.abort();
         if (crash === "host-cancelled") turnAbort.abort();
@@ -72,6 +82,7 @@ process.once("message", async ({ mode, crash }) => {
       },
     ]);
     else faux.setResponses([(value) => { context = structuredClone(value.messages); return fauxAssistantMessage([fauxText("Fictional explicit next reply.")]); }]);
+    if (crash === "mid-stream") faux.setResponses([fauxAssistantMessage([fauxText("Fictional streamed draft. ".repeat(2_000))])]);
     const result = await harness.run({ conversationId: bucket, userMessage: mode === "produce" ? crash === "overflow-compaction" ? "Fictional prior context. ".repeat(1_800).slice(0, 40_000) : "Fictional counted effect request." : "Fictional explicit next request.",
       abortSignal: turnAbort.signal,
       ...(crash !== "live-input" ? {} : { onLiveInputOwnership: (event) => {

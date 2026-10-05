@@ -69,7 +69,7 @@ it.each(["native-return", "returned-tool"])("built configured host adopts whole 
 }, 60_000);
 
 const preload = fileURLToPath(new URL("./fixtures/host-turn-crash-preload.cjs", import.meta.url));
-const earlyPhases = ["pending-partial", "pending-file", "pending-directory", "fence-file", "fence-rename", "fence-directory", "native-start", "tool-started"];
+const earlyPhases = ["pending-partial", "pending-file", "pending-directory", "fence-file", "fence-rename", "fence-directory", "native-start", "tool-started", "mid-stream"];
 const completedPhases = ["canonical-rename", "canonical-directory", "fence-cleanup", "payload-cleanup"];
 function controlledWorker(root: string, phase: string): ChildProcess {
   return fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: ["--require", preload],
@@ -79,7 +79,7 @@ async function fixtureRoot(): Promise<string> {
   const parent = fileURLToPath(new URL("../../../../.worklab-tmp/", import.meta.url)); await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, "host-turn-matrix-")); dirs.push(root); return root;
 }
-it.each([...earlyPhases, "tool-returned-unplaced", ...completedPhases, "legacy-unbound"])("real built host crash boundary %s settles once with no provider/tool replay", async (phase) => {
+it.each([...earlyPhases, "tool-effect", "tool-returned-unplaced", ...completedPhases, "legacy-unbound"])("real built host crash boundary %s settles once with no provider/tool replay", async (phase) => {
   const root = await fixtureRoot(); const producer = phase === "legacy-unbound"
     ? fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] }) : controlledWorker(root, phase);
   const count = earlyPhases.includes(phase) ? 0 : 1;
@@ -99,7 +99,7 @@ it.each([...earlyPhases, "tool-returned-unplaced", ...completedPhases, "legacy-u
       expect(first.nativeInspections).toBe(1); expect(first.record.lastCommit.outcome).toBe("interrupted");
       expect(first.record.messages[1]!.content).toContain("No tools were replayed");
       if (phase === "tool-returned-unplaced") expect(first.record.messages[1]!.content).toContain("1 observed tool outcomes");
-      if (phase === "tool-started") expect(first.record.messages[1]!.content).toContain("1 unknown");
+      if (phase === "tool-started" || phase === "tool-effect") expect(first.record.messages[1]!.content).toContain("1 unknown");
       if (phase === "legacy-unbound") expect(first.record.lastCommit.journalId).toBeNull();
     }
   } finally {

@@ -25,6 +25,15 @@ fs.open = async (...args) => {
       handle.writeFile = async (bytes) => { await writeFile(Buffer.from(bytes).subarray(0, 17)); await stop("pending-partial"); };
     }
   }
+  if (phase === "tool-effect" && path.endsWith(".jsonl")) {
+    const write = handle.write.bind(handle);
+    handle.write = async (...writeArgs) => {
+      const bytes = writeArgs[0];
+      if (Buffer.isBuffer(bytes) && bytes.toString().includes('"kind":"tool_result"')
+        && bytes.toString().includes('"phase":"returned"')) await stop("tool-effect");
+      return await write(...writeArgs);
+    };
+  }
   const sync = handle.sync.bind(handle);
   handle.sync = async () => {
     await sync();
