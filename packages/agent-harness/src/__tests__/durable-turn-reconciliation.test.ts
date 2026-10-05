@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, lstat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, lstat, writeFile, rename, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -107,7 +107,7 @@ it("durable host cancellation overrides a completed native seal and a late compl
   await turn.reconciliation!.claim("completed", { outcome: "completed", text: "Fictional late completion.", timestamp, error: null, failureKind: null });
   await (await turn.prepareCommit([], { providerSessionSynced: false })).commit();
   const record = await f.record(); expect(record.lastCommit.outcome).toBe("cancelled"); expect(record.messages.at(-1).content).toBe("Fictional host cancellation.");
-  expect(f.retire).not.toHaveBeenCalled();
+  expect(f.retire).toHaveBeenCalledWith(turn.providerSessionId, modelKey); expect(record.providerSession.revision).toBe(0);
 });
 
 it("detached host candidate governs backup success while the primary handle becomes cold", async () => {
@@ -284,4 +284,69 @@ it.each(["execution", "compaction"] as const)("only manual %s may seal completed
     await expect(f.store.recoverProviderSessionTurn(bucket)).resolves.toMatchObject({ outcome: "completed" });
     expect((await f.record()).messages).toEqual([]); expect((await f.record()).providerSession.revision).toBe(1);
   }
+});
+
+it.each(["enriched", "silent"])("live completion persists the host %s candidate and capture timestamp", async (kind) => {
+  const f = await fixture(); const turn = await f.begin();
+  const capturedAt = "2026-01-01T00:01:00.000Z", text = kind === "silent" ? "[Host: silent completion]" : "Fictional enriched reply.";
+  await turn.reconciliation!.claim("completed", { outcome: "completed", text: "Fictional native result.", timestamp,
+    error: null, failureKind: null, ...(kind === "silent" ? { silent: "finish_silently" as const } : {}) });
+  await (await turn.prepareCommit([{ role: "user", content: "Fictional redacted input.", timestamp: capturedAt, runId: "fictional-turn" },
+    { role: "assistant", content: text, timestamp: capturedAt, runId: "fictional-turn" }], { providerSessionSynced: true })).commit();
+  expect((await f.record()).messages).toEqual([{ role: "user", content: "Fictional redacted input.", timestamp: capturedAt, runId: "fictional-turn" },
+    { role: "assistant", content: text, timestamp: capturedAt, runId: "fictional-turn" }]);
+});
+
+it("counts poisoned inactive owners as unresolved and continues draining later healthy owners", async () => {
+  const f = await fixture(); const first = await f.begin(); await first.abort();
+  const second = await f.store.beginProviderSessionTurn("fictional-later-owner", "fictional-later-turn", { modelKey,
+    reconciliation: { purpose: "execution", ownerKey: "fictional-later-owner", initial: { persistText: "Fictional later input.", timestamp } } });
+  await second.abort(); f.inspect.mockRejectedValueOnce(new Error("Fictional poisoned native journal"));
+  expect(await f.store.drainPendingProviderSessionTurns()).toMatchObject({ settled: 1, unresolved: 1, busy: 0 });
+  expect(f.inspect).toHaveBeenCalledTimes(2); expect(await readFile(f.fencePath)).toBeTruthy();
+});
+
+it("keeps the host failure category when native evidence is positively absent", async () => {
+  const f = await fixture(); const turn = await f.begin();
+  await turn.reconciliation!.claim("failed", { outcome: "failed", text: "Fictional authentication failure.", timestamp,
+    error: null, failureKind: "auth_required" }); await turn.abort(); f.inspect.mockResolvedValueOnce({ status: "absent" });
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toMatchObject({ outcome: "failed" });
+  const record = await f.record(); expect(record.lastCommit.outcome).toBe("failed");
+  expect(record.messages.at(-1).content).toBe("Fictional authentication failure."); expect(record.providerSession.revision).toBe(0);
+});
+
+it("host failure over native completion goes cold and retires outside the global root transaction", async () => {
+  const f = await fixture(); const turn = await f.begin();
+  await turn.reconciliation!.claim("failed", { outcome: "failed", text: "Fictional host failure.", timestamp, error: null, failureKind: "failed" });
+  f.retire.mockImplementationOnce(async () => { await f.store.stats(); });
+  await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+  expect((await f.record()).providerSession.revision).toBe(0); expect(f.retire).toHaveBeenCalledOnce();
+}, 5_000);
+
+it("draining rejects root identity replacement rather than counting it as a per-owner failure", async () => {
+  const f = await fixture(); const turn = await f.begin(); await turn.abort();
+  const displaced = `${f.root}-displaced`; dirs.push(displaced);
+  f.inspect.mockImplementationOnce(async () => {
+    await rename(f.root, displaced); await mkdir(f.root, { mode: 0o700 }); throw new Error("Fictional native failure after replacement");
+  });
+  await expect(f.store.drainPendingProviderSessionTurns()).rejects.toThrow("changed while it was in use");
+  expect(await readdir(f.root)).toEqual([]);
+});
+
+it("receipt cleanup retires cold native evidence outside the global root transaction", async () => {
+  const f = await fixture(); const turn = await f.begin();
+  await turn.reconciliation!.claim("failed", { outcome: "failed", text: "Fictional host failure.", timestamp, error: null, failureKind: "failed" });
+  f.retire.mockRejectedValueOnce(new Error("Fictional retirement storage fault"));
+  await (await turn.prepareCommit([], { providerSessionSynced: true })).commit(); const committed = await f.record();
+  f.retire.mockImplementationOnce(async () => { await f.store.stats(); });
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toMatchObject({ outcome: "failed" });
+  expect(await f.record()).toEqual(committed); expect(f.inspect).toHaveBeenCalledOnce(); expect(f.retire).toHaveBeenCalledTimes(2);
+}, 5_000);
+
+it("does not invent canonical live input when the offer was durable but native never consumed it", async () => {
+  const f = await fixture(); const turn = await f.begin();
+  await turn.reconciliation!.admit(createPendingLiveInput({ id: "fictional-unconsumed", persistText: "Fictional unconsumed offer.", receivedAt: timestamp }, "Fictional unconsumed offer.", "live"));
+  await turn.abort(); await f.store.recoverProviderSessionTurn(bucket);
+  const record = await f.record(); expect(record.lastCommit.outcome).toBe("completed"); expect(record.messages).toHaveLength(2);
+  expect(JSON.stringify(record.messages)).not.toContain("Fictional unconsumed offer.");
 });

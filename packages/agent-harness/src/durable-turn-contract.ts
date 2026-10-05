@@ -38,6 +38,8 @@ export interface PendingTurnCandidate {
   readonly failureKind: string | null;
   readonly silent?: "finish_silently";
   readonly consumedInputIds?: readonly string[];
+  /** Host-built completion capture time; presence certifies a live canonical candidate. */
+  readonly initialTimestamp?: string;
 }
 export interface PendingTurnPayload {
   readonly version: 1;
@@ -117,10 +119,11 @@ export function validatePendingTurnPayload(value: unknown): asserts value is Pen
   if (identity.purpose === "execution" ? initials !== 1 : value.inputs.length !== 0) invalid();
   if (value.candidate !== undefined) {
     const candidate = value.candidate; object(candidate);
-    keys(candidate, ["outcome", "text", "timestamp", "error", "failureKind"], ["silent", "consumedInputIds"]);
+    keys(candidate, ["outcome", "text", "timestamp", "error", "failureKind"], ["silent", "consumedInputIds", "initialTimestamp"]);
     if (!outcomes.has(candidate.outcome as string)) invalid();
     for (const key of ["text", "error", "failureKind"]) if (candidate[key] !== null) text(candidate[key], key === "text" ? 64 * 1024 : 4096, true);
     timestamp(candidate.timestamp);
+    if (candidate.initialTimestamp !== undefined) { timestamp(candidate.initialTimestamp); if (candidate.outcome !== "completed") invalid(); }
     if (candidate.consumedInputIds !== undefined) {
       if (!Array.isArray(candidate.consumedInputIds) || candidate.consumedInputIds.length > 101
         || new Set(candidate.consumedInputIds).size !== candidate.consumedInputIds.length) invalid();
@@ -154,7 +157,8 @@ export function createPendingLiveInput(source: { readonly id: string; readonly p
 export function createPendingTurnCandidate(source: PendingTurnCandidate): PendingTurnCandidate {
   return { outcome: source.outcome, text: source.text, timestamp: source.timestamp, error: source.error, failureKind: source.failureKind,
     ...(source.silent === undefined ? {} : { silent: source.silent }),
-    ...(source.consumedInputIds === undefined ? {} : { consumedInputIds: [...source.consumedInputIds] }) };
+    ...(source.consumedInputIds === undefined ? {} : { consumedInputIds: [...source.consumedInputIds] }),
+    ...(source.initialTimestamp === undefined ? {} : { initialTimestamp: source.initialTimestamp }) };
 }
 /** Explicit payload publication builder, excluding runtime/transport/controller extras at all layers. */
 export function createPendingTurnPayload(identity: PendingTurnIdentity, inputs: readonly PendingTurnInput[],

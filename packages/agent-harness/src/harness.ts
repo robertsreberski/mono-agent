@@ -295,9 +295,9 @@ export class MonoAgentHarness implements AgentHarness {
       // refresh of an unconfirmed epoch, and retirement of a stale mapping.
       try {
         providerTurn = await beginProviderSessionTurn(conversationId,
-          historyStore?.providerSessionReconciliation === "v1" ? `synthetic:manual:${runId}` : runId,
+          historyStore?.providerSessionReconciliation === "v1" && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn !== undefined ? `synthetic:manual:${runId}` : runId,
           ...(bound ? [{ modelKey, skipModelRotation: true,
-            ...(historyStore?.providerSessionReconciliation === "v1" ? { reconciliation: {
+            ...(historyStore?.providerSessionReconciliation === "v1" && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn !== undefined ? { reconciliation: {
               purpose: "compaction" as const, ownerKey: this.options.toolHistory?.logicalConversationId(conversationId) ?? conversationId } } : {}) }] : []));
       } catch (error) {
         if (error instanceof ProviderSessionModelChangedError) {
@@ -1152,15 +1152,18 @@ export class MonoAgentHarness implements AgentHarness {
         && (historyStore?.providerSessionModelBinding === "v1"
           || requestedModelKey === sessionModelKey(this.options.model));
       if (durableProviderSessionsEnabled) {
+        const sessionOwner = this.runtimeForSession(requestedModelKey);
+        const reconcileTurn = historyStore?.providerSessionReconciliation === "v1"
+          && sessionOwner.sessionTurnReconciliation === "v1" && sessionOwner.reconcileSessionTurn !== undefined;
         const beginMutation = (async () => {
           providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
             ...(historyStore?.providerSessionModelBinding === "v1" ? [{ modelKey: requestedModelKey,
-              ...(historyStore.providerSessionReconciliation === "v1" ? { reconciliation: { purpose: "execution" as const,
+              ...(reconcileTurn ? { reconciliation: { purpose: "execution" as const,
                 ownerKey: this.options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
                 initial: { persistText: persistUserMessage, timestamp: this.nowIso(),
                   ...(canonicalSenderLabel(request.sender) === undefined ? {} : { senderLabel: canonicalSenderLabel(request.sender)! }) } } } : {}) }] : []));
           p2Turn = providerHistoryTurn.reconciliation;
-          if (historyStore?.providerSessionReconciliation === "v1" && p2Turn === undefined) throw new AgentHarnessError(
+          if (reconcileTurn && p2Turn === undefined) throw new AgentHarnessError(
             "provider_session_reconciliation_mismatch", "Durable history did not acknowledge protected native turn admission.");
           if (providerHistoryTurn.recovery?.status === "interrupted") emit({ type: "runtime_warning", warning_kind: "interrupted_turn_recovered",
             message: "The previous turn was interrupted and accounted without replay; this explicit new message starts a new turn." });
@@ -1634,6 +1637,7 @@ export class MonoAgentHarness implements AgentHarness {
         );
         throwIfCancellationOwned();
         try {
+          const completedMessages = completedTurn.messages;
           const historyPreparation = (async () => {
             if (providerHistoryTurn !== undefined) {
             const providerSessionId = typeof runtimeResult.providerSessionId === "string"
@@ -1663,7 +1667,8 @@ export class MonoAgentHarness implements AgentHarness {
               );
             }
             preparedHistoryAppend = await providerHistoryTurn.prepareCommit(
-              completedTurn.messages,
+              p2Turn === undefined ? completedMessages : completedMessages.filter((_message, index) =>
+                index === 0 || index === completedMessages.length - 1 || appliedLiveInputs[index - 1]?.deliveryKey === undefined),
               { providerSessionSynced },
             );
             if (p2Turn !== undefined) providerSessionSynced = p2Turn.settlement?.nativeReusable === true;

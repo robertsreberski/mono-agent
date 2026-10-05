@@ -279,10 +279,12 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   readonly retry?: MonoRuntimeRetryPolicy;
   /** Private host seam for actual-model provider options and route-owned runtimes. */
   readonly resolveAttempt?: MonoRuntimeAttemptResolver;
+  /** Custom routers must explicitly attest that their session owner supports native matching. */
+  readonly sessionTurnReconciliation?: "v1";
 }
 
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
-  const { fallbackChain, retry, resolveAttempt, ...hostOptions } = options;
+  const { fallbackChain, retry, resolveAttempt, sessionTurnReconciliation, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
   const retryPolicy = normalizeRetryPolicy(retry);
   // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
@@ -301,6 +303,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     : createRouterRuntime({
         host: hostWithSandbox,
         chain,
+        ...(sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation }),
         ...(retryPolicy === undefined ? {} : { retry: retryPolicy }),
         ...(protectedResolveAttempt === undefined
           ? {}
@@ -338,6 +341,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
           : (withoutCallerSandbox(next) as unknown as KernelToolOptions),
       );
     },
+    ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
     async reconcileSessionTurn(request) {
       if (!runtime.reconcileSessionTurn) throw new RuntimeAdapterError("runtime_backend_unavailable", "Native turn reconciliation unavailable.");
       return await runtime.reconcileSessionTurn(request);

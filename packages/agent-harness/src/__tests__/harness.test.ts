@@ -4449,3 +4449,15 @@ describe("composite failure recording", () => {
     }
   });
 });
+
+it("does not admit P2 evidence when the selected session owner only exposes a matcher method", async () => {
+  const dir = await tempDir(), identityPath = join(dir, "IDENTITY.md"); await writeFile(identityPath, "You are Mono.");
+  const inspect = vi.fn(async () => ({ status: "absent" as const })), matcher = vi.fn(async () => ({ status: "absent" as const }));
+  const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => {}, reconcileProviderSessionTurn: inspect });
+  const fake = createFakeRuntime(async () => ({ text: "Fictional custom owner answer." }));
+  const harness = createAgentHarness({ identityPath, model, cwd: dir, piSessionsRoot: join(dir, "pi"), session: { mode: "continuous", idleTimeoutMs: 60_000 }, historyStore,
+    runtime: { ...fake.runtime, reconcileSessionTurn: matcher, async refreshSession() {}, async syncSession() { return true; } } });
+  expect(await harness.run({ conversationId: "fictional-owner", userMessage: "Fictional input.", abortSignal: new AbortController().signal })).toMatchObject({ text: "Fictional custom owner answer." });
+  expect(inspect).not.toHaveBeenCalled(); expect(matcher).not.toHaveBeenCalled();
+  expect((await historyStore.load("fictional-owner")).at(-1)?.content).toBe("Fictional custom owner answer."); await harness.dispose?.();
+});

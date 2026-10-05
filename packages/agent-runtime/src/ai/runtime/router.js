@@ -120,9 +120,10 @@ class ResolverProtectedOptionError extends Error {
  * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
  * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
  *   retries. Per-route retry counts live on each chain entry's `attempts`.
+ * @param {"v1"} [options.sessionTurnReconciliation] Explicit ownership assertion for a custom resolver that preserves the native owner.
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
  */
-export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry } = {}) {
+export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry, sessionTurnReconciliation } = {}) {
   const retryPolicy = normalizeRetryPolicy(retry);
   const entries = normaliseChain(chain);
   if (entries.length === 0) {
@@ -509,6 +510,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
     },
+    sessionTurnReconciliation: resolveAttempt === undefined ? inner.sessionTurnReconciliation : sessionTurnReconciliation,
     async reconcileSessionTurn(request) {
       if (!inner.reconcileSessionTurn) throw new Error("Native turn reconciliation unavailable");
       return inner.reconcileSessionTurn(request);

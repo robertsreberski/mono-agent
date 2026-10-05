@@ -87,11 +87,11 @@ it("survives SIGKILL after payload namespace durability before fence pointer upd
   expect(await recover()).toMatchObject({ payload: value, removed: 1, generations: 1 }); expect(await recover()).toMatchObject({ payload: value, removed: 0, generations: 1 });
 });
 
-it("preserves referenced payloads and charges an unpublished generation after ENOSPC at durability", async () => {
+it("preserves referenced payloads and removes an unpublished temp after ENOSPC at durability", async () => {
   const { store, owner } = await fixture(), value = payload(); const first = await store.publish(value, owner);
   owner.onPhase = async (phase) => { if (phase === "file_synced") throw Object.assign(new Error("Fictional ENOSPC durability fault"), { code: "ENOSPC" }); };
   await expect(store.publish(value, owner)).rejects.toMatchObject({ code: "ENOSPC" });
-  expect(await store.read(first, value.identity)).toEqual(value); const entries = await store.list(); expect(entries).toHaveLength(2); expect(entries.reduce((n, entry) => n + entry.bytes, 0)).toBeGreaterThan(entries[0]!.bytes);
+  expect(await store.read(first, value.identity)).toEqual(value); const entries = await store.list(); expect(entries).toHaveLength(1); expect(entries[0]!.name).not.toMatch(/\.tmp$/u);
 });
 it("rejects a hard-linked generation and root replacement without recreating data", async () => {
   const { root, store, owner } = await fixture(), value = payload(); await store.publish(value, owner);

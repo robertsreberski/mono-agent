@@ -17,12 +17,12 @@ async function stop(at) {
 fs.open = async (...args) => {
   const handle = await realOpen(...args), path = String(args[0]);
   // Numeric O_CREAT flags are used by immutable publication; a read must not count.
-  const writingPending = path.includes("/.pending-turns/") && path.endsWith(".json") && typeof args[1] === "number" && (args[1] & require("node:fs").constants.O_CREAT);
+  const writingPending = path.includes("/.pending-turns/") && path.endsWith(".json.tmp") && typeof args[1] === "number" && (args[1] & require("node:fs").constants.O_CREAT);
   if (writingPending) {
     payloads += 1;
-    if (payloads === 2 && phase === "pending-partial") {
+    if ((payloads === 2 && phase === "pending-partial") || (payloads === 1 && phase === "pending-initial-partial")) {
       const writeFile = handle.writeFile.bind(handle);
-      handle.writeFile = async (bytes) => { await writeFile(Buffer.from(bytes).subarray(0, 17)); await stop("pending-partial"); };
+      handle.writeFile = async (bytes) => { await writeFile(Buffer.from(bytes).subarray(0, 17)); await stop(phase); };
     }
   }
   if (phase === "tool-effect" && path.endsWith(".jsonl")) {
@@ -57,7 +57,17 @@ fs.open = async (...args) => {
 fs.rename = async (...args) => {
   await realRename(...args);
   const destination = String(args[1]);
-  if (destination.endsWith(".dirty.json")) { dirtyRenames += 1; if (dirtyRenames === 2) await stop("fence-rename"); }
+  if (destination.endsWith(".dirty.json")) {
+    dirtyRenames += 1; if (dirtyRenames === 2) await stop("fence-rename");
+    if (phase === "candidate-fence") {
+      const fence = JSON.parse(await readFile(destination, "utf8"));
+      if (fence.payload) {
+        const name = `${fence.conversationKey}.${fence.runIdDigest}.${fence.payload.generation}.json`;
+        const payload = JSON.parse(await readFile(join(root, ".mono-agent", "history", ".pending-turns", name), "utf8"));
+        if (payload.candidate?.initialTimestamp) await stop("candidate-fence");
+      }
+    }
+  }
   if (destination.endsWith(".history.json")) { canonicalRenamed = true; await stop("canonical-rename"); }
 };
 fs.rm = async (...args) => {

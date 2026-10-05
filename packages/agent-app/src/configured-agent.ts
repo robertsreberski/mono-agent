@@ -473,6 +473,8 @@ function createConfiguredAgentRuntimeBase(
           // Resolve custom/local Pi options from the ACTUAL route selected by
           // the fallback router. Secrets stay inside this private return value
           // and are never copied into route metadata or events.
+          // This resolver changes endpoint options only, never the native owner.
+          sessionTurnReconciliation: "v1",
           resolveAttempt: ({ model }) => ({
             options: runtimeOptionsForLocalProvider(model, config.providers?.local),
           }),
@@ -576,6 +578,7 @@ function wrapOwnedConfiguredRuntime(
     ...(runtime.configureTools === undefined
       ? {}
       : { configureTools: runtime.configureTools.bind(runtime) }),
+    ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
     ...(runtime.reconcileSessionTurn === undefined ? {} : { reconcileSessionTurn: (request) => withReconciliationLease(() => runtime.reconcileSessionTurn!(request)) }),
     ...(runtime.recoverSession === undefined ? {} : { recoverSession: (receipt, context) => withReconciliationLease(() => runtime.recoverSession!(receipt, context)) }),
     ...(runtime.syncSession === undefined ? {} : { syncSession: runtime.syncSession.bind(runtime) }),
@@ -1365,10 +1368,10 @@ async function createConfiguredAgentHarnessInternal(
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
-          ...(runtime.reconcileSessionTurn === undefined ? {} : {
+          ...(runtime.sessionTurnReconciliation !== "v1" || runtime.reconcileSessionTurn === undefined ? {} : {
             reconcileProviderSessionTurn: async (request: ConversationHistoryTurnInspection) => {
               const owner = runtimeForSession(request.modelKey);
-              if (owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
+              if (owner.sessionTurnReconciliation !== "v1" || owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
               const selected = parseMonoRuntimeModelReference(request.modelKey);
               return await owner.reconcileSessionTurn({ descriptor: request.descriptor, purpose: request.purpose,
                 expectedInputs: request.expectedInputs, sessionsRoot: piSessionsRoot,

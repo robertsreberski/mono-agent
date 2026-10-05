@@ -730,3 +730,15 @@ it.each([false, true])("forwards storage-only turn reconciliation through the ty
     await expect(runtime.reconcileSessionTurn!({ ...request, descriptor: { ...request.descriptor, baseRevision: null } })).rejects.toThrow("reconciliation");
   } finally { await runtime.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
 });
+
+describe("explicit native reconciliation ownership", () => {
+  it("does not certify custom route owners from the default inner matcher", async () => {
+    const model = parseMonoRuntimeModelReference("openai:fictional-model");
+    const direct = createMonoRuntime(), routed = createMonoRuntime({ fallbackChain: [{ model }], resolveAttempt: () => ({ runtime: { async run() { return { text: "Fictional answer." }; } } }) });
+    const owned = createMonoRuntime({ fallbackChain: [{ model }], resolveAttempt: () => ({ options: {} }), sessionTurnReconciliation: "v1" });
+    expect(direct.sessionTurnReconciliation).toBe("v1");
+    expect(routed.reconcileSessionTurn).toBeTypeOf("function"); expect(routed.sessionTurnReconciliation).toBeUndefined();
+    expect(owned.sessionTurnReconciliation).toBe("v1");
+    await direct.disposeAllSessions?.(); await routed.disposeAllSessions?.(); await owned.disposeAllSessions?.();
+  });
+});

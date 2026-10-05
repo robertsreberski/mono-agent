@@ -155,13 +155,14 @@ it("survives SIGKILL after reset intent durability and completes deletion in two
   }
 }, 20_000);
 
-it("fails closed on an unattributable partial orphan during logical discovery without deleting any owner", async () => {
+it("resets a validated logical owner while preserving an unrelated unattributable partial orphan", async () => {
   const f = await fixture(); const own = await f.publish("fictional-logical#2026-01-01", "fictional-own-turn");
   await f.publish("fictional-other#2026-01-01", "fictional-partial-turn", "execution", false);
   const other = (await f.payloads.list()).find((entry) => entry.conversationKey !== own.coordinates.conversationKey)!;
   await writeFile(join(f.root, ".pending-turns", other.name), '{"version":', { mode: 0o600 });
-  const before = await readFile(own.path);
-  await expect(f.store.resetLogicalConversation("fictional-logical")).rejects.toThrow();
-  expect(await readFile(own.path)).toEqual(before); expect(await f.payloads.list()).toHaveLength(2);
-  expect(f.retireProviderSession).not.toHaveBeenCalled();
+  const otherPath = join(f.root, ".pending-turns", other.name), before = await readFile(otherPath);
+  await f.store.resetLogicalConversation("fictional-logical");
+  await expect(readFile(own.path)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(otherPath)).toEqual(before); expect(await f.payloads.list()).toHaveLength(1);
+  expect(f.retireProviderSession).toHaveBeenCalledOnce();
 });

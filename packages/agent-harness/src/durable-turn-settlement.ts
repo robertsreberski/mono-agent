@@ -71,9 +71,9 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
   const detached = payload.disposition === "detached";
   if (payload.disposition === "cancelled") outcome = "cancelled";
   else if (detached) outcome = payload.candidate?.outcome ?? "interrupted";
-  else if (payload.disposition === "failed" && matched && (matched.outcome === "completed" || matched.outcome === "failed")) outcome = "failed";
+  else if (payload.disposition === "failed" && (result.status === "absent" || (matched && (matched.outcome === "completed" || matched.outcome === "failed")))) outcome = "failed";
   const seal = matched?.commitCandidate ?? matched?.seal?.result;
-  const useHost = payload.candidate && (detached || ((payload.disposition === "cancelled" || payload.disposition === "failed") && payload.candidate.outcome === outcome));
+  const useHost = payload.candidate && (detached || (outcome === "completed" && payload.candidate.initialTimestamp !== undefined) || ((payload.disposition === "cancelled" || payload.disposition === "failed") && payload.candidate.outcome === outcome));
   let candidate: PendingTurnCandidate | undefined;
   if (payload.identity.purpose === "execution") {
     candidate = useHost ? payload.candidate : outcome === "completed" && seal
@@ -100,7 +100,7 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
   const messages: HistoryMessage[] = [];
   if (payload.identity.purpose === "execution") {
     const initial = payload.inputs.find((input) => input.kind === "initial")!;
-    if (initial.kind === "initial") messages.push({ role: "user", content: initial.persistText, timestamp: initial.timestamp,
+    if (initial.kind === "initial") messages.push({ role: "user", content: initial.persistText, timestamp: candidate?.initialTimestamp ?? initial.timestamp,
       runId: payload.identity.turnId, ...(initial.senderLabel === undefined ? {} : { name: initial.senderLabel }) });
     for (const id of detached ? payload.candidate?.consumedInputIds ?? matched?.consumedInputIds ?? [] : matched?.consumedInputIds ?? []) {
       const input = payload.inputs.find((entry) => entry.id === id);
@@ -111,7 +111,7 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
       ...(outcome === "cancelled" || outcome === "failed" ? { idempotencyKey: `${outcome === "cancelled" ? CANCELLED_TURN_HISTORY_KEY_PREFIX : FAILED_TURN_HISTORY_KEY_PREFIX}${payload.identity.turnId}` } : {}) });
   }
   return { outcome, ...(candidate === undefined ? {} : { candidate }), messages,
-    nativeReusable: matched !== undefined && !detached && matched.currentTipId === matched.tipId
+    nativeReusable: matched !== undefined && !detached && !(matched.outcome === "completed" && outcome !== "completed") && matched.currentTipId === matched.tipId
       && (payload.identity.purpose === "compaction" || matched.consumedInputIds.includes(pendingTurnDescriptor(payload).reconciliation!.initialInputId!)),
     journalId: matched?.journalId ?? null, tipId: matched?.tipId ?? null };
 }

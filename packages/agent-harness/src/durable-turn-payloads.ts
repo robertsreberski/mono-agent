@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import {
@@ -91,7 +91,7 @@ export class PendingTurnPayloadStore {
     const directory = await this.ensureDirectory(false); if (!directory) return [];
     const entries: PendingPayloadEntry[] = [];
     for (const name of (await readdir(this.directory)).sort()) {
-      const match = PENDING_FILE_PATTERN.exec(name); if (!match) throw new Error("Unsupported pending turn artifact");
+      const match = PENDING_FILE_PATTERN.exec(name.endsWith(".tmp") ? name.slice(0, -4) : name); if (!match) throw new Error("Unsupported pending turn artifact");
       const info = await lstat(join(this.directory, name)); secure(info, false);
       if (info.size > MAX_PENDING_TURN_BYTES) throw new RangeError("Pending turn artifact exceeds 16 MiB");
       entries.push({ conversationKey: match[1]!, runIdDigest: match[2]!, generation: match[3]!, name, bytes: info.size, mtimeMs: info.mtimeMs });
@@ -105,26 +105,35 @@ export class PendingTurnPayloadStore {
     const directory = await this.ensureDirectory(true, owner); if (!directory) unavailable();
     await owner.assertOwned(); const generation = randomBytes(16).toString("hex");
     const name = pendingPayloadName(coordinates.conversationKey, coordinates.runIdDigest, generation), path = join(this.directory, name);
-    const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow(), 0o600);
+    const temporaryPath = `${path}.tmp`;
+    const handle = await open(temporaryPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow(), 0o600);
+    let published = false;
     try {
       await handle.writeFile(bytes); const before = await handle.stat(); secure(before, false);
       if (before.size !== bytes.byteLength) throw new Error("Pending payload short write");
       await handle.sync(); await owner.onPhase?.("file_synced");
-      const current = await lstat(path); secure(current, false); if (!unchanged(before, current)) unavailable();
+      const current = await lstat(temporaryPath); secure(current, false); if (!unchanged(before, current)) unavailable();
       await this.assertDirectory(directory); await owner.assertOwned();
+      await rename(temporaryPath, path); published = true;
+      const named = await lstat(path); secure(named, false);
+      if (!same(before, named) || before.size !== named.size) unavailable();
       await this.syncDirectory(this.directory, directory); await owner.onPhase?.("directory_synced");
       await this.assertDirectory(directory); await owner.assertOwned();
       return { generation, sha256: sha256(bytes) };
     } finally {
-      // A failed publication is an unreferenced generation, not abandoned
-      // canonical staging. Leave it charged for explicit owner-held collection.
       await handle.close();
+      if (!published) {
+        // Ordinary pre-publication faults cannot leave a torn final generation.
+        // SIGKILL may leave a charged temp; exact-owner collection removes it.
+        try { await this.assertDirectory(directory); await owner.assertOwned(); await rm(temporaryPath, { force: true }); await this.syncDirectory(this.directory, directory); }
+        catch { /* Preserve/charge uncertain cleanup; do not mask the publication failure. */ }
+      }
     }
   }
   /** Secure, read-only discovery of orphan identity for an explicit logical reset.
    * The filename must agree with the parsed payload; discovery grants no owner. */
   async inspect(entry: Pick<PendingPayloadEntry, "name">, expectedDigest?: string): Promise<{ readonly payload: PendingTurnPayload; readonly pointer: PendingTurnPointer }> {
-    const match = PENDING_FILE_PATTERN.exec(entry.name); if (!match) throw new Error("Unsupported pending turn artifact");
+    const match = PENDING_FILE_PATTERN.exec(entry.name.endsWith(".tmp") ? entry.name.slice(0, -4) : entry.name); if (!match) throw new Error("Unsupported pending turn artifact");
     const directory = await this.ensureDirectory(false); if (!directory) throw new Error("Pending payload is absent");
     const path = join(this.directory, entry.name), before = await lstat(path); secure(before, false);
     if (before.size > MAX_PENDING_TURN_BYTES) throw new RangeError("Pending turn payload exceeds 16 MiB");

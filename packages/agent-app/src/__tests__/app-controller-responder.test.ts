@@ -681,9 +681,8 @@ it("compacts durable web conversations through the production responder composit
   const router = (model: RuntimeModelReference, withFallback: boolean): MonoRuntimeLike => {
     const routed = createMonoRuntime({ fallbackChain: [{ model }, ...(withFallback ? [{ model: other }] : [])],
       resolveAttempt: () => ({ runtime: provider }) });
-    // This scripted owner has no native journal matcher; the default router
-    // seam belongs to an unrelated inner runtime and must not opt this fake in.
-    delete routed.reconcileSessionTurn;
+    // Custom route ownership is not certified by the default inner matcher.
+    // Method presence alone must not opt this scripted provider into P2.
     return { ...routed,
     // The scripted provider is the durable Pi session owner; the router's
     // default inner runtime has no knowledge of this test's provider handle.
