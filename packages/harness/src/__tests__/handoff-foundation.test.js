@@ -11,19 +11,20 @@ import { createHandoffBudget, buildHandoff, buildOpenWorkLedger, renderHandoffMe
 
 const provenance = { provider: "fictional", api: "fictional-api", account: "fixture-account" };
 const target = { ...provenance, model: "A" };
+const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const hostContext = { systemPrompt: "Current fictional rules", tools: [{ name: "Read", parameters: { type: "object" } }] };
 const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext });
 const options = { target, budget, hostContext, timestamp: 17, producer: "outgoing" };
 const text = (value) => ({ role: "user", content: value, timestamp: 1 });
 const summary = { intent: ["Fictional goal"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] };
-async function segment(id, epoch, predecessorJournalId = null, messages = [text(id)]) {
-  const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional" });
+async function segment(id, epoch, predecessorJournalId = null, messages = [text(id)], guarded = false) {
+  const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional", ...(guarded ? { hostAuthority, assertOwned: async () => {} } : {}) });
   await store.beginTurn(`turn-${id}`);
   for (let i = 0; i < messages.length; i++) await store.appendMessage(messages[i], `${id}-message-${i}`);
   await store.endTurn(`turn-${id}`, "completed");
   const descriptor = { ownerKey: "fictional-owner", historyBucket: "fictional-bucket", epoch, journalId: store.metadata.journalId,
     handleId: id, predecessorJournalId, sourceDigest: evidenceDigest(store.records), sourceSeq: store.seq, sourceTipId: store.tip, provenance };
-  return { descriptor, header: { ...store.metadata, format: "mono-harness", version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id } }, records: store.records, store };
+  return { descriptor, header: { format: "mono-harness", version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id }, ...store.metadata }, records: store.records, store };
 }
 function view(segments) { return createEvidenceView({ ownerKey: "fictional-owner", historyBucket: "fictional-bucket", segments }); }
 function refreshed(segment) { return { ...segment, records: segment.store.records, descriptor: { ...segment.descriptor,
@@ -55,8 +56,8 @@ it("rejects fabricated views, cycles, foreign owners, changed frozen tips/digest
   expect(() => view([a, a])).toThrow("Invalid");
 });
 it("persists opt-in composed coverage and replays inherited material exactly once", async () => {
-  const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId);
-  b.store.enableVersion3Writes({ exclusiveWriters: true });
+  const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId, [text("B")], true);
+  b.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   const frozen = view([a, b]);
   await b.store.appendComposedCompaction({ summary: "A and B checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, frozen);
   expect(b.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
@@ -114,8 +115,8 @@ it("enforces one context-builder seam in production source (definition and compa
 });
 
 it("opt-in model-change records carry only an artifact reference; canonical gaps cannot masquerade as native evidence", async () => {
-  const a = await segment("A", 0);
-  a.store.enableVersion3Writes({ exclusiveWriters: true });
+  const a = await segment("A", 0, null, [text("A")], true);
+  a.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   await a.store.appendModelChangeReference({ switchId: "fictional-switch", from: provenance, to: target, artifactRef: { id: "fictional-artifact", hash: "0".repeat(64) } });
   const event = a.store.records.find((r) => r.kind === "model_change");
   expect(event.schemaVersion).toBe(3); expect(event.payload.artifactRef).toEqual({ id: "fictional-artifact", hash: "0".repeat(64) });
@@ -233,15 +234,15 @@ it("source enforcement catches JS/TS imports and re-exports in other packages an
   } finally { await rm(fake, { recursive: true, force: true }); }
 });
 
-it("gates every opt-in v3 writer on an explicit exclusive-upgraded-writers acknowledgement", async () => {
-  const a = await segment("v3-gate", 0); const before = structuredClone(a.store.records);
+it("gates every opt-in v3 writer on upgraded header authority AND the exclusive-writers acknowledgement", async () => {
+  const a = await segment("v3-gate", 0, null, [text("v3-gate")], true); const before = structuredClone(a.store.records);
   const change = { switchId: "fictional-switch", from: provenance, to: target, artifactRef: { id: "fixture", hash: "0".repeat(64) } };
   await expect(a.store.appendModelChangeReference(change)).rejects.toThrow("exclusive upgraded writers");
   await expect(a.store.appendComposedCompaction({ summary: "fixture", retainedTail: [] }, view([a]))).rejects.toThrow("exclusive upgraded writers");
   await expect(a.store.write("model_change", {}, { schemaVersion: 3 })).rejects.toThrow("exclusive upgraded writers");
   expect(() => a.store.enableVersion3Writes({ exclusiveWriters: false })).toThrow("exclusive upgraded writers");
   expect(a.store.records).toEqual(before);
-  a.store.enableVersion3Writes({ exclusiveWriters: true }); await a.store.appendModelChangeReference(change);
+  a.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority }); await a.store.appendModelChangeReference(change);
   expect(a.store.records.some((r) => r.kind === "model_change" && r.schemaVersion === 3)).toBe(true);
 });
 
@@ -338,4 +339,11 @@ it("qualifies suffix message identities by journal and never sheds a prefix-only
   expect(built.status).toBe("ready");
   expect(built.artifact.recent.map((group) => group.journalId)).toEqual([a.header.journalId, c.header.journalId]);
   expect(built.artifact.recent.at(-1).messages[0].data[0].text).toContain("last suffix");
+});
+
+it("does not project a guarded journal under a contradictory host owner", async () => {
+  const a = await segment("guarded-view", 0, null, [text("guarded fictional fact")], true);
+  const foreign = { ...a, header: { ...a.header, hostAuthority: { ...hostAuthority, ownerKey: "foreign" } } };
+  expect(() => view([foreign])).toThrow("upgraded header owner");
+  expect(() => view([a])).not.toThrow();
 });

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Require a durably published, host-authorized native header before opt-in v3
+  writes. Reject old native readers and deletion before torn-tail repair on
+  upgraded journals; preserve record bytes, paths and standalone defaults.
+  Require explicit host C/D authority for guarded deletion. Keep host switching
+  disabled and require stopped older binaries and backup restoration for rollback.
+
 - Fix exact-checkpoint handoffs refusing when optional recent turns duplicate
   the complete suffix or retained evidence. Shed only whole, fully represented
   groups without summary production; preserve the latest turn and work ledger.

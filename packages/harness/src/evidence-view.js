@@ -22,6 +22,8 @@ export function createEvidenceView(input) {
   const segments = input.segments.map((source) => {
     const { descriptor, header, records } = structuredClone({ descriptor: source.descriptor, header: source.header, records: source.records });
     validateJournalHeader(header);
+    if (header.ownershipSchemaVersion === 2 && (header.hostAuthority.ownerKey !== input.ownerKey
+      || header.hostAuthority.historyBucket !== input.historyBucket)) fail("upgraded header owner");
     if (!descriptor || descriptor.ownerKey !== input.ownerKey || descriptor.historyBucket !== input.historyBucket
       || descriptor.journalId !== header.journalId || descriptor.handleId !== header.id
       || descriptor.predecessorJournalId !== predecessor || seen.has(header.journalId)

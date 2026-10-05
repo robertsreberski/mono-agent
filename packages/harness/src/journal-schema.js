@@ -1,6 +1,7 @@
 // @ts-check
 import { createHash } from "node:crypto";
 import { JOURNAL_FORMAT, JOURNAL_KINDS, JOURNAL_VERSION } from "./journal-types.js";
+import { validateHostJournalAuthority } from "./header-authority.js";
 const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
 const time = (v) => Number.isSafeInteger(v) && v >= 0;
@@ -18,9 +19,12 @@ export function digestTurnInput(content) {
 export function validateJournalHeader(header) {
   requireValue(object(header) && header.format === JOURNAL_FORMAT && header.version === JOURNAL_VERSION
     && id(header.journalId) && /^[A-Za-z0-9_-]+$/.test(header.journalId)
-    && header.ownershipSchemaVersion === 1 && header.ownership?.kind === "unbound"
+    && [1, 2].includes(header.ownershipSchemaVersion) && header.ownership?.kind === "unbound"
     && id(header.initialHandle?.id) && header.id === header.initialHandle.id
     && typeof header.cwd === "string" && time(header.createdAt));
+  if (header.ownershipSchemaVersion === 2) {
+    try { validateHostJournalAuthority(header.hostAuthority); } catch { fail(); }
+  } else requireValue(header.hostAuthority === undefined);
   if (header.import !== undefined) {
     const info = header.import, source = info?.source, identity = source?.identity;
     requireValue(object(info) && info.version === 1 && /^[a-f0-9]{64}$/.test(info.importId)
