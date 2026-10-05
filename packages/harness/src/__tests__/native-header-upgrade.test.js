@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import { appendFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -43,6 +43,7 @@ beforeAll(async () => {
       ...await import(pathToFileURL(join(r, "session-store.js")).href),
       ...await import(pathToFileURL(join(r, "journal-schema.js")).href),
       ...await import(pathToFileURL(join(r, "journal-reader.js")).href),
+      ...await import(pathToFileURL(join(r, "legacy-import.js")).href),
     };
   } finally { await rm(r, { recursive: true, force: true }); }
 });
@@ -265,4 +266,144 @@ it("actual old warm index cannot bypass a newly published guarded header", async
   const bytes = await readFile(metadata.path);
   await expect(old.open(metadata)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
   expect(await readFile(metadata.path)).toEqual(bytes); await old.close();
+});
+
+
+const reorderedAuthority = Object.fromEntries(Object.entries(authority).reverse());
+for (const failureKind of ["ENOSPC", "fsync", "host_claim"]) for (const recovery of ["re-upgrade", "unguarded-delete"]) {
+  it(`cleans its failed ${failureKind} stage before ${recovery}`, async () => {
+    const r = await root(), { repository, metadata, before } = await fixture(r);
+    const temporary = `${metadata.path}.upgrading`;
+    const probe = await open(join(r, "file-handle-probe"), "w", 0o600);
+    const prototype = Object.getPrototypeOf(probe); await probe.close();
+    let lostOwnership = false, stageIdentity;
+    const injected = Object.assign(new Error(`injected ${failureKind}`), { code: failureKind === "ENOSPC" ? "ENOSPC" : "EIO" });
+    repository.onHeaderUpgradePhase = async (phase) => {
+      if (phase === "stage_created") {
+        stageIdentity = await lstat(temporary);
+        if (failureKind !== "host_claim") {
+          const method = failureKind === "ENOSPC" ? "write" : "sync", original = prototype[method];
+          vi.spyOn(prototype, method).mockImplementation(async function (...args) {
+            const identity = await this.stat();
+            if (identity.dev === stageIdentity.dev && identity.ino === stageIdentity.ino) throw injected;
+            return original.apply(this, args);
+          });
+        }
+      }
+      if (phase === "body_copied" && failureKind === "host_claim") lostOwnership = true;
+    };
+    await expect(repository.upgradeHeader(metadata, { hostAuthority: authority, assertOwned: async () => { if (lostOwnership) throw injected; } })).rejects.toBe(injected);
+    vi.restoreAllMocks();
+    expect(await readFile(metadata.path)).toEqual(before);
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    repository.onHeaderUpgradePhase = async () => {};
+    if (recovery === "re-upgrade") {
+      const upgraded = await repository.upgradeHeader(metadata, { ...upgrade, hostAuthority: reorderedAuthority });
+      const bytes = await readFile(metadata.path), header = JSON.parse(bytes.subarray(0, bytes.indexOf(10)));
+      expect(body(bytes)).toEqual(body(before)); expect(header.hostAuthority).toEqual(authority);
+      expect(Object.keys(header.hostAuthority)).toEqual(Object.keys(authority));
+      await repository.delete(upgraded, { ...upgrade, disposition: "D" });
+    } else await repository.delete(metadata);
+    expect(await repository.list()).toEqual([]);
+  });
+}
+
+it("does not unlink a replaced stage inode during in-process failure cleanup", async () => {
+  const { repository, metadata, before } = await fixture(await root());
+  const stage = `${metadata.path}.upgrading`;
+  repository.onHeaderUpgradePhase = async (phase) => {
+    if (phase === "header_written") {
+      await rename(stage, `${stage}.saved`);
+      await writeFile(stage, "Unknown replacement fixture evidence", { mode: 0o600 });
+      throw new Error("injected replaced stage failure");
+    }
+  };
+  await expect(repository.upgradeHeader(metadata, upgrade)).rejects.toThrow("injected replaced stage failure");
+  expect(await readFile(stage, "utf8")).toBe("Unknown replacement fixture evidence");
+  expect(await readFile(metadata.path)).toEqual(before);
+});
+
+it("recovers canonically ordered staged bytes with reordered equal authority after a process crash", async () => {
+  const r = await root(), { repository, metadata, before } = await fixture(r);
+  await worker(r, "header_written", true);
+  const staged = await readFile(`${metadata.path}.upgrading`);
+  const stagedHeader = JSON.parse(staged.subarray(0, staged.indexOf(10)));
+  expect(Object.keys(stagedHeader.hostAuthority)).toEqual(Object.keys(authority));
+  await repository.upgradeHeader(metadata, { ...upgrade, hostAuthority: reorderedAuthority });
+  const ready = await readFile(metadata.path);
+  expect(ready.subarray(0, ready.indexOf(10) + 1)).toEqual(staged);
+  expect(body(ready)).toEqual(body(before));
+  await worker(r, "recover"); expect(await readFile(metadata.path)).toEqual(ready);
+});
+
+it.each([false, true])("validates every explicit deletion disposition on unguarded journals (durable: %s)", async (durable) => {
+  const repository = durable ? repo(await root()) : new MemorySessionRepo();
+  const store = await repository.create({ id: "unguarded-dispositions", cwd: "/fictional" });
+  const metadata = { ...store.metadata }; await store.close();
+  const actions = [() => repository.delete(metadata, currentOptions)];
+  let currentOptions;
+  if (durable) actions.push(() => repository.retire(metadata, currentOptions), () => repository.retireByHandle(metadata.id, currentOptions), () => repository.removeOwned(metadata, currentOptions));
+  for (const disposition of ["P", "U", "unknown", undefined, null, 17]) {
+    currentOptions = { disposition };
+    for (const action of actions) {
+      await expect(action()).rejects.toThrow("C/D disposition");
+      expect((await repository.list()).map((entry) => entry.id)).toEqual([metadata.id]);
+    }
+  }
+  await repository.delete(metadata, { disposition: "C" });
+  expect(await repository.list()).toEqual([]);
+  const next = await repository.create({ id: "default-deletion" }); await next.close();
+  await repository.delete(next.metadata); expect(await repository.list()).toEqual([]);
+});
+
+it("memory metadata cannot forge or downgrade its private validated native header", async () => {
+  const repository = new MemorySessionRepo();
+  const plain = await repository.create({ id: "memory-forge", cwd: "/fictional" });
+  const original = structuredClone(plain.metadata);
+  Object.assign(plain.metadata, { format: "mono-harness", version: 2, ownershipSchemaVersion: 2,
+    ownership: { kind: "unbound" }, initialHandle: { id: original.id }, hostAuthority: structuredClone(authority) });
+  expect(() => plain.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: authority })).toThrow("upgraded native header authority");
+  expect(await repository.list()).toEqual([original]);
+  await plain.close();
+  // Even direct mutation of the public catalogue copy cannot replace the private header.
+  Object.assign(repository.sessions.get(original.id).metadata, plain.metadata);
+  const reopened = await repository.open(plain.metadata);
+  expect(reopened.metadata).toEqual(original);
+  expect(() => reopened.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: authority })).toThrow("upgraded native header authority");
+  await reopened.close(); await repository.delete(plain.metadata);
+
+  const guarded = await repository.create({ id: "memory-downgrade", cwd: "/fictional", ...upgrade });
+  const header = structuredClone(guarded.metadata);
+  guarded.metadata.ownershipSchemaVersion = 1; delete guarded.metadata.hostAuthority;
+  expect(await repository.list()).toEqual([header]);
+  await guarded.close();
+  const publicCopy = repository.sessions.get(header.id).metadata;
+  publicCopy.ownershipSchemaVersion = 1; delete publicCopy.hostAuthority;
+  await expect(repository.delete(guarded.metadata)).rejects.toThrow("Invalid host journal upgrade authority");
+  const reopenedGuard = await repository.open(guarded.metadata);
+  expect(reopenedGuard.metadata).toEqual(header);
+  reopenedGuard.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: authority });
+  reopenedGuard.metadata.hostAuthority.ownerKey = "forged-owner";
+  expect((await repository.list())[0].hostAuthority.ownerKey).toBe(authority.ownerKey);
+  await reopenedGuard.close();
+  await expect(repository.delete(header, { ...upgrade, disposition: "D", hostAuthority: { ...authority, ownerKey: "forged-owner" } })).rejects.toThrow("authorized C/D");
+  await repository.delete(header, { ...upgrade, disposition: "D" }); expect(await repository.list()).toEqual([]);
+});
+
+
+it("actual old catalogue listing and legacy import reject the whole root after one journal upgrade", async () => {
+  const r = await root(), { repository, metadata } = await fixture(r);
+  const untouched = await repository.create({ id: "untouched-journal", cwd: "/fictional" }); await untouched.close();
+  await mkdir(join(r, "legacy"), { mode: 0o700 });
+  const source = join(r, "legacy", "fixture_fixture-session.jsonl");
+  await copyFile(new URL("./fixtures/legacy-v3.jsonl", import.meta.url), source);
+  const legacy = (await oldModules.listLegacySessions(r))[0], original = await readFile(source);
+  await repository.upgradeHeader(metadata, upgrade);
+  const guarded = await readFile(metadata.path), old = new oldModules.JsonlSessionRepo({ sessionsRoot: r });
+  await expect(old.list()).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+  await expect(old.importLegacy(legacy)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+  expect(await readFile(source)).toEqual(original); expect(await readFile(metadata.path)).toEqual(guarded);
+  await expect(lstat(`${source}.migrated`)).rejects.toMatchObject({ code: "ENOENT" });
+  // Catalogue refusal is root-wide, but it is NOT a universal direct-open barrier.
+  const direct = await old.open(untouched.metadata); await direct.close(); await old.close();
 });

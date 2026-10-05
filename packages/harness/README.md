@@ -198,7 +198,11 @@ It acquires the native writer and catalogue locks, copies only the upgraded
 header plus byte-identical native records to private staging, fsyncs, renames
 at the **same** journal path, and syncs publication directories. It refuses
 unsettled lifecycle, torn source bytes, contradictory ownership and unknown
-staging evidence instead of repairing or deleting them. Restart validates any
+staging evidence instead of repairing or deleting them. An in-process failure
+before publication removes its own stage only after a dev/inode identity match
+under the held locks, then syncs the directory. Authority fields use canonical
+key order, so equal references produce identical staged/publication bytes even
+when callers reorder their keys. Restart validates any
 abandoned stage as an exact prefix of the pinned source copy before rebuilding;
 an already-published matching header is synced idempotently. New coordinated
 journals use `create({ hostAuthority, assertOwned, ... })` and start guarded.
@@ -214,9 +218,14 @@ its owner to match their host owner.
 
 Old native binaries reject the upgraded header **before** record scan/torn-tail
 repair and direct deletion, even with an unterminated first v3 record. That
-technical protection is per upgraded journal, not universal root admission:
-untouched journals still use legacy headers, and arbitrary direct filesystem
-access is not fenced. Draining/stopping old binaries before upgrade, refusing
+direct-open/delete protection is per upgraded journal. Once **any** journal
+under a root is upgraded, an older binary's catalogue `list()` and legacy import
+reject the **whole root** when they encounter that header. This root-wide
+catalogue failure is intentional, not a partial listing or permission to discard
+unknown evidence. It is not universal root admission: a direct open using cached
+metadata for an untouched legacy journal is not technically excluded, and
+arbitrary direct filesystem access is not fenced. Draining/stopping old binaries
+before upgrade, refusing
 mixed writers and keeping the host claim remain operational prerequisites.
 Rollback means stopping writers and restoring consistent host/native backups;
 there is no downgrade/strip tool or permission to migrate real roots.
@@ -227,7 +236,11 @@ For C, the host assertion proves an eligible unreferenced current/retirement
 target; for D, it proves membership in the host's restartable whole-chain
 reset/retention transaction. P uses preserving detach, never deletion; U cannot
 target guarded host evidence. These primitives do not discover chain membership
-or authorize reset themselves. Unguarded/stateless/subagent behavior is unchanged.
+or authorize reset themselves. Any explicitly supplied deletion disposition is
+validated even for an unguarded journal: only C/D may delete, while P/U/unknown
+values reject. Unguarded/stateless/subagent callers passing no disposition keep
+their existing behavior. Memory repositories clone caller metadata and retain a
+private validated header so metadata mutation cannot forge or demote authority.
 
 `SessionStore.appendComposedCompaction` explicitly writes schemaVersion-3
 composed coverage, rejecting changed sources and predecessor-native tail copies.

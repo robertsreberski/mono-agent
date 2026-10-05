@@ -5,7 +5,7 @@ import { constants } from "node:fs";
 import { lstat, open, rename, unlink } from "node:fs/promises";
 import { JournalReader } from "./journal-reader.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
-import { sameHostJournalAuthority, validateHeaderUpgradeOptions } from "./header-authority.js";
+import { canonicalHostJournalAuthority, sameHostJournalAuthority, validateHeaderUpgradeOptions } from "./header-authority.js";
 const fail = () => { throw new Error("Native header upgrade evidence unavailable"); };
 const unchanged = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 const secure = (stat) => stat.isFile() && !(stat.mode & 0o077) && (!process.getuid || stat.uid === process.getuid());
@@ -25,10 +25,12 @@ async function readAll(handle, bytes, position) {
 /** @param {any} repo @param {any} metadata @param {any} options */
 export async function publishGuardedHeader(repo, metadata, options) {
   validateHeaderUpgradeOptions(options);
-  const authority = structuredClone(options.hostAuthority);
+  const authority = canonicalHostJournalAuthority(options.hostAuthority);
   await options.assertOwned(); await repo.assertDirectory();
   const reader = await JournalReader.open(metadata.path, repo.root);
-  let stage;
+  let stage, createdIdentity;
+  let publicationComplete = false;
+  const temporary = `${metadata.path}.upgrading`;
   try {
     /** @type {any} */ let header;
     let bodyOffset = 0;
@@ -63,7 +65,6 @@ export async function publishGuardedHeader(repo, metadata, options) {
       return { ...upgraded, path: metadata.path };
     }
     const headerBytes = Buffer.from(`${JSON.stringify(upgraded)}\n`);
-    const temporary = `${metadata.path}.upgrading`;
     const expectedSize = headerBytes.length + evidence.identity.size - bodyOffset;
     // An abandoned stage may be removed only when ALL of its bytes are an exact
     // prefix of this guarded header + this pinned source body. Unknown evidence
@@ -89,6 +90,7 @@ export async function publishGuardedHeader(repo, metadata, options) {
     }
     stage = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     const stageIdentity = await stage.stat();
+    createdIdentity = stageIdentity;
     await repo.onHeaderUpgradePhase("stage_created");
     await writeAll(stage, headerBytes); await repo.onHeaderUpgradePhase("header_written");
     for (let offset = bodyOffset; offset < evidence.identity.size;) {
@@ -103,11 +105,30 @@ export async function publishGuardedHeader(repo, metadata, options) {
     await assertSource();
     if (!unchanged(await stage.stat(), copied) || !unchanged(await lstat(temporary), copied)
       || stageIdentity.dev !== copied.dev || stageIdentity.ino !== copied.ino) fail();
-    await rename(temporary, metadata.path); await repo.onHeaderUpgradePhase("published");
+    await rename(temporary, metadata.path); publicationComplete = true;
+    await repo.onHeaderUpgradePhase("published");
     await repo.syncDirectories(); await repo.onHeaderUpgradePhase("publication_synced");
     await options.assertOwned(); await repo.assertDirectory();
     const published = await lstat(metadata.path);
     if (published.dev !== copied.dev || published.ino !== copied.ino || published.size !== copied.size || published.mtimeMs !== copied.mtimeMs || !secure(published)) fail();
     return { ...upgraded, path: metadata.path };
+  } catch (error) {
+    // Still under native writer/catalogue ownership: remove only the stage this
+    // invocation created. A lost host claim cannot authorize publication, but
+    // does not require preserving our unpublished duplicate copy. Replaced or
+    // pre-existing unknown evidence remains pinned. SIGKILL recovery is separate.
+    if (createdIdentity && !publicationComplete) {
+      try {
+        await repo.assertDirectory();
+        let current;
+        try { current = await lstat(temporary); } catch (failure) { if (failure.code !== "ENOENT") throw failure; }
+        if (current?.dev === createdIdentity.dev && current?.ino === createdIdentity.ino) {
+          await unlink(temporary); await repo.syncDirectories();
+        }
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Native header upgrade failed and stage cleanup is incomplete", { cause: error });
+      }
+    }
+    throw error;
   } finally { await stage?.close(); await reader.close(); }
 }

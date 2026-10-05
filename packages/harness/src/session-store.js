@@ -14,7 +14,7 @@ import { archiveLegacySession, listLegacySessions, readLegacySession, legacyJour
 import { assertEvidenceView } from "./evidence-view.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
-import { validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
+import { canonicalHostJournalAuthority, validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
 import { publishGuardedHeader } from "./header-upgrade.js";
 const sessionAuthorities = new WeakMap();
 const enabledVersion3Sessions = new WeakSet();
@@ -22,7 +22,13 @@ function acceptHeader(session, header) {
   validateJournalHeader(header);
   if (header.ownershipSchemaVersion === 2) sessionAuthorities.set(session, clone(header.hostAuthority));
 }
+function validateDeletionDisposition(options) {
+  if (options != null && "disposition" in Object(options) && !["C", "D"].includes(options.disposition)) {
+    throw new TypeError("Native deletion requires a C/D disposition when provided");
+  }
+}
 async function authorizeGuardedDeletion(header, options) {
+  validateDeletionDisposition(options);
   if (header.ownershipSchemaVersion !== 2) return;
   validateHeaderUpgradeOptions(options);
   if (!["C", "D"].includes(options.disposition) || !sameHostJournalAuthority(header.hostAuthority, options.hostAuthority)) {
@@ -325,38 +331,51 @@ async function initializeSession(session) {
 }
 
 export class MemorySessionRepo {
+  #headers = new Map();
   constructor() { this.sessions = new Map(); this.openSessions = new Map(); }
   /** @param {{id?: string, cwd?: string, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] */
   async create({ id = randomUUID(), cwd = process.cwd(), hostAuthority, assertOwned } = {}) {
     if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned(); }
     if (this.sessions.has(id)) throw new Error("Harness session already exists");
     const metadata = { id, cwd, createdAt: Date.now(), journalId: randomUUID(), ...(hostAuthority ? {
-      format: FORMAT, version: 2, ownershipSchemaVersion: 2, ownership: { kind: "unbound" }, initialHandle: { id }, hostAuthority: clone(hostAuthority),
+      format: FORMAT, version: 2, ownershipSchemaVersion: 2, ownership: { kind: "unbound" }, initialHandle: { id }, hostAuthority: canonicalHostJournalAuthority(hostAuthority),
     } : {}) };
-    const data = { metadata, records: [] };
+    const header = { format: FORMAT, version: 2, ownershipSchemaVersion: 1,
+      ownership: { kind: "unbound" }, initialHandle: { id }, ...clone(metadata) };
+    validateJournalHeader(header); this.#headers.set(id, clone(header));
+    const data = { metadata: clone(metadata), records: [] };
     this.sessions.set(id, data);
     const session = await this.open(metadata);
     await initializeSession(session);
     return session;
   }
   async open(metadata, { repair = true } = {}) {
-    if (this.openSessions.has(metadata.id)) throw new Error("Harness session is already open");
-    const data = this.sessions.get(metadata.id);
+    const id = metadata.id;
+    if (this.openSessions.has(id)) throw new Error("Harness session is already open");
+    const data = this.sessions.get(id);
     if (!data) throw new Error("Harness session not found");
-    const session = new SessionStore(data.metadata, data.records, null, (store) => {
-      data.records = clone(store.records); this.openSessions.delete(metadata.id);
+    const header = this.#headers.get(id);
+    validateJournalHeader(header);
+    const session = new SessionStore(this.#publicMetadata(header), data.records, null, (store) => {
+      data.records = clone(store.records); this.openSessions.delete(id);
     });
-    this.openSessions.set(metadata.id, session);
+    this.openSessions.set(id, session);
     try { if (repair) await repairInterruptedSession(session); return session; }
     catch (error) { await session.close().catch(() => {}); throw error; }
   }
-  async list() { return [...this.sessions.values()].map((s) => clone(s.metadata)); }
+  #publicMetadata(header) {
+    return header.ownershipSchemaVersion === 1
+      ? { id: header.id, cwd: header.cwd, createdAt: header.createdAt, journalId: header.journalId }
+      : clone(header);
+  }
+  async list() { return [...this.sessions.keys()].map((id) => this.#publicMetadata(this.#headers.get(id))); }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
   async delete(metadata, options = undefined) {
+    validateDeletionDisposition(options);
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is open");
     const stored = this.sessions.get(metadata.id);
-    if (stored) await authorizeGuardedDeletion(stored.metadata, options);
-    this.sessions.delete(metadata.id);
+    if (stored) await authorizeGuardedDeletion(this.#headers.get(metadata.id), options);
+    this.sessions.delete(metadata.id); this.#headers.delete(metadata.id);
   }
   async close() { for (const session of this.openSessions.values()) await session.close(); }
 }
@@ -419,7 +438,7 @@ export class JsonlSessionRepo {
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
         if (hostAuthority !== undefined) await assertOwned();
         await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: hostAuthority ? 2 : 1,
-          ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, ...(hostAuthority ? { hostAuthority: clone(hostAuthority) } : {}) }, true);
+          ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, ...(hostAuthority ? { hostAuthority: canonicalHostJournalAuthority(hostAuthority) } : {}) }, true);
         if (hostAuthority !== undefined) await assertOwned();
         published = true;
       });
@@ -852,6 +871,7 @@ export class JsonlSessionRepo {
   }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
   async removeOwned(metadata, options = undefined) {
+    validateDeletionDisposition(options);
     await this.assertDirectory();
     const paths = this.journalPaths(metadata);
     const files = await readdir(this.directory);
@@ -893,6 +913,7 @@ export class JsonlSessionRepo {
   }
   /** @param {string} id @param {import('./header-authority.js').HostJournalDeletion} [options] */
   async retireByHandle(id, options = undefined) {
+    validateDeletionDisposition(options);
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     this.retireHandle(id);
     try {
@@ -930,6 +951,7 @@ export class JsonlSessionRepo {
   finishRetirement(id) { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
   async retire(metadata, options = undefined) {
+    validateDeletionDisposition(options);
     const live = this.openSessions.get(metadata.id), authority = live && sessionAuthorities.get(live);
     if (authority) await authorizeGuardedDeletion({ ownershipSchemaVersion: 2, hostAuthority: authority }, options);
     this.retireHandle(metadata.id);
@@ -947,6 +969,7 @@ export class JsonlSessionRepo {
   }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
   async delete(metadata, options = undefined) {
+    validateDeletionDisposition(options);
     this.clearWarm(metadata.id);
     const locks = await this.ensureDirectory();
     if (metadata.legacy) {

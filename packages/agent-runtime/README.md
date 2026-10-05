@@ -180,7 +180,10 @@ cross-process canonical authority. Host switching/retention policy is unchanged.
 Coordinated opt-in v3 writers now also require the harness's durably published
 ownership-schema-2 native header and matching host authority reference; a caller
 acknowledgement alone cannot enable them. Older native readers/deleters reject
-that header before torn-tail repair or deletion. Guarded deletion needs the
+that header before torn-tail repair or deletion. After any journal is upgraded,
+older catalogue listing and legacy import fail closed for the entire root;
+this is intentional and does not make direct access to untouched journals safe.
+Guarded deletion needs the
 host's explicit C/D disposition and ownership assertion. No default runtime
 upgrades journals or enables switching; see the
 [harness header upgrade contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).

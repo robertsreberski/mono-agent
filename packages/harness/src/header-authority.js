@@ -13,6 +13,13 @@ export function validateHostJournalAuthority(value) {
     || !id(value.ownerKey) || !id(value.historyBucket)) throw new TypeError("Invalid host journal upgrade authority");
 }
 
+/** Canonical order for byte-identical staging/publication. @param {any} value */
+export function canonicalHostJournalAuthority(value) {
+  validateHostJournalAuthority(value);
+  return { version: value.version, canonicalVersion: value.canonicalVersion, rootId: value.rootId,
+    authorityId: value.authorityId, ownerKey: value.ownerKey, historyBucket: value.historyBucket };
+}
+
 /** Compare fixed fields; caller property order is irrelevant. @param {any} a @param {any} b */
 export function sameHostJournalAuthority(a, b) {
   validateHostJournalAuthority(a); validateHostJournalAuthority(b);

@@ -5,6 +5,10 @@
 - Require a durably published, host-authorized native header before opt-in v3
   writes. Reject old native readers and deletion before torn-tail repair on
   upgraded journals; preserve record bytes, paths and standalone defaults.
+  Clean up identity-matched failed upgrade stages and canonicalize authority
+  bytes. Validate explicit C/D deletion dispositions on all journals and prevent
+  memory metadata from forging or demoting header authority. Fail older catalogue
+  listing and legacy import closed for roots containing an upgraded journal.
   Require explicit host C/D authority for guarded deletion. Keep host switching
   disabled and require stopped older binaries and backup restoration for rollback.
 
