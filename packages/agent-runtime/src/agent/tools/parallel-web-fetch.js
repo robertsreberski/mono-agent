@@ -2,6 +2,7 @@
 import { callParallelMcp, parallelFailure, parallelStructuredContent, PARALLEL_MCP_URL } from "./parallel-mcp.js";
 import { guardedSearch } from "./web-search-providers/shared.js";
 import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
+import { assertWebReadableEvidence } from "./web-readable-evidence.js";
 import { markdownToText } from "./web-document-extractor.js";
 
 export function unsupportedParallelFetchOption(params) {
@@ -38,8 +39,8 @@ export async function fetchParallelDocument(url, params, options) {
           || !Array.isArray(entry.excerpts) || entry.excerpts.some((text) => typeof text !== "string")) throw new Error("Malformed Parallel extraction result.");
         const excerptsOnly = !entry.full_content;
         const markdown = excerptsOnly ? entry.excerpts.join("\n\n") : entry.full_content;
-        if (!markdown.trim()) throw new Error("Parallel returned no readable content.");
         assertNoWebAccessInterstitial({ url: url.href, text: markdown });
+        assertWebReadableEvidence({ kind: "remote-markdown", text: markdown, url: url.href, title: entry.title });
         const body = params.format === "text" ? markdownToText(markdown) : markdown;
         const outcome = { status: "ok", code: "ok", backend: "parallel", retryable: false, attempts: 1,
           cacheHit: false, durationMs: Date.now() - started, bytes: Buffer.byteLength(body, "utf8"),

@@ -1,4 +1,5 @@
 import { fetchParallelDocument, unsupportedParallelFetchOption } from "./parallel-web-fetch.js";
+import { assertWebReadableEvidence } from "./web-readable-evidence.js";
 import { localEndpointError } from "./local/config.js";
 import { parallelSessionId } from "./parallel-mcp.js";
 import { withWebDeadline, coordinatedWebRequest, webRequestFailure } from "./web-request.js";
@@ -175,6 +176,7 @@ async function performFetch(
       }));
       const rendered = normalizeBrowserResult(renderedResult.rendered, parsed.href);
       assertNoWebAccessInterstitial({ url: rendered.finalUrl, text: rendered.text });
+      assertWebReadableEvidence({ kind: "rendered", text: rendered.text, url: rendered.finalUrl, title: rendered.title });
       const renderedBody = outputFormat === "text" ? markdownToText(rendered.text) : rendered.text;
       const document = {
         body: renderedBody,
@@ -192,7 +194,7 @@ async function performFetch(
       return documentOnly ? { text: "", error: false, outcome: document.outcome, document }
         : formatWebFetchDocument(document, { start_line, max_lines, max_output_chars: maxChars, format: requestedFormat, render, focus, include_links }, resolvedCtx);
     } catch (error) {
-      const code = ["access_challenge", "authentication_required", "network_denied"].includes(error?.code)
+      const code = ["access_challenge", "authentication_required", "network_denied", "unusable_content"].includes(error?.code)
         ? error.code : "browser_render_failed";
       return failure(`Error rendering URL: ${error?.message || String(error)}`, code, startedAt, {
         attempts: 1, backend: "agent-browser", rendered: false, renderFailed: true,
@@ -287,6 +289,7 @@ async function performFetch(
         url: finalUrl,
         text: decodedForExtraction.text,
         statusCode: response.status,
+        headers: response.headers,
       });
     } catch (error) {
       if (["access_challenge", "authentication_required"].includes(error?.code)) {
@@ -304,7 +307,7 @@ async function performFetch(
     }
   } else {
     try {
-      assertNoWebAccessInterstitial({ url: finalUrl, statusCode: response.status });
+      assertNoWebAccessInterstitial({ url: finalUrl, statusCode: response.status, headers: response.headers });
     } catch (error) {
       return failure(`Error fetching URL: ${error.message}`, error.code, startedAt, {
         attempts,
@@ -343,6 +346,7 @@ async function performFetch(
 
   let extracted;
   let decoding;
+  let htmlExtractionFailed = false;
   try {
     decoding = decodedForExtraction ?? decodeWebBytes(bytes, contentType, responseKind);
     extracted = await extractWebDocument(bytes, {
@@ -351,21 +355,40 @@ async function performFetch(
       url: finalUrl,
     });
   } catch (error) {
-    return failure(`Error extracting URL: ${error?.message || String(error)}`, error?.code || "extraction_failed", startedAt, {
-      attempts,
-      statusCode: response.status,
-      bytes: responseBytes,
-      backend: "http",
-      redirectCount,
-      browserRecommended: requestedRender === "auto" && responseKind === "html",
-      contentKind: responseKind,
-      ...(decoding === undefined ? {} : {
-        charset: decoding.charset,
-        charsetSource: decoding.charsetSource,
-        hadDecodingReplacement: decoding.hadDecodingReplacement,
-      }),
-      ...(Array.isArray(error?.parserFailures) ? { parserFailures: error.parserFailures.slice(0, 3) } : {}),
-    });
+    // Total HTML parser failure means no evidence, not a terminal parser policy
+    // error. Auto can try the browser; never can advance the selected chain.
+    // Charset/size failures and non-HTML parse errors keep their original codes.
+    if (responseKind === "html" && error?.code === "extraction_failed") {
+      htmlExtractionFailed = true;
+      extracted = { body: "", readableText: "", title: "", extractionStage: "failed",
+        charset: decoding?.charset, charsetSource: decoding?.charsetSource,
+        hadDecodingReplacement: decoding?.hadDecodingReplacement,
+        parserFailureCount: error.parserFailures?.length ?? 0, parserFailures: error.parserFailures ?? [] };
+      if (requestedRender === "never") {
+        return failure(`Error extracting URL: ${error.message}`, "unusable_content", startedAt, {
+          attempts, statusCode: response.status, bytes: responseBytes, backend: "http", redirectCount,
+          contentKind: responseKind, parserFailures: extracted.parserFailures,
+          charset: decoding?.charset, charsetSource: decoding?.charsetSource,
+          hadDecodingReplacement: decoding?.hadDecodingReplacement,
+        });
+      }
+    } else {
+      return failure(`Error extracting URL: ${error?.message || String(error)}`, error?.code || "extraction_failed", startedAt, {
+        attempts,
+        statusCode: response.status,
+        bytes: responseBytes,
+        backend: "http",
+        redirectCount,
+        browserRecommended: requestedRender === "auto" && responseKind === "html",
+        contentKind: responseKind,
+        ...(decoding === undefined ? {} : {
+          charset: decoding.charset,
+          charsetSource: decoding.charsetSource,
+          hadDecodingReplacement: decoding.hadDecodingReplacement,
+        }),
+        ...(Array.isArray(error?.parserFailures) ? { parserFailures: error.parserFailures.slice(0, 3) } : {}),
+      });
+    }
   }
 
   try {
@@ -387,7 +410,7 @@ async function performFetch(
   const shouldRender = responseKind === "html"
     && (
       requestedRender === "always"
-      || (requestedRender === "auto" && shouldAutoRender(extracted.readableText, decodedText(bytes, contentType, responseKind)))
+      || (requestedRender === "auto" && (htmlExtractionFailed || shouldAutoRender(extracted.readableText, decodedText(bytes, contentType, responseKind))))
     );
   let backend = "http";
   let renderFailed = false;
@@ -410,7 +433,7 @@ async function performFetch(
       extracted = {
         body: outputFormat === "text" ? markdownToText(rendered.text) : rendered.text,
         readableText: markdownToText(rendered.text),
-        title: extracted.title,
+        title: rendered.title || extracted.title,
         charset: extracted.charset,
         charsetSource: extracted.charsetSource,
         hadDecodingReplacement: extracted.hadDecodingReplacement,
@@ -440,6 +463,15 @@ async function performFetch(
 
   if (responseKind === "html" && backend === "http" && shouldAutoRender(extracted.readableText, decodedText(bytes, contentType, responseKind))) {
     return failure("Error: Page contains an unusable loading shell; no readable evidence was retrieved.", "unusable_content", startedAt, { backend, rendered: false, renderFailed, browserRecommended: true });
+  }
+  try {
+    assertWebReadableEvidence({ kind: backend === "agent-browser" ? "rendered" : responseKind,
+      text: extracted.readableText, url: finalUrl, title: extracted.title });
+  } catch (error) {
+    return failure(`Error: ${error.message}`, error.code, startedAt, {
+      attempts, statusCode: response.status, bytes: responseBytes, backend, redirectCount,
+      rendered: backend === "agent-browser", renderFailed, parserFailures: extracted.parserFailures,
+    });
   }
   const body = extracted.body || "(no readable content)";
   // Bounded citation/main-content links come from the already-downloaded static
@@ -628,7 +660,7 @@ function isTransientResponse(response, bytes, url) {
   const contentType = response.headers.get("content-type") || "";
   let text = "";
   try { text = decodeWebBytes(bytes.subarray(0, 32 * 1024), contentType).text; } catch { /* normal decoding error follows */ }
-  return !classifyWebAccessInterstitial({ url, text, statusCode: response.status });
+  return !classifyWebAccessInterstitial({ url, text, statusCode: response.status, headers: response.headers });
 }
 
 function retryDelayForResponse(response, fallback) {

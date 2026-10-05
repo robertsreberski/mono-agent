@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix `WebFetch` to reject access challenges and empty URL/title-only evidence
+  across extraction backends, and let automatic rendering recover total HTML
+  parser failures without bypassing rate limits or access controls.
+
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 
