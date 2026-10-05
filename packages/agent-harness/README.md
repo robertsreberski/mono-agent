@@ -135,7 +135,13 @@ or arbitrary controllers. The private codec separates execution, compaction and
 retirement fences at1KiB and validates bounded16MiB payloads/commit receipts.
 Canonical writes use v3, with backward reads of v1/v2. A bounded last-turn
 receipt survives message eviction and native epoch rotation; explicit reset
-clears it. Reads neither migrate files nor invoke runtime recovery.
+clears it. Explicit physical/logical reset also removes all matching pending
+payload generations (including dirty-only and orphan-only buckets) while
+preserving siblings. A pending-turn reset requires fail-closed provider
+retirement; post-rename cleanup failures remain visible in store diagnostics.
+Malformed or unstable orphan evidence is preserved; logical reset fails closed
+when ownership cannot be attributed safely. Reads neither migrate files nor
+invoke runtime recovery.
 These primitives alone do **not** enable configured-host automatic reconciliation
 or canonical adoption; the owner-held transaction wiring is separate.
 

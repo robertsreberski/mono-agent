@@ -8,7 +8,8 @@
   acknowledgement from runtime extensions. Automatic P2b host adoption is not
   enabled by these preparatory primitives alone. Write canonical history v3
   while retaining v1/v2 reads, and preserve bounded turn receipts across message
-  retention and native epoch rotation; explicit reset clears the receipt.
+  retention and native epoch rotation; explicit reset clears the receipt and
+  all matching pending generations without deleting sibling owners.
 
 
 - Add explicitly opted-in native turn bindings, minimal final-result seals and

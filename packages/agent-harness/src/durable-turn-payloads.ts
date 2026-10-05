@@ -120,23 +120,33 @@ export class PendingTurnPayloadStore {
       await handle.close();
     }
   }
-  async read(pointer: PendingTurnPointer, expected: PendingTurnIdentity): Promise<PendingTurnPayload> {
-    validateTurnPointer(pointer); const coordinates = pendingCoordinates(expected);
+  /** Secure, read-only discovery of orphan identity for an explicit logical reset.
+   * The filename must agree with the parsed payload; discovery grants no owner. */
+  async inspect(entry: Pick<PendingPayloadEntry, "name">, expectedDigest?: string): Promise<{ readonly payload: PendingTurnPayload; readonly pointer: PendingTurnPointer }> {
+    const match = PENDING_FILE_PATTERN.exec(entry.name); if (!match) throw new Error("Unsupported pending turn artifact");
     const directory = await this.ensureDirectory(false); if (!directory) throw new Error("Pending payload is absent");
-    const path = join(this.directory, pendingPayloadName(coordinates.conversationKey, coordinates.runIdDigest, pointer.generation));
-    const before = await lstat(path); secure(before, false); if (before.size > MAX_PENDING_TURN_BYTES) throw new RangeError("Pending turn payload exceeds 16 MiB");
+    const path = join(this.directory, entry.name), before = await lstat(path); secure(before, false);
+    if (before.size > MAX_PENDING_TURN_BYTES) throw new RangeError("Pending turn payload exceeds 16 MiB");
     const handle = await open(path, constants.O_RDONLY | noFollow());
     try {
       const opened = await handle.stat(); secure(opened, false); if (!unchanged(before, opened)) unavailable();
       const bytes = await handle.readFile(); const after = await handle.stat(), named = await lstat(path);
       secure(after, false); secure(named, false); if (!unchanged(opened, after) || !unchanged(after, named) || bytes.byteLength !== after.size) unavailable();
-      if (sha256(bytes) !== pointer.sha256) throw new Error("Pending turn payload digest mismatch");
-      const value = parsePendingTurnPayload(bytes);
-      for (const key of ["purpose", "ownerKey", "historyBucket", "turnId", "handleId", "modelKey", "baseRevision", "fenceDigest"] as const) {
-        if (value.identity[key] !== expected[key]) throw new Error("Pending turn payload owner/binding mismatch");
-      }
-      await this.assertDirectory(directory); return value;
+      if (expectedDigest !== undefined && sha256(bytes) !== expectedDigest) throw new Error("Pending turn payload digest mismatch");
+      const payload = parsePendingTurnPayload(bytes), coordinates = pendingCoordinates(payload.identity);
+      if (coordinates.conversationKey !== match[1] || coordinates.runIdDigest !== match[2]) throw new Error("Pending payload filename/identity mismatch");
+      await this.assertDirectory(directory);
+      return { payload, pointer: { generation: match[3]!, sha256: sha256(bytes) } };
     } finally { await handle.close(); }
+  }
+  async read(pointer: PendingTurnPointer, expected: PendingTurnIdentity): Promise<PendingTurnPayload> {
+    validateTurnPointer(pointer); const coordinates = pendingCoordinates(expected);
+    const entry = await this.inspect({ name: pendingPayloadName(coordinates.conversationKey, coordinates.runIdDigest, pointer.generation) }, pointer.sha256);
+    if (entry.pointer.sha256 !== pointer.sha256) throw new Error("Pending turn payload digest mismatch");
+    for (const key of ["purpose", "ownerKey", "historyBucket", "turnId", "handleId", "modelKey", "baseRevision", "fenceDigest"] as const) {
+      if (entry.payload.identity[key] !== expected[key]) throw new Error("Pending turn payload owner/binding mismatch");
+    }
+    return entry.payload;
   }
   async collectUnreferenced(coordinates: PendingPayloadCoordinates, keep: readonly PendingTurnPointer[], owner: PendingPayloadOwner): Promise<number> {
     for (const pointer of keep) validateTurnPointer(pointer);

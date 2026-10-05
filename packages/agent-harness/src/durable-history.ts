@@ -173,12 +173,14 @@ interface DirtyFence {
 }
 
 interface HeldConversation {
+  assertOwned(): Promise<void>;
   readonly marker: ActiveMarker;
   readonly rootIdentity: DirectoryIdentity;
   release(): Promise<void>;
 }
 
 interface HeldLogicalConversation {
+  assertOwned(): Promise<void>;
   readonly logicalConversationId: string;
   readonly rootIdentity: DirectoryIdentity;
   release(): Promise<void>;
@@ -331,14 +333,20 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         heldExact = await this.acquireExactConversationClaim(logicalId);
       }
       const entries = await this.scanCommittedEntries(rootIdentity, true);
-      const conversationIds: string[] = [];
+      const conversationIds = new Set<string>();
       for (const entry of entries) {
         const record = await this.readCommittedEntryRecord(entry, rootIdentity);
         if (belongsToLogicalConversation(record.conversationId, logicalId)) {
-          conversationIds.push(record.conversationId);
+          conversationIds.add(record.conversationId);
         }
       }
-      const orderedIds = conversationIds.sort();
+      for (const entry of await this.pendingPayloads(rootIdentity).list()) {
+        const { payload } = await this.pendingPayloads(rootIdentity).inspect(entry);
+        if (belongsToLogicalConversation(payload.identity.historyBucket, logicalId)) {
+          conversationIds.add(payload.identity.historyBucket);
+        }
+      }
+      const orderedIds = [...conversationIds].sort();
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
       }
@@ -346,7 +354,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (conversationId === logicalId) continue;
         await this.resetPhysicalConversation(conversationId, heldLogical);
       }
-      await this.resetDirtyFencesForLogicalConversation(logicalId);
+      await this.resetDirtyFencesForLogicalConversation(logicalId, heldLogical);
     } finally {
       try {
         if (heldExact !== undefined) {
@@ -358,7 +366,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async resetDirtyFencesForLogicalConversation(logicalConversationId: string): Promise<void> {
+  private async resetDirtyFencesForLogicalConversation(logicalConversationId: string, held: HeldLogicalConversation): Promise<void> {
     const rootIdentity = await this.ensureRoot();
     const locksIdentity = await this.ensureLocksRoot();
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
@@ -376,7 +384,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             ? deriveProviderSessionId(logicalConversationId, fence.epoch)
             : undefined);
         if (providerSessionId === undefined) continue;
-        matching.push({ fence, providerSessionId });
+        if (fence.kind !== undefined && this.retireProviderSession === undefined) {
+          throw new Error("Reset of a pending native turn requires fail-closed provider retirement.");
+        }
+        matching.push({ fence: await this.authorizeFenceReset(fence, locksIdentity), providerSessionId });
       }
       // Every fence remains a crash-recovery journal until all matching provider
       // retirements succeed. A failure therefore leaves the reset retryable and
@@ -385,6 +396,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // so an unrelated maintenance sweep cannot consume the same journal.
       await this.retireProviderSessions(matching.map((entry) => ({ providerSessionId: entry.providerSessionId, ...modelBinding(entry.fence.modelKey) })));
       for (const { fence } of matching) {
+        await this.removePendingConversation(fence.conversationKey, rootIdentity, () => held.assertOwned());
         await rm(fence.path);
       }
       if (matching.length > 0) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
@@ -410,13 +422,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let prepared: PreparedHistoryAppend;
     try {
       const existing = await this.readRecord(conversationId, rootIdentity);
-      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
+      if (this.retireProviderSession === undefined
+        && (await this.pendingPayloads(rootIdentity).list()).some((entry) => entry.conversationKey === historyKey(conversationId))) {
+        throw new Error("Reset of pending turn payloads requires fail-closed provider retirement.");
+      }
+      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity, true);
       prepared = await this.prepareRecord({
         version: STORE_VERSION,
         conversationId,
         messages: [],
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
-      }, held, rootIdentity, undefined, retirementFence);
+      }, held, rootIdentity, undefined, retirementFence,
+      async () => await this.removePendingConversation(historyKey(conversationId), rootIdentity, () => held.assertOwned()));
     } catch (error) {
       await this.releaseConversation(held, rootIdentity).catch(() => undefined);
       throw error;
@@ -802,6 +819,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     rootIdentity: DirectoryIdentity,
     onSettled?: () => void,
     dirtyFence?: DirtyFence,
+    afterDurableCommit?: () => Promise<void>,
   ): Promise<PreparedHistoryAppend> {
     const projected = this.projectRecord(record);
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
@@ -812,7 +830,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // pass the same staged-byte reservation before this temp becomes visible.
       stage = await this.writeStage(record, rootIdentity);
       await this.validateRetentionReservation(rootIdentity, [stage]);
-      return this.createPreparedAppend(stage, rootIdentity, held, onSettled, dirtyFence);
+      return this.createPreparedAppend(stage, rootIdentity, held, onSettled, dirtyFence, afterDurableCommit);
     } catch (error) {
       if (stage !== undefined) {
         await rm(stage.temporaryPath, { force: true }).catch(() => undefined);
@@ -947,6 +965,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     held: HeldConversation,
     onSettled?: () => void,
     dirtyFence?: DirtyFence,
+    afterDurableCommit?: () => Promise<void>,
   ): PreparedHistoryAppend {
     let state: "prepared" | "committed" | "aborted" = "prepared";
     let operation = Promise.resolve();
@@ -981,6 +1000,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             // the crash fence is removed. If cleanup cannot be made durable,
             // restore the visible fence and record a diagnostic so the next
             // turn rotates instead of trusting ambiguous provider state.
+            await afterDurableCommit?.();
             if (dirtyFence !== undefined) await this.removeDirtyFenceAfterCommit(dirtyFence);
             const committed = await lstat(join(this.root, stage.destinationName));
             assertSecureHistoryFile(committed, join(this.root, stage.destinationName));
@@ -1379,8 +1399,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       return {
         marker,
         rootIdentity,
+        assertOwned: async (): Promise<void> => {
+          if (released) throw new Error("History conversation ownership has been released.");
+          await heldLogical.assertOwned();
+          await assertDirectoryIdentity(this.root, rootIdentity!);
+          const current = await readActiveMarker(marker!.path);
+          if (current.token !== marker!.token || current.conversationKey !== conversationKey || current.pid !== process.pid) {
+            throw new Error("History conversation ownership changed.");
+          }
+        },
         release: async (): Promise<void> => {
           if (released) return;
+          released = true;
           try {
             await legacyLock?.release();
           } finally {
@@ -1391,7 +1421,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               if (ownsLogicalFence) await heldLogical.release();
             }
           }
-          released = true;
         },
       };
     } catch (error) {
@@ -1435,14 +1464,19 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       return {
         logicalConversationId,
         rootIdentity,
+        assertOwned: async (): Promise<void> => {
+          if (released) throw new Error("History logical ownership has been released.");
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+        },
         release: async (): Promise<void> => {
           if (released) return;
+          released = true;
           try {
             await lock.release();
           } finally {
             releaseProcess();
           }
-          released = true;
         },
       };
     } catch (error) {
@@ -1467,8 +1501,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       rootIdentity,
       release: async (): Promise<void> => {
         if (released) return;
-        await lock.release();
         released = true;
+        await lock.release();
       },
     };
   }
@@ -1790,14 +1824,19 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async prepareProviderRetirement(
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
+    reset = false,
   ): Promise<DirtyFence | undefined> {
     const locksIdentity = await this.ensureLocksRoot();
-    requireSettledFence(await this.findDirtyFence(historyKey(record.conversationId), locksIdentity));
+    const existing = await this.findDirtyFence(historyKey(record.conversationId), locksIdentity);
+    if (!reset) requireSettledFence(existing);
+    if (reset && existing?.kind !== undefined && this.retireProviderSession === undefined) {
+      throw new Error("Reset of a pending native turn requires fail-closed provider retirement.");
+    }
     if (this.retireProviderSession === undefined) return undefined;
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let fence: DirtyFence | undefined;
     try {
-      fence = await this.ensureRetirementFence(record, rootIdentity, locksIdentity);
+      fence = await this.ensureRetirementFence(record, rootIdentity, locksIdentity, reset);
     } finally {
       await releaseRoot();
     }
@@ -1809,11 +1848,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
     locksIdentity: DirectoryIdentity,
+    reset = false,
   ): Promise<DirtyFence | undefined> {
     const conversationKey = historyKey(record.conversationId);
     const existing = await this.findDirtyFence(conversationKey, locksIdentity);
-    requireSettledFence(existing);
-    if (existing !== undefined) return existing;
+    if (!reset) requireSettledFence(existing);
+    if (existing !== undefined) return reset ? await this.authorizeFenceReset(existing, locksIdentity) : existing;
     if (record.providerSession === undefined) return undefined;
     await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
     const providerSessionId = deriveProviderSessionId(record.conversationId, record.providerSession.epoch);
@@ -1826,6 +1866,27 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       revision: record.providerSession.revision ?? 0,
       runIdDigest: digestRunId(`history-retirement-${randomBytes(16).toString("hex")}`),
     }, locksIdentity);
+  }
+
+  private async authorizeFenceReset(fence: DirtyFence, locksIdentity: DirectoryIdentity): Promise<DirtyFence> {
+    if (fence.kind !== "execution" && fence.kind !== "compaction") return fence;
+    return await this.publishDirtyFence({
+      kind: "retirement", conversationKey: fence.conversationKey, logicalConversationKey: fence.logicalConversationKey!,
+      epoch: fence.epoch, providerSessionId: fence.providerSessionId!, modelKey: fence.modelKey!,
+      revision: fence.revision, runIdDigest: fence.runIdDigest,
+    }, locksIdentity);
+  }
+
+  private async removePendingConversation(conversationKey: string, rootIdentity: DirectoryIdentity,
+    assertOwned: () => Promise<void>): Promise<void> {
+    const payloads = this.pendingPayloads(rootIdentity);
+    const runs = new Set((await payloads.list()).filter((entry) => entry.conversationKey === conversationKey).map((entry) => entry.runIdDigest));
+    for (const runIdDigest of runs) {
+      await payloads.collectUnreferenced({ conversationKey, runIdDigest }, [], {
+        assertOwned,
+        reserve: async () => { throw new Error("Reset cleanup cannot publish pending payloads."); },
+      });
+    }
   }
 
   private providerSessionsForRetirement(
