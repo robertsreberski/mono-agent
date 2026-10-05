@@ -213,7 +213,7 @@ it("manual host cancellation survives release and overrides a completed native c
 }, 60_000);
 
 for (const { crash, name } of [
-  { crash: "live-input", name: "built host persists live admissions before native consumption and excludes private wake fields after a crash" },
+  { crash: "live-input", name: "built host recovers consumed live inputs once and excludes private wake fields after a crash" },
   { crash: "live-prompt-override", name: "built host matches overridden live-input guidance digests after a crash" },
 ]) it(name, async () => {
   const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });

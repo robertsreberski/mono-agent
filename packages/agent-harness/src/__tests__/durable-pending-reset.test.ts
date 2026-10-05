@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, writeFile, lstat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile, lstat, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -165,4 +165,42 @@ it("resets a validated logical owner while preserving an unrelated unattributabl
   await expect(readFile(own.path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await readFile(otherPath)).toEqual(before); expect(await f.payloads.list()).toHaveLength(1);
   expect(f.retireProviderSession).toHaveBeenCalledOnce();
+});
+
+
+async function tearInitialTemp(f: Awaited<ReturnType<typeof fixture>>, bucket: string, turnId: string): Promise<string> {
+  const pending = await f.publish(bucket, turnId, "execution", false);
+  const name = `${pending.coordinates.conversationKey}.${pending.coordinates.runIdDigest}.${pending.pointer.generation}.json`;
+  const path = join(f.root, ".pending-turns", `${name}.tmp`);
+  await rename(join(f.root, ".pending-turns", name), path);
+  await writeFile(path, '{"version":1,"inputs":[{"persistText":"Fictional torn private input', { mode: 0o600 });
+  return path;
+}
+
+it.each(["base", "validated-rollover"])("logical reset removes torn initial temps at known %s coordinates", async (kind) => {
+  const f = await fixture(), bucket = kind === "base" ? "fictional-logical" : "fictional-logical#2026-01-01";
+  const torn = await tearInitialTemp(f, bucket, "fictional-torn-turn");
+  if (kind === "validated-rollover") await f.publish(bucket, "fictional-valid-orphan", "execution", false);
+  const unrelated = await tearInitialTemp(f, "fictional-unrelated#2026-01-01", "fictional-unrelated-torn");
+  const preserved = await readFile(unrelated);
+  await f.store.resetLogicalConversation("fictional-logical");
+  await expect(readFile(torn)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(unrelated)).toEqual(preserved);
+  expect(await f.payloads.list()).toHaveLength(1);
+  expect(await f.store.stats()).toMatchObject({ postCommitMaintenanceFailures: 1,
+    lastPostCommitMaintenanceError: expect.stringContaining("Logical reset preserved 1 unattributable pending entries") });
+});
+
+it("logical reset diagnoses an unbound torn first-turn rollover temp and exact reset clears its private prefix", async () => {
+  const f = await fixture(), bucket = "fictional-logical#2026-01-01";
+  const torn = await tearInitialTemp(f, bucket, "fictional-first-turn"), original = await readFile(torn);
+  const key = pendingCoordinates({ historyBucket: bucket, turnId: "fictional-first-turn" }).conversationKey;
+  await expect(readFile(join(f.root, `${key}.history.json`))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readFile(join(f.root, ".locks", `${key}.dirty.json`))).rejects.toMatchObject({ code: "ENOENT" });
+  await f.store.resetLogicalConversation("fictional-logical");
+  expect(await readFile(torn)).toEqual(original); expect(await f.store.load(bucket)).toEqual([]);
+  expect(await f.store.stats()).toMatchObject({ postCommitMaintenanceFailures: 1,
+    lastPostCommitMaintenanceError: expect.stringContaining("Logical reset preserved 1 unattributable pending entries") });
+  await f.store.reset(bucket); await expect(readFile(torn)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await f.payloads.list()).toEqual([]);
 });

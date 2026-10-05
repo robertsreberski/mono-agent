@@ -352,6 +352,11 @@ epoch. An advanced protected native revision never silently creates a missing
 empty warm transcript. Interrupted work waits for a new message; compaction
 recovery changes metadata/receipt, not canonical answers or new summaries.
 
+Logical reset clears torn entries at its known base/validated rollover-child
+keys. Unattributable remnants at unknown hashed coordinates remain preserved;
+their count is reported in store maintenance diagnostics at reset completion.
+Use exact physical reset to clear a never-bound child whose bucket ID is known.
+
 Immutable private pending generations publish through temp write, file fsync,
 rename and directory fsync before fence replacement. They are capped at 16 MiB,
 with 1 KiB fences;

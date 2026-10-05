@@ -356,6 +356,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           conversationIds.add(record.conversationId);
         }
       }
+      const unattributableNames = new Set<string>();
       for (const entry of await this.pendingPayloads(rootIdentity).list()) {
         try {
           const { payload } = await this.pendingPayloads(rootIdentity).inspect(entry);
@@ -366,6 +367,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // validated logical fence coordinates can still clear known owners.
           await assertDirectoryIdentity(this.root, rootIdentity);
           await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), await this.ensureLocksRoot());
+          unattributableNames.add(entry.name);
+          // Filename coordinates are sufficient for the exact logical base.
+          // Validated child identities below are reset under their own claims,
+          // which also clear every torn generation at those known coordinates.
+          if (entry.conversationKey === historyKey(logicalId)) conversationIds.add(logicalId);
         }
       }
       const orderedIds = [...conversationIds].sort();
@@ -377,6 +383,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await this.resetPhysicalConversation(conversationId, heldLogical);
       }
       await this.resetDirtyFencesForLogicalConversation(logicalId, heldLogical);
+      const releaseDiagnostics = await this.acquireRootTransaction(rootIdentity);
+      try {
+        await heldLogical.assertOwned();
+        const preserved = (await this.pendingPayloads(rootIdentity).list()).filter((entry) => unattributableNames.has(entry.name)).length;
+        if (preserved > 0) recordPostCommitMaintenanceFailure(this.root, new Error(
+          `Logical reset preserved ${preserved} unattributable pending entries; exact-owner reset is required to clear unknown coordinates.`));
+      } finally { await releaseDiagnostics(); }
     } finally {
       try {
         if (heldExact !== undefined) {
@@ -933,15 +946,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
       const fences = new Map((await this.scanDirtyFences(locksIdentity, true)).map((fence) => [fence.conversationKey, fence]));
-      const owners = new Map<string, { readonly conversationKey: string; readonly mtimeMs: number; readonly name: string }>();
+      const owners = new Map<string, { readonly conversationKey: string; mtimeMs: number; readonly entries: Array<{ readonly name: string; readonly mtimeMs: number }> }>();
       for (const entry of await this.pendingPayloads(rootIdentity).list()) {
         if (entry.conversationKey === excludedKey || active.has(entry.conversationKey)) continue;
         const fence = fences.get(entry.conversationKey);
         if (fence && fence.kind !== "execution" && fence.kind !== "compaction") continue;
         if (fence?.payload && entry.generation !== fence.payload.generation) continue;
         const prior = owners.get(entry.conversationKey);
-        if (!prior || entry.mtimeMs < prior.mtimeMs) owners.set(entry.conversationKey,
-          { conversationKey: entry.conversationKey, mtimeMs: fence?.mtimeMs ?? entry.mtimeMs, name: entry.name });
+        if (prior) {
+          prior.entries.push({ name: entry.name, mtimeMs: entry.mtimeMs });
+          prior.mtimeMs = Math.min(prior.mtimeMs, fence?.mtimeMs ?? entry.mtimeMs);
+        } else owners.set(entry.conversationKey, { conversationKey: entry.conversationKey,
+          mtimeMs: fence?.mtimeMs ?? entry.mtimeMs, entries: [{ name: entry.name, mtimeMs: entry.mtimeMs }] });
       }
       candidates = [...owners.values()].sort((a, b) => a.mtimeMs - b.mtimeMs || a.conversationKey.localeCompare(b.conversationKey))
         .filter((entry) => !cursor || entry.mtimeMs > cursor.mtimeMs || (entry.mtimeMs === cursor.mtimeMs && entry.conversationKey > cursor.conversationKey));
@@ -952,7 +968,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       nextCursor = { mtimeMs: candidate.mtimeMs, conversationKey: candidate.conversationKey };
       let held: HeldConversation | undefined;
       try {
-        const { payload } = await this.pendingPayloads(rootIdentity).inspect(candidate);
+        let payload: PendingTurnPayload | undefined, inspectionError: unknown;
+        for (const entry of candidate.entries.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name))) {
+          try { payload = (await this.pendingPayloads(rootIdentity).inspect(entry)).payload; break; }
+          catch (error) {
+            await assertDirectoryIdentity(this.root, rootIdentity);
+            await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+            inspectionError = error;
+          }
+        }
+        if (!payload) throw inspectionError ?? new Error("Pending owner has no attributable generation.");
         // Read-only discovery is not ownership. Try exact/logical rows without
         // waiting for a foreign owner, even if it appeared after our snapshot.
         held = await this.acquireConversation(normalizeConversationId(payload.identity.historyBucket), undefined, undefined, true);

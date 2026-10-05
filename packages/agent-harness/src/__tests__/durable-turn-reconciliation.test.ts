@@ -1,22 +1,31 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, lstat, writeFile, rename, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, lstat, writeFile, rename, mkdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
 import type { DurableHistoryStoreOptions } from "../durable-history.js";
 import type { ConversationHistoryTurnInspection } from "../types.js";
 import { PendingTurnPayloadStore } from "../durable-turn-payloads.js";
 import { createPendingTurnPayload, createPendingInitialInput, createPendingLiveInput } from "../durable-turn-contract.js";
-const fault = vi.hoisted(() => ({ unlinkFence: false }));
+const fault = vi.hoisted(() => ({ unlinkFence: false, beforePendingSync: undefined as ((path: string) => Promise<void>) | undefined }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
-  return { ...actual, rm: async (...args: Parameters<typeof actual.rm>) => {
+  return { ...actual, open: async (...args: Parameters<typeof actual.open>) => {
+    const handle = await actual.open(...args), path = String(args[0]);
+    if (path.includes("/.pending-turns/") && path.endsWith(".json.tmp")) {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => { await fault.beforePendingSync?.(path); await sync(); };
+    }
+    return handle;
+  }, rm: async (...args: Parameters<typeof actual.rm>) => {
     if (fault.unlinkFence && String(args[0]).endsWith(".dirty.json")) { fault.unlinkFence = false; throw new Error("injected canonical fence cleanup failure"); }
     return await actual.rm(...args);
   } };
 });
 const { createDurableHistoryStore } = await import("../durable-history.js");
+const { createAgentHarness } = await import("../harness.js");
 const dirs: string[] = [], timestamp = "2026-01-01T00:00:00.000Z", modelKey = "openai:fictional-model", bucket = "fictional-bucket";
 function evidence(request: ConversationHistoryTurnInspection, outcome: "completed" | "failed" | "cancelled" | "interrupted" = "completed"): RuntimeSessionTurnReconciliationResult {
   const { descriptor } = request;
@@ -42,7 +51,7 @@ async function fixture(limits: Partial<Pick<DurableHistoryStoreOptions, "maxConv
       reconciliation: { ownerKey: bucket, purpose, ...(purpose === "execution" ? { initial: { persistText: "Fictional redacted input.", timestamp } } : {}) } });
   return { root, store, begin, inspect, retire, path, fencePath, record: async () => JSON.parse(await readFile(path, "utf8")) };
 }
-afterEach(async () => { fault.unlinkFence = false; await Promise.all(dirs.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { fault.unlinkFence = false; fault.beforePendingSync = undefined; await Promise.all(dirs.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 it("durably admits initial/live identities, keeps load read-only, and commits once through explicit recovery", async () => {
   const f = await fixture(); const turn = await f.begin(), descriptor = turn.reconciliation!.descriptor;
@@ -350,3 +359,67 @@ it("does not invent canonical live input when the offer was durable but native n
   const record = await f.record(); expect(record.lastCommit.outcome).toBe("completed"); expect(record.messages).toHaveLength(2);
   expect(JSON.stringify(record.messages)).not.toContain("Fictional unconsumed offer.");
 });
+
+
+it("drains a valid orphan in the same pass when an older torn temp shadows its owner", async () => {
+  const f = await fixture(); const turn = await f.begin(); await turn.abort();
+  const payloads = new PendingTurnPayloadStore(f.root, await lstat(f.root));
+  const [first] = await payloads.list(), { payload } = await payloads.inspect(first!);
+  await rm(f.fencePath); // Initial publication crash: owner payloads, no native fence/dispatch.
+  const pointer = await payloads.publish(payload, { assertOwned: async () => {}, reserve: async () => {} });
+  const next = (await payloads.list()).find((entry) => entry.generation === pointer.generation)!;
+  const tornPath = join(f.root, ".pending-turns", `${first!.name}.tmp`);
+  await rename(join(f.root, ".pending-turns", first!.name), tornPath);
+  await writeFile(tornPath, '{"version":', { mode: 0o600 });
+  await utimes(tornPath, 1, 1); await utimes(join(f.root, ".pending-turns", next.name), 2, 2);
+  expect(await f.store.drainPendingProviderSessionTurns({ limit: 1 })).toMatchObject({ settled: 1, unresolved: 0, busy: 0, remaining: false });
+  expect(await payloads.list()).toEqual([]); expect(f.inspect).not.toHaveBeenCalled(); expect(await f.store.load(bucket)).toEqual([]);
+});
+
+
+it("keeps native accepted acknowledgement behind durable live payload and fence publication", async () => {
+  const f = await fixture(), workspace = await mkdtemp(join(tmpdir(), "turn-ack-order-test-")); dirs.push(workspace);
+  const identityPath = join(workspace, "IDENTITY.md"); await writeFile(identityPath, "You are Mono.");
+  let entered!: () => void, release!: () => void, paused = false;
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  fault.beforePendingSync = async (path) => {
+    const payload = JSON.parse(await readFile(path, "utf8"));
+    if (!paused && payload.inputs.some((input: { id: string }) => input.id === "fictional-ordered-live")) {
+      paused = true; entered(); await gate;
+    }
+  };
+  const accepted = vi.fn(), controller = new AbortController();
+  f.inspect.mockImplementation(async (request) => {
+    const result = evidence(request); if (result.status !== "matched") throw new Error("fixture");
+    return { ...result, consumedInputIds: request.expectedInputs.map((input) => input.id),
+      inputs: request.expectedInputs.map((input) => ({ ...input, messageId: `fictional-envelope:${input.id}`, complete: true })) };
+  });
+  const harness = createAgentHarness({ identityPath, cwd: workspace, model: parseMonoRuntimeModelReference(modelKey),
+    historyStore: f.store, createRunId: () => "fictional-turn", piSessionsRoot: join(workspace, "pi"),
+    session: { mode: "continuous", idleTimeoutMs: 60_000 }, runtime: {
+      sessionTurnReconciliation: "v1", async reconcileSessionTurn() { return { status: "absent" }; },
+      async refreshSession() {}, async syncSession() { return true; },
+      async run(_prompt, options) {
+        const next = await options.liveInput![Symbol.asyncIterator]().next(); if (next.done) throw new Error("Live input unavailable");
+        accepted(); next.value.accepted?.(); next.value.acknowledge?.();
+        return { text: "Fictional final reply.", providerSessionId: options.sessionTurn!.handleId };
+      },
+    } });
+  const response = harness.run({ conversationId: bucket, userMessage: "Fictional redacted input.", abortSignal: controller.signal,
+    onLiveInputOwnership: (event) => {
+      if (event.status === "ready") expect(harness.offerLiveInput!({ conversationId: bucket, id: "fictional-ordered-live",
+        text: "Fictional ordered follow-up.", receivedAt: timestamp }).status).toBe("accepted");
+    } });
+  try {
+    await waiting; expect(accepted).not.toHaveBeenCalled();
+    const fence = JSON.parse(await readFile(f.fencePath, "utf8")), payloads = new PendingTurnPayloadStore(f.root, await lstat(f.root));
+    const referenced = (await payloads.inspect({ name: `${fence.conversationKey}.${fence.runIdDigest}.${fence.payload.generation}.json` })).payload;
+    expect(referenced.inputs.some((input) => input.id === "fictional-ordered-live")).toBe(false);
+    release(); expect(await response).toMatchObject({ text: "Fictional final reply." });
+    expect(accepted).toHaveBeenCalledOnce();
+    expect((await f.record()).messages[1].content).toBe("Fictional ordered follow-up.");
+  } finally {
+    release(); fault.beforePendingSync = undefined; controller.abort(); await response.catch(() => {}); await harness.dispose?.();
+  }
+}, 10_000);

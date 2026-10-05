@@ -16,7 +16,9 @@
   commits. Require explicit runtime ownership before enabling reconciliation,
   preserve pre-dispatch failure categories and rotate overridden native success
   to a cold epoch. Publish pending inputs atomically and let poisoned owners
-  remain protected without blocking unrelated draining or reset.
+  remain protected without blocking unrelated draining or reset. Clear torn
+  pending input at known logical reset coordinates and report the count of
+  unattributable remnants instead of silently claiming complete cleanup.
 
 - Add explicitly opted-in native turn bindings, minimal final-result seals and
   indexed evidence matching for host reconciliation, without changing legacy

@@ -163,8 +163,12 @@ owner, followed by canonical revalidation and cleanup.
 Physical/logical reset clears receipts and all matching pending generations,
 including validated dirty-only/orphan-only buckets, while preserving siblings.
 Malformed unattributable orphan evidence remains charged and preserved, but
-cannot prevent resetting unrelated validated logical owners. Exact reset clears
-its known physical coordinates; discovery never guesses an owner. Post-rename cleanup failures remain
+cannot prevent resetting unrelated validated logical owners. Logical reset clears
+torn entries at its base key and every validated child key. Any remaining
+unattributable entry count is reported through `postCommitMaintenanceFailures`
+and `lastPostCommitMaintenanceError` at reset completion, not silently forgotten.
+A never-bound rollover child cannot be inferred from its hashed filename; exact
+reset clears those known physical coordinates. Discovery never guesses an owner. Post-rename cleanup failures remain
 visible in store diagnostics. Retention protects unsettled execution fences and
 clears generations only after authorized settlement/deletion.
 `drainPendingProviderSessionTurns()` visits at most 32 inactive physical owners
