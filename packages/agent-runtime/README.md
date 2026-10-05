@@ -152,7 +152,10 @@ terminal and never advertises a resumable receipt. Legacy callers are unchanged.
 `reconcileSessionTurn` is storage-only and matches protected identity and input
 evidence before idempotent repair. Native inline binding closes the pre-binding
 crash window. Router detachment requires an awaited protected host acknowledgement
-before stateless retry/fallback. Canonical dirty-turn adoption remains separate.
+before stateless retry/fallback. An opted-in positive canonical base revision
+never silently creates an empty missing native transcript; it fails before
+dispatch so the host can establish a cold boundary. Canonical adoption is owned
+by the separate host history transaction, not the raw runtime.
 
 ## Architecture
 

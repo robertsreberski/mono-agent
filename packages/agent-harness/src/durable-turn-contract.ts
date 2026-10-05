@@ -1,7 +1,12 @@
 import { assertSessionModelKey } from "./session-runtime.js";
 import { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/runtime-adapter";
-import type { RuntimePromptOverrides } from "@mono-agent/runtime-adapter";
+import type { RuntimePromptOverrides, RuntimeSessionTurnDescriptor } from "@mono-agent/runtime-adapter";
 import { createHash } from "node:crypto";
+
+export class DurableTurnAlreadyCommittedError extends Error {
+  readonly code = "ERR_HISTORY_TURN_ALREADY_COMMITTED";
+  constructor() { super("This turn is already canonically committed; use a new turn id."); }
+}
 
 /** Private P2b wire contracts; not execution or authority to recover a turn. */
 export const PENDING_TURN_DIRECTORY = ".pending-turns";
@@ -32,6 +37,7 @@ export interface PendingTurnCandidate {
   readonly error: string | null;
   readonly failureKind: string | null;
   readonly silent?: "finish_silently";
+  readonly consumedInputIds?: readonly string[];
 }
 export interface PendingTurnPayload {
   readonly version: 1;
@@ -111,10 +117,15 @@ export function validatePendingTurnPayload(value: unknown): asserts value is Pen
   if (identity.purpose === "execution" ? initials !== 1 : value.inputs.length !== 0) invalid();
   if (value.candidate !== undefined) {
     const candidate = value.candidate; object(candidate);
-    keys(candidate, ["outcome", "text", "timestamp", "error", "failureKind"], ["silent"]);
+    keys(candidate, ["outcome", "text", "timestamp", "error", "failureKind"], ["silent", "consumedInputIds"]);
     if (!outcomes.has(candidate.outcome as string)) invalid();
     for (const key of ["text", "error", "failureKind"]) if (candidate[key] !== null) text(candidate[key], key === "text" ? 64 * 1024 : 4096, true);
     timestamp(candidate.timestamp);
+    if (candidate.consumedInputIds !== undefined) {
+      if (!Array.isArray(candidate.consumedInputIds) || candidate.consumedInputIds.length > 101
+        || new Set(candidate.consumedInputIds).size !== candidate.consumedInputIds.length) invalid();
+      for (const id of candidate.consumedInputIds) { text(id, 512); if (!ids.has(id as string)) invalid(); }
+    }
     if (candidate.silent !== undefined && candidate.silent !== "finish_silently") invalid();
     if (candidate.outcome === "completed" && (candidate.error !== null || candidate.failureKind !== null)) invalid();
     if (identity.purpose === "compaction") invalid();
@@ -142,7 +153,8 @@ export function createPendingLiveInput(source: { readonly id: string; readonly p
 }
 export function createPendingTurnCandidate(source: PendingTurnCandidate): PendingTurnCandidate {
   return { outcome: source.outcome, text: source.text, timestamp: source.timestamp, error: source.error, failureKind: source.failureKind,
-    ...(source.silent === undefined ? {} : { silent: source.silent }) };
+    ...(source.silent === undefined ? {} : { silent: source.silent }),
+    ...(source.consumedInputIds === undefined ? {} : { consumedInputIds: [...source.consumedInputIds] }) };
 }
 /** Explicit payload publication builder, excluding runtime/transport/controller extras at all layers. */
 export function createPendingTurnPayload(identity: PendingTurnIdentity, inputs: readonly PendingTurnInput[],
@@ -198,3 +210,13 @@ export function validateDurableTurnReceipt(value: unknown): asserts value is Dur
   if (value.committedRevision !== (value.baseRevision as number) + 1) invalid();
 }
 export function sha256(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
+
+/** Protected router acknowledgement is scoped to the entire original binding. */
+export function assertDetachedTurnDescriptor(actual: RuntimeSessionTurnDescriptor, expected: RuntimeSessionTurnDescriptor): void {
+  for (const key of ["kind", "ownerKey", "historyBucket", "turnId", "handleId", "baseRevision"] as const) {
+    if (actual[key] !== expected[key]) throw new Error("Detached attempt owner mismatch.");
+  }
+  for (const key of ["version", "purpose", "fenceDigest", "initialInputId"] as const) {
+    if (actual.reconciliation?.[key] !== expected.reconciliation?.[key]) throw new Error("Detached reconciliation binding mismatch.");
+  }
+}

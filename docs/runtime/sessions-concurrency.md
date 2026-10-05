@@ -319,21 +319,46 @@ P2b history roots are not safe for in-place downgrade. Older binaries must not
 run against their new pending/fence/canonical formats; writes fail closed rather
 than stripping reconciliation evidence. To roll back, stop writers and restore
 a consistent pre-P2b backup (later turns are lost). No strip/conversion tool is
-provided. Preparatory pending-input codecs do not by themselves enable automatic
-host adoption; owner-held reconciliation wiring supplies that transaction.
+provided. Canonical writes use v3 and preserve bounded last-commit receipts
+across message retention and epoch rotation; reads accept v1/v2 without migration.
 
 Routers await protected detached-attempt acknowledgement before stateless retries
 or backups, removing that authority and the descriptor from those attempts.
 Configured raw runtime reconciliation and legacy recovery hold attested
-root-generation request leases through settlement. This is **native capability
-only**: canonical history/fence/receipt formats, read-only history loading and
-host retirement/adoption policy are unchanged. Automatic host dirty-turn
-reconciliation is a subsequent host-transaction phase, not a guarantee of this
-native contract. No durable queue, continuation or effect-exactly-once promise is
-added. Older native writers must not be mixed with opted-in journals: they cannot
-provide or validate these new binding/seal/input proofs.
+root-generation request leases through settlement. The raw runtime does not
+write canonical history: the configured harness wires its matcher into the
+durable store's `reconcileProviderSessionTurn` option and opts coordinated host
+turns/compaction in through `providerSessionReconciliation: "v1"`.
 
-User cancellation does not spend the failure budget. One `provider_unavailable`
+`recoverProviderSessionTurn()` is explicit and owner-held; admission, plain
+append (including verbatim delivery), exclusive capture and context import also
+settle dirty execution before mutation. `load()` remains read-only. Matching
+adopts the whole ordered operation set; native fsync precedes canonical rename,
+directory sync, then fence/payload cleanup. Rename commits a bounded receipt, so
+repeated recovery recognizes the commit before inspecting native storage again,
+even when retained messages have been evicted. New requests use new turn IDs.
+Host cancellation overrides native completion. A detached attempt without a
+final host candidate is interrupted, never inferred successful from its primary
+seal. Unknown/absent/unbound evidence establishes an interrupted gap and cold
+epoch. An advanced protected native revision never silently creates a missing
+empty warm transcript. Interrupted work waits for a new message; compaction
+recovery changes metadata/receipt, not canonical answers or new summaries.
+
+Immutable private pending generations are capped at 16 MiB, with 1 KiB fences;
+old/new/orphan generations count toward staged bytes and physical-owner limits.
+`drainPendingProviderSessionTurns()` tries at most 32 inactive owners per pass,
+oldest first, and returns a continuation cursor. It does not wait for foreign
+logical/exact owners. Busy/unresolved evidence stays charged and protected;
+insufficient capacity rejects, never quota-deletes execution. Reset and
+post-settlement authorized retention remove matching generations. Unattributable
+malformed orphan content fails closed during logical reset/discovery.
+
+No durable queue, continuation or effect-exactly-once promise is added. Recovery
+never calls a provider/tool or resumes suspended work. Older native writers must
+not share opted-in journals: they cannot provide or validate the binding/seal/input
+proofs.
+
+For the legacy receipt-only path, user cancellation does not spend the failure budget. One `provider_unavailable`
 failure, including single-primary exhaustion with matching proof, may recover per
 epoch in the current process. Success does not reset that budget. A second failure,
 context termination, auth/usage limits, invalid/empty results, session errors,
@@ -341,8 +366,8 @@ ambiguous throws, extra attempts, late contradictory evidence, failed tool-histo
 finalization or uncertain persistence selects cold reseed. The budget and one-shot
 boundary marker live only in the in-memory session record and clear on rotation;
 reconstructing the harness can allow one additional failed-turn recovery.
-The durable record and v4 fence shapes are unchanged by terminal recovery, so
-this feature adds no older-binary incompatibility beyond model binding.
+Legacy receipt recovery itself does not widen its v4 fence. The v3/P2 storage
+upgrade has the downgrade consequences described above.
 
 Recovery is opt-in through the built-in coordinator's `providerSessionRecovery:
 "v1"` capability and the owning runtime's `recoverSession` method. Custom stores

@@ -127,23 +127,42 @@ selection through the host's model/context-policy hook, including explicit false
 on the configured primary. It allocates no turn tools and changes no shared
 history format. Ordinary turn options receive the same validated policy.
 
-P2b preparation uses immutable `.pending-turns/` generations under the private
-history root, measured before publication and charged to staged-byte quota even
-when a writer crashes. Payloads contain explicitly selected canonical input and
-candidate fields, not `deliveryKey`, memory-only `ownerText`, private wake bodies
-or arbitrary controllers. The private codec separates execution, compaction and
-retirement fences at1KiB and validates bounded16MiB payloads/commit receipts.
-Canonical writes use v3, with backward reads of v1/v2. A bounded last-turn
-receipt survives message eviction and native epoch rotation; explicit reset
-clears it. Explicit physical/logical reset also removes all matching pending
-payload generations (including dirty-only and orphan-only buckets) while
-preserving siblings. A pending-turn reset requires fail-closed provider
-retirement; post-rename cleanup failures remain visible in store diagnostics.
-Malformed or unstable orphan evidence is preserved; logical reset fails closed
-when ownership cannot be attributed safely. Reads neither migrate files nor
-invoke runtime recovery.
-These primitives alone do **not** enable configured-host automatic reconciliation
-or canonical adoption; the owner-held transaction wiring is separate.
+Coordinated native turns use immutable `.pending-turns/` generations under the
+private history root, measured before publication and charged to staged-byte
+quota even after a crash. Payloads contain explicitly selected canonical input,
+identity and candidate fields, not `deliveryKey`, memory-only `ownerText`, private
+wake bodies or arbitrary controllers. Execution, compaction and retirement
+fences stay at 1 KiB; payload generations are bounded at 16 MiB.
+
+`reconcileProviderSessionTurn` on the durable-store options installs the
+storage-only native matcher (and requires fail-closed retirement). The positive
+`providerSessionReconciliation: "v1"` capability enables host admission and
+claims; configured native hosts wire it automatically. `load()` stays read-only.
+`recoverProviderSessionTurn()` and admission/append/exclusive/import entrances
+settle dirty execution before mutation, matching the entire ordered operation
+set outside root transactions. Native fsync precedes canonical rename, directory
+sync and fence/payload cleanup. A bounded v3 last-commit receipt survives message
+eviction and epoch rotation; repeat settlement cannot duplicate the commit.
+New requests must use new turn IDs. V1/v2 remain readable.
+
+A durable host cancellation overrides a completed native seal. Detachment without
+a final host candidate is interrupted, never promoted from the primary result.
+Interrupted work is accounted and waits for a new message; recovery invokes no
+provider, tool, summary or deferred continuation. Manual compaction changes
+metadata/receipt only, not canonical user/assistant messages. This does not make
+external tool effects exactly-once or introduce a durable queue.
+
+Physical/logical reset clears receipts and all matching pending generations,
+including validated dirty-only/orphan-only buckets, while preserving siblings.
+Malformed or unstable unattributable orphan evidence is preserved; logical reset
+fails closed rather than guessing an owner. Post-rename cleanup failures remain
+visible in store diagnostics. Retention protects unsettled execution fences and
+clears generations only after authorized settlement/deletion.
+`drainPendingProviderSessionTurns()` visits at most 32 inactive physical owners
+per pass, oldest first, and returns a cursor for further passes. It tries owner
+claims without waiting for foreign ownership. Busy/unresolved owners remain
+charged; admission drains once when capacity requires it and otherwise rejects
+clearly instead of quota-deleting evidence.
 
 Older binaries must not run against a P2b history root. Rollback means stopping
 writers and restoring a consistent pre-P2b backup, losing later turns. There is
@@ -321,6 +340,12 @@ ConversationHistoryContextImport
 ConversationHistoryExclusiveTurn
 ConversationHistoryProviderSessionTurn
 ConversationHistoryStore
+ConversationHistoryTurnDrainOptions
+ConversationHistoryTurnDrainResult
+ConversationHistoryTurnInspection
+ConversationHistoryTurnInspector
+ConversationHistoryTurnReconciliation
+ConversationHistoryTurnRecovery
 CreateSkillsCacheOptions
 DEFAULT_SOUL_TEXT
 DurableConversationHistoryStore

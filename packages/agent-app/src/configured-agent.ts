@@ -1,3 +1,4 @@
+import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
@@ -1364,6 +1365,16 @@ async function createConfiguredAgentHarnessInternal(
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
+          ...(runtime.reconcileSessionTurn === undefined ? {} : {
+            reconcileProviderSessionTurn: async (request: ConversationHistoryTurnInspection) => {
+              const owner = runtimeForSession(request.modelKey);
+              if (owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
+              const selected = parseMonoRuntimeModelReference(request.modelKey);
+              return await owner.reconcileSessionTurn({ descriptor: request.descriptor, purpose: request.purpose,
+                expectedInputs: request.expectedInputs, sessionsRoot: piSessionsRoot,
+                expectedModel: { provider: selected.provider, id: selected.model } });
+            },
+          }),
           retireProviderSession: async (providerSessionId: string, modelKey?: string): Promise<void> => {
             const owner = runtimeForSession(modelKey);
             if (owner.retireDurableSession === undefined) {

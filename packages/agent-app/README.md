@@ -39,7 +39,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   host settlement category while bounding/redacting runtime/provider code and
   detail as untrusted evidence. Eligible durable Pi recovery retains native context
   without appending the account to Pi; cold reseed includes the account. The
-  on-disk history shape is unchanged by recovery;
+  coordinated native turns use canonical v3 receipts and owner-held,
+  storage-only reconciliation across crashes. Read-only history loading does
+  not recover or migrate. Interrupted work waits for the next explicit message;
+  recovery never reruns a model or tool. Host cancellation wins over a completed
+  native seal, and manual compaction changes metadata rather than answers.
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical

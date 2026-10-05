@@ -2,15 +2,16 @@
 
 ## Unreleased
 
-- Prepare bounded, owner-only immutable pending-turn payload generations and
-  explicit execution/compaction/retirement wire contracts for host recovery;
-  share native admission digests/guidance with hosts and protect detached-turn
-  acknowledgement from runtime extensions. Automatic P2b host adoption is not
-  enabled by these preparatory primitives alone. Write canonical history v3
-  while retaining v1/v2 reads, and preserve bounded turn receipts across message
-  retention and native epoch rotation; explicit reset clears the receipt and
-  all matching pending generations without deleting sibling owners.
-
+- Wire owner-held, storage-only recovery for coordinated native host turns and
+  manual compaction. Durably admit canonical inputs before dispatch/steering,
+  preserve cancellation and detached-attempt claims, and commit whole matched
+  native turns once through bounded canonical v3 receipts. Read v1/v2 histories
+  without migrating on load. Report interrupted work and wait for a new message;
+  recovery never calls a model, tool, summary or continuation. Bound and drain
+  inactive pending owners without deleting unresolved evidence. Keep private
+  wake bodies, delivery keys and memory-only owner text out of pending inputs;
+  reset and authorized retention clear matching generations. Older binaries
+  must not share upgraded roots; rollback restores a pre-upgrade backup.
 
 - Add explicitly opted-in native turn bindings, minimal final-result seals and
   indexed evidence matching for host reconciliation, without changing legacy

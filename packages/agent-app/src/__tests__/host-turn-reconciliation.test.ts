@@ -1,0 +1,195 @@
+import { fork, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { afterEach, expect, it } from "vitest";
+const dirs: string[] = [];
+const worker = new URL("./fixtures/host-turn-reconciliation-worker.mjs", import.meta.url);
+interface Reply {
+  phase?: string;
+  counter: number;
+  providerCalls: number;
+  runtimeCalls: number;
+  nativeInspections: number;
+  recovery: { status: string; outcome?: string };
+  record: { messages: Array<{ role: string; content: string }>; lastCommit: { turnId: string; outcome: string; journalId: string } };
+  context: unknown;
+  pending: string[];
+}
+function receive(child: ChildProcess): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    let stderr = ""; child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const timeout = setTimeout(() => { cleanup(); reject(new Error(`Configured recovery worker timed out: ${stderr}`)); }, 25_000);
+    const onMessage = (value: Reply) => { cleanup(); resolve(value); };
+    const onExit = (code: number | null) => { cleanup(); reject(new Error(`Configured recovery worker exited ${code}: ${stderr}`)); };
+    const cleanup = () => { clearTimeout(timeout); child.off("message", onMessage); child.off("exit", onExit); };
+    child.once("message", onMessage); child.once("exit", onExit);
+  });
+}
+async function run(root: string, mode: string): Promise<Reply> {
+  const child = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const reply = receive(child), exited = once(child, "exit"); child.send({ mode });
+    const value = await reply; expect((await exited)[0]).toBe(0); return value;
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+  }
+}
+afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+it.each(["native-return", "returned-tool"])("built configured host adopts whole native evidence once after SIGKILL at %s, never replays the counted effect", async (crash) => {
+  const parent = fileURLToPath(new URL("../../../../.worklab-tmp/", import.meta.url)); await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "host-turn-reconcile-")); dirs.push(root);
+  const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const stopped = receive(producer); producer.send({ mode: "produce", crash });
+    expect(await stopped).toMatchObject({ phase: crash, counter: 1 });
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.nativeInspections).toBe(1);
+    expect(second.providerCalls).toBe(0); expect(second.runtimeCalls).toBe(0); expect(second.nativeInspections).toBe(0);
+    expect(first.counter).toBe(1); expect(second.counter).toBe(1); expect(first.pending).toEqual([]); expect(second.pending).toEqual([]);
+    expect(second.record).toEqual(first.record); expect(first.record.messages).toHaveLength(2);
+    expect(first.record.lastCommit.journalId).toBeTruthy();
+    if (crash === "native-return") {
+      expect(first.recovery).toMatchObject({ status: "recovered", outcome: "completed" });
+      expect(first.record.messages[1]!.content).toBe("Fictional verbatim final reply.");
+    } else {
+      expect(first.recovery).toMatchObject({ status: "interrupted", outcome: "interrupted" });
+      expect(first.record.messages[1]!.content).toContain("No tools were replayed");
+    }
+    const next = await run(root, "continue");
+    expect(next.runtimeCalls).toBe(1); expect(next.providerCalls).toBe(1); expect(next.counter).toBe(1);
+    expect(JSON.stringify(next.context)).toContain("fictional-counted-effect");
+    expect(JSON.stringify(next.context)).toContain("fictional-durable-signature");
+    expect(next.record.messages).toHaveLength(4);
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
+
+const preload = fileURLToPath(new URL("./fixtures/host-turn-crash-preload.cjs", import.meta.url));
+const earlyPhases = ["pending-partial", "pending-file", "pending-directory", "fence-file", "fence-rename", "fence-directory", "native-start", "tool-started"];
+const completedPhases = ["canonical-rename", "canonical-directory", "fence-cleanup", "payload-cleanup"];
+function controlledWorker(root: string, phase: string): ChildProcess {
+  return fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: ["--require", preload],
+    env: { ...process.env, MONO_AGENT_FIXTURE_CRASH_PHASE: phase } });
+}
+async function fixtureRoot(): Promise<string> {
+  const parent = fileURLToPath(new URL("../../../../.worklab-tmp/", import.meta.url)); await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "host-turn-matrix-")); dirs.push(root); return root;
+}
+it.each([...earlyPhases, "tool-returned-unplaced", ...completedPhases, "legacy-unbound"])("real built host crash boundary %s settles once with no provider/tool replay", async (phase) => {
+  const root = await fixtureRoot(); const producer = phase === "legacy-unbound"
+    ? fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] }) : controlledWorker(root, phase);
+  const count = earlyPhases.includes(phase) ? 0 : 1;
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: phase });
+    expect(await ready).toMatchObject({ phase, counter: count });
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.counter).toBe(count);
+    expect(second.providerCalls).toBe(0); expect(second.runtimeCalls).toBe(0); expect(second.counter).toBe(count);
+    expect(first.pending).toEqual([]); expect(second.pending).toEqual([]);
+    expect(second.record).toEqual(first.record); expect(first.record.messages).toHaveLength(2);
+    if (completedPhases.includes(phase)) {
+      expect(first.nativeInspections).toBe(0); // Receipt wins at rename, before native inspection.
+      expect(first.record.lastCommit.outcome).toBe("completed"); expect(first.record.messages[1]!.content).toBe("Fictional verbatim final reply.");
+    } else {
+      expect(first.nativeInspections).toBe(1); expect(first.record.lastCommit.outcome).toBe("interrupted");
+      expect(first.record.messages[1]!.content).toContain("No tools were replayed");
+      if (phase === "tool-returned-unplaced") expect(first.record.messages[1]!.content).toContain("1 observed tool outcomes");
+      if (phase === "tool-started") expect(first.record.messages[1]!.content).toContain("1 unknown");
+      if (phase === "legacy-unbound") expect(first.record.lastCommit.journalId).toBeNull();
+    }
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
+
+it("survives killing recovery itself after canonical rename and recognizes its receipt without inspecting native state again", async () => {
+  const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  let recovering: ChildProcess | undefined;
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: "native-return" }); await ready;
+    const killed = once(producer, "exit"); producer.kill("SIGKILL"); await killed;
+    recovering = controlledWorker(root, "canonical-rename"); const stopped = receive(recovering);
+    recovering.send({ mode: "recover" }); expect(await stopped).toMatchObject({ phase: "canonical-rename", counter: 1 });
+    const exited = once(recovering, "exit"); recovering.kill("SIGKILL"); await exited;
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.nativeInspections).toBe(0); expect(second.nativeInspections).toBe(0);
+    expect(first.providerCalls).toBe(0); expect(second.providerCalls).toBe(0); expect(first.counter).toBe(1); expect(second.counter).toBe(1);
+    expect(first.record).toEqual(second.record); expect(first.record.messages).toHaveLength(2); expect(first.pending).toEqual([]);
+  } finally {
+    for (const child of [producer, recovering]) if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+    }
+  }
+}, 60_000);
+
+it("manual compaction crash repairs prior context without changing canonical messages or asking a model for a summary", async () => {
+  const root = await fixtureRoot(); const producer = controlledWorker(root, "manual-start");
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: "manual-start" });
+    expect(await ready).toMatchObject({ phase: "manual-start", counter: 1 });
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.record.messages).toHaveLength(2); expect(first.record.messages[1]!.content).toBe("Fictional verbatim final reply.");
+    expect(first.record.lastCommit.turnId).toMatch(/^synthetic:manual:/u); expect(first.record.lastCommit.outcome).toBe("interrupted");
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(second.record).toEqual(first.record);
+    expect(first.counter).toBe(1); expect(second.counter).toBe(1); expect(first.pending).toEqual([]);
+    const next = await run(root, "continue"); expect(next.counter).toBe(1); expect(JSON.stringify(next.context)).toContain("fictional-counted-effect");
+    expect(next.record.messages).toHaveLength(4);
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
+
+it("verbatim delivery after a dirty native crash settles the old turn first and records delivery once across fresh processes", async () => {
+  const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: "native-return" }); await ready;
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const first = await run(root, "verbatim"), second = await run(root, "verbatim");
+    expect(first.nativeInspections).toBe(1); expect(second.nativeInspections).toBe(0);
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.counter).toBe(1); expect(second.counter).toBe(1);
+    expect(second.record).toEqual(first.record); expect(first.record.messages).toHaveLength(4);
+    expect(first.record.messages[1]!.content).toBe("Fictional verbatim final reply.");
+    expect(first.record.messages[3]!.content).toBe("Fictional verbatim delivery."); expect(first.pending).toEqual([]);
+    expect(first.record.lastCommit.outcome).toBe("completed");
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
+
+it("overflow followed by a durable compaction checkpoint remains interrupted before the final re-prompt seal", async () => {
+  const root = await fixtureRoot(); const producer = controlledWorker(root, "overflow-compaction");
+  try {
+    const ready = receive(producer); producer.send({ mode: "produce", crash: "overflow-compaction" });
+    expect(await ready).toMatchObject({ phase: "overflow-compaction", counter: 1 });
+    const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
+    const first = await run(root, "recover"), second = await run(root, "recover");
+    expect(first.record.lastCommit.outcome).toBe("interrupted"); expect(first.record.messages).toHaveLength(4);
+    expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.counter).toBe(1);
+    expect(first.record.messages.some((message) => message.content.includes("Fictional final overflow reply."))).toBe(false);
+    expect(second.record).toEqual(first.record); expect(second.nativeInspections).toBe(0);
+    const next = await run(root, "continue"); expect(next.counter).toBe(1); expect(JSON.stringify(next.context)).toContain("Fictional overflow checkpoint summary.");
+    expect(next.record.messages).toHaveLength(6);
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);
+
+it("known native deletion after a committed turn fails before dispatch and uses one explicit cold attempt rather than an empty warm transcript", async () => {
+  const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const completed = receive(producer), exited = once(producer, "exit"); producer.send({ mode: "produce", crash: "native-deleted" });
+    const value = await completed; expect((await exited)[0]).toBe(0);
+    expect(value.counter).toBe(1); expect(value.record.messages).toHaveLength(4);
+    expect(value.record.messages[3]!.content).toBe("Fictional explicit reseeded reply.");
+    expect(value.runtimeCalls).toBe(3); // initial turn, pre-dispatch miss, explicit cold retry.
+    expect(value.record.lastCommit.outcome).toBe("completed"); expect(value.record.lastCommit.journalId).toBeNull();
+  } finally {
+    if (producer.exitCode === null && producer.signalCode === null) { const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited; }
+  }
+}, 60_000);

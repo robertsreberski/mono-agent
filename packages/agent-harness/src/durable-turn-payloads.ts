@@ -19,7 +19,8 @@ export interface PendingPayloadEntry extends PendingPayloadCoordinates {
 }
 export type PendingPayloadPhase = "file_synced" | "directory_synced" | "removed";
 export interface PendingPayloadOwner {
-  /** Must prove the caller still holds the exact logical/physical history owner. */
+  /** Prove exact logical/physical ownership, or authorized root-held retention
+   * of an inactive, settled exact victim. Never a PID/age-only deletion claim. */
   assertOwned(): Promise<void>;
   /** Reserve aggregate staged bytes under the caller's root transaction. */
   reserve(bytes: number): Promise<void>;
