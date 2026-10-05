@@ -616,6 +616,7 @@ statsForCompletedChange
 **`@mono-agent/agent-runtime/ai/live-input-prompt.js`**
 
 ```text
+digestNativeTurnInput
 formatLiveInputGuidance
 ```
 

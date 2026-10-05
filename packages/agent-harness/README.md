@@ -127,6 +127,19 @@ selection through the host's model/context-policy hook, including explicit false
 on the configured primary. It allocates no turn tools and changes no shared
 history format. Ordinary turn options receive the same validated policy.
 
+P2b preparation uses immutable `.pending-turns/` generations under the private
+history root, measured before publication and charged to staged-byte quota even
+when a writer crashes. Payloads contain explicitly selected canonical input and
+candidate fields, not `deliveryKey`, memory-only `ownerText`, private wake bodies
+or arbitrary controllers. The private codec separates execution, compaction and
+retirement fences at1KiB and validates bounded16MiB payloads/commit receipts.
+These primitives alone do **not** enable configured-host automatic reconciliation
+or canonical adoption; the owner-held transaction wiring is separate.
+
+Older binaries must not run against a P2b history root. Rollback means stopping
+writers and restoring a consistent pre-P2b backup, losing later turns. There is
+no downgrade/strip tool; offline conversion is outside this scope.
+
 ## Architecture
 
 Memory reads receive the host-confirmed `retainedContext` signal from history

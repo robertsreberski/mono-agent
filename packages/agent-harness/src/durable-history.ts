@@ -1,3 +1,6 @@
+import type { PendingTurnPointer } from "./durable-turn-contract.js";
+import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
+import { PENDING_TURN_DIRECTORY, validateDurableTurnFence, serializeDurableTurnFence } from "./durable-turn-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
@@ -157,6 +160,8 @@ interface ActiveMarker {
 }
 
 interface DirtyFence {
+  readonly kind?: "execution" | "compaction" | "retirement";
+  readonly payload?: PendingTurnPointer;
   readonly modelKey?: string;
   readonly path: string;
   readonly conversationKey: string;
@@ -221,6 +226,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private readonly retireProviderSession: ((providerSessionId: string, modelKey?: string) => Promise<void>) | undefined;
   private rootReady: Promise<DirectoryIdentity> | undefined;
   private locksRootReady: Promise<DirectoryIdentity> | undefined;
+  private pendingPayloadStore: PendingTurnPayloadStore | undefined;
+  private pendingPayloads(rootIdentity: DirectoryIdentity): PendingTurnPayloadStore {
+    return this.pendingPayloadStore ??= new PendingTurnPayloadStore(this.root, rootIdentity);
+  }
 
   constructor(options: DurableHistoryStoreOptions) {
     if (typeof options?.root !== "string" || options.root.trim().length === 0) {
@@ -496,6 +505,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           locksIdentity,
           historyKey(normalizedId),
         );
+        requireSettledFence(await this.findDirtyFence(historyKey(normalizedId), locksIdentity));
         marker = await this.createActiveMarker(historyKey(normalizedId), locksIdentity);
       } finally {
         await releaseRoot();
@@ -571,6 +581,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
+      requireSettledFence(await this.findDirtyFence(historyKey(normalizedId), await this.ensureLocksRoot()));
       const existing = await this.readRecord(normalizedId, rootIdentity, true);
       const exactPair = findContextImportPair(existing.messages, normalized.idempotencyKey);
       if (exactPair !== undefined) {
@@ -639,6 +650,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const releaseRoot = await this.acquireRootTransaction(rootIdentity);
       try {
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
+        requireSettledFence(existingFence);
         // The read-only preflight can race another process. Guard the binding
         // again under the root transaction before any rotation or retirement.
         if (binding?.skipModelRotation === true && existingProvider !== undefined
@@ -843,6 +855,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const reclaimable = fences
       .filter((fence) => (
         fence.conversationKey !== conversationKey
+        && fence.kind !== "execution" && fence.kind !== "compaction"
         && !committedKeys.has(fence.conversationKey)
         && !activeKeys.has(fence.conversationKey)
       ))
@@ -1041,7 +1054,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       const current = await readDirtyFence(fence.path);
       if (
-        current.conversationKey !== fence.conversationKey
+        current.kind !== fence.kind
+        || current.payload?.generation !== fence.payload?.generation || current.payload?.sha256 !== fence.payload?.sha256
+        || current.conversationKey !== fence.conversationKey
         || current.logicalConversationKey !== fence.logicalConversationKey
         || current.modelKey !== fence.modelKey
         || current.epoch !== fence.epoch
@@ -1063,6 +1078,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       } catch (statError) {
         if (isErrno(statError, "ENOENT")) {
           await this.publishDirtyFence({
+            ...(fence.kind === undefined ? {} : { kind: fence.kind }),
+            ...(fence.payload === undefined ? {} : { payload: fence.payload }),
             conversationKey: fence.conversationKey,
             ...(fence.logicalConversationKey === undefined
               ? {}
@@ -1150,6 +1167,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const protectedNames = new Set(
       (await this.scanActiveMarkers(true)).map((marker) => `${marker.conversationKey}${HISTORY_FILE_SUFFIX}`),
     );
+    // Pending execution/compaction owners cannot be quota/age-evicted before
+    // explicit settlement. No native inspection occurs under this transaction.
+    for (const fence of await this.scanDirtyFences(await this.ensureLocksRoot(), false)) {
+      if (fence.kind === "execution" || fence.kind === "compaction") protectedNames.add(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
+    }
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
     let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
     let projectedCount = entries.length;
@@ -1176,7 +1198,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const activeConversationKeys = new Set(
       (await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey),
     );
-    let bytes = 0;
+    // Published pending inputs remain charged after a crash/marker removal.
+    // They are not abandoned canonical staging and require owner-held recovery.
+    let bytes = (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0);
     let removed = false;
     for (const name of (await readdir(this.root)).sort()) {
       const match = TEMP_FILE_PATTERN.exec(name);
@@ -1217,6 +1241,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (name === LOCKS_DIRECTORY) {
         const info = await lstat(path);
         assertSecureHistoryDirectory(info, path);
+        continue;
+      }
+      if (name === PENDING_TURN_DIRECTORY) {
+        await this.pendingPayloads(rootIdentity).list();
         continue;
       }
       if (name === TOOL_HISTORY_DIRECTORY) {
@@ -1634,6 +1662,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const fence of fences) {
       if (
         fence.conversationKey === excludedConversationKey
+        || fence.kind === "execution" || fence.kind === "compaction"
         || activeKeys.has(fence.conversationKey)
         || fence.providerSessionId === undefined
       ) {
@@ -1757,8 +1786,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
   ): Promise<DirtyFence | undefined> {
-    if (this.retireProviderSession === undefined) return undefined;
     const locksIdentity = await this.ensureLocksRoot();
+    requireSettledFence(await this.findDirtyFence(historyKey(record.conversationId), locksIdentity));
+    if (this.retireProviderSession === undefined) return undefined;
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let fence: DirtyFence | undefined;
     try {
@@ -1777,6 +1807,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<DirtyFence | undefined> {
     const conversationKey = historyKey(record.conversationId);
     const existing = await this.findDirtyFence(conversationKey, locksIdentity);
+    requireSettledFence(existing);
     if (existing !== undefined) return existing;
     if (record.sourceVersion !== STORE_VERSION || record.providerSession === undefined) return undefined;
     await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
@@ -2167,6 +2198,9 @@ function serializeHistoryFile(record: HistoryFileV2): Buffer {
 }
 
 function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffer {
+  if (value.kind !== undefined) return serializeDurableTurnFence({ version: 5, kind: value.kind, conversationKey: value.conversationKey,
+    logicalConversationKey: value.logicalConversationKey!, epoch: value.epoch, providerSessionId: value.providerSessionId!, modelKey: value.modelKey!,
+    revision: value.revision, runIdDigest: value.runIdDigest, ...(value.payload === undefined ? {} : { payload: value.payload }) });
   if (value.modelKey !== undefined) {
     assertSessionModelKey(value.modelKey);
     if (value.logicalConversationKey === undefined || value.providerSessionId === undefined) {
@@ -2706,6 +2740,12 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     } catch {
       throw new Error(`History dirty fence ${path} is not valid JSON.`);
     }
+    if (isRecord(value) && value.version === 5) {
+      validateDurableTurnFence(value);
+      return { path, kind: value.kind, conversationKey: value.conversationKey, logicalConversationKey: value.logicalConversationKey,
+        epoch: value.epoch, providerSessionId: value.providerSessionId, modelKey: value.modelKey, revision: value.revision, runIdDigest: value.runIdDigest,
+        ...(value.payload === undefined ? {} : { payload: value.payload }) };
+    }
     const keys = isRecord(value) ? Object.keys(value).sort().join(",") : "";
     const legacy = isRecord(value)
       && value.version === 1
@@ -2923,4 +2963,10 @@ function isErrno(error: unknown, code: string): boolean {
 
 function modelBinding(modelKey: string | undefined): { readonly modelKey?: string } {
   return modelKey === undefined ? {} : { modelKey };
+}
+
+function requireSettledFence(fence: DirtyFence | undefined): void {
+  if (fence?.kind === "execution" || fence?.kind === "compaction") {
+    throw new Error("Pending provider turn requires explicit owner-held reconciliation");
+  }
 }

@@ -160,6 +160,13 @@ matching still requires the bound original ID and exact content digest. Live
 inputs must match `live` placement exactly. `endTurn` durably cancels remaining
 unconsumed native offers before sealing; none carries into the next turn.
 
+Hosts preparing durable admissions can use `digestNativeTurnInput` and
+`formatLiveInputGuidance` from this facade. They delegate to the same native
+codec/formatter used by Pi. Hash actual decorated original content; live input
+hashes the formatted guidance (including prompt overrides), not raw body.
+Canonical payload builders must keep runtime-only decoration out of persisted
+input text; digests do not grant native execution or canonical adoption.
+
 Routed opted-in requests must provide the protected awaited
 `onSessionTurnDetached` host hook before any stateless retry/backup. It receives
 primary attempt evidence; failure to acknowledge is terminal. Neither that hook
@@ -368,9 +375,11 @@ createSrtSandboxEngine
 describeMonoRuntimeSupport
 describePiBuiltinProvider
 describeSandboxEffectiveState
+digestNativeTurnInput
 discoverLocalProviderModels
 discoverLocalProviders
 failClosedSandboxPolicy
+formatLiveInputGuidance
 inspectCodexSubscriptionSearch
 isAutodiscoverableProviderId
 isCodedError

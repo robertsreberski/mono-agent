@@ -35,7 +35,9 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const contractsUrl = new URL("../../../agent-contracts/dist/index.js", import.meta.url).href;
   const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
     .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl))
-    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href));
+    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href))
+    .replace('"./durable-turn-payloads.js"', JSON.stringify(new URL("../../dist/durable-turn-payloads.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",

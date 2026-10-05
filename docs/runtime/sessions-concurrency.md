@@ -315,6 +315,13 @@ matching still requires the bound original ID and exact content digest. Live
 inputs must match `live` placement exactly. `endTurn` durably cancels remaining
 unconsumed native offers before sealing; none carries into the next turn.
 
+P2b history roots are not safe for in-place downgrade. Older binaries must not
+run against their new pending/fence/canonical formats; writes fail closed rather
+than stripping reconciliation evidence. To roll back, stop writers and restore
+a consistent pre-P2b backup (later turns are lost). No strip/conversion tool is
+provided. Preparatory pending-input codecs do not by themselves enable automatic
+host adoption; owner-held reconciliation wiring supplies that transaction.
+
 Routers await protected detached-attempt acknowledgement before stateless retries
 or backups, removing that authority and the descriptor from those attempts.
 Configured raw runtime reconciliation and legacy recovery hold attested
