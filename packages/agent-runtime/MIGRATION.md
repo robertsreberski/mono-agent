@@ -43,9 +43,19 @@ That preserves canonical chat history, not exact interrupted native context.
 Never exercise import/archival against live session directories during testing.
 
 Journal records separate one logical turn from its prompt/compaction operations.
-Reopening still aborts old operations without running models or tools. This is
-not native interruption repair or host crash adoption. Model-change retirement
-still deletes native evidence. No public runtime-adapter descriptor is added.
+Reopening deterministically seals old unsealed work as interrupted, without
+running a model/tool; missing results are prompt-only accounts and observed
+returned outcomes remain evidence. Repeated repair is idempotent. Deferred
+suspension is accounted as suspended, not resumed, with no fabricated completion. Streamed non-durable drafts may be lost.
+This native repair is not host crash adoption or a successful terminal receipt.
+Logical input/assistant/tool admission/outcome barriers fail terminally on journal
+storage errors, preventing retry/fallback effects. Exact compaction checkpoints
+are synced before completion and replayed on reopen without another summary call. Model-change retirement
+still deletes native evidence. The additive protected runtime-adapter `sessionTurn` descriptor binds known host
+or instance ownership append-only, separately from the existing `sessionRecovery`
+capability. Resolver overrides/private evaluation refuse it; backup/retry attempts
+strip it. P2-P6 host reconciliation, model-switch/handoffs, queue/delegation work
+remain pending.
 
 An existing current-uid-owned Pi 0.99 root such as 0755 is tightened to 0700
 through a pinned no-follow descriptor before creating v2 data. Group/other-writable

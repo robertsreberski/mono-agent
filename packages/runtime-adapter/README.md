@@ -99,6 +99,16 @@ proves the exact session/model/tip after successful native close. Recovery appen
 nothing and returns false when the tail cannot be proven safe. It does not change
 the durable history record format.
 
+`RuntimeRunOptions.sessionTurn` is an additive, protected host-owned descriptor
+with `kind` (`host` or `instance`), `ownerKey`, `historyBucket` (physical history
+bucket for hosts, null for instances), `turnId`, `handleId` and `baseRevision`
+(number or null). It binds native ownership append-only without changing journal
+identity or rewriting the unbound header. It does **not** enable terminal recovery
+or host crash adoption. The handle must match the actual primary session; resolver
+plugins cannot override it, and every retry/backup drops it. Hosts use their run
+ID; persistent subagents use their turn token. Manual execution is explicitly
+synthetic. Uncoordinated callers may omit it; their ownership remains unbound.
+
 The agent harness supplies the active provider-session epoch automatically for
 continuous conversations and protects it from route-attempt overrides. Direct
 runtime callers that need attribution continuity across calls must reuse a safe,
@@ -274,6 +284,7 @@ RuntimeModelReference
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
+RuntimeSessionTurnDescriptor
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity

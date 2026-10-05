@@ -341,6 +341,8 @@ export class MonoAgentHarness implements AgentHarness {
           loadToolHistoryProjection(this.options, conversationId, runId, history)?.text),
         sessionId,
         providerSessionId: sessionId,
+        sessionTurn: { kind: "host", ownerKey: this.options.toolHistory?.logicalConversationId(conversationId) ?? conversationId,
+          historyBucket: conversationId, turnId: `synthetic:manual:${runId}`, handleId: sessionId, baseRevision: revision },
         sessionKeepAlive: true,
         sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
         piSessionsRoot: this.options.piSessionsRoot,
@@ -1278,6 +1280,7 @@ export class MonoAgentHarness implements AgentHarness {
           providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
+            ...(coordinatedProviderAttemptEligibleForSync ? { turnRevision: coordinatedProviderSessionRevision } : {}),
             ...(this.options.historyStore?.providerSessionRecovery === "v1" && coordinatedProviderAttemptEligibleForSync
               ? { recoveryRevision: coordinatedProviderSessionRevision } : {}),
             onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },

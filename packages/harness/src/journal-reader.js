@@ -20,6 +20,7 @@ export class JournalReader {
   constructor(path, root, handle, identity, directories, ownerOnly = true) {
     this.path = path; this.root = root; this.handle = handle;
     this.identity = identity; this.directories = directories; this.ownerOnly = ownerOnly;
+    this.cache = new Map(); this.cacheBytes = 0; this.cacheVersion = identity; this.cacheLimit = 8 * 1024 * 1024;
   }
   /** @param {string} filename @param {string} sessionsRoot @param {{ownerOnly?:boolean}} [options] */
   static async open(filename, sessionsRoot, { ownerOnly = true } = {}) {
@@ -41,6 +42,23 @@ export class JournalReader {
       const reader = new JournalReader(path, root, handle, identity, directories, ownerOnly);
       await reader.assertIdentity(); return reader;
     } catch (error) { await handle.close(); throw error; }
+  }
+  clearCache() { this.cache.clear(); this.cacheBytes = 0; }
+  remember(address, record) {
+    if (!["message", "compaction"].includes(record.kind) && !(record.kind === "tool_result" && record.payload.phase === "returned")) return;
+    if (address.length > this.cacheLimit) return;
+    const key = `${address.offset}:${address.length}`;
+    if (this.cache.has(key)) return;
+    this.cache.set(key, structuredClone(record)); this.cacheBytes += address.length;
+    while (this.cacheBytes > this.cacheLimit || this.cache.size > 512) {
+      const oldest = this.cache.keys().next().value;
+      this.cacheBytes -= Number(oldest.split(":")[1]); this.cache.delete(oldest);
+    }
+  }
+  cached(address) {
+    const key = `${address.offset}:${address.length}`; const value = this.cache.get(key);
+    if (!value) return undefined;
+    this.cache.delete(key); this.cache.set(key, value); return structuredClone(value);
   }
   async assertIdentity() {
     for (const [path, identity] of this.directories) {
@@ -69,7 +87,8 @@ export class JournalReader {
         if (end < 0 || end >= bytesRead) break;
         const last = chunk.subarray(start, end);
         const bytes = fragments.length ? Buffer.concat([...fragments, last], fragmentBytes + last.length) : last;
-        await visit(parse(bytes), { offset: lineOffset, length: bytes.length });
+        const address = { offset: lineOffset, length: bytes.length }; const record = parse(bytes);
+        await visit(record, address); this.remember(address, record);
         completeBytes = offset + end + 1; lineOffset = completeBytes;
         fragments = []; fragmentBytes = 0; start = end + 1;
       }
@@ -115,9 +134,13 @@ export class JournalReader {
   /** @param {{offset:number,length:number}} address */
   async read(address) {
     const stat = await this.assertIdentity();
+    if (stat.size !== this.cacheVersion.size || stat.mtimeMs !== this.cacheVersion.mtimeMs || stat.ctimeMs !== this.cacheVersion.ctimeMs) this.clearCache();
+    this.cacheVersion = stat;
     const { offset, length } = address;
     if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 1
       || offset + length >= stat.size) fail();
+    const cached = this.cached(address);
+    if (cached) { await this.assertIdentity(); return cached; }
     const bytes = Buffer.alloc(length + 1);
     let count = 0;
     while (count < bytes.length) {
@@ -125,7 +148,7 @@ export class JournalReader {
       if (!bytesRead) fail(); count += bytesRead;
     }
     if (bytes[length] !== 10) fail();
-    await this.assertIdentity(); return parse(bytes.subarray(0, length));
+    await this.assertIdentity(); const record = parse(bytes.subarray(0, length)); this.remember(address, record); return record;
   }
   async close() { await this.handle.close(); }
 }

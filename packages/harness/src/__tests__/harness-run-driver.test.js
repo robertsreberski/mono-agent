@@ -1,15 +1,19 @@
 import { createRetryStream } from "../retry-stream.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+vi.mock("@earendil-works/pi-agent-core", { spy: true });
+import * as agentCore from "@earendil-works/pi-agent-core";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import { buildHarnessSessionContext } from "../session-context.js";
 import { MemorySessionRepo } from "../session-store.js";
 import { createRunDriver } from "../run-driver.js";
 
-async function harness(responses, retry, modelDef = {}) {
-  const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture", ...modelDef }], tokensPerSecond: undefined });
+async function harness(responses, retry, modelDef = {}, tools = [], tokensPerSecond = undefined) {
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "retry-fixture", ...modelDef }], tokensPerSecond });
   const models = createModels(); models.setProvider(faux.provider); faux.setResponses(responses);
   const repo = new MemorySessionRepo(); const raw = await repo.create();
   const adapter = createRunDriver(raw, {
-    models, model: faux.getModel(), tools: [], systemPrompt: "Fictional test.", thinkingLevel: "off",
+    models, model: faux.getModel(), tools, systemPrompt: "Fictional test.", thinkingLevel: "off",
     retry: { enabled: true, maxRetries: 2, baseDelayMs: 0, ...retry },
   });
   return { adapter, raw, faux };
@@ -151,4 +155,159 @@ it("does not emit retry lifecycle after consumer exit while a retryable result s
   const next = iterator.next(); await entered; const returned = iterator.return(); resolveResult(message);
   await next; await returned; await expect(stream.result()).rejects.toThrow("consumer closed");
   expect(calls).toBe(1); expect(events).toEqual([]);
+});
+
+it.each(["host", "instance"])("binds authoritative %s ownership append-only without enabling recovery", async (kind) => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional reply.")])]);
+  const descriptor = { kind, ownerKey: "fictional-owner", historyBucket: kind === "host" ? "fictional-bucket" : null,
+    turnId: "descriptor-turn", handleId: raw.metadata.id, baseRevision: kind === "host" ? 3 : null };
+  try {
+    await adapter.beginTurn(descriptor.turnId, kind, descriptor); await adapter.prompt("Fictional input."); await adapter.endTurn("completed");
+    expect(raw.validator.owner).toEqual({ kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket });
+    expect(raw.validator.turns.get(descriptor.turnId).start.payload.identitySource).toBe(kind);
+    expect(raw.validator.handleBindings.get(raw.metadata.id)).toMatchObject({ baseRevision: descriptor.baseRevision, authoritative: true });
+    const bindings = raw.records.filter((record) => record.kind === "owner_binding"); expect(bindings.map((record) => record.payload.kind)).toEqual(["unbound", kind]);
+    expect(raw.metadata.ownership).toBeUndefined(); // immutable header is not rewritten
+    const seq = raw.seq;
+    await expect(adapter.beginTurn("wrong-owner-turn", kind, { ...descriptor, turnId: "wrong-owner-turn", ownerKey: "other-owner" })).rejects.toThrow("ownership");
+    expect(raw.seq).toBe(seq); expect(await raw.getOpenTurns()).toEqual([]);
+    await expect(adapter.beginTurn("wrong-logical-turn", kind, descriptor)).rejects.toThrow("sessionTurn");
+    expect(raw.seq).toBe(seq);
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+const fictionalTool = (name, execute) => ({ name, description: "Fictional effect", parameters: { type: "object", properties: {} }, execute });
+it("fsyncs logical input, assistant calls, started admission and parallel outcomes before dispatch/return", async () => {
+  let raw, durableSeq = 0, effects = 0;
+  const tools = ["One", "Two"].map((name) => fictionalTool(name, async (callId) => {
+    expect(raw.validator.calls.get(`${raw.activeOperationId()}\0${callId}`).admission).toBe("started");
+    expect(durableSeq).toBe(raw.seq); effects += 1;
+    return { content: [{ type: "text", text: `${name} fictional outcome` }] };
+  }));
+  const fixture = await harness([(context) => {
+    expect([...raw.validator.turns.values()].at(-1).inputs.size).toBe(1); expect(durableSeq).toBe(raw.seq);
+    return fauxAssistantMessage([fauxToolCall("One", {}, { id: "one" }), fauxToolCall("Two", {}, { id: "two" })]);
+  }, () => {
+    expect(raw.outcomes.size).toBe(2); expect(durableSeq).toBe(raw.seq); return fauxAssistantMessage([fauxText("done")]);
+  }], undefined, {}, tools); raw = fixture.raw;
+  raw.io = { append: async () => {}, sync: async () => { durableSeq = raw.seq; } };
+  try { expect((await fixture.adapter.prompt("Fictional input.")).status).toBe("completed"); expect(effects).toBe(2);
+    expect(raw.records.filter((record) => record.kind === "tool_result" && record.payload.phase === "returned")).toHaveLength(2);
+    expect([...raw.validator.calls.values()].every((call) => call.placed)).toBe(true);
+  } finally { await fixture.adapter.close(); await raw.close(); }
+});
+
+it.each(["input", "assistant", "admitted", "started", "returned"])("fails terminally at the %s fsync barrier without another effect/provider request", async (phase) => {
+  let effects = 0;
+  const { adapter, raw, faux } = await harness([fauxAssistantMessage([fauxToolCall("Effect", {}, { id: "effect" })]), fauxAssistantMessage([fauxText("must not dispatch")])], undefined, {},
+    [fictionalTool("Effect", async () => { effects += 1; return { content: [{ type: "text", text: "observed" }] }; })]);
+  raw.io = { append: async () => {}, sync: async () => {
+    const record = raw.records.at(-1); const matches = phase === "input" ? record.kind === "input_consumed"
+      : phase === "assistant" ? record.kind === "tool_call" && record.payload.admission === "observed"
+      : phase === "returned" ? record.kind === "tool_result" && record.payload.phase === "returned"
+      : record.kind === "tool_call" && record.payload.admission === phase;
+    if (matches) throw Object.assign(new Error("Fictional barrier failure"), { code: "ENOSPC" });
+  } };
+  try { await expect(adapter.prompt("Fictional input.")).rejects.toMatchObject({ name: "JournalStorageError", code: "ENOSPC" });
+    expect(effects).toBe(phase === "returned" ? 1 : 0); expect(faux.state.callCount).toBe(phase === "input" ? 0 : 1);
+  } finally { await adapter.close().catch(() => {}); await raw.close().catch(() => {}); }
+});
+
+it("drains already admitted parallel effects after a poisoned outcome barrier before releasing the driver", async () => {
+  let started = 0, releaseSecond, bothStarted; const waitBoth = new Promise((resolve) => { bothStarted = resolve; });
+  const waitSecond = new Promise((resolve) => { releaseSecond = resolve; });
+  const tools = ["First", "Second"].map((name) => fictionalTool(name, async () => {
+    started += 1; if (started === 2) bothStarted(); await waitBoth; if (name === "Second") await waitSecond;
+    return { content: [{ type: "text", text: "Fictional completed effect" }] };
+  }));
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxToolCall("First", {}, { id: "first" }), fauxToolCall("Second", {}, { id: "second" })])], undefined, {}, tools);
+  raw.io = { append: async () => {}, sync: async () => { if (raw.records.at(-1).kind === "tool_result") throw new Error("Fictional poisoned outcome"); } };
+  let settled = false; const pending = adapter.prompt("Fictional input."); void pending.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    await waitBoth; await new Promise((resolve) => setImmediate(resolve)); expect(raw.failure).toBeTruthy(); expect(settled).toBe(false);
+    releaseSecond(); await expect(pending).rejects.toMatchObject({ name: "JournalStorageError" }); expect(started).toBe(2);
+  } finally { releaseSecond(); await adapter.close().catch(() => {}); await raw.close().catch(() => {}); }
+});
+
+it("does not project an orphan result after abort mid tool-call stream, including provider transformation after compaction", async () => {
+  let effects = 0; const fixture = await harness([fauxAssistantMessage([fauxToolCall("Effect", { note: "Fictional streamed arguments repeated to exercise mid-stream cancellation" }, { id: "draft-call" })])], { enabled: false }, {},
+    [{ ...fictionalTool("Effect", async () => { effects += 1; return { content: [] }; }), parameters: { type: "object", properties: { note: { type: "string" } } } }], 1000);
+  const { adapter, raw, faux } = fixture; let midStream = false;
+  adapter.subscribe((event) => { if (event.type === "message_update" && event.message.content.some((part) => part.type === "toolCall")) { midStream = true; void adapter.abort(); } });
+  try {
+    expect((await adapter.prompt("Fictional tool request.")).status).toBe("aborted"); expect(midStream).toBe(true); expect(effects).toBe(0);
+    const entries = await raw.getEntries(); const draft = entries.findLast((entry) => entry.message?.role === "assistant").message;
+    expect(draft.stopReason).toBe("aborted"); expect(draft.content.some((part) => part.type === "toolCall")).toBe(true);
+    expect([...raw.validator.calls.values()]).toEqual([]);
+    const repairs = await raw.getRepairEntries(); expect(repairs).toHaveLength(1); expect(repairs[0].calls).toEqual([]);
+    const assertTranscript = async () => {
+      const context = buildHarnessSessionContext(await raw.getEntries(), { repairs: await raw.getRepairEntries() });
+      const provider = transformMessages(context, faux.getModel());
+      expect(provider.filter((message) => message.role === "toolResult")).toEqual([]);
+      expect(provider.filter((message) => message.role === "assistant")).toEqual([]);
+      expect(JSON.stringify(provider)).not.toContain("draft-call");
+    };
+    await assertTranscript();
+    // Even a legacy checkpoint that retained the draft and its old synthetic
+    // result must not send a tool_result whose tool_use Pi discards.
+    await raw.appendCompaction({ summary: "Fictional summary.", retainedTail: [draft,
+      { role: "toolResult", toolCallId: "draft-call", toolName: "Effect", content: [], isError: true, projectionOnly: true, timestamp: 2 }], tokensBefore: 100 });
+    await assertTranscript();
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("rejects provider schema evidence before append without poisoning or preventing the next turn", async () => {
+  let effects = 0; const { adapter, raw, faux } = await harness([
+    fauxAssistantMessage([fauxToolCall("Effect", {}, { id: "duplicate" }), fauxToolCall("Effect", {}, { id: "duplicate" })]),
+    fauxAssistantMessage([fauxText("Fictional next turn.")]),
+  ], { enabled: false }, {}, [fictionalTool("Effect", async () => { effects += 1; return { content: [] }; })]);
+  try {
+    await expect(adapter.prompt("Fictional invalid calls.")).rejects.toThrow("Invalid provider tool-call evidence");
+    expect(raw.failure).toBeNull(); expect(effects).toBe(0); expect([...raw.validator.calls.values()]).toEqual([]); expect(await raw.getOpenOperations()).toEqual([]);
+    expect((await raw.getTurn(raw.records.findLast((record) => record.kind === "turn_start").turnId)).payload.status).toBe("failed");
+    expect((await adapter.prompt("Fictional next input.")).status).toBe("completed"); expect(faux.state.callCount).toBe(2); await raw.sync();
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("limits after_tool merging to Pi's supported result keys", async () => {
+  const original = { content: [{ type: "text", text: "Fictional original" }], details: { original: true }, custom: "keep-original" };
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxToolCall("Effect", {}, { id: "merged" })]), fauxAssistantMessage([fauxText("done")])], undefined, {}, [fictionalTool("Effect", async () => original)]);
+  let executionResult; adapter.subscribe((event) => { if (event.type === "tool_execution_end") executionResult = event.result; });
+  adapter.hooks.on("after_tool", () => ({ content: [{ type: "text", text: "Fictional override" }], details: { updated: true }, usage: { output: 3 }, terminate: false, isError: true, custom: "must-not-merge", unrelated: true }));
+  try {
+    expect((await adapter.prompt("Fictional input.")).status).toBe("completed");
+    const returned = [...raw.outcomes.values()][0].record.payload.message;
+    expect(returned).toMatchObject({ content: [{ type: "text", text: "Fictional override" }], details: { updated: true }, usage: { output: 3 }, isError: true });
+    expect(executionResult).toMatchObject({ content: [{ type: "text", text: "Fictional override" }], details: { updated: true }, usage: { output: 3 }, terminate: false, custom: "keep-original" });
+    expect(executionResult.unrelated).toBeUndefined();
+    // Foreign hook keys must not enter host finalization or the returned SDK result.
+    expect(original.custom).toBe("keep-original"); expect(returned.unrelated).toBeUndefined();
+  } finally { await adapter.close(); await raw.close(); }
+});
+
+it("guards nested Pi runToolCall before any unjournaled effect with an explicit error, not a TypeError", async () => {
+  let wrappedTools, nested, innerEffects = 0;
+  const real = (await vi.importActual("@earendil-works/pi-agent-core")).runAgentLoop; const spy = vi.spyOn(agentCore, "runAgentLoop").mockImplementation((prompts, context, ...rest) => { wrappedTools = context.tools; return real(prompts, context, ...rest); });
+  const tools = [fictionalTool("Outer", async (_id, _args, signal) => {
+    nested = await agentCore.runToolCall({ type: "toolCall", id: "nested", name: "Inner", arguments: {} }, {
+      assistantMessage: fauxAssistantMessage([]), context: { messages: [], tools: wrappedTools }, tools: wrappedTools, signal,
+    }); return { content: [{ type: "text", text: "Outer fictional result" }] };
+  }), fictionalTool("Inner", async () => { innerEffects += 1; return { content: [] }; })];
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxToolCall("Outer", {}, { id: "outer" })]), fauxAssistantMessage([fauxText("done")])], undefined, {}, tools);
+  try {
+    expect((await adapter.prompt("Fictional nested request.")).status).toBe("completed"); expect(innerEffects).toBe(0);
+    expect(nested.isError).toBe(true); expect(nested.result.content[0].text).toContain("nested calls are unsupported");
+    expect(nested.result.content[0].text).not.toContain("messageId"); expect([...raw.validator.calls.values()].map((call) => call.callId)).toEqual(["outer"]);
+  } finally { spy.mockRestore(); await adapter.close(); await raw.close(); }
+});
+
+it("abortOpenOperations accounts only for open operations, not earlier completed model work", async () => {
+  const { adapter, raw } = await harness([fauxAssistantMessage([fauxText("Fictional complete operation.")])]);
+  try {
+    await adapter.beginTurn("abort-host-turn", "host"); await adapter.prompt("Fictional completed input.");
+    const completed = raw.validator.turns.get("abort-host-turn").operations[0];
+    await raw.openOperation("abort-open", {}); await adapter.abortOpenOperations();
+    const repairs = await raw.getRepairEntries(); expect(repairs).toHaveLength(1); expect(repairs[0].operationIds).toEqual(["abort-open"]);
+    expect(raw.validator.operations.get(completed).end.payload.status).toBe("completed"); expect(await raw.getOpenOperations()).toEqual([]);
+  } finally { await adapter.close(); await raw.close(); }
 });

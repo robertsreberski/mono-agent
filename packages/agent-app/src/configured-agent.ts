@@ -835,6 +835,10 @@ export function buildSubagentsOptions(
       ...(request.liveInput !== undefined && steeringSupported ? { liveInput: request.liveInput } : {}),
       ...childCapabilityOptions,
       ...(recovery ? { sessionRecovery: recovery } : {}),
+      ...(request.instance && request.turnToken ? { sessionTurn: {
+        kind: "instance" as const, ownerKey: request.instance.id, historyBucket: null,
+        turnId: request.turnToken, handleId: request.instance.sessionId, baseRevision: null,
+      } } : {}),
       ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
       ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),

@@ -236,7 +236,19 @@ async function salvageOwnedJournal(path, root, sessionId) {
       if (first) { first = false; return; }
       store.apply(record, address);
     });
-    return await collectEvidence(store.entries, new Map([["main", store.tip]]), new Map(),
+    const result = await collectEvidence(store.entries, new Map([["main", store.tip]]), new Map(),
       (await store.getOpenTurns()).length > 0, evidence.torn, (entry) => store.getEntry(entry.id));
+    const visible = new Set((await store.getEntries()).map((entry) => entry.id));
+    for (const call of store.validator.calls.values()) {
+      if (!call.result || call.placed || !visible.has(call.messageId)) continue;
+      const returned = await store.getReturnedOutcome(call.operationId, call.callId);
+      if (!returned) continue;
+      const text = returned.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text.slice(-4096)).join("\n").slice(-4096);
+      const at = result.outcomeUnknown.findIndex((item) => item.name === call.name);
+      if (at >= 0) result.outcomeUnknown.splice(at, 1);
+      result.completed.push({ name: call.name, result: text });
+    }
+    result.omittedCompleted += Math.max(0, result.completed.length - 8); result.completed = result.completed.slice(-8);
+    return result;
   } finally { await reader.close(); }
 }

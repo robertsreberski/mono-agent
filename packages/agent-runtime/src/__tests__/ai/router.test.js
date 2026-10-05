@@ -777,6 +777,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const sessionKeys = {
       sessionId: "host-session", providerSessionId: "provider-session",
       sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+      sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "host-session", baseRevision: 1 },
     };
     await router.run("sys", { messages: [], ...sessionKeys, providerAttributionSessionId: "epoch" });
     expect(executeMock).toHaveBeenCalledTimes(4);
@@ -807,7 +808,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       });
       const result = await router.run("sys", {
         messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
-        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 }, sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "coordinated-id", baseRevision: 1 },
       });
       expect(result.providerSessionId).toBeUndefined();
       expect(result.providerSessionRecovery).toBeUndefined();
@@ -817,7 +818,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       const options = executeMock.mock.calls.at(-1)[1];
       expect(options.model).toEqual(outcome === "primary retry" ? primary : backup);
       expect(options.providerAttributionSessionId).toBe("coordinated-id");
-      for (const key of ["sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+      for (const key of ["sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
         expect(options).not.toHaveProperty(key);
       }
       expect(result.failoverHistory).toHaveLength(1);
@@ -843,9 +844,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
     const result = await router.run("sys", {
       messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
-      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 }, sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "coordinated-id", baseRevision: 1 },
     });
-    for (const key of ["sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+    for (const key of ["sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
       expect(executeMock.mock.calls[0][1]).not.toHaveProperty(key);
     }
     expect(result.providerSessionId).toBeUndefined();
@@ -1378,4 +1379,19 @@ it("attributes a primary user cancellation without changing its result or trying
   expect(result.failoverHistory).toEqual([expect.objectContaining({ model, failureKind: "cancelled" })]);
   expect(executeMock).toHaveBeenCalledTimes(1);
   expect(events.filter((event) => event.type.startsWith("provider_failover") || event.type === "provider_retry_started")).toEqual([]);
+});
+
+it("rejects an attempt resolver overriding the protected native turn descriptor", async () => {
+  const primary = modelRef("openai-codex", "primary");
+  const descriptor = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "run", handleId: "owned", baseRevision: 0 };
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { sessionTurn: descriptor } }) });
+  const result = await router.run("sys", { model: primary, messages: [], sessionTurn: descriptor });
+  expect(result.error).toContain("cannot override sessionTurn"); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it.each(["safety_journal_storage_failed", "safety_session_turn_contract"])("never retries or fails over a terminal native failure (%s)", async (failureKind) => {
+  executeMock.mockResolvedValue({ error: "503 network timeout while persisting evidence", failureKind, events: [] });
+  const primary = modelRef("openai-codex", "primary"); const router = createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, modelRef("anthropic", "backup")] });
+  const result = await router.run("sys", { model: primary, messages: [] });
+  expect(result.failureKind).toBe(failureKind); expect(executeMock).toHaveBeenCalledTimes(1);
 });

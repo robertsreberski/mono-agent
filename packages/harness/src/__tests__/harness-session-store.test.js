@@ -93,14 +93,16 @@ describe("mono-agent harness session store", () => {
     await s.close();
     expect(await repo.list()).toHaveLength(1);
   });
-  it("repairs only a torn owned line, leaving the complete turn-open marker pending", async () => {
+  it("repairs a torn owned tail and seals the surviving turn as interrupted without changing native context", async () => {
     const repo = new JsonlSessionRepo({ sessionsRoot: await root() });
     const s = await repo.create({ id: "torn-session" });
     await s.beginTurn("interrupted", {}); await s.appendMessage(message);
     await s.close(); await appendFile(s.metadata.path, '{"kind":"turn_close"');
     const reopened = await repo.open(s.metadata);
     expect(await reopened.getEntries()).toHaveLength(1);
-    expect(await reopened.getOpenTurns()).toHaveLength(1);
+    expect(await reopened.getOpenTurns()).toEqual([]);
+    expect(await reopened.getTurn("interrupted")).toMatchObject({ payload: { status: "interrupted" } });
+    expect([...reopened.interruptions.values()].find((repair) => repair.turnId === "interrupted")).toMatchObject({ cause: "crashed", draftLossPossible: true });
     await reopened.close();
     expect((await readFile(s.metadata.path, "utf8")).endsWith("\n")).toBe(true);
   });
@@ -118,7 +120,7 @@ describe("mono-agent harness session store", () => {
     expect(order).toEqual(["append", "file+directory-sync", "host-history-commit"]);
     await s.close();
   });
-  it("detects an unfinished turn after killing a child between append and sync", async () => {
+  it("accounts for an unfinished turn after SIGKILL without claiming it completed", async () => {
     const r = await root();
     const child = fork(new URL("./fixtures/append-worker.mjs", import.meta.url), [r], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
     try {
@@ -127,7 +129,9 @@ describe("mono-agent harness session store", () => {
       const exit = once(child, "exit"); child.kill("SIGKILL"); await exit;
       const repo = new JsonlSessionRepo({ sessionsRoot: r });
       const s = await repo.open((await repo.list())[0]);
-      expect(await s.getOpenTurns()).toHaveLength(1);
+      expect(await s.getOpenTurns()).toEqual([]);
+      expect([...s.interruptions.values()]).toHaveLength(1);
+      expect([...s.validator.turns.values()].at(-1).end.payload.status).toBe("interrupted");
       expect(await s.getEntries()).toHaveLength(1);
       await s.close();
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
@@ -398,4 +402,16 @@ it("does not reclaim context-bearing or future native creation artifacts", async
   const path = `${metadata.path}.creating`; await rename(metadata.path, path); const bytes = await readFile(path);
   await expect(repo.list()).rejects.toThrow("Invalid"); expect((await readFile(path)).equals(bytes)).toBe(true);
   expect((await stat(join(r, "mono-v2", "locks", `${metadata.journalId}.sqlite`))).isFile()).toBe(true);
+});
+
+it("rejects pre-write schema validation without I/O or poison and can close the failed operation", async () => {
+  const store = await new MemorySessionRepo().create(); await store.beginTurn("validation-turn"); await store.openOperation("validation-op", {});
+  const messageId = await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call", name: "Effect", arguments: {} }], stopReason: "toolUse" });
+  let appends = 0; store.io = { append: async () => { appends += 1; }, sync: async () => {} };
+  const payload = { callId: "call", name: "Effect", messageId, admission: "observed" };
+  await store.write("tool_call", payload, { operationId: "validation-op" }); const seq = store.seq;
+  await expect(store.write("tool_call", payload, { operationId: "validation-op" })).rejects.toThrow("Invalid mono-agent harness journal");
+  expect(store.failure).toBeNull(); expect(store.seq).toBe(seq); expect(appends).toBe(1);
+  await store.closeOperation("validation-op", "failed"); await store.endTurn("validation-turn", "failed"); await store.sync();
+  await store.beginTurn("next-validation-turn"); await store.endTurn("next-validation-turn", "completed"); await store.close();
 });

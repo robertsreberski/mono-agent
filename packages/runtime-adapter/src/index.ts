@@ -154,6 +154,7 @@ export type {
   RuntimePromptOverrides,
   RuntimeResult,
   RuntimeRunOptions,
+  RuntimeSessionTurnDescriptor,
   RuntimeSubagentActivityEvent,
   RuntimeSubagentActivityPhase,
   RuntimeSubagentIdentity,

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add protected host and persistent-subagent native turn descriptors; bind journal
+  ownership append-only without granting terminal recovery or host crash adoption.
+  Fsync native admission/outcome boundaries before effects, fail terminally on
+  poisoned storage, project idempotent interruption evidence without tool replay,
+  and replay exact durable compaction checkpoints without new summary calls.
+  Exclude aborted draft calls from provider repair pairs, account interruptions
+  per operation and suspended work without resuming it, preserve validation/host
+  contract classification, and cache repair projection for long sessions.
+  Preserve every file-fsync effect barrier while avoiding repeated directory
+  fsyncs, immutable-envelope reads and unchanged-journal scans; invalidate cached
+  identity/state on mutations and roll resumed provider suspensions back as
+  unreceipted failures.
+
+
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 

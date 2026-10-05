@@ -447,6 +447,17 @@ export interface RuntimeMcpAppHost {
   }): Promise<AgentReplyPartFailure>;
 }
 
+/** Host-owned native turn identity; distinct from terminal-recovery authority. */
+export interface RuntimeSessionTurnDescriptor {
+  readonly kind: "host" | "instance";
+  readonly ownerKey: string;
+  /** Physical canonical-history bucket; null for instance-owned execution. */
+  readonly historyBucket: string | null;
+  readonly turnId: string;
+  readonly handleId: string;
+  readonly baseRevision: number | null;
+}
+
 export interface RuntimeRunOptions {
   /** Stable configured profile, never executable authority or retained controllers. */
   readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
@@ -458,6 +469,8 @@ export interface RuntimeRunOptions {
   readonly finishSilentlyController?: { eligible(): boolean };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
+  /** Protected host-owned journal/turn binding, not permission to recover canonical history. */
+  readonly sessionTurn?: RuntimeSessionTurnDescriptor | undefined;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;

@@ -78,9 +78,36 @@ acquisition and identity validation; context-bearing/unknown artifacts pin state
 Open legacy operations instead create a clean break without replay or source
 mutation. No unreleased mono-v1 converter or mixed-binary writer mode exists.
 
-P1a preserves abort-on-reopen and destructive model-change retirement. Native
-interruption repair, host crash adoption, handoffs and durable live-input queues
-are not implemented by the schema alone.
+The driver fsyncs logical turn/input admission before provider dispatch,
+assistant/call evidence before tools, started admission before host invocation,
+and observed outcomes before tool execution resolves (including parallel batches).
+Existing published journals keep each file-fsync barrier; directory fsync is
+reserved for create/rename/unlink and incomplete-publication recovery. Immutable
+parsed envelopes have an 8 MiB/512-record LRU cache (large records still stream).
+Read batches serialize with appends and validate pinned path/fd/version before
+and after cache use. A single bounded closed-store index can be reused only for
+an exact unchanged inode/size/mtime/ctime and matching header identity; otherwise
+reopen fully scans and validates. Rewind, retirement and identity/version changes
+invalidate the appropriate caches. The writer lock is still released at close.
+A poisoned journal aborts admission and is terminal, never provider failover.
+Pre-write schema rejection fails the attempt without poisoning the healthy writer;
+I/O, fsync and post-write identity/application faults remain terminal.
+
+Reopen appends an idempotent interruption account and interrupted scope ends,
+without running any provider or tool. Prompt-only missing-result evidence
+separates crashed outcome-unknown (check whether it took effect), user-interrupted,
+skipped and superseded work. Returned outcomes survive before native envelope
+placement; synthetic projection never becomes a successful recovery receipt.
+Provider suspension stays distinct: reopen accounts for it as suspended, not resumed, without invoking its deferred continuation.
+Non-durable streamed drafts may have been lost. Current instructions/tools are
+rebuilt by the host, not historical prose.
+
+Compaction persists the exact summary envelope, ordered preserved message IDs,
+explicit derived messages, count/model/coverage/version metadata and syncs before
+completion/use. Process reopen replays that checkpoint with no summary call or
+new summary timestamp. P2 host dirty-turn adoption, P3 non-destructive model
+switch/handoffs, P4 further loop policy, P5 durable live queues and P6 delegation
+coordination remain separate work. Model-change retirement is still destructive.
 
 ## Public API
 
@@ -102,14 +129,21 @@ Every symbol exported by each public code entrypoint is listed below.
 JOURNAL_FORMAT
 JOURNAL_KINDS
 JOURNAL_VERSION
+JournalStorageError
 JournalValidator
 JsonlSessionRepo
 MemorySessionRepo
+NativeSuspendedError
 SessionStore
 buildHarnessSessionContext
 createRunDriver
+isJournalStorageError
 projectContext
+projectInterruptions
+recordInterruption
+repairInterruptedSession
 validateJournalHeader
+validateSessionTurn
 ```
 
 **`@mono-agent/harness/compaction-kit/compaction.js`**
@@ -152,6 +186,7 @@ JournalReader
 ```text
 JournalValidator
 validateJournalHeader
+validateSessionTurn
 ```
 
 **`@mono-agent/harness/journal-types.js`**

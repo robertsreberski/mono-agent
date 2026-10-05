@@ -266,9 +266,18 @@ first attempt provides a receipt for a closed operation. Recovery reserves and
 reopens the exact record, checks model, revision, tip, ancestry, settled operation
 and applied input identities, validates the effective provider projection, and
 fsyncs the transcript and directory before canonical history advances one revision.
-It appends nothing to Pi. Pi filters interrupted assistant prose and reasoning;
-completed native tool turns and the cancelled user input remain. Pi's serializers
-supply error results for surviving orphaned tool calls. Canonical history keeps
+Receipt settlement itself appends nothing. Native reopen separately writes
+idempotent, per-operation interruption accounts and seals interrupted work without
+running a model or tool. The next request projects a prompt-only interruption
+notice; completed native tool turns and the cancelled input remain. Non-executable
+aborted/error/deferred assistant drafts never supply tool-call repair pairs.
+Missing results for executable admitted calls are explicit prompt-only accounts,
+not successful native receipts; crashed started work says to check whether it
+took effect. Provider suspension is accounted as suspended, not resumed, without
+a deferred continuation. A live suspension on a resumed session is an
+unreceipted failure: the native branch rolls back to its baseline, and no retained
+recovery-pending tail or successful receipt is created. This native repair is not
+P2 adoption of dirty host turns. Canonical history keeps
 the existing continuity account, including bounded partial prose and error detail;
 SessionHistory retains the same tool evidence. No cancelled/failed memory capture occurs.
 

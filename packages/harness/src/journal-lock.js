@@ -66,14 +66,14 @@ export class JournalLocks {
   }
   async ensureFile(path) {
     await this.assertRoot();
-    let handle;
+    let handle, created = false;
     try {
       handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      await handle.sync();
+      created = true; await handle.sync();
     } catch (error) { if (error.code !== "EEXIST") throw error; }
     finally { await handle?.close(); }
     const identity = await lstat(path); secure(identity);
-    await this.syncDirectory();
+    if (created) await this.syncDirectory();
     return identity;
   }
   /** A failed attempt closes its connection; never retain a SQLite waiter. */

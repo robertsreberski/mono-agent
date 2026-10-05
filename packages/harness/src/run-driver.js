@@ -1,10 +1,12 @@
 // Own admission/queues/persistence, but depend on Pi's loop and all providers.
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { buildHarnessSessionContext } from "./session-context.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
+import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
+import { validateSessionTurn } from "./journal-schema.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
 export function createRunDriver(store, options) {
@@ -12,16 +14,35 @@ export function createRunDriver(store, options) {
   const registrations = new Map();
   const queue = new Map();
   const messageIds = new WeakMap();
+  const executions = new Set();
   let runId, controller, running;
   let turnId = null, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
-  async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic") {
+  async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
     if (turnId) throw new Error("Pi logical turn is already open");
-    await store.beginTurn(id, modelConfig(), source); turnId = id; promptCount = 0; initialInputKey = undefined;
+    if (descriptor) {
+      validateSessionTurn(descriptor, store.metadata.id);
+      if (source !== "synthetic" && (source !== descriptor.kind || id !== descriptor.turnId)) {
+        throw new TypeError("Logical turn does not match sessionTurn descriptor");
+      }
+      const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
+      if (store.validator.owner.kind !== "unbound" && (store.validator.owner.kind !== owner.kind
+        || store.validator.owner.ownerKey !== owner.ownerKey || store.validator.owner.historyBucket !== owner.historyBucket)) {
+        throw new Error("Native journal ownership does not match sessionTurn");
+      }
+    }
+    await store.beginTurn(id, modelConfig(), source); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined;
+    if (descriptor) {
+      const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
+      if (store.validator.owner.kind === "unbound") await store.write("owner_binding", owner);
+      await store.write("handle_binding", { handleId: descriptor.handleId, baseRevision: descriptor.baseRevision,
+        model: modelConfig().model, authoritative: true });
+      await store.sync();
+    }
   }
   async function endTurn(status) {
     if (!turnId) return;
-    const id = turnId; await store.endTurn(id, status); turnId = null; ownsTurn = false;
+    const id = turnId; await store.endTurn(id, status); await store.sync(); turnId = null; ownsTurn = false;
   }
   async function ensureTurn(cause) {
     if (turnId) return false;
@@ -29,7 +50,47 @@ export function createRunDriver(store, options) {
   }
   let closed = false, compactionArmed = false;
   let settings = { enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 };
-  let tools = options.tools || [];
+  function toolCall(toolCallId) { return store.validator.calls.get(`${runId}\0${toolCallId}`); }
+  function assertHealthy() { if (store.failure) { controller?.abort(store.failure); throw store.failure; } }
+  async function barrier() { try { await store.sync(); } catch (error) { controller?.abort(error); throw error; } assertHealthy(); }
+  function wrapTools(loadout) { return loadout.map((tool) => ({ ...tool,
+    async execute(toolCallId, args, signal, onUpdate) {
+      const operationId = runId; const call = toolCall(toolCallId);
+      if (!call || call.name !== tool.name || call.admission !== "admitted") {
+        throw new Error("Tool call has no durable model-issued admission; nested calls are unsupported");
+      }
+      const execution = (async () => {
+        assertHealthy();
+        await store.write("tool_call", { callId: toolCallId, name: tool.name, messageId: call.messageId, admission: "started" }, { operationId });
+        await barrier();
+        if (signal?.aborted) throw new Error("Tool execution interrupted before invocation");
+        let result, isError = false;
+        try { result = await tool.execute(toolCallId, args, signal, onUpdate); isError = result?.isError === true; }
+        catch (error) { result = { content: [{ type: "text", text: error?.message || String(error) }], details: {} }; isError = true; }
+        // Apply host finalization before capturing the observed outcome. Pi's
+        // ordinary hook catch must not swallow a journal admission/outcome fault.
+        try {
+          const after = await hooks("after_tool", { toolName: tool.name, toolCallId, ...result, isError });
+          if (after) {
+            const structuredContent = after.structuredContent ?? (after.content ? undefined : result?.structuredContent);
+            for (const key of ["content", "details", "usage", "terminate"]) if (after[key] != null) result = { ...result, [key]: after[key] };
+            if (structuredContent === undefined) delete result.structuredContent;
+            else result = { ...result, structuredContent };
+            isError = after.isError ?? isError;
+          }
+        } catch (error) { result = { content: [{ type: "text", text: error?.message || String(error) }], details: {} }; isError = true; }
+        const message = { role: "toolResult", toolCallId, toolName: tool.name, content: result?.content ?? [],
+          details: result?.details, usage: result?.usage, isError, timestamp: Date.now() };
+        await store.write("tool_result", { callId: toolCallId, name: tool.name, messageId: null, phase: "returned",
+          message, outcome: isError ? "error" : "success" }, { operationId });
+        await barrier();
+        return { ...result, isError };
+      })();
+      executions.add(execution);
+      try { return await execution; } finally { executions.delete(execution); }
+    },
+  })); }
+  let tools = wrapTools(options.tools || []);
   const retry = { enabled: true, maxRetries: 3, baseDelayMs: 1000, ...options.retry };
   if (!Number.isSafeInteger(retry.maxRetries) || retry.maxRetries < 0
     || !Number.isSafeInteger(retry.baseDelayMs) || retry.baseDelayMs < 0) throw new RangeError("Invalid Pi retry policy");
@@ -68,6 +129,10 @@ export function createRunDriver(store, options) {
       || ((event.type === "message_start" || event.type === "message_end") && event.message.role === "system")) return;
     if (event.type === "message_end") {
       if (event.message.role === "assistant") await hooks("after_response", { message: event.message });
+      if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
+        const calls = event.message.content.filter((part) => part.type === "toolCall");
+        if (new Set(calls.map((call) => call.id)).size !== calls.length) throw new TypeError("Invalid provider tool-call evidence: duplicate ID");
+      }
       const id = messageIds.get(event.message) || randomUUID();
       const isInput = event.message.role === "user" && !queue.has(id);
       const inputId = isInput ? currentInputId : (queue.has(id) ? id : null);
@@ -76,7 +141,7 @@ export function createRunDriver(store, options) {
       if (inputId && !store.validator.turns.get(turnId)?.inputs.has(inputId)) {
         await store.write("input_consumed", { inputId, messageId: entryId }, { operationId: runId });
       }
-      if (event.message.role === "assistant" && Array.isArray(event.message.content)) {
+      if (isExecutableAssistant(event.message) && Array.isArray(event.message.content)) {
         for (const call of event.message.content.filter((part) => part?.type === "toolCall")) {
           await store.write("tool_call", { callId: call.id, name: call.name, messageId: entryId, admission: "observed" }, { operationId: runId });
         }
@@ -84,6 +149,7 @@ export function createRunDriver(store, options) {
         await store.write("tool_result", { callId: event.message.toolCallId, name: event.message.toolName, messageId: entryId,
           outcome: event.message.isError ? "error" : "success" }, { operationId: runId });
       }
+      await barrier();
       const queued = queue.get(id);
       if (queued) queued.state = "placed";
       publish({ ...event, entryId });
@@ -105,8 +171,13 @@ export function createRunDriver(store, options) {
     try {
       await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
       let decision;
+      const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
+      const branchEntries = repairs.length ? buildHarnessSessionContext(nativeEntries, { repairs }).map((message, index) => ({
+        type: "message", message, id: nativeEntries.find((entry) => entry.type === "message" && entry.message === message)?.id ?? `derived:repair:${index}`,
+        parentId: null, timestamp: message.timestamp, seq: index,
+      })) : nativeEntries;
       for (const handler of registrations.get("before_compaction") || []) {
-        decision = await handler({ reason, branchEntries: await store.getEntries(), signal: context.abortSignal, context }, context);
+        decision = await handler({ reason, branchEntries, signal: context.abortSignal, context }, context);
         if (decision !== undefined) break;
       }
       if (!decision || decision.decline || !decision.compaction) {
@@ -115,8 +186,11 @@ export function createRunDriver(store, options) {
       }
       if (context.abortSignal.aborted) throw new Error("Pi compaction aborted");
       const id = await store.appendCompaction(decision.compaction);
+      await barrier();
       entry = await store.getEntry(id);
-      // Publication is after placement, never merely after summary generation.
+      // Publish completion only after the exact checkpoint and terminal
+      // operation marker are both durable, never after summary generation alone.
+      await store.closeOperation(operationId, "completed"); operationOpened = false; await barrier();
       ended = true;
       publish({ type: "compaction_end", reason, status: "completed", entry, compaction: entry });
       return entry;
@@ -131,7 +205,7 @@ export function createRunDriver(store, options) {
     }
   }
   async function requestContext() {
-    const messages = buildHarnessSessionContext(await store.getEntries());
+    const messages = buildHarnessSessionContext(await store.getEntries(), { repairs: await store.getRepairEntries() });
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
     return { messages: normalizeContext({ systemPrompt: options.systemPrompt,
@@ -151,7 +225,7 @@ export function createRunDriver(store, options) {
         promptCount += 1;
         const inputKey = JSON.stringify([text, promptOptions?.images ?? []]);
         initialInputKey ??= inputKey;
-        currentInputId = inputKey === initialInputKey ? `${turnId}:input:initial` : `synthetic:input:${randomUUID()}`;
+        currentInputId = inputKey === initialInputKey ? `input:${createHash("sha256").update(turnId).digest("hex")}` : `synthetic:input:${randomUUID()}`;
         await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
         const messages = buildHarnessSessionContext(await store.getEntries());
         /** @type {any[]} */
@@ -173,12 +247,15 @@ export function createRunDriver(store, options) {
             return { context: await requestContext() };
           },
           beforeToolCall: async ({ toolCall, args }) => {
+            assertHealthy();
             const result = await hooks("before_tool", { toolName: toolCall.name, toolCallId: toolCall.id, args });
+            const call = toolCall.name && store.validator.calls.get(`${id}\0${toolCall.id}`);
+            await store.write("tool_call", { callId: toolCall.id, name: toolCall.name, messageId: call.messageId,
+              admission: result?.block ? "blocked" : "admitted" }, { operationId: id });
+            await barrier();
             return result?.block ? { block: true, ...result.block } : undefined;
           },
-          afterToolCall: async ({ toolCall, result, isError }) => hooks("after_tool", {
-            toolName: toolCall.name, toolCallId: toolCall.id, ...result, isError,
-          }),
+
           onPayload: async (payload, model) => {
             const result = await hooks("before_payload", { payload, model: model || options.model });
             return result?.payload;
@@ -186,6 +263,7 @@ export function createRunDriver(store, options) {
         }, emit, controller.signal, (model, context, streamOptions) => /** @type {any} */ (createRetryStream(
           options.models, model, context, streamOptions, retry, emit,
         )));
+        assertHealthy();
         const entries = await store.getEntries();
         const final = [...entries].reverse().find((e) => e.type === "message" && e.message.role === "assistant")?.message;
         status = controller.signal.aborted || final?.stopReason === "aborted" ? "aborted"
@@ -202,7 +280,10 @@ export function createRunDriver(store, options) {
         error = { code: "run_failed", message: cause?.message || String(cause) };
         throw cause;
       } finally {
+        await Promise.allSettled([...executions]);
+        assertHealthy();
         if (opened && status !== "suspended") {
+          if (status === "aborted") await recordInterruption(store, turnId, "user_interrupted", [id]);
           await store.closeOperation(id, status);
           if (ownsTurn) await endTurn(status);
         }
@@ -240,13 +321,16 @@ export function createRunDriver(store, options) {
       running = performCompaction();
       try { return await running; } finally { running = null; }
     },
-    setTools(value) { tools = value; },
+    setTools(value) { tools = wrapTools(value); },
     setMidRunCompactionArmed(value) { compactionArmed = value === true; },
     setCompactionSettings(value) { settings = { ...settings, ...value }; },
+    async repairOpenOperations() { await repairInterruptedSession(store); turnId = null; ownsTurn = false; },
     async abortOpenOperations() {
+      const open = await store.getOpenOperations();
+      for (const turn of await store.getOpenTurns()) await recordInterruption(store, turn.turnId, "user_interrupted", open.filter((op) => op.turnId === turn.turnId).map((op) => op.operationId));
       for (const op of (await store.getOpenOperations()).reverse()) await store.closeOperation(op.operationId, "aborted");
       for (const turn of await store.getOpenTurns()) await store.endTurn(turn.turnId, "aborted");
-      turnId = null; ownsTurn = false;
+      await barrier(); turnId = null; ownsTurn = false;
     },
     async close() { closed = true; controller?.abort(); await running; },
   };

@@ -41,6 +41,7 @@ interface HarnessRuntimeRouting {
   readonly modelKey: string;
   readonly runtimeForSession: SessionRuntimeResolver;
   readonly recoveryRevision?: number | undefined;
+  readonly turnRevision?: number | undefined;
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -179,6 +180,7 @@ export async function runHarnessRuntime(
       delete merged.sessionIdleTimeoutMs;
       delete merged.sessionId;
       delete merged.providerSessionId;
+      delete merged.sessionTurn;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
       delete merged.toolLifecycleSink;
@@ -303,6 +305,11 @@ export async function runHarnessRuntime(
       };
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
+        ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
+          && durablePiSessionsRoot !== undefined && (resumeSessionId ?? providerAttributionSessionId) !== undefined
+          ? { sessionTurn: { kind: "host" as const, ownerKey: options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
+              historyBucket: request.conversationId, turnId: runId,
+              handleId: (resumeSessionId ?? providerAttributionSessionId)!, baseRevision: routing.turnRevision } } : {}),
         sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
           && sessionsEnabled && !sessionIsolated && durablePiSessionsRoot !== undefined
           ? { runId, revision: routing.recoveryRevision } : undefined,

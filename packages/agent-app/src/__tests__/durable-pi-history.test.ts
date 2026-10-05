@@ -390,7 +390,9 @@ it.each(["normal", "slow-writer"])("reopens a recovered tool-bearing Pi transcri
   expect(consumed.requests[0], `Producer providerSession: ${JSON.stringify(produced.records[0]?.providerSession)}; runtimeWarnings: ${JSON.stringify(produced.runtimeWarnings)}`)
     .toBe(produced.requests[0]);
   expect(JSON.stringify(consumed.context.slice(0, produced.context.length))).toBe(JSON.stringify(produced.context));
-  expect(consumed.context).toHaveLength(produced.context.length + 1);
+  expect(consumed.context).toHaveLength(produced.context.length + 2);
+  expect(consumed.context[produced.context.length]).toMatchObject({ role: "user", projectionOnly: true, interruptionCause: "user_interrupted" });
+  expect(JSON.stringify(consumed.context[produced.context.length])).toContain("no tool was replayed");
   expect(JSON.stringify(consumed.context)).toContain("disk-signature");
   const producerReadResult = produced.context.find((message: {
     role?: unknown;

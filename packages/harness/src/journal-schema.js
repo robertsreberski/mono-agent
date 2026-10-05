@@ -29,6 +29,16 @@ export function validateJournalHeader(header) {
   }
 }
 
+/** Validate the protected descriptor independently of recovery opt-in. */
+export function validateSessionTurn(descriptor, handleId) {
+  if (!object(descriptor) || !["host", "instance"].includes(descriptor.kind)
+    || !id(descriptor.ownerKey) || !id(descriptor.turnId) || !id(descriptor.handleId)
+    || descriptor.handleId !== handleId || !(descriptor.baseRevision === null || time(descriptor.baseRevision))
+    || (descriptor.kind === "host" ? !id(descriptor.historyBucket) : descriptor.historyBucket !== null)) {
+    throw new TypeError("Invalid host-owned sessionTurn descriptor");
+  }
+}
+
 /** Incremental reference/lifecycle validator. Never transforms native payloads. */
 export class JournalValidator {
   constructor() {
@@ -45,6 +55,8 @@ export class JournalValidator {
     this.calls = new Map();
     this.inputs = new Map();
     this.handles = new Set();
+    this.handleBindings = new Map();
+    /** @type {any} */ this.owner = { kind: "unbound" };
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
   validate(record) {
@@ -56,7 +68,7 @@ export class JournalValidator {
     const turn = this.turns.get(record.turnId);
     if (record.kind === "turn_start") {
       requireValue(!turn && this.openTurns.size === 0
-        && ["host", "synthetic"].includes(p.identitySource) && object(p.config)
+        && ["host", "instance", "synthetic"].includes(p.identitySource) && object(p.config)
         && p.baselineTipId === this.tip && record.operationId === undefined);
       return;
     }
@@ -93,29 +105,54 @@ export class JournalValidator {
             && object(p.input) && typeof p.input.complete === "boolean"
             && (p.input.id === null || id(p.input.id)));
         } else {
-          // Keep the adapter-shaped compaction unchanged until exact checkpoints
-          // in P1b; ordered IDs and explicit derived messages are already versioned.
+          // Legacy v2 cuts remain readable; new cuts additionally carry an exact
+          // checkpoint envelope and positively validated ordered coverage.
           requireValue(object(p.compaction) && typeof p.compaction.summary === "string"
             && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i, index) => this.contextInfo.get(i)?.kind === "message"
               && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
             && Array.isArray(p.derivedMessages) && Number.isSafeInteger(p.coverageVersion) && p.coverageVersion > 0);
+          const checkpoint = p.compaction.checkpoint;
+          if (checkpoint !== undefined) requireValue(object(checkpoint) && checkpoint.version === 1
+            && checkpoint.projectionVersion === 1 && checkpoint.summaryMessage?.role === "compactionSummary"
+            && checkpoint.summaryMessage.summary === p.compaction.summary && time(checkpoint.summaryMessage.timestamp)
+            && checkpoint.summaryMessage.tokensBefore === p.compaction.tokensBefore
+            && JSON.stringify(checkpoint.preservedMessageIds) === JSON.stringify(p.preservedMessageIds)
+            && JSON.stringify(checkpoint.derivedMessages) === JSON.stringify(p.derivedMessages)
+            && checkpoint.coverage?.version === p.coverageVersion && checkpoint.coverage.sourceTipId === this.tip
+            && time(checkpoint.coverage.sourceEntryCount) && (checkpoint.tokensBefore === null || Number.isFinite(checkpoint.tokensBefore))
+            && (checkpoint.tokensAfter === null || Number.isFinite(checkpoint.tokensAfter))
+            && (checkpoint.model === null || object(checkpoint.model)));
         }
       } else if (record.kind === "rewind") {
         requireValue(p.tipId === null || this.contextIds.has(p.tipId));
       } else if (record.kind === "tool_call") {
         const message = this.contextInfo.get(p.messageId);
-        requireValue(id(p.callId) && !this.calls.has(callKey) && id(p.name)
-          && message?.role === "assistant" && message.calls?.get(p.callId) === p.name
-          && ["observed", "admitted", "blocked"].includes(p.admission));
+        const call = this.calls.get(callKey);
+        requireValue(id(p.callId) && id(p.name) && message?.role === "assistant" && message.calls?.get(p.callId) === p.name
+          && (!call ? ["observed", "admitted", "blocked"].includes(p.admission)
+            : !call.result && call.name === p.name && call.messageId === p.messageId
+              && (call.admission === "observed" ? ["admitted", "blocked"].includes(p.admission)
+                : call.admission === "admitted" && p.admission === "started")));
       } else if (record.kind === "tool_result") {
         const call = this.calls.get(callKey), message = this.contextInfo.get(p.messageId);
-        requireValue(call && !call.result && call.name === p.name && message?.role === "toolResult"
-          && message.callId === p.callId && message.name === p.name
-          && (p.outcome === "success" ? message.isError === false
-            : ["error", "cancelled", "skipped"].includes(p.outcome) ? message.isError === true : p.outcome === "unknown"));
+        const returned = p.phase === "returned";
+        const envelope = returned ? p.message : null;
+        requireValue(call && call.name === p.name && (returned ? !call.result && call.admission === "started"
+          && p.messageId === null && object(envelope) && envelope.role === "toolResult"
+          && envelope.toolCallId === p.callId && envelope.toolName === p.name && Array.isArray(envelope.content)
+          : !call.placed && message?.role === "toolResult" && message.callId === p.callId && message.name === p.name)
+          && (p.outcome === "success" ? (returned ? envelope.isError : message?.isError) === false
+            : ["error", "cancelled", "skipped"].includes(p.outcome) ? (returned ? envelope.isError : message?.isError) === true : p.outcome === "unknown"));
       } else if (record.kind === "interruption") {
         requireValue(typeof p.cause === "string" && ids(p.operationIds)
-          && p.operationIds.every((i) => this.operations.get(i)?.turnId === record.turnId));
+          && p.operationIds.every((i) => this.operations.get(i)?.turnId === record.turnId)
+          && (p.tipId === undefined || p.tipId === this.tip)
+          && (p.calls === undefined || Array.isArray(p.calls) && p.calls.every((call) => {
+            const known = this.calls.get(`${call.operationId}\0${call.callId}`);
+            return known?.turnId === record.turnId && known.name === call.name && known.messageId === call.messageId
+              && known.admission === call.admission && ["crashed", "user_interrupted", "skipped", "superseded", "observed_outcome"].includes(call.cause)
+              && (call.cause !== "observed_outcome" || known.result);
+          })));
       } else if (record.kind === "model_change") {
         requireValue(object(p.from) && object(p.to) && typeof p.source === "string"
           && (p.checkpointId === null || this.contextIds.has(p.checkpointId)));
@@ -128,10 +165,11 @@ export class JournalValidator {
         requireValue(id(p.inputId) && !turn.inputs.has(p.inputId) && message?.role === "user"
           && message.inputId === p.inputId && this.inputs.get(p.inputId)?.state !== "cancelled");
       } else if (record.kind === "owner_binding") {
-        requireValue(p.kind === "unbound" || (["host", "instance"].includes(p.kind)
-          && id(p.ownerKey) && (p.historyBucket === null || id(p.historyBucket))));
+        requireValue((p.kind === "unbound" && this.owner.kind === "unbound") || (["host", "instance"].includes(p.kind)
+          && id(p.ownerKey) && (p.kind === "host" ? id(p.historyBucket) : p.historyBucket === null)
+          && (this.owner.kind === "unbound" || this.owner.kind === p.kind && this.owner.ownerKey === p.ownerKey && this.owner.historyBucket === p.historyBucket)));
       } else if (record.kind === "handle_binding") {
-        requireValue(id(p.handleId) && !this.handles.has(p.handleId)
+        requireValue(id(p.handleId) && (!this.handles.has(p.handleId) || (p.authoritative === true && this.owner.kind !== "unbound"))
           && (p.baseRevision === null || time(p.baseRevision)) && (p.model === null || object(p.model)));
       } else if (record.kind === "handle_retired") {
         requireValue(this.handles.has(p.handleId) && typeof p.cause === "string");
@@ -159,19 +197,25 @@ export class JournalValidator {
       this.contextIds.add(record.id); this.tip = record.id;
       const message = p.message;
       this.contextInfo.set(record.id, { kind: record.kind, seq: record.seq, parentId: p.contextParentId,
-        role: message?.role, inputId: p.input?.id, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
+        operationId: record.operationId, role: message?.role, stopReason: message?.stopReason, inputId: p.input?.id, callId: message?.toolCallId, name: message?.toolName, isError: message?.isError,
         calls: new Map((Array.isArray(message?.content) ? message.content : []).filter((part) => part?.type === "toolCall").map((call) => [call.id, call.name])) });
     }
     if (record.kind === "rewind") this.tip = p.tipId;
     const callKey = `${record.operationId ?? record.turnId}\0${p.callId}`;
-    if (record.kind === "tool_call") this.calls.set(callKey, { name: p.name, result: false });
-    if (record.kind === "tool_result") this.calls.get(callKey).result = true;
+    if (record.kind === "tool_call") this.calls.set(callKey, { ...(this.calls.get(callKey) ?? {}), name: p.name,
+      callId: p.callId, messageId: p.messageId, admission: p.admission, operationId: record.operationId, turnId: record.turnId,
+      result: false });
+    if (record.kind === "tool_result") {
+      const call = this.calls.get(callKey); call.result = true; call.outcome = p.outcome;
+      if (p.phase !== "returned") call.placed = true;
+    }
     if (record.kind === "input_queued") this.inputs.set(p.inputId, { state: p.state, placement: p.placement });
     if (record.kind === "input_consumed") {
       this.turns.get(record.turnId).inputs.add(p.inputId);
       if (this.inputs.has(p.inputId)) this.inputs.get(p.inputId).state = "consumed";
     }
-    if (record.kind === "handle_binding") this.handles.add(p.handleId);
+    if (record.kind === "owner_binding") this.owner = p;
+    if (record.kind === "handle_binding") { this.handles.add(p.handleId); this.handleBindings.set(p.handleId, p); }
     if (record.kind === "handle_retired") this.handles.delete(p.handleId);
     this.ids.add(record.id); this.seq = record.seq; this.parentId = record.id;
   }

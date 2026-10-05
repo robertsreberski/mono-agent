@@ -1,3 +1,4 @@
+import { validateSessionTurn, isJournalStorageError, NativeSuspendedError } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -445,6 +446,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     || options.providerAttributionSessionId
     || options.runId
     || randomUUID();
+  if (options.sessionTurn !== undefined) {
+    try {
+      validateSessionTurn(options.sessionTurn, providerSessionId);
+      if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
+        || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
+        throw new TypeError("sessionTurn and sessionRecovery identities disagree");
+      }
+    } catch {
+      return { ...buildErrorResult({ assistantTexts: [], events, start, turnCount: 0, resolved, options,
+        externalAbort: false, errorMessage: "Invalid protected sessionTurn host contract", providerSessionId,
+        runtimeWarnings, isRetryable: false }), failureKind: "safety_session_turn_contract", retryable: false };
+    }
+  }
   const providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
   // Prefer the explicit sessionId, but fall back to providerSessionId so a caller
   // that only supplies providerSessionId still resumes the prior session instead
@@ -666,12 +680,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     }
 
     // One logical turn encompasses proactive/manual compaction and every prompt
-    // operation, including reactive overflow re-prompts. Ownership remains unbound
-    // until the protected descriptor arrives in P1b.
+    // operation, including reactive overflow re-prompts. Bind ownership only from
+    // the protected descriptor; recovery opt-in alone never binds an owner.
     const recoveryIdentity = options.sessionRecovery;
     const hasHostIdentity = typeof recoveryIdentity?.runId === "string" && recoveryIdentity.runId.length > 0
       && recoveryIdentity.runId.length <= 512 && Number.isSafeInteger(recoveryIdentity.revision) && recoveryIdentity.revision >= 0;
-    await harness.beginTurn(hasHostIdentity ? recoveryIdentity.runId : undefined, hasHostIdentity ? "host" : "synthetic");
+    const descriptor = options.sessionTurn;
+    await harness.beginTurn(descriptor?.turnId ?? (options.manualCompaction ? undefined : hasHostIdentity ? recoveryIdentity.runId : undefined),
+      options.manualCompaction ? "synthetic" : descriptor?.kind ?? (hasHostIdentity ? "host" : "synthetic"), descriptor);
 
     if (options.manualCompaction === true) {
       // The same resolve/reopen/seed path as a turn, but without a user prompt,
@@ -851,6 +867,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           liveInputEpoch.confirm(operationId);
         },
       });
+      if (promptResult.suspended) {
+        await runState.session.rawSession.sync();
+        throw new NativeSuspendedError();
+      }
       runError = promptResult.runError;
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
@@ -1124,8 +1144,32 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
-    try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen aborts unsealed work */ }
-    await cleanupSessionOnThrow(runState, { durableRepo });
+    if (err instanceof NativeSuspendedError) {
+      // Fresh suspension keeps disposal/reopen ownership without completion.
+      // A resumed suspension has no host receipt: use failed-turn rollback,
+      // not a retained recovery tail or deferred continuation.
+      try {
+        if (runState.sessionEntry) {
+          // A resumed suspension is a failed unreceipted host turn: seal it
+          // without projecting completion, then let normal commit roll back.
+          runState.retainRecoveryTail = false;
+          runState.sessionEntry.recoveryPending = false; delete runState.sessionEntry.recovery;
+          const raw = runState.session.rawSession;
+          for (const operation of (await raw.getOpenOperations()).reverse()) await raw.closeOperation(operation.operationId, "failed");
+          for (const turn of await raw.getOpenTurns()) await raw.endTurn(turn.turnId, "failed");
+          await raw.sync();
+        }
+        await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
+          externalAbort: false, errorMessage: runState.sessionEntry ? "Native provider suspended without a recovery receipt" : undefined, onEvent });
+
+      } catch (cleanupError) {
+        err = cleanupError;
+        await cleanupSessionOnThrow(runState, { durableRepo });
+      }
+    } else {
+      try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen repairs unsealed work */ }
+      await cleanupSessionOnThrow(runState, { durableRepo });
+    }
     // The throw path still holds the original Error, so its cause chain is the
     // authoritative source here — no correlation guesswork needed.
     const errorMessage = annotateProviderErrorMessage(
@@ -1136,7 +1180,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       errorText: errorMessage,
       failureKind: "provider_unavailable",
     }).retryable;
-    return buildErrorResult({
+    const failure = buildErrorResult({
       assistantTexts: runState.assistantTexts,
       events,
       start,
@@ -1154,6 +1198,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
+    return isJournalStorageError(err) ? { ...failure, failureKind: "safety_journal_storage_failed",
+      retryable: false, providerSessionRecovery: undefined } : err instanceof NativeSuspendedError
+      ? { ...failure, failureKind: "safety_native_suspended", retryable: false, providerSessionRecovery: undefined } : failure;
   } finally {
     // Safety net for a throw between arming and the prompt: disarm is
     // idempotent, and it must run before the harness closes so the session's

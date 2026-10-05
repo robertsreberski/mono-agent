@@ -17,7 +17,7 @@ export function createPiSessionAdapter(rawSession) {
     rawSession,
     get metadata() { return rawSession.metadata; },
     attach(nextDriver) { driver = nextDriver; },
-    async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true }); },
+    async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true, repairs: await rawSession.getRepairEntries() }); },
     getEntries: () => rawSession.getEntries(),
     getLeafId: () => rawSession.getLeafId(),
     appendMessage: (message) => rawSession.appendMessage(message),
@@ -101,7 +101,7 @@ export async function createHarnessAdapter(session, options) {
     async setCompactionSettings(settings) { driver.setCompactionSettings(settings); },
     setMidRunCompactionArmed(value) { driver.setMidRunCompactionArmed(value); },
     appendMessage: (message) => session.appendMessage(message),
-    beginTurn: (id, source) => driver.beginTurn(id, source),
+    beginTurn: (id, source, descriptor) => driver.beginTurn(id, source, descriptor),
     endTurn: (status) => driver.endTurn(status),
     async prompt(text, promptOptions) {
       if (closed) throw new Error("mono-agent harness is closed");
@@ -124,6 +124,7 @@ export async function createHarnessAdapter(session, options) {
     },
     subscribe: (listener) => driver.subscribe(listener),
     async abortOpenOperations() { await driver.abortOpenOperations(); },
+    async repairOpenOperations() { await driver.repairOpenOperations(); },
     async close() {
       stopTools();
       if (closed) return; closed = true;
