@@ -31,9 +31,9 @@ export function validateTurnHistoryV3(value: unknown, validateMessage: (message:
   if (state.modelKey !== undefined) assertSessionModelKey(state.modelKey);
   if (record.lastCommit !== undefined) {
     validateDurableTurnReceipt(record.lastCommit);
-    // A cold boundary may rotate the epoch/revision to zero after a native gap;
-    // the last canonical commit receipt remains valid for duplicate settlement.
-    if (state.revision !== 0 && state.revision !== record.lastCommit.committedRevision) throw new TypeError("V3 history receipt revision mismatch");
+    // The receipt belongs to its commit, not necessarily the current native
+    // epoch. Host-only writes can rotate the epoch and later turns advance it.
+    // Keep the bounded receipt independently of native revision and retention.
   }
 }
 /** Receipt identity is independent of retained messages, never a message scan. */

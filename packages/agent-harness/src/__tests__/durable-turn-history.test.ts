@@ -24,7 +24,7 @@ it("permits an explicit cold native boundary while preserving canonical idempote
   const value = { ...record(), providerSession: { ...record().providerSession, epoch: "b".repeat(64), revision: 0 } };
   expect(() => validateTurnHistoryV3(value, validate)).not.toThrow();
   expect(recognizesTurnCommit(value, value.conversationId, receipt.turnId, hash, hash)).toBe(true);
-  expect(() => validateTurnHistoryV3({ ...record(), providerSession: { ...record().providerSession, revision: 2 } }, validate)).toThrow("revision mismatch");
+  expect(() => validateTurnHistoryV3({ ...record(), providerSession: { ...record().providerSession, revision: 2 } }, validate)).not.toThrow();
 });
 it.each(["deliveryKey", "ownerText", "runtime", "metadata"])("rejects an extra v3 canonical/receipt/provider field %s", (key) => {
   expect(() => validateTurnHistoryV3({ ...record(), [key]: "fictional" }, validate)).toThrow();

@@ -1,4 +1,6 @@
-import type { PendingTurnPointer } from "./durable-turn-contract.js";
+import { validateTurnHistoryV3 } from "./durable-turn-history.js";
+import type { TurnHistoryV3 } from "./durable-turn-history.js";
+import type { DurableTurnReceipt, PendingTurnPointer } from "./durable-turn-contract.js";
 import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
 import { PENDING_TURN_DIRECTORY, validateDurableTurnFence, serializeDurableTurnFence } from "./durable-turn-contract.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -32,7 +34,8 @@ import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionH
 import { isProcessAlive } from "./history-process-liveness.js";
 
 const LEGACY_STORE_VERSION = 1;
-const STORE_VERSION = 2;
+const PROVIDER_STORE_VERSION = 2;
+const STORE_VERSION = 3;
 const DEFAULT_MAX_MESSAGES = 64;
 const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
 const MAX_MESSAGE_ENVELOPE_BYTES = 16 * 1024;
@@ -126,15 +129,11 @@ interface ProviderSessionState {
   readonly dirtyRunId?: string;
 }
 
-interface HistoryFileV2 {
-  readonly version: typeof STORE_VERSION;
-  readonly conversationId: string;
-  readonly messages: readonly HistoryMessage[];
-  readonly providerSession: ProviderSessionState;
-}
+type CanonicalHistoryFile = TurnHistoryV3;
 
 interface LoadedHistoryRecord {
-  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof STORE_VERSION;
+  readonly lastCommit?: DurableTurnReceipt;
+  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION;
   readonly conversationId: string;
   readonly messages: readonly HistoryMessage[];
   readonly providerSession?: ProviderSessionState;
@@ -297,7 +296,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
-    const provider = record.sourceVersion === STORE_VERSION ? record.providerSession : undefined;
+    const provider = record.providerSession;
     return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0 };
   }
 
@@ -443,10 +442,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
       const combined = [...existing.messages, ...admitted];
       const retained = retainHistoryMessages(combined, this.maxMessages);
-      const record: HistoryFileV2 = {
+      const record: CanonicalHistoryFile = {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: retained,
+        ...lastCommitBinding(existing),
         // Host-only history is not present in a provider transcript. Rotate on
         // every ordinary append so no old provider cache can be resumed.
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
@@ -529,10 +529,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             }
             const retirementFence = await this.prepareProviderRetirement(current, held.rootIdentity);
             const retained = retainHistoryMessages([...current.messages, ...admitted], this.maxMessages);
-            const record: HistoryFileV2 = {
+            const record: CanonicalHistoryFile = {
               version: STORE_VERSION,
               conversationId: normalizedId,
               messages: retained,
+              ...lastCommitBinding(current),
               providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(current.providerSession?.modelKey) },
             };
             const inner = await this.prepareRecord(record, held, held.rootIdentity, undefined, retirementFence);
@@ -598,10 +599,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         { role: "system", name: "context-import-provenance", content: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, timestamp: normalized.timestamp },
         { role: "assistant", name: "context-import", content: normalized.text, timestamp: normalized.timestamp, idempotencyKey: normalized.idempotencyKey },
       ];
-      const record: HistoryFileV2 = {
+      const record: CanonicalHistoryFile = {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages,
+        ...lastCommitBinding(existing),
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
       };
       return {
@@ -634,7 +636,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     };
     try {
       const existing = await this.readRecord(normalizedId, rootIdentity);
-      const existingProvider = existing.sourceVersion === STORE_VERSION ? existing.providerSession : undefined;
+      const existingProvider = existing.providerSession;
       const modelKey = binding?.modelKey ?? existingProvider?.modelKey;
       const previousModelKey = binding !== undefined && existingProvider?.modelKey !== modelKey
         ? existingProvider?.modelKey : undefined;
@@ -679,10 +681,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         epoch = reusable ? existingProvider.epoch : createProviderSessionEpoch();
         revision = reusable ? existingProvider.revision as number : 0;
         const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
-        const projectedCleanRecord: HistoryFileV2 = {
+        const projectedCleanRecord: CanonicalHistoryFile = {
           version: STORE_VERSION,
           conversationId: normalizedId,
           messages: retainHistoryMessages(existing.messages, this.maxMessages),
+          ...lastCommitBinding(existing),
           providerSession: { epoch, revision: revision + 1, ...modelBinding(modelKey) },
         };
         await this.validateRetentionReservation(rootIdentity, [this.projectRecord(projectedCleanRecord)]);
@@ -699,10 +702,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       } finally {
         await releaseRoot();
       }
-      const turnBaseRecord: HistoryFileV2 = {
+      const turnBaseRecord: CanonicalHistoryFile = {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: existing.messages,
+        ...lastCommitBinding(existing),
         providerSession: { epoch, revision, ...modelBinding(modelKey) },
       };
       const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
@@ -731,10 +735,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           }
           const combined = [...turnBaseRecord.messages, ...admitted];
           const retained = retainHistoryMessages(combined, this.maxMessages);
-          const cleanRecord: HistoryFileV2 = {
+          const cleanRecord: CanonicalHistoryFile = {
             version: STORE_VERSION,
             conversationId: normalizedId,
             messages: retained,
+            ...lastCommitBinding(turnBaseRecord),
             providerSession: {
               epoch: options.providerSessionSynced ? epoch : createProviderSessionEpoch(),
               revision: options.providerSessionSynced ? revision + 1 : 0,
@@ -792,7 +797,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async prepareRecord(
-    record: HistoryFileV2,
+    record: CanonicalHistoryFile,
     held: HeldConversation,
     rootIdentity: DirectoryIdentity,
     onSettled?: () => void,
@@ -819,7 +824,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private projectRecord(record: HistoryFileV2): ActiveStage {
+  private projectRecord(record: CanonicalHistoryFile): ActiveStage {
     const conversationKey = historyKey(record.conversationId);
     return {
       conversationKey,
@@ -915,7 +920,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async writeStage(record: HistoryFileV2, rootIdentity: DirectoryIdentity): Promise<ActiveStage> {
+  private async writeStage(record: CanonicalHistoryFile, rootIdentity: DirectoryIdentity): Promise<ActiveStage> {
     const conversationKey = historyKey(record.conversationId);
     const bytes = serializeHistoryFile(record);
     const temporaryPath = join(
@@ -1672,7 +1677,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const committedRecord = committedEntry === undefined
         ? undefined
         : await this.readCommittedEntryRecord(committedEntry, rootIdentity);
-      const canonicalProvesCommit = committedRecord?.sourceVersion === STORE_VERSION
+      const canonicalProvesCommit = committedRecord?.providerSession !== undefined
         && committedRecord.providerSession?.epoch === fence.epoch
         && committedRecord.providerSession.modelKey === fence.modelKey
         && committedRecord.providerSession.dirtyRunId === undefined
@@ -1684,7 +1689,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // A canonical epoch at exactly revision+1 proves the history rename won
       // and only fence cleanup crashed; preserve that valid transcript.
       if (!canonicalProvesCommit) {
-        const sameCommittedEpoch = committedRecord?.sourceVersion === STORE_VERSION
+        const sameCommittedEpoch = committedRecord?.providerSession !== undefined
           && committedRecord.providerSession?.epoch === fence.epoch;
         // Contradictory owners for one id are corruption, not a retirement hint.
         // Validate both before invoking either runtime or losing the journal.
@@ -1693,7 +1698,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           : [{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
         if (
           committedEntry !== undefined
-          && committedRecord?.sourceVersion === STORE_VERSION
+          && committedRecord?.providerSession !== undefined
           && committedRecord.providerSession?.epoch === fence.epoch
         ) {
           await this.rotateCommittedProviderEpoch(committedEntry, committedRecord, rootIdentity);
@@ -1809,7 +1814,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const existing = await this.findDirtyFence(conversationKey, locksIdentity);
     requireSettledFence(existing);
     if (existing !== undefined) return existing;
-    if (record.sourceVersion !== STORE_VERSION || record.providerSession === undefined) return undefined;
+    if (record.providerSession === undefined) return undefined;
     await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
     const providerSessionId = deriveProviderSessionId(record.conversationId, record.providerSession.epoch);
     return await this.publishDirtyFence({
@@ -1828,7 +1833,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     fence?: DirtyFence,
   ): readonly ProviderSessionHandle[] {
     return [
-      ...(record.sourceVersion !== STORE_VERSION || record.providerSession === undefined
+      ...(record.providerSession === undefined
         ? []
         : [{ providerSessionId: deriveProviderSessionId(record.conversationId, record.providerSession.epoch), ...modelBinding(record.providerSession.modelKey) }]),
       ...(fence === undefined
@@ -1871,11 +1876,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
   ): Promise<void> {
-    if (record.sourceVersion !== STORE_VERSION || record.providerSession === undefined) return;
-    const rotated: HistoryFileV2 = {
+    if (record.providerSession === undefined) return;
+    const rotated: CanonicalHistoryFile = {
       version: STORE_VERSION,
       conversationId: record.conversationId,
       messages: record.messages,
+      ...lastCommitBinding(record),
       providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(record.providerSession.modelKey) },
     };
     const stage = await this.writeStage(rotated, rootIdentity);
@@ -1949,7 +1955,7 @@ function compareRetentionEntries(left: CommittedEntry, right: CommittedEntry): n
   return left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name);
 }
 
-function historyRecordVersion(record: LoadedHistoryRecord | HistoryFileV2): string {
+function historyRecordVersion(record: LoadedHistoryRecord | CanonicalHistoryFile): string {
   return createHash("sha256")
     .update("mono-agent-history-version-v1\0")
     .update(JSON.stringify({
@@ -1957,6 +1963,7 @@ function historyRecordVersion(record: LoadedHistoryRecord | HistoryFileV2): stri
       conversationId: record.conversationId,
       messages: record.messages,
       providerSession: record.providerSession,
+      lastCommit: record.lastCommit,
     }), "utf8")
     .digest("hex");
 }
@@ -2189,7 +2196,12 @@ function cloneMessage(message: HistoryMessage): HistoryMessage {
   };
 }
 
-function serializeHistoryFile(record: HistoryFileV2): Buffer {
+function lastCommitBinding(record: { readonly lastCommit?: DurableTurnReceipt }): { readonly lastCommit?: DurableTurnReceipt } {
+  return record.lastCommit === undefined ? {} : { lastCommit: { ...record.lastCommit } };
+}
+
+function serializeHistoryFile(record: CanonicalHistoryFile): Buffer {
+  validateTurnHistoryV3(record, (message) => validateAndCloneMessage(message as HistoryMessage));
   const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
   if (bytes.byteLength > MAX_STORE_FILE_BYTES) {
     throw new Error(`Serialized conversation history exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
@@ -2296,8 +2308,18 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
   if (value.version === LEGACY_STORE_VERSION && keys === "conversationId,messages,version") {
     return { sourceVersion: LEGACY_STORE_VERSION, conversationId, messages };
   }
+  if (value.version === STORE_VERSION) {
+    validateTurnHistoryV3(value, (message) => validateAndCloneMessage(message as HistoryMessage));
+    return {
+      sourceVersion: STORE_VERSION,
+      conversationId,
+      messages,
+      providerSession: { epoch: value.providerSession.epoch, revision: value.providerSession.revision, ...modelBinding(value.providerSession.modelKey) },
+      ...lastCommitBinding(value),
+    };
+  }
   if (
-    value.version !== STORE_VERSION
+    value.version !== PROVIDER_STORE_VERSION
     || keys !== "conversationId,messages,providerSession,version"
     || !isRecord(value.providerSession)
   ) {
@@ -2333,7 +2355,7 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
     }
   }
   return {
-    sourceVersion: STORE_VERSION,
+    sourceVersion: PROVIDER_STORE_VERSION,
     conversationId,
     messages,
     providerSession: {

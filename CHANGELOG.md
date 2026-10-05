@@ -6,7 +6,9 @@
   explicit execution/compaction/retirement wire contracts for host recovery;
   share native admission digests/guidance with hosts and protect detached-turn
   acknowledgement from runtime extensions. Automatic P2b host adoption is not
-  enabled by these preparatory primitives alone.
+  enabled by these preparatory primitives alone. Write canonical history v3
+  while retaining v1/v2 reads, and preserve bounded turn receipts across message
+  retention and native epoch rotation; explicit reset clears the receipt.
 
 
 - Add explicitly opted-in native turn bindings, minimal final-result seals and
