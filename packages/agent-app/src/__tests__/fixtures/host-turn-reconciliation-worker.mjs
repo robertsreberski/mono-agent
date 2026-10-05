@@ -30,6 +30,9 @@ process.once("message", async ({ mode, crash }) => {
       keepRecentTokens: 4_000, minSavingsTokens: 500, summaryMaxTokens: 2_000, contextWindowOverride: 100_000 };
     await writeFile(join(root, "IDENTITY.md"), "You are Mono. Use only the requested harmless fixture.");
     let context, runtimeCalls = 0, nativeInspections = 0, draftReported = false;
+    const liveCase = crash === "live-input" || crash === "live-prompt-override";
+    let queuedResolve; const nativeQueued = new Promise((resolve) => { queuedResolve = resolve; });
+    const queuedIds = new Set(), liveOffers = [];
     const manualAbort = new AbortController(), turnAbort = new AbortController();
     if (mode === "recover") {
       runtime = createConfiguredAgentRuntime({ config, cwd: root, sandboxEngine });
@@ -49,6 +52,15 @@ process.once("message", async ({ mode, crash }) => {
     harness = await createConfiguredAgentHarness({ cwd: root, config, sandboxEngine,
       runtime: { ...base, async reconcileSessionTurn(request) { nativeInspections += 1; return base.reconcileSessionTurn(request); }, async run(prompt, options) {
         runtimeCalls += 1;
+        if (liveCase && options.liveInput) {
+          const live = options.liveInput;
+          options = { ...options, liveInput: { async *[Symbol.asyncIterator]() {
+            for await (const message of live) yield { ...message, accepted(evidence) {
+              message.accepted?.(evidence); queuedIds.add(message.id);
+              if (queuedIds.has("fictional-human") && queuedIds.has("fictional-wake")) queuedResolve();
+            } };
+          } } };
+        }
         if (crash === "mid-stream") {
           const observe = options.onEvent;
           options = { ...options, onEvent(event) {
@@ -62,9 +74,22 @@ process.once("message", async ({ mode, crash }) => {
           ? { ...options, sessionTurn: { ...options.sessionTurn, reconciliation: undefined } } : options);
         if (crash === "manual-cancelled" && options.manualCompaction) manualAbort.abort();
         if (crash === "host-cancelled") turnAbort.abort();
-        if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound" || crash === "live-input")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => {}); }
-        return result;
-      } }, runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, piMaxRetries: 0, effort: "none" } });
+        if (mode === "produce" && liveCase) {
+          const settlements = await Promise.all(liveOffers.map((offer) => offer.settled));
+          if (settlements.length !== 2 || settlements.some((value) => value.status !== "applied")) throw new Error("Fixture requires both native live inputs to be consumed.");
+          process.send({ phase: "live-consumed", nativeConsumedIds: ["fictional-human", "fictional-wake"], counter: await counter() }); await new Promise(() => {});
+        }
+        if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => {}); }
+        return crash === "silent" ? { ...result, text: "", turnDisposition: "silent" } : result;
+      } },
+      ...(["enriched", "candidate-fence"].includes(crash) ? { turnHistoryEnricher: {
+        enrichAssistantHistory: async ({ assistantText }) => `${assistantText} Fictional host enrichment.` } } : {}),
+      runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, piMaxRetries: 0, effort: "none", ...(crash === "live-prompt-override" ? { prompts: { liveInputGuidance: (body) => `Fictional override:\n${body}` } } : {}) } });
+    if (mode === "reset") {
+      await harness.resetConversation(bucket); await harness.dispose(); harness = undefined;
+      process.send({ record: await readRecord(), pending: await readdir(join(historyRoot, ".pending-turns")),
+        counter: await counter(), runtimeCalls, nativeInspections, providerCalls: faux.state.callCount }, () => process.exit(0)); return;
+    }
     if (mode === "verbatim") {
       await harness.appendVerbatimTurn(bucket, "Fictional verbatim delivery.", { idempotencyKey: "fictional-verbatim-delivery" });
       await harness.dispose(); harness = undefined;
@@ -72,7 +97,7 @@ process.once("message", async ({ mode, crash }) => {
         providerCalls: faux.state.callCount, pending: await readdir(join(historyRoot, ".pending-turns")) }, () => process.exit(0));
       return;
     }
-    if (mode === "produce") faux.setResponses([
+    if (mode === "produce") { const responses = [
       fauxAssistantMessage([...(crash === "overflow-compaction" ? [fauxText("Fictional archived context. ".repeat(1_600).slice(0, 40_000))] : []), { ...fauxThinking("Fictional signed reasoning."), thinkingSignature: "fictional-durable-signature" },
         fauxToolCall("Bash", { command: "printf 'effect-marker\\n' >> effect-count.txt" }, { id: "fictional-counted-effect" })]),
       async (value) => {
@@ -80,18 +105,29 @@ process.once("message", async ({ mode, crash }) => {
         if (crash === "returned-tool") { process.send({ phase: "returned-tool", counter: await counter() }); await new Promise(() => {}); }
         return fauxAssistantMessage([fauxText("Fictional verbatim final reply.")]);
       },
-    ]);
+    ];
+      // Native queue durability, not wall-clock speed, controls the first model
+      // response. The driver can then consume both entries before final seal.
+      if (liveCase) {
+        const first = responses[0]; responses[0] = async () => { await nativeQueued; return first; };
+        // Each consumed steering batch may request another model response.
+        responses.push(fauxAssistantMessage([fauxText("Fictional verbatim final reply.")]),
+          fauxAssistantMessage([fauxText("Fictional verbatim final reply.")]));
+      }
+      faux.setResponses(responses);
+    }
     else faux.setResponses([(value) => { context = structuredClone(value.messages); return fauxAssistantMessage([fauxText("Fictional explicit next reply.")]); }]);
     if (crash === "mid-stream") faux.setResponses([fauxAssistantMessage([fauxText("Fictional streamed draft. ".repeat(2_000))])]);
     const result = await harness.run({ conversationId: bucket, userMessage: mode === "produce" ? crash === "overflow-compaction" ? "Fictional prior context. ".repeat(1_800).slice(0, 40_000) : "Fictional counted effect request." : "Fictional explicit next request.",
       abortSignal: turnAbort.signal,
-      ...(crash !== "live-input" ? {} : { onLiveInputOwnership: (event) => {
+      ...(!(crash === "live-input" || crash === "live-prompt-override") ? {} : { onLiveInputOwnership: (event) => {
         if (event.status !== "ready") return;
         for (const [id, text, delivery] of [["fictional-human", "Fictional ordinary follow-up.", false],
           ["fictional-wake", "Fictional private wake body.", true]]) {
           const offer = harness.offerLiveInput({ conversationId: bucket, id, text, receivedAt: "2026-01-01T00:00:00.000Z",
             ...(delivery ? { deliveryKey: "fictional-private-delivery-key", ownerText: "Fictional memory-only body." } : {}) });
           if (offer.status !== "accepted") throw new Error(`Fixture live offer rejected: ${offer.status}`);
+          liveOffers.push(offer);
         }
       } }) });
     if (result.failure && !(crash === "host-cancelled" && result.failure.kind === "cancelled")) throw new Error(JSON.stringify(result.failure));
@@ -116,6 +152,7 @@ process.once("message", async ({ mode, crash }) => {
       }
     }
     await harness.dispose(); harness = undefined;
-    process.send({ record: await readRecord(), counter: await counter(), context, runtimeCalls, providerCalls: faux.state.callCount }, () => process.exit(0));
+    process.send({ record: await readRecord(), counter: await counter(), context, runtimeCalls, nativeInspections,
+      pending: await readdir(join(historyRoot, ".pending-turns")), providerCalls: faux.state.callCount }, () => process.exit(0));
   } catch (error) { console.error(error); await harness?.dispose().catch(() => {}); await runtime?.disposeAllSessions?.().catch(() => {}); process.exit(1); }
 });

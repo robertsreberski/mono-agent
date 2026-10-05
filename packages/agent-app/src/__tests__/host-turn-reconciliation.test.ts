@@ -8,12 +8,13 @@ const dirs: string[] = [];
 const worker = new URL("./fixtures/host-turn-reconciliation-worker.mjs", import.meta.url);
 interface Reply {
   phase?: string;
+  nativeConsumedIds?: string[];
   counter: number;
   providerCalls: number;
   runtimeCalls: number;
   nativeInspections: number;
   recovery: { status: string; outcome?: string };
-  record: { messages: Array<{ role: string; content: string }>; lastCommit: { turnId: string; outcome: string; journalId: string } };
+  record: { messages: Array<{ role: string; content: string }>; lastCommit: { turnId: string; outcome: string; journalId: string }; providerSession: { epoch: string; revision: number } };
   context: unknown;
   pending: string[];
 }
@@ -27,10 +28,10 @@ function receive(child: ChildProcess): Promise<Reply> {
     child.once("message", onMessage); child.once("exit", onExit);
   });
 }
-async function run(root: string, mode: string): Promise<Reply> {
+async function run(root: string, mode: string, crash?: string): Promise<Reply> {
   const child = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
   try {
-    const reply = receive(child), exited = once(child, "exit"); child.send({ mode });
+    const reply = receive(child), exited = once(child, "exit"); child.send({ mode, crash });
     const value = await reply; expect((await exited)[0]).toBe(0); return value;
   } finally {
     if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
@@ -211,11 +212,14 @@ it("manual host cancellation survives release and overrides a completed native c
   }
 }, 60_000);
 
-it("built host persists live admissions before native consumption and excludes private wake fields after a crash", async () => {
+for (const { crash, name } of [
+  { crash: "live-input", name: "built host persists live admissions before native consumption and excludes private wake fields after a crash" },
+  { crash: "live-prompt-override", name: "built host matches overridden live-input guidance digests after a crash" },
+]) it(name, async () => {
   const root = await fixtureRoot(); const producer = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
   try {
-    const ready = receive(producer); producer.send({ mode: "produce", crash: "live-input" });
-    expect(await ready).toMatchObject({ phase: "live-input" });
+    const ready = receive(producer); producer.send({ mode: "produce", crash });
+    expect(await ready).toMatchObject({ phase: "live-consumed", nativeConsumedIds: ["fictional-human", "fictional-wake"] });
     const exited = once(producer, "exit"); producer.kill("SIGKILL"); await exited;
     const pendingRoot = join(root, ".mono-agent", "history", ".pending-turns");
     const pending = (await Promise.all((await readdir(pendingRoot)).map((name) => readFile(join(pendingRoot, name), "utf8")))).join("\n");
@@ -242,4 +246,56 @@ it("ordinary host cancellation overrides native completion and never promotes it
   const second = await run(root, "recover");
   expect(second.record).toEqual(first.record); expect(second.nativeInspections).toBe(0);
   expect(second.providerCalls).toBe(0); expect(second.runtimeCalls).toBe(0); expect(second.counter).toBe(1);
+}, 60_000);
+
+async function killProduction(root: string, phase: string, preloaded = false): Promise<void> {
+  const child = preloaded ? controlledWorker(root, phase) : fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  try {
+    const ready = receive(child); child.send({ mode: "produce", crash: phase });
+    expect(await ready).toMatchObject({ phase });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+  }
+}
+
+it("recovers a durable host-built enriched candidate before canonical rename without rerunning enrichment", async () => {
+  const root = await fixtureRoot(); await killProduction(root, "candidate-fence", true);
+  const first = await run(root, "recover"), second = await run(root, "recover");
+  expect(first.record.messages[1]!.content).toBe("Fictional verbatim final reply. Fictional host enrichment.");
+  expect(first.record.lastCommit.outcome).toBe("completed"); expect(second.record).toEqual(first.record);
+  expect(first.providerCalls).toBe(0); expect(first.runtimeCalls).toBe(0); expect(second.nativeInspections).toBe(0); expect(first.counter).toBe(1);
+}, 60_000);
+
+it("configured next-message admission settles a crashed turn without an explicit recovery call", async () => {
+  const root = await fixtureRoot(); await killProduction(root, "native-return"); const next = await run(root, "continue");
+  expect(next.nativeInspections).toBe(2); // pending old turn, then current completed turn.
+  expect(next.runtimeCalls).toBe(1); expect(next.providerCalls).toBe(1); expect(next.counter).toBe(1);
+  expect(next.record.messages).toHaveLength(4); expect(next.record.messages[1]!.content).toBe("Fictional verbatim final reply.");
+  expect(JSON.stringify(next.context)).toContain("fictional-counted-effect");
+}, 60_000);
+
+it("native-absent recovery rotates to a fresh zero-revision epoch that accepts explicit continuation", async () => {
+  const root = await fixtureRoot(); await killProduction(root, "fence-directory", true);
+  const locksRoot = join(root, ".mono-agent", "history", ".locks");
+  const fenceName = (await readdir(locksRoot)).find((name) => name.endsWith(".dirty.json"))!;
+  const fence = JSON.parse(await readFile(join(locksRoot, fenceName), "utf8"));
+  const first = await run(root, "recover"); expect(first.record.providerSession.revision).toBe(0);
+  expect(first.record.providerSession.epoch).not.toBe(fence.epoch); expect(first.record.lastCommit.outcome).toBe("interrupted");
+  const next = await run(root, "continue"); expect(next.runtimeCalls).toBe(1); expect(next.providerCalls).toBe(1);
+  expect(next.record.messages).toHaveLength(4); expect(next.record.providerSession.epoch).toBe(first.record.providerSession.epoch);
+  expect(next.record.providerSession.revision).toBe(1); expect(next.counter).toBe(0);
+}, 60_000);
+
+it("reset clears a torn unpublished initial temp after SIGKILL without inventing a native outcome", async () => {
+  const root = await fixtureRoot(); await killProduction(root, "pending-initial-partial", true);
+  const first = await run(root, "reset"), second = await run(root, "reset");
+  expect(first.record.messages).toEqual([]); expect(first.pending).toEqual([]); expect(second.pending).toEqual([]);
+  expect(first.counter).toBe(0); expect(first.nativeInspections).toBe(0); expect(first.runtimeCalls).toBe(0); expect(first.providerCalls).toBe(0);
+}, 60_000);
+
+it.each(["enriched", "silent"])("built configured P2 commits host %s completion content", async (kind) => {
+  const root = await fixtureRoot(); const completed = await run(root, "produce", kind);
+  expect(completed.record.lastCommit.outcome).toBe("completed");
+  expect(completed.record.messages[1]!.content).toBe(kind === "silent" ? "[Host: silent completion]" : "Fictional verbatim final reply. Fictional host enrichment.");
+  const repeated = await run(root, "recover"); expect(repeated.record).toEqual(completed.record); expect(repeated.nativeInspections).toBe(0);
 }, 60_000);
