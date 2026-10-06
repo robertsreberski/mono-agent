@@ -189,8 +189,11 @@ current tail. The host must persist the target epoch/handle/time first.
 for every supplied member. It preflights matching headers/copies, preserves
 unknown evidence, and repeats absent-member cleanup without recreating journals.
 The host must retain canonical membership and its deletion intent through every
-unlink/directory barrier. These methods do not yet implement ordinary host cold
-rotation, reset or retention; those entrances remain guarded.
+unlink/directory barrier. The opt-in durable-history host coordinates those
+transactions; this runtime factory does not persist host lifecycle intents.
+Read-only cold/switch verification refuses missing evidence behind canonical
+receipts. Retention eligibility probes protect busy/contradictory native owners;
+probes do not grant deletion authority.
 This factory does not prove host artifact acceptance or canonical publication;
 the host coordinator must supply those authorities and keep pending switches
 fenced. No configured host opts in. Do not use it for real-root switching until

@@ -277,7 +277,7 @@ logical-owner coordinates reject before intent publication. IDs longer than 512 
 cold-epoch-with-replay path instead of failing a switch request. Capacity
 unavailability must likewise be treated as unsupported switch storage by future
 host policy, falling back to cold replay before intent publication; no production
-caller is enabled until roll-forward and whole-chain deletion are implemented.
+caller is enabled here; runtime dispatch/switch policy integration is separate.
 
 Managed root enumeration recognizes only secure owned `.model-switches`
 contents. Aggregate/staged quotas include physical artifacts, generations and
@@ -290,10 +290,10 @@ plans separately. Retention protects every fenced physical bucket, including
 inactive provider retirement fences. Logical reset prechecks all matching
 physical buckets for pending switches before resetting any sibling.
 A pending intent blocks ordinary provider admission, append/import and reset
-before retirement; native/canonical transaction and whole-chain cleanup
-integration is still required to settle it. Releasing the storage lease releases
+before retirement; ready-only native/canonical roll-forward settles accepted
+content, while pending production remains an explicit-message host concern. Releasing the storage lease releases
 ownership only, never the fence or evidence. Do not begin such a lease on a real
-root before the remaining transaction integration is enabled.
+root without stopped older writers and explicit migration authority.
 It does not issue root authority, settle turns, run a producer, bind a model,
 enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
 The ordinary canonical v3/v5 paths and configured host switching policy remain
@@ -306,18 +306,37 @@ evicted; turn receipts still settle exactly once. Native reconciliation must
 match the authoritative current journal. Optimistic versions and switch-source
 digests include the v4 metadata, not just messages and the provider binding.
 
-**Temporary v4-only guards:** host-only append/exclusive/import, model changes,
-unsynced or otherwise cold provider turns, inactive cold-fence retirement, reset
-and retention require managed native epoch-transition or whole-chain-deletion
-capability. Until P3b-2b2-ii supplies authority/header issuance, roll-forward and
-restartable whole-chain deletion, these paths fail before native retirement or
-canonical/membership deletion rather than inventing a journal or demoting v4.
-V4 members are temporarily non-evictable in quota reservation plans, so they
-cannot cause post-commit quota growth or block pruning eligible legacy victims.
-Unresolved v4 dirty fences are preserved without blocking unrelated owners.
-Logical reset likewise prechecks all
-matching canonical members. These guards apply only to already-v4 conversations;
-v1/v2/v3 roots retain today's import, cold rotation, reset and retention behavior.
+With explicit `nativeJournalStorage`, v4 host-only append/exclusive/import,
+unsynced/cancelled/interrupted provider settlement and stale-current admission
+use a durable `.native-history-op.<owner-hash>.json` C intent. The exact target
+handle/epoch and initializer plan are persisted before native creation. Canonical
+publication replaces only the current descriptor, retaining its predecessor link;
+reference-checked cleanup never deletes a chain predecessor or promotes a rejected
+current tail. Aborting preparation does not create/delete native epochs. Recovery
+holds the actual owner claim and performs native I/O outside root transactions.
+A historical completed-switch fence validates retained source frames/current
+membership without restoring an obsolete target or recreating missing evidence.
+
+D reset/retention intents retain canonical authority and complete membership until
+all native members/copies, switch artifacts/generations, pending payloads and
+publication barriers complete. Reset then writes a clean v3 record; retention
+removes the canonical owner only afterward. Interrupted deletion resumes under
+owner claims, including when only its intent remains. The shared immutable root
+marker stays. Retention counts physical native/artifact reclamation and protects
+busy native writers at reservation instead of allowing post-commit quota growth.
+Lifecycle intents and unfinished native publication are charged; stats distinguish
+physical bytes from outstanding native reservations. Pending switches and
+unsettled execution/compaction owners remain protected, and logical reset
+prechecks matching buckets before mutating any sibling.
+
+Without the administrative native capability, v4 cold/deletion mutation refuses
+before side effects. Unresolved v4 fences never block unrelated owners; managed
+roots preserve unreadable evidence rather than overwrite it as v3. V1/v2/v3
+behavior stays unchanged. A v4 model change must use accepted switch storage;
+ordinary cold replacement retains the bound model and makes no compatibility or
+account claim. Incoming dispatch, switch policy and configured runtime wiring
+are not enabled by these storage APIs.
+
 The administrative `acquireNativeHistoryAuthority(id, { exclusiveWriters: true })`
 requires an explicit stopped-older-writer acknowledgement, a bound source and
 drained host ownership. It issues a bounded, immutable private root marker and
@@ -326,11 +345,10 @@ proposals and the winner remain charged and crash recovery never erases unknown
 proposals. Managed-marker roots use strict canonical reads: torn files cannot
 lose native authority by being overwritten as v3. Unmarked legacy roots retain
 their existing torn-file policy. This API is not used by configured hosts and
-must not be invoked on real roots before the complete native transaction lands.
+does not grant permission to migrate real roots.
 Older binaries must stay stopped; the marker is not proof that every older
 admission path checks it. Rollback requires consistent host/native backups, not
 stripping the marker. The lease itself does not upgrade a header or enable dispatch.
-The coordinated transaction/deletion integration removes the remaining guards.
 An explicit administrative `nativeJournalStorage` capability couples measured
 native inventory/reservations to `rollForwardModelSwitch(id, switchId,
 { exclusiveWriters: true })`. Initial admission checks actual frozen sources,
@@ -343,8 +361,8 @@ intent fence. Recovered receipt cleanup never repairs or creates missing native
 evidence. Artifact and winning attempt storage remain retained for later D deletion.
 Physical native bytes replace provisional native credits without process-local
 refund counters; committed native bytes do not consume the unpublished-stage
-quota. No configured host opts in; cold epoch/whole-chain guards remain until
-the rest of the coordinated lifecycle lands. This is not a standalone rollout.
+quota. No configured host opts in; incoming dispatch and model-switch policy
+remain separate runtime integration. This is not a standalone real-root rollout.
 
 Pending switching stays entirely in host intent/attempt storage: no native
 `model_change` or incoming binding is published before accepted handoff content

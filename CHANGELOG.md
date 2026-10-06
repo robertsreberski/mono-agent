@@ -2,27 +2,15 @@
 
 ## Unreleased
 
-- Add exact same-model native cold-epoch planning/publication and reference-checked
-  current-only or whole-chain native deletion primitives. Preserve predecessors
-  and unknown evidence; keep host cold/reset/retention integration guarded.
-
-- Couple owner-held ready switch recovery to measured native storage, canonical
-  v4 binding/receipts and durable intent-fence cleanup. Pending stays host-only;
-  configured switching remains disabled until cold/deletion integration lands.
-
-- Add a storage-only native journal bridge with measured source/copy budgets,
-  recoverable immutable model-change framing and atomically initialized guarded
-  epochs. It is not configured by hosts until the coordinated lifecycle lands.
-
-- Keep unresolved v4 owners from blocking unrelated history writes and reserve
-  v4 members as non-evictable until whole-chain deletion is enabled. Issue bounded
-  owner-held native root authority only under drained, explicitly exclusive
-  ownership; strictly preserve unreadable canonical evidence on managed roots.
-
-- Preserve existing canonical v4 journal-chain authority, projection and switch
-  receipts during same-epoch writes and turn recovery. Reject unsupported v4
-  cold rotation or destructive cleanup before retiring native evidence; keep
-  upgrades disabled and legacy history behavior unchanged.
+- Add owner-held canonical v4 journal chains, strict managed-root authority and
+  ready-only native model-switch publication with measured retained-evidence
+  quotas. Keep pending switches host-only. Publish exact cold replacement epochs
+  without freezing rejected tails, preserve referenced predecessors, and make
+  whole-chain reset/retention cleanup restartable through native journals,
+  handoffs and crash storage. Keep unrelated owners progressing and reserve
+  capacity before mutation, including when native victims are busy. Keep
+  configured switching disabled; older writers must stay stopped and rollback
+  requires restoring consistent backups.
 
 - Fix managed switch-storage owner validation and transactional pending checks,
   preserve switching owners during logical reset and inactive fence cleanup, and

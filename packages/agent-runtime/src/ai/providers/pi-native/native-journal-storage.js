@@ -189,6 +189,23 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         handleId: context.targetHandleId, ownerKey: last.ownerKey, historyBucket: last.historyBucket, provenance: context.targetProvenance });
       await context.assertOwned(); return [...output, target.descriptor];
     },
+    /** Historical completed switch fences may outlive a cold replacement of
+     * their target. Verify the accepted source frames, never recreate old B.
+     * @param {any[]} chain @param {any[]} sources @param {any} context */
+    async verifySwitchSources(chain, sources, context) {
+      await context.assertOwned(); validateChain(chain, context);
+      if (chain.length <= sources.length) fail();
+      for (let index = 0; index < sources.length; index++) {
+        const current = await snapshot(sources[index], index === sources.length - 1 ? context.event : undefined);
+        if (!same(current.header.hostAuthority, context.hostAuthority) || !same(current.descriptor, chain[index])
+          || current.descriptor.sourceSeq !== sources[index].sourceSeq + (index === sources.length - 1 ? 3 : 0)) fail();
+      }
+      for (let index = sources.length; index < chain.length; index++) {
+        const evidence = await snapshot(chain[index], undefined, index === chain.length - 1);
+        if (!same(evidence.header.hostAuthority, context.hostAuthority) || index < chain.length - 1 && !same(evidence.descriptor, chain[index])) fail();
+      }
+      await context.assertOwned();
+    },
     /** Recovered canonical receipts must name real completed native publication.
      * Read-only validation: never append, repair or create missing evidence.
      * @param {any[]} chain @param {any[]} sources @param {any} context */
@@ -237,6 +254,43 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       if (!same(target.header, plan.header)) fail();
       await context.assertOwned(); return [...chain.slice(0, -1), descriptor];
     },
+    /** Read-only proof after the host cold rename. Never recreates missing
+     * evidence behind a canonical receipt. @param {any[]} chain @param {any} context */
+    async verifyColdEpoch(chain, context) {
+      const { plan, descriptor } = coldPlan(chain, context); await context.assertOwned();
+      for (const predecessor of chain.slice(0, -1)) {
+        const frozen = await snapshot(predecessor);
+        if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
+      }
+      const target = await snapshot(descriptor, undefined, true);
+      if (!same(target.header, plan.header)) fail(); await context.assertOwned();
+    },
+    /** Read-only retention eligibility probe, not deletion authority. A live
+     * writer or contradictory header protects the owner before reservation.
+     * @param {any[]} chain @param {any} authority */
+    async deletionBlocked(chain, authority) {
+      validateChain(chain, { hostAuthority: authority, assertOwned: async () => {} });
+      const locks = await repo.ensureDirectory();
+      try { return await locks.withCatalog(async () => {
+        const writers = [];
+        try {
+          for (const entry of chain) {
+            if (repo.openSessions.has(entry.handleId)) return true;
+            const writerPath = join(locks.directory, `${entry.journalId}.sqlite`);
+            await locks.ensureFile(writerPath); const writer = await locks.tryLock(writerPath);
+            if (!writer) return true; writers.push(writer);
+            let reader;
+            try { reader = await JournalReader.open(path(entry.journalId), root); }
+            catch (error) { if (missing(error)) continue; throw error; }
+            try {
+              const header = await reader.readHeader(); validateJournalHeader(header);
+              if (header.id !== entry.handleId || header.journalId !== entry.journalId || header.ownershipSchemaVersion !== 2 || !same(header.hostAuthority, authority)) return true;
+            } catch { return true; } finally { await reader.close(); }
+          }
+          return false;
+        } finally { for (const writer of writers) writer.release(); }
+      }, { wait: false }); } catch (error) { if (error?.code === "ERR_HARNESS_WRITER_BUSY") return true; throw error; }
+    },
     /** Reference-checked C or full-set D. Missing members are idempotent success,
      * not creation eligibility. Host retains membership until every barrier wins.
      * @param {any[]} chain @param {any} context */
@@ -260,7 +314,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     async inventory() {
       const directory = join(root, "mono-v2", "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
-      await repo.ensureDirectory(); let bytes = 0, stagedBytes = 0;
+      const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
       /** @type {Record<string,{retainedBytes:number,headerCopyBytes:number,stagedBytes:number}>} */ const journals = Object.create(null);
       for (const name of await readdir(directory)) {
         if (!/^[A-Za-z0-9_-]+\.jsonl(?:\.(?:creating|importing|upgrading))?$/.test(name)) fail();
@@ -273,6 +327,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         finally { await reader.close(); }
       }
       await repo.assertDirectory(); return { bytes, stagedBytes, journals };
+      });
     },
   };
 }

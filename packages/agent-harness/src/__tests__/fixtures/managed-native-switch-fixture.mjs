@@ -42,7 +42,7 @@ export async function ready(f) {
   const lease = await f.store.beginModelSwitchStorage(f.state); if (lease.status !== "owned") throw new Error("Expected owned switch");
   await lease.advanceUnfit(); const reference = await lease.accept({ version: 1, policy: "mono-handoff-v1",
     coverage: f.state.identity.sources.map(({ ordinal, epoch: _epoch, ...entry }) => ({ ...entry, epoch: ordinal })),
-    summary: null, checkpoint: null, recent: [], ledger: [], retainedIds: [], producer: "checkpoint", timestamp: 17,
+    summary: null, checkpoint: null, recent: [], ledger: [], retainedIds: [], producer: "checkpoint", timestamp: f.state.identity.timestamp,
     target: f.state.identity.targetProvenance, budget: f.budget });
   await lease.release(); return reference;
 }

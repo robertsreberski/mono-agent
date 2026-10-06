@@ -733,11 +733,14 @@ export type RuntimeNativeChainDeletion = RuntimeNativeJournalDeletion & (
 export interface RuntimeNativeJournalStorage {
   /** Persist this exact plan in the host cold intent before native publication. */
   planColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): { readonly descriptor: RuntimeNativeJournalDescriptor; readonly bytes: number };
+  verifyColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<void>;
   publishColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
   /** Caller retains canonical membership and deletion intent through completion. */
+  deletionBlocked(chain: readonly RuntimeNativeJournalDescriptor[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
   deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
   freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
   measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
+  verifySwitchSources(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
   verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
   publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
   inventory(): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
