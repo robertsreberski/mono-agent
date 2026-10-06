@@ -1772,7 +1772,7 @@ describe("WebFetch", () => {
     });
     expect(empty).toMatchObject({
       error: true,
-      outcome: { code: "extraction_failed", parserFailures: ["defuddle", "readability", "body"] },
+      outcome: { code: "unusable_content", parserFailures: ["defuddle", "readability", "body"] },
     });
   });
 
@@ -2603,7 +2603,8 @@ describe("run-scoped web controller and browser isolation", () => {
         cleanups.push(cleanup);
         const output = command.args.includes("read")
           ? JSON.stringify({ text: "# Rendered\n\nSafe page" })
-          : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
+          : command.args.includes("title") ? JSON.stringify({ text: "Rendered page" })
+            : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
         return {
           command: process.execPath,
           args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
@@ -2619,7 +2620,8 @@ describe("run-scoped web controller and browser isolation", () => {
     });
     expect(text.text).toContain("Safe page");
     expect(text.finalUrl).toBe("https://example.com/page");
-    expect(preparedCommands).toHaveLength(5);
+    expect(text.title).toBe("Rendered page");
+    expect(preparedCommands).toHaveLength(6);
     const sessions = new Set();
     for (const command of preparedCommands) {
       expect(command.command).toBe("agent-browser");

@@ -127,7 +127,7 @@ export function parallelFailure(error, signal) {
   const rateLimited = !aborted && (error?.code === "rate_limited" || error?.code === 429 || /rate.?limit|too many requests|quota exceeded|\b429\b/iu.test(error?.message ?? ""));
   const code = aborted ? (signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted")
     : rateLimited ? "rate_limited"
-      : ["network_denied", "invalid_parallel_config", "search_budget_exhausted", "response_too_large", "coordination_unavailable", "deadline_exceeded", "aborted", "access_challenge", "authentication_required"].includes(error?.code) ? error.code : "backend_unavailable";
+      : ["network_denied", "invalid_parallel_config", "search_budget_exhausted", "response_too_large", "coordination_unavailable", "deadline_exceeded", "aborted", "access_challenge", "authentication_required", "unusable_content"].includes(error?.code) ? error.code : "backend_unavailable";
   return {
     ok: false, backend: "parallel", code, retryable: code === "backend_unavailable" || rateLimited,
     message: code === "network_denied" ? "Network access denied by sandbox policy." : `Parallel request failed (${code}).`,
