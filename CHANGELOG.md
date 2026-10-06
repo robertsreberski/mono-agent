@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Harden managed-history retention and native cleanup: reuse canonical snapshots,
+  protect unreadable and same-owner victims, replan after unlocked native I/O,
+  and reuse durable cold reservations on retry. Charge only enrolled native
+  journals, preserve switched-away references and unknown header copies, verify
+  torn bytes under writer ownership, and normalize runtime/bridge sessions roots.
+
 - Add owner-held canonical v4 journal chains, strict managed-root authority and
   ready-only native model-switch publication with measured retained-evidence
   quotas. Keep pending switches host-only. Publish exact cold replacement epochs

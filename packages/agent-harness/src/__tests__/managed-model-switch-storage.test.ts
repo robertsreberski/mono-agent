@@ -19,7 +19,7 @@ async function fixture(maxStoreBytes = 1024 * 1024, maxStagedBytes = 1024 * 1024
   const turn = await store.beginProviderSessionTurn(historyBucket, "fictional-source-turn", { modelKey: "faux:A" });
   const fencePath = join(root, ".locks", `${switchConversationKey(historyBucket)}.dirty.json`);
   const sourceFence = JSON.parse(await readFile(fencePath, "utf8"));
-  const prepared = await turn.prepareCommit([{ role: "user", content: "Fictional retained history", timestamp: "1990-05-17T00:00:00.000Z" }], { providerSessionSynced: true }); await prepared.commit();
+  const prepared = await turn.prepareCommit([{ role: "user", content: "Fictional retained history", timestamp: "2000-01-01T00:00:00.000Z" }], { providerSessionSynced: true }); await prepared.commit();
   const source = await store.modelSwitchStorageSource(historyBucket); if (source.status !== "supported") throw new Error("Expected supported source");
   const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const descriptor = { journalId: "fictional-journal", epoch: source.sourceEpoch, ordinal: 0, handleId: turn.providerSessionId, predecessorJournalId: null,
@@ -59,7 +59,7 @@ it("charges real model storage and remaining durable plans without quota-deletin
   await replay.admit("outgoing"); await replay.release();
   expect((await exact.stats()).bytes + (await exact.stats()).reservedBytes).toBe(before.bytes + reservationBytes(state.reservation));
   const low = createDurableHistoryStore({ root, maxStoreBytes: before.bytes + 1024, maxStagedBytes: 1024, retireProviderSession: async () => {} });
-  await expect(low.append("fictional-other", [{ role: "user", content: "Too little capacity", timestamp: "1990-05-17T00:00:00.000Z" }])).rejects.toThrow();
+  await expect(low.append("fictional-other", [{ role: "user", content: "Too little capacity", timestamp: "2000-01-01T00:00:00.000Z" }])).rejects.toThrow();
   expect(await store.load(bucket)).toHaveLength(1); expect((await readdir(join(root, MODEL_SWITCH_DIRECTORY))).length).toBe(2);
 });
 it("refuses initial aggregate/header-copy space before creating any intent", async () => {
@@ -71,13 +71,13 @@ it("refuses initial aggregate/header-copy space before creating any intent", asy
 it("blocks ordinary admission, append and reset before retirement while a durable switch intent exists", async () => {
   const { store, state, retire } = await fixture(); const lease = await store.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned lease"); await lease.release();
   await expect(store.beginProviderSessionTurn(bucket, "fictional-next", { modelKey: "faux:B" })).rejects.toThrow("pending");
-  await expect(store.append(bucket, [{ role: "user", content: "No mutation", timestamp: "1990-05-17T00:00:00.000Z" }])).rejects.toThrow("pending");
+  await expect(store.append(bucket, [{ role: "user", content: "No mutation", timestamp: "2000-01-01T00:00:00.000Z" }])).rejects.toThrow("pending");
   await expect(store.reset(bucket)).rejects.toThrow("pending"); expect(retire).not.toHaveBeenCalled(); expect(await store.load(bucket)).toHaveLength(1);
 });
 it("treats long IDs as unsupported storage, preserving today's cold-epoch replay behavior", async () => {
   const { store, state } = await fixture(); const id = "fictional-" + "x".repeat(513);
   const turn = await store.beginProviderSessionTurn(id, "fictional-long-A", { modelKey: "faux:A" });
-  const prepared = await turn.prepareCommit([{ role: "user", content: "Retained fictional long-id history", timestamp: "1990-05-17T00:00:00.000Z" }], { providerSessionSynced: true }); await prepared.commit();
+  const prepared = await turn.prepareCommit([{ role: "user", content: "Retained fictional long-id history", timestamp: "2000-01-01T00:00:00.000Z" }], { providerSessionSynced: true }); await prepared.commit();
   expect(await store.modelSwitchStorageSource(id)).toEqual({ status: "unsupported", reason: "id_limit" });
   expect(await store.beginModelSwitchStorage({ ...state, identity: { ...state.identity, historyBucket: id, ownerKey: id } })).toEqual({ status: "unsupported", reason: "id_limit" });
   const cold = await store.beginProviderSessionTurn(id, "fictional-long-B", { modelKey: "faux:B" }); expect(cold.providerSessionId).not.toBe(turn.providerSessionId); expect(cold.providerSessionRevision).toBe(0);

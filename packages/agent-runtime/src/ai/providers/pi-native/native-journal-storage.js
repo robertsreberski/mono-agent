@@ -2,11 +2,12 @@
 // Private storage-only bridge: no provider dispatch, repair accounting or tools.
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { SessionStore, JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { JournalReader } from "@mono-agent/harness/journal-reader.js";
 import { JournalValidator, validateJournalHeader } from "@mono-agent/harness/journal-schema.js";
 import { resolveDurableNativeSessionRepo, detachDurableNativeSession } from "./session-lifecycle.js";
+import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 /** @returns {never} */
 function fail() { throw new Error("Managed native journal evidence changed or is unavailable"); }
 const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordered(v[k])])) : v;
@@ -14,8 +15,8 @@ const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b))
 const missing = (error) => error?.code === "ENOENT";
 /** @param {{sessionsRoot:string, onPhase?:(phase:string)=>Promise<void>}} options */
 export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = async () => {} }) {
-  if (!isAbsolute(sessionsRoot)) throw new TypeError("Managed native root must be absolute");
-  const root = resolve(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
+  if (typeof sessionsRoot !== "string" || !isAbsolute(sessionsRoot.trim())) throw new TypeError("Managed native root must be absolute");
+  const root = normalizeDurableSessionsRoot(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
   const phase = async (name) => { await onPhase(name); };
   const path = (id) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "mono-v2", "journals", `${id}.jsonl`); };
   const metadata = async (source) => {
@@ -102,6 +103,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         try { reader = await JournalReader.open(path(entry.journalId) + suffix, root); }
         catch (error) { if (missing(error)) continue; throw error; }
         try {
+          if (suffix === ".upgrading") {
+            const source = await JournalReader.open(path(entry.journalId), root);
+            try { await JsonlSessionRepo.assertGuardedHeaderCopy(source, reader, context.hostAuthority); }
+            finally { await source.close(); }
+            continue;
+          }
           const header = await reader.readHeader(); validateJournalHeader(header);
           if (header.id !== entry.handleId || header.journalId !== entry.journalId
             || header.ownershipSchemaVersion !== 2 || !same(header.hostAuthority, context.hostAuthority)) fail();
@@ -175,8 +182,10 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         } else if (!same(current.header.hostAuthority, context.hostAuthority)) fail();
         if (index < sources.length - 1 && !same(current.descriptor, source)) fail();
         if (index === sources.length - 1) {
+          await phase("model_change_before_open");
           const store = await repo.open(current.metadata, { repair: false, wait: false });
-          try { await context.assertOwned(); store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: context.hostAuthority });
+          try {
+            await phase("model_change_writer_opened"); await context.assertOwned(); store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: context.hostAuthority });
             await store.appendModelChangeReference({ ...context.event, onPhase: phase });
           } finally { await store.close(); }
         }
@@ -276,6 +285,13 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         try {
           for (const entry of chain) {
             if (repo.openSessions.has(entry.handleId)) return true;
+            try { await lstat(path(entry.journalId)); } catch (error) {
+              if (!missing(error)) throw error;
+              for (const suffix of [".creating", ".upgrading", ".importing"]) {
+                try { await lstat(path(entry.journalId) + suffix); return true; } catch (stageError) { if (!missing(stageError)) throw stageError; }
+              }
+              continue;
+            }
             const writerPath = join(locks.directory, `${entry.journalId}.sqlite`);
             await locks.ensureFile(writerPath); const writer = await locks.tryLock(writerPath);
             if (!writer) return true; writers.push(writer);
@@ -285,6 +301,15 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
             try {
               const header = await reader.readHeader(); validateJournalHeader(header);
               if (header.id !== entry.handleId || header.journalId !== entry.journalId || header.ownershipSchemaVersion !== 2 || !same(header.hostAuthority, authority)) return true;
+              for (const suffix of [".creating", ".upgrading", ".importing"]) {
+                let copy; try { copy = await JournalReader.open(path(entry.journalId) + suffix, root); }
+                catch (error) { if (missing(error)) continue; return true; }
+                try {
+                  const copied = suffix === ".upgrading" ? await JsonlSessionRepo.assertGuardedHeaderCopy(reader, copy, authority) : await copy.readHeader();
+                  validateJournalHeader(copied);
+                  if (copied.id !== entry.handleId || copied.journalId !== entry.journalId || copied.ownershipSchemaVersion !== 2 || !same(copied.hostAuthority, authority)) return true;
+                } catch { return true; } finally { await copy.close(); }
+              }
             } catch { return true; } finally { await reader.close(); }
           }
           return false;
@@ -310,17 +335,28 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       }
       await context.assertOwned(); await phase("native_members_directory_synced");
     },
-    /** All journal/stage/copy bytes in this explicitly dedicated native root. */
-    async inventory() {
+    /** Only guarded managed journals, plus exact IDs enrolled by durable host
+     * intents. Legacy provider journals never receive implicit charge/credit.
+     * @param {string[]} [managedJournalIds] */
+    async inventory(managedJournalIds = undefined) {
+      const scope = managedJournalIds === undefined ? null : new Set(managedJournalIds);
+      if (scope && [...scope].some((id) => !/^[A-Za-z0-9_-]+$/.test(id))) fail();
       const directory = join(root, "mono-v2", "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
       const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
       /** @type {Record<string,{retainedBytes:number,headerCopyBytes:number,stagedBytes:number}>} */ const journals = Object.create(null);
       for (const name of await readdir(directory)) {
         if (!/^[A-Za-z0-9_-]+\.jsonl(?:\.(?:creating|importing|upgrading))?$/.test(name)) fail();
+        const id = name.split(".")[0]; if (scope && !scope.has(id)) continue;
         const reader = await JournalReader.open(join(directory, name), root);
-        try { const stat = await reader.assertIdentity(); if (stat.nlink !== 1) fail(); bytes += stat.size; if (!Number.isSafeInteger(bytes)) fail();
-          const id = name.split(".")[0], row = journals[id] ??= { retainedBytes: 0, headerCopyBytes: 0, stagedBytes: 0 };
+        try {
+          if (!scope) {
+            let header; try { header = await reader.readHeader({ allowIncomplete: true }); validateJournalHeader(header); }
+            catch { continue; }
+            if (header?.ownershipSchemaVersion !== 2) continue;
+          }
+          const stat = await reader.assertIdentity(); if (stat.nlink !== 1) fail(); bytes += stat.size; if (!Number.isSafeInteger(bytes)) fail();
+          const row = journals[id] ??= { retainedBytes: 0, headerCopyBytes: 0, stagedBytes: 0 };
           if (name.endsWith(".upgrading")) row.headerCopyBytes += stat.size; else row.retainedBytes += stat.size;
           if (!name.endsWith(".jsonl")) { row.stagedBytes += stat.size; stagedBytes += stat.size; }
         }

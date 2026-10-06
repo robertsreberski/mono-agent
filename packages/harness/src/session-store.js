@@ -16,7 +16,7 @@ import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 import { canonicalHostJournalAuthority, validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
 import { modelChangeRecords, guardedEpochPlan } from "./managed-journal.js";
-import { publishGuardedHeader } from "./header-upgrade.js";
+import { publishGuardedHeader, assertGuardedHeaderCopy } from "./header-upgrade.js";
 const sessionAuthorities = new WeakMap();
 const enabledVersion3Sessions = new WeakSet();
 function acceptHeader(session, header) {
@@ -253,9 +253,10 @@ export class SessionStore {
       const remaining = records.slice(start ? prior ? 2 : 1 : 0);
       const validator = Object.assign(new JournalValidator(), structuredClone(this.validator));
       for (const record of remaining) validator.apply(record);
-      // The host bridge has matched any torn bytes to this immutable plan before
-      // admitting truncation. No generic native interruption/accounting runs.
-      await this.io?.prepareReconciliation();
+      // Recheck this exact remaining frame while holding the native writer;
+      // the earlier bridge snapshot cannot authorize truncating changed bytes.
+      const expectedTail = Buffer.from(remaining.map((record) => JSON.stringify(record)).join("\n") + "\n");
+      await this.io?.prepareReconciliation(expectedTail);
       for (const record of remaining) {
         await this.writeRecord(record.kind, record.payload, { id: record.id, turnId: record.turnId,
           schemaVersion: record.schemaVersion, timestamp: record.timestamp });
@@ -499,6 +500,7 @@ export class JsonlSessionRepo {
     }
   }
   static guardedEpochPlan(options) { return guardedEpochPlan(options); }
+  static assertGuardedHeaderCopy(source, copy, authority) { return assertGuardedHeaderCopy(source, copy, authority); }
   /** Atomic, idempotent host epoch initialization; ordinary create stays unchanged.
    * @param {any} options */
   async createGuardedEpoch(options) {
@@ -627,9 +629,17 @@ export class JsonlSessionRepo {
           if (!sameIdentity(stat, expectedStat) || stat.size !== expectedSize || stat.mtimeMs !== expectedStat.mtimeMs) fail();
           expectedStat = stat; reader.cacheVersion = stat;
         },
-        prepareReconciliation: async () => {
+        prepareReconciliation: async (/** @type {Buffer|undefined} */ expectedTail = undefined) => {
           await verify();
           if (pendingTornTail !== null) {
+            if (expectedTail !== undefined) {
+              const length = expectedSize - pendingTornTail;
+              if (length > expectedTail.length) fail();
+              const bytes = Buffer.alloc(length); let offset = 0;
+              while (offset < length) { const result = await handle.read(bytes, offset, length - offset, pendingTornTail + offset); if (!result.bytesRead) fail(); offset += result.bytesRead; }
+              if (!expectedTail.subarray(0, length).equals(bytes)) fail();
+              await verify();
+            }
             await handle.truncate(pendingTornTail); expectedSize = pendingTornTail; expectedStat = await handle.stat();
             pendingTornTail = null; reader.clearCache(); this.warm = null;
           }
@@ -685,7 +695,7 @@ export class JsonlSessionRepo {
         Object.assign(storeMetadata, header, { path: metadata.path });
         if (evidence.torn) {
           await reader.assertIdentity(); const current = await handle.stat();
-          if (!sameIdentity(current, evidence.identity) || current.size !== evidence.identity.size) fail();
+          if (!unchanged(current, evidence.identity)) fail();
           if (repair) { await handle.truncate(evidence.completeBytes); expectedSize = evidence.completeBytes; expectedStat = await handle.stat(); }
           else pendingTornTail = evidence.completeBytes;
         }
@@ -976,6 +986,7 @@ export class JsonlSessionRepo {
       for (const path of paths) {
         if (await absent(path)) continue;
         const reader = await JournalReader.open(path, this.root); readers.push(reader);
+        if (path.endsWith(".upgrading")) continue;
         const header = await reader.readHeader(); validateJournalHeader(header);
         if (header.journalId !== metadata.journalId || header.id !== metadata.id) fail();
         if (header.import) {
@@ -983,7 +994,16 @@ export class JsonlSessionRepo {
           archives.push({ ...source, path: `${source.path}.migrated` });
         }
       }
-      for (const reader of readers) { const header = await reader.readHeader(); await authorizeGuardedDeletion(header, options); }
+      const source = readers.find((reader) => reader.path === metadata.path);
+      for (const reader of readers) {
+        const header = reader.path.endsWith(".upgrading")
+          ? await assertGuardedHeaderCopy(source, reader, options?.hostAuthority) : await reader.readHeader();
+        await authorizeGuardedDeletion(header, options);
+        if (options?.disposition === "C") {
+          await reader.scan((record) => { if (record.kind === "model_change") throw new Error("C cannot delete switched-away native evidence"); });
+        }
+      }
+      readers.sort((a, b) => Number(b.path.endsWith(".upgrading")) - Number(a.path.endsWith(".upgrading")));
       for (const archive of archives) await this.removeLegacy(archive);
       for (const reader of readers) { await options?.assertOwned?.(); await reader.assertIdentity(); await unlink(reader.path); await options?.onPhase?.("native_file_removed"); }
     } finally { for (const reader of readers) await reader.close(); }

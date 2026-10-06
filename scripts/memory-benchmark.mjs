@@ -113,7 +113,7 @@ const PROVIDER_AUTOMATIC_CASES = [
 // shared-word traps); automatic recall on the negatives is gated: no false
 // recall and full abstention.
 const NAMES_DATES_RECORDS = [
-  record("nd-morgan-born", "Morgan Reyes was born on 1990-05-17."),
+  record("nd-morgan-born", "Morgan Reyes was born on 2000-01-01."),
   record("nd-taylor-born", "Taylor Brooks was born on 1988-11-02."),
   record("nd-morgan-party", "Morgan planned the birthday party playlist for the team offsite."),
   record("nd-zoe-birthday", "Zoë Nowak obchodzi urodziny 12 marca."),

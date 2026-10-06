@@ -300,7 +300,7 @@ describe("extractCapturePlanStrict never plans open tasks", () => {
     const plan = await extractCapturePlanStrict(turn, { id: `task-${_language}`, complete: async () => JSON.stringify({
       memories: [
         { type: "task", text, salience: 0.8, isInsight: false, entityIds: ["person:morgan"], source: "user" },
-        { type: "event", text: "Morgan moved into the Maple flat on 1990-05-17.", salience: 0.8, isInsight: false,
+        { type: "event", text: "Morgan moved into the Maple flat on 2000-01-01.", salience: 0.8, isInsight: false,
           entityIds: ["person:morgan"], source: "user" },
       ],
       entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],

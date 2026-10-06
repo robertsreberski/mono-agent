@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { createManagedNativeJournalStorage } from "../../ai/providers/pi-native/native-journal-storage.js";
 const roots = [], repos = [];
 const authority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
@@ -35,7 +36,8 @@ it("measures native bytes and peak copy before any native migration or event", a
   const f = await fixture(), measured = await f.bridge.measureSwitch([f.source], context);
   expect(measured.retainedNativeBytes).toBeGreaterThan(f.before.length);
   expect(measured.headerCopyBytes).toBeGreaterThan(f.before.length);
-  expect((await f.bridge.inventory()).bytes).toBe(f.before.length);
+  expect((await f.bridge.inventory()).bytes).toBe(0);
+  expect((await f.bridge.inventory([f.source.journalId])).bytes).toBe(f.before.length);
   expect(await readFile(f.metadata.path)).toEqual(f.before);
   expect(await f.repo.listOwned()).toHaveLength(1);
 });
@@ -96,7 +98,7 @@ it("preserves a foreign deterministic epoch stage and charges its bytes", async 
     onPhase: async (phase) => { if (phase === "epoch_stage_created") throw new Error("Interrupted"); } })).rejects.toThrow();
   await appendFile(stage, "foreign evidence"); const before = await readFile(stage);
   await expect(f.repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: 17, hostAuthority: authority, assertOwned: context.assertOwned })).rejects.toThrow();
-  expect(await readFile(stage)).toEqual(before); expect((await f.bridge.inventory()).bytes).toBe(f.before.length + before.length);
+  expect(await readFile(stage)).toEqual(before); expect((await f.bridge.inventory([plan.header.journalId])).bytes).toBe(before.length);
 });
 
 const worker = fileURLToPath(new URL("./fixtures/native-journal-storage-worker.mjs", import.meta.url));
@@ -124,8 +126,9 @@ it.skipIf(process.platform === "win32").each(["model_change_started", "model_cha
 
 it("charges prototype-shaped native stems without prototype-key ledger credits", async () => {
   const f = await fixture(); await writeFile(join(f.repo.directory, "constructor.jsonl"), "opaque preserved evidence", { mode: 0o600 });
-  const inventory = await f.bridge.inventory(); expect(inventory.journals.constructor.retainedBytes).toBe(Buffer.byteLength("opaque preserved evidence"));
-  expect(inventory.bytes).toBe(f.before.length + Buffer.byteLength("opaque preserved evidence"));
+  expect((await f.bridge.inventory()).bytes).toBe(0);
+  const inventory = await f.bridge.inventory(["constructor"]); expect(inventory.journals.constructor.retainedBytes).toBe(Buffer.byteLength("opaque preserved evidence"));
+  expect(inventory.bytes).toBe(Buffer.byteLength("opaque preserved evidence"));
 });
 
 const coldContext = { hostAuthority: authority, assertOwned: async () => {}, timestamp: 23,
@@ -232,3 +235,70 @@ it.skipIf(process.platform === "win32").each([
     expect(await readdir(f.repo.directory)).toHaveLength(2);
   } else { expect(second.inventory.bytes).toBe(0); expect(await readdir(f.repo.directory)).toEqual([]); }
 }, 60000);
+
+
+it("rejects C for a switched-away journal even when the caller presents it as the only current member", async () => {
+  const f = await lifecycleFixture(), before = await readFile(f.metadata.path);
+  await expect(f.bridge.deleteJournals([f.chain[0]], { ...f.deletion, eligibleJournalId: f.chain[0].journalId })).rejects.toThrow("switched-away");
+  expect(await readFile(f.metadata.path)).toEqual(before); expect(await f.repo.listOwned()).toHaveLength(2);
+});
+it.each(["model_change_before_open", "model_change_writer_opened"])("never truncates a foreign tail inserted at %s", async (boundary) => {
+  let f, preserved;
+  f = await fixture({ onPhase: async (phase) => {
+    if (boundary === "model_change_writer_opened" && phase === "model_change_before_open") await appendFile(f.metadata.path, "{");
+    if (phase !== boundary) return;
+    if (boundary === "model_change_before_open") await appendFile(f.metadata.path, "foreign evidence");
+    else { const bytes = await readFile(f.metadata.path); bytes[bytes.length - 1] = 120; await writeFile(f.metadata.path, bytes); }
+    preserved = await readFile(f.metadata.path);
+  } });
+  await expect(f.bridge.publishSwitch([f.source], context)).rejects.toThrow();
+  expect(preserved).toBeDefined(); expect(await readFile(f.metadata.path)).toEqual(preserved);
+  expect(await f.repo.listOwned()).toHaveLength(1);
+});
+it.each(["foreign-body", "oversized", "partial-header"])("pins a non-prefix header copy during D deletion: %s", async (kind) => {
+  const f = await lifecycleFixture(), before = await readFile(f.metadata.path), copy = `${f.metadata.path}.upgrading`;
+  const newline = before.indexOf(10) + 1;
+  const bytes = kind === "foreign-body" ? Buffer.concat([before.subarray(0, newline), Buffer.from("foreign payload\n")])
+    : kind === "oversized" ? Buffer.concat([before, Buffer.from("foreign suffix")]) : Buffer.from("{foreign");
+  await writeFile(copy, bytes, { mode: 0o600 });
+  expect(await f.bridge.deletionBlocked(f.chain, authority)).toBe(true);
+  await expect(f.bridge.deleteJournals(f.chain, { ...f.deletion, disposition: "D", eligibleJournalId: undefined })).rejects.toThrow();
+  expect(await readFile(copy)).toEqual(bytes); expect(await readFile(f.metadata.path)).toEqual(before); expect(await f.repo.listOwned()).toHaveLength(2);
+});
+it.each([0, 11, "body"])("removes only a proven prefix header copy before its source: %s", async (length) => {
+  const f = await lifecycleFixture(), source = await readFile(f.metadata.path), copy = `${f.metadata.path}.upgrading`;
+  const bytes = source.subarray(0, length === "body" ? source.indexOf(10) + 21 : length);
+  await writeFile(copy, bytes, { mode: 0o600 });
+  await f.bridge.deleteJournals(f.chain, { ...f.deletion, disposition: "D", eligibleJournalId: undefined });
+  expect(await f.repo.listOwned()).toHaveLength(0); await expect(readFile(copy)).rejects.toMatchObject({ code: "ENOENT" });
+});
+it("does not create a writer lock for an absent-journal deletion probe", async () => {
+  const f = await lifecycleFixture(), locks = join(f.root, "mono-v2", "locks");
+  await f.bridge.deleteJournals(f.chain, { ...f.deletion, disposition: "D", eligibleJournalId: undefined });
+  const before = (await readdir(locks)).sort();
+  expect(await f.bridge.deletionBlocked(f.chain, authority)).toBe(false);
+  expect((await readdir(locks)).sort()).toEqual(before);
+  const orphan = join(f.repo.directory, `${f.chain[0].journalId}.jsonl.upgrading`); await writeFile(orphan, "unknown copy", { mode: 0o600 });
+  expect(await f.bridge.deletionBlocked(f.chain, authority)).toBe(true); expect((await readdir(locks)).sort()).toEqual(before);
+});
+it("upgrades every retained chain member before publishing the next epoch", async () => {
+  const f = await fixture(), old = await f.repo.create({ id: "d".repeat(64), cwd: "/fictional" });
+  await old.scopedWrite(async () => {
+    await old.writeRecord("owner_binding", { kind: "host", ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
+    await old.writeRecord("handle_binding", { handleId: old.metadata.id, baseRevision: 0, authoritative: true, model: { provider: from.provider, id: from.model, api: from.api } });
+  }, "bind"); await old.sync(); const oldMetadata = { ...old.metadata }; await old.close();
+  const first = await f.bridge.freeze({ epoch: "e".repeat(64), ordinal: 0, handleId: oldMetadata.id, journalId: oldMetadata.journalId, predecessorJournalId: null, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket, provenance: from });
+  const second = { ...f.source, ordinal: 1, predecessorJournalId: first.journalId };
+  const chain = await f.bridge.publishSwitch([first, second], context); expect(chain).toHaveLength(3);
+  for (const member of chain) {
+    const header = JSON.parse((await readFile(join(f.repo.directory, `${member.journalId}.jsonl`), "utf8")).split("\n")[0]);
+    expect(header.ownershipSchemaVersion).toBe(2); expect(header.hostAuthority).toEqual(authority);
+  }
+});
+it("shares runtime repository identity with the bridge for a trailing-slash sessions root", async () => {
+  const f = await fixture(), runtime = resolveDurableNativeSessionRepo(`${f.root}/`); repos.push(runtime);
+  expect(resolveDurableNativeSessionRepo(f.root)).toBe(runtime);
+  const bridge = createManagedNativeJournalStorage({ sessionsRoot: `${f.root}/` });
+  expect(await bridge.publishSwitch([f.source], context)).toHaveLength(2);
+  expect(runtime.root).toBe(f.root); expect((await runtime.listOwned()).map((row) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
+});

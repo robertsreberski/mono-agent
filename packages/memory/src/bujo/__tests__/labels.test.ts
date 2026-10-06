@@ -22,7 +22,7 @@ function bullet(id: string, text = "Morgan prefers short reports."): Bullet {
     isInsight: false, createdAt: when.toISOString(), refs: ["existing-reference"] };
 }
 const birthday: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "birth_date",
-  value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+  value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" };
 const home: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "home_location",
   value: { type: "text", text: "Northport" }, attribution: "document", validFrom: "2025-01-01", validTo: "2025-12-31" };
 const preference: MemoryLabel = { v: 1, kind: "preference", scope: "project:fictional-project", attribution: "user-stated" };
@@ -67,7 +67,7 @@ describe("labels on canonical bullets", () => {
 
   it("indexes labels from a daily line and rebuilds scope, history and conflicts", async () => {
     const dir = root();
-    const b1 = withMemoryLabels(bullet("B1", "Morgan was born on 1990-05-17."), [birthday, home]);
+    const b1 = withMemoryLabels(bullet("B1", "Morgan was born on 2000-01-01."), [birthday, home]);
     const b2 = withMemoryLabels(bullet("B2", "Morgan's date was reported differently."), [
       { ...birthday, value: { type: "date", date: "1991-05-17" } },
       { ...home, value: { type: "text", text: "Southport" }, validFrom: "2026-01-01", validTo: "2026-12-31" },

@@ -607,11 +607,11 @@ describe("backend-agnostic recall server", () => {
     const store = {
       findMemoryEntitiesByNames: (names: readonly string[]) => names.includes("morgan") ? entities : [],
       labelsForEntity: (id: string) => Array.from({ length: 14 }, (_, index) => ({
-        memoryId: `${id}-${index}`, ordinal: 0, text: "Morgan was born 1990-05-17.",
+        memoryId: `${id}-${index}`, ordinal: 0, text: "Morgan was born 2000-01-01.",
         status: index === 13 ? "open" : "invalidated", active: index === 13,
         currentAt: index === 13, conflict: false, createdAt: `2026-09-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
         label: { v: 1 as const, kind: "fact" as const, entityId: id, key: "birth_date",
-          value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const },
+          value: { type: "date" as const, date: "2000-01-01" }, attribution: "user-stated" as const },
       })),
       guidanceForScope: () => [],
     };
@@ -690,10 +690,10 @@ describe("backend-agnostic recall server", () => {
   });
   it("prepends labelled fact/history/conflicts and scoped guidance in both modes without filtering ordinary hits", async () => {
     const birth = (id: string, active: boolean) => ({ memoryId: id, ordinal: 0,
-      text: "Morgan was born 1990-05-17.", status: active ? "open" : "invalidated", active,
+      text: "Morgan was born 2000-01-01.", status: active ? "open" : "invalidated", active,
       conflict: active, currentAt: active, createdAt: "2026-09-06T00:00:00.000Z",
       label: { v: 1 as const, kind: "fact" as const, entityId: "person:morgan", key: "birth_date",
-        value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const } });
+        value: { type: "date" as const, date: "2000-01-01" }, attribution: "user-stated" as const } });
     const store = {
       recall: async () => [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted.", createdAt: "2026-09-06" } },
         { score: 0.5, record: { id: "guidance", text: "Keep reports concise." } }],
@@ -731,7 +731,7 @@ describe("backend-agnostic recall server", () => {
   it("renders source and validity dates on direct or graph-expanded records when supplied", async () => {
     const store = {
       recall: async () => [{ score: 0.9, record: { id: "a", text: "Morgan was born in May" } }],
-      expandGraph: async () => [{ score: 0.9, record: { id: "b", text: "Morgan birth date", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "1990-05-17T00:00:00.000Z" } }],
+      expandGraph: async () => [{ score: 0.9, record: { id: "b", text: "Morgan birth date", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "2000-01-01T00:00:00.000Z" } }],
       close: async () => {},
     };
     const server = createMemoryRecallServer(store);
@@ -741,7 +741,7 @@ describe("backend-agnostic recall server", () => {
     try {
       const result = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birth date" } });
       expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("recorded 2026-09-20T00:00:00.000Z") })]);
-      expect(result.structuredContent).toMatchObject({ hits: [{ id: "b", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "1990-05-17T00:00:00.000Z" }] });
+      expect(result.structuredContent).toMatchObject({ hits: [{ id: "b", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "2000-01-01T00:00:00.000Z" }] });
     } finally { await client.close(); await server.close(); }
   });
 

@@ -327,7 +327,15 @@ busy native writers at reservation instead of allowing post-commit quota growth.
 Lifecycle intents and unfinished native publication are charged; stats distinguish
 physical bytes from outstanding native reservations. Pending switches and
 unsettled execution/compaction owners remain protected, and logical reset
-prechecks matching buckets before mutating any sibling.
+prechecks matching buckets before mutating any sibling. Retention reads each
+canonical once per plan, protects native victims sharing the committing logical
+owner, and replans after every unlocked native-I/O window. Under-quota legacy
+append does not deserialize unrelated canonicals. Native accounting includes
+only canonical managed membership and exact journals enrolled by durable intents,
+not unrelated v1-v3 provider journals. A retry reuses its published cold reservation.
+C cleanup also rejects switched-away `model_change` evidence independently of
+caller membership; header copies are removed before their sources only after an
+exact byte-prefix proof. Unknown copies remain pinned.
 
 Without the administrative native capability, v4 cold/deletion mutation refuses
 before side effects. Unresolved v4 fences never block unrelated owners; managed

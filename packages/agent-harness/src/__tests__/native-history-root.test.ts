@@ -68,7 +68,7 @@ it.each(["append", "reset", "logical reset", "exclusive", "import", "admission"]
   const fresh = createDurableHistoryStore({ root: f.root, retireProviderSession: f.retire });
   const operation = action === "append" ? fresh.append(bucket, []) : action === "reset" ? fresh.reset(bucket)
     : action === "logical reset" ? fresh.resetLogicalConversation(bucket) : action === "exclusive" ? fresh.contextImport!.beginExclusiveTurn(bucket)
-    : action === "import" ? fresh.contextImport!.prepareImport(bucket, { text: "Fictional context.", idempotencyKey: "fictional-import", timestamp: "1990-05-17T00:00:00.000Z" })
+    : action === "import" ? fresh.contextImport!.prepareImport(bucket, { text: "Fictional context.", idempotencyKey: "fictional-import", timestamp: "2000-01-01T00:00:00.000Z" })
     : fresh.beginProviderSessionTurn(bucket, "fictional-new-turn", { modelKey });
   await expect(operation).rejects.toThrow("not valid JSON"); expect(await readFile(f.path)).toEqual(torn); expect(f.retire).not.toHaveBeenCalled();
   await fresh.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]);
@@ -128,3 +128,35 @@ for (const phase of ["root_marker_file_synced", "root_marker_renamed", "root_mar
     expect((await readdir(f.root)).filter((name) => NATIVE_HISTORY_ROOT_TEMP.test(name))).toEqual([]);
   }, 30000);
 }
+
+
+it.each([false, true])("keeps unrelated append independent of unreadable canonicals (managed=%s)", async (managed) => {
+  for (const bytes of ["{", "{}", JSON.stringify({ version: 99, conversationId: bucket }), JSON.stringify(legacy("fictional-wrong-file-id"))]) {
+    const f = await fixture();
+    if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
+    const interrupted = await f.store.beginProviderSessionTurn(bucket, "fictional-interrupted", { modelKey }); await interrupted.abort();
+    await writeFile(f.path, bytes);
+    await f.store.append("fictional-unrelated", [{ role: "assistant", content: "Independent valid history" }]);
+    expect(await f.store.load("fictional-unrelated")).toHaveLength(1); expect(await readFile(f.path, "utf8")).toBe(bytes);
+  }
+});
+it("does not deserialize existing legacy canonicals on an under-quota append", async () => {
+  const f = await fixture();
+  const spy = vi.spyOn(f.store as unknown as { readCommittedEntryRecord: (...args: unknown[]) => Promise<unknown> }, "readCommittedEntryRecord");
+  await f.store.append("fictional-first", [{ role: "assistant", content: "First update" }]); expect(spy).not.toHaveBeenCalled();
+  await Promise.all(Array.from({ length: 128 }, async (_, index) => {
+    const id = `fictional-seeded-${index}`; await writeFile(join(f.root, `${conversationKey(id)}.history.json`), JSON.stringify(legacy(id)) + "\n", { mode: 0o600 });
+  }));
+  await f.store.append("fictional-next", [{ role: "assistant", content: "Next update" }]); expect(spy).not.toHaveBeenCalled();
+});
+it("deserializes each canonical only once within a managed retention plan", async () => {
+  const f = await fixture(), lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true });
+  if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release();
+  const internals = f.store as unknown as { retentionPlan: (...args: unknown[]) => Promise<unknown>; readCommittedEntryRecord: (...args: unknown[]) => Promise<unknown> };
+  const reads = vi.spyOn(internals, "readCommittedEntryRecord"), original = internals.retentionPlan.bind(internals);
+  const plans = vi.spyOn(internals, "retentionPlan").mockImplementation(async (...args) => {
+    const before = reads.mock.calls.length, result = await original(...args);
+    expect(reads.mock.calls.length - before).toBe((await readdir(f.root)).filter((name) => name.endsWith(".history.json")).length); return result;
+  });
+  await f.store.append("fictional-unrelated", [{ role: "assistant", content: "Managed independent update" }]); expect(plans).toHaveBeenCalled();
+});
