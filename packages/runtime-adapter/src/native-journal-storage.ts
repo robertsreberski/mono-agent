@@ -15,5 +15,5 @@ export function createManagedNativeJournalStorage(options: {
     verifySwitchSources: (chain, sources, context) => storage.verifySwitchSources([...chain], [...sources], context),
     verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),
     publishSwitch: (sources, context) => storage.publishSwitch([...sources], context),
-    inventory: (ids) => storage.inventory(ids === undefined ? undefined : [...ids]) };
+    inventory: (ids, owners) => storage.inventory(ids === undefined ? undefined : [...ids], owners === undefined ? undefined : { ...owners, conversationKeys: [...owners.conversationKeys] }) };
 }

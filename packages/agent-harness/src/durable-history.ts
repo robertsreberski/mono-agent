@@ -424,7 +424,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       for (const row of state.identity.sources) ids.add(row.journalId);
       ids.add(managedNativeJournalId(deriveProviderSessionId(state.identity.historyBucket, state.identity.targetEpoch)));
     }
-    return this.nativeJournalStorage!.inventory([...ids]);
+    const unknownKeys = [...(records?.entries() ?? [])].filter(([, record]) => record === undefined)
+      .map(([name]) => name.slice(0, -HISTORY_FILE_SUFFIX.length));
+    const marker = unknownKeys.length === 0 ? undefined : await this.nativeHistoryRoot(rootIdentity).read();
+    return this.nativeJournalStorage!.inventory([...ids], marker ? { rootId: marker.rootId, conversationKeys: unknownKeys } : undefined);
   }
   private async modelSwitchFootprint(rootIdentity: DirectoryIdentity, records?: ReadonlyMap<string, LoadedHistoryRecord | undefined>, native?: Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>) {
     const footprint = await this.modelSwitchPayloads(rootIdentity).inventory();

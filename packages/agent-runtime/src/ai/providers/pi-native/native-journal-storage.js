@@ -11,6 +11,7 @@ import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 /** @returns {never} */
 function fail() { throw new Error("Managed native journal evidence changed or is unavailable"); }
 const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordered(v[k])])) : v;
+const hex64 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error) => error?.code === "ENOENT";
 /** @param {{sessionsRoot:string, onPhase?:(phase:string)=>Promise<void>}} options */
@@ -337,23 +338,32 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     },
     /** Only guarded managed journals, plus exact IDs enrolled by durable host
      * intents. Legacy provider journals never receive implicit charge/credit.
-     * @param {string[]} [managedJournalIds] */
-    async inventory(managedJournalIds = undefined) {
+     * Unreadable canonicals still charge independently attested schema-2
+     * evidence for those exact buckets in this pinned root, never legacy files
+     * or journals belonging to another root/bucket.
+     * @param {string[]} [managedJournalIds]
+     * @param {{rootId:string,conversationKeys:string[]}} [unreadableOwners] */
+    async inventory(managedJournalIds = undefined, unreadableOwners = undefined) {
       const scope = managedJournalIds === undefined ? null : new Set(managedJournalIds);
       if (scope && [...scope].some((id) => !/^[A-Za-z0-9_-]+$/.test(id))) fail();
+      if (unreadableOwners && (!hex64(unreadableOwners.rootId)
+        || !Array.isArray(unreadableOwners.conversationKeys) || unreadableOwners.conversationKeys.some((key) => !hex64(key)))) fail();
+      const unknownKeys = new Set(unreadableOwners?.conversationKeys);
       const directory = join(root, "mono-v2", "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
       const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
       /** @type {Record<string,{retainedBytes:number,headerCopyBytes:number,stagedBytes:number}>} */ const journals = Object.create(null);
       for (const name of await readdir(directory)) {
         if (!/^[A-Za-z0-9_-]+\.jsonl(?:\.(?:creating|importing|upgrading))?$/.test(name)) fail();
-        const id = name.split(".")[0]; if (scope && !scope.has(id)) continue;
+        const id = name.split(".")[0]; if (scope && !scope.has(id) && !unreadableOwners) continue;
         const reader = await JournalReader.open(join(directory, name), root);
         try {
-          if (!scope) {
+          if (!scope || !scope.has(id)) {
             let header; try { header = await reader.readHeader({ allowIncomplete: true }); validateJournalHeader(header); }
             catch { continue; }
             if (header?.ownershipSchemaVersion !== 2) continue;
+            if (scope && (!unreadableOwners || !same(header.hostAuthority.rootId, unreadableOwners.rootId)
+              || !unknownKeys.has(createHash("sha256").update("mono-agent-history-v1\0").update(header.hostAuthority.historyBucket).digest("hex")))) continue;
           }
           const stat = await reader.assertIdentity(); if (stat.nlink !== 1) fail(); bytes += stat.size; if (!Number.isSafeInteger(bytes)) fail();
           const row = journals[id] ??= { retainedBytes: 0, headerCopyBytes: 0, stagedBytes: 0 };

@@ -332,7 +332,10 @@ canonical once per plan, protects native victims sharing the committing logical
 owner, and replans after every unlocked native-I/O window. Under-quota legacy
 append does not deserialize unrelated canonicals. Native accounting includes
 only canonical managed membership and exact journals enrolled by durable intents,
-not unrelated v1-v3 provider journals. A retry reuses its published cold reservation.
+not unrelated v1-v3 provider journals. If a canonical is unreadable, independently
+validated schema-2 headers for its exact bucket and pinned root remain charged;
+other roots/buckets and legacy provider files do not justify credits. A retry
+reuses its published cold reservation.
 C cleanup also rejects switched-away `model_change` evidence independently of
 caller membership; header copies are removed before their sources only after an
 exact byte-prefix proof. Unknown copies remain pinned.

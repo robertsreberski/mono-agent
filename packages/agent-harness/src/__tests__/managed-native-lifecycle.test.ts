@@ -254,3 +254,15 @@ it("payload read remains absent after fence removal and after its old target is 
   const oldTarget = f.before.native.chain.at(-1).journalId;
   expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).not.toContain(`${oldTarget}.jsonl`);
 });
+
+
+it("preserves native quota charges when a managed canonical becomes unreadable", async () => {
+  const f = await setup(), canonicalBytes = (await readFile(f.canonicalPath)).length, before = await f.store.stats();
+  await writeFile(f.canonicalPath, "{");
+  const protectedBytes = before.bytes - canonicalBytes + 1;
+  expect((await f.store.stats()).bytes).toBe(protectedBytes);
+  const { store } = openStore(f.base, undefined, { maxStoreBytes: protectedBytes + 1024 });
+  await expect(store.append("fictional-capacity-owner", [{ role: "assistant", content: "x".repeat(2048) }])).rejects.toThrow("quota");
+  expect(await readFile(f.canonicalPath, "utf8")).toBe("{");
+  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+});

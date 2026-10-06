@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { fork, execFile } from "node:child_process";
@@ -301,4 +302,19 @@ it("shares runtime repository identity with the bridge for a trailing-slash sess
   const bridge = createManagedNativeJournalStorage({ sessionsRoot: `${f.root}/` });
   expect(await bridge.publishSwitch([f.source], context)).toHaveLength(2);
   expect(runtime.root).toBe(f.root); expect((await runtime.listOwned()).map((row) => row.id).sort()).toEqual([f.metadata.id, context.targetHandleId].sort());
+});
+
+
+it("charges guarded unreadable-owner evidence only in the pinned root and exact bucket", async () => {
+  const f = await lifecycleFixture(), retained = (await f.bridge.inventory()).bytes;
+  const filter = { rootId: authority.rootId,
+    conversationKeys: [createHash("sha256").update("mono-agent-history-v1\0").update(authority.historyBucket).digest("hex")] };
+  const foreignRoot = { ...authority, rootId: "e".repeat(64), authorityId: "f".repeat(64) };
+  await f.repo.createGuardedEpoch({ id: "d".repeat(64), timestamp: 17, hostAuthority: foreignRoot, assertOwned: context.assertOwned });
+  await f.repo.createGuardedEpoch({ id: "c".repeat(64), timestamp: 17,
+    hostAuthority: { ...authority, ownerKey: "fictional-other-owner", historyBucket: "fictional-other-bucket" }, assertOwned: context.assertOwned });
+  const legacy = await f.repo.create({ id: "f".repeat(64), cwd: "/fictional" }); await legacy.close();
+  expect((await f.bridge.inventory([])).bytes).toBe(0);
+  expect((await f.bridge.inventory([], filter)).bytes).toBe(retained);
+  expect((await f.bridge.inventory([f.chain[0].journalId], filter)).bytes).toBe(retained);
 });
