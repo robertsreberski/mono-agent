@@ -965,7 +965,7 @@ export class JsonlSessionRepo {
   async removeOwned(metadata, options = undefined) {
     validateDeletionDisposition(options);
     await this.assertDirectory();
-    const paths = this.journalPaths(metadata);
+    const paths = [...this.journalPaths(metadata), join(this.directory, `${metadata.journalId}.jsonl.upgrading`)];
     const files = await readdir(this.directory);
     if (files.some((name) => name.startsWith(`${metadata.journalId}.`) && !paths.some((path) => path.endsWith(`/${name}`)))) fail();
     const aliases = join(this.root, "mono-v2", "aliases");
@@ -985,9 +985,10 @@ export class JsonlSessionRepo {
       }
       for (const reader of readers) { const header = await reader.readHeader(); await authorizeGuardedDeletion(header, options); }
       for (const archive of archives) await this.removeLegacy(archive);
-      for (const reader of readers) { await reader.assertIdentity(); await unlink(reader.path); }
+      for (const reader of readers) { await options?.assertOwned?.(); await reader.assertIdentity(); await unlink(reader.path); await options?.onPhase?.("native_file_removed"); }
     } finally { for (const reader of readers) await reader.close(); }
     await this.syncDirectories();
+    await options?.onPhase?.("native_member_directory_synced");
   }
   async removeLegacy(metadata) {
     const path = resolve(metadata.path), parent = dirname(path);
@@ -1072,7 +1073,7 @@ export class JsonlSessionRepo {
     }
     this.checkMetadata(metadata);
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is open");
-    const writer = await locks.acquireWriter(metadata.journalId);
+    const writer = await locks.acquireWriter(metadata.journalId, { wait: options?.hostAuthority === undefined });
     try { await locks.withCatalog(() => this.removeOwned(metadata, options)); }
     finally {
       try { await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }

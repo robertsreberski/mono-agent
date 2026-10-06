@@ -127,3 +127,108 @@ it("charges prototype-shaped native stems without prototype-key ledger credits",
   const inventory = await f.bridge.inventory(); expect(inventory.journals.constructor.retainedBytes).toBe(Buffer.byteLength("opaque preserved evidence"));
   expect(inventory.bytes).toBe(f.before.length + Buffer.byteLength("opaque preserved evidence"));
 });
+
+const coldContext = { hostAuthority: authority, assertOwned: async () => {}, timestamp: 23,
+  targetHandleId: "b".repeat(64), targetEpoch: "c".repeat(64) };
+async function lifecycleFixture(extra = {}) {
+  const f = await fixture();
+  const chain = await f.bridge.publishSwitch([f.source], context);
+  const bridge = createManagedNativeJournalStorage({ sessionsRoot: f.root, ...extra });
+  const deletion = { hostAuthority: authority, assertOwned: context.assertOwned,
+    disposition: "C", eligibleJournalId: chain.at(-1).journalId };
+  return { ...f, bridge, chain, deletion };
+}
+it("cold creation replaces only the current descriptor and preserves frozen predecessors", async () => {
+  const f = await lifecycleFixture(), before = await readFile(f.metadata.path);
+  const old = f.chain.at(-1), oldPath = join(f.repo.directory, `${old.journalId}.jsonl`);
+  // A rejected current tail is not promoted or repaired by the cold boundary.
+  await appendFile(oldPath, "rejected-current-tail"); const rejected = await readFile(oldPath);
+  const plan = f.bridge.planColdEpoch(f.chain, coldContext);
+  expect((await f.bridge.inventory()).bytes).toBe(before.length + rejected.length);
+  const first = await f.bridge.publishColdEpoch(f.chain, coldContext);
+  expect(first).toEqual([f.chain[0], plan.descriptor]);
+  expect(first[1].predecessorJournalId).toBe(f.chain[0].journalId);
+  expect(first[1].ordinal).toBe(1); expect(first[1].sourceSeq).toBe(4);
+  expect(await readFile(oldPath)).toEqual(rejected);
+  expect(await readFile(f.metadata.path)).toEqual(before);
+  expect(await f.bridge.publishColdEpoch(f.chain, coldContext)).toEqual(first);
+  await f.bridge.deleteJournals(f.chain, f.deletion);
+  await f.bridge.deleteJournals(f.chain, f.deletion);
+  expect(await readFile(f.metadata.path)).toEqual(before);
+  expect(await readdir(f.repo.directory)).toEqual(expect.arrayContaining([`${first[1].journalId}.jsonl`, `${first[0].journalId}.jsonl`]));
+  expect(await readdir(f.repo.directory)).not.toContain(`${old.journalId}.jsonl`);
+});
+it("refuses C deletion of a referenced predecessor and forged C membership", async () => {
+  const f = await lifecycleFixture(), before = await f.bridge.inventory();
+  await expect(f.bridge.deleteJournals(f.chain, { ...f.deletion, eligibleJournalId: f.chain[0].journalId })).rejects.toThrow();
+  await expect(f.bridge.deleteJournals([f.chain[1]], f.deletion)).rejects.toThrow();
+  expect(await f.bridge.inventory()).toEqual(before);
+});
+it("deletes a whole D set including validated copy storage without recreating absent members", async () => {
+  const f = await lifecycleFixture();
+  await writeFile(`${f.metadata.path}.upgrading`, await readFile(f.metadata.path), { mode: 0o600 });
+  const deletion = { ...f.deletion, disposition: "D" };
+  await f.bridge.deleteJournals(f.chain, deletion);
+  expect(await readdir(f.repo.directory)).toEqual([]);
+  await f.bridge.deleteJournals(f.chain, deletion);
+  expect(await f.bridge.inventory()).toEqual({ bytes: 0, stagedBytes: 0, journals: {} });
+});
+it("preflights every D member before deleting any foreign header or unknown copy", async () => {
+  const f = await lifecycleFixture(), current = join(f.repo.directory, `${f.chain[1].journalId}.jsonl`);
+  const original = await readFile(current);
+  const rows = original.toString().trim().split("\n").map((line) => JSON.parse(line));
+  rows[0].hostAuthority.authorityId = "e".repeat(64);
+  await writeFile(current, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", { mode: 0o600 });
+  const first = await readFile(f.metadata.path);
+  await expect(f.bridge.deleteJournals(f.chain, { ...f.deletion, disposition: "D" })).rejects.toThrow();
+  expect(await readFile(f.metadata.path)).toEqual(first);
+  await writeFile(current, original, { mode: 0o600 });
+  await writeFile(`${current}.unknown`, "foreign evidence", { mode: 0o600 });
+  await expect(f.bridge.deleteJournals(f.chain, { ...f.deletion, disposition: "D" })).rejects.toThrow();
+  expect(await readFile(f.metadata.path)).toEqual(first);
+  await rm(`${current}.unknown`);
+  await writeFile(`${current}.upgrading`, Buffer.concat([original, Buffer.from("unknown copy tail")]), { mode: 0o600 });
+  await expect(f.bridge.deleteJournals(f.chain, { ...f.deletion, disposition: "D" })).rejects.toThrow();
+  expect(await readFile(f.metadata.path)).toEqual(first);
+  expect(await readFile(`${current}.upgrading`)).toEqual(Buffer.concat([original, Buffer.from("unknown copy tail")]));
+});
+it("refuses a foreign live writer rather than waiting under host ownership", async () => {
+  const f = await lifecycleFixture(); const writer = await f.repo.open({ id: f.chain[1].handleId, journalId: f.chain[1].journalId,
+    path: join(f.repo.directory, `${f.chain[1].journalId}.jsonl`) }, { repair: false, wait: false });
+  try { await expect(f.bridge.deleteJournals(f.chain, f.deletion)).rejects.toThrow(); }
+  finally { await writer.close(); }
+  expect(await readdir(f.repo.directory)).toHaveLength(2);
+});
+it("reasserts ownership before each unlink and never creates a cold epoch with lost authority", async () => {
+  const f = await lifecycleFixture(), before = await f.bridge.inventory();
+  const assertOwned = async () => { throw new Error("Lost fictional owner"); };
+  await expect(f.bridge.publishColdEpoch(f.chain, { ...coldContext, assertOwned })).rejects.toThrow("Lost fictional owner");
+  await expect(f.bridge.deleteJournals(f.chain, { ...f.deletion, assertOwned })).rejects.toThrow("Lost fictional owner");
+  expect(await f.bridge.inventory()).toEqual(before);
+});
+const lifecycleWorker = fileURLToPath(new URL("./fixtures/native-lifecycle-storage-worker.mjs", import.meta.url));
+it.skipIf(process.platform === "win32").each([
+  ["cold", "epoch_stage_created"], ["cold", "epoch_stage_synced"], ["cold", "epoch_renamed"], ["cold", "epoch_directory_synced"],
+  ["cold", "native_file_removed"], ["cold", "native_member_directory_synced"], ["cold", "native_member_removed"], ["cold", "native_members_directory_synced"],
+  ["delete", "native_file_removed"], ["delete", "native_member_directory_synced"], ["delete", "native_member_removed"], ["delete", "native_members_directory_synced"],
+])("recovers native %s twice in fresh processes after SIGKILL at %s", async (operation, phase) => {
+  const f = await lifecycleFixture();
+  if (operation === "delete") await writeFile(`${f.metadata.path}.upgrading`, await readFile(f.metadata.path), { mode: 0o600 });
+  await writeFile(join(f.root, "lifecycle-proof.json"), JSON.stringify({ chain: f.chain, cold: coldContext,
+    deletion: { ...f.deletion, disposition: operation === "delete" ? "D" : "C" }, operation }), { mode: 0o600 });
+  const child = fork(lifecycleWorker, [f.root, phase], { silent: true }); let error = "";
+  child.stderr.on("data", (bytes) => { error += bytes; }); const exited = once(child, "exit"); let timer;
+  try {
+    await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Proof owner exited before boundary: ${error}`); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Boundary timeout")), 15000); })]);
+    child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
+  } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }
+  const run = promisify(execFile);
+  const first = JSON.parse((await run(process.execPath, [lifecycleWorker, f.root], { timeout: 30000 })).stdout);
+  const second = JSON.parse((await run(process.execPath, [lifecycleWorker, f.root], { timeout: 30000 })).stdout);
+  expect(second).toEqual(first); expect(second.inventory.stagedBytes).toBe(0);
+  if (operation === "cold") {
+    expect(second.published).toEqual([f.chain[0], f.bridge.planColdEpoch(f.chain, coldContext).descriptor]);
+    expect(await readdir(f.repo.directory)).toHaveLength(2);
+  } else { expect(second.inventory.bytes).toBe(0); expect(await readdir(f.repo.directory)).toEqual([]); }
+}, 60000);

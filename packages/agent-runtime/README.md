@@ -181,6 +181,16 @@ immutable non-null handoff reference and atomically publishes a fully initialize
 empty epoch. Deterministic frame/epoch bytes permit exact-prefix crash recovery;
 unknown tails/stages are preserved, never generically repaired. Native inventory
 charges all journal, copy and stage bytes in the explicitly dedicated native root.
+`planColdEpoch` supplies the exact bytes/descriptor for a durable host cold intent;
+`publishColdEpoch` replaces only the current same-model descriptor, retaining its
+predecessor link and validating frozen predecessors without repairing the rejected
+current tail. The host must persist the target epoch/handle/time first.
+`deleteJournals` accepts C only for the chain's unreferenced current member, or D
+for every supplied member. It preflights matching headers/copies, preserves
+unknown evidence, and repeats absent-member cleanup without recreating journals.
+The host must retain canonical membership and its deletion intent through every
+unlink/directory barrier. These methods do not yet implement ordinary host cold
+rotation, reset or retention; those entrances remain guarded.
 This factory does not prove host artifact acceptance or canonical publication;
 the host coordinator must supply those authorities and keep pending switches
 fenced. No configured host opts in. Do not use it for real-root switching until

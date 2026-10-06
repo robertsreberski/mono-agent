@@ -5,7 +5,10 @@ export function createManagedNativeJournalStorage(options: {
   readonly sessionsRoot: string; readonly onPhase?: (phase: string) => Promise<void>;
 }): RuntimeNativeJournalStorage {
   const storage = nativeStorage(options);
-  return { freeze: (source) => storage.freeze(source),
+  return { planColdEpoch: (chain, context) => storage.planColdEpoch([...chain], context),
+    publishColdEpoch: (chain, context) => storage.publishColdEpoch([...chain], context),
+    deleteJournals: (chain, context) => storage.deleteJournals([...chain], context),
+    freeze: (source) => storage.freeze(source),
     measureSwitch: (sources, context) => storage.measureSwitch([...sources], context),
     verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),
     publishSwitch: (sources, context) => storage.publishSwitch([...sources], context),

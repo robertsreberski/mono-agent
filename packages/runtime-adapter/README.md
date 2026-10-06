@@ -186,6 +186,11 @@ administrative storage capability, not a `MonoRuntimeLike` dispatch capability o
 model-facing run option. Its caller must hold host root/conversation authority,
 validate accepted content and coordinate canonical publication/deletion. It
 forwards only journal storage operations; no configured host creates it yet.
+Cold planning/publication retains predecessors and replaces only the same-model
+current epoch. Reference-checked C and complete-set D native deletion are
+restartable storage primitives, not host reset/retention transactions. Callers
+must durably retain the exact cold plan or deletion membership until all physical
+files and publication barriers have completed.
 
 ## Architecture
 
@@ -334,6 +339,8 @@ RuntimeMcpAppHost
 RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
+RuntimeNativeChainDeletion
+RuntimeNativeColdEpochContext
 RuntimeNativeJournalAuthority
 RuntimeNativeJournalDeletion
 RuntimeNativeJournalDescriptor

@@ -140,6 +140,8 @@ export type {
   RuntimeNativeSwitchContext,
   RuntimeNativeJournalStorage,
   RuntimeNativeJournalDeletion,
+  RuntimeNativeColdEpochContext,
+  RuntimeNativeChainDeletion,
   DurableSessionSalvage,
   MonoRuntimeParsedPricingModel,
   MonoRuntimePricing,

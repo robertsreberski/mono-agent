@@ -239,7 +239,12 @@ target guarded host evidence. These primitives do not discover chain membership
 or authorize reset themselves. Any explicitly supplied deletion disposition is
 validated even for an unguarded journal: only C/D may delete, while P/U/unknown
 values reject. Unguarded/stateless/subagent callers passing no disposition keep
-their existing behavior. Memory repositories clone caller metadata and retain a
+their existing behavior. Guarded deletion refuses a foreign live writer instead
+of waiting under host ownership, validates header-copy storage alongside journal
+publication/stages, and reasserts the host claim before each unlink. Optional
+`onPhase` hooks expose file removal and member directory-sync boundaries for
+process-kill verification; hooks are not an alternative durability barrier.
+Memory repositories clone caller metadata and retain a
 private validated header so metadata mutation cannot forge or demote authority.
 
 `SessionStore.appendComposedCompaction` explicitly writes schemaVersion-3

@@ -72,6 +72,63 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         };
     } finally { await reader.close(); }
   };
+  // Canonical membership is supplied by the held host owner, never inferred
+  // from catalogue presence. Native storage validates all coordinates again.
+  const validateChain = (chain, context) => {
+    if (!Array.isArray(chain) || !chain.length || typeof context?.assertOwned !== "function") fail();
+    JsonlSessionRepo.guardedEpochPlan({ id: chain[0]?.handleId, timestamp: 0, hostAuthority: context.hostAuthority });
+    const journals = new Set(), handles = new Set();
+    for (let index = 0; index < chain.length; index++) {
+      const entry = chain[index];
+      if (!entry || !/^[A-Za-z0-9_-]+$/.test(entry.journalId) || !/^[a-f0-9]{64}$/.test(entry.handleId)
+        || !/^[a-f0-9]{64}$/.test(entry.epoch) || entry.ordinal !== index
+        || entry.predecessorJournalId !== (index ? chain[index - 1].journalId : null)
+        || entry.ownerKey !== context.hostAuthority.ownerKey || entry.historyBucket !== context.hostAuthority.historyBucket
+        || journals.has(entry.journalId) || handles.has(entry.handleId)) fail();
+      journals.add(entry.journalId); handles.add(entry.handleId);
+    }
+  };
+  const deletionMetadata = (entry) => ({ id: entry.handleId, journalId: entry.journalId, path: path(entry.journalId) });
+  // Preflight the complete physical set, including stages, before any unlink.
+  // Rejected current tails are not repaired or promoted into frozen evidence.
+  const inspectDeletion = async (entries, context) => {
+    await context.assertOwned(); await repo.ensureDirectory();
+    const names = await readdir(repo.directory);
+    for (const entry of entries) {
+      const allowed = new Set(["", ".creating", ".importing", ".upgrading"].map((suffix) => `${entry.journalId}.jsonl${suffix}`));
+      if (names.some((name) => name.startsWith(`${entry.journalId}.`) && !allowed.has(name))) fail();
+      for (const suffix of ["", ".creating", ".importing", ".upgrading"]) {
+        let reader;
+        try { reader = await JournalReader.open(path(entry.journalId) + suffix, root); }
+        catch (error) { if (missing(error)) continue; throw error; }
+        try {
+          const header = await reader.readHeader(); validateJournalHeader(header);
+          if (header.id !== entry.handleId || header.journalId !== entry.journalId
+            || header.ownershipSchemaVersion !== 2 || !same(header.hostAuthority, context.hostAuthority)) fail();
+          if (suffix) {
+            const validator = new JournalValidator(); let first = true;
+            const evidence = await reader.scan((record) => {
+              if (first) first = false; else validator.apply(record);
+            });
+            if (evidence.torn || validator.openTurns.size || validator.openOperations.size) fail();
+          }
+          const identity = await reader.assertIdentity(); if (identity.nlink !== 1) fail();
+        } finally { await reader.close(); }
+      }
+    }
+    await repo.assertDirectory(); await context.assertOwned();
+  };
+  const coldPlan = (chain, context) => {
+    validateChain(chain, context);
+    const current = chain.at(-1);
+    if (chain.some((entry) => entry.predecessorJournalId === current.journalId)
+      || chain.some((entry) => entry.handleId === context.targetHandleId || entry.epoch === context.targetEpoch)
+      || !/^[a-f0-9]{64}$/.test(context.targetEpoch)) fail();
+    const plan = JsonlSessionRepo.guardedEpochPlan({ id: context.targetHandleId, timestamp: context.timestamp, hostAuthority: context.hostAuthority });
+    return { plan, descriptor: { ...current, epoch: context.targetEpoch, handleId: context.targetHandleId,
+      journalId: plan.header.journalId, sourceTipId: null, sourceSeq: 4,
+      sourceDigest: createHash("sha256").update(JSON.stringify(plan.records)).digest("hex") } };
+  };
   return {
     /** @param {any} coordinates */
     async freeze(coordinates) { await detachDurableNativeSession(coordinates.handleId, root); return (await snapshot(coordinates)).descriptor; },
@@ -154,6 +211,50 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       // initializer prefix is required here; any provider fence owns its tail.
       const target = await snapshot(expected, undefined, true);
       if (!same(target.header, plan.header)) fail(); await context.assertOwned();
+    },
+    /** Pure deterministic plan, to persist in host C intent before any I/O.
+     * No new predecessor is made from the rejected current tail.
+     * @param {any[]} chain @param {any} context */
+    planColdEpoch(chain, context) {
+      const { plan, descriptor } = coldPlan(chain, context);
+      return { descriptor, bytes: plan.bytes.length };
+    },
+    /** Host must retain its C intent until canonical publication and cleanup.
+     * @param {any[]} chain @param {any} context */
+    async publishColdEpoch(chain, context) {
+      const { plan, descriptor } = coldPlan(chain, context);
+      await context.assertOwned();
+      // Frozen predecessors must still be exact; current may have a rejected or
+      // interrupted tail, so only its immutable header is deletion evidence.
+      for (const predecessor of chain.slice(0, -1)) {
+        const frozen = await snapshot(predecessor);
+        if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
+      }
+      await inspectDeletion([chain.at(-1)], context);
+      await repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: context.timestamp,
+        hostAuthority: context.hostAuthority, assertOwned: context.assertOwned, onPhase: phase });
+      const target = await snapshot(descriptor, undefined, true);
+      if (!same(target.header, plan.header)) fail();
+      await context.assertOwned(); return [...chain.slice(0, -1), descriptor];
+    },
+    /** Reference-checked C or full-set D. Missing members are idempotent success,
+     * not creation eligibility. Host retains membership until every barrier wins.
+     * @param {any[]} chain @param {any} context */
+    async deleteJournals(chain, context) {
+      validateChain(chain, context);
+      if (!["C", "D"].includes(context.disposition)) fail();
+      const entries = context.disposition === "D" ? chain : chain.filter((entry) => entry.journalId === context.eligibleJournalId);
+      if (context.disposition === "C" && (entries.length !== 1 || entries[0] !== chain.at(-1)
+        || chain.some((entry) => entry.predecessorJournalId === context.eligibleJournalId))) fail();
+      for (const entry of entries) await detachDurableNativeSession(entry.handleId, root);
+      await inspectDeletion(entries, context);
+      for (const entry of entries) {
+        await context.assertOwned();
+        await repo.delete(deletionMetadata(entry), { hostAuthority: context.hostAuthority,
+          disposition: context.disposition, assertOwned: context.assertOwned, onPhase: phase });
+        await phase("native_member_removed");
+      }
+      await context.assertOwned(); await phase("native_members_directory_synced");
     },
     /** All journal/stage/copy bytes in this explicitly dedicated native root. */
     async inventory() {

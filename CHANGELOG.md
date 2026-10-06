@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add exact same-model native cold-epoch planning/publication and reference-checked
+  current-only or whole-chain native deletion primitives. Preserve predecessors
+  and unknown evidence; keep host cold/reset/retention integration guarded.
+
 - Couple owner-held ready switch recovery to measured native storage, canonical
   v4 binding/receipts and durable intent-fence cleanup. Pending stays host-only;
   configured switching remains disabled until cold/deletion integration lands.

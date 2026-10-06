@@ -721,7 +721,21 @@ export interface RuntimeNativeSwitchContext {
     readonly from: RuntimeNativeJournalDescriptor["provenance"]; readonly to: RuntimeNativeJournalDescriptor["provenance"];
     readonly artifactRef: { readonly id: string; readonly hash: string } };
 }
+export interface RuntimeNativeColdEpochContext {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertOwned: () => Promise<void>;
+  readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
+}
+export type RuntimeNativeChainDeletion = RuntimeNativeJournalDeletion & (
+  | { readonly disposition: "C"; readonly eligibleJournalId: string }
+  | { readonly disposition: "D" }
+);
 export interface RuntimeNativeJournalStorage {
+  /** Persist this exact plan in the host cold intent before native publication. */
+  planColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): { readonly descriptor: RuntimeNativeJournalDescriptor; readonly bytes: number };
+  publishColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
+  /** Caller retains canonical membership and deletion intent through completion. */
+  deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
   freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
   measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
   verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
