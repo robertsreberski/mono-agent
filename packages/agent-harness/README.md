@@ -299,6 +299,27 @@ enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
 The ordinary canonical v3/v5 paths and configured host switching policy remain
 unchanged. Do not use these private modules to upgrade a real root manually.
 
+Already-existing canonical v4 records are strictly readable. Same-epoch synced
+writes and owner-held v5 execution/compaction recovery retain the native chain,
+authority, projection and last-switch receipt, including when messages are
+evicted; turn receipts still settle exactly once. Native reconciliation must
+match the authoritative current journal. Optimistic versions and switch-source
+digests include the v4 metadata, not just messages and the provider binding.
+
+**Temporary v4-only guards:** host-only append/exclusive/import, model changes,
+unsynced or otherwise cold provider turns, inactive cold-fence retirement, reset
+and retention require managed native epoch-transition or whole-chain-deletion
+capability. Until P3b-2b2-ii supplies authority/header issuance, roll-forward and
+restartable whole-chain deletion, these paths fail before native retirement or
+canonical/membership deletion rather than inventing a journal or demoting v4.
+Retention reports the blocked maintenance in store diagnostics and prechecks all
+selected victims before deleting any. Logical reset likewise prechecks all
+matching canonical members. These guards apply only to already-v4 conversations;
+v1/v2/v3 roots retain today's import, cold rotation, reset and retention behavior.
+No API in this split issues root authority, upgrades a header, writes the root
+marker, creates a v4 conversation, or enables a host switch. The next coordinated
+transaction/deletion integration removes these temporary guards.
+
 Its v4 wire validators bind journal-chain ownership/provenance and stable switch
 coordinates. Binding receipts describe their own transitions independently of
 later cold epochs/projection references; receipt recognition alone is not

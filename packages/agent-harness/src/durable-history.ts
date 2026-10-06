@@ -1,7 +1,7 @@
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
-import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState } from "./durable-model-switch-contract.js";
-import type { ModelSwitchState, HandoffReference, SummaryAttempt } from "./durable-model-switch-contract.js";
+import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState, validateTurnHistoryV4 } from "./durable-model-switch-contract.js";
+import type { ModelSwitchState, HandoffReference, SummaryAttempt, TurnHistoryV4 } from "./durable-model-switch-contract.js";
 import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
 import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
@@ -157,11 +157,13 @@ interface ProviderSessionState {
   readonly dirtyRunId?: string;
 }
 
-type CanonicalHistoryFile = TurnHistoryV3;
+type CanonicalHistoryFile = TurnHistoryV3 | TurnHistoryV4;
 
 interface LoadedHistoryRecord {
   readonly lastCommit?: DurableTurnReceipt;
-  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION;
+  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION | 4;
+  readonly native?: TurnHistoryV4["native"];
+  readonly lastSwitch?: TurnHistoryV4["lastSwitch"];
   readonly conversationId: string;
   readonly messages: readonly HistoryMessage[];
   readonly providerSession?: ProviderSessionState;
@@ -344,9 +346,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
     const rootIdentity = await this.ensureRoot(), record = await this.readRecord(id, rootIdentity);
-    if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || record.sourceVersion !== STORE_VERSION) return { status: "unsupported", reason: "unbound" };
+    if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || (record.sourceVersion !== STORE_VERSION && record.sourceVersion !== 4)) return { status: "unsupported", reason: "unbound" };
     return { status: "supported", sourceCanonicalDigest: switchDigest({ version: record.sourceVersion, conversationId: id, messages: record.messages,
-      providerSession: record.providerSession, ...lastCommitBinding(record) }), sourceRevision: record.providerSession.revision,
+      providerSession: record.providerSession, ...lastCommitBinding(record), ...v4Extension(record) }), sourceRevision: record.providerSession.revision,
       fromModelKey: record.providerSession.modelKey, sourceEpoch: record.providerSession.epoch, ownerKey };
   }
   /** Host-only storage lease. Holds the real logical/physical claim while each
@@ -457,6 +459,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         for (const entry of entries) {
           const record = await this.readCommittedEntryRecord(entry, rootIdentity);
           if (belongsToLogicalConversation(record.conversationId, logicalId)) {
+            requireV4Capability(record, "whole-chain deletion", "logical reset");
             conversationIds.add(record.conversationId);
           }
         }
@@ -564,6 +567,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let prepared: PreparedHistoryAppend;
     try {
       const existing = await this.readRecord(conversationId, rootIdentity);
+      requireV4Capability(existing, "whole-chain deletion", "reset");
       if (this.retireProviderSession === undefined
         && (await this.pendingPayloads(rootIdentity).list()).some((entry) => entry.conversationKey === historyKey(conversationId))) {
         throw new Error("Reset of pending turn payloads requires fail-closed provider retirement.");
@@ -597,6 +601,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
+      requireV4Capability(await this.readRecord(normalizedId, rootIdentity), "native epoch transition", "host-only append");
       await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity);
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
@@ -657,6 +662,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (requiresExactConversationClaim(normalizedId)) {
         heldExact = await this.acquireExactConversationClaim(normalizedId);
       }
+      requireV4Capability(await this.readRecord(normalizedId, heldLogical.rootIdentity), "native epoch transition", "exclusive host-only mutation");
       const settlementOwner = await this.acquireConversation(normalizedId, heldLogical, heldExact);
       try { await this.settleHeldTurn(normalizedId, settlementOwner); }
       finally { await this.releaseConversation(settlementOwner, settlementOwner.rootIdentity); }
@@ -745,6 +751,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
+      requireV4Capability(await this.readRecord(normalizedId, rootIdentity), "native epoch transition", "context import");
       await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity, true);
       const exactPair = findContextImportPair(existing.messages, normalized.idempotencyKey);
@@ -840,6 +847,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           && existingProvider.revision !== undefined
           && existingProvider.revision < Number.MAX_SAFE_INTEGER;
         if (!reusable) {
+          requireV4Capability(existing, "native epoch transition", "provider admission cold rotation");
           await this.retireProviderSessions([
             ...(existingProvider === undefined
               ? []
@@ -852,13 +860,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         epoch = reusable ? existingProvider.epoch : createProviderSessionEpoch();
         revision = reusable ? existingProvider.revision as number : 0;
         const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
-        const projectedCleanRecord: CanonicalHistoryFile = {
+        const projectedCleanRecord = preserveV4(existing, {
           version: STORE_VERSION,
           conversationId: normalizedId,
           messages: retainHistoryMessages(existing.messages, this.maxMessages),
           ...lastCommitBinding(existing),
           providerSession: { epoch, revision: revision + 1, ...modelBinding(modelKey) },
-        };
+        });
         await this.validateRetentionReservation(rootIdentity, [this.projectRecord(projectedCleanRecord)]);
         await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
         if (binding?.reconciliation !== undefined) {
@@ -891,13 +899,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       } finally {
         await releaseRoot();
       }
-      const turnBaseRecord: CanonicalHistoryFile = {
+      const turnBaseRecord = preserveV4(existing, {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: existing.messages,
         ...lastCommitBinding(existing),
         providerSession: { epoch, revision, ...modelBinding(modelKey) },
-      };
+      });
       const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
 
       return {
@@ -969,6 +977,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             }, abort: async () => await pendingAppend.abort() };
           }
           if (!options.providerSessionSynced) {
+            requireV4Capability(existing, "native epoch transition", "unsynced provider commit");
             // The harness normally invalidates a failed/unsynced live handle
             // first. Retire by exact durable id as a second fail-closed layer:
             // a cold/unknown registry entry must not strand its JSONL.
@@ -976,7 +985,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           }
           const combined = [...turnBaseRecord.messages, ...admitted];
           const retained = retainHistoryMessages(combined, this.maxMessages);
-          const cleanRecord: CanonicalHistoryFile = {
+          const cleanRecord = preserveV4(existing, {
             version: STORE_VERSION,
             conversationId: normalizedId,
             messages: retained,
@@ -986,7 +995,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               revision: options.providerSessionSynced ? revision + 1 : 0,
               ...modelBinding(modelKey),
             },
-          };
+          });
           prepared = await this.prepareRecord(cleanRecord, held, rootIdentity, () => {
             turnSettled = true;
           }, fence);
@@ -1177,6 +1186,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const evidence = await this.inspectProviderTurn({ descriptor: pendingTurnDescriptor(payload), purpose: payload.identity.purpose,
       modelKey: payload.identity.modelKey, expectedInputs: payload.inputs.map((input) => ({ id: input.id, requestDigest: input.requestDigest, placement: input.placement })) });
     await held.assertOwned();
+    if (existing.sourceVersion === 4 && evidence.status === "matched" && evidence.journalId !== existing.native?.chain.at(-1)?.journalId) {
+      throw new Error("Canonical v4 native settlement journal does not match the authoritative chain tip");
+    }
     const current = await this.readRecord(payload.identity.historyBucket, held.rootIdentity, true);
     if (historyRecordVersion(current) !== canonicalVersion) throw new Error("Canonical history changed during native inspection.");
     let projection = projectTurnSettlement(payload, evidence, new Date(this.now()).toISOString());
@@ -1197,20 +1209,21 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       });
       projection = projectTurnSettlement(payload, evidence, assistant.timestamp);
     }
+    const cold = !projection.nativeReusable;
+    if (cold) requireV4Capability(existing, "native epoch transition", "cold native turn settlement");
     // Persist the resolved minimal candidate before canonical staging. A crash at
     // rename can then recognize the receipt without inspecting native state again.
     if (projection.candidate !== undefined) {
       payload = createPendingTurnPayload(payload.identity, payload.inputs, payload.disposition, projection.candidate);
       fence = await this.replacePendingPayload(fence, payload, held);
     }
-    const cold = !projection.nativeReusable;
     const lastCommit: DurableTurnReceipt = { version: 1, turnId: payload.identity.turnId, inputDigest: turnInputDigest(payload),
       candidateDigest: turnCandidateDigest(payload), journalId: projection.journalId, tipId: projection.tipId,
       baseRevision: fence.revision, committedRevision: fence.revision + 1, outcome: projection.outcome };
-    return { fence, payload, cold, record: { version: STORE_VERSION, conversationId: payload.identity.historyBucket,
+    return { fence, payload, cold, record: preserveV4(existing, { version: STORE_VERSION, conversationId: payload.identity.historyBucket,
       messages: retainHistoryMessages([...existing.messages, ...projection.messages], this.maxMessages), lastCommit,
       providerSession: { epoch: cold ? createProviderSessionEpoch() : fence.epoch,
-        revision: cold ? 0 : fence.revision + 1, ...modelBinding(fence.modelKey) } } };
+        revision: cold ? 0 : fence.revision + 1, ...modelBinding(fence.modelKey) } }) };
   }
 
   private async settleHeldTurn(conversationId: string, held: HeldConversation): Promise<ConversationHistoryTurnRecovery> {
@@ -1233,6 +1246,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (payload.identity.historyBucket !== conversationId) throw new Error("Pending history bucket mismatch.");
     const existing = await this.readRecord(conversationId, held.rootIdentity, true);
     if (recognizesTurnCommit(existing, conversationId, payload.identity.turnId, turnInputDigest(payload), turnCandidateDigest(payload))) {
+      if (existing.providerSession?.epoch !== fence.epoch) requireV4Capability(existing, "native epoch transition", "cold receipt cleanup");
       const releaseRoot = await this.acquireRootTransaction(held.rootIdentity);
       try {
         await held.assertOwned();
@@ -1306,11 +1320,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     keepOwner = false,
     afterFenceCleanup?: () => Promise<void>,
   ): Promise<PreparedHistoryAppend> {
-    const projected = this.projectRecord(record);
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let stage: ActiveStage | undefined;
     try {
       await this.requireNoModelSwitch(record.conversationId, rootIdentity);
+      record = preserveV4(await this.readRecord(record.conversationId, rootIdentity), record);
+      const projected = this.projectRecord(record);
       await this.validateStagingReservation(rootIdentity, projected.bytes);
       // Write while the root transaction is held so another process cannot
       // pass the same staged-byte reservation before this temp becomes visible.
@@ -1661,6 +1676,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let projectedCount = plan.projectedCount;
     const now = this.now();
     let removedAny = false;
+    // Preflight the complete victim set before any native or canonical deletion.
+    // v4 membership cannot be discarded until the whole-chain transaction lands.
+    let preflightBytes = projectedBytes, preflightCount = projectedCount;
+    for (const entry of plan.candidates) {
+      if (now - entry.mtimeMs <= this.maxAgeMs && preflightCount <= this.maxConversations && preflightBytes <= this.maxStoreBytes) continue;
+      requireV4Capability(await this.readCommittedEntryRecord(entry, rootIdentity), "whole-chain deletion", "retention");
+      preflightCount--; preflightBytes -= entry.size;
+    }
     for (const entry of plan.candidates) {
       const expired = now - entry.mtimeMs > this.maxAgeMs;
       const overCount = projectedCount > this.maxConversations;
@@ -2226,7 +2249,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const committedByName = new Map(
       (await this.scanCommittedEntries(rootIdentity, true)).map((entry) => [entry.name, entry]),
     );
-    let removed = false;
+    const planned: Array<{ fence: DirtyFence & { readonly providerSessionId: string }; committedEntry: CommittedEntry | undefined; committedRecord: LoadedHistoryRecord | undefined; canonicalProvesCommit: boolean }> = [];
     for (const fence of fences) {
       if (
         fence.conversationKey === excludedConversationKey
@@ -2246,6 +2269,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         && committedRecord.providerSession.modelKey === fence.modelKey
         && committedRecord.providerSession.dirtyRunId === undefined
         && committedRecord.providerSession.revision === fence.revision + 1;
+      if (!canonicalProvesCommit && committedRecord) requireV4Capability(committedRecord, "native epoch transition", "inactive dirty-fence retirement");
+      planned.push({ fence: { ...fence, providerSessionId: fence.providerSessionId }, committedEntry, committedRecord, canonicalProvesCommit });
+    }
+    let removed = false;
+    for (const { fence, committedEntry, committedRecord, canonicalProvesCommit } of planned) {
       // The fence is the crash-recovery journal: durable transcript deletion
       // happens first, then its directory entry is fsynced, and only then may
       // the fence disappear. A crash or error at any earlier point leaves the
@@ -2361,6 +2389,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let fence: DirtyFence | undefined;
     try {
       await this.requireNoModelSwitch(record.conversationId, rootIdentity);
+      requireV4Capability(record, reset ? "whole-chain deletion" : "native epoch transition", reset ? "reset" : "provider retirement");
       const existing = await this.findDirtyFence(historyKey(record.conversationId), locksIdentity);
       if (!reset) requireSettledFence(existing);
       if (reset && existing?.kind !== undefined && this.retireProviderSession === undefined) {
@@ -2381,6 +2410,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     locksIdentity: DirectoryIdentity,
     reset = false,
   ): Promise<DirtyFence | undefined> {
+    requireV4Capability(record, reset ? "whole-chain deletion" : "native epoch transition", "retirement-fence issuance");
     const conversationKey = historyKey(record.conversationId);
     const existing = await this.findDirtyFence(conversationKey, locksIdentity);
     if (!reset) requireSettledFence(existing);
@@ -2469,6 +2499,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     rootIdentity: DirectoryIdentity,
   ): Promise<void> {
     if (record.providerSession === undefined) return;
+    requireV4Capability(record, "native epoch transition", "inactive provider epoch rotation");
     const rotated: CanonicalHistoryFile = {
       version: STORE_VERSION,
       conversationId: record.conversationId,
@@ -2551,11 +2582,12 @@ function historyRecordVersion(record: LoadedHistoryRecord | CanonicalHistoryFile
   return createHash("sha256")
     .update("mono-agent-history-version-v1\0")
     .update(JSON.stringify({
-      sourceVersion: "sourceVersion" in record ? record.sourceVersion : STORE_VERSION,
+      sourceVersion: "sourceVersion" in record ? record.sourceVersion : record.version,
       conversationId: record.conversationId,
       messages: record.messages,
       providerSession: record.providerSession,
       lastCommit: record.lastCommit,
+      ...v4Extension(record),
     }), "utf8")
     .digest("hex");
 }
@@ -2792,8 +2824,33 @@ function lastCommitBinding(record: { readonly lastCommit?: DurableTurnReceipt })
   return record.lastCommit === undefined ? {} : { lastCommit: { ...record.lastCommit } };
 }
 
+/** Temporary pre-integration guard: never affects v1/v2/v3 conversations.
+ * P3b-2b2-ii replaces this with owner-held native transition/deletion authority. */
+function requireV4Capability(record: LoadedHistoryRecord | CanonicalHistoryFile, capability: "native epoch transition" | "whole-chain deletion", operation: string): void {
+  if (("sourceVersion" in record ? record.sourceVersion : record.version) === 4) {
+    throw new Error(`Canonical v4 ${operation} requires managed ${capability} capability (P3b-2b2-ii not enabled)`);
+  }
+}
+function v4Extension(record: { readonly conversationId: string; readonly native?: TurnHistoryV4["native"]; readonly lastSwitch?: TurnHistoryV4["lastSwitch"] }) {
+  return record.native === undefined ? {} : { native: structuredClone(record.native),
+    ...(record.lastSwitch === undefined ? {} : { lastSwitch: structuredClone(record.lastSwitch) }) };
+}
+/** Preserve chain/authority/projection/switch receipt only for a proven same-
+ * epoch write. Never invent a native journal descriptor or demote v4 to v3. */
+function preserveV4(existing: LoadedHistoryRecord | CanonicalHistoryFile, next: CanonicalHistoryFile): CanonicalHistoryFile {
+  if (("sourceVersion" in existing ? existing.sourceVersion : existing.version) !== 4) return next;
+  if (next.conversationId !== existing.conversationId || next.providerSession.epoch !== existing.providerSession?.epoch
+    || next.providerSession.modelKey !== existing.providerSession.modelKey) {
+    requireV4Capability(existing, "native epoch transition", "canonical epoch replacement");
+  }
+  const record = { ...next, version: 4, ...v4Extension(existing) };
+  validateTurnHistoryV4(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  return record;
+}
+
 function serializeHistoryFile(record: CanonicalHistoryFile): Buffer {
-  validateTurnHistoryV3(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  if (record.version === 4) validateTurnHistoryV4(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  else validateTurnHistoryV3(record, (message) => validateAndCloneMessage(message as HistoryMessage));
   const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
   if (bytes.byteLength > MAX_STORE_FILE_BYTES) {
     throw new Error(`Serialized conversation history exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
@@ -2899,6 +2956,15 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
   const keys = Object.keys(value).sort().join(",");
   if (value.version === LEGACY_STORE_VERSION && keys === "conversationId,messages,version") {
     return { sourceVersion: LEGACY_STORE_VERSION, conversationId, messages };
+  }
+  if (value.version === 4) {
+    validateTurnHistoryV4(value, (message) => validateAndCloneMessage(message as HistoryMessage));
+    if (value.native.authority.ownerKey !== logicalConversationIdForFence(conversationId)
+      || value.native.chain.some((segment) => segment.handleId !== deriveProviderSessionId(conversationId, segment.epoch))) {
+      throw new Error("Canonical v4 journal chain does not belong to the managed conversation");
+    }
+    return { sourceVersion: 4, conversationId, messages, providerSession: { ...value.providerSession },
+      ...lastCommitBinding(value), ...v4Extension(value) };
   }
   if (value.version === STORE_VERSION) {
     validateTurnHistoryV3(value, (message) => validateAndCloneMessage(message as HistoryMessage));

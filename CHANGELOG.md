@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve existing canonical v4 journal-chain authority, projection and switch
+  receipts during same-epoch writes and turn recovery. Reject unsupported v4
+  cold rotation or destructive cleanup before retiring native evidence; keep
+  upgrades disabled and legacy history behavior unchanged.
+
 - Fix managed switch-storage owner validation and transactional pending checks,
   preserve switching owners during logical reset and inactive fence cleanup, and
   avoid charging published state/fence bytes twice. Report physical history bytes
