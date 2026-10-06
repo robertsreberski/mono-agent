@@ -104,6 +104,12 @@
   identity/state on mutations and roll resumed provider suspensions back as
   unreceipted failures.
 
+- Fix the `sharp` dependency vulnerability across the agent runtime,
+  documentation and marketing sites.
+
+- Fix the MCP SDK OAuth credential vulnerability across the workspace
+  and the web console.
+
 - Fix dependency vulnerabilities in `compression`, `proxy-addr` and
   `source-map-js` across the web console, documentation and marketing sites.
 
