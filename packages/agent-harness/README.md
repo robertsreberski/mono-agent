@@ -264,8 +264,26 @@ The harness is the request-to-runtime composition boundary:
 
 ### Internal model-switch storage foundation
 
-The private storage component requires a held logical conversation claim,
+The private payload component requires a held logical conversation claim,
 existing short root transaction, and caller-owned quota reservation/accounting.
+`DurableConversationHistoryStore.modelSwitchStorageSource()` and
+`beginModelSwitchStorage()` provide an administrative storage lease backed by
+its real logical/physical claims and short SQLite root transactions. They do
+not advertise runtime switching capability or migrate canonical history. Source
+coordinates are revalidated after v5 settlement; stale/mismatched coordinates
+reject before intent publication. IDs longer than 512 characters return
+`switch storage unsupported` (`id_limit`), allowing the caller to keep today's
+cold-epoch-with-replay path instead of failing a switch request.
+
+Managed root enumeration recognizes only secure owned `.model-switches`
+contents. Aggregate/staged quotas include physical artifacts, generations and
+crash leftovers plus remaining durable reservations (including retained-native
+and header-copy estimates). Retention protects every fenced physical bucket.
+A pending intent blocks ordinary provider admission, append/import and reset
+before retirement; native/canonical transaction and whole-chain cleanup
+integration is still required to settle it. Releasing the storage lease releases
+ownership only, never the fence or evidence. Do not begin such a lease on a real
+root before the remaining transaction integration is enabled.
 It does not issue root authority, settle turns, run a producer, bind a model,
 enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
 The ordinary canonical v3/v5 paths and configured host switching policy remain
@@ -297,9 +315,10 @@ unrecognized crash leftovers; managed-root integration must reconcile those
 other estimates at their corresponding publication/cleanup boundaries.
 
 Summary admission must be durably published before any paid call, which occurs
-outside the root transaction. The provisional policy is one outgoing producer,
-free exact-checkpoint attempt, then one incoming producer per explicit
-message-authorized generation. An unknown outcome remains admitted/charged:
+outside the root transaction. The final policy allows at most two billed calls per switchId without new
+user action: one outgoing producer,
+free exact-checkpoint attempt, then one incoming producer. Each later explicit user message authorizes one
+new attempt per producer, with a new two-call cap for that message generation. An unknown outcome remains admitted/charged:
 reopen, maintenance, duplicate authorization and cached-output recovery never
 silently permit another request. Authorizations and attempt identities remain
 bounded without dropping earlier identities. The caller must prove that any

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Account model-switch storage and durable capacity plans in managed-history
+  quotas under real conversation ownership, protect pending switch evidence from
+  ordinary mutation/retention, and report long conversation IDs as unsupported
+  switch storage without changing their existing cold replay behavior. Keep host
+  switching and canonical/native migration disabled.
 - Fix guarded retirement authority forwarding through chained runtimes and
   fail closed when pinned model-switch storage disappears. Reclaim superseded
   switch states after durable replacement and reconcile provisional reservations

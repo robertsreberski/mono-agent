@@ -108,6 +108,27 @@ export class ModelSwitchPayloadStore {
     }
     await this.assertDirectory(directory); return total;
   }
+  /** Read-only managed-root accounting. Hash-only fence coordinates are resolved
+   * exclusively through their validated payload, never guessed from filenames. */
+  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number }[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [] };
+    const bytes = await this.retainedBytes(), pending: { state: ModelSwitchState; remainingReservation: number }[] = [];
+    for (const name of await readdir(this.directory)) {
+      if (!name.endsWith(".fence.json")) continue;
+      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES)));
+      validateModelSwitchFence(raw);
+      const prefix = `${raw.conversationKey}.${raw.switchId}`;
+      if (name !== `${prefix}.fence.json`) unavailable();
+      const payload = await this.readBytes(`${prefix}.${raw.payload.generation}.state.json`, MAX_MODEL_SWITCH_BYTES);
+      if (hash(payload) !== raw.payload.sha256) unavailable();
+      const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload)); validateModelSwitchState(decoded);
+      const current = await this.read(decoded.identity.historyBucket, raw.switchId);
+      if (!current || switchDigest(current.fence) !== switchDigest(raw)) unavailable();
+      const cached = decoded.phase === "ready" ? decoded.artifact : await this.cachedArtifact(decoded);
+      pending.push({ state: current.state, remainingReservation: reservationBytes(decoded.reservation) - (cached ? decoded.reservation.artifactBytes : 0) });
+    }
+    await this.assertDirectory(directory); return { bytes, pending };
+  }
   private async publish(name: string, bytes: Buffer, owner: ModelSwitchStorageOwner, replace: boolean, label: string): Promise<void> {
     const directory = await this.ensureDirectory(true, owner); if (!directory || !filePattern.test(name)) unavailable();
     const path = join(this.directory, name);
