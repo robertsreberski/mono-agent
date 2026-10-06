@@ -141,7 +141,7 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
  * canonical epoch has already rotated, so that old id is never resumable in the
  * interim. Absence is success; cleanup or verification uncertainty rejects.
  */
-export async function retireDurableNativeSession(providerSessionId, piSessionsRoot) {
+export async function retireDurableNativeSession(providerSessionId, piSessionsRoot, deletionOptions = undefined) {
   if (!isSafeSessionId(providerSessionId)) {
     throw new TypeError("providerSessionId must be a safe, non-empty session id");
   }
@@ -156,7 +156,8 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
   await nativeSessions.refresh(providerSessionId);
   const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
   if (!repo) throw new Error("Durable Pi session repository is unavailable");
-  await repo.retireByHandle(providerSessionId);
+  if (deletionOptions === undefined) await repo.retireByHandle(providerSessionId);
+  else await repo.retireByHandle(providerSessionId, deletionOptions);
 }
 
 /** Preserving detach, separate from destructive retirement. Reject a busy or

@@ -531,11 +531,12 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       if (typeof inner.salvageDurableSession !== "function") throw new Error("Durable session salvage unavailable");
       return inner.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId, sessionsRoot) {
+    async retireDurableSession(providerSessionId, sessionsRoot, deletionOptions) {
       if (typeof inner.retireDurableSession !== "function") {
         throw new Error("A routed runtime cannot retire durable provider-session state");
       }
-      await inner.retireDurableSession(providerSessionId, sessionsRoot);
+      return deletionOptions === undefined ? inner.retireDurableSession(providerSessionId, sessionsRoot)
+        : inner.retireDurableSession(providerSessionId, sessionsRoot, deletionOptions);
     },
     async disposeSession(providerSessionId) {
       return Boolean(await inner.disposeSession?.(providerSessionId));

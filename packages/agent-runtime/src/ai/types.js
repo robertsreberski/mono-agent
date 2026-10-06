@@ -540,7 +540,7 @@
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
  * @property {(providerSessionId: string, sessionsRoot: string) => ReturnType<typeof import('./providers/pi-native/session-salvage.js').salvageDurableNativeSession>} [salvageDurableSession] Read-only best-effort snapshot of a durable Pi transcript.
- * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
+ * @property {(providerSessionId: string, sessionsRoot: string, deletion?: {hostAuthority:{version:1,canonicalVersion:4,rootId:string,authorityId:string,ownerKey:string,historyBucket:string},disposition:'C'|'D',assertOwned:()=>Promise<void>}) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
  * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions

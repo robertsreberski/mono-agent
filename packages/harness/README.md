@@ -246,7 +246,12 @@ private validated header so metadata mutation cannot forge or demote authority.
 composed coverage, rejecting changed sources and predecessor-native tail copies.
 Its summary must cover the entire inherited prefix; its retained native tail is
 current-journal evidence only. `appendModelChangeReference` explicitly writes a
-schemaVersion-3 artifact reference, not another summary copy. Neither API nor the
+schemaVersion-3 artifact reference, not another summary copy. Its stable
+switch identity is idempotent across concurrent calls and cold/warm reopen;
+conflicting content under that identity rejects rather than appending another
+event. Native deletion accepts either authority as the second argument or
+`(metadata, cancellationContext, authority)`; cancellation context alone never
+supplies authority, and ambiguous mixed arguments reject. Neither API nor the
 header guard enables host switching, supplies canonical history/retention
 transactions, or grants replay permission. No default host enables v3 writes.
 

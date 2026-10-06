@@ -122,3 +122,15 @@ it("turn_advanced reconciliation rejects synchronously without reading context e
     expect(reads).not.toHaveBeenCalled();
   } finally { reads.mockRestore(); }
 });
+
+it("forwards guarded retirement authority through the durable native helper", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-guarded-retirement-")); roots.push(root);
+  const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+  const repo = resolveDurableNativeSessionRepo(root), assertOwned = vi.fn(async () => {});
+  const store = await repo.create({ id: "guarded-retirement", hostAuthority, assertOwned }); await store.close();
+  const bytes = await readFile(store.metadata.path);
+  await expect(retireDurableNativeSession(store.metadata.id, root)).rejects.toThrow("authority");
+  expect(await readFile(store.metadata.path)).toEqual(bytes);
+  await retireDurableNativeSession(store.metadata.id, root, { hostAuthority, disposition: "D", assertOwned });
+  await expect(readFile(store.metadata.path)).rejects.toMatchObject({ code: "ENOENT" }); expect(assertOwned).toHaveBeenCalled();
+});

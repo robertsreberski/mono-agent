@@ -407,3 +407,36 @@ it("actual old catalogue listing and legacy import reject the whole root after o
   // Catalogue refusal is root-wide, but it is NOT a universal direct-open barrier.
   const direct = await old.open(untouched.metadata); await direct.close(); await old.close();
 });
+
+it("keeps cancellation context separate from guarded deletion authority", async () => {
+  const context = { abortSignal: new AbortController().signal };
+  for (const durable of [false, true]) {
+    const repository = durable ? repo(await root()) : new MemorySessionRepo();
+    const plain = await repository.create({ id: "context-plain" }); await plain.close();
+    await repository.delete(plain.metadata, context); expect(await repository.list()).toEqual([]);
+    const guard = await repository.create({ id: "context-guard", ...upgrade }); await guard.close();
+    const deletion = { ...upgrade, disposition: "D" };
+    await expect(repository.delete(guard.metadata, context)).rejects.toThrow("authority");
+    await expect(repository.delete(guard.metadata, { ...context, ...deletion })).rejects.toThrow("Ambiguous");
+    await expect(repository.delete(guard.metadata, deletion, deletion)).rejects.toThrow("Ambiguous");
+    await repository.delete(guard.metadata, context, deletion); expect(await repository.list()).toEqual([]);
+    if (durable) {
+      const retired = await repository.create({ id: "context-retire", ...upgrade }); await retired.close();
+      await repository.retire(retired.metadata, context, deletion); expect(await repository.list()).toEqual([]);
+    }
+  }
+});
+
+it("records one model_change per switch identity across concurrent calls and cold reopen", async () => {
+  const r = await root(), repository = repo(r), store = await repository.create({ id: "switch-event", ...upgrade });
+  const event = { switchId: "fictional-switch-id", from: { provider: "faux", model: "A" }, to: { provider: "faux", model: "B" }, artifactRef: { id: "fictional-artifact", hash: "0".repeat(64) } };
+  store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: authority });
+  const [first, repeat] = await Promise.all([store.appendModelChangeReference(event), store.appendModelChangeReference(event)]);
+  expect(first).toEqual(repeat); await store.sync(); await store.close();
+  const bytes = await readFile(store.metadata.path);
+  const reopened = await repo(r).open(store.metadata); reopened.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: authority });
+  expect(await reopened.appendModelChangeReference({ ...event, from: { model: "A", provider: "faux" } })).toEqual(first);
+  await expect(reopened.appendModelChangeReference({ ...event, artifactRef: { ...event.artifactRef, hash: "1".repeat(64) } })).rejects.toThrow("conflicts");
+  await reopened.close(); expect(await readFile(store.metadata.path)).toEqual(bytes);
+  expect(bytes.toString().split("\n").filter((line) => line.includes('"kind":"model_change"'))).toHaveLength(1);
+});

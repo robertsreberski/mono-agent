@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fix guarded retirement authority forwarding through chained runtimes and
+  fail closed when pinned model-switch storage disappears. Reclaim superseded
+  switch states after durable replacement and reconcile provisional reservations
+  without charging accepted artifact capacity twice.
+- Prepare bounded, ownership-checked model-switch payloads, immutable handoff
+  artifacts and durable summary-attempt admission without enabling host switching
+  or migrating managed histories.
+- Keep cancellation context separate from host authority in native deletion
+  overloads, forward explicit guarded retirement options, and record one
+  immutable native model-change reference per switch identity. Keep default
+  session payloads and host switching policy unchanged.
+
 - Require a durably published, host-authorized native header before opt-in v3
   writes. Reject old native readers and deletion before torn-tail repair on
   upgraded journals; preserve record bytes, paths and standalone defaults.
