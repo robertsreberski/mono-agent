@@ -136,6 +136,9 @@ export type {
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
   RuntimeNativeJournalAuthority,
+  RuntimeNativeJournalDescriptor,
+  RuntimeNativeSwitchContext,
+  RuntimeNativeJournalStorage,
   RuntimeNativeJournalDeletion,
   DurableSessionSalvage,
   MonoRuntimeParsedPricingModel,
@@ -180,3 +183,5 @@ export type {
 
 export { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 export type { OwnedForegroundProcessRequest, OwnedForegroundProcessController, OwnedForegroundProcesses } from "./owned-foreground-processes.js";
+
+export { createManagedNativeJournalStorage } from "./native-journal-storage.js";

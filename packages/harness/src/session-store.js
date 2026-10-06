@@ -15,6 +15,7 @@ import { assertEvidenceView } from "./evidence-view.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 import { canonicalHostJournalAuthority, validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
+import { modelChangeRecords, guardedEpochPlan } from "./managed-journal.js";
 import { publishGuardedHeader } from "./header-upgrade.js";
 const sessionAuthorities = new WeakMap();
 const enabledVersion3Sessions = new WeakSet();
@@ -124,15 +125,15 @@ export class SessionStore {
     this.line = result.catch(() => {});
     return result;
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3}} [identity] */
+  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3, timestamp?:number}} [identity] */
   write(kind, payload, identity = {}) {
     return this.enqueue(() => this.writeRecord(kind, payload, identity));
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3}} [identity] */
-  async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2 } = {}) {
+  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3, timestamp?:number}} [identity] */
+  async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2, timestamp = Date.now() } = {}) {
       if (schemaVersion === 3) this.assertVersion3WritesEnabled();
       const record = { schemaVersion, id, parentId: this.validator.parentId,
-        seq: this.seq + 1, timestamp: Date.now(), turnId, kind,
+        seq: this.seq + 1, timestamp, turnId, kind,
         ...(operationId ? { operationId } : {}), payload: typeof payload === "function" ? payload() : clone(payload) };
       const text = `${JSON.stringify(record)}\n`;
       const persisted = this.io?.read ? JSON.parse(text) : record;
@@ -229,22 +230,39 @@ export class SessionStore {
       if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
     } : undefined);
   }
-  /** Opt-in reference only: host artifacts are the sole content authority. */
-  async appendModelChangeReference({ switchId, from, to, artifactRef }) {
+  static modelChangeRecords(options, source) { return modelChangeRecords(options, source); }
+  /** Ready-only host reference. Deterministic synthetic framing can resume after
+   * any partial append; a foreign/open operation is never repaired or closed.
+   * @param {any} options */
+  async appendModelChangeReference(options) {
     this.assertVersion3WritesEnabled();
-    const payload = ordered({ version: 1, switchId, from, to, source: "host-handoff", checkpointId: null, artifactRef });
     return this.enqueue(async () => {
-      const prior = this.modelChanges.get(switchId);
-      if (prior) {
-        if (JSON.stringify(ordered(prior.payload)) !== JSON.stringify(payload)) throw new Error("Native model-change identity conflicts with existing evidence");
-        return clone(prior);
+      const prior = this.modelChanges.get(options.switchId);
+      const expectedTurn = `synthetic:model-change:${createHash("sha256").update(options.switchId).digest("hex")}`;
+      const start = this.validator.turns.get(prior?.turnId ?? expectedTurn)?.start;
+      const source = start ? { seq: start.seq - 1, parentId: start.parentId, tip: start.payload.baselineTipId }
+        : { seq: this.seq, parentId: this.validator.parentId, tip: this.tip };
+      const records = modelChangeRecords({ ...options, timestamp: start?.timestamp ?? options.timestamp ?? Date.now() }, source);
+      if (prior && JSON.stringify(ordered(prior.payload)) !== JSON.stringify(ordered(records[1].payload))) throw new Error("Native model-change identity conflicts with existing evidence");
+      if (prior && !this.validator.openTurns.has(prior.turnId)) { await this.io?.sync(); this.durableSeq = this.seq; return clone(prior); }
+      if (this.validator.openOperations.size || this.validator.openTurns.size && (!start
+        || this.validator.openTurns.size !== 1 || !this.validator.openTurns.has(expectedTurn)
+        || JSON.stringify(start) !== JSON.stringify(records[0])
+        || this.seq !== source.seq + (prior ? 2 : 1)
+        || this.validator.parentId !== records[prior ? 1 : 0].id)) throw new Error("Native model-change has foreign or changed open evidence");
+      const remaining = records.slice(start ? prior ? 2 : 1 : 0);
+      const validator = Object.assign(new JournalValidator(), structuredClone(this.validator));
+      for (const record of remaining) validator.apply(record);
+      // The host bridge has matched any torn bytes to this immutable plan before
+      // admitting truncation. No generic native interruption/accounting runs.
+      await this.io?.prepareReconciliation();
+      for (const record of remaining) {
+        await this.writeRecord(record.kind, record.payload, { id: record.id, turnId: record.turnId,
+          schemaVersion: record.schemaVersion, timestamp: record.timestamp });
+        await options.onPhase?.(({ turn_start: "model_change_started", model_change: "model_change_appended", turn_end: "model_change_ended" })[record.kind]);
       }
-      const synthetic = !this.activeTurnId(), turnId = synthetic ? `synthetic:model-change:${randomUUID()}` : this.activeTurnId();
-      if (synthetic) await this.writeRecord("turn_start", { config: { cause: "model-change" }, identitySource: "synthetic", baselineTipId: this.tip }, { turnId });
-      const record = await this.writeRecord("model_change", payload, { schemaVersion: 3,
-        id: `model-change:${createHash("sha256").update(switchId).digest("hex")}` });
-      if (synthetic) await this.writeRecord("turn_end", { status: "completed", tipId: this.tip, finalOperationId: null, consumedInputIds: [] }, { turnId });
-      return record;
+      await this.io?.sync(); this.durableSeq = this.seq; await options.onPhase?.("model_change_synced");
+      return clone(this.modelChanges.get(options.switchId));
     });
   }
   async moveTo(tipId) { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
@@ -480,6 +498,55 @@ export class JsonlSessionRepo {
       throw error;
     }
   }
+  static guardedEpochPlan(options) { return guardedEpochPlan(options); }
+  /** Atomic, idempotent host epoch initialization; ordinary create stays unchanged.
+   * @param {any} options */
+  async createGuardedEpoch(options) {
+    validateHeaderUpgradeOptions(options); const plan = guardedEpochPlan(options);
+    const metadata = { ...plan.header, path: join(this.directory, `${plan.header.journalId}.jsonl`) };
+    await options.assertOwned(); const locks = await this.ensureDirectory();
+    if (this.openSessions.has(options.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
+    const writer = await locks.acquireWriter(metadata.journalId, { wait: false });
+    try { return await locks.withCatalog(async () => {
+      await options.assertOwned(); await this.assertDirectory();
+      const validate = async (path, prefix) => {
+        const reader = await JournalReader.open(path, this.root);
+        try {
+          const before = await reader.assertIdentity();
+          if (before.nlink !== 1 || before.size > plan.bytes.length || !prefix && before.size !== plan.bytes.length) fail();
+          const bytes = await reader.handle.readFile(); const after = await reader.assertIdentity();
+          if (!sameIdentity(before, after) || before.size !== after.size || before.mtimeMs !== after.mtimeMs
+            || before.ctimeMs !== after.ctimeMs || bytes.length !== after.size || !plan.bytes.subarray(0, bytes.length).equals(bytes)) fail();
+          return after;
+        } finally { await reader.close(); }
+      };
+      const stage = `${metadata.path}.creating`;
+      const committed = !await absent(metadata.path);
+      if (committed) { await validate(metadata.path, false); await syncPath(metadata.path); await this.syncDirectories(); }
+      // Never overwrite/discard a foreign same-handle journal or unknown stage.
+      if ((await this.listOwnedUnlocked()).some((entry) => entry.id === options.id && entry.journalId !== metadata.journalId)) fail();
+      if (!await absent(stage)) {
+        const identity = await validate(stage, true); await options.assertOwned();
+        const named = await lstat(stage);
+        if (!sameIdentity(identity, named) || identity.size !== named.size || identity.ctimeMs !== named.ctimeMs) fail();
+        await unlink(stage); await this.syncDirectories(); await options.onPhase?.("epoch_stage_reclaimed");
+      }
+      if (!committed) {
+        const handle = await open(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        try {
+          await options.onPhase?.("epoch_stage_created"); await handle.writeFile(plan.bytes);
+          await handle.sync(); await options.onPhase?.("epoch_stage_synced");
+          const written = await handle.stat(); await options.assertOwned(); await this.assertDirectory();
+          const named = await lstat(stage);
+          if (written.nlink !== 1 || !sameIdentity(written, named) || written.size !== plan.bytes.length
+            || written.ctimeMs !== named.ctimeMs) fail();
+          await rename(stage, metadata.path); await options.onPhase?.("epoch_renamed");
+          await this.syncDirectories(); await options.onPhase?.("epoch_directory_synced");
+        } finally { await handle.close(); }
+      }
+      await options.assertOwned(); await this.assertDirectory(); return metadata;
+    }); } finally { writer.release(); }
+  }
   async open(metadata, { repair = true, wait = repair } = {}) {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
@@ -506,7 +573,7 @@ export class JsonlSessionRepo {
    * provider execution occurs here. The host holds its conversation claim until
    * this promise settles; native writer/catalogue ownership is acquired here.
    * @param {any} metadata
-   * @param {{hostAuthority:import('./header-authority.js').HostJournalAuthority, assertOwned:()=>Promise<void>}} options
+   * @param {{hostAuthority:import('./header-authority.js').HostJournalAuthority, assertOwned:()=>Promise<void>, onPhase?:(phase:string)=>Promise<void>}} options
    */
   async upgradeHeader(metadata, options) {
     validateHeaderUpgradeOptions(options); this.checkMetadata(metadata);

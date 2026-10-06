@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a storage-only native journal bridge with measured source/copy budgets,
+  recoverable immutable model-change framing and atomically initialized guarded
+  epochs. It is not configured by hosts until the coordinated lifecycle lands.
+
 - Keep unresolved v4 owners from blocking unrelated history writes and reserve
   v4 members as non-evictable until whole-chain deletion is enabled. Issue bounded
   owner-held native root authority only under drained, explicitly exclusive

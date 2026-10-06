@@ -25,6 +25,7 @@ async function readAll(handle, bytes, position) {
 /** @param {any} repo @param {any} metadata @param {any} options */
 export async function publishGuardedHeader(repo, metadata, options) {
   validateHeaderUpgradeOptions(options);
+  const onPhase = options.onPhase ?? repo.onHeaderUpgradePhase;
   const authority = canonicalHostJournalAuthority(options.hostAuthority);
   await options.assertOwned(); await repo.assertDirectory();
   const reader = await JournalReader.open(metadata.path, repo.root);
@@ -91,23 +92,23 @@ export async function publishGuardedHeader(repo, metadata, options) {
     stage = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     const stageIdentity = await stage.stat();
     createdIdentity = stageIdentity;
-    await repo.onHeaderUpgradePhase("stage_created");
-    await writeAll(stage, headerBytes); await repo.onHeaderUpgradePhase("header_written");
+    await onPhase("stage_created");
+    await writeAll(stage, headerBytes); await onPhase("header_written");
     for (let offset = bodyOffset; offset < evidence.identity.size;) {
       const chunk = Buffer.alloc(Math.min(65536, evidence.identity.size - offset));
       await readAll(reader.handle, chunk, offset); await writeAll(stage, chunk); offset += chunk.length;
-      await repo.onHeaderUpgradePhase("body_copied");
+      await onPhase("body_copied");
     }
     await assertSource();
     const copied = await stage.stat();
     if (copied.size !== expectedSize || !secure(copied) || !unchanged(await lstat(temporary), copied)) fail();
-    await stage.sync(); await repo.onHeaderUpgradePhase("stage_synced");
+    await stage.sync(); await onPhase("stage_synced");
     await assertSource();
     if (!unchanged(await stage.stat(), copied) || !unchanged(await lstat(temporary), copied)
       || stageIdentity.dev !== copied.dev || stageIdentity.ino !== copied.ino) fail();
     await rename(temporary, metadata.path); publicationComplete = true;
-    await repo.onHeaderUpgradePhase("published");
-    await repo.syncDirectories(); await repo.onHeaderUpgradePhase("publication_synced");
+    await onPhase("published");
+    await repo.syncDirectories(); await onPhase("publication_synced");
     await options.assertOwned(); await repo.assertDirectory();
     const published = await lstat(metadata.path);
     if (published.dev !== copied.dev || published.ino !== copied.ino || published.size !== copied.size || published.mtimeMs !== copied.mtimeMs || !secure(published)) fail();

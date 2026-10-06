@@ -704,6 +704,30 @@ export interface RuntimeNativeJournalDeletion {
   readonly assertOwned: () => Promise<void>;
 }
 
+/** Private administrative journal coordinates, never model-facing run options. */
+export interface RuntimeNativeJournalDescriptor {
+  readonly journalId: string; readonly epoch: string; readonly ordinal: number; readonly handleId: string;
+  readonly predecessorJournalId: string | null; readonly ownerKey: string; readonly historyBucket: string;
+  readonly sourceTipId: string | null; readonly sourceSeq: number; readonly sourceDigest: string;
+  readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
+}
+export interface RuntimeNativeSwitchContext {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertOwned: () => Promise<void>;
+  readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
+  readonly sourceRevision: number; readonly fromModelKey: string;
+  readonly targetProvenance: RuntimeNativeJournalDescriptor["provenance"];
+  readonly event: { readonly switchId: string; readonly timestamp: number;
+    readonly from: RuntimeNativeJournalDescriptor["provenance"]; readonly to: RuntimeNativeJournalDescriptor["provenance"];
+    readonly artifactRef: { readonly id: string; readonly hash: string } };
+}
+export interface RuntimeNativeJournalStorage {
+  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
+  measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
+  publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
+  inventory(): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
+}
+
 export interface MonoRuntimeLike {
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;

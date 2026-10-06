@@ -181,6 +181,12 @@ primary attempt evidence; failure to acknowledge is terminal. Neither that hook
 nor the turn descriptor is forwarded to detached attempts; private attempt
 resolvers cannot replace them. Backup success never certifies primary success.
 
+The separately exported `createManagedNativeJournalStorage` provides a typed
+administrative storage capability, not a `MonoRuntimeLike` dispatch capability or
+model-facing run option. Its caller must hold host root/conversation authority,
+validate accepted content and coordinate canonical publication/deletion. It
+forwards only journal storage operations; no configured host creates it yet.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -330,6 +336,9 @@ RuntimeMessage
 RuntimeModelReference
 RuntimeNativeJournalAuthority
 RuntimeNativeJournalDeletion
+RuntimeNativeJournalDescriptor
+RuntimeNativeJournalStorage
+RuntimeNativeSwitchContext
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
@@ -378,6 +387,7 @@ SrtSettings
 assertParsedRuntimeModelReference
 bridgeOwnedForegroundProcesses
 bridgeProcessJobsController
+createManagedNativeJournalStorage
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
