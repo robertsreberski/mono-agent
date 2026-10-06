@@ -859,18 +859,37 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     return operations;
   }
-  private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
+  /** Cleanup invariants:
+   * - prepareRecord/provider admission: only our logical D may run before
+   *   reservation; a foreign failure cannot block an unrelated owner.
+   * - resumeInactiveNativeDeletions: borrowed ownership prevents same-owner
+   *   stranding; without native capability do nothing. Foreign D runs only as
+   *   post-commit maintenance, with failures recorded rather than rethrown.
+   * - retentionPlan: protect persisted/busy evidence, preserve LRU, probe only
+   *   needed victims and never grant capacity credit from an excluded victim.
+   * - applyRetention: exclude each attempted busy victim and replan so a free
+   *   victim can restore quotas; bound retries and refresh after native I/O.
+   */
+  private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo,
+    committingOwner: HeldLogicalConversation, phase: "prepare" | "maintenance"): Promise<void> {
+    if (!this.nativeJournalStorage) return;
     const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     for (const operation of await this.nativeOperationOwners(rootIdentity)) {
-      const id = operation.source.conversationId; if (operation.disposition !== "D" || active.has(historyKey(id))) continue;
+      const id = operation.source.conversationId, logicalId = logicalConversationIdForFence(id);
+      if (operation.disposition !== "D" || active.has(historyKey(id))
+        || phase === "prepare" && logicalId !== committingOwner.logicalConversationId) continue;
       let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined;
       try {
-        const logicalId = logicalConversationIdForFence(id);
-        owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.acquireLogicalConversation(logicalId, true);
-        if (requiresExactConversationClaim(id)) exact = await this.acquireExactConversationClaim(id, true);
-        await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
-      } catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; }
-      finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
+        try {
+          owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.acquireLogicalConversation(logicalId, true);
+          if (requiresExactConversationClaim(id)) exact = await this.acquireExactConversationClaim(id, true);
+          await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
+        } finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
+      } catch (error) {
+        if (error instanceof HistoryOwnerBusyError) continue;
+        if (phase === "prepare") throw error;
+        recordPostCommitMaintenanceFailure(this.root, error);
+      }
     }
   }
   private async recoverNativeOperation(id: string, held: HeldConversation): Promise<void> {
@@ -1318,7 +1337,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       let releaseRoot = await this.acquireRootTransaction(rootIdentity);
       const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
       try {
-        await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical);
+        await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical, "prepare");
         await this.requireNoModelSwitch(normalizedId, rootIdentity);
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
         requireSettledFence(existingFence);
@@ -1733,7 +1752,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         .filter((entry) => entry.state.identity.historyBucket === conversationId);
       for (const { state } of pending) if (state.phase === "ready") {
         const marker = await this.nativeHistoryRoot(held.rootIdentity).read();
-        if (!marker) throw new Error("Native root authority missing for ready recovery");
+        if (!marker) continue; // Not native-ready; keep its switch fence, but allow authority/recovery.
         const authority = this.nativeHistoryRoot(held.rootIdentity).authority(marker, state.identity.ownerKey, conversationId);
         if (await this.nativeJournalStorage.hasSwitchReference(state.identity.sources, this.nativeSwitchContext(state, authority, () => held.assertOwned()))) {
           await this.rollForwardHeldModelSwitch(conversationId, state.identity.switchId, held);
@@ -1837,7 +1856,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
     let stage: ActiveStage | undefined;
     try {
-      await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical);
+      await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical, "prepare");
       await this.requireNoModelSwitch(record.conversationId, rootIdentity);
       const existing = await this.readRecord(record.conversationId, rootIdentity);
       if (existing.sourceVersion === 4 && existing.providerSession?.epoch !== record.providerSession.epoch) {
@@ -2237,12 +2256,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
-    await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, committingOwner);
+    await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, committingOwner, "maintenance");
     const attempted = new Set<string>();
-    for (;;) {
-      const plan = await this.retentionPlan(rootIdentity, [committedStage]);
+    const maxPlans = (await this.scanCommittedEntries(rootIdentity, false)).length + 1;
+    for (let iteration = 0; iteration < maxPlans; iteration++) {
+      const plan = await this.retentionPlan(rootIdentity, [committedStage], attempted);
       if (plan.minimumCount > this.maxConversations || plan.minimumBytes > this.maxStoreBytes) throw new Error("Conversation history retention reservation changed after publication.");
-      let bytes = plan.projectedBytes, count = plan.projectedCount, nativeWindow = false;
+      let bytes = plan.projectedBytes, count = plan.projectedCount, replan = false;
       // Preserve global LRU order. After any unlocked native window, rebuild
       // all coordinates, protections and estimates before considering a victim.
       for (const entry of plan.candidates) {
@@ -2258,10 +2278,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             const operation: NativeHistoryOperation = { version: 1, disposition: "D", source: this.nativeCanonical(record), next: null, timestamp: 0 };
             const assertOwned = async () => { await owner!.assertOwned(); if ((await this.scanActiveMarkers(false)).some((marker) => marker.conversationKey === historyKey(record.conversationId))) throw new Error("Retention victim acquired ownership"); };
             await assertOwned(); await this.publishNativeOperation(operation, rootIdentity); await this.finishNativeOperation(operation, rootIdentity, assertOwned, nativeIo);
-            nativeWindow = true;
-          } catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; }
+            replan = true;
+          } catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; replan = true; }
           finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
-          if (nativeWindow) break;
+          if (replan) break;
           continue;
         }
         const retirementFence = this.retireProviderSession === undefined ? undefined
@@ -2277,15 +2297,17 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         });
         count--; bytes -= entry.size;
       }
-      if (nativeWindow) continue;
+      if (replan) continue;
       if (count > this.maxConversations || bytes > this.maxStoreBytes) throw new Error("Retention victims became unavailable; quota maintenance remains pending.");
       await assertDirectoryIdentity(this.root, rootIdentity); return;
     }
+    throw new Error("Retention replanning bound reached; quota maintenance remains pending.");
   }
 
   private async retentionPlan(
     rootIdentity: DirectoryIdentity,
     projectedStages: readonly ActiveStage[],
+    excludedNames: ReadonlySet<string> = new Set(),
   ): Promise<{
     readonly projectedBytes: number;
     readonly projectedCount: number;
@@ -2335,7 +2357,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let removableBytes = 0;
     const needsPruning = projectedCount > this.maxConversations || projectedBytes > this.maxStoreBytes
       || entries.some((entry) => this.now() - entry.mtimeMs > this.maxAgeMs);
-    if (needsPruning) for (const entry of entries.filter((item) => !protectedNames.has(item.name)).sort(compareRetentionEntries)) {
+    if (needsPruning) for (const entry of entries.filter((item) => !protectedNames.has(item.name) && !excludedNames.has(item.name)).sort(compareRetentionEntries)) {
       // Do not touch exact-claim SQLite transactions until this LRU victim is
       // actually needed. Stop as soon as both quota excess and age are covered.
       if (projectedCount - candidates.length <= this.maxConversations && projectedBytes - removableBytes <= this.maxStoreBytes

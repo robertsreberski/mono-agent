@@ -6,6 +6,8 @@ import { lstat, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createDurableHistoryStore } from "../durable-history.js";
+import { NATIVE_HISTORY_ROOT_FILE } from "../native-history-root.js";
 import { fixture, ready, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
@@ -326,7 +328,9 @@ it.each(["model_change_started", "model_change_appended", "model_change_synced"]
   });
   await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).rejects.toThrow("Interrupted current reference");
   const current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.providerSession.epoch).toBe(f.state.identity.sources.at(-1)!.epoch);
-  const references = (await readFile(f.nativePath, "utf8")).split("\n").filter((line) => line.includes('"kind":"model_change"'));
+  const referenceRows = (await readFile(f.nativePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  expect(referenceRows.filter((row) => row.kind === "turn_start" && row.payload.config?.cause === "model-change")).toHaveLength(1);
+  const references = referenceRows.filter((row) => row.kind === "model_change");
   expect(references).toHaveLength(boundary === "model_change_started" ? 0 : 1);
   // No administrative rollForwardModelSwitch call: ordinary admission must
   // complete the accepted current reference before its requested C mutation.
@@ -383,4 +387,50 @@ it("keeps a ready artifact without native reference fenced during ordinary admis
   await expect(f.store.append(bucket, [{ role: "assistant", content: "Do not initiate configured switching" }])).rejects.toThrow("pending");
   expect(await readFile(f.canonicalPath)).toEqual(canonical); expect(await readFile(f.nativePath)).toEqual(native);
   expect(await readdir(join(root, "native", "mono-v2", "journals"))).toHaveLength(1);
+});
+
+
+it.each([false, true])("does not let a foreign failing D block append or admission (native=%s)", async (capability) => {
+  const f = await setup(), deletion = vi.spyOn(f.native, "deleteJournals").mockRejectedValue(new Error("Fictional foreign D blocked"));
+  await expect(f.store.reset(bucket)).rejects.toThrow("Fictional foreign D blocked");
+  const history = join(f.base, "history"), operationName = (await readdir(history)).find((name) => name.startsWith(".native-history-op."))!;
+  const operation = await readFile(join(history, operationName)), canonical = await readFile(f.canonicalPath), before = deletion.mock.calls.length;
+  const store = createDurableHistoryStore({ root: history, ...(capability ? { nativeJournalStorage: f.native } : {}) });
+  const prepared = await store.prepareAppend("fictional-independent-Z", [{ role: "assistant", content: "Independent append" }]);
+  expect(deletion.mock.calls).toHaveLength(before); // No cross-owner native work before publication.
+  await prepared.commit();
+  expect(await store.load("fictional-independent-Z")).toEqual([{ role: "assistant", content: "Independent append" }]);
+  expect(deletion.mock.calls.length).toBe(capability ? before + 1 : before);
+  const afterCommit = deletion.mock.calls.length;
+  const turn = await store.beginProviderSessionTurn("fictional-independent-admission-Z", "fictional-admission", { modelKey: "faux:A" });
+  await turn.abort(); expect(deletion.mock.calls).toHaveLength(afterCommit);
+  expect(await readFile(join(history, operationName))).toEqual(operation); expect(await readFile(f.canonicalPath)).toEqual(canonical);
+  expect((await store.stats()).postCommitMaintenanceFailures).toBe(capability ? 1 : 0);
+});
+it("replans past a logically busy oldest native day to a free LRU victim", async () => {
+  const older = `${bucket}#2000-01-01`, f = await setup(older), original = await readFile(f.canonicalPath);
+  await f.store.append("fictional-free-retention-victim", [{ role: "assistant", content: "Free history" }]);
+  await utimes(f.canonicalPath, 1, 1);
+  const activeSibling = await f.store.contextImport!.beginExclusiveTurn(`${bucket}#2000-01-02`);
+  const { store } = openStore(f.base, undefined, { maxConversations: 2, retireProviderSession: async () => {} });
+  try {
+    await store.append("fictional-busy-retention-winner", [{ role: "assistant", content: "Count-limit winner" }]);
+    expect((await store.stats()).conversations).toBe(2); expect((await store.stats()).postCommitMaintenanceFailures).toBe(0);
+    expect(await readFile(f.canonicalPath)).toEqual(original);
+    expect(await store.load("fictional-free-retention-victim")).toEqual([]);
+    expect((await store.load("fictional-busy-retention-winner")).at(-1)?.content).toBe("Count-limit winner");
+  } finally { await activeSibling.abort(); }
+});
+it.each([false, true])("keeps markerless ready state fenced without wedging authority/recovery/drain (native=%s)", async (capability) => {
+  const root = await mkdtemp(join(tmpdir(), "mono-markerless-ready-")); roots.push(root);
+  const f = await fixture(root); await ready(f); await rm(join(root, "history", NATIVE_HISTORY_ROOT_FILE));
+  const original = await readFile(f.nativePath), inspect = vi.fn(async () => { throw new Error("No pending provider work expected"); });
+  const store = createDurableHistoryStore({ root: join(root, "history"), ...(capability ? { nativeJournalStorage: f.native } : {}), reconcileProviderSessionTurn: inspect, retireProviderSession: async () => { throw new Error("No provider retirement expected"); } });
+  expect(await store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
+  expect(await store.drainPendingProviderSessionTurns()).toMatchObject({ settled: 0, busy: 0, unresolved: 0, remaining: false });
+  await expect(store.beginProviderSessionTurn(bucket, "fenced-ready", { modelKey: "faux:A" })).rejects.toThrow("pending");
+  const authority = await store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true });
+  expect(authority.status).toBe("owned"); if (authority.status === "owned") await authority.release();
+  await expect(store.append(bucket, [{ role: "assistant", content: "Still fenced" }])).rejects.toThrow("pending");
+  expect(await readFile(f.nativePath)).toEqual(original); expect(inspect).not.toHaveBeenCalled();
 });

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Isolate pre-publication native cleanup to the committing logical owner and
+  keep foreign cleanup failures diagnostic. Replan around busy retention
+  victims so free history can restore quotas, while markerless ready switches
+  remain fenced without blocking authority issuance or recovery.
+
 - Keep managed daily rollover live at capacity by reusing the held logical
   claim for older inactive days. Preserve mixed-history LRU eviction order and
   share capacity footprints within each root transaction without carrying stale

@@ -860,3 +860,14 @@ pnpm --filter @mono-agent/agent-harness run build
 pnpm --filter @mono-agent/agent-harness run typecheck
 pnpm --filter @mono-agent/agent-harness run test
 ```
+
+
+Cleanup before publication resumes only the committing logical owner's D intent;
+foreign D recovery is post-commit maintenance and its failure cannot block an
+unrelated append/admission. Native cleanup is skipped without capability. A busy
+logical retention victim is excluded and replanned around within a bounded pass,
+without granting it quota credit. Ready artifacts without native capability or a
+root marker remain fenced/non-dispatchable, but do not block authority issuance
+or owner-held recovery. Foreign/garbled native tails fail closed: bounded drain
+reports that owner unresolved and continues other owners; it never repairs those
+bytes or promotes them into accepted reference evidence.
