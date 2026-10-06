@@ -9,6 +9,7 @@ minimumReleaseAge: 0
 # Security floors for production transitive ranges. Keep these exact so the
 # isolated webapp resolves the reviewed fixed versions.
 overrides:
+  '@modelcontextprotocol/sdk': 1.31.0
   fast-uri: 3.1.7
   proxy-addr: 2.0.8
   source-map-js: 1.2.2
