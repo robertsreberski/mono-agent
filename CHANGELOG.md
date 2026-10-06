@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix managed switch-storage owner validation and transactional pending checks,
+  preserve switching owners during logical reset and inactive fence cleanup, and
+  avoid charging published state/fence bytes twice. Report physical history bytes
+  separately from provisional reservations and retain Windows mode exemptions.
+
 - Account model-switch storage and durable capacity plans in managed-history
   quotas under real conversation ownership, protect pending switch evidence from
   ordinary mutation/retention, and report long conversation IDs as unsupported

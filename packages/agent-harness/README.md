@@ -270,15 +270,25 @@ existing short root transaction, and caller-owned quota reservation/accounting.
 `beginModelSwitchStorage()` provide an administrative storage lease backed by
 its real logical/physical claims and short SQLite root transactions. They do
 not advertise runtime switching capability or migrate canonical history. Source
-coordinates are revalidated after v5 settlement; stale/mismatched coordinates
-reject before intent publication. IDs longer than 512 characters return
+coordinates are revalidated after v5 settlement and require settled provider
+fences inside the root transaction; unnormalized buckets and stale/mismatched
+logical-owner coordinates reject before intent publication. IDs longer than 512 characters return
 `switch storage unsupported` (`id_limit`), allowing the caller to keep today's
-cold-epoch-with-replay path instead of failing a switch request.
+cold-epoch-with-replay path instead of failing a switch request. Capacity
+unavailability must likewise be treated as unsupported switch storage by future
+host policy, falling back to cold replay before intent publication; no production
+caller is enabled until roll-forward and whole-chain deletion are implemented.
 
 Managed root enumeration recognizes only secure owned `.model-switches`
 contents. Aggregate/staged quotas include physical artifacts, generations and
 crash leftovers plus remaining durable reservations (including retained-native
-and header-copy estimates). Retention protects every fenced physical bucket.
+and header-copy estimates). Published current state/fence bytes consume the
+pending publication plan rather than being charged twice; orphan generations
+and crash temps remain fully charged. `stats().bytes` reports physical canonical
+and switch-storage bytes; `stats().reservedBytes` reports remaining provisional
+plans separately. Retention protects every fenced physical bucket, including
+inactive provider retirement fences. Logical reset prechecks all matching
+physical buckets for pending switches before resetting any sibling.
 A pending intent blocks ordinary provider admission, append/import and reset
 before retirement; native/canonical transaction and whole-chain cleanup
 integration is still required to settle it. Releasing the storage lease releases
@@ -310,7 +320,7 @@ artifact capacity covers publication without a second artifact reservation;
 after durable acceptance its physical bytes replace the provisional artifact
 cap. Every durable mutation/recovery resets remaining provisional accounting,
 so transient state/fence publication reservations cannot accumulate. Fixed
-canonical/native/header-copy/pending estimates remain conservative, as do
+canonical/native/header-copy estimates remain conservative, as do
 unrecognized crash leftovers; managed-root integration must reconcile those
 other estimates at their corresponding publication/cleanup boundaries.
 
