@@ -38,7 +38,7 @@
     "test": "pnpm run build && vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@yarflam/potion-base-8m": "1.0.4",
     "github-slugger": "2.0.0",
     "zod": "^4.4.3"

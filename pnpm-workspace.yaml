@@ -25,6 +25,7 @@ minimumReleaseAge: 0
 # advisory gate and every packed consumer resolve the reviewed fixed versions.
 overrides:
   '@xmldom/xmldom': 0.9.12
+  '@modelcontextprotocol/sdk': 1.31.0
   fast-uri: 3.1.7
   ip-address: 10.3.1
   protobufjs: 7.6.5

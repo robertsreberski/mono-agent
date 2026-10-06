@@ -112,7 +112,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.99.2",
     "@earendil-works/pi-ai": "0.99.2",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@mozilla/readability": "0.6.0",
     "@vscode/ripgrep": "1.18.0",
     "bmp-ts": "1.0.9",
