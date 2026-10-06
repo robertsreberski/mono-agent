@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the `sharp` dependency vulnerability across the agent runtime,
+  documentation and marketing sites.
+
 - Fix dependency vulnerabilities in `compression`, `proxy-addr` and
   `source-map-js` across the web console, documentation and marketing sites.
 
