@@ -7,6 +7,7 @@ export function createManagedNativeJournalStorage(options: {
   const storage = nativeStorage(options);
   return { freeze: (source) => storage.freeze(source),
     measureSwitch: (sources, context) => storage.measureSwitch([...sources], context),
+    verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),
     publishSwitch: (sources, context) => storage.publishSwitch([...sources], context),
     inventory: () => storage.inventory() };
 }

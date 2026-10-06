@@ -369,6 +369,28 @@ export class ModelSwitchPayloadStore {
       await this.publishState(next, owner); return reference;
     });
   }
+  /** Re-establish a recovered fence-unlink publication barrier. */
+  async syncPublication(): Promise<void> {
+    const directory = await this.ensureDirectory(false); if (directory) await this.syncDirectory(this.directory, directory);
+  }
+  /** Canonical/native publication precedes fence release. Retain the winning
+   * ready attempt/content for reference lifetime and whole-chain D deletion. */
+  async complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
+    await owner.withRootTransaction(async () => {
+      await this.owner(owner); const current = await this.read(bucket, switchId);
+      await assertCanonicalReady();
+      if (!current) { await this.syncPublication(); return; }
+      if (current.state.phase !== "ready") throw new Error("Pending switch cannot release its intent fence");
+      await this.owner(owner, current.state); await this.reconcile(current.state, current.fence.payload, owner);
+      const name = `${this.coordinates(bucket, switchId)}.fence.json`, directory = await this.ensureDirectory(false); if (!directory) unavailable();
+      const before = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
+      await this.owner(owner, current.state); await assertCanonicalReady();
+      if (!(await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES)).equals(before)) unavailable();
+      await rm(join(this.directory, name)); await owner.onPhase?.("switch_fence_removed");
+      await this.syncDirectory(this.directory, directory); await owner.onPhase?.("switch_fence_directory_synced");
+      await this.owner(owner, current.state); await owner.adjustReservation(0);
+    });
+  }
   async readArtifact(bucket: string, switchId: string, reference: HandoffReference): Promise<ModelSwitchArtifact> {
     validateSwitchReference(reference);
     const bytes = await this.readBytes(`${this.coordinates(bucket, switchId)}.${reference.id}.handoff.json`, MAX_MODEL_SWITCH_BYTES);

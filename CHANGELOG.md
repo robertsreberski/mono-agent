@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Couple owner-held ready switch recovery to measured native storage, canonical
+  v4 binding/receipts and durable intent-fence cleanup. Pending stays host-only;
+  configured switching remains disabled until cold/deletion integration lands.
+
 - Add a storage-only native journal bridge with measured source/copy budgets,
   recoverable immutable model-change framing and atomically initialized guarded
   epochs. It is not configured by hosts until the coordinated lifecycle lands.

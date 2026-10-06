@@ -25,7 +25,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   /** Streaming digests; only the three reference-frame records are retained.
    * An immutable intent admits only an exact prefix of those deterministic bytes.
    * @param {any} coordinate @param {any} [event] */
-  const snapshot = async (coordinate, event) => {
+  const snapshot = async (coordinate, event, prefixOnly = false) => {
     const meta = await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
     try {
       /** @type {any} */ let header;
@@ -64,9 +64,9 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         const bytes = Buffer.alloc(length); let read = 0;
         while (read < length) { const result = await reader.handle.read(bytes, read, length - read, boundary + read); if (!result.bytesRead) fail(); read += result.bytesRead; }
         if (!expected.subarray(0, length).equals(bytes)) fail();
-      } else if (evidence.torn || validator.openTurns.size || validator.openOperations.size) fail();
+      } else if (!prefixOnly && (evidence.torn || validator.openTurns.size || validator.openOperations.size)) fail();
       const current = await reader.assertIdentity();
-      if (current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
+      if (current.nlink !== 1 || current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
       return { metadata: meta, header, handleBinding, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
         sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: digest }, parentId,
         };
@@ -132,12 +132,35 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         handleId: context.targetHandleId, ownerKey: last.ownerKey, historyBucket: last.historyBucket, provenance: context.targetProvenance });
       await context.assertOwned(); return [...output, target.descriptor];
     },
+    /** Recovered canonical receipts must name real completed native publication.
+     * Read-only validation: never append, repair or create missing evidence.
+     * @param {any[]} chain @param {any[]} sources @param {any} context */
+    async verifySwitch(chain, sources, context) {
+      await context.assertOwned();
+      if (chain.length !== sources.length + 1) fail();
+      for (let index = 0; index < sources.length; index++) {
+        const current = await snapshot(sources[index], index === sources.length - 1 ? context.event : undefined);
+        if (!same(current.header.hostAuthority, context.hostAuthority) || !same(current.descriptor, chain[index])
+          || current.descriptor.sourceSeq !== sources[index].sourceSeq + (index === sources.length - 1 ? 3 : 0)) fail();
+      }
+      const plan = JsonlSessionRepo.guardedEpochPlan({ id: context.targetHandleId, timestamp: context.timestamp, hostAuthority: context.hostAuthority });
+      const expected = { epoch: context.targetEpoch, ordinal: sources.length, handleId: context.targetHandleId,
+        journalId: plan.header.journalId, predecessorJournalId: sources.at(-1).journalId,
+        ownerKey: context.hostAuthority.ownerKey, historyBucket: context.hostAuthority.historyBucket,
+        provenance: context.targetProvenance, sourceTipId: null, sourceSeq: 4,
+        sourceDigest: createHash("sha256").update(JSON.stringify(plan.records)).digest("hex") };
+      if (!same(chain.at(-1), expected)) fail();
+      // Later B turns may exist after semantic fence unlink. Only the immutable
+      // initializer prefix is required here; any provider fence owns its tail.
+      const target = await snapshot(expected, undefined, true);
+      if (!same(target.header, plan.header)) fail(); await context.assertOwned();
+    },
     /** All journal/stage/copy bytes in this explicitly dedicated native root. */
     async inventory() {
       const directory = join(root, "mono-v2", "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
       await repo.ensureDirectory(); let bytes = 0, stagedBytes = 0;
-      /** @type {Record<string,{retainedBytes:number,headerCopyBytes:number,stagedBytes:number}>} */ const journals = {};
+      /** @type {Record<string,{retainedBytes:number,headerCopyBytes:number,stagedBytes:number}>} */ const journals = Object.create(null);
       for (const name of await readdir(directory)) {
         if (!/^[A-Za-z0-9_-]+\.jsonl(?:\.(?:creating|importing|upgrading))?$/.test(name)) fail();
         const reader = await JournalReader.open(join(directory, name), root);

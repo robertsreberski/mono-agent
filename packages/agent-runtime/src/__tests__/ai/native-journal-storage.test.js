@@ -121,3 +121,9 @@ it.skipIf(process.platform === "win32").each(["model_change_started", "model_cha
   expect(rows.filter((row) => row.kind === "message")).toHaveLength(1);
   expect(rows.filter((row) => row.kind === "turn_start").length).toBe(rows.filter((row) => row.kind === "turn_end").length);
 }, 60_000);
+
+it("charges prototype-shaped native stems without prototype-key ledger credits", async () => {
+  const f = await fixture(); await writeFile(join(f.repo.directory, "constructor.jsonl"), "opaque preserved evidence", { mode: 0o600 });
+  const inventory = await f.bridge.inventory(); expect(inventory.journals.constructor.retainedBytes).toBe(Buffer.byteLength("opaque preserved evidence"));
+  expect(inventory.bytes).toBe(f.before.length + Buffer.byteLength("opaque preserved evidence"));
+});

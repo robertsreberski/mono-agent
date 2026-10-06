@@ -724,6 +724,7 @@ export interface RuntimeNativeSwitchContext {
 export interface RuntimeNativeJournalStorage {
   freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
   measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
+  verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
   publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
   inventory(): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
 }

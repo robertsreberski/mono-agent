@@ -329,9 +329,23 @@ their existing torn-file policy. This API is not used by configured hosts and
 must not be invoked on real roots before the complete native transaction lands.
 Older binaries must stay stopped; the marker is not proof that every older
 admission path checks it. Rollback requires consistent host/native backups, not
-stripping the marker. It does not upgrade a header, create a v4 conversation, or
-enable switching.
+stripping the marker. The lease itself does not upgrade a header or enable dispatch.
 The coordinated transaction/deletion integration removes the remaining guards.
+An explicit administrative `nativeJournalStorage` capability couples measured
+native inventory/reservations to `rollForwardModelSwitch(id, switchId,
+{ exclusiveWriters: true })`. Initial admission checks actual frozen sources,
+header-copy/new-journal/reference peaks and canonical publication capacity before
+publishing an intent. Ready-only recovery holds logical/conversation ownership
+across native I/O, outside short host root transactions. It publishes guarded
+native evidence, exact initialized target membership and canonical binding/receipt,
+then proves both canonical and real native publication before releasing the
+intent fence. Recovered receipt cleanup never repairs or creates missing native
+evidence. Artifact and winning attempt storage remain retained for later D deletion.
+Physical native bytes replace provisional native credits without process-local
+refund counters; committed native bytes do not consume the unpublished-stage
+quota. No configured host opts in; cold epoch/whole-chain guards remain until
+the rest of the coordinated lifecycle lands. This is not a standalone rollout.
+
 Pending switching stays entirely in host intent/attempt storage: no native
 `model_change` or incoming binding is published before accepted handoff content
 exists, and no native artifact-reference wire change is introduced.
