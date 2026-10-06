@@ -740,6 +740,8 @@ export interface RuntimeNativeJournalStorage {
   deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
   freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
   measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
+  /** Prove an exact full/partial ready reference already exists; never publish one. */
+  hasSwitchReference(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<boolean>;
   verifySwitchSources(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
   verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
   publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;

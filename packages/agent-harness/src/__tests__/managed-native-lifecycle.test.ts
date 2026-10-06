@@ -291,7 +291,7 @@ it("preserves mixed-root LRU order instead of preferring legacy victims", async 
 });
 
 
-it("computes switch/native footprints and canonical snapshots once per root transaction", async () => {
+it("shares footprint snapshots until canonical publication invalidates the transaction ledger", async () => {
   const f = await setup(), history = join(f.base, "history");
   const internals = f.store as unknown as {
     acquireRootTransaction: (...args: unknown[]) => Promise<() => Promise<void>>;
@@ -300,35 +300,87 @@ it("computes switch/native footprints and canonical snapshots once per root tran
   };
   const physical = vi.spyOn(f.native, "inventory"), canonical = vi.spyOn(internals, "readCommittedEntryRecord");
   const switches = vi.spyOn(internals.modelSwitchPayloads(await lstat(history)), "inventory");
-  const acquire = internals.acquireRootTransaction.bind(internals); let observed = 0;
+  const invalidation = vi.spyOn(f.store as unknown as { invalidateCanonicalAccounting(name: string): void }, "invalidateCanonicalAccounting");
+  const acquire = internals.acquireRootTransaction.bind(internals); let observed = 0, refreshed = 0;
   vi.spyOn(internals, "acquireRootTransaction").mockImplementation(async (...args) => {
     const release = await acquire(...args), nativeStart = physical.mock.calls.length,
       switchStart = switches.mock.calls.length, recordStart = canonical.mock.calls.length;
     return async () => {
       const nativeReads = physical.mock.calls.length - nativeStart, switchReads = switches.mock.calls.length - switchStart;
-      expect(nativeReads).toBeLessThanOrEqual(1); expect(switchReads).toBeLessThanOrEqual(1);
+      expect(nativeReads).toBeLessThanOrEqual(2); expect(switchReads).toBeLessThanOrEqual(2);
       const names = canonical.mock.calls.slice(recordStart).map(([entry]) => entry.name);
-      expect(new Set(names).size).toBe(names.length); if (nativeReads) observed++;
+      expect(new Set(names).size).toBe(names.length); if (nativeReads) observed++; if (nativeReads === 2) refreshed++;
       await release();
     };
   });
   await f.store.append("fictional-cached-accounting", [{ role: "assistant", content: "Ordinary unrelated update" }]);
-  expect(observed).toBeGreaterThanOrEqual(2);
+  expect(observed).toBeGreaterThanOrEqual(2); expect(refreshed).toBe(1);
+  expect(invalidation).toHaveBeenCalledWith(`${switchConversationKey("fictional-cached-accounting")}.history.json`);
 });
-it("always rolls an accepted still-current model-change frame forward before allowing C", async () => {
+it.each(["model_change_started", "model_change_appended", "model_change_synced"])("always rolls an accepted still-current model-change frame forward before C after %s", async (boundary) => {
   const root = await mkdtemp(join(tmpdir(), "mono-current-reference-")); roots.push(root);
   const f = await fixture(root); await ready(f);
   let stopped = false;
   const { store } = openStore(root, async (phase) => {
-    if (!stopped && phase === "model_change_synced") { stopped = true; throw new Error("Interrupted current reference"); }
+    if (!stopped && phase === boundary) { stopped = true; throw new Error("Interrupted current reference"); }
   });
   await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).rejects.toThrow("Interrupted current reference");
   const current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.providerSession.epoch).toBe(f.state.identity.sources.at(-1)!.epoch);
-  expect((await readFile(f.nativePath, "utf8")).split("\n").filter((line) => line.includes('"kind":"model_change"'))).toHaveLength(1);
-  await expect(store.append(bucket, [{ role: "assistant", content: "Cannot cold-replace accepted reference" }])).rejects.toThrow("pending");
+  const references = (await readFile(f.nativePath, "utf8")).split("\n").filter((line) => line.includes('"kind":"model_change"'));
+  expect(references).toHaveLength(boundary === "model_change_started" ? 0 : 1);
+  // No administrative rollForwardModelSwitch call: ordinary admission must
+  // complete the accepted current reference before its requested C mutation.
+  const recovering = openStore(root).store;
+  await recovering.append(bucket, [{ role: "assistant", content: "Cold update after unconditional roll-forward" }]);
+  expect((await recovering.load(bucket)).at(-1)?.content).toBe("Cold update after unconditional roll-forward");
   expect((await readdir(join(root, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
-  expect(await store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
-  await store.append(bucket, [{ role: "assistant", content: "Cold update after unconditional roll-forward" }]);
-  expect((await store.load(bucket)).at(-1)?.content).toBe("Cold update after unconditional roll-forward");
-  expect((await readdir(join(root, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
+});
+
+
+it("does not probe sibling exact claims or native deletion while within limits", async () => {
+  const f = await setup(`${bucket}#2000-01-01`), { store, native } = openStore(f.base, undefined, { maxConversations: 3 });
+  const exact = vi.spyOn(store as unknown as { acquireExactConversationClaim: (id: string, tryOnly: boolean) => Promise<unknown> }, "acquireExactConversationClaim");
+  const blocked = vi.spyOn(native, "deletionBlocked");
+  await store.append("fictional-no-pruning", [{ role: "assistant", content: "Within limits" }]);
+  expect(exact).not.toHaveBeenCalled(); expect(blocked).not.toHaveBeenCalled(); expect((await store.stats()).conversations).toBe(2);
+});
+it("resumes a thrown same-owner D before the next daily reservation", async () => {
+  const older = `${bucket}#2000-01-01`, f = await setup(older); let stopped = false;
+  const { store } = openStore(f.base, undefined, { maxConversations: 1, retireProviderSession: async (handle: string) => {
+    expect(f.before.native.chain.some((row: { handleId: string }) => row.handleId === handle)).toBe(false);
+  }, onNativeHistoryPhase: async (phase: string) => {
+    if (!stopped && phase === "lifecycle_native_deleted") { stopped = true; throw new Error("Interrupted daily delete"); }
+  } });
+  await store.append(`${bucket}#2000-01-02`, [{ role: "assistant", content: "Second day" }]);
+  expect((await readdir(join(f.base, "history"))).filter((name) => name.startsWith(".native-history-op."))).toHaveLength(1);
+  await store.append(`${bucket}#2000-01-03`, [{ role: "assistant", content: "Third day" }]);
+  await store.append(`${bucket}#2000-01-04`, [{ role: "assistant", content: "Fourth day" }]);
+  expect((await store.stats()).conversations).toBe(1);
+  expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
+  expect(await store.load(`${bucket}#2000-01-04`)).toEqual([{ role: "assistant", content: "Fourth day" }]);
+});
+it.skipIf(process.platform === "win32")("recovers crashed same-owner D at native deletion before next-day count-limit admission", async () => {
+  const older = `${bucket}#2000-01-01`, f = await setup(older);
+  await writeFile(join(f.base, "lifecycle-proof.json"), JSON.stringify({ operation: "retention", bucket: older,
+    winner: `${bucket}#2000-01-02`, nativeHandles: f.before.native.chain.map((row: { handleId: string }) => row.handleId), recoveryBuckets: [`${bucket}#2000-01-03`, `${bucket}#2000-01-04`] }), { mode: 0o600 });
+  const child = fork(worker, [f.base, "lifecycle_native_deleted"], { silent: true }); let error = "";
+  child.stderr!.on("data", (bytes) => { error += bytes; }); const exited = once(child, "exit"); let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Owner exited early: ${error}`); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Daily boundary timeout")), 15000); })]);
+    child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
+  } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }
+  expect((await readdir(join(f.base, "history"))).filter((name) => name.startsWith(".native-history-op."))).toHaveLength(1);
+  const run = promisify(execFile), first = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 30000 })).stdout),
+    second = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 30000 })).stdout);
+  expect(second).toEqual(first); expect(first.stats.conversations).toBe(1); expect(first.stats.reservedBytes).toBe(0);
+  expect(first.operations).toEqual([]); expect(first.journals).toEqual([]); expect(first.switches).toEqual([]);
+}, 60000);
+
+it("keeps a ready artifact without native reference fenced during ordinary admission", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mono-unstarted-reference-")); roots.push(root);
+  const f = await fixture(root); await ready(f); const canonical = await readFile(f.canonicalPath), native = await readFile(f.nativePath);
+  await expect(f.store.append(bucket, [{ role: "assistant", content: "Do not initiate configured switching" }])).rejects.toThrow("pending");
+  expect(await readFile(f.canonicalPath)).toEqual(canonical); expect(await readFile(f.nativePath)).toEqual(native);
+  expect(await readdir(join(root, "native", "mono-v2", "journals"))).toHaveLength(1);
 });

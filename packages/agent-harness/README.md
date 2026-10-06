@@ -346,8 +346,13 @@ root/bucket header fallback and remains uncharged unless a durable intent names
 its exact journal ID; it never supplies a reservation credit. This conservative
 attribution limit is accepted rather than guessing ownership. A reference frame
 on the still-current source is accepted ready evidence: it must roll forward,
-not be abandoned for C; the switch fence prevents ordinary cold mutation until
-that roll-forward settles.
+not be abandoned for C. Owner-held ordinary admission uses the native
+`hasSwitchReference` read-only proof to finish already-started exact reference
+frames before C. Ready artifacts with no native reference remain fenced and do
+not initiate a configured switch. Same-owner interrupted D intents are resumed
+before new daily capacity reservations, under the held logical claim; pruning
+probes exact sibling claims only for needed LRU victims. Canonical rename/removal
+invalidates capacity footprints even within an otherwise-held root transaction.
 
 Without the administrative native capability, v4 cold/deletion mutation refuses
 before side effects. Unresolved v4 fences never block unrelated owners; managed

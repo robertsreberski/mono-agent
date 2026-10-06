@@ -11,6 +11,7 @@ export function createManagedNativeJournalStorage(options: {
     deletionBlocked: (chain, authority) => storage.deletionBlocked([...chain], authority),
     deleteJournals: (chain, context) => storage.deleteJournals([...chain], context),
     freeze: (source) => storage.freeze(source),
+    hasSwitchReference: (sources, context) => storage.hasSwitchReference([...sources], context),
     measureSwitch: (sources, context) => storage.measureSwitch([...sources], context),
     verifySwitchSources: (chain, sources, context) => storage.verifySwitchSources([...chain], [...sources], context),
     verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),

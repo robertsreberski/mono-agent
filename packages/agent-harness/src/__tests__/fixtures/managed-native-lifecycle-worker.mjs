@@ -1,19 +1,22 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { openStore, bucket } from "./managed-native-switch-fixture.mjs";
+import { openStore, bucket as defaultBucket } from "./managed-native-switch-fixture.mjs";
 import { switchConversationKey } from "../../../dist/durable-model-switch-contract.js";
 const [base, stop] = process.argv.slice(2);
 const phase = async (name) => { if (name === stop) { process.send?.({ name }); await new Promise(() => {}); } };
-const { operation } = JSON.parse(await readFile(join(base, "lifecycle-proof.json"), "utf8"));
-const { store } = openStore(base, phase, { onNativeHistoryPhase: phase, ...(operation === "retention" ? { maxConversations: 1 } : {}) });
+const { operation, bucket = defaultBucket, winner = "fictional-retention-winner", recoveryBuckets, nativeHandles = [] } = JSON.parse(await readFile(join(base, "lifecycle-proof.json"), "utf8"));
+const { store } = openStore(base, phase, { onNativeHistoryPhase: phase, ...(operation === "retention" ? { maxConversations: 1 } : {}), ...(recoveryBuckets ? { retireProviderSession: async (handle) => {
+  if (nativeHandles.includes(handle)) throw new Error("Managed native evidence cannot use legacy retirement");
+} } : {}) });
 if (stop) {
   if (operation === "cold") await store.append(bucket, [{ role: "assistant", content: "Fictional cold update" }]);
   else if (operation === "reset") await store.reset(bucket);
-  else await store.append("fictional-retention-winner", [{ role: "assistant", content: "Fictional retention winner" }]);
+  else await store.append(winner, [{ role: "assistant", content: "Fictional retention winner" }]);
 } else {
   // Storage-only owner admission recovers the durable C/D intent, never replays
   // the explicit host mutation or dispatches providers/tools.
-  const lease = await store.contextImport.beginExclusiveTurn(bucket); await lease.abort();
+  if (recoveryBuckets) for (const id of recoveryBuckets) await store.append(id, [{ role: "assistant", content: "Fictional daily recovery" }]);
+  else { const lease = await store.contextImport.beginExclusiveTurn(bucket); await lease.abort(); }
 }
 let canonical = null;
 try { canonical = JSON.parse(await readFile(join(base, "history", `${switchConversationKey(bucket)}.history.json`), "utf8")); }

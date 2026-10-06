@@ -85,8 +85,8 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
   it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
     const prompts: string[] = [];
     for (const [turn, expected] of [
-      ["User: Morgan was born on 17 May 2026.\nAssistant: Morgan was born on 17 May 2026.", ["User reported Morgan was born on 17 May 2026."]],
-      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 17 May 2026.", []],
+      ["User: Morgan was born on 1 January 2000.\nAssistant: Morgan was born on 1 January 2000.", ["User reported Morgan was born on 1 January 2000."]],
+      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 1 January 2000.", []],
       ["User: How do I dress for rain?\nAssistant: Wear a raincoat.", []],
     ] as const) {
       const plan = await extractCapturePlanStrict(turn, {

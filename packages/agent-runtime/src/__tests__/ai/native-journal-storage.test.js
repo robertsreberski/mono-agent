@@ -258,8 +258,9 @@ it.each(["model_change_before_open", "model_change_writer_opened"])("never trunc
       try { await handle.write(Buffer.from("x"), 0, 1, before.size - 1); } finally { await handle.close(); }
       await utimes(f.metadata.path, before.atimeMs / 1000, before.mtimeMs / 1000);
       const after = await stat(f.metadata.path);
-      expect(after.size).toBe(before.size); expect(after.mtimeMs).toBe(before.mtimeMs);
-      expect(after.ctimeMs).not.toBe(before.ctimeMs);
+      expect(after.size).toBe(before.size); expect(Math.floor(after.mtimeMs / 1000)).toBe(Math.floor(before.mtimeMs / 1000));
+      // A coarse filesystem may keep ctime unchanged too. Byte validation,
+      // not timestamp precision, must still preserve the rewritten tail.
     }
     preserved = await readFile(f.metadata.path);
   } });
@@ -328,4 +329,21 @@ it("charges guarded unreadable-owner evidence only in the pinned root and exact 
   expect((await f.bridge.inventory([])).bytes).toBe(0);
   expect((await f.bridge.inventory([], filter)).bytes).toBe(retained);
   expect((await f.bridge.inventory([f.chain[0].journalId], filter)).bytes).toBe(retained);
+});
+
+it("does not treat a ready artifact without native reference bytes as runtime switch authority", async () => {
+  const f = await fixture(); expect(await f.bridge.hasSwitchReference([f.source], context)).toBe(false);
+  expect(await readFile(f.metadata.path)).toEqual(f.before); expect(await f.repo.listOwned()).toHaveLength(1);
+});
+it.each(["model_change_started", "model_change_appended", "model_change_synced"])("proves an already-started exact reference without mutation after %s", async (boundary) => {
+  let stopped = false;
+  const f = await fixture({ onPhase: async (phase) => { if (!stopped && phase === boundary) { stopped = true; throw new Error("Interrupted accepted reference"); } } });
+  await expect(f.bridge.publishSwitch([f.source], context)).rejects.toThrow("Interrupted accepted reference");
+  const before = await readFile(f.metadata.path);
+  expect(await f.bridge.hasSwitchReference([f.source], context)).toBe(true);
+  expect(await readFile(f.metadata.path)).toEqual(before); expect(await f.repo.listOwned()).toHaveLength(1);
+});
+it("rejects foreign reference bytes without granting automatic ready recovery", async () => {
+  const f = await fixture(); await appendFile(f.metadata.path, "foreign reference"); const before = await readFile(f.metadata.path);
+  await expect(f.bridge.hasSwitchReference([f.source], context)).rejects.toThrow(); expect(await readFile(f.metadata.path)).toEqual(before);
 });

@@ -46,11 +46,15 @@ it.each(["canonicalBytes", "retainedNativeBytes", "headerCopyBytes"] as const)("
   expect(await readFile(f.nativePath)).toEqual(f.original);
   expect(await readdir(join(f.base, "history"))).not.toContain(".model-switches");
 });
-it("keeps canonical B nondispatchable while a publication fence still exists", async () => {
+it("settles an accepted B publication fence before permitting dispatch after interrupted cleanup", async () => {
   const f = await setup(); await ready(f);
   await expect(f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true,
     onPhase: async (phase) => { if (phase === "switch_canonical_directory_synced") throw new Error("Interrupted cleanup"); } })).rejects.toThrow("Interrupted cleanup");
-  await expect(f.store.beginProviderSessionTurn(bucket, "early-B", { modelKey: "faux:B" })).rejects.toThrow("pending");
+  const turn = await f.store.beginProviderSessionTurn(bucket, "recovered-B", { modelKey: "faux:B" });
+  try {
+    expect(turn.modelKey).toBe("faux:B");
+    expect((await f.store.stats()).reservedBytes).toBe(0);
+  } finally { await turn.abort(); }
   expect(await openStore(f.base).store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
 });
 it("does not trust a matching canonical receipt with forged native membership", async () => {

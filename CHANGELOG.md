@@ -7,6 +7,10 @@
   share capacity footprints within each root transaction without carrying stale
   snapshots across unlocked native I/O. Keep legacy retirement-fence failures
   unchanged on unmarked roots.
+- Resume interrupted same-owner daily deletion before reserving new history.
+  Avoid sibling-claim probes within quotas, refresh capacity footprints after
+  canonical changes, and finish already-started accepted native references
+  during owner-held recovery without initiating an unstarted model switch.
 
 - Harden managed-history retention and native cleanup: reuse canonical snapshots,
   protect unreadable and same-owner victims, replan after unlocked native I/O,

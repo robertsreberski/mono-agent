@@ -34,6 +34,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       /** @type {any} */ let handleBinding;
       let parentId = null, first = true, frozenFirst = true, frozenTip = null;
       const validator = new JournalValidator(), full = createHash("sha256").update("["), frozen = createHash("sha256").update("[");
+      let referenceBytes = 0;
       let plan = [], planIndex = 0, frozenFound = coordinate.sourceSeq === undefined, frozenDigest, boundary = 0;
       const evidence = await reader.scan((record, address) => {
         if (!header) { validateJournalHeader(record); header = record; boundary = address.offset + address.length + 1; return; }
@@ -61,7 +62,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       if (event) {
         // Validate even partial JSON byte tails before the primitive may truncate.
         const expected = Buffer.from(plan.map((r) => JSON.stringify(r)).join("\n") + "\n");
-        const length = evidence.identity.size - boundary;
+        const length = evidence.identity.size - boundary; referenceBytes = length;
         if (length > expected.length) fail();
         const bytes = Buffer.alloc(length); let read = 0;
         while (read < length) { const result = await reader.handle.read(bytes, read, length - read, boundary + read); if (!result.bytesRead) fail(); read += result.bytesRead; }
@@ -69,7 +70,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       } else if (!prefixOnly && (evidence.torn || validator.openTurns.size || validator.openOperations.size)) fail();
       const current = await reader.assertIdentity();
       if (current.nlink !== 1 || current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
-      return { metadata: meta, header, handleBinding, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
+      return { metadata: meta, header, handleBinding, referenceBytes, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
         sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: digest }, parentId,
         };
     } finally { await reader.close(); }
@@ -169,6 +170,22 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       // reserve a fixed-size hash reference with the same serialized dimensions.
       retainedNativeBytes += target.bytes.length + Buffer.byteLength(frames.map((r) => JSON.stringify(r)).join("\n") + "\n");
       await context.assertOwned(); return { retainedNativeBytes, headerCopyBytes };
+    },
+    /** Read-only proof that native publication has begun for this exact ready
+     * intent. An empty tail does not opt the owner into a switch. Foreign bytes
+     * fail closed; valid partial deterministic frames are recoverable too.
+     * @param {any[]} sources @param {any} context */
+    async hasSwitchReference(sources, context) {
+      await context.assertOwned(); validateChain(sources, context);
+      let present = false;
+      for (let index = 0; index < sources.length; index++) {
+        const source = sources[index], current = await snapshot(source, index === sources.length - 1 ? context.event : undefined);
+        if (index < sources.length - 1 && !same(current.descriptor, source)) fail();
+        if (current.header.ownershipSchemaVersion === 2 && !same(current.header.hostAuthority, context.hostAuthority)) fail();
+        if (current.referenceBytes > 0 && current.header.ownershipSchemaVersion !== 2) fail();
+        if (index === sources.length - 1) present = current.referenceBytes > 0;
+      }
+      await context.assertOwned(); return present;
     },
     /** Ready-only. @param {any[]} sources @param {any} context */
     async publishSwitch(sources, context) {

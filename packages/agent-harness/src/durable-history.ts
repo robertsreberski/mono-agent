@@ -415,6 +415,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     this.modelSwitchPayloadStore ??= new ModelSwitchPayloadStore(this.root, rootIdentity); return this.modelSwitchPayloadStore;
   }
   private rootAccounting: RootAccounting | undefined;
+  private invalidateCanonicalAccounting(name: string): void {
+    if (!this.rootAccounting) return;
+    this.rootAccounting.records.delete(name);
+    delete this.rootAccounting.rawSwitches; delete this.rootAccounting.switches;
+    delete this.rootAccounting.native; delete this.rootAccounting.operations;
+  }
   private switchInventory(rootIdentity: DirectoryIdentity) {
     const compute = () => this.modelSwitchPayloads(rootIdentity).inventory();
     return this.rootAccounting ? this.rootAccounting.rawSwitches ??= compute() : compute();
@@ -589,72 +595,77 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     readonly exclusiveWriters: true; readonly onPhase?: (phase: string) => Promise<void>;
   }): Promise<{ readonly status: "pending" | "committed" | "absent" }> {
     if (options?.exclusiveWriters !== true || !this.nativeJournalStorage) throw new Error("Managed native switch capability and exclusive writers required");
-    const id = normalizeConversationId(conversationId), held = await this.acquireConversation(id), rootIdentity = held.rootIdentity;
-    const payloads = this.modelSwitchPayloads(rootIdentity), phase = options.onPhase ?? (async () => {});
+    const id = normalizeConversationId(conversationId), held = await this.acquireConversation(id);
+    try { return await this.rollForwardHeldModelSwitch(id, switchId, held, options.onPhase); }
+    finally { await this.releaseConversation(held, held.rootIdentity); }
+  }
+  private async rollForwardHeldModelSwitch(id: string, switchId: string, held: HeldConversation,
+    phase: (phase: string) => Promise<void> = async () => {}): Promise<{ readonly status: "pending" | "committed" | "absent" }> {
+    const rootIdentity = held.rootIdentity, native = this.nativeJournalStorage;
+    if (!native) throw new Error("Managed native switch capability required");
+    const payloads = this.modelSwitchPayloads(rootIdentity);
     const assertOwned = async () => { await held.assertOwned(); const marker = await this.nativeHistoryRoot(rootIdentity).read(); if (!marker) throw new Error("Native root authority missing"); };
     const withRootTransaction = async <T>(action: () => Promise<T>): Promise<T> => { const unlock = await this.acquireRootTransaction(rootIdentity); try { await assertOwned(); return await action(); } finally { await unlock(); } };
-    try {
-      await assertOwned();
-      const current = await payloads.read(id, switchId), existing = await this.readRecord(id, rootIdentity);
-      if (!current) {
-        if (existing.lastSwitch?.switchId !== switchId) return { status: "absent" };
-        await withRootTransaction(async () => { await this.syncManagedCanonical(id, rootIdentity); await payloads.syncPublication(); });
-        return { status: "committed" };
-      }
-      if (current.state.phase !== "ready") return { status: "pending" };
-      const state = current.state;
-      if (state.identity.ownerKey !== logicalConversationIdForFence(id)) throw new Error("Switch does not belong to the managed owner");
-      const receiptMatches = existing.sourceVersion === 4 && recognizesModelSwitchBinding(existing, state.identity);
-      const historical = existing.sourceVersion === 4 && !!existing.native && existing.native.chain.length > state.identity.sources.length
-        && existing.providerSession?.epoch !== state.identity.targetEpoch
-        && state.identity.sources.every((entry, index) => existing.native!.chain[index]?.journalId === entry.journalId && existing.native!.chain[index]?.epoch === entry.epoch);
-      if (!receiptMatches && !historical) {
-        requireSettledFence(await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot()));
-        const source = await this.modelSwitchStorageSource(id);
-        if (source.status !== "supported" || source.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest
-          || source.sourceRevision !== state.identity.sourceRevision || source.fromModelKey !== state.identity.fromModelKey
-          || source.sourceEpoch !== state.identity.sources.at(-1)!.epoch) throw new Error("Switch source changed before native roll-forward");
-        const marker = (await this.nativeHistoryRoot(rootIdentity).read())!;
-        const authority = this.nativeHistoryRoot(rootIdentity).authority(marker, state.identity.ownerKey, id);
-        // All potentially long native I/O is outside the short host root transaction.
-        const chain = await this.nativeJournalStorage.publishSwitch(state.identity.sources, this.nativeSwitchContext(state, authority, assertOwned));
-        validateJournalChain(chain, state.identity.ownerKey, id);
-        if (chain.length !== state.identity.sources.length + 1 || chain.at(-1)!.epoch !== state.identity.targetEpoch
-          || chain.at(-1)!.handleId !== deriveProviderSessionId(id, state.identity.targetEpoch)
-          || state.identity.sources.some((row, index) => row.journalId !== chain[index]!.journalId || row.epoch !== chain[index]!.epoch || row.handleId !== chain[index]!.handleId)) throw new Error("Native switch returned conflicting membership");
-        const record = switchCanonicalRecord(existing, state, authority, chain);
-        if (serializeHistoryFile(record).byteLength > state.reservation.canonicalBytes) throw new Error("Canonical switch exceeds frozen publication capacity");
-        await withRootTransaction(async () => {
-          const latest = await this.modelSwitchStorageSource(id);
-          if (latest.status !== "supported" || latest.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest) throw new Error("Canonical source changed during native publication");
-          // The durable plan already reserved this peak before native side effects;
-          // double-charging it here could strand an admitted intent after recovery.
-          const stage = await this.writeStage(record, rootIdentity); await phase("switch_canonical_stage_synced");
-          await assertOwned(); await rename(stage.temporaryPath, join(this.root, stage.destinationName)); await phase("switch_canonical_renamed");
-          await fsyncDirectory(this.root, rootIdentity); await phase("switch_canonical_directory_synced");
-        });
-      }
-      const published = await this.readRecord(id, rootIdentity);
-      if (!published.native) throw new Error("Canonical switch membership missing");
-      if (historical) await this.nativeJournalStorage.verifySwitchSources(published.native.chain, state.identity.sources,
-        this.nativeSwitchContext(state, published.native.authority, assertOwned));
-      else await this.nativeJournalStorage.verifySwitch(published.native.chain, state.identity.sources,
-        this.nativeSwitchContext(state, published.native.authority, assertOwned));
-      const proveReceipt = async () => {
-        const canonical = await this.readRecord(id, rootIdentity);
-        if (historical) {
-          if (canonical.sourceVersion !== 4 || !canonical.native || switchDigest(canonical.native.chain) !== switchDigest(published.native!.chain)) throw new Error("Historical switch membership changed");
-          await this.nativeJournalStorage!.verifySwitchSources(canonical.native.chain, state.identity.sources, this.nativeSwitchContext(state, canonical.native.authority, assertOwned));
-        } else if (canonical.sourceVersion !== 4 || !recognizesModelSwitchBinding(canonical, state.identity)
-          || canonical.providerSession?.epoch !== state.identity.targetEpoch || canonical.providerSession.modelKey !== state.identity.toModelKey
-          || switchDigest(canonical.native?.projection) !== switchDigest(state.artifact)
-          || switchDigest(canonical.lastSwitch?.artifact) !== switchDigest(state.artifact)) throw new Error("Canonical ready binding conflicts with accepted intent");
-        await this.syncManagedCanonical(id, rootIdentity);
-      };
-      await payloads.complete(id, switchId, { ownerKey: state.identity.ownerKey, historyBucket: id, assertOwned, withRootTransaction,
-        reserve: async () => { throw new Error("Completed switch cannot reserve anew"); }, adjustReservation: async () => {}, onPhase: phase }, proveReceipt);
+    await assertOwned();
+    const current = await payloads.read(id, switchId), existing = await this.readRecord(id, rootIdentity);
+    if (!current) {
+      if (existing.lastSwitch?.switchId !== switchId) return { status: "absent" };
+      await withRootTransaction(async () => { await this.syncManagedCanonical(id, rootIdentity); await payloads.syncPublication(); });
       return { status: "committed" };
-    } finally { await this.releaseConversation(held, rootIdentity); }
+    }
+    if (current.state.phase !== "ready") return { status: "pending" };
+    const state = current.state;
+    if (state.identity.ownerKey !== logicalConversationIdForFence(id)) throw new Error("Switch does not belong to the managed owner");
+    const receiptMatches = existing.sourceVersion === 4 && recognizesModelSwitchBinding(existing, state.identity);
+    const historical = existing.sourceVersion === 4 && !!existing.native && existing.native.chain.length > state.identity.sources.length
+      && existing.providerSession?.epoch !== state.identity.targetEpoch
+      && state.identity.sources.every((entry, index) => existing.native!.chain[index]?.journalId === entry.journalId && existing.native!.chain[index]?.epoch === entry.epoch);
+    if (!receiptMatches && !historical) {
+      requireSettledFence(await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot()));
+      const source = await this.modelSwitchStorageSource(id);
+      if (source.status !== "supported" || source.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest
+        || source.sourceRevision !== state.identity.sourceRevision || source.fromModelKey !== state.identity.fromModelKey
+        || source.sourceEpoch !== state.identity.sources.at(-1)!.epoch) throw new Error("Switch source changed before native roll-forward");
+      const marker = (await this.nativeHistoryRoot(rootIdentity).read())!;
+      const authority = this.nativeHistoryRoot(rootIdentity).authority(marker, state.identity.ownerKey, id);
+      // All potentially long native I/O is outside the short host root transaction.
+      const chain = await native.publishSwitch(state.identity.sources, this.nativeSwitchContext(state, authority, assertOwned));
+      validateJournalChain(chain, state.identity.ownerKey, id);
+      if (chain.length !== state.identity.sources.length + 1 || chain.at(-1)!.epoch !== state.identity.targetEpoch
+        || chain.at(-1)!.handleId !== deriveProviderSessionId(id, state.identity.targetEpoch)
+        || state.identity.sources.some((row, index) => row.journalId !== chain[index]!.journalId || row.epoch !== chain[index]!.epoch || row.handleId !== chain[index]!.handleId)) throw new Error("Native switch returned conflicting membership");
+      const record = switchCanonicalRecord(existing, state, authority, chain);
+      if (serializeHistoryFile(record).byteLength > state.reservation.canonicalBytes) throw new Error("Canonical switch exceeds frozen publication capacity");
+      await withRootTransaction(async () => {
+        const latest = await this.modelSwitchStorageSource(id);
+        if (latest.status !== "supported" || latest.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest) throw new Error("Canonical source changed during native publication");
+        // The durable plan already reserved this peak before native side effects;
+        // double-charging it here could strand an admitted intent after recovery.
+        const stage = await this.writeStage(record, rootIdentity); await phase("switch_canonical_stage_synced");
+        await assertOwned(); await rename(stage.temporaryPath, join(this.root, stage.destinationName)); this.invalidateCanonicalAccounting(stage.destinationName); await phase("switch_canonical_renamed");
+        await fsyncDirectory(this.root, rootIdentity); await phase("switch_canonical_directory_synced");
+      });
+    }
+    const published = await this.readRecord(id, rootIdentity);
+    if (!published.native) throw new Error("Canonical switch membership missing");
+    if (historical) await native.verifySwitchSources(published.native.chain, state.identity.sources,
+      this.nativeSwitchContext(state, published.native.authority, assertOwned));
+    else await native.verifySwitch(published.native.chain, state.identity.sources,
+      this.nativeSwitchContext(state, published.native.authority, assertOwned));
+    const proveReceipt = async () => {
+      const canonical = await this.readRecord(id, rootIdentity);
+      if (historical) {
+        if (canonical.sourceVersion !== 4 || !canonical.native || switchDigest(canonical.native.chain) !== switchDigest(published.native!.chain)) throw new Error("Historical switch membership changed");
+        await native.verifySwitchSources(canonical.native.chain, state.identity.sources, this.nativeSwitchContext(state, canonical.native.authority, assertOwned));
+      } else if (canonical.sourceVersion !== 4 || !recognizesModelSwitchBinding(canonical, state.identity)
+        || canonical.providerSession?.epoch !== state.identity.targetEpoch || canonical.providerSession.modelKey !== state.identity.toModelKey
+        || switchDigest(canonical.native?.projection) !== switchDigest(state.artifact)
+        || switchDigest(canonical.lastSwitch?.artifact) !== switchDigest(state.artifact)) throw new Error("Canonical ready binding conflicts with accepted intent");
+      await this.syncManagedCanonical(id, rootIdentity);
+    };
+    await payloads.complete(id, switchId, { ownerKey: state.identity.ownerKey, historyBucket: id, assertOwned, withRootTransaction,
+      reserve: async () => { throw new Error("Completed switch cannot reserve anew"); }, adjustReservation: async () => {}, onPhase: phase }, proveReceipt);
+    return { status: "committed" };
   }
   private async syncManagedCanonical(id: string, rootIdentity: DirectoryIdentity): Promise<void> {
     await assertDirectoryIdentity(this.root, rootIdentity);
@@ -813,6 +824,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const stage = await this.writeStage(operation.next, rootIdentity); await this.nativePhase("lifecycle_canonical_stage_synced");
         await owned(); await rename(stage.temporaryPath, this.recordPath(id));
       } else { await owned(); await rm(this.recordPath(id)); }
+      this.invalidateCanonicalAccounting(`${historyKey(id)}${HISTORY_FILE_SUFFIX}`);
       await this.nativePhase("lifecycle_canonical_published");
     }
     await this.syncLifecycleCanonical(id, operation.next !== null, rootIdentity); await this.nativePhase("lifecycle_canonical_directory_synced");
@@ -847,17 +859,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     return operations;
   }
-  private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo): Promise<void> {
+  private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
     const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     for (const operation of await this.nativeOperationOwners(rootIdentity)) {
       const id = operation.source.conversationId; if (operation.disposition !== "D" || active.has(historyKey(id))) continue;
       let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined;
       try {
-        owner = await this.acquireLogicalConversation(logicalConversationIdForFence(id), true);
+        const logicalId = logicalConversationIdForFence(id);
+        owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.acquireLogicalConversation(logicalId, true);
         if (requiresExactConversationClaim(id)) exact = await this.acquireExactConversationClaim(id, true);
         await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
       } catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; }
-      finally { await exact?.release(); await owner?.release(); }
+      finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
     }
   }
   private async recoverNativeOperation(id: string, held: HeldConversation): Promise<void> {
@@ -1305,6 +1318,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       let releaseRoot = await this.acquireRootTransaction(rootIdentity);
       const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
       try {
+        await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical);
         await this.requireNoModelSwitch(normalizedId, rootIdentity);
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
         requireSettledFence(existingFence);
@@ -1711,6 +1725,21 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   private async settleHeldTurn(conversationId: string, held: HeldConversation): Promise<ConversationHistoryTurnRecovery> {
     await held.assertOwned();
+    // Ready alone is not runtime switch authority. Once this exact accepted
+    // reference has begun in the current native journal, however, ordinary
+    // admission must finish storage roll-forward rather than strand C forever.
+    if (this.nativeJournalStorage) {
+      const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory()).pending
+        .filter((entry) => entry.state.identity.historyBucket === conversationId);
+      for (const { state } of pending) if (state.phase === "ready") {
+        const marker = await this.nativeHistoryRoot(held.rootIdentity).read();
+        if (!marker) throw new Error("Native root authority missing for ready recovery");
+        const authority = this.nativeHistoryRoot(held.rootIdentity).authority(marker, state.identity.ownerKey, conversationId);
+        if (await this.nativeJournalStorage.hasSwitchReference(state.identity.sources, this.nativeSwitchContext(state, authority, () => held.assertOwned()))) {
+          await this.rollForwardHeldModelSwitch(conversationId, state.identity.switchId, held);
+        }
+      }
+    }
     const locksIdentity = await this.ensureLocksRoot();
     let fence: DirtyFence | undefined;
     const releaseSnapshot = await this.acquireRootTransaction(held.rootIdentity);
@@ -1804,9 +1833,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     keepOwner = false,
     afterFenceCleanup?: () => Promise<void>,
   ): Promise<PreparedHistoryAppend> {
-    const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+    let releaseRoot = await this.acquireRootTransaction(rootIdentity);
+    const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
     let stage: ActiveStage | undefined;
     try {
+      await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical);
       await this.requireNoModelSwitch(record.conversationId, rootIdentity);
       const existing = await this.readRecord(record.conversationId, rootIdentity);
       if (existing.sourceVersion === 4 && existing.providerSession?.epoch !== record.providerSession.epoch) {
@@ -2031,7 +2062,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // committed since this stage reserved its projected capacity.
           await this.validateRetentionReservation(rootIdentity, [stage]);
           await rename(stage.temporaryPath, join(this.root, stage.destinationName));
-          this.rootAccounting?.records.delete(stage.destinationName);
+          this.invalidateCanonicalAccounting(stage.destinationName);
           published = true;
           state = "committed";
 
@@ -2206,7 +2237,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
-    await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo);
+    await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, committingOwner);
     const attempted = new Set<string>();
     for (;;) {
       const plan = await this.retentionPlan(rootIdentity, [committedStage]);
@@ -2236,7 +2267,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const retirementFence = this.retireProviderSession === undefined ? undefined
           : await this.ensureRetirementFence(record, rootIdentity, await this.ensureLocksRoot());
         await this.retireProviderSessions(this.providerSessionsForRetirement(record, retirementFence));
-        await rm(entry.path); await fsyncDirectory(this.root, rootIdentity);
+        await rm(entry.path); this.invalidateCanonicalAccounting(entry.name); await fsyncDirectory(this.root, rootIdentity);
         if (retirementFence) await this.removeDirtyFenceAfterCommit(retirementFence);
         const key = historyKey(record.conversationId);
         await this.removePendingConversation(key, rootIdentity, async () => {
@@ -2301,7 +2332,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       for (const [name, record] of records) if (!record) protectedNames.add(name);
     }
     const candidates: CommittedEntry[] = [];
-    for (const entry of entries.filter((item) => !protectedNames.has(item.name)).sort(compareRetentionEntries)) {
+    let removableBytes = 0;
+    const needsPruning = projectedCount > this.maxConversations || projectedBytes > this.maxStoreBytes
+      || entries.some((entry) => this.now() - entry.mtimeMs > this.maxAgeMs);
+    if (needsPruning) for (const entry of entries.filter((item) => !protectedNames.has(item.name)).sort(compareRetentionEntries)) {
+      // Do not touch exact-claim SQLite transactions until this LRU victim is
+      // actually needed. Stop as soon as both quota excess and age are covered.
+      if (projectedCount - candidates.length <= this.maxConversations && projectedBytes - removableBytes <= this.maxStoreBytes
+        && this.now() - entry.mtimeMs <= this.maxAgeMs) break;
       const record = records.get(entry.name);
       if (record?.sourceVersion === 4 && requiresExactConversationClaim(record.conversationId)) {
         let exact: HeldExactConversationClaim | undefined;
@@ -2314,7 +2352,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const extra = record?.sourceVersion === 4 ? record.native!.chain.reduce((sum, row) => sum
         + (native?.journals[row.journalId]?.retainedBytes ?? 0) + (native?.journals[row.journalId]?.headerCopyBytes ?? 0), 0)
         + await this.modelSwitchPayloads(rootIdentity).conversationBytes(record.conversationId) : 0;
-      candidates.push({ ...entry, size: entry.size + extra });
+      candidates.push({ ...entry, size: entry.size + extra }); removableBytes += entry.size + extra;
     }
     const minimumBytes = projectedBytes - candidates.reduce((sum, entry) => sum + entry.size, 0);
     const minimumCount = projectedCount - candidates.length;
@@ -3115,6 +3153,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let published = false;
     try {
       await rename(stage.temporaryPath, entry.path);
+      this.invalidateCanonicalAccounting(entry.name);
       published = true;
       await fsyncDirectory(this.root, rootIdentity);
     } finally {
