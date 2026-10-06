@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix dependency vulnerabilities in `compression`, `proxy-addr` and
+  `source-map-js` across the web console, documentation and marketing sites.
+
 - Fix `WebFetch` to reject access challenges and empty URL/title-only evidence
   across extraction backends, and let automatic rendering recover total HTML
   parser failures without bypassing rate limits or access controls.
