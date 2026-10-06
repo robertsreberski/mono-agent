@@ -328,6 +328,8 @@ RuntimeMcpAppHost
 RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
+RuntimeNativeJournalAuthority
+RuntimeNativeJournalDeletion
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions

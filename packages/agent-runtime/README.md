@@ -184,7 +184,10 @@ that header before torn-tail repair or deletion. After any journal is upgraded,
 older catalogue listing and legacy import fail closed for the entire root;
 this is intentional and does not make direct access to untouched journals safe.
 Guarded deletion needs the
-host's explicit C/D disposition and ownership assertion. No default runtime
+host's explicit C/D disposition and ownership assertion. The optional third
+`retireDurableSession` argument forwards that authority to exact-handle native
+retirement; the ordinary two-argument call keeps its existing behavior.
+No default runtime
 upgrades journals or enables switching; see the
 [harness header upgrade contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).
 

@@ -291,8 +291,9 @@ export function createRuntime(host = {}) {
     async salvageDurableSession(providerSessionId, sessionsRoot) {
       return salvageDurableNativeSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId, sessionsRoot) {
-      return retireDurableNativeSession(providerSessionId, sessionsRoot);
+    async retireDurableSession(providerSessionId, sessionsRoot, deletionOptions) {
+      return deletionOptions === undefined ? retireDurableNativeSession(providerSessionId, sessionsRoot)
+        : retireDurableNativeSession(providerSessionId, sessionsRoot, deletionOptions);
     },
     async disposeSession(providerSessionId) {
       return disposeProviderSession(providerSessionId);

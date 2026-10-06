@@ -365,14 +365,15 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       if (!runtime.salvageDurableSession) throw new RuntimeAdapterError("runtime_backend_unavailable", "Durable session salvage unavailable.");
       return runtime.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId: string, sessionsRoot: string): Promise<void> {
+    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletion?: import("./types.js").RuntimeNativeJournalDeletion): Promise<void> {
       if (typeof runtime.retireDurableSession !== "function") {
         throw new RuntimeAdapterError(
           "runtime_backend_unavailable",
           "The runtime cannot retire durable provider-session state.",
         );
       }
-      await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+      if (deletion === undefined) await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+      else await runtime.retireDurableSession(providerSessionId, sessionsRoot, deletion);
     },
     async disposeSession(providerSessionId: string): Promise<boolean> {
       return Boolean(await runtime.disposeSession?.(providerSessionId));

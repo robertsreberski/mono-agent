@@ -689,6 +689,21 @@ export interface DurableSessionSalvage {
   readonly additionalOutcomesUnknown: boolean;
 }
 
+/** Host-only storage authority; never a model-facing runtime option. */
+export interface RuntimeNativeJournalAuthority {
+  readonly version: 1;
+  readonly canonicalVersion: 4;
+  readonly rootId: string;
+  readonly authorityId: string;
+  readonly ownerKey: string;
+  readonly historyBucket: string;
+}
+export interface RuntimeNativeJournalDeletion {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly disposition: "C" | "D";
+  readonly assertOwned: () => Promise<void>;
+}
+
 export interface MonoRuntimeLike {
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;
@@ -709,7 +724,7 @@ export interface MonoRuntimeLike {
    * supplied durable sessions root. Absence is success; uncertainty rejects.
    */
   salvageDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<DurableSessionSalvage>;
-  retireDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<void>;
+  retireDurableSession?(providerSessionId: string, sessionsRoot: string, deletion?: RuntimeNativeJournalDeletion): Promise<void>;
   disposeSession?(providerSessionId: string): Promise<boolean>;
   /** Permanently discard live and durable provider transcript state. */
   invalidateSession?(providerSessionId: string): Promise<boolean>;

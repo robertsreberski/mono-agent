@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep cancellation context separate from host authority in native deletion
+  overloads, forward explicit guarded retirement options, and record one
+  immutable native model-change reference per switch identity. Keep default
+  session payloads and host switching policy unchanged.
+
 - Require a durably published, host-authorized native header before opt-in v3
   writes. Reject old native readers and deletion before torn-tail repair on
   upgraded journals; preserve record bytes, paths and standalone defaults.

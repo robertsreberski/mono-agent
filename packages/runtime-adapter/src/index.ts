@@ -135,6 +135,8 @@ export type {
   MonoRuntimeCompactionRecord,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  RuntimeNativeJournalAuthority,
+  RuntimeNativeJournalDeletion,
   DurableSessionSalvage,
   MonoRuntimeParsedPricingModel,
   MonoRuntimePricing,

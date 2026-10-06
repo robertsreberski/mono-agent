@@ -22,6 +22,12 @@ function acceptHeader(session, header) {
   validateJournalHeader(header);
   if (header.ownershipSchemaVersion === 2) sessionAuthorities.set(session, clone(header.hostAuthority));
 }
+function deletionOptions(contextOrOptions, explicitOptions) {
+  const context = contextOrOptions != null && "abortSignal" in Object(contextOrOptions);
+  const authority = contextOrOptions != null && ["disposition", "hostAuthority", "assertOwned"].some((key) => key in Object(contextOrOptions));
+  if (context && authority || explicitOptions !== undefined && authority) throw new TypeError("Ambiguous native deletion context/authority");
+  return explicitOptions !== undefined ? explicitOptions : context ? undefined : contextOrOptions;
+}
 function validateDeletionDisposition(options) {
   if (options != null && "disposition" in Object(options) && !["C", "D"].includes(options.disposition)) {
     throw new TypeError("Native deletion requires a C/D disposition when provided");
@@ -46,6 +52,7 @@ function checkRecordAuthority(session, record) {
     && (owner.kind !== "host" || owner.ownerKey !== authority.ownerKey || owner.historyBucket !== authority.historyBucket)) corruptBinding();
 }
 const clone = (v) => structuredClone(v);
+const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, ordered(v[key])])) : v;
 const fail = () => { throw new Error("Invalid mono-agent harness session"); };
 const corruptBinding = () => { throw Object.assign(new Error("Invalid mono-agent harness session binding"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const safeId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
@@ -59,6 +66,7 @@ export class SessionStore {
     this.retired = false;
     /** @type {string|undefined} */ this.continuity = undefined;
     this.entries = new Map();
+    this.modelChanges = new Map();
     this.outcomes = new Map();
     this.interruptions = new Map();
     this.interruptedOperations = new Set(); this.repairCache = null;
@@ -74,6 +82,7 @@ export class SessionStore {
   }
   validateRecord(record) {
     checkRecordAuthority(this, record);
+    if (record.kind === "model_change" && record.schemaVersion === 3 && this.modelChanges.has(record.payload?.switchId)) corruptBinding();
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.validate(record);
   }
@@ -81,6 +90,10 @@ export class SessionStore {
     checkRecordAuthority(this, record);
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.apply(record);
+    if (record.kind === "model_change" && record.schemaVersion === 3) {
+      if (this.modelChanges.has(record.payload.switchId)) corruptBinding();
+      this.modelChanges.set(record.payload.switchId, clone(record));
+    }
     this.io?.remember?.(address, record);
     if (record.kind === "rewind") this.io?.invalidate?.();
     const p = record.payload;
@@ -219,15 +232,26 @@ export class SessionStore {
   /** Opt-in reference only: host artifacts are the sole content authority. */
   async appendModelChangeReference({ switchId, from, to, artifactRef }) {
     this.assertVersion3WritesEnabled();
-    return this.scopedWrite(() => this.writeRecord("model_change", {
-      version: 1, switchId, from, to, source: "host-handoff", checkpointId: null, artifactRef,
-    }, { schemaVersion: 3 }), "model-change");
+    const payload = ordered({ version: 1, switchId, from, to, source: "host-handoff", checkpointId: null, artifactRef });
+    return this.enqueue(async () => {
+      const prior = this.modelChanges.get(switchId);
+      if (prior) {
+        if (JSON.stringify(ordered(prior.payload)) !== JSON.stringify(payload)) throw new Error("Native model-change identity conflicts with existing evidence");
+        return clone(prior);
+      }
+      const synthetic = !this.activeTurnId(), turnId = synthetic ? `synthetic:model-change:${randomUUID()}` : this.activeTurnId();
+      if (synthetic) await this.writeRecord("turn_start", { config: { cause: "model-change" }, identitySource: "synthetic", baselineTipId: this.tip }, { turnId });
+      const record = await this.writeRecord("model_change", payload, { schemaVersion: 3,
+        id: `model-change:${createHash("sha256").update(switchId).digest("hex")}` });
+      if (synthetic) await this.writeRecord("turn_end", { status: "completed", tipId: this.tip, finalOperationId: null, consumedInputIds: [] }, { turnId });
+      return record;
+    });
   }
   async moveTo(tipId) { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
   async verifyRead() { try { await this.io?.verify?.(); } catch (error) { throw this.poison(error); } }
   snapshot() {
     return clone({ validator: this.validator, entries: this.entries, outcomes: this.outcomes,
-      interruptions: this.interruptions, interruptedOperations: this.interruptedOperations,
+      interruptions: this.interruptions, interruptedOperations: this.interruptedOperations, modelChanges: this.modelChanges,
       tip: this.tip, seq: this.seq, durableSeq: this.durableSeq });
   }
   restore(snapshot) {
@@ -369,8 +393,9 @@ export class MemorySessionRepo {
       : clone(header);
   }
   async list() { return [...this.sessions.keys()].map((id) => this.#publicMetadata(this.#headers.get(id))); }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
-  async delete(metadata, options = undefined) {
+  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
+  async delete(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
+    const options = deletionOptions(contextOrOptions, explicitOptions);
     validateDeletionDisposition(options);
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is open");
     const stored = this.sessions.get(metadata.id);
@@ -911,8 +936,9 @@ export class JsonlSessionRepo {
     } finally { await reader.close(); }
     await syncPath(parent); await syncPath(this.root); await this.assertDirectory();
   }
-  /** @param {string} id @param {import('./header-authority.js').HostJournalDeletion} [options] */
-  async retireByHandle(id, options = undefined) {
+  /** @param {string} id @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
+  async retireByHandle(id, contextOrOptions = undefined, explicitOptions = undefined) {
+    const options = deletionOptions(contextOrOptions, explicitOptions);
     validateDeletionDisposition(options);
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     this.retireHandle(id);
@@ -949,8 +975,9 @@ export class JsonlSessionRepo {
   clearWarm(id) { if (this.warm?.metadata.id === id) { this.warm.cache.clear(); this.warm = null; } }
   retireHandle(id) { this.retiredHandles.add(id); this.clearWarm(id); }
   finishRetirement(id) { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
-  async retire(metadata, options = undefined) {
+  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
+  async retire(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
+    const options = deletionOptions(contextOrOptions, explicitOptions);
     validateDeletionDisposition(options);
     const live = this.openSessions.get(metadata.id), authority = live && sessionAuthorities.get(live);
     if (authority) await authorizeGuardedDeletion({ ownershipSchemaVersion: 2, hostAuthority: authority }, options);
@@ -967,8 +994,9 @@ export class JsonlSessionRepo {
     await locks.withCatalog(() => this.removeOwned(metadata, options));
     // Keep its already-held writer lock until the provider's close/unwind.
   }
-  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion} [options] */
-  async delete(metadata, options = undefined) {
+  /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
+  async delete(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
+    const options = deletionOptions(contextOrOptions, explicitOptions);
     validateDeletionDisposition(options);
     this.clearWarm(metadata.id);
     const locks = await this.ensureDirectory();
