@@ -704,6 +704,50 @@ export interface RuntimeNativeJournalDeletion {
   readonly assertOwned: () => Promise<void>;
 }
 
+/** Private administrative journal coordinates, never model-facing run options. */
+export interface RuntimeNativeJournalDescriptor {
+  readonly journalId: string; readonly epoch: string; readonly ordinal: number; readonly handleId: string;
+  readonly predecessorJournalId: string | null; readonly ownerKey: string; readonly historyBucket: string;
+  readonly sourceTipId: string | null; readonly sourceSeq: number; readonly sourceDigest: string;
+  readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
+}
+export interface RuntimeNativeSwitchContext {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertOwned: () => Promise<void>;
+  readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
+  readonly sourceRevision: number; readonly fromModelKey: string;
+  readonly targetProvenance: RuntimeNativeJournalDescriptor["provenance"];
+  readonly event: { readonly switchId: string; readonly timestamp: number;
+    readonly from: RuntimeNativeJournalDescriptor["provenance"]; readonly to: RuntimeNativeJournalDescriptor["provenance"];
+    readonly artifactRef: { readonly id: string; readonly hash: string } };
+}
+export interface RuntimeNativeColdEpochContext {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertOwned: () => Promise<void>;
+  readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
+}
+export type RuntimeNativeChainDeletion = RuntimeNativeJournalDeletion & (
+  | { readonly disposition: "C"; readonly eligibleJournalId: string }
+  | { readonly disposition: "D" }
+);
+export interface RuntimeNativeJournalStorage {
+  /** Persist this exact plan in the host cold intent before native publication. */
+  planColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): { readonly descriptor: RuntimeNativeJournalDescriptor; readonly bytes: number };
+  verifyColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<void>;
+  publishColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
+  /** Caller retains canonical membership and deletion intent through completion. */
+  deletionBlocked(chain: readonly RuntimeNativeJournalDescriptor[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
+  deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
+  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
+  measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
+  /** Prove an exact full/partial ready reference already exists; never publish one. */
+  hasSwitchReference(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<boolean>;
+  verifySwitchSources(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
+  verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
+  publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
+  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
+}
+
 export interface MonoRuntimeLike {
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;

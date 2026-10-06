@@ -37,7 +37,7 @@ describe("curate --tasks-to-notes", () => {
     seed(path, "C-done", "Water the Maple garden.", "task", "done");
     seed(path, "C-dropped", "Call the Maple office.", "task", "dropped");
     seed(path, "C-superseded", "Book the Maple room.", "task", "invalidated");
-    seed(path, "C-note", "Morgan was born 1990-05-17.", "note", "open");
+    seed(path, "C-note", "Morgan was born 2000-01-01.", "note", "open");
     seed(path, "C-event", "Morgan moved into the Maple flat.", "event", "open");
     const scan = proposeTasksToNotes(path);
     expect(scan.proposals.map(({ source }) => source.id)).toEqual(["C-open-en", "C-open-pl", "C-open-es"]);
@@ -134,7 +134,7 @@ describe("curate --tasks-to-notes", () => {
     const path = memoryRoot();
     initializeReplayProjection(path);
     seed(path, "C-task", "Renew the Maple lease for Morgan.", "task", "open");
-    seed(path, "C-note", "Morgan was born 1990-05-17.", "note", "open");
+    seed(path, "C-note", "Morgan was born 2000-01-01.", "note", "open");
     const embeddings = fakeEmbeddings(16);
     await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
     const proposals = proposeTasksToNotes(path).proposals.map((proposal) => ({ ...proposal, accepted: true }));

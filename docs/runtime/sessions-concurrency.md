@@ -431,6 +431,26 @@ before the next Send when a reset/import advanced it.
 
 For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.
 
+## Administrative native history chains
+
+The durable-history storage API can explicitly opt into canonical v4 epoch-journal
+chains through `nativeJournalStorage`. This is not configured model switching or
+incoming dispatch. Root authority requires drained owner claims and stopped older
+writers; managed roots strictly preserve unreadable canonical evidence.
+
+Accepted switch content permits ready-only native/canonical roll-forward. Pending
+switch production stays host-only and blocks ordinary admission. Cold boundaries
+persist the exact replacement epoch before creating it, preserve predecessor
+journals, and delete only a reference-checked current retirement target. Reset and
+retention retain complete membership through restartable whole-chain native,
+handoff and crash-storage cleanup. Recovery does not call a model, tool or summary.
+Whole-root operator purge retains its existing stopped-writer quarantine protocol.
+
+Do not run older binaries against an upgraded root. The marker is not a universal
+old-binary admission barrier. Rollback means stopping writers and restoring
+consistent host/native backups; there is no downgrade or strip tool, and these
+APIs grant no authority to migrate a real root.
+
 ## Related
 
 - [Pi runtime & model references](/runtime/backends/) — choosing `runtime.model`

@@ -173,6 +173,32 @@ session. Hosts own durable attempt admission, fallback ordering (outgoing,
 checkpoint plus complete suffix, incoming), accepted-output caching and billing
 limits. A lost completion is explicitly outcome-unknown, not permission to retry.
 
+`createManagedNativeJournalStorage({ sessionsRoot })` is an administrative
+storage-only bridge, not a runtime run option. It freezes and validates native
+source coordinates, measures actual source/header-copy/new-epoch/reference bytes,
+and under supplied owner-held authority upgrades closed sources, appends an
+immutable non-null handoff reference and atomically publishes a fully initialized
+empty epoch. Deterministic frame/epoch bytes permit exact-prefix crash recovery;
+unknown tails/stages are preserved, never generically repaired. Native inventory
+charges all journal, copy and stage bytes in the explicitly dedicated native root.
+`planColdEpoch` supplies the exact bytes/descriptor for a durable host cold intent;
+`publishColdEpoch` replaces only the current same-model descriptor, retaining its
+predecessor link and validating frozen predecessors without repairing the rejected
+current tail. The host must persist the target epoch/handle/time first.
+`deleteJournals` accepts C only for the chain's unreferenced current member, or D
+for every supplied member. It preflights matching headers/copies, preserves
+unknown evidence, and repeats absent-member cleanup without recreating journals.
+The host must retain canonical membership and its deletion intent through every
+unlink/directory barrier. The opt-in durable-history host coordinates those
+transactions; this runtime factory does not persist host lifecycle intents.
+Read-only cold/switch verification refuses missing evidence behind canonical
+receipts. Retention eligibility probes protect busy/contradictory native owners;
+probes do not grant deletion authority.
+This factory does not prove host artifact acceptance or canonical publication;
+the host coordinator must supply those authorities and keep pending switches
+fenced. No configured host opts in. Do not use it for real-root switching until
+canonical roll-forward and whole-chain deletion are coupled to it.
+
 `detachDurableNativeSession` drops an idle local handle without deleting native
 bytes. Busy/recovery-pending handles, cold opens and create reservations must be
 settled first. It is deliberately separate from destructive retirement/invalidation and does not establish
@@ -396,6 +422,7 @@ buildTranscriptTailSnapshot
 checkPiProviderAuth
 classifyProviderCheckFailure
 createApprovalManager
+createManagedNativeJournalStorage
 createMetricsObserver
 createObserverHub
 createPiOAuthApiKeyResolver

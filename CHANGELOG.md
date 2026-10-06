@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- Stop retention maintenance if native cleanup cannot regain the root lock.
+  Keep failed deletion intents for recovery while pruning a later free victim
+  in the same commit when root ownership remains intact.
+
+- Isolate pre-publication native cleanup to the committing logical owner and
+  keep foreign cleanup failures diagnostic. Replan around busy retention
+  victims so free history can restore quotas, while markerless ready switches
+  remain fenced without blocking authority issuance or recovery.
+
+- Keep managed daily rollover live at capacity by reusing the held logical
+  claim for older inactive days. Preserve mixed-history LRU eviction order and
+  share capacity footprints within each root transaction without carrying stale
+  snapshots across unlocked native I/O. Keep legacy retirement-fence failures
+  unchanged on unmarked roots.
+- Resume interrupted same-owner daily deletion before reserving new history.
+  Avoid sibling-claim probes within quotas, refresh capacity footprints after
+  canonical changes, and finish already-started accepted native references
+  during owner-held recovery without initiating an unstarted model switch.
+
+- Harden managed-history retention and native cleanup: reuse canonical snapshots,
+  protect unreadable and same-owner victims, replan after unlocked native I/O,
+  and reuse durable cold reservations on retry. Charge only enrolled native
+  journals, preserve switched-away references and unknown header copies, verify
+  torn bytes under writer ownership, and normalize runtime/bridge sessions roots.
+
+- Add owner-held canonical v4 journal chains, strict managed-root authority and
+  ready-only native model-switch publication with measured retained-evidence
+  quotas. Keep pending switches host-only. Publish exact cold replacement epochs
+  without freezing rejected tails, preserve referenced predecessors, and make
+  whole-chain reset/retention cleanup restartable through native journals,
+  handoffs and crash storage. Keep unrelated owners progressing and reserve
+  capacity before mutation, including when native victims are busy. Keep
+  configured switching disabled; older writers must stay stopped and rollback
+  requires restoring consistent backups.
+
 - Fix managed switch-storage owner validation and transactional pending checks,
   preserve switching owners during logical reset and inactive fence cleanup, and
   avoid charging published state/fence bytes twice. Report physical history bytes

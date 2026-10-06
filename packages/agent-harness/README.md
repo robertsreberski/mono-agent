@@ -277,7 +277,7 @@ logical-owner coordinates reject before intent publication. IDs longer than 512 
 cold-epoch-with-replay path instead of failing a switch request. Capacity
 unavailability must likewise be treated as unsupported switch storage by future
 host policy, falling back to cold replay before intent publication; no production
-caller is enabled until roll-forward and whole-chain deletion are implemented.
+caller is enabled here; runtime dispatch/switch policy integration is separate.
 
 Managed root enumeration recognizes only secure owned `.model-switches`
 contents. Aggregate/staged quotas include physical artifacts, generations and
@@ -290,14 +290,108 @@ plans separately. Retention protects every fenced physical bucket, including
 inactive provider retirement fences. Logical reset prechecks all matching
 physical buckets for pending switches before resetting any sibling.
 A pending intent blocks ordinary provider admission, append/import and reset
-before retirement; native/canonical transaction and whole-chain cleanup
-integration is still required to settle it. Releasing the storage lease releases
+before retirement; ready-only native/canonical roll-forward settles accepted
+content, while pending production remains an explicit-message host concern. Releasing the storage lease releases
 ownership only, never the fence or evidence. Do not begin such a lease on a real
-root before the remaining transaction integration is enabled.
+root without stopped older writers and explicit migration authority.
 It does not issue root authority, settle turns, run a producer, bind a model,
 enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
 The ordinary canonical v3/v5 paths and configured host switching policy remain
 unchanged. Do not use these private modules to upgrade a real root manually.
+
+Canonical v4 records on validated managed-marker roots are strictly readable. Same-epoch synced
+writes and owner-held v5 execution/compaction recovery retain the native chain,
+authority, projection and last-switch receipt, including when messages are
+evicted; turn receipts still settle exactly once. Native reconciliation must
+match the authoritative current journal. Optimistic versions and switch-source
+digests include the v4 metadata, not just messages and the provider binding.
+
+With explicit `nativeJournalStorage`, v4 host-only append/exclusive/import,
+unsynced/cancelled/interrupted provider settlement and stale-current admission
+use a durable `.native-history-op.<owner-hash>.json` C intent. The exact target
+handle/epoch and initializer plan are persisted before native creation. Canonical
+publication replaces only the current descriptor, retaining its predecessor link;
+reference-checked cleanup never deletes a chain predecessor or promotes a rejected
+current tail. Aborting preparation does not create/delete native epochs. Recovery
+holds the actual owner claim and performs native I/O outside root transactions.
+A historical completed-switch fence validates retained source frames/current
+membership without restoring an obsolete target or recreating missing evidence.
+
+D reset/retention intents retain canonical authority and complete membership until
+all native members/copies, switch artifacts/generations, pending payloads and
+publication barriers complete. Reset then writes a clean v3 record; retention
+removes the canonical owner only afterward. Interrupted deletion resumes under
+owner claims, including when only its intent remains. The shared immutable root
+marker stays. Retention counts physical native/artifact reclamation and protects
+busy native writers at reservation instead of allowing post-commit quota growth.
+Lifecycle intents and unfinished native publication are charged; stats distinguish
+physical bytes from outstanding native reservations. Pending switches and
+unsettled execution/compaction owners remain protected, and logical reset
+prechecks matching buckets before mutating any sibling. Retention reads each
+canonical and computes switch/native footprints once per root transaction.
+Older daily buckets can be evicted under the committing logical claim; busy
+exact claims and active markers remain protected. Mixed-root victims keep their
+LRU order, and every unlocked native-I/O window requires a fresh plan. Under-quota legacy
+append does not deserialize unrelated canonicals. Native accounting includes
+only canonical managed membership and exact journals enrolled by durable intents,
+not unrelated v1-v3 provider journals. If a canonical is unreadable, independently
+validated schema-2 headers for its exact bucket and pinned root remain charged;
+other roots/buckets and legacy provider files do not justify credits. A retry
+reuses its published cold reservation.
+C cleanup also rejects switched-away `model_change` evidence independently of
+caller membership; header copies are removed before their sources only after an
+exact byte-prefix proof. Unknown copies remain pinned. With an unreadable
+canonical, a header-incomplete `.upgrading` copy cannot be attributed by the
+root/bucket header fallback and remains uncharged unless a durable intent names
+its exact journal ID; it never supplies a reservation credit. This conservative
+attribution limit is accepted rather than guessing ownership. A reference frame
+on the still-current source is accepted ready evidence: it must roll forward,
+not be abandoned for C. Owner-held ordinary admission uses the native
+`hasSwitchReference` read-only proof to finish already-started exact reference
+frames before C. Ready artifacts with no native reference remain fenced and do
+not initiate a configured switch. Same-owner interrupted D intents are resumed
+before new daily capacity reservations, under the held logical claim; pruning
+probes exact sibling claims only for needed LRU victims. Canonical rename/removal
+invalidates capacity footprints even within an otherwise-held root transaction.
+
+Without the administrative native capability, v4 cold/deletion mutation refuses
+before side effects. Unresolved v4 fences never block unrelated owners; managed
+roots preserve unreadable evidence rather than overwrite it as v3. V1/v2/v3
+behavior stays unchanged. A v4 model change must use accepted switch storage;
+ordinary cold replacement retains the bound model and makes no compatibility or
+account claim. Incoming dispatch, switch policy and configured runtime wiring
+are not enabled by these storage APIs.
+
+The administrative `acquireNativeHistoryAuthority(id, { exclusiveWriters: true })`
+requires an explicit stopped-older-writer acknowledgement, a bound source and
+drained host ownership. It issues a bounded, immutable private root marker and
+an owner-held authority lease; lease release releases ownership only. Marker
+proposals and the winner remain charged and crash recovery never erases unknown
+proposals. Managed-marker roots use strict canonical reads: torn files cannot
+lose native authority by being overwritten as v3. Unmarked legacy roots retain
+their existing torn-file policy. This API is not used by configured hosts and
+does not grant permission to migrate real roots.
+Older binaries must stay stopped; the marker is not proof that every older
+admission path checks it. Rollback requires consistent host/native backups, not
+stripping the marker. The lease itself does not upgrade a header or enable dispatch.
+An explicit administrative `nativeJournalStorage` capability couples measured
+native inventory/reservations to `rollForwardModelSwitch(id, switchId,
+{ exclusiveWriters: true })`. Initial admission checks actual frozen sources,
+header-copy/new-journal/reference peaks and canonical publication capacity before
+publishing an intent. Ready-only recovery holds logical/conversation ownership
+across native I/O, outside short host root transactions. It publishes guarded
+native evidence, exact initialized target membership and canonical binding/receipt,
+then proves both canonical and real native publication before releasing the
+intent fence. Recovered receipt cleanup never repairs or creates missing native
+evidence. Artifact and winning attempt storage remain retained for later D deletion.
+Physical native bytes replace provisional native credits without process-local
+refund counters; committed native bytes do not consume the unpublished-stage
+quota. No configured host opts in; incoming dispatch and model-switch policy
+remain separate runtime integration. This is not a standalone real-root rollout.
+
+Pending switching stays entirely in host intent/attempt storage: no native
+`model_change` or incoming binding is published before accepted handoff content
+exists, and no native artifact-reference wire change is introduced.
 
 Its v4 wire validators bind journal-chain ownership/provenance and stable switch
 coordinates. Binding receipts describe their own transitions independently of
@@ -766,3 +860,21 @@ pnpm --filter @mono-agent/agent-harness run build
 pnpm --filter @mono-agent/agent-harness run typecheck
 pnpm --filter @mono-agent/agent-harness run test
 ```
+
+
+Cleanup before publication resumes only the committing logical owner's D intent;
+foreign D recovery is post-commit maintenance and its failure cannot block an
+unrelated append/admission. Native cleanup is skipped without capability. A busy
+logical retention victim is excluded and replanned around within a bounded pass,
+without granting it quota credit. Ready artifacts without native capability or a
+root marker remain fenced/non-dispatchable, but do not block authority issuance
+or owner-held recovery. Foreign/garbled native tails fail closed: bounded drain
+reports that owner unresolved and continues other owners; it never repairs those
+bytes or promotes them into accepted reference evidence.
+
+Maintenance can continue after an owner-local native failure only if it regained
+the root transaction. A fresh victim's failed published D remains charged and
+recoverable, while another free LRU victim can be pruned in the same commit.
+Accepted limits: a v4 victim's logical owner may be busy in another process after
+admission credits it, leaving maintenance pending; the replan budget is fixed
+from the entry count at maintenance start, not extended by concurrent arrivals.

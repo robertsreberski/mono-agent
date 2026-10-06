@@ -4,7 +4,7 @@ const digest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(val
 const id = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.includes("\0");
 
 /** @typedef {{version:1, canonicalVersion:4, rootId:string, authorityId:string, ownerKey:string, historyBucket:string}} HostJournalAuthority */
-/** @typedef {{hostAuthority:HostJournalAuthority, disposition:'C'|'D', assertOwned:()=>Promise<void>}} HostJournalDeletion */
+/** @typedef {{hostAuthority:HostJournalAuthority, disposition:'C'|'D', assertOwned:()=>Promise<void>, onPhase?:(phase:string)=>Promise<void>}} HostJournalDeletion */
 /** @param {any} value */
 export function validateHostJournalAuthority(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)

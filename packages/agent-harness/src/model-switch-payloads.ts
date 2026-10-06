@@ -110,6 +110,50 @@ export class ModelSwitchPayloadStore {
     }
     await this.assertDirectory(directory); return total;
   }
+  async conversationBytes(bucket: string): Promise<number> {
+    const directory = await this.ensureDirectory(false); if (!directory) return 0;
+    const prefix = `${switchConversationKey(bucket)}.`; let bytes = 0;
+    for (const name of await readdir(this.directory)) {
+      if (!filePattern.test(name)) unavailable(); if (!name.startsWith(prefix)) continue;
+      const info = await lstat(join(this.directory, name)); secure(info, false); bytes += info.size;
+    }
+    await this.assertDirectory(directory); return bytes;
+  }
+  /** Whole-owner D cleanup only. The durable host intent retains membership;
+   * fences are removed first so interrupted collection cannot leave dangling
+   * pointers that poison unrelated inventory. Exact-coordinate orphan temps
+   * are authorized like pending-turn reset generations, never guessed owners. */
+  async removeConversation(bucket: string, ownerKey: string, assertOwned: () => Promise<void>, onPhase: (phase: string) => Promise<void>): Promise<void> {
+    const directory = await this.ensureDirectory(false); if (!directory) return;
+    const prefix = `${switchConversationKey(bucket)}.`;
+    const names = (await readdir(this.directory)).filter((name) => name.startsWith(prefix));
+    const inspected: { name: string; identity: Stats }[] = [];
+    for (const name of names) {
+      if (!filePattern.test(name)) unavailable();
+      const path = join(this.directory, name), identity = await lstat(path); secure(identity, false);
+      if (identity.size > MAX_MODEL_SWITCH_BYTES) unavailable();
+      if (!name.endsWith(".tmp")) {
+        const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)));
+        if (name.endsWith(".state.json")) {
+          validateModelSwitchState(raw); if (raw.identity.historyBucket !== bucket || raw.identity.ownerKey !== ownerKey || raw.identity.switchId !== name.split(".")[1]) unavailable();
+        } else if (name.endsWith(".fence.json")) { validateModelSwitchFence(raw); if (raw.conversationKey !== switchConversationKey(bucket)) unavailable(); }
+        else {
+          const [, switchId, artifactId] = name.split(".");
+          const artifact = await this.readArtifact(bucket, switchId!, { id: artifactId!, hash: artifactId! });
+          if (artifact.ownerKey !== ownerKey) unavailable();
+        }
+      }
+      inspected.push({ name, identity });
+    }
+    inspected.sort((a, b) => Number(b.name.endsWith(".fence.json")) - Number(a.name.endsWith(".fence.json")) || a.name.localeCompare(b.name));
+    for (const { name, identity } of inspected) {
+      await assertOwned(); await this.assertDirectory(directory);
+      const path = join(this.directory, name), named = await lstat(path); secure(named, false); if (!unchanged(identity, named)) unavailable();
+      await rm(path); await onPhase("lifecycle_switch_file_removed");
+      await this.syncDirectory(this.directory, directory);
+    }
+    await this.syncDirectory(this.directory, directory); await assertOwned();
+  }
   /** Read-only managed-root accounting. Hash-only fence coordinates are resolved
    * exclusively through their validated payload, never guessed from filenames. */
   async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[] }> {
@@ -367,6 +411,28 @@ export class ModelSwitchPayloadStore {
       const next = acceptHandoffReference(current.state, reference);
       await owner.reserve(serializeModelSwitchState(next).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
       await this.publishState(next, owner); return reference;
+    });
+  }
+  /** Re-establish a recovered fence-unlink publication barrier. */
+  async syncPublication(): Promise<void> {
+    const directory = await this.ensureDirectory(false); if (directory) await this.syncDirectory(this.directory, directory);
+  }
+  /** Canonical/native publication precedes fence release. Retain the winning
+   * ready attempt/content for reference lifetime and whole-chain D deletion. */
+  async complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
+    await owner.withRootTransaction(async () => {
+      await this.owner(owner); const current = await this.read(bucket, switchId);
+      await assertCanonicalReady();
+      if (!current) { await this.syncPublication(); return; }
+      if (current.state.phase !== "ready") throw new Error("Pending switch cannot release its intent fence");
+      await this.owner(owner, current.state); await this.reconcile(current.state, current.fence.payload, owner);
+      const name = `${this.coordinates(bucket, switchId)}.fence.json`, directory = await this.ensureDirectory(false); if (!directory) unavailable();
+      const before = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
+      await this.owner(owner, current.state); await assertCanonicalReady();
+      if (!(await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES)).equals(before)) unavailable();
+      await rm(join(this.directory, name)); await owner.onPhase?.("switch_fence_removed");
+      await this.syncDirectory(this.directory, directory); await owner.onPhase?.("switch_fence_directory_synced");
+      await this.owner(owner, current.state); await owner.adjustReservation(0);
     });
   }
   async readArtifact(bucket: string, switchId: string, reference: HandoffReference): Promise<ModelSwitchArtifact> {

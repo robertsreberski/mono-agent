@@ -67,7 +67,7 @@ describe("embedding-first recall ranking", () => {
 
   it("boosts exact dates and numbers", async () => {
     const dated = note("dated", "Taylor Brooks was born on 1988-11-02.");
-    const other = note("other", "Morgan Reyes was born on 1990-05-17.");
+    const other = note("other", "Morgan Reyes was born on 2000-01-01.");
     const result = await scores([dated, other], { [dated.text]: 0.7, [other.text]: 0.7 }, "Who was born on 1988-11-02?");
     expect(result.get("dated")! - result.get("other")!).toBeCloseTo(0.9 * 0.15, 2);
   });
@@ -107,9 +107,9 @@ describe("embedding-first recall ranking", () => {
     const names = ["Sam Okafor", "Morgan", "Lu"];
     expect([...queryAnchors("what car does sam okafor drive", names)].sort()).toEqual(["okafor", "sam"]);
     // Capitalised question words are not anchors; no stop-word list is needed.
-    expect([...queryAnchors("When was Morgan born on 17 May?", names)].sort()).toEqual(["17", "morgan"]);
+    expect([...queryAnchors("When was Morgan born on 1 January?", names)].sort()).toEqual(["1", "morgan"]);
     expect([...queryAnchors("¿Cuándo nació Morgan? Kiedy urodził się Morgan?", names)].sort()).toEqual(["morgan"]);
-    expect([...queryAnchors("When was Morgan born on 1990-05-17?", [])].sort()).toEqual(["1990-05-17"]);
+    expect([...queryAnchors("When was Morgan born on 2000-01-01?", [])].sort()).toEqual(["2000-01-01"]);
     // Name words shorter than three letters are too ambiguous to anchor.
     expect([...queryAnchors("Did Lu call?", names)]).toEqual([]);
     expect(anchorCoverage(new Set(["zoe", "12"]), "Zoë obchodzi urodziny 12 marca.")).toBe(1);

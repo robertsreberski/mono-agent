@@ -17,6 +17,7 @@ import { validRecoveryProjection } from "./terminal-recovery.js";
 import { createHash } from "node:crypto";
 import { access, open } from "node:fs/promises";
 import { dirname } from "node:path";
+import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
 import { projectContext, createPiSessionAdapter, HARNESS_CONTEXT } from "./harness-adapter.js";
@@ -119,8 +120,8 @@ const durableNativeSessionRepos = new Map();
 const coldOpenCounts = new Map();
 
 export function resolveDurableNativeSessionRepo(piSessionsRoot) {
-  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) return null;
-  const root = piSessionsRoot.trim();
+  const root = normalizeDurableSessionsRoot(piSessionsRoot);
+  if (!root) return null;
   let repo = durableNativeSessionRepos.get(root);
   if (!repo) {
     repo = new JsonlSessionRepo({

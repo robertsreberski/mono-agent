@@ -1,4 +1,5 @@
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -138,6 +139,42 @@ describe("purgeConversationState session accounting", () => {
     if (recover) await expect(stat(quarantine)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(repo.create({ id: "fictional-late" })).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("operator whole-root wipe removes v4 chain journals and switch storage (recovery=%s)", async (recover) => {
+    const { JsonlSessionRepo } = await import("../../../harness/dist/index.js");
+    const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } }, artifacts: { dir: "./.mono-agent/artifacts" } });
+    const nativeRoot = join(dir, ".mono-agent", "sessions"), historyRoot = join(dir, ".mono-agent", "history");
+    const id = "fictional-purge-owner", rootId = "1".repeat(64);
+    const coordinates = { canonicalVersion: 4 as const, historyBucket: id, ownerKey: id, rootId, version: 1 as const };
+    const authority = { ...coordinates, authorityId: createHash("sha256").update(JSON.stringify(coordinates)).digest("hex") };
+    const repo = new JsonlSessionRepo({ sessionsRoot: nativeRoot }), chain = [];
+    let predecessorJournalId: string | null = null;
+    for (const [ordinal, epoch] of ["a".repeat(64), "b".repeat(64)].entries()) {
+      const handleId = createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
+      const session = await repo.create({ id: handleId, hostAuthority: authority, assertOwned: async () => {} });
+      await session.appendMessage({ role: "user", content: "Fictional chain evidence.", timestamp: 17 }); await session.sync();
+      chain.push({ journalId: session.metadata.journalId, epoch, ordinal, handleId, predecessorJournalId, ownerKey: id, historyBucket: id,
+        sourceTipId: session.tip ?? null, sourceSeq: session.seq, sourceDigest: "3".repeat(64), provenance: { provider: "faux", api: "faux-api", model: ordinal ? "B" : "A", account: null } });
+      predecessorJournalId = session.metadata.journalId; await session.close();
+    }
+    await repo.close(); await mkdir(join(historyRoot, ".model-switches"), { recursive: true, mode: 0o700 });
+    const key = createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
+    await writeFile(join(historyRoot, `${key}.history.json`), JSON.stringify({ version: 4, conversationId: id, messages: [],
+      providerSession: { epoch: chain[1]!.epoch, revision: 0, modelKey: "faux:B" }, native: { authority, chain, projection: null } }), { mode: 0o600 });
+    await writeFile(join(historyRoot, ".native-history-root.json"), JSON.stringify({ version: 1, kind: "native-history", canonicalVersion: 4, rootId }), { mode: 0o600 });
+    // Whole-root deletion covers immutable artifacts and uncommitted/crash state,
+    // without attempting to authorize a per-owner roll-forward or repair first.
+    await writeFile(join(historyRoot, ".model-switches", `${key}.${"4".repeat(64)}.${"5".repeat(64)}.handoff.json`), "Fictional retained handoff bytes.", { mode: 0o600 });
+    await writeFile(join(historyRoot, ".model-switches", `${key}.${"4".repeat(64)}.${"6".repeat(32)}.state.json`), "Fictional crash state bytes.", { mode: 0o600 });
+    const quarantines: string[] = [];
+    if (recover) await expect(purgeConversationState(inputFor(configPath), { hooks: { afterRootQuarantined: (path) => {
+      quarantines.push(path); throw new Error("Fictional v4 operator wipe interruption");
+    } } })).rejects.toThrow("operator wipe interruption");
+    await purgeConversationState(inputFor(configPath));
+    await expect(stat(nativeRoot)).rejects.toMatchObject({ code: "ENOENT" }); await expect(stat(historyRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    for (const path of quarantines) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    for (const segment of chain) await expect(readFile(join(nativeRoot, "mono-v2", "journals", `${segment.journalId}.jsonl`))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("is a no-op when the configured store does not exist on disk yet", async () => {
