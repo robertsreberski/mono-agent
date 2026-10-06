@@ -260,6 +260,47 @@ The harness is the request-to-runtime composition boundary:
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
+| `src/durable-model-switch-contract.ts` / `src/model-switch-billing.ts` / `src/model-switch-payloads.ts` | Private additive switch wire, artifact and summary-admission storage; not managed-history migration or enabled host switching |
+
+### Internal model-switch storage foundation
+
+The private storage component requires a held logical conversation claim,
+existing short root transaction, and caller-owned quota reservation/accounting.
+It does not issue root authority, settle turns, run a producer, bind a model,
+enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
+The ordinary canonical v3/v5 paths and configured host switching policy remain
+unchanged. Do not use these private modules to upgrade a real root manually.
+
+Its v4 wire validators bind journal-chain ownership/provenance and stable switch
+coordinates. Binding receipts describe their own transitions independently of
+later cold epochs/projection references; receipt recognition alone is not
+projection readiness or dispatch authority. Bounded v6 fences carry only
+references/hashes, never current user text, routing metadata, controllers,
+credentials or host instructions. Payloads/artifacts are limited to 16 MiB;
+fences to 1 KiB; chains to 32 journals. Reservations include canonical, artifact,
+retained-native, pending-generation and transient native-header-copy space.
+Retained-byte inspection charges immutable generations and crash leftovers;
+unrecognized or replaced evidence fails closed and is not removed.
+
+Summary admission must be durably published before any paid call, which occurs
+outside the root transaction. The provisional policy is one outgoing producer,
+free exact-checkpoint attempt, then one incoming producer per explicit
+message-authorized generation. An unknown outcome remains admitted/charged:
+reopen, maintenance, duplicate authorization and cached-output recovery never
+silently permit another request. Authorizations and attempt identities remain
+bounded without dropping earlier identities. The caller must prove that any
+new generation came from an actual authorized message, not a wake/recovery.
+
+A caller-validated, fitted P3a proposal is stored once as a content-addressed
+immutable artifact before publishing ready state. Storage validates frozen
+coverage/target/budget coordinates; it does not replace P3a fit, mandatory
+latest-turn or complete-ledger validation. Cached accepted output rolls forward
+without another producer or new text. An existing intent cannot be replaced by
+a newly requested target; canonical commit/whole-chain cleanup integration is
+still required before admitting a later separate switch. No PID, age or file
+name is deletion authority. SIGKILL tests cover intent publication, summary
+start/returned-before-cache, artifact publication and ready-fence replacement,
+with two fresh-process recoveries per interruption.
 
 With continuous sessions, `piSessionsRoot`, and a fail-closed durable history
 store, the harness and responder also expose `compactConversation()`: a
