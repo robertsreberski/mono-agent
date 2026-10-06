@@ -279,8 +279,22 @@ references/hashes, never current user text, routing metadata, controllers,
 credentials or host instructions. Payloads/artifacts are limited to 16 MiB;
 fences to 1 KiB; chains to 32 journals. Reservations include canonical, artifact,
 retained-native, pending-generation and transient native-header-copy space.
-Retained-byte inspection charges immutable generations and crash leftovers;
-unrecognized or replaced evidence fails closed and is not removed.
+Retained-byte inspection charges the current immutable generation and crash
+leftovers. After the new fence is durable, validated superseded states are
+reclaimed only if their complete admission/authorization journals remain in the
+winner; unknown, future or replaced evidence and crash temps remain charged.
+Fence replacement does not retain earlier fence generations. A pinned storage
+directory disappearing fails closed, not as an absent intent.
+
+The owner must implement idempotent absolute `adjustReservation(bytes)` under
+its root transaction, with physical retained bytes charged separately. Initial
+artifact capacity covers publication without a second artifact reservation;
+after durable acceptance its physical bytes replace the provisional artifact
+cap. Every durable mutation/recovery resets remaining provisional accounting,
+so transient state/fence publication reservations cannot accumulate. Fixed
+canonical/native/header-copy/pending estimates remain conservative, as do
+unrecognized crash leftovers; managed-root integration must reconcile those
+other estimates at their corresponding publication/cleanup boundaries.
 
 Summary admission must be durably published before any paid call, which occurs
 outside the root transaction. The provisional policy is one outgoing producer,

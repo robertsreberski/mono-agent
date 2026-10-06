@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix guarded retirement authority forwarding through chained runtimes and
+  fail closed when pinned model-switch storage disappears. Reclaim superseded
+  switch states after durable replacement and reconcile provisional reservations
+  without charging accepted artifact capacity twice.
 - Prepare bounded, ownership-checked model-switch payloads, immutable handoff
   artifacts and durable summary-attempt admission without enabling host switching
   or migrating managed histories.

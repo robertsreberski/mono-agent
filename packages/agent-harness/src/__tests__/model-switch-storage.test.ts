@@ -8,7 +8,7 @@ import { once } from "node:events";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "../model-switch-payloads.js";
 import { createModelSwitchState, admitSummaryAttempt, finishSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage } from "../model-switch-billing.js";
-import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, recognizesModelSwitchBinding, validateModelSwitchState, validateTurnHistoryV4 } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateTurnHistoryV4 } from "../durable-model-switch-contract.js";
 import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, TurnHistoryV4 } from "../durable-model-switch-contract.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -28,13 +28,14 @@ function proposal(state: ModelSwitchState, producer = "outgoing"): Record<string
 }
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "mono-switch-storage-")); roots.push(root); const identity = await lstat(root);
-  const store = new ModelSwitchPayloadStore(root, identity), state = initial(), reservations: number[] = [], phases: string[] = [];
+  const store = new ModelSwitchPayloadStore(root, identity), state = initial(), reservations: number[] = [], adjustments: number[] = [], phases: string[] = [];
   let rootHeld = false;
   const owner: ModelSwitchStorageOwner = { ownerKey: source.ownerKey, historyBucket: source.historyBucket,
     assertOwned: async () => {}, reserve: async (bytes) => { expect(rootHeld).toBe(true); reservations.push(bytes); },
+    adjustReservation: async (bytes) => { expect(rootHeld).toBe(true); adjustments.push(bytes); },
     withRootTransaction: async (action) => { expect(rootHeld).toBe(false); rootHeld = true; try { return await action(); } finally { rootHeld = false; } },
     onPhase: async (phase) => { expect(rootHeld).toBe(true); phases.push(phase); } };
-  return { root, store, state, owner, reservations, phases, rootHeld: () => rootHeld };
+  return { root, store, state, owner, reservations, adjustments, phases, rootHeld: () => rootHeld };
 }
 
 it("validates canonical v4 chains/binding/provenance/receipts without changing v3", () => {
@@ -161,7 +162,7 @@ for (const phase of ["reserved", "payload_file_synced", "payload_renamed", "fenc
     expect(second.state).toEqual(first.state); expect(first.state.phase).toBe("outgoing"); expect(first.state.attempts).toEqual([]);
   });
 }
-for (const phase of ["summary_started", "summary_returned", "artifact_file_synced", "artifact_renamed", "artifact_directory_synced", "fence_renamed"]) {
+for (const phase of ["summary_started", "summary_returned", "artifact_file_synced", "artifact_renamed", "artifact_directory_synced", "fence_renamed", "obsolete_state_removed", "obsolete_states_directory_synced", "reservation_adjusted"]) {
   it(`recovers paid-attempt/cache boundaries twice after SIGKILL at ${phase}`, async () => {
     const { root } = await fixture(); await worker(root, "begin", "recover"); await worker(root, "accept", phase, true);
     const first = await worker(root, "recover", "recover"), second = await worker(root, "recover", "recover");
@@ -243,4 +244,57 @@ it("freezes caller-owned intent and proposed content before asynchronous ownersh
     ...owner, assertOwned: async () => { content.summary = { intent: ["Changed by an asynchronous caller"] }; },
   });
   expect((await store.readArtifact(source.historyBucket, expected.identity.switchId, reference)).artifact).toEqual(frozen);
+});
+
+it("distinguishes never-created storage/missing fences from disappearance of a pinned directory", async () => {
+  const { store, state, owner, root } = await fixture();
+  expect(await store.read(source.historyBucket, state.identity.switchId)).toBeUndefined();
+  await store.begin(state, owner);
+  expect(await store.read(source.historyBucket, "e".repeat(64))).toBeUndefined();
+  await rename(join(root, MODEL_SWITCH_DIRECTORY), join(root, "preserved-storage"));
+  await expect(store.read(source.historyBucket, state.identity.switchId)).rejects.toThrow("unavailable");
+  await expect(store.read(source.historyBucket, "e".repeat(64))).rejects.toThrow("unavailable");
+  expect((await readdir(join(root, "preserved-storage"))).length).toBe(2);
+});
+
+it("reconciles provisional artifact capacity and reclaims only superseded state after durable replacement", async () => {
+  const { store, state, owner, root } = await fixture();
+  const directory = join(root, MODEL_SWITCH_DIRECTORY), held: number[] = [], reserves: number[] = [];
+  let reservation = 0;
+  const quotaOwner = { ...owner, reserve: async (bytes: number) => { reservation += bytes; reserves.push(bytes); },
+    adjustReservation: async (bytes: number) => { reservation = bytes; held.push(bytes); } };
+  await store.begin(state, quotaOwner);
+  const total = Object.values(state.reservation).reduce((sum, value) => sum + value, 0);
+  for (let generation = 0; generation < 4; generation++) {
+    await store.admit(source.historyBucket, state.identity.switchId, "outgoing", quotaOwner);
+    await store.finish(source.historyBucket, state.identity.switchId, "outgoing", "rejected", quotaOwner);
+    await store.advanceUnfit(source.historyBucket, state.identity.switchId, quotaOwner);
+    await store.admit(source.historyBucket, state.identity.switchId, "incoming", quotaOwner);
+    await store.finish(source.historyBucket, state.identity.switchId, "incoming", "unknown", quotaOwner);
+    expect(reservation).toBe(total);
+    const names = await readdir(directory); expect(names.filter((name) => name.endsWith(".state.json"))).toHaveLength(1); expect(names.filter((name) => name.endsWith(".fence.json"))).toHaveLength(1);
+    await store.authorizeMessage(source.historyBucket, state.identity.switchId, String(generation + 1).repeat(64), quotaOwner);
+  }
+  await store.admit(source.historyBucket, state.identity.switchId, "outgoing", quotaOwner);
+  const before = (await store.read(source.historyBucket, state.identity.switchId))!.state;
+  const expectedReady = { ...before, phase: "ready", artifact: { id: "a".repeat(64), hash: "a".repeat(64) } };
+  const reference = await store.accept(source.historyBucket, state.identity.switchId, proposal(state), quotaOwner);
+  expect(reserves.at(-1)).toBe(serializeModelSwitchState({ ...expectedReady, artifact: reference, attempts: before.attempts.map((entry) => entry.generation === 4 && entry.producer === "outgoing" ? { ...entry, outcome: "accepted", artifact: reference } : entry) } as ModelSwitchState).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
+  expect(reservation).toBe(total - state.reservation.artifactBytes);
+  expect((await store.read(source.historyBucket, state.identity.switchId))!.state.attempts).toHaveLength(9);
+  expect((await readdir(directory)).length).toBe(3);
+  await store.recoverArtifact(source.historyBucket, state.identity.switchId, quotaOwner);
+  expect(reservation).toBe(total - state.reservation.artifactBytes); expect(held.every((bytes) => bytes === total || bytes === total - state.reservation.artifactBytes)).toBe(true);
+});
+
+it("keeps the referenced generation on pre-fence failures and preserves unrecognized future admissions", async () => {
+  const { store, state, owner, root } = await fixture(); await store.begin(state, owner);
+  const directory = join(root, MODEL_SWITCH_DIRECTORY), original = (await readdir(directory)).find((name) => name.endsWith(".state.json"))!;
+  await expect(store.admit(source.historyBucket, state.identity.switchId, "outgoing", { ...owner, onPhase: async (phase) => { if (phase === "payload_directory_synced") throw new Error("before fence"); } })).rejects.toThrow("before fence");
+  expect((await store.read(source.historyBucket, state.identity.switchId))!.state.attempts).toHaveLength(0);
+  expect(await readFile(join(directory, original))).toEqual(serializeModelSwitchState(state));
+  await store.begin(state, owner); // Cannot erase the orphan's unseen admission merely by name or age.
+  expect((await readdir(directory)).filter((name) => name.endsWith(".state.json"))).toHaveLength(2);
+  await store.admit(source.historyBucket, state.identity.switchId, "outgoing", owner);
+  expect((await readdir(directory)).filter((name) => name.endsWith(".state.json"))).toHaveLength(1);
 });

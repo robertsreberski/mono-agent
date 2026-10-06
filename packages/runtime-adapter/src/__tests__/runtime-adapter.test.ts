@@ -743,7 +743,7 @@ describe("explicit native reconciliation ownership", () => {
   });
 });
 
-it("forwards host-only guarded retirement authority without dispatch", async () => {
+it.each([false, true])("forwards host-only guarded retirement authority without dispatch (routed=%s)", async (routed) => {
   const { JsonlSessionRepo } = await import("@mono-agent/harness");
   const { readFile } = await import("node:fs/promises");
   const root = await mkdtemp(join(tmpdir(), "adapter-guarded-retire-"));
@@ -751,7 +751,7 @@ it("forwards host-only guarded retirement authority without dispatch", async () 
     const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" } as const;
     const assertOwned = vi.fn(async () => {}), repo = new JsonlSessionRepo({ sessionsRoot: root });
     const store = await repo.create({ id: "guarded-adapter-retire", hostAuthority, assertOwned }); await store.close();
-    const runtime = createMonoRuntime();
+    const runtime = createMonoRuntime(routed ? { chain: [parseMonoRuntimeModelReference("faux:fixture")] } : {});
     await expect(runtime.retireDurableSession!(store.metadata.id, root)).rejects.toThrow("authority");
     await runtime.retireDurableSession!(store.metadata.id, root, { hostAuthority, disposition: "D", assertOwned });
     await expect(readFile(store.metadata.path)).rejects.toMatchObject({ code: "ENOENT" }); expect(assertOwned).toHaveBeenCalled();

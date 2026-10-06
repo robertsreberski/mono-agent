@@ -13,14 +13,17 @@ const state = createModelSwitchState({ ownerKey: source.ownerKey, historyBucket:
   sources: [source], fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },
   targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
   { canonicalBytes: 8192, artifactBytes: 32768, retainedNativeBytes: 16384, headerCopyBytes: 16384, pendingBytes: 65536 });
-const store = new ModelSwitchPayloadStore(root, await lstat(root)); let armed = action === "begin";
-const owner = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: async () => {}, reserve: async () => {},
+const store = new ModelSwitchPayloadStore(root, await lstat(root)); let armed = action === "begin", artifactPublished = false;
+const owner = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: async () => {}, reserve: async () => {}, adjustReservation: async () => {},
   withRootTransaction: async (run) => {
     const path = join(root, "storage-test.sqlite"), database = new DatabaseSync(path); await chmod(path, 0o600);
     database.exec("PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN IMMEDIATE");
     try { return await run(); } finally { database.exec("ROLLBACK"); database.close(); }
   },
-  onPhase: async (current) => { if (armed && current === phase) { process.send?.({ phase }); await new Promise(() => {}); } } };
+  onPhase: async (current) => {
+    if (current === "artifact_directory_synced") artifactPublished = true;
+    if (action === "accept" && !artifactPublished && ["obsolete_state_removed", "obsolete_states_directory_synced", "reservation_adjusted"].includes(current)) return;
+    if (armed && current === phase) { process.send?.({ phase }); await new Promise(() => {}); } } };
 try {
   if (action === "begin") await store.begin(state, owner);
   if (action === "accept") {

@@ -18,8 +18,12 @@ export interface ModelSwitchStorageOwner {
   /** Host supplies its existing short root transaction, never a provider call. */
   withRootTransaction<T>(action: () => Promise<T>): Promise<T>;
   /** Reserve the initial durable plan (including native retention/header copy)
-   * or incremental serialized generations. Reclaimed bytes are not assumed. */
+   * or transient serialized publication space until absolute reconciliation. */
   reserve(bytes: number): Promise<void>;
+  /** Idempotently SET (not add/subtract) this intent's remaining provisional
+   * reservation under the same root transaction. Physical retained bytes are
+   * charged separately; recovery repeats this reconciliation safely. */
+  adjustReservation(bytes: number): Promise<void>;
   onPhase?(phase: string): Promise<void>;
 }
 export interface ModelSwitchArtifact {
@@ -68,7 +72,8 @@ export class ModelSwitchPayloadStore {
   private async ensureDirectory(create: boolean, owner?: ModelSwitchStorageOwner): Promise<ModelSwitchDirectoryIdentity | undefined> {
     await this.assertRoot(); let stat;
     try { stat = await lstat(this.directory); } catch (error) {
-      if (!missing(error) || this.directoryIdentity) throw error;
+      if (!missing(error)) throw error;
+      if (this.directoryIdentity) unavailable();
       if (!create) return undefined; if (!owner) unavailable(); await this.owner(owner);
       try { await mkdir(this.directory, { mode: 0o700 }); } catch (failure) { if (!(failure && typeof failure === "object" && "code" in failure && failure.code === "EEXIST")) throw failure; }
       await this.syncDirectory(this.root, this.rootIdentity); stat = await lstat(this.directory);
@@ -134,8 +139,10 @@ export class ModelSwitchPayloadStore {
     }
   }
   async read(bucket: string, switchId: string): Promise<{ readonly state: ModelSwitchState; readonly fence: ModelSwitchFence } | undefined> {
-    const prefix = this.coordinates(bucket, switchId); let bytes;
-    try { bytes = await this.readBytes(`${prefix}.fence.json`, MAX_MODEL_SWITCH_FENCE_BYTES); } catch (error) { if (missing(error) || !await this.ensureDirectory(false)) return undefined; throw error; }
+    const prefix = this.coordinates(bucket, switchId), directory = await this.ensureDirectory(false); if (!directory) return undefined;
+    let bytes;
+    try { bytes = await this.readBytes(`${prefix}.fence.json`, MAX_MODEL_SWITCH_FENCE_BYTES); }
+    catch (error) { if (!missing(error)) throw error; await this.assertDirectory(directory); return undefined; }
     const fence: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); validateModelSwitchFence(fence);
     if (fence.switchId !== switchId || fence.conversationKey !== switchConversationKey(bucket)) unavailable();
     const payload = await this.readBytes(`${prefix}.${fence.payload.generation}.state.json`, MAX_MODEL_SWITCH_BYTES);
@@ -157,7 +164,51 @@ export class ModelSwitchPayloadStore {
       targetEpoch: state.identity.targetEpoch, payload: pointer };
     validateModelSwitchFence(fence); const fenceBytes = boundedSwitchBytes(fence, MAX_MODEL_SWITCH_FENCE_BYTES);
     await this.publish(`${prefix}.${generation}.state.json`, bytes, owner, false, "payload");
-    await this.publish(`${prefix}.fence.json`, fenceBytes, owner, true, "fence"); return pointer;
+    await this.publish(`${prefix}.fence.json`, fenceBytes, owner, true, "fence");
+    await this.reconcile(state, pointer, owner); return pointer;
+  }
+  /** Only validated earlier snapshots whose complete admission/authorization
+   * journals are retained by the durable winner may be reclaimed. Never erase
+   * future/unknown admissions, artifacts, temps, or merely matching filenames. */
+  private superseded(before: ModelSwitchState, after: ModelSwitchState): boolean {
+    if (switchDigest(before.identity) !== switchDigest(after.identity) || switchDigest(before.reservation) !== switchDigest(after.reservation)
+      || before.authorizationGeneration > after.authorizationGeneration) return false;
+    if (before.authorizations.some((entry, index) => switchDigest(entry) !== switchDigest(after.authorizations[index] ?? null))) return false;
+    for (const entry of before.attempts) {
+      const retained = after.attempts.find((candidate) => candidate.id === entry.id);
+      if (!retained || entry.outcome !== "started" && switchDigest(entry) !== switchDigest(retained)) return false;
+    }
+    const order = { outgoing: 0, checkpoint: 1, incoming: 2, pending: 3, ready: 4 };
+    return (before.authorizationGeneration < after.authorizationGeneration || order[before.phase] <= order[after.phase])
+      && (before.artifact === null || switchDigest(before.artifact) === switchDigest(after.artifact));
+  }
+  private async reconcile(state: ModelSwitchState, pointer: ModelSwitchPointer, owner: ModelSwitchStorageOwner): Promise<void> {
+    await this.owner(owner, state);
+    const current = await this.read(state.identity.historyBucket, state.identity.switchId);
+    if (!current || switchDigest(current.fence.payload) !== switchDigest(pointer) || switchDigest(current.state) !== switchDigest(state)) unavailable();
+    const directory = await this.ensureDirectory(false); if (!directory) unavailable();
+    // A recovered rename may have interrupted directory fsync. Establish the
+    // winner's publication barrier before removing any prior payload.
+    await this.syncDirectory(this.directory, directory);
+    const prefix = `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.`;
+    for (const name of await readdir(this.directory)) {
+      if (!filePattern.test(name)) unavailable();
+      if (!name.startsWith(prefix) || !name.endsWith(".state.json") || name === `${prefix}${pointer.generation}.state.json`) continue;
+      const path = join(this.directory, name), before = await lstat(path); secure(before, false);
+      const bytes = await this.readBytes(name, MAX_MODEL_SWITCH_BYTES);
+      const previous: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); validateModelSwitchState(previous);
+      if (!this.superseded(previous, state)) continue;
+      await this.owner(owner, state); await this.assertDirectory(directory);
+      const named = await lstat(path); secure(named, false); if (!unchanged(before, named)) unavailable();
+      await rm(path); await owner.onPhase?.("obsolete_state_removed");
+    }
+    await this.syncDirectory(this.directory, directory); await owner.onPhase?.("obsolete_states_directory_synced");
+    // Keep fixed canonical/native/header-copy/pending estimates conservative.
+    // Once content is durable its physical bytes replace, not supplement, the
+    // provisional artifact cap. Absolute reconciliation is crash-idempotent.
+    const cached = state.phase === "ready" ? state.artifact : await this.cachedArtifact(state);
+    await owner.adjustReservation(reservationBytes(state.reservation) - (cached ? state.reservation.artifactBytes : 0));
+    await this.owner(owner, state); await owner.onPhase?.("reservation_adjusted");
   }
   async begin(state: ModelSwitchState, owner: ModelSwitchStorageOwner): Promise<ModelSwitchState> {
     validateModelSwitchState(state); state = structuredClone(state);
@@ -180,6 +231,7 @@ export class ModelSwitchPayloadStore {
         if (switchDigest(current.state.identity) !== switchDigest(state.identity) || switchDigest(current.state.reservation) !== switchDigest(state.reservation)) throw new Error("Switch intent identity conflicts");
         const directory = await this.ensureDirectory(false); if (!directory) unavailable();
         await this.syncDirectory(this.directory, directory); await this.owner(owner, current.state);
+        await this.reconcile(current.state, current.fence.payload, owner);
         return current.state; // never reverse/restart an admitted durable intent
       }
       const serialized = serializeModelSwitchState(state);
@@ -192,6 +244,7 @@ export class ModelSwitchPayloadStore {
     await this.owner(owner);
     return owner.withRootTransaction(async () => {
       const current = await this.read(bucket, switchId); if (!current) throw new Error("Switch intent is absent"); await this.owner(owner, current.state);
+      await this.reconcile(current.state, current.fence.payload, owner);
       if (current.state.phase !== "ready" && await this.cachedArtifact(current.state)) throw new Error("Cached handoff must roll forward before producer advancement");
       const next = change(current.state); validateModelSwitchState(next);
       if (canonicalSwitchJSON(next) === canonicalSwitchJSON(current.state)) return next;
@@ -221,6 +274,7 @@ export class ModelSwitchPayloadStore {
     return owner.withRootTransaction(async () => {
       const current = await this.read(bucket, switchId); if (!current) throw new Error("Switch intent is absent"); await this.owner(owner, current.state);
       const state = current.state;
+      await this.reconcile(state, current.fence.payload, owner);
       this.validateProposal(state, artifact);
       const attempt = state.attempts.find((entry) => entry.generation === state.authorizationGeneration && entry.producer === artifact.producer);
       if (state.phase !== "ready" && artifact.producer !== state.phase) throw new Error("Handoff producer does not match durable admission");
@@ -233,11 +287,13 @@ export class ModelSwitchPayloadStore {
       if (state.phase === "ready") {
         await this.readArtifact(bucket, switchId, reference);
         const directory = await this.ensureDirectory(false); if (!directory) unavailable();
-        await this.syncDirectory(this.directory, directory); await this.owner(owner, state); return reference;
+        await this.syncDirectory(this.directory, directory); await this.owner(owner, state);
+        await this.reconcile(state, current.fence.payload, owner); return reference;
       }
       const cached = await this.cachedArtifact(state);
       if (cached && switchDigest(cached) !== switchDigest(reference)) throw new Error("Immutable accepted output conflicts with cached artifact");
-      await owner.reserve((cached ? 0 : bytes.byteLength) + serializeModelSwitchState(next).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
+      // Artifact bytes are already covered by the initial provisional cap.
+      await owner.reserve(serializeModelSwitchState(next).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
       await this.publish(`${this.coordinates(bucket, switchId)}.${reference.id}.handoff.json`, bytes, owner, false, "artifact");
       await this.publishState(next, owner); return reference;
     });
@@ -271,11 +327,8 @@ export class ModelSwitchPayloadStore {
     await this.owner(owner);
     return owner.withRootTransaction(async () => {
       const current = await this.read(bucket, switchId); if (!current) return undefined; await this.owner(owner, current.state);
-      if (current.state.phase === "ready") {
-        const directory = await this.ensureDirectory(false); if (!directory) unavailable();
-        await this.syncDirectory(this.directory, directory); await this.owner(owner, current.state);
-        return current.state.artifact!;
-      }
+      await this.reconcile(current.state, current.fence.payload, owner);
+      if (current.state.phase === "ready") return current.state.artifact!;
       const reference = await this.cachedArtifact(current.state); if (!reference) return undefined;
       const next = acceptHandoffReference(current.state, reference);
       await owner.reserve(serializeModelSwitchState(next).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
