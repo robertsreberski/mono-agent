@@ -434,3 +434,44 @@ it.each([false, true])("keeps markerless ready state fenced without wedging auth
   await expect(store.append(bucket, [{ role: "assistant", content: "Still fenced" }])).rejects.toThrow("pending");
   expect(await readFile(f.nativePath)).toEqual(original); expect(inspect).not.toHaveBeenCalled();
 });
+
+
+it("aborts resumed-D maintenance when native I/O cannot reacquire the root lock", async () => {
+  const f = await setup(), deletion = vi.spyOn(f.native, "deleteJournals").mockRejectedValueOnce(new Error("Initial D interruption"));
+  await f.store.append("fictional-root-loss-free-victim", [{ role: "assistant", content: "Must not unlink without root ownership" }]);
+  await expect(f.store.reset(bucket)).rejects.toThrow("Initial D interruption");
+  const free = join(f.base, "history", `${switchConversationKey("fictional-root-loss-free-victim")}.history.json`), before = await readFile(free);
+  const retirement = vi.fn(async () => {}), store = createDurableHistoryStore({ root: join(f.base, "history"),
+    nativeJournalStorage: f.native, maxConversations: 2, retireProviderSession: retirement });
+  const internals = store as unknown as { acquireRootTransaction: (...args: unknown[]) => Promise<() => Promise<void>> };
+  const acquire = internals.acquireRootTransaction.bind(internals); let failReacquire = false;
+  vi.spyOn(internals, "acquireRootTransaction").mockImplementation(async (...args) => {
+    if (failReacquire) throw new Error("Fictional root reacquisition failure"); return await acquire(...args);
+  });
+  deletion.mockImplementationOnce(async () => { failReacquire = true; throw new Error("Owner-local native failure"); });
+  await store.append("fictional-root-loss-winner", [{ role: "assistant", content: "Already committed before maintenance" }]);
+  expect(failReacquire).toBe(true); failReacquire = false;
+  expect(await readFile(free)).toEqual(before); expect(retirement).not.toHaveBeenCalled();
+  expect((await store.stats()).conversations).toBe(3); // Pending maintenance, not unlocked quota pruning.
+  expect((await store.stats()).lastPostCommitMaintenanceError).toContain("Fictional root reacquisition failure");
+  expect((await readdir(join(f.base, "history"))).filter((name) => name.startsWith(".native-history-op."))).toHaveLength(1);
+});
+it("keeps a fresh failed D for recovery and prunes the next free victim in the same commit", async () => {
+  const older = `${bucket}#2000-01-01`, f = await setup(older);
+  await f.store.append("fictional-fresh-D-free-victim", [{ role: "assistant", content: "Free LRU history" }]); await utimes(f.canonicalPath, 1, 1);
+  const original = await readFile(f.canonicalPath), deletion = vi.spyOn(f.native, "deleteJournals").mockRejectedValueOnce(new Error("Fictional fresh D failure"));
+  const store = createDurableHistoryStore({ root: join(f.base, "history"), nativeJournalStorage: f.native,
+    maxConversations: 2, retireProviderSession: async () => {} });
+  await store.append("fictional-fresh-D-winner", [{ role: "assistant", content: "New retained history" }]);
+  expect(deletion).toHaveBeenCalledTimes(1); expect(await readFile(f.canonicalPath)).toEqual(original);
+  expect(await store.load("fictional-fresh-D-free-victim")).toEqual([]); expect((await store.stats()).conversations).toBe(2);
+  expect((await store.stats()).postCommitMaintenanceFailures).toBe(1);
+  const operations = (await readdir(join(f.base, "history"))).filter((name) => name.startsWith(".native-history-op."));
+  expect(operations).toHaveLength(1);
+  const operation = JSON.parse(await readFile(join(f.base, "history", operations[0]!), "utf8"));
+  expect(operation.disposition).toBe("D"); expect(operation.source.conversationId).toBe(older);
+  // Later post-commit recovery consumes the exact retained intent idempotently.
+  await store.append("fictional-fresh-D-winner", [{ role: "assistant", content: "Next maintenance opportunity" }]);
+  expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
+  expect((await store.stats()).conversations).toBe(1);
+});

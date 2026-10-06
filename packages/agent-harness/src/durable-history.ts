@@ -64,7 +64,10 @@ const TOOL_HISTORY_OWNER_FILE = "tool-lifecycles-owner.sqlite";
 const ROOT_LOCK_FILE = "root.sqlite";
 const NATIVE_OPERATION_PATTERN = /^\.native-history-op\.([a-f0-9]{64})\.json$/u;
 const MAX_NATIVE_OPERATION_BYTES = 2 * MAX_STORE_FILE_BYTES + 4096;
-type NativeHistoryIo = <T>(action: () => Promise<T>) => Promise<T>;
+type NativeHistoryIo = {
+  <T>(action: () => Promise<T>): Promise<T>;
+  isRootHeld(): boolean;
+};
 interface NativeHistoryOperation {
   readonly version: 1; readonly disposition: "C" | "D";
   readonly source: TurnHistoryV4; readonly next: CanonicalHistoryFile | null;
@@ -772,11 +775,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await fsyncDirectory(this.root, rootIdentity); await this.nativePhase("lifecycle_intent_directory_synced");
   }
   private nativeIoOutsideRoot(rootIdentity: DirectoryIdentity, release: () => Promise<void>, replace: (unlock: () => Promise<void>) => void): NativeHistoryIo {
-    return async (action) => {
+    let rootHeld = true;
+    const run = async <T>(action: () => Promise<T>): Promise<T> => {
+      // A failed release/reacquisition is not an owner-local action failure.
+      // Keep the flag false until the caller has a real root unlock again.
+      rootHeld = false;
       await release(); replace(async () => {});
       try { return await action(); }
-      finally { replace(await this.acquireRootTransaction(rootIdentity)); }
+      finally { replace(await this.acquireRootTransaction(rootIdentity)); rootHeld = true; }
     };
+    return Object.assign(run, { isRootHeld: () => rootHeld });
   }
   /** The caller holds both the exact/logical owner and a root transaction.
    * Canonical membership survives native deletion, including every unlink crash. */
@@ -864,11 +872,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
    *   reservation; a foreign failure cannot block an unrelated owner.
    * - resumeInactiveNativeDeletions: borrowed ownership prevents same-owner
    *   stranding; without native capability do nothing. Foreign D runs only as
-   *   post-commit maintenance, with failures recorded rather than rethrown.
+   *   post-commit maintenance; owner/native failures are diagnostic only while
+   *   the root is held. Failed root reacquisition aborts maintenance.
    * - retentionPlan: protect persisted/busy evidence, preserve LRU, probe only
    *   needed victims and never grant capacity credit from an excluded victim.
-   * - applyRetention: exclude each attempted busy victim and replan so a free
-   *   victim can restore quotas; bound retries and refresh after native I/O.
+   * - applyRetention: exclude busy or failed-intent victims and replan so a
+   *   free victim can restore quotas; never continue after losing the root lock.
+   * Accepted limits: a v4 logical owner busy in another process can be admitted
+   * for credit and leave maintenance pending. The replan bound is fixed at the
+   * start-of-maintenance entry count (+ one final plan), not extended by arrivals.
    */
   private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo,
     committingOwner: HeldLogicalConversation, phase: "prepare" | "maintenance"): Promise<void> {
@@ -886,6 +898,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
         } finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
       } catch (error) {
+        if (!nativeIo.isRootHeld()) throw error;
         if (error instanceof HistoryOwnerBusyError) continue;
         if (phase === "prepare") throw error;
         recordPostCommitMaintenanceFailure(this.root, error);
@@ -2270,16 +2283,26 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const record = plan.records.get(entry.name); if (!record) continue;
         if (record.sourceVersion === 4) {
           if (attempted.has(entry.name)) continue; attempted.add(entry.name);
-          let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined;
+          let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined, published = false;
           try {
             owner = logicalConversationIdForFence(record.conversationId) === committingOwner.logicalConversationId
               ? committingOwner : await this.acquireLogicalConversation(logicalConversationIdForFence(record.conversationId), true);
             if (requiresExactConversationClaim(record.conversationId)) exact = await this.acquireExactConversationClaim(record.conversationId, true);
             const operation: NativeHistoryOperation = { version: 1, disposition: "D", source: this.nativeCanonical(record), next: null, timestamp: 0 };
             const assertOwned = async () => { await owner!.assertOwned(); if ((await this.scanActiveMarkers(false)).some((marker) => marker.conversationKey === historyKey(record.conversationId))) throw new Error("Retention victim acquired ownership"); };
-            await assertOwned(); await this.publishNativeOperation(operation, rootIdentity); await this.finishNativeOperation(operation, rootIdentity, assertOwned, nativeIo);
+            await assertOwned(); await this.publishNativeOperation(operation, rootIdentity); published = true;
+            await this.finishNativeOperation(operation, rootIdentity, assertOwned, nativeIo);
             replan = true;
-          } catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; replan = true; }
+          } catch (error) {
+            if (!nativeIo.isRootHeld()) throw error;
+            if (!(error instanceof HistoryOwnerBusyError)) {
+              if (!published) throw error;
+              // Keep the published D intent charged/protective for later resume,
+              // but do not let this failed victim hide another free LRU victim.
+              recordPostCommitMaintenanceFailure(this.root, error);
+            }
+            replan = true;
+          }
           finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
           if (replan) break;
           continue;

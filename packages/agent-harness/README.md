@@ -871,3 +871,10 @@ root marker remain fenced/non-dispatchable, but do not block authority issuance
 or owner-held recovery. Foreign/garbled native tails fail closed: bounded drain
 reports that owner unresolved and continues other owners; it never repairs those
 bytes or promotes them into accepted reference evidence.
+
+Maintenance can continue after an owner-local native failure only if it regained
+the root transaction. A fresh victim's failed published D remains charged and
+recoverable, while another free LRU victim can be pruned in the same commit.
+Accepted limits: a v4 victim's logical owner may be busy in another process after
+admission credits it, leaving maintenance pending; the replan budget is fixed
+from the entry count at maintenance start, not extended by concurrent arrivals.

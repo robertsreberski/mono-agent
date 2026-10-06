@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stop retention maintenance if native cleanup cannot regain the root lock.
+  Keep failed deletion intents for recovery while pruning a later free victim
+  in the same commit when root ownership remains intact.
+
 - Isolate pre-publication native cleanup to the committing logical owner and
   keep foreign cleanup failures diagnostic. Replan around busy retention
   victims so free history can restore quotas, while markerless ready switches
