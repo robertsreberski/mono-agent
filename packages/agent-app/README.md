@@ -816,7 +816,11 @@ The durable store holds one cross-process logical-session fence across discovery
 and every bucket reset, and appends take that same fence before their physical
 bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
-tool history while reporting message/tool counts and bytes separately. Doctor
+tool history while reporting message/tool counts and bytes separately. This is
+an explicit stopped-writer operator wipe of the complete attested roots, not
+per-conversation retirement: it removes v4 canonical chain membership, root
+markers, switch payloads/artifacts/crash evidence, and every native epoch journal.
+The existing quarantine manifests keep whole-root deletion restartable. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
 unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
 not inflate the count, and unrelated writes or run finalization cannot hide lost

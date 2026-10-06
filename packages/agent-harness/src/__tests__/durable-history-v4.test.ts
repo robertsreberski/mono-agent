@@ -17,6 +17,7 @@ async function fixture(value: unknown = canonicalRecord(), options: Partial<Dura
   const root = await mkdtemp(join(tmpdir(), "canonical-v4-test-")); roots.push(root);
   const id = (value as TurnHistoryV4).conversationId;
   const path = join(root, `${conversationKey(id)}.history.json`), fencePath = join(root, ".locks", `${conversationKey(id)}.dirty.json`);
+  if ((value as { version?: number }).version === 4) await writeFile(join(root, ".native-history-root.json"), JSON.stringify({ version: 1, kind: "native-history", canonicalVersion: 4, rootId: "1".repeat(64) }), { mode: 0o600 });
   await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   const inspect = vi.fn(async (request) => evidence(request) as RuntimeSessionTurnReconciliationResult);
   const retire = vi.fn(async () => {});
@@ -125,24 +126,24 @@ it("guards unsynced v4 commit and stale admission without consuming the dirty fe
   expect(await readFile(f.path)).toEqual(before); expect(await readFile(f.fencePath)).toEqual(fence); expect(f.retire).not.toHaveBeenCalled();
 });
 
-it("guards inactive v4 dirty-fence retirement during unrelated exclusive maintenance", async () => {
+it("preserves unresolved v4 dirty fences without blocking unrelated exclusive maintenance", async () => {
   const f = await fixture(), before = await readFile(f.path);
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-abandoned", { modelKey }); await turn.abort(); const fence = await readFile(f.fencePath);
-  await expect(f.store.contextImport!.beginExclusiveTurn("fictional-other")).rejects.toThrow("native epoch transition capability");
+  const exclusive = await f.store.contextImport!.beginExclusiveTurn("fictional-other"); await exclusive.abort();
+  await f.store.append("fictional-other", [{ role: "user", content: "Fictional unrelated work." }]);
   expect(await readFile(f.path)).toEqual(before); expect(await readFile(f.fencePath)).toEqual(fence); expect(f.retire).not.toHaveBeenCalled();
 });
 
-it("guards v4 age/quota retention before deleting any selected legacy or v4 victim", async () => {
+it("counts v4 as non-evictable and rejects over-quota admission before publication", async () => {
   const f = await fixture(undefined, { maxConversations: 1, maxAgeMs: 1 }); const before = await readFile(f.path);
   const legacyId = "fictional-legacy-victim", seed = canonicalRecord(legacyId);
   const legacyPath = join(f.root, `${conversationKey(legacyId)}.history.json`);
   await writeFile(legacyPath, `${JSON.stringify({ version: 3, conversationId: legacyId, messages: seed.messages, providerSession: seed.providerSession })}\n`, { mode: 0o600 });
   const legacyBefore = await readFile(legacyPath);
   await utimes(legacyPath, new Date(0), new Date(0)); await utimes(f.path, new Date(1), new Date(1));
-  await f.store.append("fictional-other", [{ role: "assistant", content: "Fictional new history." }]);
-  expect(await readFile(f.path)).toEqual(before); expect(f.retire).not.toHaveBeenCalled();
-  expect(await readFile(legacyPath)).toEqual(legacyBefore);
-  expect((await f.store.stats()).lastPostCommitMaintenanceError).toContain("whole-chain deletion capability");
+  await expect(f.store.append("fictional-other", [{ role: "assistant", content: "Fictional new history." }])).rejects.toThrow("quota");
+  expect(await readFile(f.path)).toEqual(before); expect(f.retire).not.toHaveBeenCalled(); expect(await readFile(legacyPath)).toEqual(legacyBefore);
+  await expect(readFile(join(f.root, `${conversationKey("fictional-other")}.history.json`))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each(["absent", "cancelled"])("guards cold v5 settlement (%s) without deleting payload or native evidence", async (outcome) => {

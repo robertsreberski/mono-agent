@@ -12,10 +12,12 @@ export function canonicalRecord(id = bucket) {
     handleId: handleId(id, sourceEpoch), predecessorJournalId, ownerKey, historyBucket: id,
     sourceTipId: "fictional-source-tip", sourceSeq: 4, sourceDigest: "c".repeat(64),
     provenance: { provider: "openai", api: "openai-responses", model: "fictional-model", account: null } });
+  const coordinates = { canonicalVersion: 4, historyBucket: id, ownerKey, rootId: "1".repeat(64), version: 1 };
+  const authority = { ...coordinates, authorityId: createHash("sha256").update(JSON.stringify(coordinates)).digest("hex") };
   const artifact = { id: "e".repeat(64), hash: "e".repeat(64) };
   return { version: 4, conversationId: id, messages: [{ role: "assistant", content: "Fictional retained answer.", timestamp }],
     providerSession: { epoch, revision: 7, modelKey },
-    native: { authority: { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey, historyBucket: id },
+    native: { authority,
       chain: [segment("fictional-predecessor", predecessorEpoch, 0, null), segment("fictional-journal", epoch, 1, "fictional-predecessor")], projection: artifact },
     lastSwitch: { version: 1, switchId: "d".repeat(64), intentDigest: "f".repeat(64), fromEpoch: predecessorEpoch, toEpoch: epoch, artifact },
     lastCommit: { version: 1, turnId: "fictional-prior-turn", inputDigest: "3".repeat(64), candidateDigest: "4".repeat(64),

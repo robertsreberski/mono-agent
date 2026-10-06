@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep unresolved v4 owners from blocking unrelated history writes and reserve
+  v4 members as non-evictable until whole-chain deletion is enabled. Issue bounded
+  owner-held native root authority only under drained, explicitly exclusive
+  ownership; strictly preserve unreadable canonical evidence on managed roots.
+
 - Preserve existing canonical v4 journal-chain authority, projection and switch
   receipts during same-epoch writes and turn recovery. Reject unsupported v4
   cold rotation or destructive cleanup before retiring native evidence; keep

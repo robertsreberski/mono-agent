@@ -299,7 +299,7 @@ enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
 The ordinary canonical v3/v5 paths and configured host switching policy remain
 unchanged. Do not use these private modules to upgrade a real root manually.
 
-Already-existing canonical v4 records are strictly readable. Same-epoch synced
+Canonical v4 records on validated managed-marker roots are strictly readable. Same-epoch synced
 writes and owner-held v5 execution/compaction recovery retain the native chain,
 authority, projection and last-switch receipt, including when messages are
 evicted; turn receipts still settle exactly once. Native reconciliation must
@@ -312,13 +312,29 @@ and retention require managed native epoch-transition or whole-chain-deletion
 capability. Until P3b-2b2-ii supplies authority/header issuance, roll-forward and
 restartable whole-chain deletion, these paths fail before native retirement or
 canonical/membership deletion rather than inventing a journal or demoting v4.
-Retention reports the blocked maintenance in store diagnostics and prechecks all
-selected victims before deleting any. Logical reset likewise prechecks all
+V4 members are temporarily non-evictable in quota reservation plans, so they
+cannot cause post-commit quota growth or block pruning eligible legacy victims.
+Unresolved v4 dirty fences are preserved without blocking unrelated owners.
+Logical reset likewise prechecks all
 matching canonical members. These guards apply only to already-v4 conversations;
 v1/v2/v3 roots retain today's import, cold rotation, reset and retention behavior.
-No API in this split issues root authority, upgrades a header, writes the root
-marker, creates a v4 conversation, or enables a host switch. The next coordinated
-transaction/deletion integration removes these temporary guards.
+The administrative `acquireNativeHistoryAuthority(id, { exclusiveWriters: true })`
+requires an explicit stopped-older-writer acknowledgement, a bound source and
+drained host ownership. It issues a bounded, immutable private root marker and
+an owner-held authority lease; lease release releases ownership only. Marker
+proposals and the winner remain charged and crash recovery never erases unknown
+proposals. Managed-marker roots use strict canonical reads: torn files cannot
+lose native authority by being overwritten as v3. Unmarked legacy roots retain
+their existing torn-file policy. This API is not used by configured hosts and
+must not be invoked on real roots before the complete native transaction lands.
+Older binaries must stay stopped; the marker is not proof that every older
+admission path checks it. Rollback requires consistent host/native backups, not
+stripping the marker. It does not upgrade a header, create a v4 conversation, or
+enable switching.
+The coordinated transaction/deletion integration removes the remaining guards.
+Pending switching stays entirely in host intent/attempt storage: no native
+`model_change` or incoming binding is published before accepted handoff content
+exists, and no native artifact-reference wire change is introduced.
 
 Its v4 wire validators bind journal-chain ownership/provenance and stable switch
 coordinates. Binding receipts describe their own transitions independently of

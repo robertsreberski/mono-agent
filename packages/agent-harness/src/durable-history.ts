@@ -1,3 +1,5 @@
+import type { RuntimeNativeJournalAuthority } from "@mono-agent/runtime-adapter";
+import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
 import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState, validateTurnHistoryV4 } from "./durable-model-switch-contract.js";
@@ -118,6 +120,14 @@ export interface DurableHistoryStoreOptions {
   readonly retireProviderSession?: (providerSessionId: string, modelKey?: string) => Promise<void>;
 }
 
+/** Administrative authority only; does not upgrade native headers or enable dispatch. */
+export interface NativeHistoryAuthorityLease {
+  readonly status: "owned";
+  readonly authority: RuntimeNativeJournalAuthority;
+  assertOwned(): Promise<void>;
+  release(): Promise<void>;
+}
+
 /** Administrative storage only; never a dispatch/capability advertisement. */
 export interface ManagedModelSwitchStorageLease {
   readonly status: "owned";
@@ -135,7 +145,7 @@ export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readon
 
 export interface DurableHistoryStoreStats {
   readonly conversations: number;
-  /** Physical canonical and model-switch bytes, excluding provisional plans. */
+  /** Physical canonical, switch-storage and root-authority bytes, excluding plans. */
   readonly bytes: number;
   readonly reservedBytes: number;
   readonly activePreparedAppends: number;
@@ -323,6 +333,54 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         prepareImport: async (conversationId, request) => await this.prepareContextImport(conversationId, request),
       }
       : undefined;
+  }
+
+  private nativeHistoryRootStore: NativeHistoryRootStore | undefined;
+  private nativeHistoryRoot(rootIdentity: DirectoryIdentity): NativeHistoryRootStore {
+    return this.nativeHistoryRootStore ??= new NativeHistoryRootStore(this.root, rootIdentity);
+  }
+  /** Explicit stopped-older-writer acknowledgement; no production caller opts in. */
+  async acquireNativeHistoryAuthority(conversationId: string, options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease> {
+    if (options?.exclusiveWriters !== true) throw new TypeError("Native root authority requires exclusive upgraded writers");
+    const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
+    if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
+    const held = await this.acquireConversation(id), rootIdentity = held.rootIdentity;
+    let released = false;
+    const release = async () => { if (released) return; released = true; await this.releaseConversation(held, rootIdentity); };
+    const assertOwned = async () => { if (released) throw new Error("Native history authority lease released"); await held.assertOwned(); };
+    try {
+      await this.settleHeldTurn(id, held);
+      const source = await this.modelSwitchStorageSource(id);
+      if (source.status === "unsupported") { await release(); return source; }
+      const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+      let marker;
+      try {
+        await assertOwned();
+        const active = await this.scanActiveMarkers(true);
+        if (active.some((entry) => entry.path !== held.marker.path)
+          || (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).length
+          || (await this.pendingPayloads(rootIdentity).list()).length) {
+          throw new Error("Native root authority requires drained host owners and settled fences");
+        }
+        const rootStore = this.nativeHistoryRoot(rootIdentity);
+        if (!await rootStore.read()) {
+          for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {
+            if ((await this.readCommittedEntryRecord(entry, rootIdentity)).sourceVersion === 4) throw new Error("Canonical v4 root authority marker is missing; restore consistent backup");
+          }
+        }
+        marker = await rootStore.ensure({ assertOwned, reserve: async (bytes) => {
+          const plan = await this.retentionPlan(rootIdentity, []);
+          if (plan.projectedBytes + bytes > this.maxStoreBytes || await this.scanStagedBytes(rootIdentity) + bytes > this.maxStagedBytes) {
+            throw new Error("Native root authority capacity unavailable");
+          }
+        } });
+      } finally { await releaseRoot(); }
+      const authority = Object.freeze(this.nativeHistoryRoot(rootIdentity).authority(marker, ownerKey, id));
+      return { status: "owned", authority, assertOwned: async () => {
+        await assertOwned(); const current = await this.nativeHistoryRoot(rootIdentity).read();
+        if (current?.rootId !== authority.rootId) throw new Error("Native history root authority changed");
+      }, release };
+    } catch (error) { await release().catch(() => undefined); throw error; }
   }
 
   private modelSwitchPayloadStore: ModelSwitchPayloadStore | undefined;
@@ -1290,7 +1348,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const switches = await this.modelSwitchFootprint(rootIdentity);
       return {
         conversations: entries.length,
-        bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes,
+        bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + await this.nativeHistoryRoot(rootIdentity).bytes(),
         reservedBytes: switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0),
         activePreparedAppends: active.length,
         postCommitMaintenanceFailures: maintenance?.count ?? 0,
@@ -1734,8 +1792,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     const switches = await this.modelSwitchFootprint(rootIdentity);
     for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
+    const managedRoot = await this.nativeHistoryRoot(rootIdentity).read() !== undefined;
+    for (const entry of entries) {
+      try { if ((await this.readCommittedEntryRecord(entry, rootIdentity)).sourceVersion === 4) protectedNames.add(entry.name); }
+      catch (error) {
+        if (error instanceof TruncatedHistoryRecordError) {
+          // A managed root cannot infer absence of chain authority from torn
+          // bytes. Preserve/charge that owner without blocking unrelated work.
+          if (managedRoot) protectedNames.add(entry.name);
+          continue; // unupgraded roots keep their existing torn-file behavior
+        }
+        if (managedRoot && error instanceof TypeError) { protectedNames.add(entry.name); continue; }
+        throw error;
+      }
+    }
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
-    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes
+    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + await this.nativeHistoryRoot(rootIdentity).bytes()
       + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let projectedCount = entries.length;
     for (const active of projectedStages) {
@@ -1764,7 +1836,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // Published pending inputs remain charged after a crash/marker removal.
     // They are not abandoned canonical staging and require owner-held recovery.
     const switches = await this.modelSwitchFootprint(rootIdentity);
-    let bytes = (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0) + switches.bytes
+    let bytes = (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0) + switches.bytes + await this.nativeHistoryRoot(rootIdentity).bytes()
       + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let removed = false;
     for (const name of (await readdir(this.root)).sort()) {
@@ -1806,6 +1878,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (name === LOCKS_DIRECTORY) {
         const info = await lstat(path);
         assertSecureHistoryDirectory(info, path);
+        continue;
+      }
+      if (name === NATIVE_HISTORY_ROOT_FILE || NATIVE_HISTORY_ROOT_TEMP.test(name)) {
+        const stat = await lstat(join(this.root, name)); assertSecureHistoryFile(stat, join(this.root, name));
+        if (stat.size > MAX_NATIVE_HISTORY_ROOT_BYTES) throw new Error("Native root marker exceeds its serialized limit");
+        if (name === NATIVE_HISTORY_ROOT_FILE) await this.nativeHistoryRoot(rootIdentity).read();
         continue;
       }
       if (name === MODEL_SWITCH_DIRECTORY) {
@@ -2261,15 +2339,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         continue;
       }
       const committedEntry = committedByName.get(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
-      const committedRecord = committedEntry === undefined
-        ? undefined
-        : await this.readCommittedEntryRecord(committedEntry, rootIdentity);
+      let committedRecord: LoadedHistoryRecord | undefined;
+      try { committedRecord = committedEntry === undefined ? undefined : await this.readCommittedEntryRecord(committedEntry, rootIdentity); }
+      catch (error) {
+        if (await this.nativeHistoryRoot(rootIdentity).read() && (error instanceof TruncatedHistoryRecordError || error instanceof TypeError)) continue;
+        throw error;
+      }
       const canonicalProvesCommit = committedRecord?.providerSession !== undefined
         && committedRecord.providerSession?.epoch === fence.epoch
         && committedRecord.providerSession.modelKey === fence.modelKey
         && committedRecord.providerSession.dirtyRunId === undefined
         && committedRecord.providerSession.revision === fence.revision + 1;
-      if (!canonicalProvesCommit && committedRecord) requireV4Capability(committedRecord, "native epoch transition", "inactive dirty-fence retirement");
+      if (!canonicalProvesCommit && committedRecord?.sourceVersion === 4) continue; // unresolved chain owner is protected, never root-wide blocking
       planned.push({ fence: { ...fence, providerSessionId: fence.providerSessionId }, committedEntry, committedRecord, canonicalProvesCommit });
     }
     let removed = false;
@@ -2302,14 +2383,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
 
+  private async assertNativeRecordAuthority(record: LoadedHistoryRecord, rootIdentity: DirectoryIdentity): Promise<void> {
+    if (record.sourceVersion !== 4) return;
+    const rootStore = this.nativeHistoryRoot(rootIdentity), marker = await rootStore.read();
+    if (!marker) throw new TypeError("Canonical v4 root authority marker is missing; restore consistent backup");
+    if (switchDigest(record.native?.authority) !== switchDigest(rootStore.authority(marker, logicalConversationIdForFence(record.conversationId), record.conversationId))) {
+      throw new TypeError("Canonical native authority does not match the managed root marker");
+    }
+  }
+
   private async readRecord(
     conversationId: string,
     rootIdentity: DirectoryIdentity,
     strict = false,
   ): Promise<LoadedHistoryRecord> {
+    strict ||= await this.nativeHistoryRoot(rootIdentity).read() !== undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.readRecordOnce(conversationId, rootIdentity, strict);
+        const record = await this.readRecordOnce(conversationId, rootIdentity, strict);
+        await this.assertNativeRecordAuthority(record, rootIdentity); return record;
       } catch (error) {
         if (attempt < 2 && (error instanceof ConcurrentHistoryMutationError || isErrno(error, "ENOENT"))) {
           continue;
@@ -2484,6 +2576,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const after = await handle.stat();
       assertSameIdentity(opened, after, entry.path);
       const record = parseHistoryFile(bytes, entry.path);
+      await this.assertNativeRecordAuthority(record, rootIdentity);
       if (`${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}` !== entry.name) {
         throw new Error(`History file ${entry.path} does not match its conversation id.`);
       }

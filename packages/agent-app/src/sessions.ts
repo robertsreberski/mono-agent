@@ -418,6 +418,9 @@ async function securelyRemovePurgeRoots(
     // Native sandbox policies protect this owner-private control directory.
     // Off/omitted policies without retained ProcessJobs roots do not: same-UID
     // subprocesses and ambient OS processes are outside this deletion boundary.
+    // Explicit stopped-writer operator wipe: the entire attested/quarantined
+    // root includes v4 canonical membership, switch storage and every native
+    // epoch journal. This is not per-conversation C/D retirement or retention.
     await rm(value.path, { recursive: true, force: false });
     await syncAndReattestPrivateDirectory(value.control, "clear-sessions control directory");
     await options.hooks?.afterQuarantineRemoved?.(value.path);

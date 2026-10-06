@@ -40,6 +40,7 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
     .replaceAll('"./durable-turn-settlement.js"', JSON.stringify(new URL("../../dist/durable-turn-settlement.js", import.meta.url).href))
     .replaceAll('"./durable-turn-history.js"', JSON.stringify(new URL("../../dist/durable-turn-history.js", import.meta.url).href))
     .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href))
+    .replaceAll('"./native-history-root.js"', JSON.stringify(new URL("../../dist/native-history-root.js", import.meta.url).href))
     .replaceAll('"./model-switch-payloads.js"', JSON.stringify(new URL("../../dist/model-switch-payloads.js", import.meta.url).href))
     .replaceAll('"./durable-model-switch-contract.js"', JSON.stringify(new URL("../../dist/durable-model-switch-contract.js", import.meta.url).href));
   const livenessSource = await readFile(
