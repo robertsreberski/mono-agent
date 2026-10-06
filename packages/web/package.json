@@ -36,7 +36,7 @@
     "@mono-agent/config": "workspace:0.25.1",
     "@mono-agent/observability": "workspace:0.25.1",
     "@mono-agent/operator-adapter": "workspace:0.25.1",
-    "compression": "1.8.1",
+    "compression": "1.8.2",
     "cron-parser": "5.5.0",
     "express": "^5.1.0",
     "web-push": "3.6.7"
