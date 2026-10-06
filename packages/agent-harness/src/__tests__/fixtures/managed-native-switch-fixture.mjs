@@ -12,13 +12,14 @@ export function openStore(base, nativePhase = async () => {}, limits = {}) {
     retireProviderSession: async () => { throw new Error("Switch must preserve native evidence"); }, ...limits });
   return { native, store };
 }
-export async function fixture(base) {
+export async function fixture(base, id = bucket) {
+  const bucket = id, ownerKey = bucket.replace(/#\d{4}-\d{2}-\d{2}$/u, "") || bucket;
   await mkdir(join(base, "history"), { mode: 0o700 });
   const { store, native } = openStore(base);
   const turn = await store.beginProviderSessionTurn(bucket, "fictional-source", { modelKey: "faux:A" });
   const repo = new JsonlSessionRepo({ sessionsRoot: join(base, "native") }), session = await repo.create({ id: turn.providerSessionId, cwd: "/fictional" });
   await session.scopedWrite(async () => {
-    await session.writeRecord("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
+    await session.writeRecord("owner_binding", { kind: "host", ownerKey, historyBucket: bucket });
     await session.writeRecord("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "A", api: "faux-api" } });
   }, "bind");
   await session.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, "source-message"); await session.sync();
@@ -28,9 +29,9 @@ export async function fixture(base) {
   if (authority.status !== "owned") throw new Error("Expected owned root authority"); await authority.release();
   const source = await store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
   const descriptor = await native.freeze({ epoch: source.sourceEpoch, ordinal: 0, handleId: turn.providerSessionId, predecessorJournalId: null,
-    ownerKey: bucket, historyBucket: bucket, provenance: { provider: "faux", api: "faux-api", model: "A", account: null } });
+    ownerKey, historyBucket: bucket, provenance: { provider: "faux", api: "faux-api", model: "A", account: null } });
   const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
-  const state = createModelSwitchState({ ownerKey: bucket, historyBucket: bucket, sourceCanonicalDigest: source.sourceCanonicalDigest,
+  const state = createModelSwitchState({ ownerKey, historyBucket: bucket, sourceCanonicalDigest: source.sourceCanonicalDigest,
     sourceRevision: source.sourceRevision, sources: [descriptor], fromModelKey: "faux:A", toModelKey: "faux:B",
     targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null }, targetEpoch: "5".repeat(64),
     projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },

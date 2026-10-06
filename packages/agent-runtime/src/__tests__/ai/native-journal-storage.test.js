@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, open, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { fork, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
@@ -246,10 +246,21 @@ it("rejects C for a switched-away journal even when the caller presents it as th
 it.each(["model_change_before_open", "model_change_writer_opened"])("never truncates a foreign tail inserted at %s", async (boundary) => {
   let f, preserved;
   f = await fixture({ onPhase: async (phase) => {
-    if (boundary === "model_change_writer_opened" && phase === "model_change_before_open") await appendFile(f.metadata.path, "{");
+    if (boundary === "model_change_writer_opened" && phase === "model_change_before_open") {
+      await appendFile(f.metadata.path, "{");
+      // Normalize to an exactly restorable filesystem timestamp before scan.
+      await utimes(f.metadata.path, 1700000000, 1700000000);
+    }
     if (phase !== boundary) return;
     if (boundary === "model_change_before_open") await appendFile(f.metadata.path, "foreign evidence");
-    else { const bytes = await readFile(f.metadata.path); bytes[bytes.length - 1] = 120; await writeFile(f.metadata.path, bytes); }
+    else {
+      const handle = await open(f.metadata.path, "r+"), before = await handle.stat();
+      try { await handle.write(Buffer.from("x"), 0, 1, before.size - 1); } finally { await handle.close(); }
+      await utimes(f.metadata.path, before.atimeMs / 1000, before.mtimeMs / 1000);
+      const after = await stat(f.metadata.path);
+      expect(after.size).toBe(before.size); expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.ctimeMs).not.toBe(before.ctimeMs);
+    }
     preserved = await readFile(f.metadata.path);
   } });
   await expect(f.bridge.publishSwitch([f.source], context)).rejects.toThrow();

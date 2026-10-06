@@ -107,7 +107,7 @@ describe("embedding-first recall ranking", () => {
     const names = ["Sam Okafor", "Morgan", "Lu"];
     expect([...queryAnchors("what car does sam okafor drive", names)].sort()).toEqual(["okafor", "sam"]);
     // Capitalised question words are not anchors; no stop-word list is needed.
-    expect([...queryAnchors("When was Morgan born on 17 May?", names)].sort()).toEqual(["17", "morgan"]);
+    expect([...queryAnchors("When was Morgan born on 1 January?", names)].sort()).toEqual(["1", "morgan"]);
     expect([...queryAnchors("¿Cuándo nació Morgan? Kiedy urodził się Morgan?", names)].sort()).toEqual(["morgan"]);
     expect([...queryAnchors("When was Morgan born on 2000-01-01?", [])].sort()).toEqual(["2000-01-01"]);
     // Name words shorter than three letters are too ambiguous to anchor.

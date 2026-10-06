@@ -82,7 +82,7 @@ describe("automatic labelled background", () => {
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2025-02-28" }, [])).toContain("age 24");
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2025-03-01" }, [])).toContain("age 25");
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2026-09-24" }, [])).toContain("age 26");
-    const conflict = formatMemoryBackground(store([], [fact("one", "2000-01-01", true), fact("two", "1991-05-17", true)]),
+    const conflict = formatMemoryBackground(store([], [fact("one", "2000-01-01", true), fact("two", "2001-01-01", true)]),
       "Morgan", "current", { hostDate: "2026-09-24" }, []);
     expect(conflict).toContain("conflicting values — ask");
     expect(conflict).not.toContain("born:");
@@ -257,7 +257,7 @@ describe("explicit fact sheet rendering", () => {
     const keyless = Array.from({ length: 14 }, (_, index): MemoryLabelHit => ({ ...fact(`note-${index}`, "2000-01-01"),
       text: `Morgan visited the fictional garden ${index}.`, createdAt: `2026-09-${String(10 + index).padStart(2, "0")}T00:00:00Z`,
       label: { v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" } }));
-    const sections = readLabelSections(store([], [...keyless, fact("one", "2000-01-01", true), fact("two", "1991-05-17", true)]),
+    const sections = readLabelSections(store([], [...keyless, fact("one", "2000-01-01", true), fact("two", "2001-01-01", true)]),
       { query: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
     expect(sections?.factSheet).toHaveLength(12);
     expect(sections?.factSheet?.slice(0, 2)).toMatchObject([{ key: "birth_date", conflict: true }, { key: "birth_date", conflict: true }]);

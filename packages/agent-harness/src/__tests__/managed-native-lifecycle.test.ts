@@ -1,8 +1,8 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { fork, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
-import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,10 +12,10 @@ import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey } from "../durable-model-switch-contract.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function setup() {
+async function setup(id = bucket) {
   const root = await mkdtemp(join(tmpdir(), "mono-native-lifecycle-")); roots.push(root);
-  const f = await fixture(root); await ready(f);
-  await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true });
+  const f = await fixture(root, id); await ready(f);
+  await f.store.rollForwardModelSwitch(id, f.state.identity.switchId, { exclusiveWriters: true });
   const before = JSON.parse(await readFile(f.canonicalPath, "utf8"));
   return { ...f, before };
 }
@@ -195,14 +195,16 @@ it.skipIf(process.platform === "win32").each([
 }, 60000);
 
 
-it.each(["count", "bytes"])("protects v4 same-logical-owner victims before reserving %s quota", async (quota) => {
-  const f = await setup(), before = await readFile(f.canonicalPath), stats = await f.store.stats();
+it.each(["count", "bytes"])("protects busy exact sibling claims before reserving %s quota", async (quota) => {
+  const older = `${bucket}#2000-01-01`, f = await setup(older), before = await readFile(f.canonicalPath), stats = await f.store.stats();
   const { store } = openStore(f.base, undefined, quota === "count" ? { maxConversations: 1 } : { maxStoreBytes: stats.bytes + 100 });
-  for (let retry = 0; retry < 2; retry++) {
-    await expect(store.append(`${bucket}#2000-01-01`, [{ role: "assistant", content: "Same-owner sibling update" }])).rejects.toThrow("quota");
+  const internals = store as unknown as { acquireExactConversationClaim(id: string, tryOnly: boolean): Promise<{ release(): Promise<void> }> };
+  const busy = await internals.acquireExactConversationClaim(older, true);
+  try { for (let retry = 0; retry < 2; retry++) {
+    await expect(store.append(`${bucket}#2000-01-02`, [{ role: "assistant", content: "Same-owner sibling update" }])).rejects.toThrow("quota");
     expect(await readFile(f.canonicalPath)).toEqual(before); expect((await store.stats()).conversations).toBe(1);
     expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
-  }
+  } } finally { await busy.release(); }
 });
 it("recomputes retention after native deletion lets another owner publish and acquire a turn", async () => {
   const f = await setup(), other = "fictional-racing-legacy";
@@ -265,4 +267,68 @@ it("preserves native quota charges when a managed canonical becomes unreadable",
   await expect(store.append("fictional-capacity-owner", [{ role: "assistant", content: "x".repeat(2048) }])).rejects.toThrow("quota");
   expect(await readFile(f.canonicalPath, "utf8")).toBe("{");
   expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+});
+
+
+it("rolls over at the count limit by deleting an older v4 day under its held logical claim", async () => {
+  const older = `${bucket}#2000-01-01`, newer = `${bucket}#2000-01-02`, f = await setup(older);
+  const { store } = openStore(f.base, undefined, { maxConversations: 1, retireProviderSession: async () => {} });
+  await store.append(newer, [{ role: "assistant", content: "Next fictional day" }]);
+  expect(await store.load(newer)).toHaveLength(1); await expect(readFile(f.canonicalPath)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(0);
+  expect((await store.stats()).conversations).toBe(1); expect((await store.stats()).postCommitMaintenanceFailures).toBe(0);
+});
+it("preserves mixed-root LRU order instead of preferring legacy victims", async () => {
+  const f = await setup(), history = join(f.base, "history"), legacy = "fictional-newer-legacy";
+  const { store: seed } = openStore(f.base, undefined, { retireProviderSession: async () => {} });
+  await seed.append(legacy, [{ role: "assistant", content: "Newer legacy survives" }]);
+  await utimes(f.canonicalPath, new Date(1000), new Date(1000));
+  await utimes(join(history, `${switchConversationKey(legacy)}.history.json`), new Date(2000), new Date(2000));
+  const { store } = openStore(f.base, undefined, { maxConversations: 2, maxAgeMs: Number.MAX_SAFE_INTEGER, retireProviderSession: async () => {} });
+  await store.append("fictional-newest", [{ role: "assistant", content: "Newest history" }]);
+  await expect(readFile(f.canonicalPath)).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await store.load(legacy))[0]?.content).toBe("Newer legacy survives"); expect((await store.stats()).conversations).toBe(2);
+});
+
+
+it("computes switch/native footprints and canonical snapshots once per root transaction", async () => {
+  const f = await setup(), history = join(f.base, "history");
+  const internals = f.store as unknown as {
+    acquireRootTransaction: (...args: unknown[]) => Promise<() => Promise<void>>;
+    readCommittedEntryRecord: (entry: { name: string }, ...args: unknown[]) => Promise<unknown>;
+    modelSwitchPayloads: (identity: { dev: number; ino: number }) => { inventory: () => Promise<unknown> };
+  };
+  const physical = vi.spyOn(f.native, "inventory"), canonical = vi.spyOn(internals, "readCommittedEntryRecord");
+  const switches = vi.spyOn(internals.modelSwitchPayloads(await lstat(history)), "inventory");
+  const acquire = internals.acquireRootTransaction.bind(internals); let observed = 0;
+  vi.spyOn(internals, "acquireRootTransaction").mockImplementation(async (...args) => {
+    const release = await acquire(...args), nativeStart = physical.mock.calls.length,
+      switchStart = switches.mock.calls.length, recordStart = canonical.mock.calls.length;
+    return async () => {
+      const nativeReads = physical.mock.calls.length - nativeStart, switchReads = switches.mock.calls.length - switchStart;
+      expect(nativeReads).toBeLessThanOrEqual(1); expect(switchReads).toBeLessThanOrEqual(1);
+      const names = canonical.mock.calls.slice(recordStart).map(([entry]) => entry.name);
+      expect(new Set(names).size).toBe(names.length); if (nativeReads) observed++;
+      await release();
+    };
+  });
+  await f.store.append("fictional-cached-accounting", [{ role: "assistant", content: "Ordinary unrelated update" }]);
+  expect(observed).toBeGreaterThanOrEqual(2);
+});
+it("always rolls an accepted still-current model-change frame forward before allowing C", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mono-current-reference-")); roots.push(root);
+  const f = await fixture(root); await ready(f);
+  let stopped = false;
+  const { store } = openStore(root, async (phase) => {
+    if (!stopped && phase === "model_change_synced") { stopped = true; throw new Error("Interrupted current reference"); }
+  });
+  await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).rejects.toThrow("Interrupted current reference");
+  const current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.providerSession.epoch).toBe(f.state.identity.sources.at(-1)!.epoch);
+  expect((await readFile(f.nativePath, "utf8")).split("\n").filter((line) => line.includes('"kind":"model_change"'))).toHaveLength(1);
+  await expect(store.append(bucket, [{ role: "assistant", content: "Cannot cold-replace accepted reference" }])).rejects.toThrow("pending");
+  expect((await readdir(join(root, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
+  expect(await store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
+  await store.append(bucket, [{ role: "assistant", content: "Cold update after unconditional roll-forward" }]);
+  expect((await store.load(bucket)).at(-1)?.content).toBe("Cold update after unconditional roll-forward");
+  expect((await readdir(join(root, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
 });

@@ -134,7 +134,6 @@ it.each([false, true])("keeps unrelated append independent of unreadable canonic
   for (const bytes of ["{", "{}", JSON.stringify({ version: 99, conversationId: bucket }), JSON.stringify(legacy("fictional-wrong-file-id"))]) {
     const f = await fixture();
     if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
-    const interrupted = await f.store.beginProviderSessionTurn(bucket, "fictional-interrupted", { modelKey }); await interrupted.abort();
     await writeFile(f.path, bytes);
     await f.store.append("fictional-unrelated", [{ role: "assistant", content: "Independent valid history" }]);
     expect(await f.store.load("fictional-unrelated")).toHaveLength(1); expect(await readFile(f.path, "utf8")).toBe(bytes);
@@ -149,14 +148,15 @@ it("does not deserialize existing legacy canonicals on an under-quota append", a
   }));
   await f.store.append("fictional-next", [{ role: "assistant", content: "Next update" }]); expect(spy).not.toHaveBeenCalled();
 });
-it("deserializes each canonical only once within a managed retention plan", async () => {
-  const f = await fixture(), lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true });
-  if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release();
-  const internals = f.store as unknown as { retentionPlan: (...args: unknown[]) => Promise<unknown>; readCommittedEntryRecord: (...args: unknown[]) => Promise<unknown> };
-  const reads = vi.spyOn(internals, "readCommittedEntryRecord"), original = internals.retentionPlan.bind(internals);
-  const plans = vi.spyOn(internals, "retentionPlan").mockImplementation(async (...args) => {
-    const before = reads.mock.calls.length, result = await original(...args);
-    expect(reads.mock.calls.length - before).toBe((await readdir(f.root)).filter((name) => name.endsWith(".history.json")).length); return result;
-  });
-  await f.store.append("fictional-unrelated", [{ role: "assistant", content: "Managed independent update" }]); expect(plans).toHaveBeenCalled();
+
+it.each([false, true])("retains the previous unmanaged retirement-fence failure policy (managed=%s)", async (managed) => {
+  const f = await fixture();
+  if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
+  const interrupted = await f.store.beginProviderSessionTurn(bucket, "fictional-interrupted", { modelKey }); await interrupted.abort();
+  await writeFile(f.path, "{");
+  const append = f.store.append("fictional-independent", [{ role: "assistant", content: "Independent update" }]);
+  if (managed) await append;
+  else await expect(append).rejects.toThrow("not valid JSON");
+  expect(f.retire).not.toHaveBeenCalled(); expect(await readFile(f.path, "utf8")).toBe("{");
+  expect((await readdir(join(f.root, ".locks"))).some((name) => name.endsWith(".dirty.json"))).toBe(true);
 });

@@ -328,8 +328,10 @@ Lifecycle intents and unfinished native publication are charged; stats distingui
 physical bytes from outstanding native reservations. Pending switches and
 unsettled execution/compaction owners remain protected, and logical reset
 prechecks matching buckets before mutating any sibling. Retention reads each
-canonical once per plan, protects native victims sharing the committing logical
-owner, and replans after every unlocked native-I/O window. Under-quota legacy
+canonical and computes switch/native footprints once per root transaction.
+Older daily buckets can be evicted under the committing logical claim; busy
+exact claims and active markers remain protected. Mixed-root victims keep their
+LRU order, and every unlocked native-I/O window requires a fresh plan. Under-quota legacy
 append does not deserialize unrelated canonicals. Native accounting includes
 only canonical managed membership and exact journals enrolled by durable intents,
 not unrelated v1-v3 provider journals. If a canonical is unreadable, independently
@@ -338,7 +340,14 @@ other roots/buckets and legacy provider files do not justify credits. A retry
 reuses its published cold reservation.
 C cleanup also rejects switched-away `model_change` evidence independently of
 caller membership; header copies are removed before their sources only after an
-exact byte-prefix proof. Unknown copies remain pinned.
+exact byte-prefix proof. Unknown copies remain pinned. With an unreadable
+canonical, a header-incomplete `.upgrading` copy cannot be attributed by the
+root/bucket header fallback and remains uncharged unless a durable intent names
+its exact journal ID; it never supplies a reservation credit. This conservative
+attribution limit is accepted rather than guessing ownership. A reference frame
+on the still-current source is accepted ready evidence: it must roll forward,
+not be abandoned for C; the switch fence prevents ordinary cold mutation until
+that roll-forward settles.
 
 Without the administrative native capability, v4 cold/deletion mutation refuses
 before side effects. Unresolved v4 fences never block unrelated owners; managed

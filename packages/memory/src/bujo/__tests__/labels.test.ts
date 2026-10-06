@@ -69,7 +69,7 @@ describe("labels on canonical bullets", () => {
     const dir = root();
     const b1 = withMemoryLabels(bullet("B1", "Morgan was born on 2000-01-01."), [birthday, home]);
     const b2 = withMemoryLabels(bullet("B2", "Morgan's date was reported differently."), [
-      { ...birthday, value: { type: "date", date: "1991-05-17" } },
+      { ...birthday, value: { type: "date", date: "2001-01-01" } },
       { ...home, value: { type: "text", text: "Southport" }, validFrom: "2026-01-01", validTo: "2026-12-31" },
     ]);
     appendBullet(dir, b1, when);

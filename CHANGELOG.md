@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep managed daily rollover live at capacity by reusing the held logical
+  claim for older inactive days. Preserve mixed-history LRU eviction order and
+  share capacity footprints within each root transaction without carrying stale
+  snapshots across unlocked native I/O. Keep legacy retirement-fence failures
+  unchanged on unmarked roots.
+
 - Harden managed-history retention and native cleanup: reuse canonical snapshots,
   protect unreadable and same-owner victims, replan after unlocked native I/O,
   and reuse durable cold reservations on retry. Charge only enrolled native
