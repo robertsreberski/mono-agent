@@ -106,9 +106,9 @@ describe("automatic labelled background", () => {
       ],
     };
     expect(formatMemoryBackground(duplicated, "Morgan", "current", options, [])).toBeUndefined();
-    expect(formatMemoryBackground(duplicated, "person:morgan", "current", options, [])).toContain("age 36");
+    expect(formatMemoryBackground(duplicated, "person:morgan", "current", options, [])).toContain("age 26");
     expect(formatMemoryBackground({ guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "2000-01-01")] },
-      "person:morgan", "current", options, [])).toContain("age 36");
+      "person:morgan", "current", options, [])).toContain("age 26");
   });
 
   it("ignores non-person graph rows and uncapitalized short names", () => {
@@ -123,10 +123,10 @@ describe("automatic labelled background", () => {
           { id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }];
       },
     };
-    expect(formatMemoryBackground(local, "Morgan", "conv", options, [])).toContain("age 36");
+    expect(formatMemoryBackground(local, "Morgan", "conv", options, [])).toContain("age 26");
     expect(names[0]).toContain("morgan");
     expect(formatMemoryBackground(store([], [fact("birth", "2000-01-01")]), "mark may morgan", "conv", options, [])).toBeUndefined();
-    expect(formatMemoryBackground(store([], [fact("birth", "2000-01-01")]), "Morgan", "conv", options, [])).toContain("age 36");
+    expect(formatMemoryBackground(store([], [fact("birth", "2000-01-01")]), "Morgan", "conv", options, [])).toContain("age 26");
   });
 
   it("uses an atomic section budget without orphan headings or partial lines", () => {
@@ -156,7 +156,7 @@ describe("automatic labelled background", () => {
       { hostDate: "2026-09-24", ownerTurn: true });
     expect(owned?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)\n\n- Morgan likes green tea. (current)");
     expect(owned?.content).toContain("Memory (background — not direct evidence)");
-    expect(owned?.content).toContain("age 36");
+    expect(owned?.content).toContain("age 26");
     expect(owned?.content).toContain(POSSIBLY_RELEVANT_HEADING);
   });
 
@@ -171,7 +171,7 @@ describe("automatic labelled background", () => {
       hostDate: "2026-09-24", ownerTurn: true,
     });
     expect(block?.content).toContain("Person card:");
-    expect(block?.content).toContain("age 36");
+    expect(block?.content).toContain("age 26");
     expect(block?.content).toContain("Working preferences & lessons");
     expect(block?.content).not.toContain(POSSIBLY_RELEVANT_HEADING);
   });
