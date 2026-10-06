@@ -40,7 +40,8 @@ const unchanged = (a: Stats, b: Stats): boolean => same(a, b) && a.size === b.si
 function unavailable(): never { throw new Error("Model-switch storage ownership, identity or permissions unavailable"); }
 function secure(stat: Stats, directory: boolean): void {
   if (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) unavailable();
-  if ((stat.mode & 0o777) !== (directory ? 0o700 : 0o600) || typeof process.getuid === "function" && stat.uid !== process.getuid()) unavailable();
+  if ((process.platform !== "win32" && (stat.mode & 0o777) !== (directory ? 0o700 : 0o600))
+    || (typeof process.getuid === "function" && stat.uid !== process.getuid())) unavailable();
 }
 function missing(error: unknown): boolean { return !!error && typeof error === "object" && "code" in error && error.code === "ENOENT"; }
 const filePattern = /^[a-f0-9]{64}\.[a-f0-9]{64}\.(?:fence|[a-f0-9]{32}\.state|[a-f0-9]{64}\.handoff)\.json(?:\.[a-f0-9]{32}\.tmp)?$/u;
@@ -70,7 +71,7 @@ export class ModelSwitchPayloadStore {
     const after = await lstat(path); secure(after, true); if (!same(before, after)) unavailable();
   }
   private async ensureDirectory(create: boolean, owner?: ModelSwitchStorageOwner): Promise<ModelSwitchDirectoryIdentity | undefined> {
-    await this.assertRoot(); let stat;
+    let stat;
     try { stat = await lstat(this.directory); } catch (error) {
       if (!missing(error)) throw error;
       if (this.directoryIdentity) unavailable();
@@ -78,6 +79,7 @@ export class ModelSwitchPayloadStore {
       try { await mkdir(this.directory, { mode: 0o700 }); } catch (failure) { if (!(failure && typeof failure === "object" && "code" in failure && failure.code === "EEXIST")) throw failure; }
       await this.syncDirectory(this.root, this.rootIdentity); stat = await lstat(this.directory);
     }
+    await this.assertRoot();
     secure(stat, true); if (this.directoryIdentity && !same(stat, this.directoryIdentity)) unavailable();
     this.directoryIdentity ??= { dev: stat.dev, ino: stat.ino }; return this.directoryIdentity;
   }
@@ -107,6 +109,34 @@ export class ModelSwitchPayloadStore {
       total += stat.size; if (!Number.isSafeInteger(total)) unavailable();
     }
     await this.assertDirectory(directory); return total;
+  }
+  /** Read-only managed-root accounting. Hash-only fence coordinates are resolved
+   * exclusively through their validated payload, never guessed from filenames. */
+  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [] };
+    const bytes = await this.retainedBytes(), pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
+    for (const name of await readdir(this.directory)) {
+      if (!name.endsWith(".fence.json")) continue;
+      const fenceBytes = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
+      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fenceBytes));
+      validateModelSwitchFence(raw);
+      const prefix = `${raw.conversationKey}.${raw.switchId}`;
+      if (name !== `${prefix}.fence.json`) unavailable();
+      const payload = await this.readBytes(`${prefix}.${raw.payload.generation}.state.json`, MAX_MODEL_SWITCH_BYTES);
+      if (hash(payload) !== raw.payload.sha256) unavailable();
+      const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload)); validateModelSwitchState(decoded);
+      const current = await this.read(decoded.identity.historyBucket, raw.switchId);
+      if (!current || switchDigest(current.fence) !== switchDigest(raw)) unavailable();
+      const cached = decoded.phase === "ready" ? decoded.artifact : await this.cachedArtifact(decoded);
+      const remaining = this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached);
+      pending.push({ state: current.state, ...remaining });
+    }
+    await this.assertDirectory(directory); return { bytes, pending };
+  }
+  private remainingReservation(state: ModelSwitchState, publicationBytes: number, cached: boolean) {
+    const remainingPendingBytes = Math.max(0, state.reservation.pendingBytes - publicationBytes);
+    return { remainingPendingBytes, remainingReservation: reservationBytes(state.reservation)
+      - state.reservation.pendingBytes + remainingPendingBytes - (cached ? state.reservation.artifactBytes : 0) };
   }
   private async publish(name: string, bytes: Buffer, owner: ModelSwitchStorageOwner, replace: boolean, label: string): Promise<void> {
     const directory = await this.ensureDirectory(true, owner); if (!directory || !filePattern.test(name)) unavailable();
@@ -203,11 +233,15 @@ export class ModelSwitchPayloadStore {
       await rm(path); await owner.onPhase?.("obsolete_state_removed");
     }
     await this.syncDirectory(this.directory, directory); await owner.onPhase?.("obsolete_states_directory_synced");
-    // Keep fixed canonical/native/header-copy/pending estimates conservative.
+    // Current state/fence bytes consume their pending plan; orphan generations
+    // and crash temps remain fully charged in addition to that live publication.
+    // Keep fixed canonical/native/header-copy estimates conservative.
     // Once content is durable its physical bytes replace, not supplement, the
     // provisional artifact cap. Absolute reconciliation is crash-idempotent.
     const cached = state.phase === "ready" ? state.artifact : await this.cachedArtifact(state);
-    await owner.adjustReservation(reservationBytes(state.reservation) - (cached ? state.reservation.artifactBytes : 0));
+    const publicationBytes = (await this.readBytes(`${prefix}${pointer.generation}.state.json`, MAX_MODEL_SWITCH_BYTES)).byteLength
+      + (await this.readBytes(`${prefix}fence.json`, MAX_MODEL_SWITCH_FENCE_BYTES)).byteLength;
+    await owner.adjustReservation(this.remainingReservation(state, publicationBytes, !!cached).remainingReservation);
     await this.owner(owner, state); await owner.onPhase?.("reservation_adjusted");
   }
   async begin(state: ModelSwitchState, owner: ModelSwitchStorageOwner): Promise<ModelSwitchState> {

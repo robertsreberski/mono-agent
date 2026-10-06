@@ -1,5 +1,5 @@
-import { afterEach, expect, it } from "vitest";
-import { lstat, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { afterEach, expect, it, vi } from "vitest";
+import { chmod, lstat, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork } from "node:child_process";
@@ -271,7 +271,7 @@ it("reconciles provisional artifact capacity and reclaims only superseded state 
     await store.advanceUnfit(source.historyBucket, state.identity.switchId, quotaOwner);
     await store.admit(source.historyBucket, state.identity.switchId, "incoming", quotaOwner);
     await store.finish(source.historyBucket, state.identity.switchId, "incoming", "unknown", quotaOwner);
-    expect(reservation).toBe(total);
+    expect(reservation).toBe(total - await store.retainedBytes());
     const names = await readdir(directory); expect(names.filter((name) => name.endsWith(".state.json"))).toHaveLength(1); expect(names.filter((name) => name.endsWith(".fence.json"))).toHaveLength(1);
     await store.authorizeMessage(source.historyBucket, state.identity.switchId, String(generation + 1).repeat(64), quotaOwner);
   }
@@ -280,11 +280,12 @@ it("reconciles provisional artifact capacity and reclaims only superseded state 
   const expectedReady = { ...before, phase: "ready", artifact: { id: "a".repeat(64), hash: "a".repeat(64) } };
   const reference = await store.accept(source.historyBucket, state.identity.switchId, proposal(state), quotaOwner);
   expect(reserves.at(-1)).toBe(serializeModelSwitchState({ ...expectedReady, artifact: reference, attempts: before.attempts.map((entry) => entry.generation === 4 && entry.producer === "outgoing" ? { ...entry, outcome: "accepted", artifact: reference } : entry) } as ModelSwitchState).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
-  expect(reservation).toBe(total - state.reservation.artifactBytes);
+  expect(reservation).toBe((await store.inventory()).pending[0]!.remainingReservation);
   expect((await store.read(source.historyBucket, state.identity.switchId))!.state.attempts).toHaveLength(9);
   expect((await readdir(directory)).length).toBe(3);
   await store.recoverArtifact(source.historyBucket, state.identity.switchId, quotaOwner);
-  expect(reservation).toBe(total - state.reservation.artifactBytes); expect(held.every((bytes) => bytes === total || bytes === total - state.reservation.artifactBytes)).toBe(true);
+  expect(reservation).toBe((await store.inventory()).pending[0]!.remainingReservation);
+  expect(held.every((bytes) => bytes < total && bytes >= total - state.reservation.pendingBytes - state.reservation.artifactBytes)).toBe(true);
 });
 
 it("keeps the referenced generation on pre-fence failures and preserves unrecognized future admissions", async () => {
@@ -297,4 +298,20 @@ it("keeps the referenced generation on pre-fence failures and preserves unrecogn
   expect((await readdir(directory)).filter((name) => name.endsWith(".state.json"))).toHaveLength(2);
   await store.admit(source.historyBucket, state.identity.switchId, "outgoing", owner);
   expect((await readdir(directory)).filter((name) => name.endsWith(".state.json"))).toHaveLength(1);
+});
+
+it("returns absent inventory before root validation and follows win32 permission exemptions", async () => {
+  const { root, store, state, owner } = await fixture();
+  const rootCheck = vi.spyOn(store as any, "assertRoot").mockRejectedValue(new Error("Root check must not run for absent storage"));
+  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
+  finally { rootCheck.mockRestore(); }
+  await store.begin(state, owner);
+  const directory = join(root, MODEL_SWITCH_DIRECTORY), before = await store.inventory();
+  await chmod(root, 0o755); await chmod(directory, 0o755);
+  for (const name of await readdir(directory)) await chmod(join(directory, name), 0o644);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(await store.inventory()).toEqual(before);
+  } finally { Object.defineProperty(process, "platform", platform); }
 });

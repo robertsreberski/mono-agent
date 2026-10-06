@@ -1,7 +1,10 @@
 import { MODEL_SWITCH_BILLING_POLICY, summaryAttemptId, switchDigest, switchHash, validateModelSwitchState, validateSwitchReference } from "./durable-model-switch-contract.js";
 import type { HandoffReference, ModelSwitchIdentity, ModelSwitchReservation, ModelSwitchState, SummaryAttempt } from "./durable-model-switch-contract.js";
 
-/** Pure policy only; callers persist the resulting state BEFORE a paid call. */
+/** Final billing policy: at most two billed calls per switchId without new
+ * user action. Each later explicit user message authorizes one new attempt per
+ * producer, with a new two-call cap for that message generation. Unknown
+ * outcomes remain charged; callers persist state BEFORE any paid call. */
 export function createModelSwitchState(coordinates: Omit<ModelSwitchIdentity, "switchId">, reservation: ModelSwitchReservation): ModelSwitchState {
   const state: ModelSwitchState = { version: 1, identity: { ...structuredClone(coordinates), switchId: switchDigest(coordinates) }, reservation: structuredClone(reservation),
     billingPolicy: MODEL_SWITCH_BILLING_POLICY, authorizationGeneration: 0, authorizations: [], attempts: [], phase: "outgoing", artifact: null };

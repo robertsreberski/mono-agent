@@ -39,7 +39,9 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
     .replace('"./durable-turn-payloads.js"', JSON.stringify(new URL("../../dist/durable-turn-payloads.js", import.meta.url).href))
     .replaceAll('"./durable-turn-settlement.js"', JSON.stringify(new URL("../../dist/durable-turn-settlement.js", import.meta.url).href))
     .replaceAll('"./durable-turn-history.js"', JSON.stringify(new URL("../../dist/durable-turn-history.js", import.meta.url).href))
-    .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href));
+    .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href))
+    .replaceAll('"./model-switch-payloads.js"', JSON.stringify(new URL("../../dist/model-switch-payloads.js", import.meta.url).href))
+    .replaceAll('"./durable-model-switch-contract.js"', JSON.stringify(new URL("../../dist/durable-model-switch-contract.js", import.meta.url).href));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",

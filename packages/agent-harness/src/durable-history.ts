@@ -1,3 +1,7 @@
+import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
+import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
+import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState } from "./durable-model-switch-contract.js";
+import type { ModelSwitchState, HandoffReference, SummaryAttempt } from "./durable-model-switch-contract.js";
 import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
 import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
@@ -114,9 +118,26 @@ export interface DurableHistoryStoreOptions {
   readonly retireProviderSession?: (providerSessionId: string, modelKey?: string) => Promise<void>;
 }
 
+/** Administrative storage only; never a dispatch/capability advertisement. */
+export interface ManagedModelSwitchStorageLease {
+  readonly status: "owned";
+  read(): ReturnType<ModelSwitchPayloadStore["read"]>;
+  admit(producer: SummaryAttempt["producer"]): Promise<ModelSwitchState>;
+  finish(producer: SummaryAttempt["producer"], outcome: "unknown" | "rejected"): Promise<ModelSwitchState>;
+  advanceUnfit(): Promise<ModelSwitchState>;
+  authorizeMessage(messageDigest: string): Promise<ModelSwitchState>;
+  accept(artifact: Record<string, unknown>): Promise<HandoffReference>;
+  recoverArtifact(): Promise<HandoffReference | undefined>;
+  /** Releases the claim, never the durable fence or evidence. */
+  release(): Promise<void>;
+}
+export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
+
 export interface DurableHistoryStoreStats {
   readonly conversations: number;
+  /** Physical canonical and model-switch bytes, excluding provisional plans. */
   readonly bytes: number;
+  readonly reservedBytes: number;
   readonly activePreparedAppends: number;
   readonly postCommitMaintenanceFailures: number;
   readonly lastPostCommitMaintenanceError?: string;
@@ -302,6 +323,85 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       : undefined;
   }
 
+  private modelSwitchPayloadStore: ModelSwitchPayloadStore | undefined;
+  private modelSwitchPayloads(rootIdentity: DirectoryIdentity): ModelSwitchPayloadStore {
+    this.modelSwitchPayloadStore ??= new ModelSwitchPayloadStore(this.root, rootIdentity); return this.modelSwitchPayloadStore;
+  }
+  private async modelSwitchFootprint(rootIdentity: DirectoryIdentity) {
+    return this.modelSwitchPayloads(rootIdentity).inventory();
+  }
+  private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    if ((await this.modelSwitchFootprint(rootIdentity)).pending.some((entry) => entry.state.identity.historyBucket === conversationId)) {
+      throw new Error("Model-switch storage pending; ordinary admission/mutation is unavailable until transaction settlement");
+    }
+  }
+  /** Read-only support probe. Long IDs continue today's ordinary cold replay:
+   * unsupported storage is a result, not a switch-time contract error. */
+  async modelSwitchStorageSource(conversationId: string): Promise<ModelSwitchStorageSupport | {
+    readonly status: "supported"; readonly sourceCanonicalDigest: string; readonly sourceRevision: number;
+    readonly fromModelKey: string; readonly sourceEpoch: string; readonly ownerKey: string;
+  }> {
+    const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
+    if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
+    const rootIdentity = await this.ensureRoot(), record = await this.readRecord(id, rootIdentity);
+    if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || record.sourceVersion !== STORE_VERSION) return { status: "unsupported", reason: "unbound" };
+    return { status: "supported", sourceCanonicalDigest: switchDigest({ version: record.sourceVersion, conversationId: id, messages: record.messages,
+      providerSession: record.providerSession, ...lastCommitBinding(record) }), sourceRevision: record.providerSession.revision,
+      fromModelKey: record.providerSession.modelKey, sourceEpoch: record.providerSession.epoch, ownerKey };
+  }
+  /** Host-only storage lease. Holds the real logical/physical claim while each
+   * durable operation borrows only a short root transaction; production is
+   * outside those transactions. Native validation/migration is not enabled. */
+  async beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease> {
+    const id = normalizeConversationId(state.identity.historyBucket), ownerKey = logicalConversationIdForFence(id);
+    if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
+    if (state.identity.historyBucket !== id || state.identity.ownerKey !== ownerKey) throw new Error("Model-switch bucket must be normalized and belong to the managed owner");
+    validateModelSwitchState(state); state = structuredClone(state);
+    const held = await this.acquireConversation(id), rootIdentity = held.rootIdentity;
+    let released = false;
+    const assertOwned = async () => { if (released) throw new Error("Model-switch storage lease released"); await held.assertOwned(); };
+    const release = async () => { if (released) return; released = true; await this.releaseConversation(held, rootIdentity); };
+    try {
+      await this.settleHeldTurn(id, held);
+      const source = await this.modelSwitchStorageSource(id);
+      if (source.status === "unsupported") { await release(); return source; }
+      if (state.identity.ownerKey !== source.ownerKey || state.identity.sourceCanonicalDigest !== source.sourceCanonicalDigest
+        || state.identity.sourceRevision !== source.sourceRevision || state.identity.fromModelKey !== source.fromModelKey
+        || state.identity.sources.at(-1)?.epoch !== source.sourceEpoch) throw new Error("Model-switch source changed or does not belong to the managed owner");
+      const payloads = this.modelSwitchPayloads(rootIdentity), bucket = state.identity.historyBucket, switchId = state.identity.switchId;
+      const validateSpace = async (additional: number) => {
+        await assertOwned();
+        const footprint = await this.modelSwitchFootprint(rootIdentity);
+        const pending = footprint.pending.find((entry) => entry.state.identity.switchId === switchId);
+        // The pending plan already covers publication space. Only a physical
+        // peak beyond its unused portion requires additional capacity.
+        if (pending) additional = Math.max(0, additional - pending.remainingPendingBytes);
+        const plan = await this.retentionPlan(rootIdentity, []);
+        // Storage admission never deletes unrelated owners merely to reserve a
+        // switch; failure precedes publication/provider work.
+        if (plan.projectedBytes + additional > this.maxStoreBytes || plan.projectedCount > this.maxConversations) throw new Error("Model-switch aggregate history capacity unavailable");
+        if (await this.scanStagedBytes(rootIdentity) + additional > this.maxStagedBytes) throw new Error("Model-switch staged capacity unavailable");
+      };
+      const owner: ModelSwitchStorageOwner = { ownerKey, historyBucket: bucket, assertOwned,
+        withRootTransaction: async (action) => { await assertOwned(); const unlock = await this.acquireRootTransaction(rootIdentity); try {
+          requireSettledFence(await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot()));
+          return await action();
+        } finally { await unlock(); } },
+        reserve: validateSpace,
+        // Durable inventory is the absolute ledger; never increment a process
+        // counter or grant credits from a caller's requested adjustment.
+        adjustReservation: async (_remaining) => await validateSpace(0) };
+      await payloads.begin(state, owner);
+      return { status: "owned", read: async () => { await assertOwned(); return payloads.read(bucket, switchId); },
+        admit: (producer) => payloads.admit(bucket, switchId, producer, owner),
+        finish: (producer, outcome) => payloads.finish(bucket, switchId, producer, outcome, owner),
+        advanceUnfit: () => payloads.advanceUnfit(bucket, switchId, owner),
+        authorizeMessage: (digest) => payloads.authorizeMessage(bucket, switchId, digest, owner),
+        accept: (artifact) => payloads.accept(bucket, switchId, artifact, owner),
+        recoverArtifact: () => payloads.recoverArtifact(bucket, switchId, owner), release };
+    } catch (error) { await release().catch(() => undefined); throw error; }
+  }
+
   async load(conversationId: string): Promise<readonly HistoryMessage[]> {
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
@@ -348,33 +448,40 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (requiresExactConversationClaim(logicalId)) {
         heldExact = await this.acquireExactConversationClaim(logicalId);
       }
-      const entries = await this.scanCommittedEntries(rootIdentity, true);
       const conversationIds = new Set<string>();
-      for (const entry of entries) {
-        const record = await this.readCommittedEntryRecord(entry, rootIdentity);
-        if (belongsToLogicalConversation(record.conversationId, logicalId)) {
-          conversationIds.add(record.conversationId);
-        }
-      }
       const unattributableNames = new Set<string>();
-      for (const entry of await this.pendingPayloads(rootIdentity).list()) {
-        try {
-          const { payload } = await this.pendingPayloads(rootIdentity).inspect(entry);
-          if (belongsToLogicalConversation(payload.identity.historyBucket, logicalId)) conversationIds.add(payload.identity.historyBucket);
-        } catch {
-          // Unattributable generations are preserved and charged, not a reason
-          // to prevent resetting an unrelated logical session. Exact reset and
-          // validated logical fence coordinates can still clear known owners.
-          await assertDirectoryIdentity(this.root, rootIdentity);
-          await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), await this.ensureLocksRoot());
-          unattributableNames.add(entry.name);
-          // Filename coordinates are sufficient for the exact logical base.
-          // Validated child identities below are reset under their own claims,
-          // which also clear every torn generation at those known coordinates.
-          if (entry.conversationKey === historyKey(logicalId)) conversationIds.add(logicalId);
+      let orderedIds: string[];
+      const releaseDiscovery = await this.acquireRootTransaction(rootIdentity);
+      try {
+        const entries = await this.scanCommittedEntries(rootIdentity, true);
+        for (const entry of entries) {
+          const record = await this.readCommittedEntryRecord(entry, rootIdentity);
+          if (belongsToLogicalConversation(record.conversationId, logicalId)) {
+            conversationIds.add(record.conversationId);
+          }
         }
-      }
-      const orderedIds = [...conversationIds].sort();
+        for (const entry of await this.pendingPayloads(rootIdentity).list()) {
+          try {
+            const { payload } = await this.pendingPayloads(rootIdentity).inspect(entry);
+            if (belongsToLogicalConversation(payload.identity.historyBucket, logicalId)) conversationIds.add(payload.identity.historyBucket);
+          } catch {
+            // Unattributable generations are preserved and charged, not a reason
+            // to prevent resetting an unrelated logical session. Exact reset and
+            // validated logical fence coordinates can still clear known owners.
+            await assertDirectoryIdentity(this.root, rootIdentity);
+            await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), await this.ensureLocksRoot());
+            unattributableNames.add(entry.name);
+            // Filename coordinates are sufficient for the exact logical base.
+            // Validated child identities below are reset under their own claims,
+            // which also clear every torn generation at those known coordinates.
+            if (entry.conversationKey === historyKey(logicalId)) conversationIds.add(logicalId);
+          }
+        }
+        orderedIds = [...conversationIds].sort();
+        await heldLogical.assertOwned();
+        // Fail before resetting any sibling, not midway through logical reset.
+        for (const id of orderedIds) await this.requireNoModelSwitch(id, rootIdentity);
+      } finally { await releaseDiscovery(); }
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
       }
@@ -714,6 +821,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       let revision: number;
       const releaseRoot = await this.acquireRootTransaction(rootIdentity);
       try {
+        await this.requireNoModelSwitch(normalizedId, rootIdentity);
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
         requireSettledFence(existingFence);
         // The read-only preflight can race another process. Guard the binding
@@ -1165,9 +1273,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const entries = await this.scanCommittedEntries(rootIdentity, false);
       const active = await this.scanActiveMarkers(true);
       const maintenance = PROCESS_POST_COMMIT_FAILURES.get(this.root);
+      const switches = await this.modelSwitchFootprint(rootIdentity);
       return {
         conversations: entries.length,
-        bytes: entries.reduce((sum, entry) => sum + entry.size, 0),
+        bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes,
+        reservedBytes: switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0),
         activePreparedAppends: active.length,
         postCommitMaintenanceFailures: maintenance?.count ?? 0,
         ...(maintenance?.lastError === undefined
@@ -1200,6 +1310,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let stage: ActiveStage | undefined;
     try {
+      await this.requireNoModelSwitch(record.conversationId, rootIdentity);
       await this.validateStagingReservation(rootIdentity, projected.bytes);
       // Write while the root transaction is held so another process cannot
       // pass the same staged-byte reservation before this temp becomes visible.
@@ -1598,8 +1709,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const fence of await this.scanDirtyFences(await this.ensureLocksRoot(), false)) {
       if (fence.kind === "execution" || fence.kind === "compaction") protectedNames.add(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
     }
+    const switches = await this.modelSwitchFootprint(rootIdentity);
+    for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
-    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes
+      + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let projectedCount = entries.length;
     for (const active of projectedStages) {
       const replaced = byName.get(active.destinationName);
@@ -1626,7 +1740,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     );
     // Published pending inputs remain charged after a crash/marker removal.
     // They are not abandoned canonical staging and require owner-held recovery.
-    let bytes = (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0);
+    const switches = await this.modelSwitchFootprint(rootIdentity);
+    let bytes = (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0) + switches.bytes
+      + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let removed = false;
     for (const name of (await readdir(this.root)).sort()) {
       const match = TEMP_FILE_PATTERN.exec(name);
@@ -1668,6 +1784,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const info = await lstat(path);
         assertSecureHistoryDirectory(info, path);
         continue;
+      }
+      if (name === MODEL_SWITCH_DIRECTORY) {
+        await this.modelSwitchFootprint(rootIdentity); continue;
       }
       if (name === PENDING_TURN_DIRECTORY) {
         await this.pendingPayloads(rootIdentity).list();
@@ -2103,6 +2222,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (this.retireProviderSession === undefined) return;
     const activeKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     const fences = await this.scanDirtyFences(locksIdentity, true);
+    const switchingKeys = new Set((await this.modelSwitchFootprint(rootIdentity)).pending.map((entry) => historyKey(entry.state.identity.historyBucket)));
     const committedByName = new Map(
       (await this.scanCommittedEntries(rootIdentity, true)).map((entry) => [entry.name, entry]),
     );
@@ -2112,6 +2232,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         fence.conversationKey === excludedConversationKey
         || fence.kind === "execution" || fence.kind === "compaction"
         || activeKeys.has(fence.conversationKey)
+        || switchingKeys.has(fence.conversationKey)
         || fence.providerSessionId === undefined
       ) {
         continue;
@@ -2236,15 +2357,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     reset = false,
   ): Promise<DirtyFence | undefined> {
     const locksIdentity = await this.ensureLocksRoot();
-    const existing = await this.findDirtyFence(historyKey(record.conversationId), locksIdentity);
-    if (!reset) requireSettledFence(existing);
-    if (reset && existing?.kind !== undefined && this.retireProviderSession === undefined) {
-      throw new Error("Reset of a pending native turn requires fail-closed provider retirement.");
-    }
-    if (this.retireProviderSession === undefined) return undefined;
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let fence: DirtyFence | undefined;
     try {
+      await this.requireNoModelSwitch(record.conversationId, rootIdentity);
+      const existing = await this.findDirtyFence(historyKey(record.conversationId), locksIdentity);
+      if (!reset) requireSettledFence(existing);
+      if (reset && existing?.kind !== undefined && this.retireProviderSession === undefined) {
+        throw new Error("Reset of a pending native turn requires fail-closed provider retirement.");
+      }
+      if (this.retireProviderSession === undefined) return undefined;
       fence = await this.ensureRetirementFence(record, rootIdentity, locksIdentity, reset);
     } finally {
       await releaseRoot();
