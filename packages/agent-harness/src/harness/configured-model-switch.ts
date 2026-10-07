@@ -108,6 +108,10 @@ export async function prepareConfiguredModelSwitch(input: {
               // Bound ANY subsequently accepted structured artifact, including a
               // not-yet-produced summary: its serialized projection is capped by
               // historyAllowance. Add that cap to the real empty summary envelope.
+              // Intentionally also checked for a fitting native candidate: exact
+              // artifact-byte refusal can still select structured handoff below.
+              // Do not publish intent/authorize paid fallback without proving
+              // its worst-case inherited prefix is compactable.
               const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget!.historyAllowance);
               if (capacityFit.status !== "ready") throw budgetFailure(capacityFit.reason);
               const proposal = nativeProposal ? { status: "ready" as const, messages: nativeProposal.nativeProjection.messages }

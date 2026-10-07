@@ -20,11 +20,11 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
   const repo = new JsonlSessionRepo({ sessionsRoot: join(base, "native") }), session = await repo.create({ id: turn.providerSessionId, cwd: "/fictional" });
   await session.scopedWrite(async () => {
     await session.writeRecord("owner_binding", { kind: "host", ownerKey, historyBucket: bucket });
-    await session.writeRecord("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "A", api: "faux-api" } });
+    await session.writeRecord("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "A", api: sourceProvenance?.api ?? "faux-api" } });
   }, "bind");
   if (sourceProvenance) {
     await session.beginTurn("fixture-native-source");
-    await session.openOperation("fixture-native-source-op", { model: { provider: "faux", api: "faux-api", id: "A" }, nativeProvenance: sourceProvenance });
+    await session.openOperation("fixture-native-source-op", { model: { provider: "faux", api: sourceProvenance?.api ?? "faux-api", id: "A" }, nativeProvenance: sourceProvenance });
   }
   await session.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, "source-message");
   if (sourceProvenance) { await session.closeOperation("fixture-native-source-op", "completed"); await session.endTurn("fixture-native-source", "completed"); }
@@ -39,7 +39,7 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
   const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey, historyBucket: bucket, sourceCanonicalDigest: source.sourceCanonicalDigest,
     sourceRevision: source.sourceRevision, sources: [descriptor], fromModelKey: "faux:A", toModelKey: "faux:B",
-    targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: sourceProvenance?.account ?? null }, targetEpoch: "5".repeat(64),
+    targetProvenance: { provider: "faux", api: sourceProvenance?.api ?? "faux-api", model: "B", account: sourceProvenance?.account ?? null }, targetEpoch: "5".repeat(64),
     projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
     { canonicalBytes: 8192, artifactBytes: 32768, retainedNativeBytes: 16384, headerCopyBytes: 16384, pendingBytes: 65536 });
   const canonicalPath = join(base, "history", `${switchConversationKey(bucket)}.history.json`);

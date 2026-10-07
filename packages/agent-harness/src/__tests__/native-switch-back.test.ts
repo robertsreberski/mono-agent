@@ -6,18 +6,19 @@ import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { createMonoRuntime, type RuntimeNativePreparationStorage } from "@mono-agent/runtime-adapter";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
-import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
+import { ModelSwitchPayloadStore, serializeModelSwitchArtifact } from "../model-switch-payloads.js";
 import { createDurableHistoryStore } from "../durable-history.js";
-import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch } from "../harness/model-switch-preparation.js";
+import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, prepareNativeSwitchProjection, nativeSwitchArtifactFits } from "../harness/model-switch-preparation.js";
 import type { PreparedHarnessRuntime, HarnessPreparedBinding } from "../harness/runtime-execution.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const provenance = { provider: "faux", api: "faux-api", model: "A", account: "fictional-account" };
 const summary = { intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
-async function setup(account: string | null = provenance.account) {
+async function setup(account: string | null = provenance.account, api = provenance.api) {
+  const dispatchProvenance = { ...provenance, api };
   const root = await mkdtemp(join(tmpdir(), "native-switch-back-")); roots.push(root);
-  const f = await fixture(root, bucket, provenance);
+  const f = await fixture(root, bucket, dispatchProvenance);
   // Bootstrap the A -> B boundary with retained positive fixture provenance.
   // No real credentials/provider calls: subsequent evidence uses exact journals.
   await ready(f); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true });
@@ -29,10 +30,10 @@ async function setup(account: string | null = provenance.account) {
   const session = await repo.open((await repo.listOwned()).find((row: { id: string }) => row.id === turn.providerSessionId)!);
   await session.beginTurn("intervening-B", {}, "synthetic", undefined);
   await session.write("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
-  await session.write("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", api: "faux-api", id: "B" } });
-  await session.openOperation("intervening-B-op", { model: { provider: "faux", api: "faux-api", id: "B" }, nativeProvenance: { ...provenance, model: "B", account } });
+  await session.write("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", api, id: "B" } });
+  await session.openOperation("intervening-B-op", { model: { provider: "faux", api, id: "B" }, nativeProvenance: { ...dispatchProvenance, model: "B", account } });
   await session.appendMessage({ role: "user", content: "Intervening fictional B fact", timestamp: 17 });
-  await session.appendMessage({ role: "assistant", provider: "faux", api: "faux-api", model: "B", stopReason: "stop", timestamp: 17,
+  await session.appendMessage({ role: "assistant", provider: "faux", api, model: "B", stopReason: "stop", timestamp: 17,
     content: [{ type: "thinking", thinking: "Fictional reasoning", thinkingSignature: "fixture-signature" }, { type: "text", text: "Intervening B reply" }] });
   await session.closeOperation("intervening-B-op", "completed"); await session.endTurn("intervening-B", "completed"); await session.sync();
   await session.close(); await repo.close();
@@ -40,13 +41,13 @@ async function setup(account: string | null = provenance.account) {
   const prep = await store.beginProviderSessionPreparation(bucket, "switch-back");
   const native = f.native as RuntimeNativePreparationStorage, captured = await prep.captureNativeEvidence();
   const source = (await prep.read()).source; if (source.status !== "supported") throw new Error("Expected source");
-  const incoming = { snapshot: { expiresAt: Date.now() + 300000, model: { provider: "faux", api: "faux-api", id: "A", contextWindow: 100000, maxTokens: 8000 },
-    provenance, authSource: "fixture", systemPrompt: "Fictional current instructions", tools: [], messages: [{ role: "user", content: "Fictional return request" }] },
+  const incoming = { snapshot: { expiresAt: Date.now() + 300000, model: { provider: "faux", api, id: "A", contextWindow: 100000, maxTokens: 8000 },
+    provenance: dispatchProvenance, authSource: "fixture", systemPrompt: "Fictional current instructions", tools: [], messages: [{ role: "user", content: "Fictional return request" }] },
     checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })), produceHandoffSummary: vi.fn(async () => ({ status: "ready" as const, summary })), close: vi.fn(async () => {}) };
   const state = createPreparedModelSwitchState({ source, sources: captured.sources, incoming: incoming.snapshot, native, targetEpoch: "6".repeat(64),
     reservation: { canonicalBytes: 65536, artifactBytes: 131072, retainedNativeBytes: 131072, headerCopyBytes: 131072, pendingBytes: 131072 },
     timestamp: 17, messageId: "persisted-return-delivery", outputReserve: 2000 });
-  const outgoing = { ...incoming, snapshot: { ...incoming.snapshot, model: { ...incoming.snapshot.model, id: "B" }, provenance: { ...provenance, model: "B", account } },
+  const outgoing = { ...incoming, snapshot: { ...incoming.snapshot, model: { ...incoming.snapshot.model, id: "B" }, provenance: { ...dispatchProvenance, model: "B", account } },
     produceHandoffSummary: vi.fn(async () => ({ status: "ready" as const, summary })) };
   const advance = (extra: Partial<Parameters<typeof advancePreparedModelSwitch>[0]> = {}) => advancePreparedModelSwitch({ preparation: prep, native, incoming, state, view: captured.view,
     messageId: "persisted-return-delivery", exclusiveWriters: true, outgoing: async () => outgoing, ...extra });
@@ -105,10 +106,10 @@ it("recovers accepted native projection bytes after a lost ready pointer without
 });
 
 it("actually dispatches and reconciles inherited native envelopes on account-ungated same-model reopening", async () => {
-  const f = await setup(), readyResult = await f.advance(); if (readyResult.status !== "ready") throw new Error("Expected ready");
+  const faux = fauxProvider({ models: [{ id: "A", contextWindow: 100000, maxTokens: 8000 }], tokensPerSecond: 1000000 });
+  const f = await setup(provenance.account, faux.getModel().api), readyResult = await f.advance(); if (readyResult.status !== "ready") throw new Error("Expected ready");
   await f.prep.abort();
   const runtime = createMonoRuntime({ workspace: f.base }), nativeRoot = join(f.base, "native");
-  const faux = fauxProvider({ models: [{ id: "A", contextWindow: 100000, maxTokens: 8000 }], tokensPerSecond: 1000000 });
   const models = createModels(); models.setProvider(faux.provider); const transport = vi.spyOn(faux.provider, "streamSimple");
   const inspect = vi.fn(async (request) => await runtime.reconcileSessionTurn!({ sessionsRoot: nativeRoot,
     descriptor: request.descriptor, purpose: request.purpose, expectedInputs: request.expectedInputs, expectedModel: { provider: "faux", id: "A" } }));
@@ -138,11 +139,11 @@ it("actually dispatches and reconciles inherited native envelopes on account-ung
       { role: "assistant", content: result.text!, runId: "actual-native-reopen", timestamp: "2000-01-01T00:00:01.000Z" }], { providerSessionSynced: true })).commit();
     await expect(inspect.mock.results.at(-1)?.value).resolves.toMatchObject({ status: "matched", outcome: "completed" });
     expect(await store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
-    // The new different-API/unknown-account operation prevents a later switch from silently
+    // The new same-API/unknown-account operation prevents a later switch from silently
     // treating the positive creation descriptor as proof for this extra turn.
     const next = await store.beginProviderSessionPreparation(bucket, "next-switch-inspection");
     try { const captured = await next.captureNativeEvidence(); expect(f.native.projectChain(captured.view,
-      { target: provenance, budget: f.state.frozenBudget!, timestamp: 17, hostContext: {} })).toMatchObject({ status: "handoff_required", reason: "different_api" });
+      { target: f.incoming.snapshot.provenance, budget: f.state.frozenBudget!, timestamp: 17, hostContext: {} })).toMatchObject({ status: "handoff_required", reason: "unknown_account" });
       const records = captured.view.segments.at(-1)!.records as any[];
       expect(records.find((record) => record.kind === "operation_start").payload.config.nativeProvenance.account).toBeNull(); }
     finally { await next.abort(); }
@@ -155,4 +156,89 @@ it("uses the approved handoff if a fitting raw native chain fails inherited-pref
   const result = await f.advance({ checkInheritedPrefix: check }); if (result.status !== "ready") throw new Error("Expected ready");
   expect(check).toHaveBeenCalled(); expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
   expect((await f.prep.readHandoff(result.switchId, result.artifact)).artifact.nativeProjection).toBeUndefined(); await f.prep.abort();
+});
+
+it.each(["provider", "api"])("refuses raw native envelopes on same-model reopening with a different %s before admission", async (key) => {
+  const f = await setup(), readyResult = await f.advance(); if (readyResult.status !== "ready") throw new Error("Expected ready");
+  const admit = vi.spyOn(f.prep, "admit"), onAdmitted = vi.fn();
+  const incoming = { snapshot: { ...f.incoming.snapshot, provenance: { ...f.incoming.snapshot.provenance, [key]: "different" } },
+    run: async (resolve: () => Promise<HarnessPreparedBinding>) => { await resolve(); throw new Error("Must not dispatch"); } } as unknown as PreparedHarnessRuntime;
+  await expect(runPreparedModelSwitch({ preparation: f.prep, incoming, ready: readyResult, sessionsRoot: join(f.base, "native"), switching: false,
+    binding: { modelKey: "faux:A", reconciliation: { ownerKey: bucket, purpose: "execution", initial: { persistText: "Fictional input", timestamp: "2000-01-01T00:00:00.000Z" } } },
+    onAdmitted })).rejects.toThrow("accepted provider/API");
+  expect(admit).not.toHaveBeenCalled(); expect(onAdmitted).not.toHaveBeenCalled(); await f.prep.abort();
+});
+
+it("falls through a near-allowance 30-journal native artifact before intent, and redelivery cannot get stuck", async () => {
+  const f = await setup();
+  // Build a real long retained chain, not caller-fabricated descriptors. Each
+  // intervening epoch binds and seals a fictional operation under the host turn.
+  for (let index = 0; index < 28; index++) {
+    const captured = await f.prep.captureNativeEvidence(), source = (await f.prep.read()).source;
+    if (source.status !== "supported") throw new Error("Expected bound source");
+    const model = index % 2 === 0 ? "A" : "B";
+    const incoming = { ...f.incoming, snapshot: { ...f.incoming.snapshot, model: { ...f.incoming.snapshot.model, id: model }, provenance: { ...provenance, model } } };
+    const state = createPreparedModelSwitchState({ source, sources: captured.sources, incoming: incoming.snapshot, native: f.native,
+      targetEpoch: (index + 30).toString(16).padStart(64, "0"), timestamp: 17, messageId: `fictional-chain-delivery-${index}`, outputReserve: 2000,
+      reservation: { canonicalBytes: 1048576, artifactBytes: 1048576, retainedNativeBytes: 1048576, headerCopyBytes: 1048576, pendingBytes: 1048576 } });
+    const result = await advancePreparedModelSwitch({ preparation: f.prep, native: f.native, incoming, state, view: captured.view,
+      messageId: `fictional-chain-delivery-${index}`, exclusiveWriters: true });
+    if (result.status !== "ready") throw new Error("Expected native fixture transition");
+    const turn = await f.prep.admit({ modelKey: `faux:${model}` });
+    const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
+    const session = await repo.open((await repo.listOwned()).find((row: { id: string }) => row.id === turn.providerSessionId)!);
+    await session.beginTurn(`chain-${index}`, {}, "synthetic", undefined);
+    await session.write("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
+    await session.write("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", api: "faux-api", id: model } });
+    await session.openOperation(`chain-op-${index}`, { model: { provider: "faux", api: "faux-api", id: model }, nativeProvenance: { ...provenance, model } });
+    await session.appendMessage({ role: "user", content: `Fictional intervening chain fact ${index}`, timestamp: 17 });
+    await session.closeOperation(`chain-op-${index}`, "completed"); await session.endTurn(`chain-${index}`, "completed"); await session.sync(); await session.close(); await repo.close();
+    await (await turn.prepareCommit([{ role: "user", content: `Fictional intervening chain fact ${index}` }], { providerSessionSynced: true })).commit();
+    f.prep = await f.store.beginProviderSessionPreparation(bucket, `chain-preparation-${index}`);
+  }
+  // Fill with opaque native reasoning: native envelopes are large, but the
+  // approved neutral handoff references (rather than copies) that reasoning.
+  let captured = await f.prep.captureNativeEvidence(), source = (await f.prep.read()).source;
+  if (source.status !== "supported") throw new Error("Expected source");
+  const stateFor = () => createPreparedModelSwitchState({ source: source as Extract<typeof source, { status: "supported" }>, sources: captured.sources,
+    incoming: f.incoming.snapshot, native: f.native, targetEpoch: "6".repeat(64), timestamp: 17, messageId: "persisted-large-native-delivery", outputReserve: 2000,
+    reservation: { canonicalBytes: 1048576, artifactBytes: 0, retainedNativeBytes: 1048576, headerCopyBytes: 1048576, pendingBytes: 1048576 } });
+  const initial = stateFor(), proposal = prepareNativeSwitchProjection(f.native, captured.view, initial)!;
+  const baseline = Buffer.byteLength(JSON.stringify(proposal.nativeProjection.messages));
+  const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
+  const session = await repo.open((await repo.listOwned()).find((row: { id: string }) => row.id === captured.sources.at(-1)!.handleId)!);
+  await session.beginTurn("large-native-turn", {}, "synthetic", undefined);
+  await session.openOperation("large-native-op", { model: { provider: "faux", api: "faux-api", id: "B" }, nativeProvenance: { ...provenance, model: "B" } });
+  const message = { role: "assistant", provider: "faux", api: "faux-api", model: "B", stopReason: "stop", timestamp: 17,
+    content: [{ type: "thinking", thinking: "", thinkingSignature: "large-fixture-signature" }] };
+  const overhead = Buffer.byteLength(JSON.stringify(message)) + 1;
+  message.content[0]!.thinking = "x".repeat(initial.frozenBudget!.historyAllowance * 3 - baseline - overhead - 3);
+  await session.appendMessage(message); await session.closeOperation("large-native-op", "completed"); await session.endTurn("large-native-turn", "completed");
+  await session.sync(); await session.close(); await repo.close();
+  captured = await f.prep.captureNativeEvidence(); source = (await f.prep.read()).source;
+  const plan = stateFor(), state = { ...plan, reservation: { ...plan.reservation, artifactBytes: plan.frozenBudget!.historyAllowance * 3 + 4096 } };
+  expect(captured.sources).toHaveLength(30);
+  const native = prepareNativeSwitchProjection(f.native, captured.view, state)!; expect(native).toBeDefined();
+  expect(Buffer.byteLength(JSON.stringify(native.nativeProjection.messages))).toBeGreaterThan(state.frozenBudget!.historyAllowance * 3 - 10);
+  expect(serializeModelSwitchArtifact(state, native, null).byteLength).toBeGreaterThan(state.reservation.artifactBytes);
+  expect(nativeSwitchArtifactFits(state, native)).toBe(false);
+  const begin = vi.spyOn(f.prep, "beginModelSwitchStorage");
+  const advance = () => advancePreparedModelSwitch({ preparation: f.prep, native: f.native, incoming: f.incoming, state, view: captured.view,
+    messageId: "persisted-large-native-delivery", exclusiveWriters: true, outgoing: async () => f.outgoing });
+  f.outgoing.produceHandoffSummary.mockRejectedValueOnce(new Error("Fictional summary interruption"));
+  await expect(advance()).rejects.toThrow("Fictional summary interruption");
+  expect(begin).toHaveBeenCalledOnce(); expect((await f.prep.read()).pending?.phase).toBe("outgoing");
+  // The same persisted delivery progresses through the free/incoming slots,
+  // rather than reselecting an oversized native artifact or rebilling outgoing.
+  const result = await advance(); expect(result.status).toBe("ready"); if (result.status !== "ready") throw new Error("Expected handoff");
+  expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce(); expect(f.incoming.produceHandoffSummary).toHaveBeenCalledOnce();
+  expect((await f.prep.readHandoff(result.switchId, result.artifact)).artifact.nativeProjection).toBeUndefined();
+  expect(await advance()).toEqual(result); expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce(); await f.prep.abort();
+}, 60000);
+
+it("treats the maximum serialized artifact bound as native-unfit too", async () => {
+  const f = await setup(), proposal = prepareNativeSwitchProjection(f.native, f.captured.view, f.state)!;
+  const huge = { ...proposal, nativeProjection: { version: 1, messages: [{ role: "user", content: "x".repeat(16 * 1024 * 1024) }] } };
+  expect(nativeSwitchArtifactFits({ ...f.state, reservation: { ...f.state.reservation, artifactBytes: 32 * 1024 * 1024 } }, huge)).toBe(false);
+  await f.prep.abort();
 });

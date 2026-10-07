@@ -254,3 +254,17 @@ it("root authority contention is typed/retryable, preserves evidence and publish
   await other.abort(); f.faux.setResponses([text(summary), text("Fictional serialized retry")]);
   expect((await f.makeHarness("B", true).run(f.request("busy-delivery"))).failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(3);
 });
+
+it("unguarded default and unguarded prepared turns emit no nativeProvenance", async () => {
+  const f = await fixture(); await f.seed();
+  const runtime = f.runtimeFor("A");
+  const lease = await runtime.prepareNativeDispatch!("Fictional unguarded rules", { model: parseMonoRuntimeModelReference("faux:A"),
+    abortSignal: new AbortController().signal, messages: [{ role: "user", content: "Fictional unguarded prepared input" }], allowedTools: [],
+    piSessionsRoot: f.nativeRoot, sessionId: "fictional-unguarded-prepare", sessionKeepAlive: true, compaction: { enabled: false } });
+  try { f.faux.setResponses([text("Fictional unguarded reply")]); expect((await lease.run()).error).toBeFalsy(); }
+  finally { await lease.close(); }
+  const records = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
+  const starts = records.filter((record) => ["turn_start", "operation_start"].includes(record.kind));
+  expect(starts.some((record) => record.payload.config?.model?.id === "A")).toBe(true);
+  expect(starts.every((record) => !Object.hasOwn(record.payload.config, "nativeProvenance"))).toBe(true);
+});
