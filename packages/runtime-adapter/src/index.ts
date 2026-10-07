@@ -193,4 +193,5 @@ export type {
 export { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 export type { OwnedForegroundProcessRequest, OwnedForegroundProcessController, OwnedForegroundProcesses } from "./owned-foreground-processes.js";
 
+export { NativeEvidenceCapacityError } from "@mono-agent/agent-runtime";
 export { createManagedNativeJournalStorage } from "./native-journal-storage.js";

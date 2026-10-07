@@ -344,6 +344,7 @@ MonoRuntimePricing
 MonoRuntimeRetryPolicy
 MonoRuntimeSandboxEngine
 MonoRuntimeSupportDescription
+NativeEvidenceCapacityError
 NormalizedMcpServer
 NormalizedMcpTransport
 OwnedForegroundProcessController

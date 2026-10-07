@@ -163,12 +163,20 @@ export interface ManagedModelSwitchStorageLease {
  * preparation/child methods serialize behind the running action. Do not call
  * same-conversation standalone store APIs while this preparation is held; they
  * acquire its claim and cannot proceed until admission or abort releases it. */
+/** Pre-intent contention, not unsupported storage or permission to cold replay.
+ * Never wait holding a conversation claim: two contenders can pin each other. */
+export class NativeHistoryAuthorityBusyError extends Error {
+  readonly code = "ERR_NATIVE_HISTORY_AUTHORITY_BUSY";
+  readonly retryable = true;
+  constructor() { super("Native root authority requires drained host owners and settled fences"); this.name = "NativeHistoryAuthorityBusyError"; }
+}
+
 export interface ManagedProviderSessionPreparation {
   readonly recovery: ConversationHistoryTurnRecovery;
   read(): Promise<ProviderSessionPreparationSnapshot>;
   /** Caller-supplied provenance is used only for a legacy source's API/model;
    * its account is explicitly null, never inferred from current credentials. */
-  captureNativeEvidence(legacyProvenance: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
+  captureNativeEvidence(legacyProvenance?: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
     readonly sources: readonly CanonicalJournalDescriptor[]; readonly view: import("@mono-agent/runtime-adapter").RuntimeNativeEvidenceView;
   }>;
   readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
@@ -426,7 +434,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (active.some((entry) => entry.path !== held.marker.path)
           || (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).length
           || (await this.pendingPayloads(rootIdentity).list()).length) {
-          throw new Error("Native root authority requires drained host owners and settled fences");
+          throw new NativeHistoryAuthorityBusyError();
         }
         const rootStore = this.nativeHistoryRoot(rootIdentity);
         if (!await rootStore.read()) {
@@ -1383,11 +1391,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (native?.nativeEvidence !== "v1" || !native.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
           const source = await this.modelSwitchStorageSource(id), record = await this.readRecord(id, held.rootIdentity);
           if (source.status !== "supported") throw new Error("Native evidence source unavailable");
-          if (`${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
+          if (legacyProvenance && `${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
           const sources = record.native ? [...record.native.chain] : [{ epoch: source.sourceEpoch, ordinal: 0,
             handleId: deriveProviderSessionId(id, source.sourceEpoch), predecessorJournalId: null, ownerKey: source.ownerKey, historyBucket: id,
-            provenance: { ...structuredClone(legacyProvenance), account: null } }];
+            ...(legacyProvenance ? { provenance: { ...structuredClone(legacyProvenance), account: null } } : {}) }];
           const current = await native.freeze(sources.at(-1)!);
+          if (`${current.provenance.provider}:${current.provenance.model}` !== source.fromModelKey) throw new Error("Captured source model disagrees with canonical binding");
           const frozen = [...sources.slice(0, -1), current] as CanonicalJournalDescriptor[];
           const view = await native.captureEvidence(frozen, { ownerKey: source.ownerKey, historyBucket: id,
             ...(record.native ? { hostAuthority: record.native.authority } : {}), assertOwned });

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve ordinary cancellation continuity after inert switch preparation selects
+  fallback; skip unavailable outgoing producers without billing and distinguish
+  native capture capacity and retryable root contention from generic failures.
+
 - Add inert before-P2 host model-switch wiring with pending-message accounting,
   pre-intent capacity fallback and real inherited-prefix compaction preflight;
   keep configured activation disabled until switch-back and lifecycle wiring land.

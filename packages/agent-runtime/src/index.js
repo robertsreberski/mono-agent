@@ -21,4 +21,4 @@ export { probeNativeAccountProvenance } from "./ai/providers/pi-native/account-p
 export { detachDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
 
 // Administrative storage factory; never forwarded through runtime run options.
-export { createManagedNativeJournalStorage } from "./ai/providers/pi-native/native-journal-storage.js";
+export { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "./ai/providers/pi-native/native-journal-storage.js";

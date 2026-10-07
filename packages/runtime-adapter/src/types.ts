@@ -774,7 +774,7 @@ export interface RuntimeNativeJournalStorage {
   /** Caller retains canonical membership and deletion intent through completion. */
   deletionBlocked(chain: readonly RuntimeNativeJournalDescriptor[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
   deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
-  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
+  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest" | "provenance"> & { readonly provenance?: RuntimeNativeJournalDescriptor["provenance"] }): Promise<RuntimeNativeJournalDescriptor>;
   measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
   /** Prove an exact full/partial ready reference already exists; never publish one. */
   hasSwitchReference(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<boolean>;

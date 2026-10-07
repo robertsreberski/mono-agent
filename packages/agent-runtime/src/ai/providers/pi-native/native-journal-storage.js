@@ -17,7 +17,14 @@ const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "ob
 // capture is bounded separately from streaming inspection; never clip evidence.
 export const MAX_CAPTURE_JOURNALS = 32;
 export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
-const captureLimit = () => { throw Object.assign(new RangeError("Managed native evidence capture exceeds its journal/chain limit"), { code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" }); };
+export class NativeEvidenceCapacityError extends RangeError {
+  constructor() {
+    super("Managed native evidence capture exceeds its journal/chain limit");
+    this.name = "NativeEvidenceCapacityError";
+    this.code = "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT";
+  }
+}
+const captureLimit = () => { throw new NativeEvidenceCapacityError(); };
 const hex64 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error) => error?.code === "ENOENT";
@@ -161,7 +168,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const statEvidence = async (source) => { try { return await lstat(path(source.journalId)); } catch { fail(); } };
       const readEvidence = async (source, remaining) => {
         try { return await snapshot(source, undefined, false, remaining); }
-        catch (error) { if (error?.code === "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT") throw error; fail(); }
+        catch (error) { if (error instanceof NativeEvidenceCapacityError) throw error; fail(); }
       };
       let bytes = 0;
       // Stat every exact published path before allocating records or parsing even
@@ -186,7 +193,17 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       await context.assertOwned(); return createEvidenceView({ ownerKey: context.ownerKey, historyBucket: context.historyBucket, segments });
     },
     /** @param {any} coordinates */
-    async freeze(coordinates) { await detachDurableNativeSession(coordinates.handleId, root); return (await snapshot(coordinates)).descriptor; },
+    async freeze(coordinates) {
+      await detachDurableNativeSession(coordinates.handleId, root);
+      const frozen = await snapshot(coordinates);
+      if (coordinates.provenance) return frozen.descriptor;
+      // Legacy account evidence is unknown. API/model come from validated owned
+      // native binding bytes, never a credential lookup needed just to summarize.
+      const binding = frozen.handleBinding, model = binding?.model;
+      if (frozen.owner.kind !== "host" || frozen.owner.ownerKey !== coordinates.ownerKey || frozen.owner.historyBucket !== coordinates.historyBucket
+        || binding?.handleId !== coordinates.handleId || !model || [model.provider, model.api, model.id].some((value) => typeof value !== "string" || !value.length)) fail();
+      return { ...frozen.descriptor, provenance: { provider: model.provider, api: model.api, model: model.id, account: null } };
+    },
     /** Before intent publication: no upgrade/event/create side effects. @param {any[]} sources @param {any} context */
     async measureSwitch(sources, context) {
       await context.assertOwned(); let retainedNativeBytes = 0, headerCopyBytes = 0;

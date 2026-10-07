@@ -135,7 +135,7 @@ export async function advancePreparedModelSwitch(input: {
   readonly messageId: string;
   readonly exclusiveWriters: true;
   /** Resolve the outgoing owner with its own pinned auth, no tools or router. */
-  readonly outgoing?: (() => Promise<PreparedSwitchProducer>) | undefined;
+  readonly outgoing?: (() => Promise<PreparedSwitchProducer | undefined>) | undefined;
   /** Diagnostic only. Cleanup rejection (including from this callback) never
    * replaces a committed result or the original producer/storage failure. */
   readonly onCleanupError?: (error: unknown) => void;

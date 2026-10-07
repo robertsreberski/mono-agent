@@ -120,7 +120,8 @@ const SHUTDOWN_DRAIN_WARNING =
   "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
 
 interface MonoAgentHarnessInternalOptions {
-  /** Inert private staging capability; never passed by configured app/createAgentHarness. */
+  /** @internal
+   * @unstable Staging capability; never passed by configured app/createAgentHarness. */
   readonly nativeModelSwitch?: InternalNativeSwitchPolicy;
   /** Deterministic test seam; production callers use the bounded default. */
   readonly shutdownDrainTimeoutMs?: number;
@@ -695,6 +696,7 @@ export class MonoAgentHarness implements AgentHarness {
     let p2Turn: ConversationHistoryTurnReconciliation | undefined;
     let preparedNativeTurn: ConfiguredPreparedTurn | undefined;
     let nativePreparationActive = false;
+    let deferredNativeContinuity: ContinuityClaim | undefined;
     let exclusiveHistoryTurn: ConversationHistoryExclusiveTurn | undefined;
     let exclusiveCapturedHistory: readonly import("./context/index.js").HistoryMessage[] | undefined;
     let exclusiveHistoryRequired = false;
@@ -1045,6 +1047,7 @@ export class MonoAgentHarness implements AgentHarness {
       if (nativePreparationActive && providerHistoryTurn === undefined && p2Turn === undefined) {
         // Pending/pre-admission messages are reported, never appended behind the
         // held claim or queued for automatic later execution.
+        deferredNativeContinuity = claim;
         terminalOwner = claim.outcome; toolHistoryStatus = claim.outcome; leavePending(); return false;
       }
       terminalOwner = claim.outcome;
@@ -1181,6 +1184,12 @@ export class MonoAgentHarness implements AgentHarness {
                 historyMode: "messages", turnId: runId, originalUserMessage: request.userMessage, isolated: false }, emit) });
             if (preparedNativeTurn) return;
             nativePreparationActive = false;
+            if (deferredNativeContinuity && continuityClaim === undefined) {
+              // The claim wait selected the ordinary fallback, not native
+              // preparation. Restore its normal cancelled-turn publication.
+              const claim = deferredNativeContinuity; deferredNativeContinuity = undefined;
+              terminalOwner = "running"; claimTurnContinuity(claim);
+            }
           }
           providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
             ...(historyStore?.providerSessionModelBinding === "v1" ? [{ modelKey: requestedModelKey,
