@@ -306,6 +306,7 @@ export class ModelSwitchPayloadStore {
       }
       const current = await this.read(state.identity.historyBucket, state.identity.switchId);
       if (current) {
+        if (current.state.initialMessageDigest !== state.initialMessageDigest) throw new Error("Switch initiating message identity conflicts");
         if (switchDigest(current.state.identity) !== switchDigest(state.identity) || switchDigest(current.state.reservation) !== switchDigest(state.reservation)) throw new Error("Switch intent identity conflicts");
         const directory = await this.ensureDirectory(false); if (!directory) unavailable();
         await this.syncDirectory(this.directory, directory); await this.owner(owner, current.state);

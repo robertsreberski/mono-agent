@@ -184,7 +184,7 @@ it("storage-only recovery rolls forward an artifact lost after acceptance, with 
   const prep = await openStore(f.base).store.beginProviderSessionPreparation(bucket, "recovery-request-for-A");
   const result = await recoverPreparedModelSwitch(prep, { exclusiveWriters: true }); expect(result.status).toBe("ready");
   expect((await prep.read()).source).toMatchObject({ fromModelKey: "faux:B" });
-  expect(await recoverPreparedModelSwitch(prep, { exclusiveWriters: true })).toEqual({ status: "absent" });
+  expect(await recoverPreparedModelSwitch(prep, { exclusiveWriters: true })).toEqual(result);
   expect((await nativeRecords(f)).filter((record: any) => record.kind === "model_change")).toHaveLength(1);
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
   await prep.abort();

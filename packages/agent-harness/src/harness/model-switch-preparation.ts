@@ -24,14 +24,26 @@ export type PreparedSwitchResult =
   | { readonly status: "budget_failure"; readonly reason: string }
   | { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
 
-/** Use an immutable delivery identity, not text: two identical explicit messages
- * are distinct authority; restart/retry of the same delivery is not. */
+/** messageId MUST be the durable host delivery identity, never a run ID or a
+ * hash of message text. Two identical explicit messages are distinct authority;
+ * restart/retry of the same delivery is not. Hosts must persist identity across
+ * retries. Shape checks cannot prove that an opaque ID satisfies this contract. */
 export function explicitSwitchMessageDigest(messageId: string): string {
-  if (!messageId || messageId.length > 512 || messageId.includes("\0")) throw new TypeError("Invalid explicit switch message identity");
+  if (!messageId || messageId.length > 512 || messageId.trim() !== messageId || /[\x00-\x1f\x7f]/u.test(messageId)) throw new TypeError("Invalid explicit switch message identity");
   return switchDigest({ messageId });
 }
 const hostContext = (snapshot: RuntimeNativeDispatchSnapshot) => ({ systemPrompt: snapshot.systemPrompt, tools: snapshot.tools });
 const estimate = (value: unknown) => Math.ceil(Buffer.byteLength(JSON.stringify(value) ?? "") / 3);
+/** Recheck the actual newly prepared host/input against the ORIGINAL allowance.
+ * Do not enlarge caps, re-summarize cached content, authorize a generation or
+ * bill a producer for a request already known not to fit. The same conservative
+ * input normalization reserve is used at intent creation and remeasurement. */
+function checkPreparedFit(snapshot: RuntimeNativeDispatchSnapshot, budget: RuntimeHandoffBudget): Extract<PreparedSwitchResult, { status: "budget_failure" }> | undefined {
+  if (snapshot.messages.length !== 1 || snapshot.messages[0]?.role !== "user") throw new Error("Switch preparation requires only the decorated current input");
+  if (estimate(hostContext(snapshot)) > budget.hostCap) return { status: "budget_failure", reason: "host_cap" };
+  if (estimate(snapshot.messages[0]) + 4096 > budget.inputTokens) return { status: "budget_failure", reason: "input_allowance" };
+  return undefined;
+}
 
 /** Create a measured plan from actual resolved declarations and decorated input.
  * Reservation/epoch policy remains the caller's responsibility. No writes. */
@@ -72,7 +84,7 @@ function options(state: ModelSwitchState): RuntimeHandoffOptions {
 async function current(lease: ManagedModelSwitchStorageLease): Promise<ModelSwitchState> {
   const stored = await lease.read(); if (!stored) throw new Error("Prepared switch intent disappeared"); return stored.state;
 }
-async function ready(preparation: ManagedProviderSessionPreparation, state: ModelSwitchState, artifact: HandoffReference): Promise<PreparedSwitchResult> {
+async function ready(preparation: ManagedProviderSessionPreparation, state: { readonly identity: Pick<ModelSwitchState["identity"], "switchId" | "toModelKey"> }, artifact: HandoffReference): Promise<PreparedSwitchResult> {
   const result = await preparation.rollForwardModelSwitch(state.identity.switchId, { exclusiveWriters: true });
   if (result.status !== "committed") throw new Error("Accepted switch did not publish a ready binding");
   const snapshot = await preparation.read();
@@ -89,8 +101,20 @@ async function ready(preparation: ManagedProviderSessionPreparation, state: Mode
 export async function recoverPreparedModelSwitch(preparation: ManagedProviderSessionPreparation, acknowledgement: { readonly exclusiveWriters: true }): Promise<PreparedSwitchResult | { readonly status: "absent" }> {
   if (acknowledgement?.exclusiveWriters !== true) throw new Error("Switch recovery requires acknowledged exclusive upgraded writers");
   const snapshot = await preparation.read();
-  if (!snapshot.pending) return { status: "absent" };
-  const state = snapshot.pending, lease = await preparation.beginModelSwitchStorage(initialState(state));
+  if (!snapshot.pending) {
+    const receipt = snapshot.lastSwitch;
+    if (!receipt?.artifact || !snapshot.native || snapshot.source.status !== "supported" || snapshot.source.sourceEpoch !== receipt.toEpoch) return { status: "absent" };
+    const cached = await preparation.readHandoff(receipt.switchId, receipt.artifact);
+    const target = cached.artifact.target as { provider: string; model: string };
+    // A committed result can outlive cleanup failure/fence removal. Rebuild only
+    // the current ready transition, never a historical receipt after rotation.
+    return await ready(preparation, { identity: { switchId: receipt.switchId, toModelKey: `${target.provider}:${target.model}` } }, receipt.artifact);
+  }
+  const state = snapshot.pending;
+  // Canonical rename may already have changed the source coordinate. Never try
+  // to begin the OLD intent against that new source; roll forward ready first.
+  if (state.phase === "ready") return await ready(preparation, state, state.artifact!);
+  const lease = await preparation.beginModelSwitchStorage(initialState(state));
   if (lease.status !== "owned") throw new Error("Existing switch storage became unsupported");
   try {
     const artifact = await lease.recoverArtifact();
@@ -106,21 +130,42 @@ export async function recoverPreparedModelSwitch(preparation: ManagedProviderSes
 export async function advancePreparedModelSwitch(input: {
   readonly preparation: ManagedProviderSessionPreparation; readonly native: RuntimeNativePreparationStorage;
   readonly incoming: PreparedSwitchProducer; readonly state: ModelSwitchState;
-  readonly view: RuntimeNativeEvidenceView; readonly messageId: string;
+  readonly view: RuntimeNativeEvidenceView;
+  /** Durable host delivery identity, never run ID or text hash; see explicitSwitchMessageDigest. */
+  readonly messageId: string;
   readonly exclusiveWriters: true;
   /** Resolve the outgoing owner with its own pinned auth, no tools or router. */
   readonly outgoing?: (() => Promise<PreparedSwitchProducer>) | undefined;
+  /** Diagnostic only. Cleanup rejection (including from this callback) never
+   * replaces a committed result or the original producer/storage failure. */
+  readonly onCleanupError?: (error: unknown) => void;
 }): Promise<PreparedSwitchResult> {
   if (input.exclusiveWriters !== true) throw new Error("Prepared switch requires acknowledged exclusive upgraded writers");
+  const snapshot = await input.preparation.read();
+  if (snapshot.pending?.phase === "ready") return await ready(input.preparation, snapshot.pending, snapshot.pending.artifact!);
+  if (!snapshot.pending && snapshot.lastSwitch?.switchId === input.state.identity.switchId) {
+    const recovered = await recoverPreparedModelSwitch(input.preparation, { exclusiveWriters: true });
+    if (recovered.status === "ready") return recovered;
+    throw new Error("Recorded switch is no longer the current ready transition");
+  }
+  if (snapshot.pending) {
+    // Accepted bytes can precede a lost ready-state pointer. Recover them before
+    // remeasuring the new message: accepted transitions roll forward even when
+    // the next request cannot fit or asks for another model.
+    const recovered = await recoverPreparedModelSwitch(input.preparation, { exclusiveWriters: true });
+    if (recovered.status === "ready") return recovered;
+  }
   const messageDigest = explicitSwitchMessageDigest(input.messageId);
   const supplied = structuredClone(input.state); validateModelSwitchState(supplied);
-  const snapshot = await input.preparation.read(), state = snapshot.pending ?? supplied;
+  const state = snapshot.pending ?? supplied;
   validateModelSwitchState(state);
   if (state.identity.switchId !== supplied.identity.switchId) throw new Error("Recorded switch must finish before another transition");
   validateFrozenHandoffBudget(state.frozenBudget);
   if (switchDigest(input.incoming.snapshot.provenance) !== switchDigest(state.identity.targetProvenance)
     || input.incoming.snapshot.model.contextWindow < state.frozenBudget.contextWindow
     || input.incoming.snapshot.model.maxTokens < state.frozenBudget.outputReserve) throw new Error("Prepared incoming model disagrees with recorded target/budget");
+  const fit = checkPreparedFit(input.incoming.snapshot, state.frozenBudget);
+  if (fit) return fit;
   // The view is validated by the native helper, and must be this intent's entire
   // frozen source chain, not a caller-selected subset or a later native tail.
   const expected = state.identity.sources.map(({ ordinal, epoch: _epoch, ...source }) => ({ ...source, epoch: ordinal }));
@@ -192,7 +237,10 @@ export async function advancePreparedModelSwitch(input: {
         active = await lease.finish(producer, result.status === "summary_rejected" && result.reason === "request_outcome_unknown" ? "unknown" : "rejected");
       } finally {
         // Incoming is owned by the host preparation and remains usable for P2.
-        if (producer === "outgoing") await selected?.close();
+        if (producer === "outgoing" && selected) {
+          try { await selected.close(); }
+          catch (error) { try { input.onCleanupError?.(error); } catch { /* diagnostics cannot change durable outcome */ } }
+        }
       }
     }
     return { status: "pending", switchId: state.identity.switchId };
