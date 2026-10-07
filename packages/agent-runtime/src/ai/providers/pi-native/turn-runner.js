@@ -12,6 +12,7 @@ import {
   createStructuredOutputTool,
   getPiBuiltinTools,
   initPiMcpTools,
+  closePiMcpClients,
 } from "../../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
@@ -102,121 +103,128 @@ export async function buildTurnTools(runState, {
   // no-default destructured keys drop out of structural inference), so the
   // caller's full bag is passed through an `any` boundary — matching how the
   // pre-split (non-@ts-check) orchestrator called these.
-  const builtIns = capabilities.tool_use === false
-    ? []
-    : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
-      // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
-      disallowedTools: options.disallowedTools,
-      skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
-      // Full skill objects so ReadSkill can honor pi's neutral Skill shape
-      // ({name, filePath, ...}) and derive each skill's root from its own
-      // filePath when no shared skillsRoot is threaded.
-      skills: options.skills || [],
-      // Progressive skill disclosure: when the harness threads the skills root
-      // (the directory holding `<name>/SKILL.md`) the ReadSkill tool resolves
-      // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
-      // remains the back-compat fallback; a per-skill filePath is the third path.
-      skillsRoot: options.skillsRoot,
-      dataDir: options.dataDir,
-      cwd: options.cwd,
-      onEvent,
-      persistArtifact,
-      onTruncate,
-      toolLimits,
-      toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
-      imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
-      toolPolicy: options.toolPolicy,
-      sandboxPolicy: options.sandboxPolicy,
-      sandboxEngine,
-      approvalManager,
-      approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
-      nodeReplController,
-      webController,
-      processJobsController: options.processJobs,
-      ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
-      processJobsAvailability: options.processJobsAvailability,
-      toolExecutionMode,
-      subagents: options.subagents,
-      askParentController: options.askParentController,
-      finishSilentlyController: options.finishSilentlyController,
-      silentTurnState: runState.silentTurn,
-      toolExposure: options.toolExposure,
-      // The child inherits the parent's route and workspace unless its profile
-      // pins a model; the tool closure reads these to build each child request.
-      subagentContext: {
-        model: options.model,
-        effort: options.effort,
+  let pendingMcpClients = [];
+  try {
+    const builtIns = capabilities.tool_use === false
+      ? []
+      : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
+        // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
+        disallowedTools: options.disallowedTools,
+        skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
+        // Full skill objects so ReadSkill can honor pi's neutral Skill shape
+        // ({name, filePath, ...}) and derive each skill's root from its own
+        // filePath when no shared skillsRoot is threaded.
+        skills: options.skills || [],
+        // Progressive skill disclosure: when the harness threads the skills root
+        // (the directory holding `<name>/SKILL.md`) the ReadSkill tool resolves
+        // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
+        // remains the back-compat fallback; a per-skill filePath is the third path.
+        skillsRoot: options.skillsRoot,
+        dataDir: options.dataDir,
         cwd: options.cwd,
-        parentRunId: runCtx?.runId,
-        // Same policy + engine this turn's own tools are confined by, so a
-        // child is never less sandboxed than the parent that spawned it.
+        onEvent,
+        persistArtifact,
+        onTruncate,
+        toolLimits,
+        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
+        imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
+        toolPolicy: options.toolPolicy,
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine,
-        // The same skills this turn was disclosed. A child runs OUTSIDE the
-        // harness, so without this it gets no index and — because ReadSkill is
-        // only built when `skills` is non-empty — no way to read one either. It
-        // then rediscovers by trial and error whatever its parent could simply
-        // have looked up. Pass-through only: whether the child actually receives
-        // them is the host's decision, not this layer's.
-        skills: options.skills,
-        skillsRoot: options.skillsRoot,
-        toolEnvironment: options.toolEnvironment,
-        webSearchConfig: options.webSearchConfig,
-        webRequestCoordinator: options.webRequestCoordinator,
-        webFetchConfig: options.webFetchConfig,
+        approvalManager,
+        approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
+        nodeReplController,
+        webController,
+        processJobsController: options.processJobs,
+        ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
+        processJobsAvailability: options.processJobsAvailability,
+        toolExecutionMode,
+        subagents: options.subagents,
+        askParentController: options.askParentController,
+        finishSilentlyController: options.finishSilentlyController,
+        silentTurnState: runState.silentTurn,
+        toolExposure: options.toolExposure,
+        // The child inherits the parent's route and workspace unless its profile
+        // pins a model; the tool closure reads these to build each child request.
+        subagentContext: {
+          model: options.model,
+          effort: options.effort,
+          cwd: options.cwd,
+          parentRunId: runCtx?.runId,
+          // Same policy + engine this turn's own tools are confined by, so a
+          // child is never less sandboxed than the parent that spawned it.
+          sandboxPolicy: options.sandboxPolicy,
+          sandboxEngine,
+          // The same skills this turn was disclosed. A child runs OUTSIDE the
+          // harness, so without this it gets no index and — because ReadSkill is
+          // only built when `skills` is non-empty — no way to read one either. It
+          // then rediscovers by trial and error whatever its parent could simply
+          // have looked up. Pass-through only: whether the child actually receives
+          // them is the host's decision, not this layer's.
+          skills: options.skills,
+          skillsRoot: options.skillsRoot,
+          toolEnvironment: options.toolEnvironment,
+          webSearchConfig: options.webSearchConfig,
+          webRequestCoordinator: options.webRequestCoordinator,
+          webFetchConfig: options.webFetchConfig,
+        },
+        ctx: runCtx,
+      }));
+
+    const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
+      runState.structuredResult = value;
+    });
+    const reservedNames = new Set(builtIns.map((/** @type {{name: string}} */ toolDef) => toolDef.name));
+    if (structuredTool) reservedNames.add(structuredTool.name);
+
+    // REUSED MCP tool bridge: same initPiMcpTools sandboxing path (see the cast
+    // note above — the option bag crosses the same untyped pi-bridge boundary).
+    const mcpInit = capabilities.tool_use === false
+      ? { clients: [], tools: [], warnings: [] }
+      : await initPiMcpTools(options.mcpServers || {}, reservedNames, /** @type {any} */ ({
+        cwd: options.cwd,
+        persistArtifact,
+        qaOutputDir,
+        onTruncate,
+        limits: toolLimits,
+        mcpCallNoTotalTimeoutTools: options.mcpCallNoTotalTimeoutTools,
+        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
+        sandboxPolicy: options.sandboxPolicy,
+        sandboxEngine,
+        ctx: runCtx,
+        mcpApps: options.mcpApps,
+        onRichOutput: () => { runState.silentTurn.visibleContent = true; },
+        runId: runCtx?.runId,
+      }));
+    // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
+    // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
+    // summary's runtimeWarnings instead of being buried as a transient event the summary drops.
+    pendingMcpClients = mcpInit.clients;
+    for (const warning of mcpInit.warnings || []) {
+      onEvent(warning);
+      runtimeWarnings.push(warning);
+    }
+
+    const tools = [
+      ...builtIns,
+      ...mcpInit.tools.map((tool) => ({ ...tool, executionMode: "sequential" })),
+      ...(structuredTool ? [structuredTool] : []),
+    ];
+    return {
+      tools,
+      structuredTool,
+      mcpClients: mcpInit.clients,
+      closeRunTools: async () => {
+        await Promise.allSettled([
+          nodeReplController?.close(),
+          webController?.close(),
+        ].filter(Boolean));
       },
-      ctx: runCtx,
-    }));
-
-  const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
-    runState.structuredResult = value;
-  });
-  const reservedNames = new Set(builtIns.map((/** @type {{name: string}} */ toolDef) => toolDef.name));
-  if (structuredTool) reservedNames.add(structuredTool.name);
-
-  // REUSED MCP tool bridge: same initPiMcpTools sandboxing path (see the cast
-  // note above — the option bag crosses the same untyped pi-bridge boundary).
-  const mcpInit = capabilities.tool_use === false
-    ? { clients: [], tools: [], warnings: [] }
-    : await initPiMcpTools(options.mcpServers || {}, reservedNames, /** @type {any} */ ({
-      cwd: options.cwd,
-      persistArtifact,
-      qaOutputDir,
-      onTruncate,
-      limits: toolLimits,
-      mcpCallNoTotalTimeoutTools: options.mcpCallNoTotalTimeoutTools,
-      toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
-      sandboxPolicy: options.sandboxPolicy,
-      sandboxEngine,
-      ctx: runCtx,
-      mcpApps: options.mcpApps,
-      onRichOutput: () => { runState.silentTurn.visibleContent = true; },
-      runId: runCtx?.runId,
-    }));
-  // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
-  // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
-  // summary's runtimeWarnings instead of being buried as a transient event the summary drops.
-  for (const warning of mcpInit.warnings || []) {
-    onEvent(warning);
-    runtimeWarnings.push(warning);
+    };
+  } catch (error) {
+    await Promise.allSettled([nodeReplController?.close(), webController?.close(), closePiMcpClients(pendingMcpClients)].filter(Boolean));
+    throw error;
   }
-
-  const tools = [
-    ...builtIns,
-    ...mcpInit.tools.map((tool) => ({ ...tool, executionMode: "sequential" })),
-    ...(structuredTool ? [structuredTool] : []),
-  ];
-  return {
-    tools,
-    structuredTool,
-    mcpClients: mcpInit.clients,
-    closeRunTools: async () => {
-      await Promise.allSettled([
-        nodeReplController?.close(),
-        webController?.close(),
-      ].filter(Boolean));
-    },
-  };
 }
 
 /**

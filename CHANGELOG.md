@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add opt-in native dispatch preparation with resolved tool declarations, pinned
+  authentication and single-use resource leases, without enabling configured
+  model switching or changing existing session paths.
+
 - Keep provider-session preparation owned when reconciliation is unavailable,
   allowing validation failures to be corrected before incoming admission.
 

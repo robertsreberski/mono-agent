@@ -143,6 +143,37 @@ metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
 A positive compaction window override replaces the declared window, and learned
 provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
 
+Native runtimes additionally expose `nativePreparedDispatch: "v1"` and
+`prepareNativeDispatch(systemPrompt, options)`. This opt-in API resolves the
+actual built-in, MCP and StructuredOutput declarations plus provider
+model/authentication **before any session lookup, open, repair or creation**.
+Its deeply frozen `snapshot` includes the augmented system prompt, input,
+declarations, model limits and nonsecret provider/API/account provenance; it
+never contains credentials or auth headers. Only positively established Codex
+OAuth account metadata is an account proof; API-key, ambient and unsupported
+accounts remain null. Authentication can perform the selected store's normal
+OAuth refresh during preparation. The accepted auth is pinned to this dispatch;
+credential/environment changes afterward do not silently select another account.
+
+The single-use lease's `run(binding)` accepts only late host-owned session keys,
+turn/recovery descriptors and native authority/projection. It cannot replace the
+frozen root, model, instructions, input or policy. Tools keep their original
+runState/execute closures; no second MCP initialization or request extension is
+performed. `close()` is idempotent and closes unused preparation without native
+mutation; while running it waits for normal settlement. Cancel using the
+original abort signal. Hosts must hold their concurrency permit until run/close
+settles and always close the lease in a finally block. Incomplete MCP
+declarations or auth/model disagreement fail preparation, not cold-fallback
+success. Certified routers prepare only the primary's first attempt and resolve
+it once; the lease never performs router-level replay or falls through to a
+backup route. Normal native transport retry policy still applies. Custom
+resolvers need explicit `sessionTurnReconciliation: "v1"` certification.
+
+No configured host invokes this capability yet. Frozen host preparation,
+durable producer admission/summary billing, ready model-switch publication and
+safe configured lifecycle wiring remain separate work. Existing `run()` paths,
+subagent behavior and default journal/provider payload bytes remain unchanged.
+
 Native runtimes expose the explicit `sessionTurnReconciliation: "v1"` ownership
 capability. Custom routing resolvers are not certified from the presence of the
 default inner matcher's method; an options-only native router may explicitly
