@@ -314,7 +314,7 @@ export function createGuardedCompactionHook({
         }
       }
       let settings = compactionSettings;
-      let prepared = prepareCompaction(event.branchEntries, settings);
+      let prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
       if (prepared.ok === false) {
         decision = { kind: "failed", error: prepared.error };
         return { cancel: true };
@@ -328,13 +328,21 @@ export function createGuardedCompactionHook({
           ...settings,
           reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, true),
         };
-        prepared = prepareCompaction(event.branchEntries, settings);
+        prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
         if (prepared.ok === false) {
           decision = { kind: "failed", error: prepared.error };
           return { cancel: true };
         }
         if (!prepared.value) {
           decision = { kind: "nothing_to_compact" };
+          return { cancel: true };
+        }
+      }
+      if (event.nonRetainablePrefixLength > 0) {
+        const prefix = new Set(event.branchEntries.slice(0, event.nonRetainablePrefixLength)
+          .filter((entry) => entry.type === "message").map((entry) => JSON.stringify(entry.message)));
+        if (prepared.value.retainedTail.some((message) => prefix.has(JSON.stringify(message)))) {
+          decision = { kind: "guard_skipped", reason: "inherited_prefix_not_reducible" };
           return { cancel: true };
         }
       }

@@ -147,9 +147,10 @@ export class SessionStore {
   poison(error) { this.failure ??= isJournalStorageError(error) ? error : new JournalStorageError(error); return this.failure; }
   activeTurnId() { return this.validator.openTurns.values().next().value; }
   activeOperationId() { return [...this.validator.openOperations].at(-1); }
-  beginTurn(turnId, config = {}, identitySource = "synthetic", binding) {
+  beginTurn(turnId, config = {}, identitySource = "synthetic", binding, projectionBinding = undefined) {
     return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip,
-      ...(binding ? { binding: clone(binding) } : {}) }), { turnId });
+      ...(binding ? { binding: clone(binding) } : {}), ...(projectionBinding ? { projectionBinding: clone(projectionBinding) } : {}) }),
+      { turnId, schemaVersion: projectionBinding ? 3 : 2 });
   }
   endTurn(turnId, status, result = null) {
     return this.write("turn_end", () => ({ status, tipId: this.tip,

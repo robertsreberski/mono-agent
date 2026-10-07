@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix guarded native projections to pin accepted handoff identity and the native
+  root, summarize inherited prefixes before retaining current context, and reject
+  uncoordinated terminal recovery before journal repair.
+
 - Add opt-in native current-handle authority and inherited request projections,
   preserving predecessor evidence through composed compaction and refusing
   cached-handoff budget overruns without re-summarizing. Existing configured

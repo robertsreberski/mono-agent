@@ -183,7 +183,9 @@ resolvers cannot replace them. Backup success never certifies primary success.
 
 `RuntimeRunOptions.nativeSessionAuthority` and `nativeSessionProjection` are
 protected host-only opt-ins forwarded unchanged by the facade. The authority's
-`assertCurrent` must prove the held owner's ready current binding/artifact and
+`sessionsRoot` pins the dedicated native root; the resolver cannot replace
+`piSessionsRoot` while that authority is present. `assertCurrent` receives the
+actual normalized root and must prove the held owner's ready binding/artifact and
 creation eligibility; an artifact reference alone grants no execution. Projection
 content stays in host artifacts/predecessors, not the current native journal.
 Its optional frozen dispatch budget refuses overruns without cached-handoff

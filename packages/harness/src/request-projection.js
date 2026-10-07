@@ -90,12 +90,12 @@ export function projectInheritedContext(entries, inherited, options = {}) {
   }
   if (checkpoint?.inheritedCoverage) {
     validateComposedCoverage(checkpoint.inheritedCoverage, sources);
-    return projectContext(entries, options);
+    return { ...projectContext(entries, options), nonRetainablePrefixLength: 0 };
   }
   if (options.mode === "compaction") {
     const prefix = inherited.messages.map((message, index) => ({ type: "message", message,
       id: `inherited:${index}`, parentId: null, timestamp: message.timestamp, seq: index }));
-    return { entries: [...prefix, ...projectContext(entries, options).entries] };
+    return { entries: [...prefix, ...projectContext(entries, options).entries], nonRetainablePrefixLength: prefix.length, messages: undefined };
   }
   const current = projectContext(entries, options);
   return { ...current, messages: [...inherited.messages, ...current.messages] };

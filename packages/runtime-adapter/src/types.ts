@@ -528,8 +528,10 @@ export type RuntimeSessionTurnReconciliationResult =
 export interface RuntimeNativeSessionAuthority {
   readonly version: 1;
   readonly currentHandleId: string;
+  /** Pinned dedicated native root; normalized path and repository inode are checked. */
+  readonly sessionsRoot: string;
   readonly hostAuthority: RuntimeNativeJournalAuthority;
-  readonly assertCurrent: (request: { readonly handleId: string; readonly action: "open" | "create" }) => Promise<void>;
+  readonly assertCurrent: (request: { readonly handleId: string; readonly action: "open" | "create"; readonly sessionsRoot: string }) => Promise<void>;
 }
 /** Host-accepted immutable projection. Historical tools remain data; native
  * envelopes may be supplied only after whole-chain compatibility validation. */

@@ -3,6 +3,7 @@ import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
 import { randomUUID, createHash } from "node:crypto";
 import { projectContext, projectInheritedContext } from "./request-projection.js";
+import { evidenceDigest } from "./evidence-view.js";
 import { checkHandoffDispatch, estimateHandoffTokens } from "./handoff.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
@@ -50,7 +51,10 @@ export function createRunDriver(store, options) {
       }
       const needsOwnerBinding = store.validator.owner.kind === "unbound";
       turnBinding = descriptor ? createTurnBinding(descriptor, modelConfig().model) : undefined;
-      await store.beginTurn(id, modelConfig(), source, turnBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined; initialMessageId = undefined;
+      const projectionBinding = inherited && options.inheritedProjectionRef && !store.validator.projectionBinding
+        ? { version: 1, artifact: structuredClone(options.inheritedProjectionRef), coverage: inherited.coverage,
+          messageDigest: evidenceDigest(inherited.messages) } : undefined;
+      await store.beginTurn(id, modelConfig(), source, turnBinding, projectionBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined; initialMessageId = undefined;
       if (descriptor) {
         const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
         if (needsOwnerBinding) await store.write("owner_binding", owner);
@@ -224,9 +228,11 @@ export function createRunDriver(store, options) {
       await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
       let decision;
       const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
-      const branchEntries = project(nativeEntries, { repairs, mode: "compaction" }).entries;
+      const projection = project(nativeEntries, { repairs, mode: "compaction" });
+      const branchEntries = projection.entries;
+      const nonRetainablePrefixLength = "nonRetainablePrefixLength" in projection ? projection.nonRetainablePrefixLength : 0;
       for (const handler of registrations.get("before_compaction") || []) {
-        decision = await handler({ reason, branchEntries, signal: context.abortSignal, context }, context);
+        decision = await handler({ reason, branchEntries, nonRetainablePrefixLength, signal: context.abortSignal, context }, context);
         if (decision !== undefined) break;
       }
       if (!decision || decision.decline || !decision.compaction) {

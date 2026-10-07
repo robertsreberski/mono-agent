@@ -187,9 +187,14 @@ late host/input overruns refuse rather than repair a cached handoff.
 compose a host-accepted prefix with the current journal's delta. The prefix is
 never seeded or copied into current evidence. Compaction sees the composed view
 and records v3 `inheritedCoverage`; reopening validates that coverage and does
-not replay the prefix twice. A cut retaining predecessor envelopes is refused:
-it must reduce the inherited prefix rather than turn it into derived current
-messages. Raw current-journal evidence inspection is unchanged.
+not replay the prefix twice. The default guarded compaction hook clamps its cut
+and split-turn start beyond the entire inherited prefix before any summary call,
+even with a small current delta. A non-reducible inherited tail is refused before
+billing; the final publication guard also rejects copied predecessor envelopes.
+The first projected turn durably records a v3 `projectionBinding` with artifact
+id/hash, coverage and inherited-message digest, not another content copy. Until
+a composed checkpoint subsumes it, a runtime reopen cannot omit or change that
+projection. Afterward, supplied coverage must match the composed checkpoint. Raw current-journal evidence inspection is unchanged.
 
 The optional run-driver `handoffDispatchBudget` rechecks normalized instructions,
 resolved tool declarations, required history and current input before every

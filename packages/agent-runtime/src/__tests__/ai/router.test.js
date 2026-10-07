@@ -1468,3 +1468,16 @@ it.each(["primary retry", "backup", "skipped primary"])("strips inherited projec
   const detached = executeMock.mock.calls.at(-1)[1];
   expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
 });
+
+it("protects piSessionsRoot when native current-handle authority is supplied", async () => {
+  const primary = modelRef("openai-codex", "primary"), router = createRouterRuntime({ chain: [primary],
+    resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/foreign-native" } }) });
+  const result = await router.run("Rules", { model: primary, messages: [], nativeSessionAuthority: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toContain("cannot override piSessionsRoot"); expect(executeMock).not.toHaveBeenCalled();
+});
+it("preserves ordinary resolver native-root selection without native authority", async () => {
+  const primary = modelRef("openai-codex", "primary"); executeMock.mockResolvedValueOnce({ text: "ordinary reply", events: [] });
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/ordinary-native" } }) });
+  expect((await router.run("Rules", { model: primary, messages: [] })).text).toBe("ordinary reply");
+  expect(executeMock.mock.calls[0][1].piSessionsRoot).toBe("/fictional/ordinary-native");
+});

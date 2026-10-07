@@ -754,7 +754,7 @@ function mergeAttemptOptions(base, resolved) {
   const merged = withoutAttemptScopedOptions(base);
   if (resolved === undefined) return merged;
   for (const [key, value] of Object.entries(resolved)) {
-    if (RESOLVER_PROTECTED_OPTION_KEYS.has(key)) {
+    if (RESOLVER_PROTECTED_OPTION_KEYS.has(key) || key === "piSessionsRoot" && base.nativeSessionAuthority !== undefined) {
       throw new ResolverProtectedOptionError(key);
     }
     if (value !== undefined) merged[key] = value;

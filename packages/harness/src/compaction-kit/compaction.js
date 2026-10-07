@@ -412,8 +412,10 @@ export async function generateSummaryWithRequest(currentMessages, options, reque
 }
 /** Prepare session entries for compaction, or return undefined when compaction is not applicable. */
 /** @returns {{ok:boolean, value?:any, error?:any}} */
-export function prepareCompaction(pathEntries, settings) {
-    if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
+export function prepareCompaction(pathEntries, settings, { nonRetainablePrefixLength = 0 } = {}) {
+    if (!Number.isSafeInteger(nonRetainablePrefixLength) || nonRetainablePrefixLength < 0
+        || nonRetainablePrefixLength > pathEntries.length) return err(new CompactionError("invalid_cut", "Invalid non-retainable compaction prefix"));
+    if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction" && nonRetainablePrefixLength === 0) {
         return ok(undefined);
     }
     let prevCompactionIndex = -1;
@@ -436,11 +438,17 @@ export function prepareCompaction(pathEntries, settings) {
             timestamp: message.timestamp,
             message,
         }));
-        compactableEntries = [...virtualRetainedEntries, ...pathEntries.slice(prevCompactionIndex + 1)];
+        if (prevCompactionIndex < nonRetainablePrefixLength) return err(new CompactionError("invalid_cut", "Checkpoint overlaps non-retainable prefix"));
+        compactableEntries = [...pathEntries.slice(0, nonRetainablePrefixLength), ...virtualRetainedEntries, ...pathEntries.slice(prevCompactionIndex + 1)];
     }
     const boundaryEnd = compactableEntries.length;
     const tokensBefore = estimateContextTokens(buildContextEntries(pathEntries).flatMap(sessionEntryToContextMessages)).tokens;
-    const cutPoint = findCutPoint(compactableEntries, 0, boundaryEnd, settings.keepRecentTokens);
+    // Inherited envelopes are immutable predecessor evidence, not a retainable
+    // current tail. Clamp BEFORE producer preparation/dispatch, including the
+    // split-turn start; a small current delta must not retain the inherited prefix.
+    const cutPoint = nonRetainablePrefixLength === boundaryEnd
+        ? { firstKeptEntryIndex: boundaryEnd, turnStartIndex: -1, isSplitTurn: false }
+        : findCutPoint(compactableEntries, nonRetainablePrefixLength, boundaryEnd, settings.keepRecentTokens);
     const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
     const messagesToSummarize = [];
     for (let i = 0; i < historyEnd; i++) {
