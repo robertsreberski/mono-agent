@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix routed prepared start allowances and post-admission reserves; refuse
+  non-persisting credential refresh and keep evidence filesystem failures generic.
+
 - Fix prepared dispatch credential refresh through the original shared store with
   same-account proof, expire forgotten idle resources, and reserve start time
   before admission. Keep preparation inert; bound materialized chain capture.

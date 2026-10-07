@@ -7,7 +7,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCal
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRuntime } from "../../runtime.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
-import { preparePiNativeDispatch, generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { preparePiNativeDispatch, generatePiNativeResponse, createDynamicCredentialStore } from "../../ai/providers/pi-native.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { probeNativeAccountProvenance } from "../../ai/providers/pi-native/account-provenance.js";
@@ -433,3 +433,39 @@ it("forgotten idle native leases expire and close MCP/runState exactly once with
   await expect(second.run()).rejects.toThrow("no longer available"); expect(closed).toHaveBeenCalledOnce();
 });
 const originalTimer = globalThis.setTimeout;
+
+
+it("routed assertReady forwards the requested minimum start allowance without consuming the lease", async () => {
+  const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) });
+  const lease = await prepare(f, {}, router), clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 29999);
+  expect(() => lease.assertReady(30000)).toThrow("start allowance"); expect(() => lease.assertReady(5000)).not.toThrow();
+  clock.mockReturnValue(lease.snapshot.expiresAt - 30000); expect(() => lease.assertReady(30000)).not.toThrow();
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Routed allowance")])]); expect((await lease.run()).text).toBe("Routed allowance");
+});
+
+it.each(["dynamic-read-only", "lying-modify", "persisting-dynamic"])("in-lease OAuth refresh requires persisted modification: %s", async (kind) => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
+  let credential = { type: "oauth", accountId: "fictional-selected", access: token("fictional-selected", 1), refresh: "fictional-old", expires: now + 10 * 60_000 + 5000 };
+  const refresh = vi.fn(async () => ({ ...credential, access: token("fictional-selected", 2), refresh: "fictional-new", expires: Date.now() + 3600000 }));
+  const modifier = vi.fn(async (_id, update) => { credential = await update(credential) ?? credential; return credential; });
+  const resolver = Object.assign(async () => credential.access, { readCredential: async () => credential,
+    ...(kind === "persisting-dynamic" ? { modifyCredential: modifier } : {}) });
+  const store = kind === "lying-modify" ? { read: async () => credential, list: async () => [], delete: vi.fn(),
+    modify: vi.fn(async (_id, update) => await update(credential) ?? credential) } : createDynamicCredentialStore(undefined, resolver, []);
+  const models = createModels({ credentials: store }); models.setProvider({ ...f.faux.provider,
+    auth: { oauth: { refresh, toAuth: (value) => ({ apiKey: value.access }) } } });
+  const pin = await prepareDispatchAuth(models, f.faux.getModel()); vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000);
+  if (kind === "persisting-dynamic") { expect((await pin.models.getAuth(pin.model)).auth.apiKey).toBe(credential.access); expect(modifier).toHaveBeenCalledOnce(); expect(refresh).toHaveBeenCalledOnce(); }
+  else { await expect(pin.models.getAuth(pin.model)).rejects.toThrow("Prepared credential refresh refused"); expect(refresh).toHaveBeenCalledTimes(kind === "dynamic-read-only" ? 0 : 1); }
+  if (kind === "dynamic-read-only") { await expect(store.modify("openai-codex", refresh)).rejects.toThrow("persisting credential resolver"); expect(refresh).not.toHaveBeenCalled(); }
+});
+
+it("installed pi-ai Codex oauth.refresh returns a complete typed OAuth credential without normalisation", async () => {
+  const provider = openaiCodexProvider(), access = token("fictional-stock-account", 2);
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: access,
+    refresh_token: "fictional-rotated", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } }));
+  const refreshed = await provider.auth.oauth.refresh({ type: "oauth", accountId: "fictional-stock-account", access: token("fictional-stock-account", 1), refresh: "fictional-old", expires: 0 });
+  expect(refreshed).toMatchObject({ type: "oauth", access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
+  expect(refreshed.expires).toBeGreaterThan(Date.now() + 3500000); expect(fetch).toHaveBeenCalledOnce();
+});

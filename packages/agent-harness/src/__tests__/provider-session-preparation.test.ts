@@ -327,3 +327,20 @@ it("capture rejects excess chain count and aggregate/single journal bytes before
   await expect(f.native.captureEvidence([source], context)).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
   expect(growing).toHaveBeenCalledOnce(); growing.mockRestore(); await prep.abort();
 });
+
+
+it("capture maps missing and other filesystem errors to generic unavailable without target paths or causes", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "generic-capture");
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
+  const source = captured.sources[0]!, context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
+  const check = async (sources: typeof captured.sources): Promise<void> => {
+    const error = await f.native.captureEvidence(sources, context).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error); expect((error as Error).message).toBe("Managed native journal evidence changed or is unavailable");
+    expect((error as Error).message).not.toContain(f.nativePath); expect(error).not.toHaveProperty("path"); expect(error).not.toHaveProperty("cause");
+  };
+  await check([{ ...source, journalId: "fictional-missing" }]); // lstat ENOENT
+  await check([{ ...source, journalId: "j".repeat(4096) }]); // other preflight filesystem failure
+  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js");
+  const scan = vi.spyOn(JournalReader.prototype, "scan").mockRejectedValueOnce(Object.assign(new Error(`EACCES: ${f.nativePath}`), { code: "EACCES", path: f.nativePath }));
+  await check([source]); scan.mockRestore(); await prep.abort();
+});

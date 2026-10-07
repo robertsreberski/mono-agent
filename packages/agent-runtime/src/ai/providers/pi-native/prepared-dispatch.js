@@ -101,10 +101,11 @@ export async function prepareDispatchAuth(models, model, signal) {
   };
   const requestAuth = async () => {
     if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires) || credential.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS)) {
-      if (!store?.modify || !oauth || !probe.supported) throw refused();
+      if (!store?.modify || !oauth || !probe.supported
+        || typeof store.supportsPersistentOAuthModify === "function" && !store.supportsPersistentOAuthModify(model.provider)) throw refused();
       try {
-        // Serialize against ALL users of the original credential id/store.
-        // Recheck under its lock, using the current rotating refresh token, not
+        // Use the original store's serialization (host enqueueAuthFile is
+        // in-process only, not coordination across processes). Recheck there, using the current rotating refresh token, not
         // our stale pin. A refreshed credential is persisted even if its account
         // changed: the old token may already be revoked; this lease then refuses.
         const post = await store.modify(model.provider, async (current) => {
@@ -112,9 +113,16 @@ export async function prepareDispatchAuth(models, model, signal) {
           if (Number.isFinite(current.expires) && current.expires - Date.now() >= OAUTH_REQUEST_RESERVE_MS) return undefined;
           return await oauth.refresh(current, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30_000)]));
         }, { signal });
-        const derived = post?.type === "oauth" ? await oauth.toAuth(post) : undefined;
-        if (!sameAccount(post, derived) || !Number.isFinite(post?.expires) || post.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS) throw refused();
-        credential = copy(post); auth = { auth: copy(derived), source: "OAuth" };
+        // A CredentialStore must expose committed modifications to its readers.
+        // Verify read-after-write; use a newer committed same-account peer token
+        // rather than a returned but unpersisted rotation. Never repair a liar by
+        // copying into another store or writing the obsolete credential back.
+        if (post?.type !== "oauth" || !sameAccount(post, await oauth.toAuth(post))) throw refused();
+        const committed = await store.read(model.provider, { signal });
+        if (post?.type !== "oauth" || committed?.type !== "oauth") throw refused();
+        const derived = await oauth.toAuth(committed);
+        if (!sameAccount(committed, derived) || !Number.isFinite(committed?.expires) || committed.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS) throw refused();
+        credential = copy(committed); auth = { auth: copy(derived), source: "OAuth" };
       } catch { throw refused(); }
     }
     return copy(auth);

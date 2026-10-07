@@ -151,3 +151,25 @@ it("max-age expiry during active production waits for settlement before releasin
   await vi.waitFor(() => expect(f.limiter.inUse()).toBe(0)); expect(f.extensionClose).toHaveBeenCalledOnce(); spy.mockRestore();
   await lease.close(); await f.owner.assertOwned();
 });
+
+
+it.each(["admission", "normalization"])("requires five seconds after slow %s before consuming the native lease", async (phase) => {
+  const f = await fixture(), transport = vi.spyOn(f.f.faux.provider, "streamSimple"), lease = await prepareHarnessRuntime(f.input);
+  cleanup.push(() => lease.close()); const clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 30000);
+  let turn: Awaited<ReturnType<typeof f.owner.admit>> | undefined;
+  const running = lease.run(async () => {
+    turn = await f.owner.admit({ modelKey: "faux:fixture", reconciliation: { purpose: "execution", ownerKey: "fictional",
+      initial: { persistText: "Original fictional input", timestamp: new Date().toISOString() } } });
+    cleanup.push(() => turn!.abort());
+    if (phase === "admission") clock.mockReturnValue(lease.snapshot.expiresAt - 4999);
+    else {
+      const admit = turn.reconciliation!.admit.bind(turn.reconciliation);
+      vi.spyOn(turn.reconciliation!, "admit").mockImplementation(async (input) => { await admit(input); clock.mockReturnValue(lease.snapshot.expiresAt - 4999); });
+    }
+    return { reconciliation: turn.reconciliation!, assertOwned: () => turn!.assertOwned(), turnRevision: turn.providerSessionRevision,
+      sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true };
+  });
+  await expect(running).rejects.toThrow("start allowance"); expect(transport).not.toHaveBeenCalled(); await turn!.assertOwned();
+  expect((await readdir(join(f.root, "history", ".locks"))).filter((name) => name.endsWith(".dirty.json"))).toHaveLength(1);
+  await lease.close(); expect(f.limiter.inUse()).toBe(0); await turn!.abort();
+});

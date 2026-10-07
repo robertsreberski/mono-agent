@@ -171,11 +171,15 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
   const read = async (providerId) => readCredential(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
   return /** @type {any} */ ({
     read,
+    // The callback-only fallback below can derive auth but cannot persist an
+    // OAuth rotation. Prepared leases must refuse before burning that token.
+    supportsPersistentOAuthModify: (providerId) => !apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function",
     async modify(providerId, fn) {
       if (!apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function") {
         return resolvePiApiKey.modifyCredential(providerId, fn);
       }
       const current = await read(providerId);
+      if (current?.type === "oauth") throw new Error("OAuth modification requires a persisting credential resolver");
       const next = await fn(current);
       if (apiKeys?.has(providerId) && next?.type === "api_key" && typeof next.key === "string") {
         apiKeys.set(providerId, next.key);

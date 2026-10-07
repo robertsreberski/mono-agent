@@ -157,12 +157,17 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     async captureEvidence(sources, context) {
       if (!sources.length || typeof context?.assertOwned !== "function") fail();
       if (sources.length > MAX_CAPTURE_JOURNALS) captureLimit();
+      const statEvidence = async (source) => { try { return await lstat(path(source.journalId)); } catch { fail(); } };
+      const readEvidence = async (source, remaining) => {
+        try { return await snapshot(source, undefined, false, remaining); }
+        catch (error) { if (error?.code === "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT") throw error; fail(); }
+      };
       let bytes = 0;
       // Stat every exact published path before allocating records or parsing even
       // the first header. Also bounds single oversized JSONL lines. Rechecked by
       // the secure reader before each scan and by its identity CAS afterward.
       await context.assertOwned();
-      for (const source of sources) { bytes += (await lstat(path(source.journalId))).size; if (bytes > MAX_CAPTURE_BYTES) captureLimit(); }
+      for (const source of sources) { bytes += (await statEvidence(source)).size; if (bytes > MAX_CAPTURE_BYTES) captureLimit(); }
       let capturedBytes = 0;
       const segments = [], seen = new Set();
       for (let index = 0; index < sources.length; index++) {
@@ -171,7 +176,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           || source.predecessorJournalId !== (index ? sources[index - 1].journalId : null) || seen.has(source.journalId)) fail();
         seen.add(source.journalId);
         if (capturedBytes >= MAX_CAPTURE_BYTES) captureLimit();
-        const captured = await snapshot(source, undefined, false, MAX_CAPTURE_BYTES - capturedBytes);
+        const captured = await readEvidence(source, MAX_CAPTURE_BYTES - capturedBytes);
         capturedBytes += captured.bytes; if (capturedBytes > MAX_CAPTURE_BYTES) captureLimit();
         if (!same(captured.descriptor, source) || captured.header.ownershipSchemaVersion === 2 && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
         const { epoch: _epoch, ordinal, ...descriptor } = source;

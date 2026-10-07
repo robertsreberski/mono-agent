@@ -520,7 +520,14 @@ while admission waits). Use the internal `run(() => admitP2AndReturnBinding())`
 entry to require at least 30
 seconds of start allowance **before** invoking admission; already-admitted binding
 callers must call `assertReady()` before admission themselves. Native dispatch
-rechecks the absolute deadline before session mutation.
+requires at least five seconds after admission, rechecks immediately before
+consuming the native lease, then rechecks the absolute deadline before session
+mutation. A slow admission/normalization can still exhaust the allowance: it
+fails without a provider call, preserving the admitted dirty P2 fence for explicit
+host abort/recovery. Native idle expiry can already have closed native resources
+while that storage work waits; it never releases or completes the admitted P2
+fence. This reserve does not promise bounded storage or scheduler latency, and
+the blocked message must not be automatically replayed.
 
 Prepared-path running abort deliberately differs from ordinary R10: it retains
 its permit and frozen extension/native resources until actual provider settlement,

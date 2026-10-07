@@ -162,8 +162,12 @@ releasing MCP/runState resources; active production settles first. Timers do not
 abort already-running dispatches.
 
 A later request with less than five minutes of OAuth validity may refresh **only**
-through the original shared store's `modify` lock and same credential id, using
-its current rotating token. Re-probe every refreshed credential and require the
+through the original shared store's persisting `modify` and same credential id,
+using its current rotating token. The host auth-file resolver provides in-process
+serialization (`enqueueAuthFile`); multi-process sharing of `auth.json` is not
+coordinated, same as ordinary refresh. Custom stores must honour their persistence
+contract. Callback-only dynamic stores without `modifyCredential` refuse before
+refresh; read-after-write verifies the committed credential. Re-probe it and require the
 same non-null account, provider and API plus sufficient validity. A foreign or
 unknown account, changed provider/API, short-lived refresh or refresh failure
 refuses the next request as `safety_prepared_credentials`, not `provider_auth`.

@@ -154,7 +154,7 @@ export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Pr
           try { assertStart(30_000); } catch (error) { return Promise.reject(error); }
           admitting = true;
           return Promise.resolve().then(() => input.assertOwned()).then(value).then((bound) => {
-            admitting = false; return start(bound, 0);
+            admitting = false; return start(bound, 5_000);
           }).finally(() => { admitting = false;
             if (deferredAbort !== undefined) stop(deferredAbort);
             else if (expired && state === "prepared") abort(new Error("Host preparation expired"));
@@ -604,6 +604,10 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       // attachment persistence, compaction, admission wait).
       const bridgeStartMs = Date.now();
       try {
+        // Normalized initial input and owned-P2 checks may themselves take time.
+        // Recheck immediately before consumption; reject with the dirty fence
+        // still owned for explicit host recovery, never rely on expiry cancellation.
+        nativeLease?.assertReady?.(5_000);
         const result = nativeLease ? await nativeLease.run({ sessionId: runtimeOptions.sessionId, providerSessionId: runtimeOptions.providerSessionId,
           ...(runtimeOptions.providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId: runtimeOptions.providerAttributionSessionId }), sessionKeepAlive: runtimeOptions.sessionKeepAlive,
           sessionIdleTimeoutMs: runtimeOptions.sessionIdleTimeoutMs, sessionTurn: runtimeOptions.sessionTurn, sessionRecovery: runtimeOptions.sessionRecovery,
