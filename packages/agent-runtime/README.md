@@ -217,6 +217,25 @@ No default runtime
 upgrades journals or enables switching; see the
 [harness header upgrade contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).
 
+Opt-in `nativeSessionAuthority` requires a protected reconciled host turn,
+kept-alive durable root, matching guarded header and exact current handle. Its
+awaited `assertCurrent({ handleId, action: "open" | "create" })` borrows the held
+host owner: the host must prove the ready canonical binding/artifact and current
+creation eligibility. A predecessor or stale mapping is not executable. Guarded
+runtime opens without authority fail before native repair, including stale warm
+metadata. Default unguarded, stateless and subagent behavior is unchanged.
+
+`nativeSessionProjection` carries the accepted artifact reference, inherited
+messages/coverage and optional frozen `dispatchBudget`. True warm/cold resumes
+compose that prefix with the current delta without seeding copies. Composed cuts
+persist inherited coverage; raw current evidence remains separate. With a frozen
+budget, normalized dispatch refuses oversized host/input/history and pins output
+reserve, without proactive/reactive/mid-run re-summary. Later calls omitting only
+the budget can compact the composed view normally. Route resolvers cannot replace
+these owning fields; retry/backup attempts strip them. The host, not this seam,
+validates content/hash, ancestry, account compatibility and readiness. No existing
+configuration enables this path; configured switching remains separate work.
+
 `probeNativeAccountProvenance` reads only caller-supplied selected credential
 metadata, with no file access, refresh, writes or paid requests. Pi 1.0.1 Codex
 OAuth login and refresh expose `accountId` from the access-token auth claim.

@@ -1,3 +1,4 @@
+import { validateNativeSessionAuthority, assertNativeSessionAccess, assertNativeSessionHeader } from "./session-authority.js";
 import { inspectCurrentEvidence, inspectCurrentLifecycle } from "@mono-agent/harness";
 // @ts-check
 // Session lifecycle for the pi-native bridge.
@@ -264,6 +265,9 @@ export async function resolveSession(runState, {
   start,
   piTransport,
 }) {
+  validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
+  const access = options.nativeSessionAuthority;
+  if (access) await assertNativeSessionAccess(access, "open");
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
@@ -348,7 +352,9 @@ export async function resolveSession(runState, {
           // paths release it. Keyed by requestedSessionId === providerSessionId.
           runState.reservation = reservation;
           runState.session = createPiSessionAdapter(await durableRepo.create(
-            { id: providerSessionId, cwd: cwd || process.cwd() },
+            { id: providerSessionId, cwd: cwd || process.cwd(), ...(access ? {
+              hostAuthority: access.hostAuthority, assertOwned: () => assertNativeSessionAccess(access, "create"),
+            } : {}) },
             HARNESS_CONTEXT,
           ));
           runState.createdOnMiss = true;
@@ -411,7 +417,18 @@ export async function resolveSession(runState, {
       runState.sessionEntry = claimed.entry;
       delete claimed.entry.recovery;
       try {
-        const raw = await claimed.entry.repo.open(claimed.entry.metadata, HARNESS_CONTEXT);
+        if (access) {
+          if (claimed.entry.repo !== durableRepo || !claimed.entry.durable) throw Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
+          await assertNativeSessionAccess(access, "open");
+        }
+        const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
+          ...(access ? { repair: false, wait: false } : {}),
+          validateHeader: (header) => assertNativeSessionHeader(access, header),
+        });
+        try {
+          assertNativeSessionHeader(access, raw.metadata);
+          if (access) raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: access.hostAuthority });
+        } catch (error) { await raw.close(); throw error; }
         runState.session = createPiSessionAdapter(raw);
         // Import publishes a new versioned pathname; the registry must sync and
         // retire that file, never the archived legacy pathname.

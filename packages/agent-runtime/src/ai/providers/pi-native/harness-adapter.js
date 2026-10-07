@@ -2,7 +2,7 @@
 // Compatibility boundary between mono-agent's Pi-native bridge and the
 // mono-owned harness built on the pinned Pi agent loop.
 
-import { createRunDriver, projectContext, inspectCurrentEvidence } from "@mono-agent/harness";
+import { createRunDriver, projectContext, projectInheritedContext, inspectCurrentEvidence } from "@mono-agent/harness";
 import { HARNESS_CONTEXT } from "@mono-agent/harness/context.js";
 
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
@@ -13,12 +13,17 @@ export { buildHarnessSessionContext } from "@mono-agent/harness/session-context.
 /** @param {any} rawSession */
 export function createPiSessionAdapter(rawSession) {
   let driver = null;
+  let inherited;
   let closePromise = null;
   return {
     rawSession,
     get metadata() { return rawSession.metadata; },
     attach(nextDriver) { driver = nextDriver; },
-    async buildContext() { return projectContext(await rawSession.getEntries(), { includeFailed: true, repairs: await rawSession.getRepairEntries() }); },
+    setInheritedProjection(projection) { inherited = structuredClone(projection); },
+    async buildContext() {
+      const entries = await rawSession.getEntries(), options = { includeFailed: true, repairs: await rawSession.getRepairEntries() };
+      return inherited === undefined ? projectContext(entries, options) : projectInheritedContext(entries, inherited, options);
+    },
     getEntries: async () => (await inspectCurrentEvidence(rawSession)).entries,
     getLeafId: () => rawSession.getLeafId(),
     appendMessage: (message) => rawSession.appendMessage(message),

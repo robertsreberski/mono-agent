@@ -549,7 +549,7 @@ export class JsonlSessionRepo {
       await options.assertOwned(); await this.assertDirectory(); return metadata;
     }); } finally { writer.release(); }
   }
-  async open(metadata, { repair = true, wait = repair } = {}) {
+  async open(metadata, { repair = true, wait = repair, validateHeader = undefined } = {}) {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
       return this.importLegacy(metadata);
@@ -563,7 +563,7 @@ export class JsonlSessionRepo {
     let session;
     try {
       if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
-      session = await this.openLocked(metadata, writer, { repair });
+      session = await this.openLocked(metadata, writer, { repair, validateHeader });
       try { if (repair) { await this.reconcileImport(session); await repairInterruptedSession(session); } return session; }
       catch (error) { await session.close().catch(() => {}); throw error; }
     } catch (error) {
@@ -598,7 +598,7 @@ export class JsonlSessionRepo {
     await syncPath(this.directory); await syncPath(join(this.root, "mono-v2")); await syncPath(this.root);
     await this.assertDirectory();
   }
-  async openLocked(metadata, writer, { repair = true } = {}) {
+  async openLocked(metadata, writer, { repair = true, validateHeader = undefined } = {}) {
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
     const locks = await this.locksPromise;
     await this.assertDirectory();
@@ -682,13 +682,14 @@ export class JsonlSessionRepo {
       });
       if (warm) {
         validatedHeader = clone(warm.metadata);
+        validateHeader?.(clone(validatedHeader));
         acceptHeader(session, validatedHeader);
         session.restore(warm.state); Object.assign(storeMetadata, warm.metadata, { path: metadata.path });
         await verify();
       } else {
         /** @type {any} */ let header;
         const evidence = await reader.scan((record, address) => {
-          if (!header) { acceptHeader(session, record); header = record; validatedHeader = clone(record); }
+          if (!header) { acceptHeader(session, record); header = record; validatedHeader = clone(record); validateHeader?.(clone(validatedHeader)); }
           else session.apply(record, address);
         });
         if (!header || header.id !== metadata.id || header.journalId !== metadata.journalId) fail();

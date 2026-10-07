@@ -68,3 +68,35 @@ export async function inspectCurrentEvidence(store) {
 export function inspectCurrentLifecycle(store) {
   return { turns: [...store.validator.turns.values()], calls: [...store.validator.calls.values()] };
 }
+
+/** Host-accepted inherited projection plus this epoch's delta. Content stays in
+ * the host artifact/predecessors, never seeded into the current native journal.
+ * @param {any[]} entries @param {any} inherited @param {any} [options]
+ */
+export function projectInheritedContext(entries, inherited, options = {}) {
+  if (!inherited || !Array.isArray(inherited.messages) || !inherited.messages.length
+    || inherited.coverage?.version !== 1 || !Array.isArray(inherited.coverage.sources)
+    || !inherited.coverage.sources.length || inherited.messages.some((message) => !message
+      || !["user", "assistant", "toolResult", "compactionSummary", "branchSummary"].includes(message.role))) throw new TypeError("Invalid inherited projection");
+  const sources = inherited.coverage.sources;
+  if (sources.some((source) => typeof source.journalId !== "string" || !source.journalId
+    || !(source.sourceTipId === null || typeof source.sourceTipId === "string")
+    || !Number.isSafeInteger(source.sourceSeq) || source.sourceSeq < 0
+    || !/^[a-f0-9]{64}$/.test(source.sourceDigest))
+    || new Set(sources.map((source) => source.journalId)).size !== sources.length) throw new TypeError("Invalid inherited coverage");
+  const checkpoint = entries.filter((entry) => entry.type === "compaction").at(-1)?.checkpoint;
+  if (!checkpoint?.inheritedCoverage && entries.some((entry) => entry.checkpoint?.inheritedCoverage)) {
+    throw new TypeError("Composed checkpoint coverage was lost");
+  }
+  if (checkpoint?.inheritedCoverage) {
+    validateComposedCoverage(checkpoint.inheritedCoverage, sources);
+    return projectContext(entries, options);
+  }
+  if (options.mode === "compaction") {
+    const prefix = inherited.messages.map((message, index) => ({ type: "message", message,
+      id: `inherited:${index}`, parentId: null, timestamp: message.timestamp, seq: index }));
+    return { entries: [...prefix, ...projectContext(entries, options).entries] };
+  }
+  const current = projectContext(entries, options);
+  return { ...current, messages: [...inherited.messages, ...current.messages] };
+}

@@ -516,6 +516,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
   }
 
+  // Host-owned capabilities/content are snapshotted before any asynchronous
+  // preparation; functions retain the held owner's original closure.
+  if (options.nativeSessionAuthority || options.nativeSessionProjection) options = { ...options,
+    nativeSessionAuthority: options.nativeSessionAuthority && { ...options.nativeSessionAuthority,
+      hostAuthority: structuredClone(options.nativeSessionAuthority.hostAuthority) },
+    nativeSessionProjection: options.nativeSessionProjection && structuredClone(options.nativeSessionProjection) };
   const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
 
   try {
@@ -659,6 +665,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       options,
     });
 
+    if (options.nativeSessionProjection) {
+      runState.session.setInheritedProjection(options.nativeSessionProjection.inherited);
+      runState.session.rawSession.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: options.nativeSessionAuthority.hostAuthority });
+    }
     // Seed prior transcript (everything before the trailing user turn) into the
     // harness-owned session. On a true resume the session already holds the
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
@@ -668,7 +678,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-    if (!requestedSessionId || runState.createdOnMiss) {
+    if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss)) {
       for (const message of priorMessages) {
         await harness.appendMessage(message);
         runState.sessionBaselineCount += 1;
@@ -794,7 +804,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       compaction: options.compaction,
       contextWindowOverride: options.compaction?.contextWindowOverride,
     });
-    await runProactiveCompaction(runState, {
+    if (!options.nativeSessionProjection?.dispatchBudget) await runProactiveCompaction(runState, {
       harness,
       systemPrompt,
       options,
@@ -813,7 +823,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // the lane's compaction settings into the operation at accept time, so this
     // must happen BEFORE harness.prompt(); the same-operation compaction never
     // starts a second run and so cannot disturb the live-input epoch below.
-    midRunCompaction = await armMidRunCompaction(runState, {
+    midRunCompaction = options.nativeSessionProjection?.dispatchBudget ? { disarm: async () => {} } : await armMidRunCompaction(runState, {
       harness,
       options,
       reference,
@@ -939,7 +949,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Reactive recovery: if the turn ended in a context overflow and we have not
     // already compacted-and-retried this run, compact once and re-prompt once
     // (and re-capture state). Learns the real window ceiling from the error.
-    ({ state, runError } = await runReactiveCompaction(runState, {
+    if (!options.nativeSessionProjection?.dispatchBudget) ({ state, runError } = await runReactiveCompaction(runState, {
       harness,
       runtime,
       resolved,
@@ -1227,6 +1237,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
+    if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
+      return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",
+        retryable: false, providerSessionRecovery: undefined };
+    }
     if (isJournalStorageError(err)) {
       return { ...failure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined,
         ...(runState.preserveTurnEvidence ? { providerSessionId: undefined } : {}) };

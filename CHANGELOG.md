@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add opt-in native current-handle authority and inherited request projections,
+  preserving predecessor evidence through composed compaction and refusing
+  cached-handoff budget overruns without re-summarizing. Existing configured
+  hosts remain unchanged; coordinated model switching is not enabled yet.
+
 - Stop retention maintenance if native cleanup cannot regain the root lock.
   Keep failed deletion intents for recovery while pruning a later free victim
   in the same commit when root ownership remains intact.
