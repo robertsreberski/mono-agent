@@ -976,12 +976,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return retained.map(cloneMessage);
   }
 
-  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined> {
+  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number; readonly native?: true } | undefined> {
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
     const provider = record.providerSession;
-    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0 };
+    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0, ...(record.sourceVersion === 4 ? { native: true as const } : {}) };
   }
 
   async append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {

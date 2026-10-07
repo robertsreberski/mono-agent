@@ -46,11 +46,13 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   native seal, and manual compaction changes metadata rather than answers.
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
   The private model-switch staging seam preserves owned preparation through
-  runtime/history decorators and serializes root mutations before claims. Web's
-  persisted inbound user-message ID is its only explicit delivery identity;
-  retries/restarts reuse it without authorizing another billed generation.
-  Requests without that ID retain ordinary admission and cannot borrow native
-  authority; guarded chains refuse before rotation or dispatch. Retryable
+  runtime/history decorators and serializes logical-conversation admission before claims. Web's
+  host-stamped `source: "web"` and persisted inbound user-message ID identify
+  explicit delivery; borrowed Web metadata on TUI/ACP does not authorize work.
+  Retries/restarts reuse that ID without authorizing another billed generation.
+  Same-model requests without that ID may dispatch the current owned native
+  chain without authorizing switch work; guarded model changes and unsupported
+  dispatch fallbacks refuse before rotation or dispatch. Retryable
   `native_switch_busy` drains only bounded inactive owners after claim release,
   never automatically replaying the message. Public config remains unexposed.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized

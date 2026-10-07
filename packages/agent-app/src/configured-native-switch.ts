@@ -1,30 +1,44 @@
-import type { AgentHarness, AgentHarnessRequest, ConversationHistoryStore } from "@mono-agent/agent-harness";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { AgentHarnessError, toolHistoryLogicalConversationId, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
 import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 
-/** APP-private identity seam. Web stamps this from its committed inbound message,
- * not from a run ID, request UUID or text hash. Do not widen to transport-native
- * IDs without an APP persistence/lifecycle decision. Background wakes never
- * authorize paid generations even if they happen to carry Web metadata. */
+/** APP-private identity seam. The host-stamped Web source carries its committed
+ * inbound message ID, not a run ID, request UUID or text hash. Background wakes
+ * may dispatch the current chain, but never authorize model-change producers. */
 export function persistedWebDeliveryId(request: AgentHarnessRequest): string | undefined {
-  if (request.continuation !== undefined || request.metadata?.cron !== undefined
-    || request.metadata?.webhook !== undefined || request.metadata?.processJob !== undefined
-    || request.metadata?.source === "subagent") return undefined;
-  const web = request.metadata?.web;
+  if (request.metadata?.source !== "web" || request.continuation !== undefined
+    || request.metadata.cron !== undefined || request.metadata.webhook !== undefined
+    || request.metadata.processJob !== undefined) return undefined;
+  const web = request.metadata.web;
   if (web === null || typeof web !== "object" || Array.isArray(web)) return undefined;
   const id = (web as Record<string, unknown>).userMessageId;
   return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
-// Shared across channel responders for this canonical agent root. Queue BEFORE
-// harness admission/claims. A failed attempt never re-enters run() automatically.
 const tails = new Map<string, Promise<void>>();
-async function serialize<T>(root: string, action: () => Promise<T>): Promise<T> {
-  const previous = tails.get(root) ?? Promise.resolve();
-  const current = previous.then(action, action);
-  const tail = current.then(() => undefined, () => undefined);
-  tails.set(root, tail);
-  try { return await current; }
-  finally { if (tails.get(root) === tail) tails.delete(root); }
+interface Scope { readonly key: string; active: boolean }
+const scopes = new AsyncLocalStorage<readonly Scope[]>();
+const cancelled = () => new AgentResponseCancelledError("Cancelled before harness admission.");
+
+/** A cancelled waiter rejects immediately and drops its action, but its queue
+ * slot still waits for the predecessor before releasing later entries. No
+ * caller/claim/resource must wait for that slot during disposal. */
+function enqueue<T>(key: string, signal: AbortSignal, action: () => Promise<T>): Promise<T> {
+  if (signal.aborted) return Promise.reject(cancelled());
+  let queued: (() => Promise<T>) | undefined = action;
+  let resolve!: (value: T) => void, reject!: (error: unknown) => void;
+  const result = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  const abort = () => { queued = undefined; signal.removeEventListener("abort", abort); reject(cancelled()); };
+  signal.addEventListener("abort", abort, { once: true });
+  const previous = tails.get(key) ?? Promise.resolve();
+  const tail = previous.then(async () => {
+    const admitted = queued; queued = undefined;
+    signal.removeEventListener("abort", abort);
+    if (!admitted) return;
+    try { resolve(await admitted()); } catch (error) { reject(error); }
+  }).finally(() => { if (tails.get(key) === tail) tails.delete(key); });
+  tails.set(key, tail);
+  return result;
 }
 
 const forwardedKeys = {
@@ -34,39 +48,52 @@ const forwardedKeys = {
 } satisfies Record<keyof AgentHarness, true>;
 void forwardedKeys;
 
-/** Staging-only root gate. Live input/cancellation must remain immediate, while
- * canonical mutations share the admission gate. Disposal cancels local waiters
- * before draining them, never waits behind a queue with a pinned host claim. */
-export function serializeNativeSwitchHarness(harness: AgentHarness, root: string, store: ConversationHistoryStore): AgentHarness {
+/** Staging-only per-logical-conversation gate shared across responder instances.
+ * Other conversations can run/mutate concurrently. Root bootstrap contention is
+ * handled by the store's try/check + typed busy refusal, not a root-wide wait.
+ * submit shares this gate because APP responders prefer it; the harness's own
+ * queue is instance-local and cannot protect cross-responder owner admission or
+ * detect nested callbacks before they wait on their own durable claim. */
+export function serializeNativeSwitchHarness(harness: AgentHarness, root: string, store: ConversationHistoryStore, rollover?: "none" | "daily"): AgentHarness {
   let disposed = false;
   let disposal: Promise<void> | undefined;
-  const pending = new Set<Promise<unknown>>();
+  const lifetime = new AbortController();
+  const pending = new Set<Promise<unknown>>(); // Admitted operations only.
   const turns = new Map<AbortController, string>();
-  const mutation = <T>(action: () => Promise<T>): Promise<T> => {
-    const promise = serialize(root, async () => {
-      if (disposed) throw new AgentResponseCancelledError("Configured harness is disposed.");
-      return await action();
+  const keyFor = (id: string) => JSON.stringify([root, toolHistoryLogicalConversationId(id, rollover)]);
+  const mutation = <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    const key = keyFor(id);
+    if (disposed) return Promise.reject(cancelled());
+    if (scopes.getStore()?.some((scope) => scope.active && scope.key === key)) return Promise.reject(new AgentHarnessError(
+      "native_switch_busy", "A nested operation cannot wait on its own conversation claim.", { retryable: true }));
+    const abortSignal = signal === undefined ? lifetime.signal : AbortSignal.any([signal, lifetime.signal]);
+    return enqueue(key, abortSignal, async () => {
+      if (disposed || abortSignal.aborted) throw cancelled();
+      const scope: Scope = { key, active: true };
+      const inherited = scopes.getStore() ?? [];
+      const operation = Promise.resolve().then(() => {
+        if (disposed || abortSignal.aborted) throw cancelled();
+        return scopes.run([...inherited, scope], action);
+      });
+      pending.add(operation);
+      try { return await operation; }
+      finally { scope.active = false; pending.delete(operation); }
     });
-    pending.add(promise);
-    void promise.then(() => pending.delete(promise), () => pending.delete(promise));
-    return promise;
   };
   const run = async (request: AgentHarnessRequest, submit: boolean) => {
     const controller = new AbortController(); turns.set(controller, request.conversationId);
     const abortSignal = AbortSignal.any([request.abortSignal, controller.signal]);
     try {
-      return await mutation(async () => {
-        if (abortSignal.aborted) throw new AgentResponseCancelledError("Cancelled before harness admission.");
+      return await mutation(request.conversationId, async () => {
         const response = await (submit && harness.submit ? harness.submit({ ...request, abortSignal }) : harness.run({ ...request, abortSignal }));
         if (response.failure?.kind === "native_switch_busy") {
-          // run() has returned and released its preparation/conversation claims.
-          // The bounded drainer skips active owners and try-acquires inactive
-          // ones. Preserve the retryable refusal; never replay this request.
+          // Only after run() has released its claims; bounded drain skips active
+          // owners and try-acquires inactive ones. Never replay this request.
           try { await store.drainPendingProviderSessionTurns?.({ limit: 32 }); }
           catch { return { ...response, failure: { ...response.failure, details: { retryable: true, drain: "failed" } } }; }
         }
         return response;
-      });
+      }, abortSignal);
     } finally { turns.delete(controller); }
   };
   return {
@@ -78,15 +105,15 @@ export function serializeNativeSwitchHarness(harness: AgentHarness, root: string
       for (const [controller, id] of turns) if (id === conversationId) controller.abort(reason);
       harness.cancel?.(conversationId, reason);
     },
-    ...(harness.compactConversation === undefined ? {} : { compactConversation: (...args: Parameters<NonNullable<AgentHarness["compactConversation"]>>) => mutation(() => harness.compactConversation!(...args)) }),
-    ...(harness.resetConversation === undefined ? {} : { resetConversation: (id: string) => mutation(() => harness.resetConversation!(id)) }),
-    ...(harness.appendVerbatimTurn === undefined ? {} : { appendVerbatimTurn: (...args: Parameters<NonNullable<AgentHarness["appendVerbatimTurn"]>>) => mutation(() => harness.appendVerbatimTurn!(...args)) }),
-    ...(harness.importContext === undefined ? {} : { importContext: (...args: Parameters<NonNullable<AgentHarness["importContext"]>>) => mutation(() => harness.importContext!(...args)) }),
+    ...(harness.compactConversation === undefined ? {} : { compactConversation: (...args: Parameters<NonNullable<AgentHarness["compactConversation"]>>) => mutation(args[0], () => harness.compactConversation!(...args), args[2]) }),
+    ...(harness.resetConversation === undefined ? {} : { resetConversation: (id: string) => mutation(id, () => harness.resetConversation!(id)) }),
+    ...(harness.appendVerbatimTurn === undefined ? {} : { appendVerbatimTurn: (...args: Parameters<NonNullable<AgentHarness["appendVerbatimTurn"]>>) => mutation(args[0], () => harness.appendVerbatimTurn!(...args)) }),
+    ...(harness.importContext === undefined ? {} : { importContext: (...args: Parameters<NonNullable<AgentHarness["importContext"]>>) => mutation(args[0], () => harness.importContext!(...args)) }),
     dispose() {
       if (disposal) return disposal;
       disposed = true;
+      lifetime.abort("Configured harness disposed.");
       for (const controller of turns.keys()) controller.abort("Configured harness disposed.");
-      // Interrupt active dispatch immediately; do not queue disposal behind it.
       disposal = (async () => {
         try { await harness.dispose?.(); }
         finally { await Promise.allSettled([...pending]); }

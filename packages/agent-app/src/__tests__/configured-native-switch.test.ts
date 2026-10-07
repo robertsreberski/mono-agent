@@ -39,16 +39,24 @@ async function fixture() {
   };
   let store: ConversationHistoryStore | undefined;
   let preparation = vi.fn(), draining = vi.fn();
-  const make = async (enabled: boolean) => {
+  const make = async (enabled: boolean, unsupported?: "non-native" | "routed") => {
+    const incoming = (id: string): MonoRuntimeLike => {
+      const runtime = runtimeFor(id);
+      if (id !== "A" || unsupported === undefined) return runtime;
+      const { nativePreparedDispatch: _native, prepareNativeDispatch: _prepare, ...base } = runtime;
+      if (unsupported === "routed") return base;
+      const { sessionTurnReconciliation: _reconciliation, reconcileSessionTurn: _reconcile, ...nonNative } = base;
+      return nonNative;
+    };
     const posted = createSlackPostedReplyHistory({ maxMessages: 64 });
-    const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime: runtimeFor("A"), runtimeForModel: (ref) => runtimeFor(ref.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } }, {
+    const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime: incoming("A"), runtimeForModel: (ref) => incoming(ref.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } }, {
       sessionRollover: "none", wrapHistoryStore: (base) => { store = base; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
       ...(enabled ? { nativeModelSwitch: { exclusiveWriters: true as const, native } } : {}),
     });
     const wrapped = posted.wrapResponder(responder); cleanup.push(() => (wrapped as AgentResponder & { dispose(): Promise<void> }).dispose()); return wrapped;
   };
   const request = (id: string | undefined, model = "faux:A"): AgentRequestBase => ({ conversationId: "web:fictional-thread", text: "Fictional current input", abortSignal: new AbortController().signal,
-    metadata: { web: { threadId: "fictional-thread", model, ...(id === undefined ? {} : { userMessageId: id }) }, tui: { requestId: randomUUID() } } });
+    metadata: { source: "web", web: { threadId: "fictional-thread", model, ...(id === undefined ? {} : { userMessageId: id }) }, tui: { requestId: randomUUID() } } });
   const record = async () => {
     for (const name of (await readdir(join(root, "history"))).filter((name) => name.endsWith(".history.json"))) {
       const record = JSON.parse(await readFile(join(root, "history", name), "utf8"));
@@ -61,26 +69,51 @@ async function fixture() {
   return { root, config, native, nativeRoot, faux, transport, request, record, make, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getDraining: () => draining };
 }
 
-it("APP wrappers prepare a persisted Web delivery, dispatch once, then refuse no-id guarded admission without cold rotation", async () => {
+it("same-model no-ID wakes dispatch the current chain without a switch; no-ID model changes refuse", async () => {
   const f = await fixture(); await f.seed(); const h = await f.make(true);
-  const prepare = f.getPreparation();
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
-  expect((await h.respond(f.request("fictional-web-message", "faux:B"), { append: async () => {} })).text).toBe("Fictional B reply");
-  expect(prepare).toHaveBeenCalledOnce();
+  await h.respond(f.request("fictional-web-message", "faux:B"), { append: async () => {} });
   const before = await f.record(); expect(before.version).toBe(4); expect(before.native.chain).toHaveLength(2);
-  expect(before.providerSession.modelKey).toBe("faux:B");
+  const measure = vi.spyOn(f.native, "measureSwitch"), handoff = vi.spyOn(f.native, "prepareHandoff");
   const calls = f.transport.mock.calls.length;
-  for (const model of ["faux:A", "faux:B"]) {
-    await expect(h.respond(f.request(undefined, model), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+  for (const wake of [{ processJob: { jobId: "fictional-job" } }, { cron: { jobId: "fictional-scheduled", model: "faux:B" } }]) {
+    f.faux.setResponses([reply("Fictional ordinary wake reply")]);
+    const request = f.request(undefined, "faux:B");
+    expect((await h.respond({ ...request, metadata: { ...request.metadata, ...wake } }, { append: async () => {} })).text).toBe("Fictional ordinary wake reply");
   }
-  expect(prepare).toHaveBeenCalledOnce(); expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(calls);
+  const after = await f.record(); expect(after.providerSession.modelKey).toBe("faux:B");
+  expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.providerSession.revision).toBe(before.providerSession.revision + 2);
+  expect(after.native.chain).toHaveLength(2); expect(after.lastSwitch).toEqual(before.lastSwitch);
+  expect(f.transport).toHaveBeenCalledTimes(calls + 2); expect(measure).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled();
+  const inspect = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-wake-inspection");
+  try { expect((await inspect.read()).pending).toBeUndefined(); } finally { await inspect.abort(); }
+  for (const source of ["web", "tui", "acp"]) {
+    const refused = f.request(source === "web" ? undefined : "fictional-spoofed-web-id", "faux:A");
+    await expect(h.respond({ ...refused, metadata: { ...refused.metadata, source } }, { append: async () => {} }))
+      .rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+  }
+  expect(await f.record()).toEqual(after); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
+});
+
+it.each(["non-native", "routed"] as const)("ID-carrying %s fallback cannot cold-rotate a v4 native source", async (unsupported) => {
+  const f = await fixture(); await f.seed(); const h = await f.make(true);
+  f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
+  await h.respond(f.request("fictional-first-web-message", "faux:B"), { append: async () => {} }); await f.dispose(h);
+  const before = await f.record(), calls = f.transport.mock.calls.length;
+  const fallback = await f.make(true, unsupported);
+  await expect(fallback.respond(f.request("fictional-next-web-message", "faux:A"), { append: async () => {} }))
+    .rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+  expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(calls); expect(f.getPreparation()).not.toHaveBeenCalled();
 });
 
 it("operator per-attempt UUIDs select the original cold path before native preparation, authority or intent", async () => {
   const f = await fixture(); await f.seed(); const h = await f.make(true);
   const prepare = f.getPreparation(), authority = vi.spyOn(f.native, "measureSwitch");
   f.faux.setResponses([reply("Fictional ordinary B reply"), reply("Fictional ordinary B follow-up")]);
-  for (let i = 0; i < 2; i++) await h.respond(f.request(undefined, "faux:B"), { append: async () => {} });
+  for (let i = 0; i < 2; i++) {
+    const request = f.request(undefined, "faux:B");
+    await h.respond({ ...request, metadata: { ...request.metadata, source: "tui" } }, { append: async () => {} });
+  }
   expect(prepare).not.toHaveBeenCalled(); expect(authority).not.toHaveBeenCalled(); expect((await f.record()).version).toBe(3);
   expect((await readdir(join(f.root, "history"))).some((name) => name.includes("model-switch") || name.includes("native-history-root"))).toBe(false);
   expect(f.transport).toHaveBeenCalledTimes(3);
@@ -124,6 +157,7 @@ it("prepared configured runtime retains protection through summary/close, strips
   const prepared = await runtime.prepareNativeDispatch!("Fictional prepared instructions", { model: { provider: "faux", model: "A", reference: "faux:A" }, messages: [{ role: "user", content: "Fictional input" }], abortSignal: new AbortController().signal, allowedTools: [], piSessionsRoot: f.nativeRoot });
   const settled = vi.fn(); const waiting = owner.coordinator.waitForSettlement().then(settled); await Promise.resolve(); await Promise.resolve();
   expect(settled).not.toHaveBeenCalled(); expect(prepared.assertReady).toBeTypeOf("function"); expect(prepared.checkHandoffSummary).toBeTypeOf("function"); expect(prepared.produceHandoffSummary).toBeTypeOf("function");
+  expect(runtime.salvageDurableSession).toBeUndefined();
   expect(completionOnlyRuntime(runtime).prepareNativeDispatch).toBeUndefined(); expect(completionOnlyRuntime(runtime).nativePreparedDispatch).toBeUndefined();
   await prepared.close(); await prepared.close(); await waiting; expect(settled).toHaveBeenCalledOnce();
 });
@@ -147,7 +181,41 @@ it("failed preparation releases protection, but duplicate dispatch cannot releas
   release(); await running; await waiting; expect(settled).toHaveBeenCalledOnce(); await prepared.close();
 });
 
-it("root gate serializes siblings and mutations before claims, drains typed busy after release, never replays", async () => {
+it("configured queued responder disposal does not wait for a foreign gate or protection lease", async () => {
+  const f = await fixture(), local = await f.make(true), owner = await acquireAgentRootOwnership(f.root); cleanup.push(() => releaseAgentRootOwnershipWhenIdle(owner));
+  const runtime = f.runtimeFor("A"), prepared = await runtime.prepareNativeDispatch!("Fictional foreign instructions", {
+    model: f.config.runtime.model, messages: [], abortSignal: new AbortController().signal,
+  });
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; }), started = new Promise<void>((resolve) => { entered = resolve; });
+  const foreign = serializeNativeSwitchHarness({ run: async () => {
+    entered(); try { await gate; return { metadata: { runId: "fictional-foreign", conversationId: "web:fictional-thread", contextSources: [], contextSectionIds: [] } }; }
+    finally { await prepared.close(); }
+  } }, owner.agentRoot, f.getStore());
+  const active = foreign.run({ conversationId: "web:fictional-thread", userMessage: "Fictional foreign input", abortSignal: new AbortController().signal }); await started;
+  const globalSettled = vi.fn(), allSettled = owner.coordinator.waitForSettlement().then(globalSettled);
+  try {
+    const queued = local.respond(f.request(undefined), { append: async () => {} });
+    const cancelled = expect(queued).rejects.toMatchObject({ name: "AgentResponseCancelledError" });
+    // Let responder admission reach its conversation queue; never release foreign.
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    await f.dispose(local); await cancelled;
+    expect(globalSettled).not.toHaveBeenCalled(); expect(f.getPreparation()).not.toHaveBeenCalled();
+  } finally { release(); await active; await allSettled; }
+});
+
+it("runtime disposal drains its own prepared lease, not another runtime's lease on the root", async () => {
+  const f = await fixture(), first = f.runtimeFor("A"), foreign = f.runtimeFor("B");
+  const options = { model: f.config.runtime.model, messages: [], abortSignal: new AbortController().signal };
+  const own = await first.prepareNativeDispatch!("Fictional own instructions", options); cleanup.push(() => own.close());
+  const other = await foreign.prepareNativeDispatch!("Fictional foreign instructions", { ...options, model: { provider: "faux", model: "B", reference: "faux:B" } }); cleanup.push(() => other.close());
+  let disposed = false; const disposing = first.disposeAllSessions!().then(() => { disposed = true; });
+  await Promise.resolve(); await Promise.resolve(); expect(disposed).toBe(false);
+  try { await own.close(); await disposing; expect(disposed).toBe(true); other.assertReady?.(); }
+  finally { await other.close(); }
+});
+
+it("conversation gate serializes siblings and mutations before claims, drains typed busy after release, never replays", async () => {
   let release!: () => void, entered!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }); const started = new Promise<void>((resolve) => { entered = resolve; });
   let held = false;
   const firstRun = vi.fn(async () => { held = true; entered(); await gate; held = false; return { metadata: { runId: "fictional-run", conversationId: "fictional", contextSources: [], contextSectionIds: [] }, failure: { kind: "native_switch_busy", message: "Fictional busy", details: { retryable: true } } }; });
@@ -165,7 +233,7 @@ it("root gate serializes siblings and mutations before claims, drains typed busy
   expect(firstRun).toHaveBeenCalledOnce(); expect(drain).toHaveBeenCalledExactlyOnceWith({ limit: 32 }); expect(nextRun).toHaveBeenCalledOnce();
 });
 
-it("queued cancellation/disposal never enters harness claims; a subsequent root owner is not poisoned", async () => {
+it("queued cancellation/disposal settles while a foreign conversation gate remains held", async () => {
   let release!: () => void, entered!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }), started = new Promise<void>((resolve) => { entered = resolve; });
   const result = { metadata: { runId: "fictional-run", conversationId: "fictional", contextSources: [], contextSectionIds: [] } };
   const store: ConversationHistoryStore = { load: async () => [], append: async () => {} };
@@ -173,13 +241,14 @@ it("queued cancellation/disposal never enters harness claims; a subsequent root 
   const run = vi.fn(async () => result), queued = serializeNativeSwitchHarness({ run }, "fictional-queue-root", store);
   const request: AgentHarnessRequest = { conversationId: "fictional", userMessage: "Fictional input", abortSignal: new AbortController().signal };
   const first = active.run(request); await started; const next = queued.run(request); const rejected = expect(next).rejects.toMatchObject({ name: "AgentResponseCancelledError" });
-  queued.cancel!("fictional", "Fictional cancellation"); const disposed = queued.dispose!(); release(); await first; await rejected; await disposed; expect(run).not.toHaveBeenCalled();
+  queued.cancel!("fictional", "Fictional cancellation"); await rejected; await queued.dispose!(); expect(run).not.toHaveBeenCalled();
+  release(); await first;
   const fresh = serializeNativeSwitchHarness({ run }, "fictional-queue-root", store); await fresh.run(request); expect(run).toHaveBeenCalledOnce();
 });
 
-it("identity seam excludes background/subagent messages and ignores run/request IDs", () => {
-  const request: AgentHarnessRequest = { conversationId: "web:fictional-thread", userMessage: "Fictional input", abortSignal: new AbortController().signal, metadata: { web: { turnId: "fictional-turn", userMessageId: "fictional-message" }, tui: { requestId: randomUUID() } } };
+it("identity seam requires a host-stamped Web source and excludes background authorization", () => {
+  const request: AgentHarnessRequest = { conversationId: "web:fictional-thread", userMessage: "Fictional input", abortSignal: new AbortController().signal, metadata: { source: "web", web: { turnId: "fictional-turn", userMessageId: "fictional-message" }, tui: { requestId: randomUUID() } } };
   expect(persistedWebDeliveryId(request)).toBe("fictional-message");
   expect(persistedWebDeliveryId({ ...request, metadata: { web: { turnId: "fictional-turn" }, tui: { requestId: randomUUID() } } })).toBeUndefined();
-  for (const metadata of [{ cron: {} }, { webhook: {} }, { processJob: {} }, { source: "subagent" }]) expect(persistedWebDeliveryId({ ...request, metadata: { ...request.metadata, ...metadata } })).toBeUndefined();
+  for (const metadata of [{ cron: {} }, { webhook: {} }, { processJob: {} }, { source: "tui" }, { source: "acp" }, { source: undefined }]) expect(persistedWebDeliveryId({ ...request, metadata: { ...request.metadata, ...metadata } })).toBeUndefined();
 });

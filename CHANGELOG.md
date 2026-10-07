@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+- Keep same-model wakes on the current native chain without switch billing;
+  refuse unsupported native dispatch fallbacks, require the Web source for
+  delivery identities, and cancel conversation-gate waiters without root-wide
+  blocking or nested self-waits. Keep model-switch config unexposed.
+
 - Forward owned native preparation through configured APP wrappers and preserve
   Web message identities across redelivery; keep model-switch config unexposed
-  and requests without persisted identities on the original fail-closed path.
+  and guarded model changes without persisted identities fail-closed.
 
 - Keep native switch projections within exact artifact byte reservations and
   require the accepted provider/API on native reopening, while leaving ordinary

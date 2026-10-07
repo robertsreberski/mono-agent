@@ -1174,7 +1174,11 @@ export class MonoAgentHarness implements AgentHarness {
         const reconcileTurn = historyStore?.providerSessionReconciliation === "v1"
           && sessionOwner.sessionTurnReconciliation === "v1" && sessionOwner.reconcileSessionTurn !== undefined;
         const beginMutation = (async () => {
-          if (this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(activeRequest) !== undefined && reconcileTurn) {
+          // The read-only native hint selects owned CURRENT-chain dispatch for
+          // no-ID wakes. It grants no authority; preparation rechecks under claim.
+          const nativeCurrent = this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(activeRequest) === undefined
+            ? (await historyStore?.readProviderSessionBinding?.(request.conversationId))?.native === true : false;
+          if (this.nativeModelSwitch && reconcileTurn && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent)) {
             nativePreparationActive = true;
             preparedNativeTurn = await prepareConfiguredModelSwitch({ policy: this.nativeModelSwitch,
               preparation: { options: this.options, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,
@@ -1194,7 +1198,7 @@ export class MonoAgentHarness implements AgentHarness {
           }
           providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
             ...(historyStore?.providerSessionModelBinding === "v1" ? [{ modelKey: requestedModelKey,
-              ...(this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(activeRequest) === undefined ? { unpreparedNativeDispatch: true as const } : {}),
+              ...(this.nativeModelSwitch ? { unpreparedNativeDispatch: true as const } : {}),
               ...(reconcileTurn ? { reconciliation: { purpose: "execution" as const,
                 ownerKey: this.options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
                 initial: { persistText: persistUserMessage, timestamp: this.nowIso(),

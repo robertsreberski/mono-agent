@@ -36,9 +36,7 @@ export async function prepareConfiguredModelSwitch(input: {
   readonly prepareContext: HarnessRuntimePreparationInput["prepareContext"];
 }): Promise<ConfiguredPreparedTurn | undefined> {
   const { policy, preparation: host } = input, options = host.options;
-  // No durable explicit delivery identity: select the original path BEFORE any
-  // native capability, resource preparation, claim or authority work.
-  if (policy.deliveryId(host.request) === undefined) return undefined;
+  const messageId = policy.deliveryId(host.request);
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);
   if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
@@ -53,6 +51,14 @@ export async function prepareConfiguredModelSwitch(input: {
   let switched = false, cold = false;
   try {
     let snapshot = await owner.read();
+    if (messageId === undefined) {
+      // Ordinary same-model dispatch can borrow the accepted current chain,
+      // but may not recover/open a model change or authorize a producer slot.
+      if (snapshot.pending) throw pending();
+      if (!snapshot.native) { await owner.abort(); return undefined; }
+      if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== host.routing.modelKey) throw new AgentHarnessError(
+        "native_cold_model_change_unavailable", "A guarded model change requires a persisted explicit delivery identity; native evidence was preserved.");
+    }
     if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
       const recovered = await recoverPreparedModelSwitch(owner, { exclusiveWriters: true });

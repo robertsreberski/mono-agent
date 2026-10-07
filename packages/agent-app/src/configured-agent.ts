@@ -501,9 +501,10 @@ const ownedRuntimeKeys = {
   nativePreparedDispatch: true, prepareNativeDispatch: true, run: true,
   configureTools: true, syncSession: true, sessionTurnReconciliation: true,
   reconcileSessionTurn: true, recoverSession: true, refreshSession: true,
-  salvageDurableSession: true, retireDurableSession: true, disposeSession: true,
+  // Deliberately omitted: switch dispatch does not need default-path salvage.
+  salvageDurableSession: false, retireDurableSession: true, disposeSession: true,
   invalidateSession: true, disposeAllSessions: true,
-} satisfies Record<keyof MonoRuntimeLike, true>;
+} satisfies Record<keyof MonoRuntimeLike, boolean>;
 const ownedPreparedKeys = {
   snapshot: true, assertReady: true, checkHandoffSummary: true,
   produceHandoffSummary: true, run: true, close: true,
@@ -519,13 +520,29 @@ export function wrapOwnedConfiguredRuntime(
 ): MonoRuntimeLike {
   let security: Promise<{ readonly ownership: AgentRootOwnership }> | undefined;
   let disposed = false;
+  const localLeases = new Set<import("./agent-root-coordinator.js").AgentRootRequestLease>();
+  const settled = new Set<() => void>();
+  const acquireRequestLease = (ownership: AgentRootOwnership, generation: import("./agent-root-coordinator.js").AgentRootProtectionGeneration) => {
+    const lease = ownership.coordinator.acquireRequestLease(generation);
+    localLeases.add(lease);
+    let released = false;
+    return { generation: lease.generation, releaseAfterSettlement() {
+      if (released) return;
+      released = true;
+      try { lease.releaseAfterSettlement(); }
+      finally {
+        localLeases.delete(lease);
+        if (localLeases.size === 0) { for (const resolve of settled) resolve(); settled.clear(); }
+      }
+    } };
+  };
   const loadSecurity = async () => {
     const ownership = await acquireAgentRootOwnership(agentRoot);
     try {
       assertAgentRootLeaseOutsideWorkspace(ownership, config.runtime.workspace);
       return { ownership };
     } catch (error) {
-      await releaseAgentRootOwnershipWhenIdle(ownership).catch(() => undefined);
+      ownership.release();
       throw error;
     }
   };
@@ -536,7 +553,11 @@ export function wrapOwnedConfiguredRuntime(
     if (current === undefined) return;
     const { ownership } = await current.catch(() => ({ ownership: undefined }));
     if (ownership !== undefined) {
-      await releaseAgentRootOwnershipWhenIdle(ownership);
+      // Drain this runtime's own prepared/run/reconciliation leases only.
+      // Releasing a reference cannot close the OS lease while foreign references
+      // or active coordinator generations still own it.
+      if (localLeases.size > 0) await new Promise<void>((resolve) => settled.add(resolve));
+      ownership.release();
     }
   };
   const withReconciliationLease = async <T>(action: () => Promise<T>): Promise<T> => {
@@ -546,7 +567,7 @@ export function wrapOwnedConfiguredRuntime(
     ownership.coordinator.synchronizeGeneration(registry.generation);
     const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
     if (disposed) throw new Error("Configured runtime has been disposed.");
-    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    const lease = acquireRequestLease(ownership, boundary.generation);
     try { await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace); return await action(); }
     finally { lease.releaseAfterSettlement(); }
   };
@@ -562,7 +583,7 @@ export function wrapOwnedConfiguredRuntime(
     ownership.coordinator.synchronizeGeneration(registry.generation);
     const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
     if (disposed) throw new Error("Configured runtime has been disposed.");
-    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    const lease = acquireRequestLease(ownership, boundary.generation);
     try {
       const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
       const protectedRoots = processJobsProtectionPolicyRoots(attested);
@@ -644,7 +665,6 @@ export function wrapOwnedConfiguredRuntime(
       : { configureTools: runtime.configureTools.bind(runtime) }),
     ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
     ...(runtime.reconcileSessionTurn === undefined ? {} : { reconcileSessionTurn: (request) => withReconciliationLease(() => runtime.reconcileSessionTurn!(request)) }),
-    ...(runtime.salvageDurableSession === undefined ? {} : { salvageDurableSession: (id, root) => withReconciliationLease(() => runtime.salvageDurableSession!(id, root)) }),
     ...(runtime.recoverSession === undefined ? {} : { recoverSession: (receipt, context) => withReconciliationLease(() => runtime.recoverSession!(receipt, context)) }),
     ...(runtime.syncSession === undefined ? {} : { syncSession: runtime.syncSession.bind(runtime) }),
     ...(runtime.refreshSession === undefined ? {} : { refreshSession: runtime.refreshSession.bind(runtime) }),
@@ -1613,7 +1633,7 @@ async function createConfiguredAgentHarnessInternal(
     });
     ownershipTransferred = true;
     const owned = harnessWithAgentRootOwnership(harness, ownership);
-    return internalHooks.nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore);
+    return internalHooks.nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore, rollover);
 
   } catch (error) {
     await toolHistory?.release?.().catch(() => undefined);
@@ -1670,8 +1690,10 @@ function harnessWithAgentRootOwnership(
     dispose: () => {
       disposePromise ??= Promise.resolve()
         .then(async () => await harness.dispose?.())
-        .finally(async () => {
-          await releaseAgentRootOwnershipWhenIdle(ownership);
+        .finally(() => {
+          // The harness drained its own work. Foreign owners/active generations
+          // retain the shared OS lease; disposing a responder must not await them.
+          ownership.release();
         });
       return disposePromise;
     },
