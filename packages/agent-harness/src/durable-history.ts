@@ -158,7 +158,11 @@ export interface ManagedModelSwitchStorageLease {
 }
 /** Claim-only host preparation. No incoming fence/admission or configured opt-in.
  * Child leases borrow this owner; releasing one never releases the preparation.
- * Admission consumes the preparation only after the canonical model is ready. */
+ * Admission consumes the preparation only after the canonical model is ready.
+ * Inside phase/native callbacks, only assertOwned may be called: all other
+ * preparation/child methods serialize behind the running action. Do not call
+ * same-conversation standalone store APIs while this preparation is held; they
+ * acquire its claim and cannot proceed until admission or abort releases it. */
 export interface ManagedProviderSessionPreparation {
   readonly recovery: ConversationHistoryTurnRecovery;
   read(): Promise<ProviderSessionPreparationSnapshot>;
@@ -1395,6 +1399,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           return owned(async () => {
             assertSessionModelKey(binding.modelKey);
             if (binding.reconciliation && Buffer.byteLength(normalizedRunId) > 512) throw new TypeError("Reconciled turn id exceeds 512 bytes.");
+            if (binding.reconciliation && this.inspectProviderTurn === undefined) throw new Error("Native turn reconciliation is not configured.");
             await this.settleHeldTurn(id, borrowed);
             await this.requireNoModelSwitch(id, held.rootIdentity);
             const record = await this.readRecord(id, held.rootIdentity);

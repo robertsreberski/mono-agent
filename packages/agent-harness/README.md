@@ -311,8 +311,12 @@ claim-only storage substrate; no configured host opts in yet. It settles old
 work and returns detached history/source/native metadata without an incoming
 execution fence. Its authority/switch/roll-forward methods borrow the same owner
 rather than reacquiring it; child release never releases the preparation.
-Mutations are serialized, while `assertOwned` can verify ownership during native
-I/O. Long native I/O and future producer work stay outside root transactions.
+Mutations are serialized. Inside phase/native callbacks, call only `assertOwned`;
+other preparation/child methods wait behind the running action. Do not call
+same-conversation standalone store APIs while the preparation is held: those
+APIs wait for its claim. Long native I/O and future producer work stay outside
+root transactions. Missing reconciliation capability is a validation failure
+before transfer, leaving preparation owned for correction or abort.
 `admit(binding)` consumes the claim exactly once only after pending switch
 settlement and a matching canonical model binding; a ready artifact alone is not
 ready admission. It does not cold-rotate a different bound model. First/unbound

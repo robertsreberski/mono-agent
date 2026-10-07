@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep provider-session preparation owned when reconciliation is unavailable,
+  allowing validation failures to be corrected before incoming admission.
+
 - Add claim-only provider preparation leases that retain one conversation owner
   through native switch storage and transfer it once to ready turn admission.
   Existing configured execution remains unchanged.
