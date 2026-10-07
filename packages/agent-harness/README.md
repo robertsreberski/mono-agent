@@ -205,8 +205,24 @@ preserves the pending intent and its charged attempts, not cold-replay success.
 Ready storage-only roll-forward is never blocked by the next message's size;
 normalized dispatch remains the final bound and late refusal never rebills a
 summary or automatically replays an admitted message. This is an inert
-implementation boundary: configured activation, cold fallback policy and
-activation-critical lifecycle forwarding are not enabled by these helpers.
+implementation boundary: configured activation and activation-critical APP
+lifecycle forwarding remain disabled.
+
+The private constructor staging path now prepares the complete host context,
+request extensions and permit before P2 under the same conversation claim. It
+sizes aggregate reservations before paid work, falls back to the existing cold
+path for unsupported capabilities or legacy-source typed pre-intent capacity refusal, and
+surfaces corruption/ownership/pending failures. It preflights the real future
+compaction-summary envelope and derived output cap against the maximum accepted
+inherited prefix before intent or billing, then checks the exact projection before
+acceptance. Pending messages are reported without appending, admission or queuing;
+post-P2 failures are accounted without automatic replay. Ordinary same-model
+reopening inherits accepted content without a switch-only account/window gate.
+No app/config/factory caller passes this private staging capability. Exposed
+opt-in, stopped-writer validation, compatible whole-chain switch-back, long-ID
+native-owner handling, guarded-chain cold fallback, APP key forwarding and lifecycle activation are still
+required before it can be enabled. Fixture reset/retention proof is not proof
+of every configured APP cleanup path.
 
 ## Architecture
 

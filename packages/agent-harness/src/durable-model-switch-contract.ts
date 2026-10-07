@@ -6,6 +6,9 @@ import type { HistoryMessage } from "./context/index.js";
 import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-agent/runtime-adapter";
 
 /** Private additive storage contracts. No host dispatch/admission opts in yet. */
+export class ModelSwitchCapacityError extends Error {
+  readonly code = "ERR_MODEL_SWITCH_CAPACITY";
+}
 export const MODEL_SWITCH_DIRECTORY = ".model-switches";
 export const MAX_MODEL_SWITCH_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SWITCH_FENCE_BYTES = 1024;
