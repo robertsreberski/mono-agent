@@ -2733,6 +2733,9 @@ export class WebService {
           web: {
             threadId: started.thread.id,
             turnId: started.turnId,
+            // Persisted inbound message identity, independent of run/HTTP attempt.
+            ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined && "userMessageId" in started
+              ? { userMessageId: started.userMessageId } : {}),
             // Host-only unprefixed owner text for memory; the dispatched text
             // still includes project context, tags and conversation markers.
             ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined ? { ownerText } : {}),

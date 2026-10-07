@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Forward owned native preparation through configured APP wrappers and preserve
+  Web message identities across redelivery; keep model-switch config unexposed
+  and requests without persisted identities on the original fail-closed path.
+
 - Keep native switch projections within exact artifact byte reservations and
   require the accepted provider/API on native reopening, while leaving ordinary
   account changes ungated.

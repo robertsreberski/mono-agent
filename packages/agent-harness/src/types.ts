@@ -1,3 +1,4 @@
+import type { ManagedProviderSessionPreparation } from "./durable-history.js";
 import type { PendingTurnInput, PendingTurnCandidate, PendingTurnPayload } from "./durable-turn-contract.js";
 import type {
   AgentLiveInputOffer,
@@ -74,6 +75,8 @@ export interface ProviderSessionTurnBinding {
   readonly modelKey: string;
   /** Manual compaction only: reject an existing different binding without retiring it. */
   readonly skipModelRotation?: boolean;
+  /** Host dispatch selected the original path and cannot borrow native authority. */
+  readonly unpreparedNativeDispatch?: true;
   readonly reconciliation?: {
     readonly ownerKey: string;
     readonly purpose: "execution" | "compaction";
@@ -146,6 +149,9 @@ export interface ConversationHistoryTurnDrainResult {
 }
 
 export interface ConversationHistoryStore {
+  /** Positive owned preparation contract. Does not acknowledge stopped older writers. */
+  readonly providerSessionPreparation?: "v1";
+  beginProviderSessionPreparation?(conversationId: string, runId: string): Promise<ManagedProviderSessionPreparation>;
   /** Opted-in owner-held, storage-only native turn settlement. load() stays read-only. */
   readonly providerSessionReconciliation?: "v1" | undefined;
   recoverProviderSessionTurn?(conversationId: string): Promise<ConversationHistoryTurnRecovery>;

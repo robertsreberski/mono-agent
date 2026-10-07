@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeResult } from "@mono-agent/runtime-adapter";
-import { DurableConversationHistoryStore, NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
+import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
 import { MAX_JOURNAL_CHAIN, MAX_MODEL_SWITCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
@@ -10,7 +10,7 @@ import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPrep
 
 /** @internal
  * @unstable Constructor capability, structurally callable but not
- * passed by app/config/createAgentHarness. Not a supported public opt-in. */
+ * passed by config or ordinary app composition. Not a supported public opt-in. */
 export interface InternalNativeSwitchPolicy {
   readonly exclusiveWriters: true;
   readonly native: RuntimeNativePreparationStorage;
@@ -36,9 +36,12 @@ export async function prepareConfiguredModelSwitch(input: {
   readonly prepareContext: HarnessRuntimePreparationInput["prepareContext"];
 }): Promise<ConfiguredPreparedTurn | undefined> {
   const { policy, preparation: host } = input, options = host.options;
+  // No durable explicit delivery identity: select the original path BEFORE any
+  // native capability, resource preparation, claim or authority work.
+  if (policy.deliveryId(host.request) === undefined) return undefined;
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);
-  if (!(store instanceof DurableConversationHistoryStore) || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
+  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
     || runtime.nativePreparedDispatch !== "v1" || !runtime.prepareNativeDispatch || runtime.sessionTurnReconciliation !== "v1" || !runtime.reconcileSessionTurn) return undefined;
   if (policy.exclusiveWriters !== true || resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "Explicit upgraded-writer acknowledgement and the configured native root are required.");
   const owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId);
