@@ -784,7 +784,31 @@ export interface RuntimeNativeJournalStorage {
   inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
 }
 
+/** Actual resolved native request, never credentials/auth headers. */
+export interface RuntimeNativeDispatchSnapshot {
+  readonly model: { readonly provider: string; readonly id: string; readonly api: string; readonly contextWindow: number; readonly maxTokens: number };
+  readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
+  readonly authSource: string;
+  readonly systemPrompt: string;
+  readonly tools: readonly { readonly name: string; readonly description: string; readonly parameters: Readonly<Record<string, unknown>> }[];
+  readonly messages: readonly RuntimeMessage[];
+}
+/** Only session binding is supplied after preparation. Instructions, input,
+ * root, model, policy and resolved tools cannot be replaced at run time. */
+export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sessionId" | "providerSessionId" | "providerAttributionSessionId"
+  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
+export interface RuntimeNativePreparedDispatch {
+  readonly snapshot: RuntimeNativeDispatchSnapshot;
+  /** Single primary attempt; no router replay/failover or repeated tool setup. */
+  run(binding?: RuntimeNativeDispatchBinding): Promise<RuntimeResult>;
+  /** Idempotent. During a running dispatch waits for normal cleanup; abort via
+   * the original signal. Host must retain its concurrency permit until settled. */
+  close(): Promise<void>;
+}
+
 export interface MonoRuntimeLike {
+  readonly nativePreparedDispatch?: "v1" | undefined;
+  prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeNativePreparedDispatch>;
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;
   /** Flush provider-owned durable transcript state before host history commit. */

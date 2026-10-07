@@ -334,6 +334,21 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
+    ...(runtime.nativePreparedDispatch === undefined ? {} : { nativePreparedDispatch: runtime.nativePreparedDispatch }),
+    async prepareNativeDispatch(systemPrompt, runOptions) {
+      if (typeof systemPrompt !== "string" || !systemPrompt.trim() || !runOptions || typeof runOptions !== "object") {
+        throw new RuntimeAdapterError("invalid_runtime_options", "Native preparation requires instructions and run options.");
+      }
+      assertParsedRuntimeModelReference(runOptions.model);
+      if (runtime.nativePreparedDispatch !== "v1" || !runtime.prepareNativeDispatch) {
+        throw new RuntimeAdapterError("runtime_backend_unavailable", "Native prepared dispatch unavailable.");
+      }
+      return await runtime.prepareNativeDispatch(systemPrompt, {
+        ...withoutCallerSandbox(runOptions),
+        ...(runOptions.processJobs === undefined ? {} : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
+        ...(runOptions.ownedForegroundProcesses === undefined ? {} : { ownedForegroundProcesses: bridgeOwnedForegroundProcesses(runOptions.ownedForegroundProcesses) }),
+      } as unknown as KernelRunOptions) as import("./types.js").RuntimeNativePreparedDispatch;
+    },
     configureTools(next?: RuntimeToolOptions): void {
       runtime.configureTools?.(
         next === undefined

@@ -530,10 +530,40 @@
  */
 
 /**
+ * @typedef {Object} NativeDispatchSnapshot
+ * @property {{provider: string, id: string, api: string, contextWindow: number, maxTokens: number}} model
+ * @property {{provider: string, api: string, model: string, account: string|null}} provenance
+ * @property {string} authSource Nonsecret provider-reported source, not an account proof.
+ * @property {string} systemPrompt Actual augmented instructions.
+ * @property {ReadonlyArray<{name: string, description: string, parameters: Record<string, any>}>} tools Actual selected built-in/MCP/StructuredOutput declarations.
+ * @property {ReadonlyArray<any>} messages Frozen request including current decorated input.
+ */
+/**
+ * @typedef {Object} NativeDispatchBinding
+ * @property {string} [sessionId]
+ * @property {string} [providerSessionId]
+ * @property {string} [providerAttributionSessionId]
+ * @property {boolean} [sessionKeepAlive]
+ * @property {number} [sessionIdleTimeoutMs]
+ * @property {RuntimeRunOptions['sessionTurn']} [sessionTurn]
+ * @property {RuntimeRunOptions['sessionRecovery']} [sessionRecovery]
+ * @property {any} [nativeSessionAuthority]
+ * @property {any} [nativeSessionProjection]
+ */
+/**
+ * @typedef {Object} NativePreparedDispatch
+ * @property {NativeDispatchSnapshot} snapshot Deep-frozen nonsecret dispatch metadata.
+ * @property {(binding?: NativeDispatchBinding) => Promise<RuntimeResult>} run Single use; no router replay/failover, tools are not rebuilt.
+ * @property {() => Promise<void>} close Idempotent; while running waits for its normal cleanup. Host owns concurrency/abort.
+ */
+
+/**
  * @typedef {Object} AgentRuntimeInstance
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {"v1"} [nativePreparedDispatch] Explicit before-session native preparation capability.
+ * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<NativePreparedDispatch>} [prepareNativeDispatch]
  * @property {"v1"} [sessionTurnReconciliation] Explicit native evidence ownership capability.
  * @property {(request: {sessionsRoot: string, descriptor: any, purpose: "execution"|"compaction", expectedModel: {provider: string, id: string, api?: string}, expectedInputs: ReadonlyArray<{id: string, requestDigest: string, placement: "initial"|"live"}>, expectedBaseTip?: string|null}) => Promise<any>} reconcileSessionTurn Storage-only protected native reconciliation.
  * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession

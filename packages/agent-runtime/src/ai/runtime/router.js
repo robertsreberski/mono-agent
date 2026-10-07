@@ -1,3 +1,4 @@
+import { snapshotNativeDispatchOptions } from "../providers/pi-native/prepared-dispatch.js";
 // Provider fallback router.
 //
 // Wraps `createRuntime` with an ordered chain of model references. If a run
@@ -508,6 +509,37 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       } finally {
         await liveInputHub?.flush();
       }
+    },
+    // Preparation is a primary-only single attempt, never a routed retry or
+    // backup. A custom resolver must explicitly certify native ownership.
+    nativePreparedDispatch: resolveAttempt === undefined || sessionTurnReconciliation === "v1" ? "v1" : undefined,
+    async prepareNativeDispatch(systemPrompt, options) {
+      const primary = entries[0];
+      if (resolveAttempt !== undefined && sessionTurnReconciliation !== "v1"
+        || !primary || modelKey(options.model) !== modelKey(primary.model)
+        || !entrySupportsSessionResume(primary) || !entrySatisfiesRequirements(primary, options)) {
+        throw new Error("Router primary does not support native prepared dispatch");
+      }
+      let callOptions = snapshotNativeDispatchOptions({ ...options, model: primary.model }), attemptRuntime = inner;
+      const capturedTools = snapshotNativeDispatchOptions(effectiveRouterToolOptions(host, configuredTools));
+      /** @type {(() => (void|Promise<void>))|undefined} */ let cleanup;
+      let cleaned = false;
+      const release = async () => { if (!cleaned) { cleaned = true; await cleanup?.(); } };
+      try {
+        const resolution = normalizeAttemptResolution(await resolveAttempt?.({ model: primary.model, attemptIndex: 0, retryIndex: 0 }));
+        cleanup = resolution?.cleanup;
+        callOptions = mergeAttemptPolicyOptions(mergeAttemptOptions(callOptions, resolution?.options), resolution?.policyOptions);
+        applyEntryEffort(callOptions, primary.effort);
+        if (resolution?.runtime) {
+          assertRuntimeLike(resolution.runtime); attemptRuntime = resolution.runtime;
+          projectPiRuntimeToolContext(attemptRuntime, capturedTools);
+        }
+        if (attemptRuntime.nativePreparedDispatch !== "v1" || !attemptRuntime.prepareNativeDispatch) throw new Error("Native prepared dispatch unavailable");
+        const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
+        return { snapshot: lease.snapshot,
+          run: async (binding) => { try { return await lease.run(binding); } finally { await lease.close(); await release(); } },
+          close: async () => { try { await lease.close(); } finally { await release(); } } };
+      } catch (error) { await release(); throw error; }
     },
     chain: () => entries.slice(),
     configureTools(next = {}) {

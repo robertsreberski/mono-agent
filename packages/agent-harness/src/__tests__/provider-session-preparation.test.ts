@@ -133,6 +133,8 @@ it("refuses a foreign intent, overlong reconciled run and missing reconciliation
   await expect(invalid.admit(binding)).rejects.toThrow("512 bytes"); await invalid.assertOwned(); await invalid.abort();
   const failed = await store.beginProviderSessionPreparation("fictional", "prepared");
   await expect(failed.admit(binding)).rejects.toThrow("not configured");
+  await failed.assertOwned(); expect(await markers(path)).toHaveLength(1);
+  const turn = await failed.admit({ modelKey: "faux:A" }); await turn.assertOwned(); await turn.abort();
   expect(await markers(path)).toEqual([]); await failed.abort(); await expect(failed.read()).rejects.toThrow("no longer owned");
 });
 
@@ -165,4 +167,61 @@ it("snapshots the requested binding before queued admission can observe caller m
   const prep = await store.beginProviderSessionPreparation("fictional", "prepared");
   const binding = { modelKey: "faux:A" }, admitted = prep.admit(binding); binding.modelKey = "faux:B";
   const turn = await admitted; expect(turn.modelKey).toBe("faux:A"); await turn.abort();
+});
+
+
+it("queues abort behind a running admit without releasing the transferred claim", async () => {
+  const path = await root();
+  let releaseRetirement!: () => void, retirementStarted!: () => void;
+  const paused = new Promise<void>((resolve) => { releaseRetirement = resolve; });
+  const started = new Promise<void>((resolve) => { retirementStarted = resolve; });
+  const store = createDurableHistoryStore({ root: path, maxMessages: 0,
+    retireProviderSession: async () => { retirementStarted(); await paused; } });
+  const first = await store.beginProviderSessionTurn("fictional", "first", { modelKey: "faux:A" });
+  await (await first.prepareCommit([], { providerSessionSynced: true })).commit();
+  const prep = await store.beginProviderSessionPreparation("fictional", "second"), original = await markers(path);
+  const admitted = prep.admit({ modelKey: "faux:A" }); await started;
+  let aborted = false; const abort = prep.abort().then(() => { aborted = true; });
+  try {
+    await Promise.resolve(); expect(aborted).toBe(false); expect(await markers(path)).toEqual(original);
+  } finally { releaseRetirement(); }
+  const turn = await admitted; await abort;
+  expect(aborted).toBe(true); expect(await markers(path)).toEqual(original); await turn.assertOwned();
+  await turn.abort(); expect(await markers(path)).toEqual([]);
+});
+
+it("cold-rotates an unbound record with committed revision instead of inventing native model ownership", async () => {
+  const path = await root(), retire = vi.fn(async () => {});
+  const store = createDurableHistoryStore({ root: path, retireProviderSession: retire });
+  const first = await store.beginProviderSessionTurn("fictional", "first");
+  await (await first.prepareCommit([{ role: "user", content: "Unbound fictional context" }], { providerSessionSynced: true })).commit();
+  expect(await store.readProviderSessionBinding("fictional")).toEqual({ revision: 1 });
+  const prep = await store.beginProviderSessionPreparation("fictional", "second"), original = await markers(path);
+  const turn = await prep.admit({ modelKey: "faux:A" });
+  expect(turn.previousModelWasUnbound).toBe(true); expect(turn.modelKey).toBe("faux:A");
+  expect(turn.providerSessionRevision).toBe(0); expect(turn.providerSessionId).not.toBe(first.providerSessionId);
+  expect(retire).toHaveBeenCalledWith(first.providerSessionId, undefined);
+  expect(await markers(path)).toEqual(original); await turn.assertOwned(); await turn.abort();
+});
+
+it("keeps the same-model non-reusable cold-rotation rule under prepared admission", async () => {
+  const path = await root(), retire = vi.fn(async () => {});
+  const store = createDurableHistoryStore({ root: path, maxMessages: 0, retireProviderSession: retire });
+  const first = await store.beginProviderSessionTurn("fictional", "first", { modelKey: "faux:A" });
+  await (await first.prepareCommit([], { providerSessionSynced: true })).commit();
+  const prep = await store.beginProviderSessionPreparation("fictional", "second");
+  const turn = await prep.admit({ modelKey: "faux:A" });
+  expect(turn.modelKey).toBe("faux:A"); expect(turn.providerSessionRevision).toBe(0);
+  expect(turn.providerSessionId).not.toBe(first.providerSessionId);
+  expect(retire).toHaveBeenCalledWith(first.providerSessionId, "faux:A"); await turn.assertOwned(); await turn.abort();
+});
+
+it("aborts directly after marker loss and releases the logical claim for the next owner", async () => {
+  const path = await root(), store = createDurableHistoryStore({ root: path });
+  const prep = await store.beginProviderSessionPreparation("fictional", "first");
+  await rm(join(path, ".locks", (await markers(path))[0]!));
+  await expect(prep.assertOwned()).rejects.toThrow(); await prep.abort(); await prep.abort();
+  const next = await store.beginProviderSessionPreparation("fictional", "second");
+  await next.assertOwned(); expect(await markers(path)).toHaveLength(1); await next.abort();
+  expect(await markers(path)).toEqual([]);
 });

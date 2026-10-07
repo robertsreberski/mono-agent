@@ -90,6 +90,8 @@ import {
 import { finalReplyText } from "./pi-native/reply-text.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
+import { appendStructuredOutputInstruction } from "./pi-native/structured-output.js";
+import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData } from "./pi-native/prepared-dispatch.js";
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
@@ -323,6 +325,16 @@ function splitUserContent(content) {
 }
 
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
+  return await executePiNativeResponse(systemPrompt, options);
+}
+
+/** Additive preparation only. No configured host invokes it yet. */
+export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlement = async () => {}) {
+  const frozen = snapshotNativeDispatchOptions(options);
+  return createPreparedDispatchLease((control) => executePiNativeResponse(systemPrompt, frozen, control).finally(afterSettlement), frozen.abortSignal);
+}
+
+async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
   if (Object.hasOwn(options, "settings")) {
     throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
   }
@@ -441,41 +453,44 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     retainRecoveryTail: false,
   };
 
-  const providerSessionId = options.sessionId
+  let providerSessionId = options.sessionId
     || options.providerSessionId
     || options.providerAttributionSessionId
     || options.runId
     || randomUUID();
-  if (options.sessionTurn !== undefined) {
-    try {
-      validateSessionTurn(options.sessionTurn, providerSessionId);
-      if (options.sessionTurn.reconciliation && (typeof options.piSessionsRoot !== "string" || !options.piSessionsRoot.trim()
-        || options.sessionKeepAlive !== true || options.sessionTurn.reconciliation.purpose !== (options.manualCompaction ? "compaction" : "execution"))) {
-        throw new TypeError("Reconciliation requires a durable kept-alive turn of matching purpose");
+  const validateProtectedTurn = () => {
+    if (options.sessionTurn !== undefined) {
+      try {
+        validateSessionTurn(options.sessionTurn, providerSessionId);
+        if (options.sessionTurn.reconciliation && (typeof options.piSessionsRoot !== "string" || !options.piSessionsRoot.trim()
+          || options.sessionKeepAlive !== true || options.sessionTurn.reconciliation.purpose !== (options.manualCompaction ? "compaction" : "execution"))) {
+          throw new TypeError("Reconciliation requires a durable kept-alive turn of matching purpose");
+        }
+        runState.preserveTurnEvidence = !!options.sessionTurn.reconciliation;
+        if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
+          || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
+          throw new TypeError("sessionTurn and sessionRecovery identities disagree");
+        }
+      } catch {
+        return { ...buildErrorResult({ assistantTexts: [], events, start, turnCount: 0, resolved, options,
+          externalAbort: false, errorMessage: "Invalid protected sessionTurn host contract", providerSessionId,
+          runtimeWarnings, isRetryable: false }), failureKind: "safety_session_turn_contract", retryable: false };
       }
-      runState.preserveTurnEvidence = !!options.sessionTurn.reconciliation;
-      if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
-        || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
-        throw new TypeError("sessionTurn and sessionRecovery identities disagree");
-      }
-    } catch {
-      return { ...buildErrorResult({ assistantTexts: [], events, start, turnCount: 0, resolved, options,
-        externalAbort: false, errorMessage: "Invalid protected sessionTurn host contract", providerSessionId,
-        runtimeWarnings, isRetryable: false }), failureKind: "safety_session_turn_contract", retryable: false };
     }
-  }
-  const providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
+  };
+  if (!control) { const invalid = validateProtectedTurn(); if (invalid) return invalid; }
+  let providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
   // Prefer the explicit sessionId, but fall back to providerSessionId so a caller
   // that only supplies providerSessionId still resumes the prior session instead
   // of being treated as a fresh run (which would drop prior context).
-  const requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
+  let requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
     ? options.sessionId
     : (typeof options.providerSessionId === "string" && options.providerSessionId.trim()
       ? options.providerSessionId
       : null);
   // Bridge TTL is a backstop behind the host's session policy; the grace
   // keeps host-side lazy expiry firing first.
-  const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
+  let sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
     ? Number(options.sessionIdleTimeoutMs) + 60_000
     : undefined;
   let structuredOutputFinalizationRetryAttempts = 0;
@@ -524,39 +539,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     nativeSessionProjection: options.nativeSessionProjection && structuredClone(options.nativeSessionProjection) };
   const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
 
-  try {
-    // Resume the session (warm registry hit, durable cold reopen, or
-    // create-on-miss for a durable cross-restart first turn) or create a fresh
-    // one. resolveSession mutates runState.session / sessionEntry / createdOnMiss
-    // / reservation, and returns an early fast-fail result (session_not_found /
-    // session_busy) to return verbatim. Its liveness claims (I1 busy-claim, R8
-    // reservation, F4 cold-reopen re-read) are await-free by construction. A
-    // session miss stays cheap: no tool/MCP/harness init runs before this
-    // fast-fail.
-    try {
-      const resolvedSession = await resolveSession(runState, {
-        requestedSessionId,
-        providerSessionId,
-        durableRepo,
-        sessionTtlMs,
-        cwd: options.cwd,
-        resolved,
-        options,
-        events,
-        runtimeWarnings,
-        start,
-        piTransport,
-      });
-      if (resolvedSession.done) return resolvedSession.result;
-    } finally {
-      if (durableRepo?.rootPermissionWarningPending) {
-        durableRepo.rootPermissionWarningPending = false;
-        const warning = { warning_kind: "pi_sessions_root_permissions_tightened", source: "pi",
-          message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." };
-        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
-      }
-    }
-
+  const prepareRun = async () => {
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
     // capabilities, bypassing the static model-registry lookup. Production
@@ -645,6 +628,72 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     const piModels = buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId);
 
+    return { runtime, capabilities, effectiveThinkingLevel, reference, toolLimits, effectiveToolExecutionMode,
+      tools, structuredTool, maxRetries, maxRetryDelayMs, toolSteeringMode, piModels };
+  };
+
+  try {
+    const prepared = control ? await prepareRun() : undefined;
+    if (prepared) {
+      if (runtimeWarnings.some((warning) => ["mcp_init_failed", "mcp_list_tools_failed"].includes(warning.warning_kind))) {
+        throw new Error("Native dispatch preparation requires complete MCP declarations");
+      }
+      const auth = await prepareDispatchAuth(prepared.piModels, prepared.runtime.model, options.abortSignal);
+      if (auth.model.provider !== resolved.provider || auth.model.id !== resolved.model) throw new Error("Prepared dispatch does not match its canonical requested model");
+      prepared.runtime = { ...prepared.runtime, model: auth.model };
+      // Pin actual declarations, not names/config guesses; execute closures stay
+      // attached to this exact runState and are never initialized a second time.
+      for (const tool of prepared.tools) tool.parameters = freezeDispatchData(structuredClone(tool.parameters));
+      systemPrompt = appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts);
+      const binding = await control.ready({ systemPrompt, messages: structuredClone(options.messages ?? []),
+        model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
+          contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
+        tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
+        provenance: auth.provenance, authSource: auth.authSource });
+      options = { ...options, ...binding };
+      providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;
+      providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
+      requestedSessionId = options.sessionId || options.providerSessionId || null;
+      sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs)) ? Number(options.sessionIdleTimeoutMs) + 60_000 : undefined;
+      prepared.piModels = withProviderCheckOutputCap(withOpenCodeSessionHeaders(auth.models, providerAttributionSessionId), options.providerCheckMaxTokens);
+      const invalid = validateProtectedTurn(); if (invalid) return invalid;
+      options.abortSignal?.throwIfAborted();
+    }
+    // Resume the session (warm registry hit, durable cold reopen, or
+    // create-on-miss for a durable cross-restart first turn) or create a fresh
+    // one. resolveSession mutates runState.session / sessionEntry / createdOnMiss
+    // / reservation, and returns an early fast-fail result (session_not_found /
+    // session_busy) to return verbatim. Its liveness claims (I1 busy-claim, R8
+    // reservation, F4 cold-reopen re-read) are await-free by construction. A
+    // ordinary session miss stays cheap: no tool/MCP/harness init runs before
+    // this fast-fail. The explicit prepared path has already resolved its tools.
+    try {
+      const resolvedSession = await resolveSession(runState, {
+        requestedSessionId,
+        providerSessionId,
+        durableRepo,
+        sessionTtlMs,
+        cwd: options.cwd,
+        resolved,
+        options,
+        events,
+        runtimeWarnings,
+        start,
+        piTransport,
+      });
+      if (resolvedSession.done) return resolvedSession.result;
+    } finally {
+      if (durableRepo?.rootPermissionWarningPending) {
+        durableRepo.rootPermissionWarningPending = false;
+        const warning = { warning_kind: "pi_sessions_root_permissions_tightened", source: "pi",
+          message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." };
+        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
+      }
+    }
+
+    const { runtime, capabilities, effectiveThinkingLevel, reference, toolLimits, effectiveToolExecutionMode,
+      tools, structuredTool, maxRetries, maxRetryDelayMs, toolSteeringMode, piModels } = prepared ?? await prepareRun();
+
     // Construct the harness and recover any interrupted durable operation.
     // Stream subscription and the external abort handler are activated only
     // after prior transcript seeding, so manual append lifecycle events cannot
@@ -655,7 +704,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,
       systemPrompt,
-      outputSchema: options.outputSchema,
+      outputSchema: control ? undefined : options.outputSchema,
       tools,
       toolExecutionMode: effectiveToolExecutionMode,
       transport: piTransport,
@@ -1270,4 +1319,5 @@ export const piNativeRuntimeBridge = {
   capabilities: runtimeCapabilities("pi"),
   supports: (ref) => Boolean(ref?.provider && ref?.model),
   execute: generatePiNativeResponse,
+  prepareNativeDispatch: preparePiNativeDispatch,
 };
