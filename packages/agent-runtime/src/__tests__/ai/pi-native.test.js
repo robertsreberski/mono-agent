@@ -1565,7 +1565,7 @@ describe("pi-native AgentHarness bridge", () => {
       expect(requests).toBe(3); // two original provider messages, one finalization
       expect(result).toMatchObject({ error: null, text: reply });
       expect(result.text).not.toContain("Private");
-      expect(retryContext.tools || []).toEqual([]);
+      expect(getCurrentTools(retryContext.messages)).toEqual([]);
       expect(retryContext.messages.at(-1)).toMatchObject({ role: "user" });
       expect(JSON.stringify(retryContext.messages.at(-1))).toContain("user-facing reply");
       expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry")
