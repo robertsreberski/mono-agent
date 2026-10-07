@@ -31,7 +31,7 @@ async function fixture(value: unknown = canonicalRecord(), options: Partial<Dura
 it("loads validated v4 without writes, retirement or native inspection", async () => {
   const f = await fixture(), before = await readFile(f.path);
   expect(await f.store.load(bucket)).toEqual(canonicalRecord().messages);
-  expect(await f.store.readProviderSessionBinding(bucket)).toEqual({ modelKey, revision: 7 });
+  expect(await f.store.readProviderSessionBinding(bucket)).toEqual({ modelKey, revision: 7, native: true });
   expect((await f.store.modelSwitchStorageSource(bucket)).status).toBe("supported");
   expect(await readFile(f.path)).toEqual(before); expect(f.inspect).not.toHaveBeenCalled(); expect(f.retire).not.toHaveBeenCalled();
 });

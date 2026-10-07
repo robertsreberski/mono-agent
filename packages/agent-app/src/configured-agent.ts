@@ -1,4 +1,6 @@
 import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
+import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
+import { createRequestModelOverrideRuntimeExtension, hasExplicitRequestModelOverride } from "./request-model-override.js";
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
@@ -256,6 +258,12 @@ interface ConfiguredAgentInternalHooks {
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
   /** App-only read decoration around the configured canonical history store. */
   readonly wrapHistoryStore?: (store: ConversationHistoryStore) => ConversationHistoryStore;
+  /** @internal Staging only. No config or controller supplies this capability.
+   * Explicit acknowledgement cannot be inferred from wrappers/methods. */
+  readonly nativeModelSwitch?: {
+    readonly exclusiveWriters: true;
+    readonly native: import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage;
+  };
   /**
    * Overrides `runtime.session.rollover` for THIS channel's responder. The app
    * builds one responder per channel, and a channel whose conversations already
@@ -489,7 +497,23 @@ function configuredSandboxEngine(
   return explicit ?? createSrtSandboxEngine();
 }
 
-function wrapOwnedConfiguredRuntime(
+// Explicit ownership boundary: new runtime/prepared methods require disposition.
+const ownedRuntimeKeys = {
+  nativePreparedDispatch: true, prepareNativeDispatch: true, run: true,
+  configureTools: true, syncSession: true, sessionTurnReconciliation: true,
+  reconcileSessionTurn: true, recoverSession: true, refreshSession: true,
+  // Deliberately omitted: switch dispatch does not need default-path salvage.
+  salvageDurableSession: false, retireDurableSession: true, disposeSession: true,
+  invalidateSession: true, disposeAllSessions: true,
+} satisfies Record<keyof MonoRuntimeLike, boolean>;
+const ownedPreparedKeys = {
+  snapshot: true, assertReady: true, checkHandoffSummary: true,
+  produceHandoffSummary: true, run: true, close: true,
+} satisfies Record<keyof import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch, true>;
+void ownedRuntimeKeys; void ownedPreparedKeys;
+
+/** @internal Package-private ownership wrapper test seam; absent from root exports. */
+export function wrapOwnedConfiguredRuntime(
   runtime: MonoRuntimeLike,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
@@ -528,53 +552,95 @@ function wrapOwnedConfiguredRuntime(
     try { await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace); return await action(); }
     finally { lease.releaseAfterSettlement(); }
   };
+  // A prepared lease owns the same protection generation as ordinary run(),
+  // but its lifetime ends at dispatch/close, not when preparation returns.
+  const secureOptions = async (runOptions: RuntimeRunOptions) => {
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const { ownership } = await secured();
+    const registry = await loadProcessJobsRootRegistryProtection(
+      ownership.agentRoot,
+      config.runtime.workspace,
+    );
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    try {
+      const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
+      const protectedRoots = processJobsProtectionPolicyRoots(attested);
+      let effectiveOptions = runOptions;
+      if (protectedRoots.length > 0) {
+        const verdict = configuredRoutesOnlyPiNative(config, runOptions.model);
+        if (!verdict.ok) {
+          throw new Error(
+            `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
+          );
+        }
+        const sandboxEngine = runOptions.sandboxEngine
+          ?? configuredSandboxEngine
+          ?? createSrtSandboxEngine();
+        if (!await sandboxEngine.isAvailable().catch(() => false)) {
+          throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+        }
+        const sandboxPolicy = mergeSandboxPolicies(
+          runOptions.sandboxPolicy,
+          processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
+        );
+        if (sandboxPolicy === undefined) {
+          throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+        }
+        effectiveOptions = {
+          ...runOptions,
+          sandboxPolicy,
+          sandboxEngine,
+        };
+      }
+      return { effectiveOptions, release: () => lease.releaseAfterSettlement() };
+    } catch (error) {
+      lease.releaseAfterSettlement();
+      throw error;
+    }
+  };
   return {
     async run(systemPrompt, runOptions) {
-      if (disposed) throw new Error("Configured runtime has been disposed.");
-      const { ownership } = await secured();
-      const registry = await loadProcessJobsRootRegistryProtection(
-        ownership.agentRoot,
-        config.runtime.workspace,
-      );
-      ownership.coordinator.synchronizeGeneration(registry.generation);
-      const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
-      if (disposed) throw new Error("Configured runtime has been disposed.");
-      const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
-      try {
-        const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        const protectedRoots = processJobsProtectionPolicyRoots(attested);
-        let effectiveOptions = runOptions;
-        if (protectedRoots.length > 0) {
-          const verdict = configuredRoutesOnlyPiNative(config, runOptions.model);
-          if (!verdict.ok) {
-            throw new Error(
-              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
-            );
-          }
-          const sandboxEngine = runOptions.sandboxEngine
-            ?? configuredSandboxEngine
-            ?? createSrtSandboxEngine();
-          if (!await sandboxEngine.isAvailable().catch(() => false)) {
-            throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-          }
-          const sandboxPolicy = mergeSandboxPolicies(
-            runOptions.sandboxPolicy,
-            processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
-          );
-          if (sandboxPolicy === undefined) {
-            throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-          }
-          effectiveOptions = {
-            ...runOptions,
-            sandboxPolicy,
-            sandboxEngine,
-          };
-        }
-        return await runtime.run(systemPrompt, effectiveOptions);
-      } finally {
-        lease.releaseAfterSettlement();
-      }
+      const secured = await secureOptions(runOptions);
+      try { return await runtime.run(systemPrompt, secured.effectiveOptions); }
+      finally { secured.release(); }
     },
+    ...(runtime.nativePreparedDispatch === undefined ? {} : { nativePreparedDispatch: runtime.nativePreparedDispatch }),
+    ...(runtime.prepareNativeDispatch === undefined ? {} : {
+      async prepareNativeDispatch(systemPrompt: string, runOptions: RuntimeRunOptions) {
+        const secured = await secureOptions(runOptions);
+        let nativeLease: import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch | undefined;
+        try {
+          const prepared = await runtime.prepareNativeDispatch!(systemPrompt, secured.effectiveOptions);
+          nativeLease = prepared;
+          let released = false, started = false, closed = false;
+          const release = () => { if (!released) { released = true; secured.release(); } };
+          return {
+            snapshot: prepared.snapshot,
+            ...(prepared.assertReady === undefined ? {} : { assertReady: prepared.assertReady.bind(prepared) }),
+            ...(prepared.checkHandoffSummary === undefined ? {} : { checkHandoffSummary: prepared.checkHandoffSummary.bind(prepared) }),
+            ...(prepared.produceHandoffSummary === undefined ? {} : { produceHandoffSummary: prepared.produceHandoffSummary.bind(prepared) }),
+            async run(binding) {
+              if (started || closed) throw new Error("Prepared dispatch has already been consumed.");
+              started = true;
+              try { return await prepared.run(binding); }
+              finally { release(); }
+            },
+            async close() {
+              closed = true;
+              try { await prepared.close(); }
+              finally { release(); }
+            },
+          } satisfies import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch;
+        } catch (error) {
+          try { await nativeLease?.close(); } catch { /* Preserve preparation failure. */ }
+          finally { secured.release(); }
+          throw error;
+        }
+      },
+    }),
     ...(runtime.configureTools === undefined
       ? {}
       : { configureTools: runtime.configureTools.bind(runtime) }),
@@ -1365,6 +1431,7 @@ async function createConfiguredAgentHarnessInternal(
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
+    ...(internalHooks.nativeModelSwitch === undefined ? {} : { nativeJournalStorage: internalHooks.nativeModelSwitch.native }),
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
@@ -1408,7 +1475,7 @@ async function createConfiguredAgentHarnessInternal(
   });
 
   try {
-    const harness = createAgentHarness({
+    const harnessOptions: AgentHarnessOptions = {
     identityPath: config.context.identityPath,
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
@@ -1535,9 +1602,31 @@ async function createConfiguredAgentHarnessInternal(
       }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    };
+    const harness = internalHooks.nativeModelSwitch === undefined
+      ? createAgentHarness(harnessOptions)
+      : createAgentHarness(harnessOptions, {
+      nativeModelSwitch: {
+        ...internalHooks.nativeModelSwitch,
+        sessionsRoot: piSessionsRoot ?? "",
+        deliveryId: persistedWebDeliveryId,
+        implicitModel: async (request, modelKey) => {
+          if (hasExplicitRequestModelOverride(request.metadata)) return undefined;
+          const selected = parseMonoRuntimeModelReference(modelKey);
+          // Reuse endpoint/effort selection without changing request metadata
+          // identity (which carries out-of-band host capabilities).
+          const extension = createRequestModelOverrideRuntimeExtension({ baseModel: model,
+            ...(config.runtime.effort === undefined ? {} : { baseEffort: config.runtime.effort }),
+            ...(config.runtime.fallbacks === undefined ? {} : { fallbackRoutes: config.runtime.fallbacks }),
+            ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }) });
+          return { model: selected, runtimeOptions: (await extension({ request: { metadata: { web: { model: modelKey } } } })).runtimeOptions };
+        },
+      },
     });
     ownershipTransferred = true;
-    return harnessWithAgentRootOwnership(harness, ownership);
+    const owned = harnessWithAgentRootOwnership(harness, ownership);
+    return internalHooks.nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore);
+
   } catch (error) {
     await toolHistory?.release?.().catch(() => undefined);
     throw error;

@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeResult } from "@mono-agent/runtime-adapter";
-import { DurableConversationHistoryStore, NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
+import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
+import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
 import { MAX_JOURNAL_CHAIN, MAX_MODEL_SWITCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
@@ -10,7 +10,7 @@ import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPrep
 
 /** @internal
  * @unstable Constructor capability, structurally callable but not
- * passed by app/config/createAgentHarness. Not a supported public opt-in. */
+ * passed by config or ordinary app composition. Not a supported public opt-in. */
 export interface InternalNativeSwitchPolicy {
   readonly exclusiveWriters: true;
   readonly native: RuntimeNativePreparationStorage;
@@ -18,6 +18,11 @@ export interface InternalNativeSwitchPolicy {
   /** Durable host delivery identity, never run ID or text hash. Undefined means
    * this is NOT an explicit-message authorization (cron/continuation/recovery). */
   readonly deliveryId: (request: AgentHarnessRequest) => string | undefined;
+  /** APP resolves undeclared no-ID wakes to the durable native model. Does not
+   * grant authority; the owned snapshot still rechecks the selected model. */
+  readonly implicitModel?: (request: AgentHarnessRequest, modelKey: string) => Promise<{
+    readonly model: RuntimeModelReference; readonly runtimeOptions: Record<string, unknown>;
+  } | undefined>;
 }
 export interface ConfiguredPreparedTurn {
   readonly context: Awaited<ReturnType<typeof prepareHarnessRuntime>>["context"];
@@ -36,9 +41,10 @@ export async function prepareConfiguredModelSwitch(input: {
   readonly prepareContext: HarnessRuntimePreparationInput["prepareContext"];
 }): Promise<ConfiguredPreparedTurn | undefined> {
   const { policy, preparation: host } = input, options = host.options;
+  const messageId = policy.deliveryId(host.request);
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);
-  if (!(store instanceof DurableConversationHistoryStore) || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
+  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
     || runtime.nativePreparedDispatch !== "v1" || !runtime.prepareNativeDispatch || runtime.sessionTurnReconciliation !== "v1" || !runtime.reconcileSessionTurn) return undefined;
   if (policy.exclusiveWriters !== true || resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "Explicit upgraded-writer acknowledgement and the configured native root are required.");
   const owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId);
@@ -50,6 +56,14 @@ export async function prepareConfiguredModelSwitch(input: {
   let switched = false, cold = false;
   try {
     let snapshot = await owner.read();
+    if (messageId === undefined) {
+      // Ordinary same-model dispatch can borrow the accepted current chain,
+      // but may not recover/open a model change or authorize a producer slot.
+      if (snapshot.pending) throw pending();
+      if (!snapshot.native) { await owner.abort(); return undefined; }
+      if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== host.routing.modelKey) throw new AgentHarnessError(
+        "native_cold_model_change_unavailable", "A guarded model change requires a persisted explicit delivery identity; native evidence was preserved.");
+    }
     if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
       const recovered = await recoverPreparedModelSwitch(owner, { exclusiveWriters: true });

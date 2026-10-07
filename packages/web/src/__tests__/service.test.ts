@@ -7768,6 +7768,11 @@ describe("conversation tags service", () => {
       await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
       expect(bodies[0]?.text).toBe('<conversation_tags>"planning"</conversation_tags>\n\nCanonical text');
       expect((bodies[0]?.metadata as { web?: { ownerText?: string } })?.web?.ownerText).toBe("Canonical text");
+      const persistedUserMessage = service.thread(thread.id).messages.find((message) => message.role === "user")!;
+      const web = (bodies[0]?.metadata as { web: { userMessageId: string; turnId: string } }).web;
+      expect(web.userMessageId).toBe(persistedUserMessage.id);
+      expect(service.store.getMessage(web.userMessageId)?.id).toBe(persistedUserMessage.id);
+      expect(web.userMessageId).not.toBe(web.turnId);
       expect(service.thread(thread.id).messages.find((message) => message.role === "user")?.parts).toEqual([{ type: "text", text: "Canonical text" }]);
       const edited = service.patchTag(tag.id, { name: "reviewing" });
       expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tag: edited } });

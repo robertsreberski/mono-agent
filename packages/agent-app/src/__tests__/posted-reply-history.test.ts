@@ -13,6 +13,7 @@ import {
   createAgentHarness,
   createAgentResponder,
   createInMemoryHistoryStore,
+  createDurableHistoryStore,
   type ConversationHistoryStore,
   type HistoryMessage,
 } from "@mono-agent/agent-harness";
@@ -615,4 +616,17 @@ it("posted-reply store returns all reconciliation capabilities and bound recover
   expect(wrapped.providerSessionReconciliation).toBe("v1");
   expect(await wrapped.recoverProviderSessionTurn!("fictional-owner")).toBe(recovery);
   expect(await wrapped.drainPendingProviderSessionTurns!({ limit: 3 })).toBe(draining);
+});
+
+it("forwards real owned preparation through the posted-reply store with its receiver and abort intact", async () => {
+  const root = await mkdtemp(join(tmpdir(), "posted-native-preparation-")); tempDirs.push(root);
+  const store = createDurableHistoryStore({ root: join(root, "history") });
+  const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+  expect(wrapped.providerSessionPreparation).toBe("v1");
+  const owner = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-preparation");
+  try { expect((await owner.read()).source.status).toBe("unsupported"); await owner.assertOwned(); }
+  finally { await owner.abort(); }
+  const next = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-next-preparation"); await next.abort();
+  const unsupported = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore({ load: async () => [], append: async () => {} });
+  expect(unsupported.providerSessionPreparation).toBeUndefined(); expect(unsupported.beginProviderSessionPreparation).toBeUndefined();
 });

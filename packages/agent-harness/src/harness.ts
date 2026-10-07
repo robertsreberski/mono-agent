@@ -1,3 +1,4 @@
+import { OrdinaryNativeDispatchUnavailableError } from "./durable-history.js";
 import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "./durable-turn-contract.js";
 import { senderLabel as canonicalSenderLabel } from "./harness/speaker-context.js";
 import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./harness/session-recovery.js";
@@ -121,7 +122,7 @@ const SHUTDOWN_DRAIN_WARNING =
 
 interface MonoAgentHarnessInternalOptions {
   /** @internal
-   * @unstable Staging capability; never passed by configured app/createAgentHarness. */
+   * @unstable Staging capability; only the private APP seam passes it. No config opt-in. */
   readonly nativeModelSwitch?: InternalNativeSwitchPolicy;
   /** Deterministic test seam; production callers use the bounded default. */
   readonly shutdownDrainTimeoutMs?: number;
@@ -708,6 +709,7 @@ export class MonoAgentHarness implements AgentHarness {
     let coordinatedProviderAttemptEligibleForSync = false;
     let providerAttemptStarted = false;
     const providerAttemptSessionIds = new Map<string, ProviderSessionHandle>();
+    let turnOptions = this.options;
     let requestedModelKey = sessionModelKey(this.options.model);
     let activeAttemptModelKey = requestedModelKey;
     const retireSessions = async (record: RuntimeSessionRecord | undefined, ...ids: readonly unknown[]): Promise<void> => {
@@ -1111,7 +1113,16 @@ export class MonoAgentHarness implements AgentHarness {
     request.abortSignal.addEventListener("abort", onAbort, { once: true });
     if (request.abortSignal.aborted) onAbort();
     try {
-      requestedModelKey = modelReferenceKey(requestSessionModel(request, this.options.model));
+      if (this.nativeModelSwitch?.implicitModel && this.nativeModelSwitch.deliveryId(request) === undefined) {
+        const binding = await this.options.historyStore?.readProviderSessionBinding?.(request.conversationId);
+        if (binding?.native === true) {
+          if (!binding.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
+          const implicit = await this.nativeModelSwitch.implicitModel(request, binding.modelKey);
+          if (implicit) turnOptions = { ...this.options, model: implicit.model,
+            runtimeOptions: mergeRuntimeOptions(this.options.runtimeOptions, implicit.runtimeOptions) };
+        }
+      }
+      requestedModelKey = modelReferenceKey(requestSessionModel(request, turnOptions.model));
       activeAttemptModelKey = requestedModelKey;
       // Resolve inside the guarded lifecycle, before any history is omitted.
       this.runtimeForSession(requestedModelKey);
@@ -1173,10 +1184,14 @@ export class MonoAgentHarness implements AgentHarness {
         const reconcileTurn = historyStore?.providerSessionReconciliation === "v1"
           && sessionOwner.sessionTurnReconciliation === "v1" && sessionOwner.reconcileSessionTurn !== undefined;
         const beginMutation = (async () => {
-          if (this.nativeModelSwitch && reconcileTurn) {
+          // The read-only native hint selects owned CURRENT-chain dispatch for
+          // no-ID wakes. It grants no authority; preparation rechecks under claim.
+          const nativeCurrent = this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(activeRequest) === undefined
+            ? (await historyStore?.readProviderSessionBinding?.(request.conversationId))?.native === true : false;
+          if (this.nativeModelSwitch && reconcileTurn && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent)) {
             nativePreparationActive = true;
             preparedNativeTurn = await prepareConfiguredModelSwitch({ policy: this.nativeModelSwitch,
-              preparation: { options: this.options, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,
+              preparation: { options: turnOptions, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,
                 runId, durablePiSessionsRoot: this.options.piSessionsRoot!, routing: { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
                   onRuntimeSelected: (key) => { activeAttemptModelKey = key; } }, attachmentContext, continuationCapabilities, turnContinuityCollector,
                 ...(liveInputMailbox ? { liveInputMailbox } : {}), onProviderStart: () => noteProviderStart(coordinatedProviderSessionId) },
@@ -1193,6 +1208,7 @@ export class MonoAgentHarness implements AgentHarness {
           }
           providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
             ...(historyStore?.providerSessionModelBinding === "v1" ? [{ modelKey: requestedModelKey,
+              ...(this.nativeModelSwitch ? { unpreparedNativeDispatch: true as const } : {}),
               ...(reconcileTurn ? { reconciliation: { purpose: "execution" as const,
                 ownerKey: this.options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
                 initial: { persistText: persistUserMessage, timestamp: this.nowIso(),
@@ -1379,7 +1395,7 @@ export class MonoAgentHarness implements AgentHarness {
             coordinatedProviderSessionRevision = turn.providerSessionRevision; coordinatedProviderAttemptEligibleForSync = true;
             resumeSessionId = turn.providerSessionId; providerAttributionSessionId = turn.providerSessionId;
           }) : runHarnessRuntime(
-          this.options,
+          turnOptions,
           this.runLimiter,
           this.sessionsEnabled(),
           activeRequest,
@@ -1870,7 +1886,9 @@ export class MonoAgentHarness implements AgentHarness {
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
-      if (nativePreparationActive && providerHistoryTurn === undefined && p2Turn === undefined && !providerHistoryOwnershipTransferred) {
+      if (error instanceof OrdinaryNativeDispatchUnavailableError) error = new AgentHarnessError("native_cold_model_change_unavailable", error.message);
+      if ((nativePreparationActive || error instanceof AgentHarnessError && error.failureKind === "native_cold_model_change_unavailable")
+        && providerHistoryTurn === undefined && p2Turn === undefined && !providerHistoryOwnershipTransferred) {
         if (sessionRecord) this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
         const summary = request.abortSignal.aborted ? await safeRecorderCancel(recorder, cancellationFailureKind(request.abortSignal), cancelledTurnReason(request.abortSignal.reason, cancellationFailureKind(request.abortSignal)), context?.systemPrompt)
           : await safeRecorderFail(recorder, error, context?.systemPrompt);
@@ -2344,8 +2362,9 @@ async function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   }
 }
 
-export function createAgentHarness(options: AgentHarnessOptions): AgentHarness {
-  const harness = new MonoAgentHarness(options);
+/** @param internalOptions @internal Unstable APP composition seam; no public config opt-in. */
+export function createAgentHarness(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}): AgentHarness {
+  const harness = new MonoAgentHarness(options, internalOptions);
   if (eligibleContextImport(options) === undefined) return harness;
   return Object.assign(harness, {
     importContext: async (

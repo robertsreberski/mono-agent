@@ -165,6 +165,13 @@ export interface ManagedModelSwitchStorageLease {
  * acquire its claim and cannot proceed until admission or abort releases it. */
 /** Pre-intent contention, not unsupported storage or permission to cold replay.
  * Never wait holding a conversation claim: two contenders can pin each other. */
+/** @internal Ordinary host admission cannot borrow prepared native authority. */
+export class OrdinaryNativeDispatchUnavailableError extends Error {
+  constructor() {
+    super("Ordinary admission on a guarded chain requires owned native preparation; native evidence was preserved.");
+    this.name = "OrdinaryNativeDispatchUnavailableError";
+  }
+}
 export class NativeHistoryAuthorityBusyError extends Error {
   readonly code = "ERR_NATIVE_HISTORY_AUTHORITY_BUSY";
   readonly retryable = true;
@@ -323,6 +330,7 @@ interface CommittedEntry {
 export class DurableConversationHistoryStore implements ConversationHistoryStore {
   readonly providerSessionReconciliation: "v1" | undefined;
   private readonly inspectProviderTurn: ConversationHistoryTurnInspector | undefined;
+  readonly providerSessionPreparation = "v1" as const;
   readonly providerSessionModelBinding = "v1" as const;
   readonly providerSessionRecovery = "v1" as const;
   readonly providerSessionRetirement: "fail-closed" | undefined;
@@ -968,12 +976,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return retained.map(cloneMessage);
   }
 
-  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined> {
+  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number; readonly native?: true } | undefined> {
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
     const provider = record.providerSession;
-    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0 };
+    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0, ...(record.sourceVersion === 4 ? { native: true as const } : {}) };
   }
 
   async append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
@@ -1505,6 +1513,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       const recovery = await this.settleHeldTurn(normalizedId, held);
       let existing = await this.readRecord(normalizedId, rootIdentity);
+      // Ordinary P2 callers cannot supply the accepted native projection/current
+      // authority. Refuse before cold rotation, dirty admission or native I/O.
+      // Only owner-held preparation may transfer that proof into dispatch.
+      if (existing.sourceVersion === 4 && binding?.unpreparedNativeDispatch === true) throw new OrdinaryNativeDispatchUnavailableError();
       if (binding?.reconciliation && existing.lastCommit?.turnId === normalizedRunId) throw new DurableTurnAlreadyCommittedError();
       const existingProvider = existing.providerSession;
       const modelKey = binding?.modelKey ?? existingProvider?.modelKey;

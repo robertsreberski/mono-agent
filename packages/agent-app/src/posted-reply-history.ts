@@ -87,9 +87,18 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
   };
 }
 
+const forwardedResponderKeys = {
+  liveInputOwnership: true, respond: true, compactConversation: true,
+  offerLiveInput: true, cancel: true, deliverVerbatim: true, importContext: true,
+  openReplyArtifact: true, loadMcpApp: true, requestMcpApp: true,
+} satisfies Record<keyof AgentResponder, true>;
+void forwardedResponderKeys;
+
 // Review every history capability when the shared store contract grows: this
 // decorator must preserve durable provider-session operations even for non-Slack turns.
 const forwardedHistoryKeys = {
+  providerSessionPreparation: true,
+  beginProviderSessionPreparation: true,
   providerSessionReconciliation: true,
   recoverProviderSessionTurn: true,
   drainPendingProviderSessionTurns: true,
@@ -106,6 +115,8 @@ const forwardedHistoryKeys = {
   readProviderSessionBinding: true,
 } satisfies Record<keyof ConversationHistoryStore, true>;
 void forwardedHistoryKeys;
+const forwardedExclusiveTurnKeys = { history: true, historyVersion: true, prepareCommit: true, abort: true } satisfies Record<keyof import("@mono-agent/agent-harness").ConversationHistoryExclusiveTurn, true>;
+void forwardedExclusiveTurnKeys;
 
 function wrapHistoryStore(
   store: ConversationHistoryStore,
@@ -115,6 +126,8 @@ function wrapHistoryStore(
   const providerSessionRetirement = store.providerSessionRetirement;
   const contextImport = store.contextImport;
   return {
+    ...(store.providerSessionPreparation === undefined ? {} : { providerSessionPreparation: store.providerSessionPreparation }),
+    ...(store.beginProviderSessionPreparation === undefined ? {} : { beginProviderSessionPreparation: store.beginProviderSessionPreparation.bind(store) }),
     ...(store.providerSessionReconciliation === undefined ? {} : { providerSessionReconciliation: store.providerSessionReconciliation }),
     ...(store.drainPendingProviderSessionTurns === undefined ? {} : { drainPendingProviderSessionTurns: store.drainPendingProviderSessionTurns.bind(store) }),
     ...(store.recoverProviderSessionTurn === undefined ? {} : { recoverProviderSessionTurn: store.recoverProviderSessionTurn.bind(store) }),
