@@ -1474,7 +1474,7 @@ async function createConfiguredAgentHarnessInternal(
   });
 
   try {
-    const harness = createAgentHarness({
+    const harnessOptions: AgentHarnessOptions = {
     identityPath: config.context.identityPath,
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
@@ -1601,7 +1601,10 @@ async function createConfiguredAgentHarnessInternal(
       }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
-    }, internalHooks.nativeModelSwitch === undefined ? {} : {
+    };
+    const harness = internalHooks.nativeModelSwitch === undefined
+      ? createAgentHarness(harnessOptions)
+      : createAgentHarness(harnessOptions, {
       nativeModelSwitch: {
         ...internalHooks.nativeModelSwitch,
         sessionsRoot: piSessionsRoot ?? "",
