@@ -7,42 +7,47 @@
   `olderWritersStopped: true`, continuous sessions and durable Pi storage.
   Persisted Web message IDs bound summary billing; pending messages never replay.
   Stop older writers before upgrade; rollback requires restoring a backup.
+  Keep no-ID turns on never-upgraded conversations on the original cold-replay
+  path; refuse declared other-model no-ID turns only on native conversations.
+  Existing native conversations retain their durable model after `runtime.model`
+  changes until a persisted Web message selects the new model.
 
-- Keep undeclared no-ID wakes on the durable current model, not the base model;
-  explicit other-model requests still refuse. The staging-only conversation gate
+- Keep undeclared no-ID wakes on native conversations' durable current model,
+  not the base model; declared other-model no-ID requests there still refuse.
+  The opt-in conversation gate
   can return retryable `native_switch_busy` for detached same-conversation work.
 
 - Keep same-model wakes on the current native chain without switch billing;
   refuse unsupported native dispatch fallbacks, require the Web source for
   delivery identities, and cancel conversation-gate waiters without root-wide
-  blocking or nested self-waits. Keep model-switch config unexposed.
+  blocking or nested self-waits.
 
 - Forward owned native preparation through configured APP wrappers and preserve
-  Web message identities across redelivery; keep model-switch config unexposed
-  and guarded model changes without persisted identities fail-closed.
+  Web message identities across redelivery; keep guarded model changes without
+  persisted identities fail-closed.
 
 - Keep native switch projections within exact artifact byte reservations and
   require the accepted provider/API on native reopening, while leaving ordinary
   account changes ungated.
-- Add whole-chain native switch-back behind the inert model-switch capability,
+- Add whole-chain native switch-back behind the opt-in model-switch capability,
   requiring positive provider, API and account proof for every recorded operation;
-  keep public configuration unexposed and use handoffs when proof or fit fails.
+  use handoffs when proof or fit fails.
 
-- Preserve ordinary cancellation continuity after inert switch preparation selects
+- Preserve ordinary cancellation continuity after switch preparation selects
   fallback; skip unavailable outgoing producers without billing and distinguish
   native capture capacity and retryable root contention from generic failures.
 
-- Add inert before-P2 host model-switch wiring with pending-message accounting,
-  pre-intent capacity fallback and real inherited-prefix compaction preflight;
-  keep configured activation disabled until switch-back and lifecycle wiring land.
+- Add before-P2 host model-switch wiring with pending-message accounting,
+  pre-intent capacity fallback and real inherited-prefix compaction preflight
+  under the acknowledged Web-only opt-in.
 
 - Fix prepared model-switch recovery after canonical publication and retain
   committed results across producer cleanup failures; refuse later-message
   budget overflow before further summary billing.
 
 - Add durable prepared model-switch producer orchestration with explicit-message
-  billing generations and ready-only incoming admission; keep configured
-  switching disabled until activation wiring is complete.
+  billing generations and ready-only incoming admission under the acknowledged
+  Web-only opt-in.
 
 - Fix routed prepared start allowances and post-admission reserves; refuse
   non-persisting credential refresh and keep evidence filesystem failures generic.
@@ -115,8 +120,8 @@
   whole-chain reset/retention cleanup restartable through native journals,
   handoffs and crash storage. Keep unrelated owners progressing and reserve
   capacity before mutation, including when native victims are busy. Keep
-  configured switching disabled; older writers must stay stopped and rollback
-  requires restoring consistent backups.
+  configured switching behind the acknowledged Web-only opt-in; older writers
+  must stay stopped and rollback requires restoring consistent backups.
 
 - Fix managed switch-storage owner validation and transactional pending checks,
   preserve switching owners during logical reset and inactive fence cleanup, and

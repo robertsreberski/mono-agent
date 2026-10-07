@@ -220,7 +220,9 @@ The separately exported `createManagedNativeJournalStorage` provides a typed
 administrative storage capability, not a `MonoRuntimeLike` dispatch capability or
 model-facing run option. Its caller must hold host root/conversation authority,
 validate accepted content and coordinate canonical publication/deletion. It
-forwards only journal storage operations; no configured host creates it yet.
+forwards only journal storage operations. The configured app creates it only
+with the OFF-default Web model-switch opt-in and explicit stopped-writer
+acknowledgement; runtime capability presence alone does not enable switching.
 Cold planning/publication retains predecessors and replaces only the same-model
 current epoch. Reference-checked C and complete-set D native deletion are
 restartable storage primitives, not host reset/retention transactions. Callers

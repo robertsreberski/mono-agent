@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -44,7 +44,7 @@ async function fixture(publicConfig = false) {
   };
   let store: ConversationHistoryStore | undefined;
   let activeNative = native;
-  let preparation = vi.fn(), draining = vi.fn();
+  let preparation = vi.fn(), draining = vi.fn(), bindingRead = vi.fn();
   const make = async (enabled: boolean, unsupported?: "non-native" | "routed") => {
     let resolved = config;
     if (publicConfig) {
@@ -67,7 +67,7 @@ async function fixture(publicConfig = false) {
     };
     const posted = createSlackPostedReplyHistory({ maxMessages: 64 });
     const responder = await createConfiguredAgentResponderForApp({ config: resolved, cwd: root, runtime: incoming("A"), runtimeForModel: (ref) => incoming(ref.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } }, {
-      sessionRollover: "none", wrapHistoryStore: (base) => { store = base; if (publicConfig && enabled) activeNative = (base as unknown as { nativeJournalStorage: typeof native }).nativeJournalStorage; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
+      sessionRollover: "none", wrapHistoryStore: (base) => { store = base; bindingRead = vi.fn(base.readProviderSessionBinding!.bind(base)); base.readProviderSessionBinding = bindingRead; if (publicConfig && enabled) activeNative = (base as unknown as { nativeJournalStorage: typeof native }).nativeJournalStorage; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
       ...(enabled && !publicConfig ? { nativeModelSwitch: { exclusiveWriters: true as const, native } } : {}),
     });
     const wrapped = posted.wrapResponder(responder); cleanup.push(() => (wrapped as AgentResponder & { dispose(): Promise<void> }).dispose()); return wrapped;
@@ -94,7 +94,7 @@ async function fixture(publicConfig = false) {
       runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } });
     cleanup.push(() => dispose(h)); return h;
   };
-  return { root, config, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getDraining: () => draining };
+  return { root, config, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
 }
 
 it.each([false, true])("same-model no-ID wakes inherit the chain; explicit no-ID changes refuse (public=%s)", async (publicConfig) => {
@@ -164,8 +164,12 @@ it.each([false, true])("Web retry/reopen never authorize a new billed generation
   await expect(restarted.respond(f.request("fictional-persisted-user-message", "faux:B"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
   const redelivered = await inspect(); expect(redelivered.authorizationGeneration).toBe(0); expect(redelivered.authorizations).toEqual(first.authorizations); expect(redelivered.attempts).toEqual(first.attempts); expect(f.transport).toHaveBeenCalledTimes(calls);
   if (publicConfig) {
+    // A pending legacy-source switch is still non-v4: no-ID input takes the
+    // original admission path, whose pending-storage guard refuses without replay.
+    const preparationCalls = f.getPreparation().mock.calls.length;
     await expect(restarted.respond({ ...request, metadata: { source: "web", web: { trigger: "job" } } }, { append: async () => {} }))
       .rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
+    expect(f.getPreparation()).toHaveBeenCalledTimes(preparationCalls);
     expect(f.transport).toHaveBeenCalledTimes(calls);
     const build = f.native.buildHandoff.bind(f.native);
     vi.spyOn(f.native, "buildHandoff").mockImplementation((view, options) => options.summary
@@ -360,12 +364,34 @@ it.each([false, true])("public config switches once before incoming dispatch, in
   expect((await f.record()).lastSwitch).toEqual(switched.lastSwitch);
   expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
 });
-it("public no-ID change refuses before root authority bootstrap", async () => {
-  const f = await fixture(true); await f.seed(); const before = await f.record(), h = await f.makePublic();
-  await expect(h.respond(f.request(undefined, "faux:B"), { append: async () => {} }))
+it.each([false, true])("Slack no-ID other-model turn keeps the original cold replay on never-upgraded history (enabled=%s)", async (enabled) => {
+  const f = await fixture(true); await f.seed(); const before = await f.record(), h = await f.make(enabled);
+  const binding = f.getBindingRead();
+  const measure = vi.spyOn(f.native, "measureSwitch");
+  f.faux.setResponses([reply("Fictional cold B answer")]);
+  const request = { ...f.request(undefined), metadata: { source: "slack", slack: { channelId: "fictional-channel", threadTs: "fictional-thread", model: "faux:B" } } };
+  expect((await h.respond(request, { append: async () => {} })).text).toBe("Fictional cold B answer");
+  const after = await f.record(); expect(after.version).toBe(3); expect(after.providerSession.modelKey).toBe("faux:B");
+  expect(after.providerSession.epoch).not.toBe(before.providerSession.epoch);
+  expect(f.transport).toHaveBeenCalledTimes(2); expect(f.getPreparation()).not.toHaveBeenCalled(); expect(measure).not.toHaveBeenCalled();
+  expect(binding).toHaveBeenCalledTimes(enabled ? 1 : 0);
+  expect(JSON.stringify(f.transport.mock.calls.at(-1))).toContain("Fictional A reply"); // Canonical cold replay.
+  expect((await readdir(join(f.root, "history"))).some((name) => name.includes("native-history-root") || name.includes("model-switch"))).toBe(false);
+});
+it("Slack no-ID other-model turn refuses only after native upgrade; keyword prose never escalates a wake", async () => {
+  const f = await fixture(true); await f.seed(); const h = await f.make(true);
+  f.faux.setResponses([reply(summary), reply("Fictional B answer")]);
+  await h.respond(f.request("fictional-upgrade-id", "faux:B"), { append: async () => {} });
+  const before = await f.record(), calls = f.transport.mock.calls.length;
+  const binding = f.getBindingRead();
+  await expect(h.respond({ ...f.request(undefined), metadata: { source: "slack", slack: { channelId: "fictional-channel", threadTs: "fictional-thread", model: "faux:A" } } }, { append: async () => {} }))
     .rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
-  expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(1);
-  expect((await readdir(join(f.root, "history"))).some((name) => name.includes("native-history-root"))).toBe(false);
+  expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(calls); expect(binding).toHaveBeenCalledTimes(1);
+  binding.mockClear(); f.faux.setResponses([reply("Fictional inherited B answer")]);
+  const wake = { ...f.request(undefined), text: "please think hard, ultra think, ultrathink", metadata: { source: "web", web: { trigger: "job" } } };
+  expect((await h.respond(wake, { append: async () => {} })).text).toBe("Fictional inherited B answer");
+  expect(binding).toHaveBeenCalledTimes(1); expect((await f.record()).providerSession.modelKey).toBe("faux:B");
+  expect((await f.record()).lastSwitch).toEqual(before.lastSwitch); expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
 });
 it.each(["reset", "retention"])("public activation %s deletes the whole upgraded native chain", async (kind) => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
@@ -388,10 +414,11 @@ it.each(["reset", "retention"])("public activation %s deletes the whole upgraded
 
 it("public constructor rejects missing acknowledgement before acquiring or upgrading roots", async () => {
   const f = await fixture();
-  await expect(createConfiguredAgentResponder({ config: { ...f.config, runtime: { ...f.config.runtime, session: {
+  await expect(createConfiguredAgentResponder({ cwd: f.root, config: { ...f.config, runtime: { ...f.config.runtime, session: {
     ...f.config.runtime.session, modelSwitch: { enabled: true },
-  } } } })).rejects.toThrow("stopped older writers");
+  } } } })).rejects.toThrow("older writers are stopped");
   expect(await readdir(f.root)).toEqual(["IDENTITY.md"]);
+  await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("public upgrade reconciles a legacy pending turn, refusing missing evidence without replay", async () => {
@@ -421,4 +448,14 @@ it("public upgrade reconciles a legacy pending turn, refusing missing evidence w
   expect(record.messages.at(-2).content).toBe("Fictional new explicit input");
   expect(f.transport.mock.calls.length - calls).toBeLessThanOrEqual(3); // Current turn + summary + new turn, never replay.
   expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+});
+
+it.each(["acknowledgement", "continuous", "piSessionsRoot"])("programmatic switch validation names the missing %s condition", async (missing) => {
+  const f = await fixture();
+  const config = { ...f.config, runtime: { ...f.config.runtime, session: { ...f.config.runtime.session,
+    ...(missing === "continuous" ? { mode: "per-message" as const } : {}),
+    modelSwitch: { enabled: true, ...(missing === "acknowledgement" ? {} : { olderWritersStopped: true as const }) },
+  } }, ...(missing === "piSessionsRoot" ? { providers: {} } : {}) };
+  await expect(createConfiguredAgentResponder({ cwd: f.root, config })).rejects.toThrow(missing);
+  await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });

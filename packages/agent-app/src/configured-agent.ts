@@ -1161,15 +1161,18 @@ async function createConfiguredAgentHarnessInternal(
   const config = options.config;
   assertNoRetiredMonoAgentConfig(config);
   const switchConfig = config.runtime.session.modelSwitch;
-  if (switchConfig?.enabled === true && (switchConfig.olderWritersStopped !== true
-    || config.runtime.session.mode !== "continuous" || !config.providers?.piNative?.piSessionsRoot)) {
-    throw new MonoAgentConfigError("invalid_json", "Web model switching requires stopped older writers, continuous sessions and piSessionsRoot.",
-      { path: "runtime.session.modelSwitch" });
+  if (switchConfig?.enabled === true) {
+    if (switchConfig.olderWritersStopped !== true) throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires explicit acknowledgement that older writers are stopped.", { path: "runtime.session.modelSwitch.olderWritersStopped" });
+    if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires continuous sessions.", { path: "runtime.session.mode" });
+    if (!config.providers?.piNative?.piSessionsRoot) throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires durable providers.piNative.piSessionsRoot.", { path: "providers.piNative.piSessionsRoot" });
   }
   // The acknowledgement is a distinct operator statement, never inferred from
   // runtime methods/capabilities. Storage authority remains lazy and owner-held.
   const nativeModelSwitch = switchConfig?.enabled === true
-    ? { exclusiveWriters: true as const, requirePersistedIdentity: true as const, native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
+    ? { exclusiveWriters: true as const, native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
     : internalHooks.nativeModelSwitch;
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());

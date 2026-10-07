@@ -113,14 +113,15 @@ it("pending explicit message is neither appended nor admitted/queued; same deliv
   const pendingOwner = await f.store.beginProviderSessionPreparation("fictional", "pending-inspection"); const pending = (await pendingOwner.read()).pending!; await pendingOwner.abort();
   expect(pending.phase).toBe("pending"); expect(pending.attempts).toHaveLength(1); expect(f.transport).toHaveBeenCalledTimes(8); expect(await f.changes()).toHaveLength(0);
   expect((await harness.run(request)).failure?.kind).toBe("handoff_pending");
-  // No persisted delivery identity now selects ordinary admission before native
-  // preparation. Its existing storage-pending refusal remains fail-closed.
+  // No persisted delivery identity selects ordinary admission before native
+  // preparation. Its typed storage-pending refusal cannot become failed-turn
+  // continuity work that blocks this same harness's next explicit message.
   const background = await harness.run({ ...request, metadata: {} });
-  expect(background.failure?.kind).toBe("Error");
-  expect(background.failure?.message).toContain("ordinary admission/mutation is unavailable");
+  expect(background.failure?.kind).toBe("handoff_pending");
+  expect(background.failure?.message).toContain("not admitted or queued");
   expect(f.transport).toHaveBeenCalledTimes(8); expect((await f.store.load("fictional"))).toEqual(before.messages);
   f.faux.setResponses([text(summary), text("Fictional explicitly authorized reply")]);
-  const resumed = await f.makeHarness("B", true).run(f.request("new-explicit-delivery")); expect(resumed.failure).toBeUndefined();
+  const resumed = await harness.run(f.request("new-explicit-delivery")); expect(resumed.failure).toBeUndefined();
   expect(f.transport).toHaveBeenCalledTimes(10); expect(await f.changes()).toHaveLength(1); expect((await f.store.load("fictional"))).toHaveLength(before.messages.length + 2);
 });
 

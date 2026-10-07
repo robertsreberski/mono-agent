@@ -50,8 +50,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   host-stamped `source: "web"` and persisted inbound user-message ID identify
   explicit delivery; borrowed Web metadata on TUI/ACP does not authorize work.
   Retries/restarts reuse that ID without authorizing another billed generation.
-  No-ID requests without an explicit model inherit the durable current model,
-  never the base model on a native-authority conversation.
+  No-ID turns on never-upgraded conversations keep the original path, including
+  cold-replay model changes on cron, webhook, Slack, Telegram, TUI, ACP and Web
+  wakes, without switch preparation or authority bootstrap. On already-native/v4
+  conversations, undeclared no-ID requests inherit the durable current model;
+  declared other-model no-ID requests refuse. Changing `runtime.model` does not
+  move these native conversations until a persisted Web message selects it.
   Same-model requests without that ID may dispatch the current owned native
   chain without authorizing switch work; guarded model changes and unsupported
   dispatch fallbacks refuse before rotation or dispatch. The opt-in gate

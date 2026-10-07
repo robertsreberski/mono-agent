@@ -433,7 +433,7 @@
               "additionalProperties": false,
               "properties": {
                 "enabled": {
-                  "description": "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot and explicit olderWritersStopped acknowledgement. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); no-ID model changes refuse. Pending messages are not queued or replayed.",
+                  "description": "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot and explicit olderWritersStopped acknowledgement. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); No-ID turns on non-native conversations keep the original cold-replay path; declared no-ID model changes refuse only on native conversations. Changing runtime.model does not move existing native conversations until a persisted Web message selects the new model. Pending messages are not queued or replayed.",
                   "examples": [
                     true
                   ],

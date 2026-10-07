@@ -65,8 +65,16 @@ before capturing evidence. Read-only history loading does not upgrade roots.
 
 Only Web's persisted inbound `started.userMessageId` with `source: "web"` authorizes
 model switching or a new summary generation. Transport IDs, run IDs, text hashes,
-TUI/ACP IDs and background wakes do not. A no-ID undeclared wake inherits the current
+TUI/ACP IDs and background wakes do not. No-ID turns on never-upgraded conversations
+keep the original path, including cold-replay model changes for cron, webhook,
+Slack, Telegram, TUI, ACP and Web wakes. They make only one cheap binding read to
+select that path, with no switch preparation, switch claim or authority bootstrap.
+On already-native/v4 conversations, a no-ID undeclared wake inherits the current
 durable model; an explicit other-model no-ID request refuses without rotation.
+Changing `runtime.model` changes the default for ordinary conversations but does
+not move existing native conversations: they retain their durable model until a
+persisted Web message selects the new model. Prose keywords do not escalate models
+or effort; they are ordinary message text.
 Switches retain predecessor journals and admit the incoming turn only after one
 durable switch and a complete fitting projection or structured handoff. Native
 reuse requires positive provider/API/account compatibility, including switch-back;
