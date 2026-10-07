@@ -42,7 +42,11 @@ describe("SuggestReplies", () => {
           for (const options of [[], ["one"], Array.from({ length: 9 }, (_, index) => String(index)), ["", "two"], [" ", "two"], ["x".repeat(76), "two"], ["one\ntwo", "three"], ["one\u2028two", "three"], [" one ", "one"]]) {
             expect((await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options } })).isError).toBe(true);
           }
-          expect((await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" first ", "second"] } })).structuredContent).toEqual({ status: "suggested" });
+          const suggested = await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" first ", "second"] } });
+          expect(suggested.structuredContent).toEqual({ status: "suggested" });
+          expect(JSON.stringify(suggested.content)).toContain("beneath your reply text");
+          expect(JSON.stringify(suggested.content)).toContain("must still write your user-facing reply as normal assistant text");
+          expect(JSON.stringify(suggested.content)).not.toContain("this final reply");
           expect(budget.claim("run-1", "another-part")).toBe("limit");
           expect((await client.callTool({ name: SUGGEST_REPLIES_TOOL_NAME, arguments: { options: [" Review draft ", "Keep going", "x".repeat(75)] } })).structuredContent).toEqual({ status: "suggested" });
         } finally { await client.close(); await extension.cleanup?.(); }

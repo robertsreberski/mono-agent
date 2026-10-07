@@ -106,7 +106,7 @@ function pickPresent(source, keys) {
   return out;
 }
 
-const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFinalization", "liveInputGuidance"];
+const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFinalization", "emptyReplyFinalization", "liveInputGuidance"];
 
 /**
  * Per-field merge of the prompt overrides: a run-level override wins over the

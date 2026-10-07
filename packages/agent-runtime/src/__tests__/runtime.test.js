@@ -314,16 +314,19 @@ describe("createRuntime", () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const hostInstruction = () => "host-instruction";
     const hostFinalization = () => "host-finalization";
+    const hostEmpty = () => "host-empty";
+    const runEmpty = () => "run-empty";
     const runInstruction = () => "run-instruction";
     const runtime = createRuntime({
-      prompts: { structuredOutputInstruction: hostInstruction, structuredOutputFinalization: hostFinalization },
+      prompts: { structuredOutputInstruction: hostInstruction, structuredOutputFinalization: hostFinalization, emptyReplyFinalization: hostEmpty },
     });
     await runtime.run("sys", {
       model: modelRef("faux", "x"),
-      // Run overrides ONE field; the host's other prompt default must survive.
-      prompts: { structuredOutputInstruction: runInstruction },
+      // Run overrides selected fields; the host's other prompt default survives.
+      prompts: { structuredOutputInstruction: runInstruction, emptyReplyFinalization: runEmpty },
     });
     const { prompts } = executeMock.mock.calls[0][1];
+    expect(prompts.emptyReplyFinalization).toBe(runEmpty);
     expect(prompts.structuredOutputInstruction).toBe(runInstruction); // run wins
     expect(prompts.structuredOutputFinalization).toBe(hostFinalization); // host fills the rest
   });

@@ -910,7 +910,7 @@ function createPublishServer(
     const part = await publish(input);
     if (part.type === "attachment") {
       return {
-        content: [{ type: "text" as const, text: `Published ${part.name} (${part.sizeBytes} bytes, ${part.integrityId}). It will be attached to this reply.` }],
+        content: [{ type: "text" as const, text: `Published ${part.name} (${part.sizeBytes} bytes, ${part.integrityId}). It will appear beneath your reply text. You must still write your user-facing reply as normal assistant text.` }],
         structuredContent: {
           published: true,
           attachmentId: part.reference.id,

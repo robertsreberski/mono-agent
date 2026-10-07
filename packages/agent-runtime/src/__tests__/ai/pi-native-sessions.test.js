@@ -125,6 +125,48 @@ function findJsonlFiles(root) {
 }
 
 describe("pi-native sessions", () => {
+  it("fails closed and retires a durable turn cancelled during reply finalization", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-reply-cancel-recovery-"));
+    const model = setup();
+    const controller = new AbortController();
+    let sessionId;
+    let nextContext;
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([]),
+        () => { controller.abort(); return fauxAssistantMessage([], { stopReason: "aborted" }); },
+      ]);
+      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+        piSessionsRoot: root, sessionKeepAlive: true, sessionRecovery: { runId: "reply-cancel", revision: 1 },
+        abortSignal: controller.signal, messages: [{ role: "user", content: "Draft an email" }],
+      }));
+      sessionId = cancelled.providerSessionId;
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.providerSessionRecovery).toBeDefined();
+      expect(cancelled.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "cancelled" }));
+      // The terminal proof intentionally certifies only the original operation.
+      // A two-operation cancelled tail cannot be silently reused.
+      await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
+      const blocked = await generatePiNativeResponse("stable", runOptions(model, {
+        piSessionsRoot: root, sessionId, messages: [{ role: "user", content: "Must not resume pending tail" }],
+      }));
+      expect(blocked.failureKind).toBe("session_busy");
+      // The host's existing fallback retires the unsafe tail and reseeds.
+      await expect(retireDurableNativeSession(sessionId, root)).resolves.toBeUndefined();
+      expect(countJsonlFiles(root)).toBe(0);
+      faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Fresh draft.")]); }]);
+      const next = await generatePiNativeResponse("stable", runOptions(model, {
+        piSessionsRoot: root, sessionId, sessionKeepAlive: true,
+        messages: [{ role: "user", content: "New draft request" }],
+      }));
+      expect(next).toMatchObject({ error: null, text: "Fresh draft." });
+      expect(transcriptOf(nextContext)).toEqual(["user:New draft request"]);
+    } finally {
+      if (sessionId) await retireDurableNativeSession(sessionId, root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resumes a cancelled tool-bearing durable Pi turn with a byte-stable valid request prefix", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-terminal-recovery-"));
     writeFileSync(join(root, "evidence.txt"), "native tool evidence");
@@ -1530,6 +1572,37 @@ describe("pi-native sessions", () => {
     expect(invoked).toBe(false);
   });
 
+  it("persists an overridable reply nudge only in the native session and resumes it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-reply-finalization-"));
+    const model = setup();
+    let resumedContext;
+    let sessionId;
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([]),
+        fauxAssistantMessage([fauxText("Here is the draft.")]),
+        (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("Updated draft.")]); },
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Draft an email" }], piSessionsRoot: root, sessionKeepAlive: true,
+        prompts: { emptyReplyFinalization: () => "Framework reply nudge" },
+      }));
+      sessionId = result.providerSessionId;
+      expect(result).toMatchObject({ error: null, text: "Here is the draft." });
+      const persisted = findJsonlFiles(root).map((path) => readFileSync(path, "utf8")).join("\n");
+      expect(persisted).toContain("Framework reply nudge");
+      expect(result.events.some((event) => event.type === "user" && JSON.stringify(event).includes("Framework reply nudge"))).toBe(false);
+      const resumed = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Revise the draft" }], piSessionsRoot: root, sessionId, sessionKeepAlive: true,
+      }));
+      expect(resumed).toMatchObject({ error: null, text: "Updated draft." });
+      expect(transcriptOf(resumedContext)).toContain("user:Framework reply nudge");
+    } finally {
+      if (sessionId) await disposeProviderSession(sessionId);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("re-prompts once for structured output when a turn ends with no result", async () => {
     const model = setup();
     // First turn yields neither text nor a StructuredOutput call; the bridge
@@ -1552,6 +1625,7 @@ describe("pi-native sessions", () => {
     expect(result.error).toBeNull();
     expect(result.structuredResult).toEqual({ answer: 7 });
     expect(result.structuredResultSource).toBe("StructuredOutput");
+    expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
     expect(result.diagnostics.structured_output_finalization_retry_attempts).toBe(1);
     expect(result.diagnostics.structured_output_finalization_retry_reason).toBe("empty_final_output");
     expect(result.diagnostics.structured_output_finalization_retry_failed).toBe(false);
