@@ -536,10 +536,14 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         }
         if (attemptRuntime.nativePreparedDispatch !== "v1" || !attemptRuntime.prepareNativeDispatch) throw new Error("Native prepared dispatch unavailable");
         const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
-        let available = true;
+        let available = true, producing = false;
         return { snapshot: lease.snapshot,
+          ...(lease.assertReady ? { assertReady: () => { if (!available || producing) throw new Error("Prepared dispatch is no longer available"); lease.assertReady(); } } : {}),
+          ...(lease.checkHandoffSummary ? { checkHandoffSummary: (input) => { if (!available) throw new Error("Prepared dispatch is no longer available"); return lease.checkHandoffSummary(input); } } : {}),
+          ...(lease.produceHandoffSummary ? { produceHandoffSummary: async (input) => { if (!available || producing) throw new Error("Prepared producer is no longer available"); const captured = structuredClone(input); producing = true; try { return await lease.produceHandoffSummary(captured); } finally { producing = false; } } } : {}),
           run: async (input) => {
             if (!available) throw new Error("Prepared dispatch is no longer available");
+            if (producing) throw new Error("Prepared handoff producer is still running");
             const binding = prepareNativeDispatchBinding(input); // Rejection does not consume either lease.
             available = false;
             try {

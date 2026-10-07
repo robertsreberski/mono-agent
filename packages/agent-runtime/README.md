@@ -188,6 +188,20 @@ it once; the lease never performs router-level replay or falls through to a
 backup route. Normal native transport retry policy still applies. Custom
 resolvers need explicit `sessionTurnReconciliation: "v1"` certification.
 
+The lease also exposes `assertReady()` (non-consuming lifetime validation before
+host P2 admission), `checkHandoffSummary({ prepared, outputReserve })` (pure full
+input/output-window preflight), and `produceHandoffSummary` (one no-tools call
+per lease, using the **same selected auth/model**, no fallback/retry/persistence).
+A rejected/truncated/unknown output never repeats automatically. The host must
+persist attempt admission before invoking it; this API does not authorize billing.
+Producer input is captured synchronously. Run refuses while production is active
+without consuming dispatch; close/abort retain resources until it settles.
+
+Managed storage exposes typed read-only complete evidence capture plus pure budget,
+native projection and handoff/checkpoint preparation. Composed checkpoint coverage
+can precede a later switch reference frame only when its exact hashed prefix and
+sole following model-change triplet are proved; changed/missing coverage fails.
+
 No configured host invokes this capability yet. Frozen host preparation,
 durable producer admission/summary billing, ready model-switch publication and
 safe configured lifecycle wiring remain separate work. Existing `run()` paths,

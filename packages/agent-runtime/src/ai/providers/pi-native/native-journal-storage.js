@@ -1,5 +1,6 @@
 // @ts-check
 // Private storage-only bridge: no provider dispatch, repair accounting or tools.
+import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, projectContext } from "@mono-agent/harness";
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -27,7 +28,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   /** Streaming digests; only the three reference-frame records are retained.
    * An immutable intent admits only an exact prefix of those deterministic bytes.
    * @param {any} coordinate @param {any} [event] */
-  const snapshot = async (coordinate, event, prefixOnly = false) => {
+  const snapshot = async (coordinate, event, prefixOnly = false, capture = false) => {
     const meta = await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
     try {
       /** @type {any} */ let header;
@@ -35,9 +36,11 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       let parentId = null, first = true, frozenFirst = true, frozenTip = null;
       const validator = new JournalValidator(), full = createHash("sha256").update("["), frozen = createHash("sha256").update("[");
       let referenceBytes = 0;
+      const records = [];
       let plan = [], planIndex = 0, frozenFound = coordinate.sourceSeq === undefined, frozenDigest, boundary = 0;
       const evidence = await reader.scan((record, address) => {
         if (!header) { validateJournalHeader(record); header = record; boundary = address.offset + address.length + 1; return; }
+        if (capture) records.push(record);
         const wire = JSON.stringify(record);
         if (!first) full.update(","); full.update(wire); first = false;
         if (!frozenFound) {
@@ -70,7 +73,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       } else if (!prefixOnly && (evidence.torn || validator.openTurns.size || validator.openOperations.size)) fail();
       const current = await reader.assertIdentity();
       if (current.nlink !== 1 || current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
-      return { metadata: meta, header, handleBinding, referenceBytes, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
+      return { metadata: meta, header, records, handleBinding, referenceBytes, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
         sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: digest }, parentId,
         };
     } finally { await reader.close(); }
@@ -139,6 +142,27 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       sourceDigest: createHash("sha256").update(JSON.stringify(plan.records)).digest("hex") } };
   };
   return {
+    nativeEvidence: "v1",
+    createBudget: createHandoffBudget, prepareHandoff, buildHandoff,
+    projectChain: (view, options) => projectContext(view, { ...options, switching: true }),
+    /** Read only: no detach/open-for-writing, repair, import or publication.
+     * Caller first freezes the current coordinate under its settled claim.
+     * @param {any[]} sources @param {any} context */
+    async captureEvidence(sources, context) {
+      if (!sources.length || typeof context?.assertOwned !== "function") fail();
+      const segments = [], seen = new Set();
+      for (let index = 0; index < sources.length; index++) {
+        const source = sources[index]; await context.assertOwned();
+        if (source.ordinal !== index || source.ownerKey !== context.ownerKey || source.historyBucket !== context.historyBucket
+          || source.predecessorJournalId !== (index ? sources[index - 1].journalId : null) || seen.has(source.journalId)) fail();
+        seen.add(source.journalId);
+        const captured = await snapshot(source, undefined, false, true);
+        if (!same(captured.descriptor, source) || captured.header.ownershipSchemaVersion === 2 && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
+        const { epoch: _epoch, ordinal, ...descriptor } = source;
+        segments.push({ descriptor: { ...descriptor, epoch: ordinal }, header: captured.header, records: captured.records });
+      }
+      await context.assertOwned(); return createEvidenceView({ ownerKey: context.ownerKey, historyBucket: context.historyBucket, segments });
+    },
     /** @param {any} coordinates */
     async freeze(coordinates) { await detachDurableNativeSession(coordinates.handleId, root); return (await snapshot(coordinates)).descriptor; },
     /** Before intent publication: no upgrade/event/create side effects. @param {any[]} sources @param {any} context */

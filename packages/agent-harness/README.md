@@ -325,8 +325,38 @@ untransferred claim; afterward the existing P2 turn owns commit/abort. The
 returned turn's `assertOwned` proves storage ownership, not artifact readiness,
 account compatibility or native execution authority. Held child capabilities
 expire on transfer/abort. These APIs do not dispatch summaries, create a native
-projection or enable configuration; complete frozen native preparation and host
-switch orchestration remain a separate integration step.
+projection or enable configuration. `read()` also returns detached pending state,
+including a persisted optional `frozenBudget`, never a budget inferred from its
+digest. `createModelSwitchState(coordinates, reservation, frozenBudget)` validates
+that exact budget/digest before publication; legacy administrative states omit
+it unchanged. `readHandoff(switchId, reference)` reads only the hash-validated
+accepted pending/current artifact and its actual budget under this same claim.
+
+`captureNativeEvidence(legacyProvenance)` freezes the settled current coordinate,
+then reads the **complete** validated chain without native writer opens, repair,
+header upgrades or publication. Legacy account ownership stays null regardless
+of caller credential metadata. The evidence view retains validation identity;
+cloning it cannot turn raw data into a validated projection.
+
+The internal `prepareHarnessRuntime` substrate now runs context/memory/skills
+preparation and request extension/policy/MCP/decorations once under the existing
+provider permit and outgoing claim, then resolves native tools/auth before P2.
+It returns frozen context and native metadata, a non-consuming lifetime check,
+an auth-pinned no-tools producer, and one late-bound run accepting the transferred
+P2 owner. Extension cleanup, capability release, native close and permit release
+settle once, including close/abort during production. Metadata identity carrying
+out-of-band capability bindings is preserved, not serialized/cloned. No configured
+caller uses this substrate yet: producer order/billing/restart and ready admission
+orchestration belong to the next integration step.
+
+Lifecycle inventory for this boundary: prepared-resource close/abort and
+settled-current capture use preserving detach (P); existing store C/D storage
+transactions are unchanged. No configured cleanup caller is newly wired. The next
+activation boundary must wire critical stale/model mapping, resume/terminal/P2
+cleanup and APP forwarding before enabling an OFF-by-default opt-in. Exhaustive
+remaining manual/native fresh/stateless, reset/retention/purge and subagent P/C/D/U
+regressions remain separate inventory work; guarded refusal is not successful
+cleanup. Existing configurations and default paths remain unchanged.
 
 With explicit `nativeJournalStorage`, v4 host-only append/exclusive/import,
 unsynced/cancelled/interrupted provider settlement and stale-current admission

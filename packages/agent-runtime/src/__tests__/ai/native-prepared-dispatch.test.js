@@ -258,8 +258,9 @@ it.each([false, true])("close settles rather than rethrowing a consumed run's re
 });
 
 it("refuses a stale prepared lease before any native mutation or provider call", async () => {
-  const f = await fixture(), lease = await prepare(f), provider = vi.spyOn(f.faux.provider, "streamSimple"), now = Date.now();
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f), now = Date.now();
   vi.spyOn(Date, "now").mockReturnValue(now + PREPARED_DISPATCH_MAX_AGE_MS + 1);
+  expect(() => lease.assertReady()).toThrow("lease expired");
   expect((await lease.run()).error).toContain("lease expired"); expect(await readdir(f.root)).toEqual([]); expect(provider).not.toHaveBeenCalled();
 });
 
@@ -288,10 +289,9 @@ it("a long run keeps the selected credential but refuses new calls as it approac
 });
 
 it("the pinned collection refuses another model even when it shares the same provider/API", async () => {
-  const f = await fixture(), pin = await prepareDispatchAuth(f.models, f.faux.getModel());
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), pin = await prepareDispatchAuth(f.models, f.faux.getModel());
   expect(pin.models.getModel("faux", "other")).toBeUndefined();
   await expect(pin.models.getAuth({ ...pin.model, id: "other" })).rejects.toThrow("cannot select another model");
-  const provider = vi.spyOn(f.faux.provider, "streamSimple");
   const result = await pin.models.completeSimple({ ...pin.model, id: "other" }, { messages: [{ role: "user", content: "Fictional input", timestamp: 0 }] });
   expect(result.errorMessage).toContain("cannot select another model"); expect(provider).not.toHaveBeenCalled();
 });
@@ -331,4 +331,49 @@ it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations 
   expect(result.errorMessage).toContain("Fictional transport refusal"); expect(fetch).toHaveBeenCalledOnce();
   expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0][0].tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
   expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
+});
+
+const producerInput = () => ({ prepared: { status: "prepared", checkpoints: [], ledger: [{ kind: "tool", outcome: "unknown" }],
+  recent: [], older: [], coverage: [] }, outputReserve: 256 });
+const summaryText = () => JSON.stringify(Object.fromEntries(["intent", "constraints", "decisions", "completedWork", "failures", "openWork", "nextActions", "references"]
+  .map((key) => [key, key === "intent" ? ["Fictional pending work"] : []])));
+it.each([false, true])("one typed prepared producer uses pinned auth, no tools/session/retry and leaves dispatch reusable: routed=%s", async (routed) => {
+  const f = await fixture(), requests = [], resolve = vi.fn(async () => ({ auth: { apiKey: "fictional-pinned-producer" } }));
+  f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { resolve } }, streamSimple(model, context, options) {
+    requests.push({ model, context, options }); return f.faux.provider.streamSimple(model, context, options); } });
+  const router = routed ? createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) }) : undefined;
+  const lease = await prepare(f, { allowedTools: ["Read"] }, router), input = producerInput();
+  expect(lease.checkHandoffSummary(input)).toEqual({ status: "ready" }); expect(await readdir(f.root)).toEqual([]);
+  f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())]), fauxAssistantMessage([fauxText("Incoming dispatch")])]);
+  const result = await lease.produceHandoffSummary(input); expect(result.status).toBe("ready");
+  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0);
+  expect(requests[0].options.apiKey).toBe("fictional-pinned-producer"); expect(resolve).toHaveBeenCalledOnce();
+  expect(await readdir(f.root)).toEqual([]); await expect(lease.produceHandoffSummary(input)).rejects.toThrow("no longer available");
+  expect((await lease.run()).text).toBe("Incoming dispatch"); expect(requests).toHaveLength(2); expect(resolve).toHaveBeenCalledOnce();
+});
+it("producer preflight refuses unfit complete input without consuming the producer or creating native state", async () => {
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f);
+  const oversized = producerInput(); oversized.prepared.older = [{ text: "x".repeat(400000) }];
+  expect(lease.checkHandoffSummary(oversized)).toMatchObject({ status: "budget_failure" });
+  expect(await lease.produceHandoffSummary(oversized)).toMatchObject({ status: "budget_failure" });
+  expect(provider).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
+  f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())])]); expect((await lease.produceHandoffSummary(producerInput())).status).toBe("ready");
+});
+it.each(["malformed", "truncated", "error"])("producer rejects %s without automatic rebilling", async (variant) => {
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f);
+  f.faux.setResponses([variant === "error" ? new Error("Fictional summary error") : fauxAssistantMessage([fauxText(variant === "malformed" ? "not JSON" : summaryText())],
+    variant === "truncated" ? { stopReason: "length" } : {})]);
+  expect((await lease.produceHandoffSummary(producerInput())).status).toBe("summary_rejected");
+  await expect(lease.produceHandoffSummary(producerInput())).rejects.toThrow("no longer available"); expect(provider).toHaveBeenCalledOnce();
+});
+it("close waits for an active producer before closing native/MCP resources; run rejects without consumption", async () => {
+  const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close");
+  let enter, release; const entered = new Promise((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = resolve; });
+  f.faux.setResponses([async () => { enter(); await gate; return fauxAssistantMessage([fauxText(summaryText())]); }]);
+  const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
+  const production = lease.produceHandoffSummary(producerInput()); await entered;
+  await expect(lease.run()).rejects.toThrow("still running"); let done = false; const closing = lease.close().then(() => { done = true; });
+  await Promise.resolve(); expect(done).toBe(false); expect(closed).not.toHaveBeenCalled();
+  release(); expect((await production).status).toBe("ready"); await closing; expect(closed).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
 });

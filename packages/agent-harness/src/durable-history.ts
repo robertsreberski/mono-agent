@@ -2,7 +2,7 @@ import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, Runtim
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
-import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState, validateTurnHistoryV4, recognizesModelSwitchBinding, MAX_JOURNAL_CHAIN, validateJournalChain } from "./durable-model-switch-contract.js";
+import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState, validateTurnHistoryV4, recognizesModelSwitchBinding, MAX_JOURNAL_CHAIN, validateJournalChain, validateFrozenHandoffBudget, switchHash, validateSwitchReference } from "./durable-model-switch-contract.js";
 import type { ModelSwitchState, HandoffReference, SummaryAttempt, TurnHistoryV4, CanonicalJournalDescriptor } from "./durable-model-switch-contract.js";
 import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
 import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
@@ -166,6 +166,13 @@ export interface ManagedModelSwitchStorageLease {
 export interface ManagedProviderSessionPreparation {
   readonly recovery: ConversationHistoryTurnRecovery;
   read(): Promise<ProviderSessionPreparationSnapshot>;
+  /** Caller-supplied provenance is used only for a legacy source's API/model;
+   * its account is explicitly null, never inferred from current credentials. */
+  captureNativeEvidence(legacyProvenance: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
+    readonly sources: readonly CanonicalJournalDescriptor[]; readonly view: import("@mono-agent/runtime-adapter").RuntimeNativeEvidenceView;
+  }>;
+  readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
+    readonly budget: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget }>;
   assertOwned(): Promise<void>;
   acquireNativeHistoryAuthority(options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
   beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
@@ -178,6 +185,7 @@ export interface ProviderSessionPreparationSnapshot {
   readonly source: Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>;
   readonly native?: TurnHistoryV4["native"];
   readonly lastSwitch?: TurnHistoryV4["lastSwitch"];
+  readonly pending?: ModelSwitchState;
 }
 export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
 
@@ -1364,8 +1372,36 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         assertOwned,
         read: () => owned(async () => {
           const record = await this.readRecord(id, held.rootIdentity);
-          return structuredClone({ history: record.messages, source: await this.modelSwitchStorageSource(id),
+          const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory()).pending.filter((entry) => entry.state.identity.historyBucket === id);
+          if (pending.length > 1) throw new Error("Conflicting pending model switches");
+          return structuredClone({ ...(pending[0] ? { pending: pending[0].state } : {}), history: record.messages, source: await this.modelSwitchStorageSource(id),
             ...(record.native ? { native: record.native } : {}), ...(record.lastSwitch ? { lastSwitch: record.lastSwitch } : {}) });
+        }),
+        captureNativeEvidence: (legacyProvenance) => owned(async () => {
+          const native = this.nativeJournalStorage as Partial<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage> | undefined;
+          if (native?.nativeEvidence !== "v1" || !native.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
+          const source = await this.modelSwitchStorageSource(id), record = await this.readRecord(id, held.rootIdentity);
+          if (source.status !== "supported") throw new Error("Native evidence source unavailable");
+          if (`${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
+          const sources = record.native ? [...record.native.chain] : [{ epoch: source.sourceEpoch, ordinal: 0,
+            handleId: deriveProviderSessionId(id, source.sourceEpoch), predecessorJournalId: null, ownerKey: source.ownerKey, historyBucket: id,
+            provenance: { ...structuredClone(legacyProvenance), account: null } }];
+          const current = await native.freeze(sources.at(-1)!);
+          const frozen = [...sources.slice(0, -1), current] as CanonicalJournalDescriptor[];
+          const view = await native.captureEvidence(frozen, { ownerKey: source.ownerKey, historyBucket: id,
+            ...(record.native ? { hostAuthority: record.native.authority } : {}), assertOwned });
+          await assertOwned(); return { sources: structuredClone(frozen), view };
+        }),
+        readHandoff: (switchId, reference) => owned(async () => {
+          switchHash(switchId); validateSwitchReference(reference);
+          const payloads = this.modelSwitchPayloads(held.rootIdentity), record = await this.readRecord(id, held.rootIdentity);
+          const pending = await payloads.read(id, switchId);
+          const ready = pending?.state.phase === "ready" ? pending.state.artifact : undefined;
+          const canonical = record.lastSwitch?.switchId === switchId ? record.native?.projection : undefined;
+          if (switchDigest(reference) !== switchDigest(ready ?? canonical ?? null)) throw new Error("Handoff is not the accepted current or pending projection");
+          const cached = await payloads.readArtifact(id, switchId, reference);
+          validateFrozenHandoffBudget(cached.artifact.budget);
+          await assertOwned(); return { artifact: structuredClone(cached.artifact), budget: structuredClone(cached.artifact.budget) };
         }),
         acquireNativeHistoryAuthority: (options) => owned(async () => {
           if (options?.exclusiveWriters !== true) throw new TypeError("Native root authority requires exclusive upgraded writers");

@@ -1,6 +1,6 @@
 // @ts-check
 import { buildHarnessSessionContext } from "./session-context.js";
-import { assertEvidenceView, nativeCompatibility } from "./evidence-view.js";
+import { assertEvidenceView, nativeCompatibility, matchesEvidenceCoverage } from "./evidence-view.js";
 import { checkHandoffDispatch } from "./handoff.js";
 
 /**
@@ -34,7 +34,7 @@ export function projectContext(source, options = {}) {
   for (let index = 0; index < source.segments.length; index++) {
     const checkpoint = source.segments[index].entries.filter((e) => e.type === "compaction").at(-1)?.checkpoint;
     if (checkpoint?.inheritedCoverage) {
-      validateComposedCoverage(checkpoint.inheritedCoverage, source.segments.slice(0, index).map((s) => s.descriptor));
+      validateComposedCoverage(checkpoint.inheritedCoverage, source.segments.slice(0, index).map((s) => s.descriptor), source.segments.slice(0, index));
       start = index;
     }
   }
@@ -46,10 +46,10 @@ export function projectContext(source, options = {}) {
   return { status: "ready", messages, coverage };
 }
 
-/** @param {any} coverage @param {any[]} descriptors */
-export function validateComposedCoverage(coverage, descriptors) {
+/** @param {any} coverage @param {any[]} descriptors @param {any[]} [segments] */
+export function validateComposedCoverage(coverage, descriptors, segments) {
   if (coverage?.version !== 1 || !Array.isArray(coverage.sources) || coverage.sources.length !== descriptors.length
-    || coverage.sources.some((s, i) => ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"].some((key) => s[key] !== descriptors[i][key]))) {
+    || coverage.sources.some((s, i) => segments ? !matchesEvidenceCoverage(s, segments[i]) : ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"].some((key) => s[key] !== descriptors[i][key]))) {
     throw new TypeError("Invalid composed checkpoint coverage");
   }
   return coverage;

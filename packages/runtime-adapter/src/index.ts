@@ -168,6 +168,8 @@ export type {
   RuntimeNativeDispatchSnapshot,
   RuntimeNativeDispatchBinding,
   RuntimeNativePreparedDispatch,
+  RuntimeNativeEvidenceView, RuntimeNativePreparationStorage, RuntimePreparedHandoff, RuntimeHandoffBudget,
+  RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffProducerResult, RuntimeHandoffFit, RuntimeHandoffOptions, RuntimeHandoffProposal,
   RuntimeSessionTurnReconciliationRequest,
   RuntimeSessionTurnReconciliationResult,
   RuntimeSessionTurnResultSeal,

@@ -91,6 +91,7 @@ import { finalReplyText } from "./pi-native/reply-text.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
 import { appendStructuredOutputInstruction } from "./pi-native/structured-output.js";
+import { prepareNativeHandoffSummaryRequest, produceNativeHandoffSummary } from "./pi-native/handoff-producer.js";
 import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./pi-native/prepared-dispatch.js";
 
 /**
@@ -649,7 +650,13 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
         model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
-        provenance: auth.provenance, authSource: auth.authSource });
+        provenance: auth.provenance, authSource: auth.authSource }, {
+        assertReady: () => auth.assertValid(true),
+        check: (input) => { auth.assertValid(true); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
+          return result.status === "ready" ? { status: "ready" } : result; },
+        run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: auth.models.completeSimple.bind(auth.models),
+          signal: options.abortSignal, completionOptions: { transport: "sse" } }),
+      });
       auth.assertValid(true); // Before any native lookup/open or incoming mutation.
       options = { ...options, ...binding };
       providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;

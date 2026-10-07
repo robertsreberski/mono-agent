@@ -784,6 +784,50 @@ export interface RuntimeNativeJournalStorage {
   inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
 }
 
+/** Complete immutable evidence, validated against exact native bytes. Cloning
+ * loses validation identity; pass the original view to preparation helpers. */
+export interface RuntimeNativeEvidenceView {
+  readonly version: 1; readonly ownerKey: string; readonly historyBucket: string;
+  readonly gaps: readonly Record<string, unknown>[];
+  readonly segments: readonly { readonly descriptor: Omit<RuntimeNativeJournalDescriptor, "epoch" | "ordinal"> & { readonly epoch: number };
+    readonly header: Readonly<Record<string, unknown>>; readonly records: readonly Readonly<Record<string, unknown>>[];
+    readonly entries: readonly Readonly<Record<string, unknown>>[]; readonly repairs: readonly Readonly<Record<string, unknown>>[];
+    readonly turns: readonly Readonly<Record<string, unknown>>[]; readonly allCalls: readonly Readonly<Record<string, unknown>>[];
+    readonly calls: readonly Readonly<Record<string, unknown>>[]; readonly inputs: readonly Readonly<Record<string, unknown>>[] }[];
+}
+export type RuntimeHandoffBudget = NonNullable<RuntimeNativeSessionProjection["dispatchBudget"]>;
+export interface RuntimePreparedHandoff {
+  readonly status: "prepared"; readonly checkpoints: readonly Readonly<Record<string, unknown>>[];
+  readonly ledger: readonly Readonly<Record<string, unknown>>[]; readonly recent: readonly Readonly<Record<string, unknown>>[];
+  readonly older: readonly Readonly<Record<string, unknown>>[];
+  readonly coverage: readonly RuntimeNativeEvidenceView["segments"][number]["descriptor"][];
+}
+export type RuntimeHandoffSummary = Readonly<Record<"intent" | "constraints" | "decisions" | "completedWork" | "failures" | "openWork" | "nextActions" | "references", readonly string[]>>;
+export interface RuntimeHandoffProducerRequest { readonly prepared: RuntimePreparedHandoff; readonly outputReserve: number }
+export type RuntimeHandoffFit = { readonly status: "ready" } | { readonly status: "budget_failure"; readonly reason: string };
+export type RuntimeHandoffProducerResult = { readonly status: "ready"; readonly summary: RuntimeHandoffSummary; readonly usage?: unknown; readonly durationMs?: number }
+  | { readonly status: "summary_rejected"; readonly reason: string; readonly usage?: unknown; readonly durationMs?: number }
+  | { readonly status: "budget_failure"; readonly reason: string };
+export interface RuntimeHandoffOptions {
+  readonly target: RuntimeNativeJournalDescriptor["provenance"]; readonly budget: RuntimeHandoffBudget;
+  readonly timestamp: number; readonly hostContext: Readonly<Record<string, unknown>>;
+  readonly summary?: RuntimeHandoffSummary; readonly producer?: "outgoing" | "checkpoint" | "incoming";
+}
+export type RuntimeHandoffProposal = { readonly status: "ready"; readonly artifact: Readonly<Record<string, unknown>>;
+  readonly contentHash: string; readonly messages: readonly Readonly<Record<string, unknown>>[]; readonly coverage: RuntimePreparedHandoff["coverage"] }
+  | { readonly status: "budget_failure" | "summary_rejected"; readonly reason: string }
+  | { readonly status: "summary_required"; readonly prepared: RuntimePreparedHandoff };
+export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalStorage {
+  readonly nativeEvidence: "v1";
+  captureEvidence(sources: readonly RuntimeNativeJournalDescriptor[], context: { readonly ownerKey: string; readonly historyBucket: string;
+    readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void> }): Promise<RuntimeNativeEvidenceView>;
+  createBudget(input: { readonly contextWindow: number; readonly outputReserve: number; readonly inputTokens: number; readonly hostContext: Readonly<Record<string, unknown>> }): RuntimeHandoffBudget;
+  prepareHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimePreparedHandoff | { readonly status: "budget_failure"; readonly reason: string };
+  buildHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimeHandoffProposal;
+  projectChain(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): { readonly status: "ready"; readonly messages: readonly Readonly<Record<string, unknown>>[]; readonly coverage: unknown }
+    | { readonly status: "handoff_required"; readonly reason: string };
+}
+
 /** Actual resolved native request, never credentials/auth headers. */
 export interface RuntimeNativeDispatchSnapshot {
   readonly model: { readonly provider: string; readonly id: string; readonly api: string; readonly contextWindow: number; readonly maxTokens: number };
@@ -799,6 +843,9 @@ export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sess
   | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
 export interface RuntimeNativePreparedDispatch {
   readonly snapshot: RuntimeNativeDispatchSnapshot;
+  assertReady?(): void;
+  checkHandoffSummary?(input: RuntimeHandoffProducerRequest): RuntimeHandoffFit;
+  produceHandoffSummary?(input: RuntimeHandoffProducerRequest): Promise<RuntimeHandoffProducerResult>;
   /** Single primary attempt; no router replay/failover or repeated tool setup. */
   run(binding?: RuntimeNativeDispatchBinding): Promise<RuntimeResult>;
   /** Idempotent. During a running dispatch waits for normal cleanup; abort via

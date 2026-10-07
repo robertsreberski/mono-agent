@@ -89,7 +89,8 @@ export async function prepareDispatchAuth(models, model, signal) {
   const pinned = createModels();
   // Forward methods/getters with the original receiver, including prototype or
   // private-field implementations. Do not flatten a provider by object spread.
-  const overrides = { getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: async () => { assertValid(); return copy(auth); } } } };
+  const overrides = { getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: async () => { assertValid(); return copy(auth); } } },
+    stream: provider.stream?.bind(provider), streamSimple: provider.streamSimple?.bind(provider) };
   pinned.setProvider(/** @type {any} */ (new Proxy(overrides, { get: (target, key) => {
     if (Object.hasOwn(target, key)) return Reflect.get(target, key);
     const value = Reflect.get(provider, key, provider);
@@ -110,7 +111,7 @@ export async function prepareDispatchAuth(models, model, signal) {
 /** Suspend the real orchestrator after native preparation but before ANY session
  * resolution. Its original runState/tool closures and finally own resources.
  * Host must hold its concurrency permit until run/close settles. No fallback.
- * @param {(control: {ready: (snapshot: any) => Promise<any>}) => Promise<any>} execute
+ * @param {(control: {ready: (snapshot: any, producer?: {assertReady: () => void, check: (input: any) => any, run: (input: any) => Promise<any>}) => Promise<any>}) => Promise<any>} execute
  * @param {AbortSignal|undefined} signal
  * @returns {Promise<NativePreparedDispatch>} */
 export function createPreparedDispatchLease(execute, signal) {
@@ -122,21 +123,41 @@ export function createPreparedDispatchLease(execute, signal) {
   const binding = new Promise((resolve, reject) => { resume = resolve; stop = reject; });
   // Cancellation during async initialization may reject before ready awaits it.
   void binding.catch(() => {});
-  let state = "preparing";
-  const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; stop(signal?.reason ?? new Error("Prepared dispatch closed")); } };
+  let state = "preparing", producerUsed = false, producerBusy = false;
+  /** @type {Promise<any>|undefined} */ let producerWork;
+  const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; const finish = () => stop(signal?.reason ?? new Error("Prepared dispatch closed"));
+    if (producerBusy) void producerWork?.catch(() => {}).then(finish); else finish(); } };
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
-  const outcome = execute({ ready: async (snapshot) => {
+  const outcome = execute({ ready: async (snapshot, producer) => {
     if (state === "closed") throw new Error("Prepared dispatch closed before readiness");
     state = "prepared";
+    const producerInput = (input) => {
+      if (state !== "prepared" || producerUsed) throw new Error("Prepared handoff producer is no longer available");
+      if (!input || typeof input !== "object" || Object.keys(input).some((key) => !["prepared", "outputReserve"].includes(key))) throw new TypeError("Invalid prepared handoff producer request");
+      return structuredClone(input);
+    };
     resolvePrepared({ snapshot: freezeDispatchData(snapshot),
+      ...(producer ? {
+        assertReady: () => { if (state !== "prepared" || producerBusy) throw new Error("Prepared dispatch is no longer available"); producer.assertReady(); },
+        checkHandoffSummary: (input) => producer.check(producerInput(input)),
+        produceHandoffSummary: (input) => {
+          let captured;
+          try { captured = producerInput(input); } catch (error) { return Promise.reject(error); }
+          let fit; try { fit = producer.check(captured); } catch (error) { return Promise.reject(error); } if (fit.status !== "ready") return Promise.resolve(fit);
+          producerUsed = true; producerBusy = true;
+          producerWork = Promise.resolve().then(() => { if (state !== "prepared") throw new Error("Prepared producer closed before dispatch"); return producer.run(captured); }).finally(() => { producerBusy = false; });
+          return producerWork;
+        },
+      } : {}),
       run: (input = {}) => {
         if (state !== "prepared") return Promise.reject(new Error("Prepared dispatch is no longer available"));
+        if (producerBusy) return Promise.reject(new Error("Prepared handoff producer is still running"));
         let frozen;
         try { frozen = prepareNativeDispatchBinding(input); } catch (error) { return Promise.reject(error); }
         state = "running"; resume(frozen); return outcome;
       },
-      close: async () => { cancel(); await outcome.catch(() => {}); },
+      close: async () => { cancel(); await producerWork?.catch(() => {}); await outcome.catch(() => {}); },
     });
     return await binding;
   } });
