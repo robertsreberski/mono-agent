@@ -181,6 +181,17 @@ Older binaries must not run against a P2b history root. Rollback means stopping
 writers and restoring a consistent pre-P2b backup, losing later turns. There is
 no downgrade/strip tool; offline conversion is outside this scope.
 
+Internal prepared-switch orchestration now runs the outgoing no-tools producer,
+then the free exact checkpoint plus complete suffix, then incoming reduction,
+under the conversation claim but outside root transactions. Durable delivery
+identities authorize at most one call per producer per explicit-message
+generation; unknown attempts stay charged and never auto-repeat. Accepted
+content rolls forward storage-only before incoming P2 admission. The incoming
+owner is exposed before post-admission refusal so the host can account/abort it
+and wait, never automatically replay the blocked message. This is an inert
+implementation boundary: configured activation, cold fallback policy and
+activation-critical lifecycle forwarding are not enabled by these helpers.
+
 ## Architecture
 
 Memory reads receive the host-confirmed `retainedContext` signal from history
