@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add claim-only provider preparation leases that retain one conversation owner
+  through native switch storage and transfer it once to ready turn admission.
+  Existing configured execution remains unchanged.
+
 - Keep inherited coverage through later native compactions without a projection,
   reject malformed projection identities before admission, and allow detached
   route resolvers to select their own native roots.
