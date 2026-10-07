@@ -12,6 +12,11 @@ import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 /** @returns {never} */
 function fail() { throw new Error("Managed native journal evidence changed or is unavailable"); }
 const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordered(v[k])])) : v;
+// Matches the host's 32-entry chain / 16 MiB switch-payload ceiling. Raw
+// capture is bounded separately from streaming inspection; never clip evidence.
+export const MAX_CAPTURE_JOURNALS = 32;
+export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
+const captureLimit = () => { throw Object.assign(new RangeError("Managed native evidence capture exceeds its journal/chain limit"), { code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" }); };
 const hex64 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error) => error?.code === "ENOENT";
@@ -28,9 +33,10 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   /** Streaming digests; only the three reference-frame records are retained.
    * An immutable intent admits only an exact prefix of those deterministic bytes.
    * @param {any} coordinate @param {any} [event] */
-  const snapshot = async (coordinate, event, prefixOnly = false, capture = false) => {
-    const meta = await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
+  const snapshot = async (coordinate, event, prefixOnly = false, capture = 0) => {
+    const meta = capture ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
     try {
+      if (capture && reader.identity.size > (typeof capture === "number" ? capture : MAX_CAPTURE_BYTES)) captureLimit();
       /** @type {any} */ let header;
       /** @type {any} */ let handleBinding;
       let parentId = null, first = true, frozenFirst = true, frozenTip = null;
@@ -59,7 +65,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           boundary = address.offset + address.length + 1;
           if (event) plan = SessionStore.modelChangeRecords(event, { seq: validator.seq, parentId, tip: validator.tip });
         }
-      });
+      }, capture ? { maxBytes: capture } : undefined);
       if (!header || header.id !== coordinate.handleId || header.journalId !== meta.journalId || !frozenFound) fail();
       const digest = full.update("]").digest("hex");
       if (event) {
@@ -76,7 +82,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       return { metadata: meta, header, records, handleBinding, referenceBytes, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
         sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: digest }, parentId,
         };
-    } finally { await reader.close(); }
+    } catch (error) { if (capture && error?.code === "ERR_JOURNAL_READ_LIMIT") captureLimit(); throw error; } finally { await reader.close(); }
   };
   // Canonical membership is supplied by the held host owner, never inferred
   // from catalogue presence. Native storage validates all coordinates again.
@@ -150,13 +156,23 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
      * @param {any[]} sources @param {any} context */
     async captureEvidence(sources, context) {
       if (!sources.length || typeof context?.assertOwned !== "function") fail();
+      if (sources.length > MAX_CAPTURE_JOURNALS) captureLimit();
+      let bytes = 0;
+      // Stat every exact published path before allocating records or parsing even
+      // the first header. Also bounds single oversized JSONL lines. Rechecked by
+      // the secure reader before each scan and by its identity CAS afterward.
+      await context.assertOwned();
+      for (const source of sources) { bytes += (await lstat(path(source.journalId))).size; if (bytes > MAX_CAPTURE_BYTES) captureLimit(); }
+      let capturedBytes = 0;
       const segments = [], seen = new Set();
       for (let index = 0; index < sources.length; index++) {
         const source = sources[index]; await context.assertOwned();
         if (source.ordinal !== index || source.ownerKey !== context.ownerKey || source.historyBucket !== context.historyBucket
           || source.predecessorJournalId !== (index ? sources[index - 1].journalId : null) || seen.has(source.journalId)) fail();
         seen.add(source.journalId);
-        const captured = await snapshot(source, undefined, false, true);
+        if (capturedBytes >= MAX_CAPTURE_BYTES) captureLimit();
+        const captured = await snapshot(source, undefined, false, MAX_CAPTURE_BYTES - capturedBytes);
+        capturedBytes += captured.bytes; if (capturedBytes > MAX_CAPTURE_BYTES) captureLimit();
         if (!same(captured.descriptor, source) || captured.header.ownershipSchemaVersion === 2 && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
         const { epoch: _epoch, ordinal, ...descriptor } = source;
         segments.push({ descriptor: { ...descriptor, epoch: ordinal }, header: captured.header, records: captured.records });

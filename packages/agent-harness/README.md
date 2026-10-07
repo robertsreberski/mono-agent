@@ -425,7 +425,10 @@ their existing torn-file policy. This API is not used by configured hosts and
 does not grant permission to migrate real roots.
 Older binaries must stay stopped; the marker is not proof that every older
 admission path checks it. Rollback requires consistent host/native backups, not
-stripping the marker. The lease itself does not upgrade a header or enable dispatch.
+stripping the marker. Persisted `frozenBudget` is an additive switch-state field
+that older strict validators reject. Downgrade requires restoring the consistent
+pre-upgrade host/native backup, not deleting that field, rewriting pending state,
+or stripping the marker. The lease itself does not upgrade a header or enable dispatch.
 An explicit administrative `nativeJournalStorage` capability couples measured
 native inventory/reservations to `rollForwardModelSwitch(id, switchId,
 { exclusiveWriters: true })`. Initial admission checks actual frozen sources,
@@ -508,6 +511,32 @@ bound to another model. Canonical history stays full.
 Persistent-child Session guidance surfaces a blocked-recovery marker and safe
 job identity, not private owner roots, verification paths or acknowledgement
 binding material. It directs inspection before continuation and prohibits replay.
+
+Prepared host leases expire after five idle minutes using unref'd timers; idle
+MCP/runState/extension resources and the provider permit are released without a
+caller close. Active producers settle before cleanup; active host admission
+settles before host extension/permit release (idle native resources may expire
+while admission waits). Use the internal `run(() => admitP2AndReturnBinding())`
+entry to require at least 30
+seconds of start allowance **before** invoking admission; already-admitted binding
+callers must call `assertReady()` before admission themselves. Native dispatch
+rechecks the absolute deadline before session mutation.
+
+Prepared-path running abort deliberately differs from ordinary R10: it retains
+its permit and frozen extension/native resources until actual provider settlement,
+rather than releasing after extension cleanup while a cancellation-ignoring
+provider is still running. This prevents reuse/destruction of producer resources
+under an unresolved turn. Callers must await settlement and reconcile P2; a
+cancellation signal or `close()` is not proof of provider termination. Default
+execution retains ordinary R10 and no configured caller enables preparation yet.
+
+Read-only materialized native evidence is limited to 32 journals and 16 MiB of
+aggregate raw journal bytes (also the single-journal bound). Capacity refusal is
+explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. Preflight and
+secure-reader scan-start checks bound parsing even if a journal grows between
+checks; validation/cloning may use bounded multiples of those raw bytes. Streaming
+inspection retains its uncapped behavior. These are preparation limits, not
+permission to erase oversized evidence or cold-fallback after switch intent.
 
 ## Public API
 

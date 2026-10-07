@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix prepared dispatch credential refresh through the original shared store with
+  same-account proof, expire forgotten idle resources, and reserve start time
+  before admission. Keep preparation inert; bound materialized chain capture.
+
 - Add reusable claim-and-permit-held host preparation, pinned no-tools producers,
   complete read-only chain capture and persisted frozen-budget/artifact access.
   Keep configured switching inert and existing configurations unchanged.

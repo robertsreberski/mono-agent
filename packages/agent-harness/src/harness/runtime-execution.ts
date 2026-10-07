@@ -65,7 +65,7 @@ export interface PreparedHarnessRuntime {
   assertReady(): void;
   checkHandoffSummary(input: RuntimeHandoffProducerRequest): RuntimeHandoffFit;
   produceHandoffSummary(input: RuntimeHandoffProducerRequest): Promise<RuntimeHandoffProducerResult>;
-  run(binding: HarnessPreparedBinding): Promise<RuntimeResult>;
+  run(binding: HarnessPreparedBinding | (() => Promise<HarnessPreparedBinding>)): Promise<RuntimeResult>;
   close(): Promise<void>;
 }
 export interface HarnessRuntimePreparationInput {
@@ -112,29 +112,53 @@ export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Pr
     ...(input.options.selectedSkills ? { selectedSkills: [...input.options.selectedSkills] } : {}) };
   let resolvePrepared!: (value: PreparedHarnessRuntime) => void, rejectPrepared!: (error: unknown) => void;
   const prepared = new Promise<PreparedHarnessRuntime>((resolve, reject) => { resolvePrepared = resolve; rejectPrepared = reject; });
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined, expired = false, admitting = false, deferredAbort: unknown;
   let resume!: (binding: HarnessPreparedBinding) => void, stop!: (reason: unknown) => void, state = "preparing", producing = false;
   const binding = new Promise<HarnessPreparedBinding>((resolve, reject) => { resume = resolve; stop = reject; });
   void binding.catch(() => {});
-  const abort = (reason: unknown) => { if (state === "preparing" || state === "prepared") { state = "closed"; stop(reason); } };
+  const abort = (reason: unknown) => { if (state === "preparing" || state === "prepared") { state = "closed"; clearTimeout(expiryTimer); if (admitting) deferredAbort = reason; else stop(reason); } };
   const outcome = executeHarnessRuntime({ assertOwned: input.assertOwned, prepareContext: input.prepareContext, abort,
     ready: async (lease, context) => {
       if (state === "closed") throw new Error("Host preparation closed before readiness");
       if (!lease.assertReady || !lease.checkHandoffSummary || !lease.produceHandoffSummary) throw new Error("Pinned handoff producer capability unavailable");
+      if (!Number.isSafeInteger(lease.snapshot.expiresAt)) throw new Error("Native prepared lease expiry unavailable");
+      const expiresAt = Math.min(lease.snapshot.expiresAt, Date.now() + 5 * 60_000);
+      const assertStart = (allowance: number): void => {
+        if (Date.now() >= expiresAt || expiresAt - Date.now() < allowance) throw new Error("Host preparation expired or has insufficient start allowance");
+        lease.assertReady!(allowance);
+      };
       state = "prepared";
+      expiryTimer = setTimeout(() => { expired = true; if (state === "prepared" && !producing && !admitting) abort(new Error("Host preparation expired")); },
+        Math.max(0, expiresAt - Date.now()));
+      expiryTimer.unref();
+      const start = (value: HarnessPreparedBinding, allowance: number): Promise<RuntimeResult> => {
+        if (state !== "prepared" || producing || admitting) return Promise.reject(new Error("Host preparation is no longer available"));
+        if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"].includes(key as string))
+          || typeof value.assertOwned !== "function" || value.reconciliation?.descriptor.reconciliation?.purpose !== "execution"
+          || value.turnRevision !== value.reconciliation.descriptor.baseRevision) return Promise.reject(new TypeError("Host preparation accepts only owned P2/session binding"));
+        let captured; try { assertStart(allowance); captured = copyPreparationData(value); } catch (error) { return Promise.reject(error); }
+        state = "running"; clearTimeout(expiryTimer); resume(captured); return outcome;
+      };
       resolvePrepared({ snapshot: lease.snapshot, context,
-        assertReady: () => { if (state !== "prepared" || producing) throw new Error("Host preparation is no longer available"); lease.assertReady!(); },
+        assertReady: () => { if (state !== "prepared" || producing || admitting) throw new Error("Host preparation is no longer available"); assertStart(30_000); },
         checkHandoffSummary: (request) => { if (state !== "prepared") throw new Error("Host preparation is no longer available"); return lease.checkHandoffSummary!(request); },
-        produceHandoffSummary: async (request) => { if (state !== "prepared" || producing) throw new Error("Host producer is no longer available");
+        produceHandoffSummary: async (request) => { if (state !== "prepared" || producing || admitting) throw new Error("Host producer is no longer available");
           const captured = structuredClone(request); producing = true;
           try { await input.assertOwned(); if (state !== "prepared") throw new Error("Host preparation closed before production");
             const result = await lease.produceHandoffSummary!(captured); await input.assertOwned(); return result; }
-          finally { producing = false; } },
+          finally { producing = false; if (expired && state === "prepared") abort(new Error("Host preparation expired")); } },
         run: (value) => {
-          if (state !== "prepared" || producing) return Promise.reject(new Error("Host preparation is no longer available"));
-          if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"].includes(key as string))
-            || typeof value.assertOwned !== "function" || value.reconciliation?.descriptor.reconciliation?.purpose !== "execution"
-            || value.turnRevision !== value.reconciliation.descriptor.baseRevision) return Promise.reject(new TypeError("Host preparation accepts only owned P2/session binding"));
-          let captured; try { lease.assertReady!(); captured = copyPreparationData(value); } catch (error) { return Promise.reject(error); } state = "running"; resume(captured); return outcome;
+          if (typeof value !== "function") return start(value, 30_000);
+          // Preferred before-P2 entry: reject before invoking host admission.
+          if (state !== "prepared" || producing || admitting) return Promise.reject(new Error("Host preparation is no longer available"));
+          try { assertStart(30_000); } catch (error) { return Promise.reject(error); }
+          admitting = true;
+          return Promise.resolve().then(() => input.assertOwned()).then(value).then((bound) => {
+            admitting = false; return start(bound, 0);
+          }).finally(() => { admitting = false;
+            if (deferredAbort !== undefined) stop(deferredAbort);
+            else if (expired && state === "prepared") abort(new Error("Host preparation expired"));
+          });
         },
         close: async () => { abort(new Error("Host preparation closed")); await outcome.catch(() => {}); },
       });
@@ -144,7 +168,7 @@ export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Pr
     false, { ...input.routing }, [], [], false, false, undefined, copyPreparationData(input.attachmentContext), input.continuationCapabilities,
     input.turnContinuityCollector, input.liveInputMailbox, input.onProviderStart);
   void outcome.then(() => { if (state === "preparing" || state === "closed") rejectPrepared(new Error("Host preparation did not complete")); }, rejectPrepared)
-    .finally(() => { state = "closed"; });
+    .finally(() => { state = "closed"; clearTimeout(expiryTimer); });
   return prepared;
 }
 type ExecutionArguments = Parameters<typeof executeHarnessRuntime> extends [unknown, ...infer Rest] ? Rest : never;

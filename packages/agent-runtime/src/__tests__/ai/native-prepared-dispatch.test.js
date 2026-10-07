@@ -16,7 +16,7 @@ import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-code
 import { Type } from "@earendil-works/pi-ai";
 
 const cleanups = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 async function fixture(provider = "faux", api) {
   const root = await mkdtemp(join(tmpdir(), "native-prepared-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
   const faux = fauxProvider({ provider, ...(api ? { api } : {}), models: [{ id: "fixture", ...(api ? { api } : {}), contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
@@ -275,7 +275,7 @@ it("requires ten-minute OAuth validity after refresh and never accepts a near-ex
   expect(refresh).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
 });
 
-it("a long run keeps the selected credential but refuses new calls as it approaches expiry", async () => {
+it("unknown-account long runs refuse refresh distinctly without touching the shared store", async () => {
   const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
   const credential = { type: "oauth", access: token("fictional-account", 1), expires: now + 60 * 60_000 };
   const read = vi.fn(async () => credential), models = createModels({ credentials: { read, list: async () => [], delete: vi.fn(), modify: vi.fn() } });
@@ -283,9 +283,9 @@ it("a long run keeps the selected credential but refuses new calls as it approac
   const pin = await prepareDispatchAuth(models, f.faux.getModel()); const reads = read.mock.calls.length;
   const clock = vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000);
   await expect(pin.models.getAuth(pin.model)).resolves.toMatchObject({ auth: { apiKey: credential.access } });
-  expect(() => pin.assertValid(true)).toThrow("lease expired"); // Start is bounded; already-running authorization is not refreshed.
-  clock.mockReturnValue(credential.expires - 5 * 60_000);
-  await expect(pin.models.getAuth(pin.model)).rejects.toThrow("expires too soon"); expect(read).toHaveBeenCalledTimes(reads);
+  expect(() => pin.assertValid(true)).toThrow("lease expired");
+  clock.mockReturnValue(credential.expires - 5 * 60_000 + 1);
+  await expect(pin.models.getAuth(pin.model)).rejects.toThrow("Prepared credential refresh refused"); expect(read).toHaveBeenCalledTimes(reads);
 });
 
 it("the pinned collection refuses another model even when it shares the same provider/API", async () => {
@@ -343,11 +343,11 @@ it.each([false, true])("one typed prepared producer uses pinned auth, no tools/s
     requests.push({ model, context, options }); return f.faux.provider.streamSimple(model, context, options); } });
   const router = routed ? createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }], sessionTurnReconciliation: "v1",
     resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) }) : undefined;
-  const lease = await prepare(f, { allowedTools: ["Read"] }, router), input = producerInput();
+  const lease = await prepare(f, { allowedTools: ["Read"], piTransport: "auto" }, router), input = producerInput();
   expect(lease.checkHandoffSummary(input)).toEqual({ status: "ready" }); expect(await readdir(f.root)).toEqual([]);
   f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())]), fauxAssistantMessage([fauxText("Incoming dispatch")])]);
   const result = await lease.produceHandoffSummary(input); expect(result.status).toBe("ready");
-  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0);
+  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0); expect(requests[0].options.transport).toBe("auto");
   expect(requests[0].options.apiKey).toBe("fictional-pinned-producer"); expect(resolve).toHaveBeenCalledOnce();
   expect(await readdir(f.root)).toEqual([]); await expect(lease.produceHandoffSummary(input)).rejects.toThrow("no longer available");
   expect((await lease.run()).text).toBe("Incoming dispatch"); expect(requests).toHaveLength(2); expect(resolve).toHaveBeenCalledOnce();
@@ -377,3 +377,59 @@ it("close waits for an active producer before closing native/MCP resources; run 
   await Promise.resolve(); expect(done).toBe(false); expect(closed).not.toHaveBeenCalled();
   release(); expect((await production).status).toBe("ready"); await closing; expect(closed).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
 });
+
+
+it.each(["same", "different", "missing", "failure", "provider", "api", "short"])("long native run crosses the old window with %s-account refresh under the original store lock", async (variant) => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now(), requests = [];
+  let credential = { type: "oauth", accountId: "fictional-selected", access: token("fictional-selected", 1), refresh: "fictional-old", expires: now + 10 * 60_000 + 5000 };
+  let locked = false;
+  const refresh = vi.fn(async (current) => {
+    expect(locked).toBe(true); expect(current.refresh).toBe("fictional-rotated-by-peer");
+    if (variant === "failure") throw new Error("Fictional refresh refusal");
+    if (variant === "provider") models.getProvider("openai-codex").id = "foreign-provider";
+    if (variant === "api") models.setProvider({ ...models.getProvider("openai-codex"), getModels: () => [{ ...f.faux.getModel(), api: "foreign-api" }] });
+    const accountId = variant === "different" ? "fictional-other" : "fictional-selected";
+    return { ...current, accountId: variant === "missing" ? undefined : accountId, access: token(accountId, 2), refresh: "fictional-next", expires: Date.now() + (variant === "short" ? 240000 : 3600000) };
+  });
+  const store = { read: vi.fn(async () => credential), list: async () => [], delete: vi.fn(), modify: vi.fn(async (id, update) => {
+    expect(id).toBe("openai-codex"); expect(locked).toBe(false); locked = true;
+    try { credential = await update(credential) ?? credential; return credential; } finally { locked = false; }
+  }) };
+  const models = createModels({ credentials: store });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh, toAuth: (value) => ({ apiKey: value.access }) } },
+    streamSimple(model, context, options) { requests.push(options.apiKey); return f.faux.provider.streamSimple(model, context, options); } });
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const lease = await prepare(f, { piResolvedModels: models, allowedTools: ["Write"] }, createRuntime({ workspace: f.root }));
+  const original = credential.access;
+  f.faux.setResponses([() => { credential = { ...credential, refresh: "fictional-rotated-by-peer" }; clock.mockReturnValue(now + 6 * 60_000);
+    return fauxAssistantMessage([fauxToolCall("Write", { file_path: "effect.txt", content: "Fictional effect once" })]); }, fauxAssistantMessage([fauxText("Refreshed success")])]);
+  const result = await lease.run(); expect(await readFile(join(f.root, "effect.txt"), "utf8")).toBe("Fictional effect once");
+  expect(store.modify).toHaveBeenCalledOnce(); expect(refresh).toHaveBeenCalledOnce();
+  if (variant === "same") { expect(result.error).toBeNull(); expect(result.text).toBe("Refreshed success"); expect(requests).toEqual([original, credential.access]); }
+  else { expect(result.failureKind).toBe("safety_prepared_credentials"); expect(result.error).toContain("Prepared credential refresh refused"); expect(requests).toEqual([original]); }
+  if (variant === "different") expect(credential.accountId).toBe("fictional-other"); // Keep rotated tokens consistent, but do not use them in this lease.
+});
+
+it("locally rejects insufficient idle-age plus reserve after a resolver spent part of the token lifetime", async () => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
+  const credential = { type: "oauth", accountId: "fictional-selected", access: token("fictional-selected", 1), expires: now + 10 * 60_000 + 5000 };
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const models = createModels({ credentials: { read: async () => credential, list: async () => [], delete: vi.fn(), modify: vi.fn() } });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh: vi.fn(), toAuth: (value) => { clock.mockReturnValue(now + 60_000); return { apiKey: value.access }; } } } });
+  await expect(prepare(f, { piResolvedModels: models })).rejects.toThrow("expires too soon"); expect(await readdir(f.root)).toEqual([]);
+});
+
+it("forgotten idle native leases expire and close MCP/runState exactly once without provider/native mutation", async () => {
+  const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close"), provider = vi.spyOn(f.faux.provider, "streamSimple");
+  // Capture just lease-age callbacks instead of advancing filesystem/network timers.
+  const observed = [];
+  const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, ms, ...args) => {
+    const actual = originalTimer(callback, ms, ...args); if (ms > 290000 && ms <= 300000) observed.push({ callback, actual }); return actual;
+  });
+  const second = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
+  expect(observed).toHaveLength(1); expect(observed[0].actual.hasRef()).toBe(false);
+  observed[0].callback(); await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce()); await second.close(); timer.mockRestore();
+  expect(closed).toHaveBeenCalledOnce(); expect(provider).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
+  await expect(second.run()).rejects.toThrow("no longer available"); expect(closed).toHaveBeenCalledOnce();
+});
+const originalTimer = globalThis.setTimeout;

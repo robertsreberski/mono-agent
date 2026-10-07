@@ -650,12 +650,12 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
         model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
-        provenance: auth.provenance, authSource: auth.authSource }, {
-        assertReady: () => auth.assertValid(true),
+        provenance: auth.provenance, authSource: auth.authSource, expiresAt: auth.expiresAt }, {
+        assertReady: (remainingStartMs = 0) => auth.assertValid(true, remainingStartMs),
         check: (input) => { auth.assertValid(true); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
           return result.status === "ready" ? { status: "ready" } : result; },
         run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: auth.models.completeSimple.bind(auth.models),
-          signal: options.abortSignal, completionOptions: { transport: "sse" } }),
+          signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
       });
       auth.assertValid(true); // Before any native lookup/open or incoming mutation.
       options = { ...options, ...binding };

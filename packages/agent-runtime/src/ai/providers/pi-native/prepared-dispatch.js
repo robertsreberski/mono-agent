@@ -57,6 +57,7 @@ export function freezeDispatchData(value) {
  * Secrets stay in closures, never in the returned host snapshot. No completion.
  * @param {any} models @param {any} model @param {AbortSignal|undefined} signal */
 export async function prepareDispatchAuth(models, model, signal) {
+  model = freezeDispatchData(copy(model));
   const provider = models.getProvider(model.provider);
   if (!provider) throw new Error("Prepared dispatch provider is unavailable");
   const selected = models.getModel(model.provider, model.id);
@@ -75,21 +76,54 @@ export async function prepareDispatchAuth(models, model, signal) {
   const resolution = await resolving.getAuth(model, { signal, minOAuthValidityMs: PREPARED_DISPATCH_MAX_AGE_MS + OAUTH_REQUEST_RESERVE_MS });
   if (!resolution) throw new Error("Prepared dispatch provider authentication is unavailable");
   signal?.throwIfAborted();
-  const auth = copy(resolution);
+  let auth = copy(resolution);
   const probe = probeNativeAccountProvenance({ provider: model.provider, api: model.api, credential,
     dispatchApiKey: auth.auth.apiKey });
   const preparedAt = Date.now();
-  const assertValid = (starting = false) => {
-    if (starting && Date.now() - preparedAt >= PREPARED_DISPATCH_MAX_AGE_MS) throw new ModelsError("auth", "Prepared dispatch lease expired; prepare again before dispatch");
-    if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires) || Date.now() + OAUTH_REQUEST_RESERVE_MS >= credential.expires)) {
-      throw new ModelsError("oauth", "Prepared OAuth authentication expires too soon; prepare again before dispatch");
+  const expiresAt = preparedAt + PREPARED_DISPATCH_MAX_AGE_MS;
+  const assertValid = (starting = false, remainingStartMs = 0) => {
+    if (!Number.isSafeInteger(remainingStartMs) || remainingStartMs < 0) throw new RangeError("Invalid prepared start allowance");
+    if (starting && (Date.now() >= expiresAt || expiresAt - Date.now() < remainingStartMs)) throw new ModelsError("auth", "Prepared dispatch lease expired or has insufficient start allowance; prepare again before dispatch");
+  };
+  // Do not rely on an optional SDK override: enforce the entire idle age plus
+  // one request reserve here even if a custom resolver ignores it.
+  if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires)
+    || credential.expires - Date.now() < PREPARED_DISPATCH_MAX_AGE_MS + OAUTH_REQUEST_RESERVE_MS)) {
+    throw new ModelsError("oauth", "Prepared OAuth authentication expires too soon; prepare again before dispatch");
+  }
+  const oauth = provider.auth?.oauth;
+  const refused = () => new ModelsError("oauth", "Prepared credential refresh refused: original account or validity could not be retained");
+  const sameAccount = (value, derived) => {
+    const currentModel = models.getModel(model.provider, model.id);
+    const next = probeNativeAccountProvenance({ provider: provider.id, api: currentModel?.api, credential: value, dispatchApiKey: derived?.apiKey });
+    return probe.supported && next.supported && next.provenance.account === probe.provenance.account
+      && next.provenance.provider === probe.provenance.provider && next.provenance.api === probe.provenance.api;
+  };
+  const requestAuth = async () => {
+    if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires) || credential.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS)) {
+      if (!store?.modify || !oauth || !probe.supported) throw refused();
+      try {
+        // Serialize against ALL users of the original credential id/store.
+        // Recheck under its lock, using the current rotating refresh token, not
+        // our stale pin. A refreshed credential is persisted even if its account
+        // changed: the old token may already be revoked; this lease then refuses.
+        const post = await store.modify(model.provider, async (current) => {
+          if (current?.type !== "oauth" || !sameAccount(current, await oauth.toAuth(current))) throw refused();
+          if (Number.isFinite(current.expires) && current.expires - Date.now() >= OAUTH_REQUEST_RESERVE_MS) return undefined;
+          return await oauth.refresh(current, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30_000)]));
+        }, { signal });
+        const derived = post?.type === "oauth" ? await oauth.toAuth(post) : undefined;
+        if (!sameAccount(post, derived) || !Number.isFinite(post?.expires) || post.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS) throw refused();
+        credential = copy(post); auth = { auth: copy(derived), source: "OAuth" };
+      } catch { throw refused(); }
     }
+    return copy(auth);
   };
   assertValid(true);
   const pinned = createModels();
   // Forward methods/getters with the original receiver, including prototype or
   // private-field implementations. Do not flatten a provider by object spread.
-  const overrides = { getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: async () => { assertValid(); return copy(auth); } } },
+  const overrides = { getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: requestAuth } },
     stream: provider.stream?.bind(provider), streamSimple: provider.streamSimple?.bind(provider) };
   pinned.setProvider(/** @type {any} */ (new Proxy(overrides, { get: (target, key) => {
     if (Object.hasOwn(target, key)) return Reflect.get(target, key);
@@ -102,16 +136,16 @@ export async function prepareDispatchAuth(models, model, signal) {
       : requested.provider !== model.provider || requested.id !== model.id || requested.api !== model.api) {
       throw new ModelsError("provider", "Prepared dispatch cannot select another model");
     }
-    assertValid(); return getAuth(requested, options);
+    return getAuth(requested, options);
   };
-  return { models: pinned, assertValid, model: freezeDispatchData(copy(model)), authSource: credential?.type === "oauth" && resolution.source === "OAuth" ? "oauth" : credential?.type === "api_key" ? "api_key" : "provider",
+  return { models: pinned, assertValid, expiresAt, model: freezeDispatchData(copy(model)), authSource: credential?.type === "oauth" && resolution.source === "OAuth" ? "oauth" : credential?.type === "api_key" ? "api_key" : "provider",
     provenance: { provider: model.provider, api: model.api, model: model.id, account: probe.supported ? probe.provenance.account : null } };
 }
 
 /** Suspend the real orchestrator after native preparation but before ANY session
  * resolution. Its original runState/tool closures and finally own resources.
  * Host must hold its concurrency permit until run/close settles. No fallback.
- * @param {(control: {ready: (snapshot: any, producer?: {assertReady: () => void, check: (input: any) => any, run: (input: any) => Promise<any>}) => Promise<any>}) => Promise<any>} execute
+ * @param {(control: {ready: (snapshot: any, producer?: {assertReady: (remainingStartMs?: number) => void, check: (input: any) => any, run: (input: any) => Promise<any>}) => Promise<any>}) => Promise<any>} execute
  * @param {AbortSignal|undefined} signal
  * @returns {Promise<NativePreparedDispatch>} */
 export function createPreparedDispatchLease(execute, signal) {
@@ -123,15 +157,20 @@ export function createPreparedDispatchLease(execute, signal) {
   const binding = new Promise((resolve, reject) => { resume = resolve; stop = reject; });
   // Cancellation during async initialization may reject before ready awaits it.
   void binding.catch(() => {});
+  /** @type {ReturnType<typeof setTimeout>|undefined} */ let expiryTimer;
+  let expired = false;
   let state = "preparing", producerUsed = false, producerBusy = false;
   /** @type {Promise<any>|undefined} */ let producerWork;
-  const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; const finish = () => stop(signal?.reason ?? new Error("Prepared dispatch closed"));
+  const cancel = () => { if (state === "preparing" || state === "prepared") { state = "closed"; clearTimeout(expiryTimer); const finish = () => stop(signal?.reason ?? new Error("Prepared dispatch closed"));
     if (producerBusy) void producerWork?.catch(() => {}).then(finish); else finish(); } };
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   const outcome = execute({ ready: async (snapshot, producer) => {
     if (state === "closed") throw new Error("Prepared dispatch closed before readiness");
     state = "prepared";
+    expiryTimer = setTimeout(() => { expired = true; if (state === "prepared" && !producerBusy) cancel(); },
+      Math.max(0, Math.min(PREPARED_DISPATCH_MAX_AGE_MS, (snapshot.expiresAt ?? Date.now() + PREPARED_DISPATCH_MAX_AGE_MS) - Date.now())));
+    expiryTimer.unref();
     const producerInput = (input) => {
       if (state !== "prepared" || producerUsed) throw new Error("Prepared handoff producer is no longer available");
       if (!input || typeof input !== "object" || Object.keys(input).some((key) => !["prepared", "outputReserve"].includes(key))) throw new TypeError("Invalid prepared handoff producer request");
@@ -139,14 +178,14 @@ export function createPreparedDispatchLease(execute, signal) {
     };
     resolvePrepared({ snapshot: freezeDispatchData(snapshot),
       ...(producer ? {
-        assertReady: () => { if (state !== "prepared" || producerBusy) throw new Error("Prepared dispatch is no longer available"); producer.assertReady(); },
+        assertReady: (remainingStartMs = 0) => { if (state !== "prepared" || producerBusy) throw new Error("Prepared dispatch is no longer available"); producer.assertReady(remainingStartMs); },
         checkHandoffSummary: (input) => producer.check(producerInput(input)),
         produceHandoffSummary: (input) => {
           let captured;
           try { captured = producerInput(input); } catch (error) { return Promise.reject(error); }
           let fit; try { fit = producer.check(captured); } catch (error) { return Promise.reject(error); } if (fit.status !== "ready") return Promise.resolve(fit);
           producerUsed = true; producerBusy = true;
-          producerWork = Promise.resolve().then(() => { if (state !== "prepared") throw new Error("Prepared producer closed before dispatch"); return producer.run(captured); }).finally(() => { producerBusy = false; });
+          producerWork = Promise.resolve().then(() => { if (state !== "prepared") throw new Error("Prepared producer closed before dispatch"); return producer.run(captured); }).finally(() => { producerBusy = false; if (expired && state === "prepared") cancel(); });
           return producerWork;
         },
       } : {}),
@@ -155,7 +194,7 @@ export function createPreparedDispatchLease(execute, signal) {
         if (producerBusy) return Promise.reject(new Error("Prepared handoff producer is still running"));
         let frozen;
         try { frozen = prepareNativeDispatchBinding(input); } catch (error) { return Promise.reject(error); }
-        state = "running"; resume(frozen); return outcome;
+        state = "running"; clearTimeout(expiryTimer); resume(frozen); return outcome;
       },
       close: async () => { cancel(); await producerWork?.catch(() => {}); await outcome.catch(() => {}); },
     });
@@ -163,6 +202,6 @@ export function createPreparedDispatchLease(execute, signal) {
   } });
   void outcome.then((result) => {
     if (state === "preparing" || state === "closed") rejectPrepared(new Error(result?.error ?? "Native dispatch preparation did not complete"));
-  }, (error) => rejectPrepared(error)).finally(() => { state = "closed"; signal?.removeEventListener("abort", cancel); });
+  }, (error) => rejectPrepared(error)).finally(() => { state = "closed"; clearTimeout(expiryTimer); signal?.removeEventListener("abort", cancel); });
   return prepared;
 }

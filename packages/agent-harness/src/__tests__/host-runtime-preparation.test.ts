@@ -88,3 +88,66 @@ it.each(["context", "native", "claim"])("failed %s preparation closes acquired r
   await expect(prepareHarnessRuntime(f.input)).rejects.toThrow(); expect(f.limiter.inUse()).toBe(0);
   expect(f.extensionClose).toHaveBeenCalledTimes(failure === "native" ? 1 : 0);
 });
+
+
+it("forgotten/expired preparations free semaphore(1), extensions and native runState without caller close", async () => {
+  const f = await fixture(), timers: { callback: () => void; handle: ReturnType<typeof setTimeout> }[] = [];
+  const original = globalThis.setTimeout;
+  const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number, ...args: unknown[]) => {
+    const handle = Reflect.apply(original, globalThis, [callback, ms, ...args]); if (ms > 290000 && ms <= 300000) timers.push({ callback, handle }); return handle;
+  }) as typeof setTimeout);
+  const forgotten = await prepareHarnessRuntime(f.input); expect(f.limiter.inUse()).toBe(1);
+  expect(timers).toHaveLength(2); expect(timers.every((timer) => !timer.handle.hasRef())).toBe(true);
+  timers.forEach((timer) => timer.callback()); await vi.waitFor(() => expect(f.limiter.inUse()).toBe(0)); spy.mockRestore();
+  expect(f.extensionClose).toHaveBeenCalledOnce(); expect(f.settleClose).toHaveBeenCalledOnce(); await f.owner.assertOwned();
+  await expect(forgotten.run({} as never)).rejects.toThrow("no longer available");
+  const next = await prepareHarnessRuntime(f.input); expect(f.limiter.inUse()).toBe(1); await next.close(); expect(f.limiter.inUse()).toBe(0);
+});
+
+it("run checks at least 30 seconds before invoking incoming P2 admission, including the exact allowance boundary", async () => {
+  const f = await fixture(), lease = await prepareHarnessRuntime(f.input); cleanup.push(() => lease.close());
+  const clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 29999);
+  const admission = vi.fn(async () => {
+    const turn = await f.owner.admit({ modelKey: "faux:fixture", reconciliation: { purpose: "execution", ownerKey: "fictional",
+      initial: { persistText: "Original fictional input", timestamp: new Date().toISOString() } } });
+    cleanup.push(() => turn.abort());
+    return { reconciliation: turn.reconciliation!, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
+      sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true };
+  });
+  expect(() => lease.assertReady()).toThrow("start allowance"); await expect(lease.run(admission)).rejects.toThrow("start allowance"); expect(admission).not.toHaveBeenCalled();
+  expect((await readdir(join(f.root, "history", ".locks"))).filter((name) => name.endsWith(".dirty.json"))).toEqual([]); await f.owner.assertOwned();
+  clock.mockReturnValue(lease.snapshot.expiresAt - 30000); f.f.faux.setResponses([f.f.response("Allowance accepted")]);
+  expect((await lease.run(admission)).text).toBe("Allowance accepted"); expect(admission).toHaveBeenCalledOnce();
+});
+
+it("prepared running abort intentionally holds resources/permit until the provider settles unlike ordinary R10", async () => {
+  const f = await fixture(), lease = await prepareHarnessRuntime(f.input); cleanup.push(() => lease.close());
+  let enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; }), gate = new Promise<void>((resolve) => { finish = resolve; });
+  f.f.faux.setResponses([async () => { enter(); await gate; return f.f.response("Late completion"); }]);
+  const running = lease.run(async () => {
+    const turn = await f.owner.admit({ modelKey: "faux:fixture", reconciliation: { purpose: "execution", ownerKey: "fictional",
+      initial: { persistText: "Original fictional input", timestamp: new Date().toISOString() } } });
+    cleanup.push(() => turn.abort());
+    return { reconciliation: turn.reconciliation!, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
+      sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true };
+  });
+  await entered; f.controller.abort(); await Promise.resolve(); expect(f.limiter.inUse()).toBe(1); expect(f.extensionClose).not.toHaveBeenCalled();
+  finish(); await running; expect(f.limiter.inUse()).toBe(0); expect(f.extensionClose).toHaveBeenCalledOnce();
+});
+
+
+it("max-age expiry during active production waits for settlement before releasing semaphore(1)", async () => {
+  const f = await fixture(), timers: (() => void)[] = [], original = globalThis.setTimeout;
+  const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number, ...args: unknown[]) => {
+    const handle = Reflect.apply(original, globalThis, [callback, ms, ...args]); if (ms > 290000 && ms <= 300000) timers.push(callback); return handle;
+  }) as typeof setTimeout);
+  const lease = await prepareHarnessRuntime(f.input);
+  let enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; }), gate = new Promise<void>((resolve) => { finish = resolve; });
+  f.f.faux.setResponses([async () => { enter(); await gate; return f.f.response(summary); }]);
+  const production = lease.produceHandoffSummary(producer); await entered; timers.forEach((callback) => callback());
+  expect(f.limiter.inUse()).toBe(1); expect(f.extensionClose).not.toHaveBeenCalled(); finish(); await production;
+  await vi.waitFor(() => expect(f.limiter.inUse()).toBe(0)); expect(f.extensionClose).toHaveBeenCalledOnce(); spy.mockRestore();
+  await lease.close(); await f.owner.assertOwned();
+});

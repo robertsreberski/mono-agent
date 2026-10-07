@@ -152,16 +152,27 @@ declarations, model limits and nonsecret provider/API/account provenance; it
 never contains credentials or auth headers. Only positively established Codex
 OAuth account metadata is an account proof; API-key, ambient and unsupported
 accounts remain null. Authentication can perform the selected store's normal
-OAuth refresh during preparation. The accepted auth is pinned to this dispatch;
-credential/environment changes afterward do not silently select another account.
-Preparation requests at least ten minutes of OAuth validity, including after
-refresh, and rejects a still-near-expiry or unmeasured OAuth token. Start the
-lease within five minutes; a stale lease fails before session resolution. Every
-later provider request on a running lease checks that the same token still has
-at least five minutes remaining. A long-running stream is authorized when its
-request starts; it is not renewed in flight. Later requests fail rather than
-refreshing/rebinding the account or replaying tools. Prepare a new lease on a
-subsequent explicit request, never an automatic rerun of a started turn.
+OAuth refresh during preparation. The accepted auth is pinned to this dispatch.
+Preparation requires locally measured validity of at least the five-minute maximum
+idle lease age plus a five-minute request reserve. Pi-ai 1.0.1 honours the requested
+`minOAuthValidityMs`, including after refresh; the lease also checks it locally.
+Start within five minutes; the host requires at least 30 seconds remaining before
+P2 admission. An unref'd max-age timer closes forgotten idle leases automatically,
+releasing MCP/runState resources; active production settles first. Timers do not
+abort already-running dispatches.
+
+A later request with less than five minutes of OAuth validity may refresh **only**
+through the original shared store's `modify` lock and same credential id, using
+its current rotating token. Re-probe every refreshed credential and require the
+same non-null account, provider and API plus sufficient validity. A foreign or
+unknown account, changed provider/API, short-lived refresh or refresh failure
+refuses the next request as `safety_prepared_credentials`, not `provider_auth`.
+Keep the newly rotated credential in that original store even if this lease
+refuses it; never overwrite it with the old token. No implicit refresh for
+unknown-account OAuth, other stores, or API-key/ambient auth. No auto-replay of a
+turn that may already have tool effects. In-flight streams are authorized at
+request start, not renewed mid-stream. The no-tools producer uses the configured
+`piTransport` (default `sse`) and remains one attempt without provider fallback.
 
 The pinned collection exposes only its selected model and refuses another
 model's authentication, including a same-provider/API model selected by a

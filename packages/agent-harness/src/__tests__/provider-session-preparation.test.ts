@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+import { copyFile, truncate, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -301,4 +303,27 @@ it("captures and projects composed checkpoints whose exact inherited prefix pred
   forged.segments[1].descriptor.sourceDigest = evidenceDigest(forged.segments[1].records);
   expect(() => createEvidenceView(forged)).toThrow("composed coverage");
   await prep.abort();
+});
+
+
+it("capture rejects excess chain count and aggregate/single journal bytes before allocating or scanning records", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "bounded-capture");
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
+  const source = captured.sources[0]!;
+  const context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
+  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"); const scan = vi.spyOn(JournalReader.prototype, "scan");
+  await expect(f.native.captureEvidence(Array.from({ length: 33 }, () => source), context)).rejects.toThrow("journal/chain limit");
+  await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
+  await expect(f.native.captureEvidence([source], context)).rejects.toThrow("journal/chain limit");
+  await truncate(f.nativePath, 8 * 1024 * 1024 + 1);
+  const extra = join(dirname(f.nativePath), "fictional-extra.jsonl"); await copyFile(f.nativePath, extra);
+  await expect(f.native.captureEvidence([source, { ...source, ordinal: 1, predecessorJournalId: source.journalId, journalId: "fictional-extra" }], context)).rejects.toThrow("journal/chain limit");
+  expect(scan).not.toHaveBeenCalled(); scan.mockRestore();
+  await writeFile(f.nativePath, f.original);
+  const original = JournalReader.prototype.scan;
+  const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit, options) {
+    await truncate(f.nativePath, 16 * 1024 * 1024 + 1); return original.call(this, visit, options);
+  });
+  await expect(f.native.captureEvidence([source], context)).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
+  expect(growing).toHaveBeenCalledOnce(); growing.mockRestore(); await prep.abort();
 });

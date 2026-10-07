@@ -531,6 +531,7 @@
 
 /**
  * @typedef {Object} NativeDispatchSnapshot
+ * @property {number} expiresAt Absolute latest start time (milliseconds).
  * @property {{provider: string, id: string, api: string, contextWindow: number, maxTokens: number}} model
  * @property {{provider: string, api: string, model: string, account: string|null}} provenance
  * @property {string} authSource Nonsecret provider-reported source, not an account proof.
@@ -557,7 +558,7 @@
  */
 /**
  * @typedef {Object} NativePreparedDispatch
- * @property {() => void} [assertReady] Check lifetime before host P2 admission, without consuming the lease.
+ * @property {(remainingStartMs?: number) => void} [assertReady] Check lifetime before host P2 admission, without consuming the lease.
  * @property {NativeDispatchSnapshot} snapshot Deep-frozen nonsecret dispatch metadata.
  * @property {(input: NativeHandoffProducerRequest) => {status: "ready"}|{status: "budget_failure", reason: string}} [checkHandoffSummary] Pure preflight; no billing or native mutation.
  * @property {(input: NativeHandoffProducerRequest) => Promise<NativeHandoffProducerResult>} [produceHandoffSummary] One auth-pinned no-tools call per lease; host owns durable admission.
