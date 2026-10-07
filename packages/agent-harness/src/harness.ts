@@ -709,6 +709,7 @@ export class MonoAgentHarness implements AgentHarness {
     let coordinatedProviderAttemptEligibleForSync = false;
     let providerAttemptStarted = false;
     const providerAttemptSessionIds = new Map<string, ProviderSessionHandle>();
+    let turnOptions = this.options;
     let requestedModelKey = sessionModelKey(this.options.model);
     let activeAttemptModelKey = requestedModelKey;
     const retireSessions = async (record: RuntimeSessionRecord | undefined, ...ids: readonly unknown[]): Promise<void> => {
@@ -1112,7 +1113,16 @@ export class MonoAgentHarness implements AgentHarness {
     request.abortSignal.addEventListener("abort", onAbort, { once: true });
     if (request.abortSignal.aborted) onAbort();
     try {
-      requestedModelKey = modelReferenceKey(requestSessionModel(request, this.options.model));
+      if (this.nativeModelSwitch?.implicitModel && this.nativeModelSwitch.deliveryId(request) === undefined) {
+        const binding = await this.options.historyStore?.readProviderSessionBinding?.(request.conversationId);
+        if (binding?.native === true) {
+          if (!binding.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
+          const implicit = await this.nativeModelSwitch.implicitModel(request, binding.modelKey);
+          if (implicit) turnOptions = { ...this.options, model: implicit.model,
+            runtimeOptions: mergeRuntimeOptions(this.options.runtimeOptions, implicit.runtimeOptions) };
+        }
+      }
+      requestedModelKey = modelReferenceKey(requestSessionModel(request, turnOptions.model));
       activeAttemptModelKey = requestedModelKey;
       // Resolve inside the guarded lifecycle, before any history is omitted.
       this.runtimeForSession(requestedModelKey);
@@ -1181,7 +1191,7 @@ export class MonoAgentHarness implements AgentHarness {
           if (this.nativeModelSwitch && reconcileTurn && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent)) {
             nativePreparationActive = true;
             preparedNativeTurn = await prepareConfiguredModelSwitch({ policy: this.nativeModelSwitch,
-              preparation: { options: this.options, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,
+              preparation: { options: turnOptions, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,
                 runId, durablePiSessionsRoot: this.options.piSessionsRoot!, routing: { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
                   onRuntimeSelected: (key) => { activeAttemptModelKey = key; } }, attachmentContext, continuationCapabilities, turnContinuityCollector,
                 ...(liveInputMailbox ? { liveInputMailbox } : {}), onProviderStart: () => noteProviderStart(coordinatedProviderSessionId) },
@@ -1385,7 +1395,7 @@ export class MonoAgentHarness implements AgentHarness {
             coordinatedProviderSessionRevision = turn.providerSessionRevision; coordinatedProviderAttemptEligibleForSync = true;
             resumeSessionId = turn.providerSessionId; providerAttributionSessionId = turn.providerSessionId;
           }) : runHarnessRuntime(
-          this.options,
+          turnOptions,
           this.runLimiter,
           this.sessionsEnabled(),
           activeRequest,

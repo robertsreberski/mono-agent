@@ -50,9 +50,13 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   host-stamped `source: "web"` and persisted inbound user-message ID identify
   explicit delivery; borrowed Web metadata on TUI/ACP does not authorize work.
   Retries/restarts reuse that ID without authorizing another billed generation.
+  No-ID requests without an explicit model inherit the durable current model,
+  never the base model on a native-authority conversation.
   Same-model requests without that ID may dispatch the current owned native
   chain without authorizing switch work; guarded model changes and unsupported
-  dispatch fallbacks refuse before rotation or dispatch. Retryable
+  dispatch fallbacks refuse before rotation or dispatch. The staging-only gate
+  can reject detached same-conversation work started during a turn with retryable
+  `native_switch_busy`; it never waits on its own claim. Retryable
   `native_switch_busy` drains only bounded inactive owners after claim release,
   never automatically replaying the message. Public config remains unexposed.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized

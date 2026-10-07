@@ -73,12 +73,12 @@ it("nested return to an active ancestor conversation refuses before another clai
   await first.run(request("fictional-A"));
 });
 
-it("daily buckets share only their logical conversation admission gate", async () => {
+it("trimmed daily buckets share the durable logical fence even without rollover", async () => {
   const lock = latch();
-  const first = serializeNativeSwitchHarness({ run: async () => { lock.enter(); await lock.gate; return response; } }, "fictional-daily-root", store, "daily");
-  const run = vi.fn(async () => response), second = serializeNativeSwitchHarness({ run }, "fictional-daily-root", store, "daily");
-  const active = first.run(request("fictional#2000-01-01")); await lock.started;
-  const next = second.run(request("fictional#2000-01-02")); await Promise.resolve(); expect(run).not.toHaveBeenCalled();
+  const first = serializeNativeSwitchHarness({ run: async () => { lock.enter(); await lock.gate; return response; } }, "fictional-daily-root", store);
+  const run = vi.fn(async () => response), second = serializeNativeSwitchHarness({ run }, "fictional-daily-root", store);
+  const active = first.run(request("  fictional#2000-01-01  ")); await lock.started;
+  const next = second.run(request(" fictional#2000-01-02 ")); await Promise.resolve(); expect(run).not.toHaveBeenCalled();
   await second.run(request("fictional-other#2000-01-02")); expect(run).toHaveBeenCalledOnce();
   lock.release(); await active; await next; expect(run).toHaveBeenCalledTimes(2);
 });

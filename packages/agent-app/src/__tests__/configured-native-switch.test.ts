@@ -76,7 +76,7 @@ it("same-model no-ID wakes dispatch the current chain without a switch; no-ID mo
   const before = await f.record(); expect(before.version).toBe(4); expect(before.native.chain).toHaveLength(2);
   const measure = vi.spyOn(f.native, "measureSwitch"), handoff = vi.spyOn(f.native, "prepareHandoff");
   const calls = f.transport.mock.calls.length;
-  for (const wake of [{ processJob: { jobId: "fictional-job" } }, { cron: { jobId: "fictional-scheduled", model: "faux:B" } }]) {
+  for (const wake of [{ source: "web", web: { trigger: "job" } }, { cron: { jobId: "fictional-scheduled", model: "faux:B" } }]) {
     f.faux.setResponses([reply("Fictional ordinary wake reply")]);
     const request = f.request(undefined, "faux:B");
     expect((await h.respond({ ...request, metadata: { ...request.metadata, ...wake } }, { append: async () => {} })).text).toBe("Fictional ordinary wake reply");

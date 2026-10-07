@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep undeclared no-ID wakes on the durable current model, not the base model;
+  explicit other-model requests still refuse. The staging-only conversation gate
+  can return retryable `native_switch_busy` for detached same-conversation work.
+
 - Keep same-model wakes on the current native chain without switch billing;
   refuse unsupported native dispatch fallbacks, require the Web source for
   delivery identities, and cancel conversation-gate waiters without root-wide

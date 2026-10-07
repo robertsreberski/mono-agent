@@ -1,5 +1,6 @@
 import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
+import { createRequestModelOverrideRuntimeExtension, hasExplicitRequestModelOverride } from "./request-model-override.js";
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
@@ -1609,11 +1610,22 @@ async function createConfiguredAgentHarnessInternal(
         ...internalHooks.nativeModelSwitch,
         sessionsRoot: piSessionsRoot ?? "",
         deliveryId: persistedWebDeliveryId,
+        implicitModel: async (request, modelKey) => {
+          if (hasExplicitRequestModelOverride(request.metadata)) return undefined;
+          const selected = parseMonoRuntimeModelReference(modelKey);
+          // Reuse endpoint/effort selection without changing request metadata
+          // identity (which carries out-of-band host capabilities).
+          const extension = createRequestModelOverrideRuntimeExtension({ baseModel: model,
+            ...(config.runtime.effort === undefined ? {} : { baseEffort: config.runtime.effort }),
+            ...(config.runtime.fallbacks === undefined ? {} : { fallbackRoutes: config.runtime.fallbacks }),
+            ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }) });
+          return { model: selected, runtimeOptions: (await extension({ request: { metadata: { web: { model: modelKey } } } })).runtimeOptions };
+        },
       },
     });
     ownershipTransferred = true;
     const owned = harnessWithAgentRootOwnership(harness, ownership);
-    return internalHooks.nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore, rollover);
+    return internalHooks.nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore);
 
   } catch (error) {
     await toolHistory?.release?.().catch(() => undefined);

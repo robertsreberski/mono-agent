@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeResult } from "@mono-agent/runtime-adapter";
+import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
 import { MAX_JOURNAL_CHAIN, MAX_MODEL_SWITCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
@@ -18,6 +18,11 @@ export interface InternalNativeSwitchPolicy {
   /** Durable host delivery identity, never run ID or text hash. Undefined means
    * this is NOT an explicit-message authorization (cron/continuation/recovery). */
   readonly deliveryId: (request: AgentHarnessRequest) => string | undefined;
+  /** APP resolves undeclared no-ID wakes to the durable native model. Does not
+   * grant authority; the owned snapshot still rechecks the selected model. */
+  readonly implicitModel?: (request: AgentHarnessRequest, modelKey: string) => Promise<{
+    readonly model: RuntimeModelReference; readonly runtimeOptions: Record<string, unknown>;
+  } | undefined>;
 }
 export interface ConfiguredPreparedTurn {
   readonly context: Awaited<ReturnType<typeof prepareHarnessRuntime>>["context"];

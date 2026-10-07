@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { AgentHarnessError, toolHistoryLogicalConversationId, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
+import { AgentHarnessError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
 import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 
 /** APP-private identity seam. The host-stamped Web source carries its committed
@@ -54,13 +54,18 @@ void forwardedKeys;
  * submit shares this gate because APP responders prefer it; the harness's own
  * queue is instance-local and cannot protect cross-responder owner admission or
  * detect nested callbacks before they wait on their own durable claim. */
-export function serializeNativeSwitchHarness(harness: AgentHarness, root: string, store: ConversationHistoryStore, rollover?: "none" | "daily"): AgentHarness {
+export function serializeNativeSwitchHarness(harness: AgentHarness, root: string, store: ConversationHistoryStore): AgentHarness {
   let disposed = false;
   let disposal: Promise<void> | undefined;
   const lifetime = new AbortController();
   const pending = new Set<Promise<unknown>>(); // Admitted operations only.
   const turns = new Map<AbortController, string>();
-  const keyFor = (id: string) => JSON.stringify([root, toolHistoryLogicalConversationId(id, rollover)]);
+  // Match durable-history's fence: trim, strip its daily suffix regardless of
+  // configured rollover, and keep suffix-only IDs nonempty.
+  const keyFor = (id: string) => {
+    const trimmed = id.trim(), logical = trimmed.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+    return JSON.stringify([root, logical.length === 0 ? trimmed : logical]);
+  };
   const mutation = <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
     const key = keyFor(id);
     if (disposed) return Promise.reject(cancelled());
