@@ -181,6 +181,20 @@ primary attempt evidence; failure to acknowledge is terminal. Neither that hook
 nor the turn descriptor is forwarded to detached attempts; private attempt
 resolvers cannot replace them. Backup success never certifies primary success.
 
+`RuntimeRunOptions.nativeSessionAuthority` and `nativeSessionProjection` are
+protected host-only opt-ins forwarded unchanged by the facade. The authority's
+`sessionsRoot` pins the dedicated native root; the resolver cannot replace
+`piSessionsRoot` on the session-eligible attempt while authority is present.
+Detached retry/backup resolvers may choose their own roots. `assertCurrent`
+receives the actual normalized path (not an inode attestation) and must prove
+the held owner's ready binding/artifact and creation eligibility; an artifact reference alone grants no execution. Projection
+content stays in host artifacts/predecessors, not the current native journal.
+Hosts must preserve accepted message/coverage object key order on reconstruction:
+the binding's digest is JSON-byte based, not semantic canonicalization.
+Its optional frozen dispatch budget refuses overruns without cached-handoff
+repair. Private route resolution cannot replace either field; stateless retries
+and backups strip both. Configured hosts do not supply them yet.
+
 The separately exported `createManagedNativeJournalStorage` provides a typed
 administrative storage capability, not a `MonoRuntimeLike` dispatch capability or
 model-facing run option. Its caller must hold host root/conversation authority,
@@ -345,6 +359,8 @@ RuntimeNativeJournalAuthority
 RuntimeNativeJournalDeletion
 RuntimeNativeJournalDescriptor
 RuntimeNativeJournalStorage
+RuntimeNativeSessionAuthority
+RuntimeNativeSessionProjection
 RuntimeNativeSwitchContext
 RuntimePromptOverrides
 RuntimeResult

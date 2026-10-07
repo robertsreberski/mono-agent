@@ -1,3 +1,4 @@
+import { assertNativeSessionAccess } from "./session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
 //
@@ -307,6 +308,10 @@ export async function buildTurnHarness(runState, {
       : {}),
     steeringMode,
     followUpMode: steeringMode,
+    assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.piSessionsRoot) : undefined,
+    inheritedProjection: options.nativeSessionProjection?.inherited,
+    inheritedProjectionRef: options.nativeSessionProjection?.artifact,
+    handoffDispatchBudget: options.nativeSessionProjection?.dispatchBudget,
     promptCacheDiagnostics: options.promptCacheDiagnostics,
     cacheRetention: options.cacheRetention,
     onEvent: options.onEvent,

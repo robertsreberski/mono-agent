@@ -2,7 +2,9 @@
 import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { normalizeContext, toToolDeclaration } from "@earendil-works/pi-ai";
 import { randomUUID, createHash } from "node:crypto";
-import { projectContext } from "./request-projection.js";
+import { projectContext, projectInheritedContext } from "./request-projection.js";
+import { evidenceDigest } from "./evidence-view.js";
+import { checkHandoffDispatch, estimateHandoffTokens } from "./handoff.js";
 import { convertToLlm } from "./compaction-kit/messages.js";
 import { estimateContextTokens, shouldCompact } from "./compaction-kit/compaction.js";
 import { recordInterruption, repairInterruptedSession, isExecutableAssistant } from "./interruption.js";
@@ -11,6 +13,17 @@ import { createTurnBinding, digestTurnInput } from "./turn-evidence.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
 export function createRunDriver(store, options) {
+  // Snapshot accepted content: a request extension cannot mutate a cached handoff
+  // while a provider/tool await is in flight.
+  const inherited = options.inheritedProjection === undefined ? undefined : structuredClone(options.inheritedProjection);
+  const dispatchBudget = options.handoffDispatchBudget === undefined ? undefined : structuredClone(options.handoffDispatchBudget);
+  const project = (entries, extra = {}) => inherited === undefined ? projectContext(entries, extra)
+    : projectInheritedContext(entries, inherited, extra);
+  let dispatchRequest;
+  const budgetFailure = (reason) => Object.assign(new Error(`Handoff dispatch budget exceeded: ${reason}`),
+    { code: "ERR_HANDOFF_DISPATCH_BUDGET", reason });
+  if (dispatchBudget && (options.model.contextWindow < dispatchBudget.contextWindow
+    || options.model.maxTokens < dispatchBudget.outputReserve)) throw budgetFailure("target_window");
   const listeners = new Set();
   const registrations = new Map();
   const queue = new Map();
@@ -19,7 +32,7 @@ export function createRunDriver(store, options) {
   let runId, controller, running;
   let turnBeginning = false, turnEnding = false;
   const inputAdmissions = new Set();
-  let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId;
+  let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId, initialMessageId;
   const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
   async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
     if (turnId || turnBeginning || turnEnding) throw new Error("Pi logical turn is already open");
@@ -38,7 +51,10 @@ export function createRunDriver(store, options) {
       }
       const needsOwnerBinding = store.validator.owner.kind === "unbound";
       turnBinding = descriptor ? createTurnBinding(descriptor, modelConfig().model) : undefined;
-      await store.beginTurn(id, modelConfig(), source, turnBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined;
+      const projectionBinding = inherited && options.inheritedProjectionRef && !store.validator.projectionBinding
+        ? { version: 1, artifact: structuredClone(options.inheritedProjectionRef), coverage: inherited.coverage,
+          messageDigest: evidenceDigest(inherited.messages) } : undefined;
+      await store.beginTurn(id, modelConfig(), source, turnBinding, projectionBinding); await store.sync(); turnId = id; promptCount = 0; initialInputKey = undefined; initialMessageId = undefined;
       if (descriptor) {
         const owner = { kind: descriptor.kind, ownerKey: descriptor.ownerKey, historyBucket: descriptor.historyBucket };
         if (needsOwnerBinding) await store.write("owner_binding", owner);
@@ -177,6 +193,7 @@ export function createRunDriver(store, options) {
       const entryId = await store.appendMessage(event.message, id, { id: inputId, complete: true,
         ...(isInput ? { placement: promptCount === 1 ? "initial" : "replay" } : turnBinding && inputId ? { placement: "live" } : {}),
         ...(turnBinding && inputId ? { requestDigest: digestTurnInput(event.message.content) } : {}) });
+      if (isInput && initialMessageId === undefined) initialMessageId = entryId;
       if (inputId && !store.validator.turns.get(turnId)?.inputs.has(inputId)) {
         await store.write("input_consumed", { inputId, messageId: entryId }, { operationId: runId });
       }
@@ -211,9 +228,11 @@ export function createRunDriver(store, options) {
       await store.openOperation(operationId, modelConfig(), "compaction", reason); operationOpened = true;
       let decision;
       const nativeEntries = await store.getEntries(); const repairs = await store.getRepairEntries();
-      const branchEntries = projectContext(nativeEntries, { repairs, mode: "compaction" }).entries;
+      const projection = project(nativeEntries, { repairs, mode: "compaction" });
+      const branchEntries = projection.entries;
+      const nonRetainablePrefixLength = "nonRetainablePrefixLength" in projection ? projection.nonRetainablePrefixLength : 0;
       for (const handler of registrations.get("before_compaction") || []) {
-        decision = await handler({ reason, branchEntries, signal: context.abortSignal, context }, context);
+        decision = await handler({ reason, branchEntries, nonRetainablePrefixLength, signal: context.abortSignal, context }, context);
         if (decision !== undefined) break;
       }
       if (!decision || decision.decline || !decision.compaction) {
@@ -221,7 +240,18 @@ export function createRunDriver(store, options) {
         return;
       }
       if (context.abortSignal.aborted) throw new Error("Pi compaction aborted");
-      const id = await store.appendCompaction(decision.compaction);
+      // A composed cut must reduce the entire inherited prefix. Retaining its
+      // native envelopes as derived current messages would copy predecessor evidence.
+      const source = { sourceTipId: store.tip, sourceSeq: store.seq };
+      if (inherited && (decision.compaction.retainedTail ?? []).some((message) =>
+        inherited.messages.some((prior) => JSON.stringify(prior) === JSON.stringify(message)))) {
+        throw new Error("Composed compaction must cover the inherited prefix");
+      }
+      // Omission after a composed checkpoint means the native summary owns the
+      // prefix. Every later checkpoint must carry its coverage, not revert to v2.
+      const inheritedCoverage = inherited?.coverage ?? nativeEntries.filter((prior) => prior.type === "compaction"
+        && prior.checkpoint?.inheritedCoverage).at(-1)?.checkpoint.inheritedCoverage;
+      const id = await store.appendCompaction(decision.compaction, inheritedCoverage, inheritedCoverage ? source : undefined);
       await barrier();
       entry = await store.getEntry(id);
       // Publish completion only after the exact checkpoint and terminal
@@ -241,11 +271,26 @@ export function createRunDriver(store, options) {
     }
   }
   async function requestContext() {
-    const messages = projectContext(await store.getEntries(), { repairs: await store.getRepairEntries() }).messages;
+    if (options.assertSessionCurrent) await options.assertSessionCurrent();
+    const messages = project(await store.getEntries(), { repairs: await store.getRepairEntries() }).messages;
     // The host supplies the current prompt/loadout on every reopen. Rebuild that
     // leading declaration after compaction too, without duplicating old prompts.
-    return { messages: normalizeContext({ systemPrompt: options.systemPrompt,
-      tools: tools.map(toToolDeclaration), messages: messages.filter((m) => m.role !== "system") }).messages, tools };
+    const declarations = tools.map(toToolDeclaration);
+    const normalized = normalizeContext({ systemPrompt: options.systemPrompt,
+      tools: declarations, messages: messages.filter((m) => m.role !== "system") });
+    if (dispatchBudget) {
+      const entries = await store.getEntries();
+      const input = entries.find((entry) => entry.type === "message" && entry.id === initialMessageId)?.message;
+      const currentInput = input ?? messages.findLast((message) => message.role === "user");
+      const reverseIndex = [...normalized.messages].reverse().findIndex((message) => message === currentInput
+        || JSON.stringify(message) === JSON.stringify(currentInput));
+      const index = reverseIndex < 0 ? -1 : normalized.messages.length - reverseIndex - 1;
+      dispatchRequest = { systemPrompt: options.systemPrompt, tools: declarations,
+        messages: normalized.messages.filter((message, at) => at !== index && message.role !== "system"), currentInput };
+      const fit = checkHandoffDispatch(dispatchRequest, dispatchBudget);
+      if (fit.status !== "ready") throw budgetFailure(fit.reason);
+    }
+    return { messages: normalized.messages, tools };
   }
   async function drive(text, promptOptions) {
     if (closed || running || turnEnding) throw new Error("mono-agent harness is closed, busy or ending its turn");
@@ -264,11 +309,12 @@ export function createRunDriver(store, options) {
         currentInputId = turnBinding ? (inputKey === initialInputKey ? turnBinding.reconciliation.initialInputId : null)
           : inputKey === initialInputKey ? `input:${createHash("sha256").update(turnId).digest("hex")}` : `synthetic:input:${randomUUID()}`;
         await store.openOperation(id, modelConfig(), "prompt", promptCount === 1 ? "prompt" : "re_prompt"); opened = true;
-        const messages = projectContext(await store.getEntries()).messages;
+        const messages = project(await store.getEntries()).messages;
         /** @type {any[]} */
         const prompts = [{ role: "user", content: [{ type: "text", text }, ...(promptOptions?.images || [])], timestamp: Date.now() }];
         await runAgentLoop(prompts, { messages, tools }, {
           ...options.streamOptions,
+          ...(dispatchBudget ? { maxTokens: dispatchBudget.outputReserve } : {}),
           sessionId: store.metadata.id,
           model: options.model,
           reasoning: options.thinkingLevel === "off" ? undefined : options.thinkingLevel,
@@ -277,8 +323,8 @@ export function createRunDriver(store, options) {
           getSteeringMessages: poll,
           getFollowUpMessages: async () => [],
           prepareRequest: async () => {
-            if (compactionArmed && settings.enabled) {
-              const messages = projectContext(await store.getEntries()).messages;
+            if (!dispatchBudget && compactionArmed && settings.enabled) {
+              const messages = project(await store.getEntries()).messages;
               if (shouldCompact(estimateContextTokens(messages).tokens, options.model.contextWindow, settings)) await performCompaction("threshold");
             }
             return { context: await requestContext() };
@@ -294,7 +340,18 @@ export function createRunDriver(store, options) {
           },
 
           onPayload: async (payload, model) => {
+            if (options.assertSessionCurrent) await options.assertSessionCurrent();
+            const before = dispatchBudget ? estimateHandoffTokens(payload) : 0;
             const result = await hooks("before_payload", { payload, model: model || options.model });
+            if (dispatchBudget) {
+              // Provider-shaped payload hooks run after normalization. Charge any
+              // late growth to host/total bounds, including in-place mutation.
+              const growth = Math.max(0, estimateHandoffTokens(result?.payload ?? payload) - before);
+              const { messages, currentInput, ...host } = dispatchRequest;
+              if (estimateHandoffTokens(host) + growth > dispatchBudget.hostCap) throw budgetFailure("host_cap");
+              if (estimateHandoffTokens(dispatchRequest) + growth + dispatchBudget.outputReserve
+                + dispatchBudget.safety > dispatchBudget.contextWindow) throw budgetFailure("target_window");
+            }
             return result?.payload;
           },
         }, emit, controller.signal, (model, context, streamOptions) => /** @type {any} */ (createRetryStream(

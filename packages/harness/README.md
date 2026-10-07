@@ -183,6 +183,38 @@ is conservative, not a provider-tokenizer guarantee. Hosts must call
 `checkHandoffDispatch` on the complete normalized request before dispatch;
 late host/input overruns refuse rather than repair a cached handoff.
 
+`projectInheritedContext` and the opt-in run-driver `inheritedProjection`
+compose a host-accepted prefix with the current journal's delta. The prefix is
+never seeded or copied into current evidence. Compaction sees the composed view
+and records v3 `inheritedCoverage`; reopening validates that coverage and does
+not replay the prefix twice. The default guarded compaction hook clamps its cut
+and split-turn start beyond the entire inherited prefix before any summary call,
+even with a small current delta. A non-reducible inherited tail is refused before
+billing; the final publication guard also rejects copied predecessor envelopes.
+The first projected turn durably records a v3 `projectionBinding` with artifact
+id/hash, coverage and inherited-message digest, not another content copy. Until
+a composed checkpoint subsumes it, a runtime reopen cannot omit or change that
+projection. Afterward, supplied coverage must match the composed checkpoint,
+and later compactions carry that coverage even when the projection is omitted.
+The binding's `evidenceDigest` hashes JSON bytes, including object key order:
+hosts must preserve the accepted message/coverage key order when rebuilding it;
+semantically equivalent reordered objects are not an identical projection.
+If the inherited prefix alone exceeds the summarizer's context budget, the
+runtime cannot compact it. The configured host must prepare a bounded accepted
+projection/new epoch at switch time or refuse/reseed; this is a known limit for
+configured switching, not permission to clip a cached handoff. Raw
+current-journal evidence inspection is unchanged.
+
+The optional run-driver `handoffDispatchBudget` rechecks normalized instructions,
+resolved tool declarations, required history and current input before every
+dispatch, pins the output reserve and charges late provider-payload growth. It
+refuses overruns without threshold compaction or cached-handoff repair. The host
+supplies this frozen budget for switch/incoming execution only; later ordinary
+turns can compact normally. `JsonlSessionRepo.open` additionally accepts a
+synchronous `validateHeader` assertion, called on the actual validated header
+(including warm opens) before repair or accounting. It does not grant host
+ancestry or switch authority.
+
 Before invoking a version-3 writer, stop/prohibit **all older binaries** for the
 root. A caller acknowledgement alone cannot enable it. Coordinated journals must
 first publish an ownership-schema-2 header carrying a nonsecret `hostAuthority`
@@ -311,6 +343,7 @@ matchTurnEvidence
 nativeCompatibility
 prepareHandoff
 projectContext
+projectInheritedContext
 projectInterruptions
 readTurnEvidence
 recordInterruption

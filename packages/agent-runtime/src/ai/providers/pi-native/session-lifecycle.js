@@ -1,3 +1,4 @@
+import { validateNativeSessionAuthority, assertNativeSessionAccess, assertNativeSessionHeader, assertNativeProjectionBinding } from "./session-authority.js";
 import { inspectCurrentEvidence, inspectCurrentLifecycle } from "@mono-agent/harness";
 // @ts-check
 // Session lifecycle for the pi-native bridge.
@@ -264,6 +265,9 @@ export async function resolveSession(runState, {
   start,
   piTransport,
 }) {
+  validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
+  const access = options.nativeSessionAuthority;
+  if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
@@ -348,7 +352,9 @@ export async function resolveSession(runState, {
           // paths release it. Keyed by requestedSessionId === providerSessionId.
           runState.reservation = reservation;
           runState.session = createPiSessionAdapter(await durableRepo.create(
-            { id: providerSessionId, cwd: cwd || process.cwd() },
+            { id: providerSessionId, cwd: cwd || process.cwd(), ...(access ? {
+              hostAuthority: access.hostAuthority, assertOwned: () => assertNativeSessionAccess(access, "create", durableRepo.root),
+            } : {}) },
             HARNESS_CONTEXT,
           ));
           runState.createdOnMiss = true;
@@ -411,7 +417,19 @@ export async function resolveSession(runState, {
       runState.sessionEntry = claimed.entry;
       delete claimed.entry.recovery;
       try {
-        const raw = await claimed.entry.repo.open(claimed.entry.metadata, HARNESS_CONTEXT);
+        if (access) {
+          if (claimed.entry.repo !== durableRepo || !claimed.entry.durable) throw Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
+          await assertNativeSessionAccess(access, "open", durableRepo.root);
+        }
+        const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
+          ...(access ? { repair: false, wait: false } : {}),
+          validateHeader: (header) => assertNativeSessionHeader(access, header),
+        });
+        try {
+          assertNativeSessionHeader(access, raw.metadata);
+          if (access) await assertNativeProjectionBinding(raw, options.nativeSessionProjection);
+          if (access) raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: access.hostAuthority });
+        } catch (error) { await raw.close(); throw error; }
         runState.session = createPiSessionAdapter(raw);
         // Import publishes a new versioned pathname; the registry must sync and
         // retire that file, never the archived legacy pathname.
@@ -666,7 +684,7 @@ export async function recoverDurableNativeSession(receipt, context) {
   try {
     const matches = (await entry.repo.list(undefined, HARNESS_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
     if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
-    raw = await entry.repo.open(matches[0], HARNESS_CONTEXT);
+    raw = await entry.repo.open(matches[0], { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
     if (await raw.getLeafId() !== receipt.tipId) return false;
     const terminal = await raw.getTerminal(proof.operationId);
     if ([...raw.validator.inputs.values()].some((input) => input.state === "queued")) return false;
@@ -702,7 +720,11 @@ export async function recoverDurableNativeSession(receipt, context) {
   }
 }
 
-/** Storage-only P2 seam: match while holding nonblocking native ownership, then repair. */
+/** Storage-only P2 seam: match while holding nonblocking native ownership, then repair.
+ * Intentional guarded-open exception: the held canonical host owns this exact
+ * reconciliation descriptor/fence. Match before repair; never dispatch or create.
+ * Runtime current-handle/projection authority is not required to inspect a prior
+ * interrupted epoch for P2 settlement. */
 export async function reconcileNativeSessionTurn(request) {
   const { validateSessionTurn, readTurnEvidence, matchTurnEvidence, repairInterruptedSession } = await import("@mono-agent/harness");
   validateSessionTurn(request?.descriptor, request?.descriptor?.handleId);

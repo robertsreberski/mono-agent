@@ -1447,3 +1447,53 @@ it("awaits detachment when an eligible injected primary itself returns capabilit
   await vi.waitFor(() => expect(onSessionTurnDetached).toHaveBeenCalledOnce()); expect(backupRun).not.toHaveBeenCalled(); acknowledge();
   expect((await running).text).toBe("Fictional backup answer"); expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun.mock.calls[0][1].sessionTurn).toBeUndefined(); expect(backupRun.mock.calls[0][1].onSessionTurnDetached).toBeUndefined();
 });
+
+it.each(["nativeSessionAuthority", "nativeSessionProjection"])("protects %s against private route resolution", async (key) => {
+  const primary = modelRef("openai-codex", "primary");
+  const supplied = { fixture: "host-owned" };
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { [key]: { fixture: "foreign" } } }) });
+  const result = await router.run("Rules", { model: primary, messages: [], [key]: supplied });
+  expect(result.error).toContain(`cannot override ${key}`); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it.each(["primary retry", "backup", "skipped primary"])("strips inherited projection/authority on %s without dropping primary ownership", async (variant) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  if (variant !== "skipped primary") executeMock.mockResolvedValueOnce({ text: null, error: "temporary unavailable", failureKind: "provider_unavailable", events: [] });
+  executeMock.mockResolvedValueOnce({ text: "fictional answer", events: [] });
+  const router = createRouterRuntime({ chain: [{ model: primary, attempts: variant === "primary retry" ? 2 : 1,
+    ...(variant === "skipped primary" ? { requires: { supports_native_subagents: true } } : {}) }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } });
+  const nativeSessionAuthority = { fixture: "host-owned-authority" }, nativeSessionProjection = { fixture: "host-owned-projection" };
+  await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true, nativeSessionAuthority, nativeSessionProjection });
+  if (variant !== "skipped primary") expect(executeMock.mock.calls[0][1]).toMatchObject({ nativeSessionAuthority, nativeSessionProjection });
+  const detached = executeMock.mock.calls.at(-1)[1];
+  expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+});
+
+it("protects piSessionsRoot when native current-handle authority is supplied", async () => {
+  const primary = modelRef("openai-codex", "primary"), router = createRouterRuntime({ chain: [primary],
+    resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/foreign-native" } }) });
+  const result = await router.run("Rules", { model: primary, messages: [], nativeSessionAuthority: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toContain("cannot override piSessionsRoot"); expect(executeMock).not.toHaveBeenCalled();
+});
+it("preserves ordinary resolver native-root selection without native authority", async () => {
+  const primary = modelRef("openai-codex", "primary"); executeMock.mockResolvedValueOnce({ text: "ordinary reply", events: [] });
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/ordinary-native" } }) });
+  expect((await router.run("Rules", { model: primary, messages: [] })).text).toBe("ordinary reply");
+  expect(executeMock.mock.calls[0][1].piSessionsRoot).toBe("/fictional/ordinary-native");
+});
+
+it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resolver to choose its own native root", async (variant) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("openai-codex", "backup");
+  if (variant === "unsupported primary") runtimeCapabilitiesMock.mockReturnValue({ supports_session_resume: false });
+  else executeMock.mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", cancelled: false, events: [] });
+  executeMock.mockResolvedValueOnce({ text: "detached root selected", events: [] });
+  const chain = variant === "backup" ? [primary, backup] : [{ model: primary, attempts: variant === "retry" ? 2 : 1 }];
+  const router = createRouterRuntime({ chain, retry: { backoffMs: 0, maxBackoffMs: 0 }, resolveAttempt: async ({ attemptIndex, retryIndex }) => ({
+    options: attemptIndex > 0 || retryIndex > 0 || variant === "unsupported primary" ? { piSessionsRoot: "/fictional/detached-native" } : {} }) });
+  const result = await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true,
+    nativeSessionAuthority: { fixture: "host-owned" }, nativeSessionProjection: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toBeFalsy(); expect(result.text).toBe("detached root selected");
+  const detached = executeMock.mock.calls.at(-1)[1]; expect(detached.piSessionsRoot).toBe("/fictional/detached-native");
+  expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+  expect(detached).not.toHaveProperty("sessionTurn"); expect(detached).not.toHaveProperty("providerSessionId");
+});

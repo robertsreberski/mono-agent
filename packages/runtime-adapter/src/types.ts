@@ -522,6 +522,40 @@ export type RuntimeSessionTurnReconciliationResult =
       }[];
     };
 
+/** Positive current-handle authority, borrowed from the held canonical owner.
+ * assertCurrent must validate ready binding/artifact and reject predecessors,
+ * stale mappings, lost claims and capacity-refused creation. No default opts in. */
+export interface RuntimeNativeSessionAuthority {
+  readonly version: 1;
+  readonly currentHandleId: string;
+  /** Pinned dedicated native root; runtime checks normalized path equality.
+   * assertCurrent receives that path; host must prove any stronger root identity. */
+  readonly sessionsRoot: string;
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertCurrent: (request: { readonly handleId: string; readonly action: "open" | "create"; readonly sessionsRoot: string }) => Promise<void>;
+}
+/** Host-accepted immutable projection. Historical tools remain data; native
+ * envelopes may be supplied only after whole-chain compatibility validation. */
+export interface RuntimeNativeSessionProjection {
+  readonly version: 1;
+  readonly artifact: { readonly id: string; readonly hash: string };
+  readonly inherited: {
+    readonly messages: readonly Record<string, unknown>[];
+    readonly coverage: { readonly version: 1; readonly sources: readonly {
+      readonly journalId: string; readonly sourceTipId: string | null;
+      readonly sourceSeq: number; readonly sourceDigest: string;
+    }[] };
+  };
+  /** Only the switch/incoming request carries this frozen budget. Later turns
+   * may compact normally using the same inherited content/coverage. */
+  readonly dispatchBudget?: {
+    readonly policy: "mono-handoff-v1"; readonly contextWindow: number;
+    readonly outputReserve: number; readonly inputTokens: number;
+    readonly hostCap: number; readonly hostContextDigest: string;
+    readonly safety: number; readonly historyAllowance: number;
+  };
+}
+
 /** Awaited host claim before a router may detach a protected native attempt. */
 export interface RuntimeSessionTurnDetachedAttempt {
   readonly descriptor: RuntimeSessionTurnDescriptor;
@@ -544,6 +578,8 @@ export interface RuntimeRunOptions {
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   /** Protected host-owned journal/turn binding, not permission to recover canonical history. */
   readonly sessionTurn?: RuntimeSessionTurnDescriptor | undefined;
+  readonly nativeSessionAuthority?: RuntimeNativeSessionAuthority;
+  readonly nativeSessionProjection?: RuntimeNativeSessionProjection;
   readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];

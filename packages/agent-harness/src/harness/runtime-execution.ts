@@ -184,6 +184,8 @@ export async function runHarnessRuntime(
       delete merged.sessionIdleTimeoutMs;
       delete merged.sessionId;
       delete merged.providerSessionId;
+      delete merged.nativeSessionAuthority;
+      delete merged.nativeSessionProjection;
       delete merged.sessionTurn;
       delete merged.onSessionTurnDetached;
       // Lifecycle persistence is host-owned and cannot be injected or replaced

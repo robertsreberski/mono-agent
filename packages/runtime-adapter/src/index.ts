@@ -163,6 +163,8 @@ export type {
   RuntimeResult,
   RuntimeRunOptions,
   RuntimeSessionTurnDescriptor,
+  RuntimeNativeSessionAuthority,
+  RuntimeNativeSessionProjection,
   RuntimeSessionTurnReconciliationRequest,
   RuntimeSessionTurnReconciliationResult,
   RuntimeSessionTurnResultSeal,

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Keep inherited coverage through later native compactions without a projection,
+  reject malformed projection identities before admission, and allow detached
+  route resolvers to select their own native roots.
+
+- Fix guarded native projections to pin accepted handoff identity and the native
+  root, summarize inherited prefixes before retaining current context, and reject
+  uncoordinated terminal recovery before journal repair.
+
+- Add opt-in native current-handle authority and inherited request projections,
+  preserving predecessor evidence through composed compaction and refusing
+  cached-handoff budget overruns without re-summarizing. Existing configured
+  hosts remain unchanged; coordinated model switching is not enabled yet.
+
 - Stop retention maintenance if native cleanup cannot regain the root lock.
   Keep failed deletion intents for recovery while pruning a later free victim
   in the same commit when root ownership remains intact.

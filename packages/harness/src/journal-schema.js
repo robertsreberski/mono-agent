@@ -81,6 +81,8 @@ export function validateTurnSeal(seal, terminalStatus) {
 export class JournalValidator {
   constructor() {
     this.seq = 0;
+    /** Immutable accepted artifact/coverage identity, not a second content copy. */
+    this.projectionBinding = null;
     /** @type {string|null} */ this.parentId = null;
     this.ids = new Set();
     this.contextIds = new Set();
@@ -98,13 +100,24 @@ export class JournalValidator {
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
   validate(record) {
-    requireValue(object(record) && (record.schemaVersion === JOURNAL_VERSION || record.schemaVersion === 3 && ["compaction", "model_change"].includes(record.kind))
+    requireValue(object(record) && (record.schemaVersion === JOURNAL_VERSION || record.schemaVersion === 3 && ["compaction", "model_change", "turn_start"].includes(record.kind))
       && id(record.id) && !this.ids.has(record.id) && record.parentId === this.parentId
       && record.seq === this.seq + 1 && time(record.timestamp) && id(record.turnId)
       && JOURNAL_KINDS.includes(record.kind) && object(record.payload));
     const p = record.payload;
     const turn = this.turns.get(record.turnId);
     if (record.kind === "turn_start") {
+      if (record.schemaVersion === 3) {
+        const projection = p.projectionBinding;
+        requireValue(keys(projection, ["version", "artifact", "coverage", "messageDigest"]) && projection.version === 1 && digest(projection.messageDigest)
+          && keys(projection.artifact, ["id", "hash"]) && digest(projection.artifact.id) && digest(projection.artifact.hash)
+          && keys(projection.coverage, ["version", "sources"]) && projection.coverage.version === 1
+          && Array.isArray(projection.coverage.sources) && projection.coverage.sources.length > 0
+          && projection.coverage.sources.every((s) => keys(s, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
+            && id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
+          && new Set(projection.coverage.sources.map((s) => s.journalId)).size === projection.coverage.sources.length
+          && this.projectionBinding === null);
+      } else requireValue(p.projectionBinding === undefined);
       requireValue(!turn && this.openTurns.size === 0
         && ["host", "instance", "synthetic"].includes(p.identitySource) && object(p.config)
         && p.baselineTipId === this.tip && record.operationId === undefined);
@@ -256,6 +269,7 @@ export class JournalValidator {
     this.validate(record);
     const p = record.payload;
     if (record.kind === "turn_start") {
+      if (p.projectionBinding) this.projectionBinding = structuredClone(p.projectionBinding);
       this.openTurns.add(record.turnId);
       if (p.binding) {
         this.owner = { kind: p.binding.kind, ownerKey: p.binding.ownerKey, historyBucket: p.binding.historyBucket };
