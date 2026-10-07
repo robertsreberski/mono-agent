@@ -156,6 +156,25 @@ export interface ManagedModelSwitchStorageLease {
   /** Releases the claim, never the durable fence or evidence. */
   release(): Promise<void>;
 }
+/** Claim-only host preparation. No incoming fence/admission or configured opt-in.
+ * Child leases borrow this owner; releasing one never releases the preparation.
+ * Admission consumes the preparation only after the canonical model is ready. */
+export interface ManagedProviderSessionPreparation {
+  readonly recovery: ConversationHistoryTurnRecovery;
+  read(): Promise<ProviderSessionPreparationSnapshot>;
+  assertOwned(): Promise<void>;
+  acquireNativeHistoryAuthority(options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
+  beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
+  rollForwardModelSwitch(switchId: string, options: { readonly exclusiveWriters: true; readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
+  admit(binding: ProviderSessionTurnBinding): Promise<ConversationHistoryProviderSessionTurn & { assertOwned(): Promise<void> }>;
+  abort(): Promise<void>;
+}
+export interface ProviderSessionPreparationSnapshot {
+  readonly history: readonly HistoryMessage[];
+  readonly source: Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>;
+  readonly native?: TurnHistoryV4["native"];
+  readonly lastSwitch?: TurnHistoryV4["lastSwitch"];
+}
 export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
 
 export interface DurableHistoryStoreStats {
@@ -374,9 +393,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (options?.exclusiveWriters !== true) throw new TypeError("Native root authority requires exclusive upgraded writers");
     const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
-    const held = await this.acquireConversation(id), rootIdentity = held.rootIdentity;
+    const held = await this.acquireConversation(id);
+    return await this.acquireHeldNativeHistoryAuthority(id, held, true);
+  }
+  private async acquireHeldNativeHistoryAuthority(id: string, held: HeldConversation, releaseOwner: boolean): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease> {
+    const ownerKey = logicalConversationIdForFence(id), rootIdentity = held.rootIdentity;
     let released = false;
-    const release = async () => { if (released) return; released = true; await this.releaseConversation(held, rootIdentity); };
+    const release = async () => { if (released) return; released = true; if (releaseOwner) await this.releaseConversation(held, rootIdentity); };
     const assertOwned = async () => { if (released) throw new Error("Native history authority lease released"); await held.assertOwned(); };
     try {
       await this.settleHeldTurn(id, held);
@@ -517,10 +540,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
     if (state.identity.historyBucket !== id || state.identity.ownerKey !== ownerKey) throw new Error("Model-switch bucket must be normalized and belong to the managed owner");
     validateModelSwitchState(state); state = structuredClone(state);
-    const held = await this.acquireConversation(id), rootIdentity = held.rootIdentity;
+    const held = await this.acquireConversation(id);
+    return await this.beginHeldModelSwitchStorage(state, held, true);
+  }
+  private async beginHeldModelSwitchStorage(state: ModelSwitchState, held: HeldConversation, releaseOwner: boolean): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease> {
+    const id = state.identity.historyBucket, ownerKey = logicalConversationIdForFence(id), rootIdentity = held.rootIdentity;
     let released = false;
     const assertOwned = async () => { if (released) throw new Error("Model-switch storage lease released"); await held.assertOwned(); };
-    const release = async () => { if (released) return; released = true; await this.releaseConversation(held, rootIdentity); };
+    const release = async () => { if (released) return; released = true; if (releaseOwner) await this.releaseConversation(held, rootIdentity); };
     try {
       await this.settleHeldTurn(id, held);
       const source = await this.modelSwitchStorageSource(id);
@@ -1307,6 +1334,95 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  /** Settle/capture under one owner before host preparation, without admitting
+   * incoming execution. Default callers still use beginProviderSessionTurn. */
+  async beginProviderSessionPreparation(conversationId: string, runId: string): Promise<ManagedProviderSessionPreparation> {
+    const id = normalizeConversationId(conversationId), normalizedRunId = normalizeRunId(runId);
+    const held = await this.acquireConversation(id);
+    let state: "prepared" | "transferred" | "closed" = "prepared";
+    let queue = Promise.resolve();
+    const children = new Set<() => Promise<void>>();
+    const assertOwned = async () => {
+      if (state !== "prepared") throw new Error("Provider preparation is no longer owned");
+      await held.assertOwned();
+      if (state !== "prepared") throw new Error("Provider preparation is no longer owned");
+    };
+    const serialize = <T>(action: () => Promise<T>): Promise<T> => {
+      const current = queue.then(action, action); queue = current.then(() => undefined, () => undefined); return current;
+    };
+    const owned = <T>(action: () => Promise<T>) => serialize(async () => { await assertOwned(); return await action(); });
+    const borrowed = { ...held, assertOwned };
+    const closeChildren = async () => { for (const release of children) await release(); children.clear(); };
+    try {
+      const recovery = await this.settleHeldTurn(id, held);
+      return {
+        recovery,
+        assertOwned,
+        read: () => owned(async () => {
+          const record = await this.readRecord(id, held.rootIdentity);
+          return structuredClone({ history: record.messages, source: await this.modelSwitchStorageSource(id),
+            ...(record.native ? { native: record.native } : {}), ...(record.lastSwitch ? { lastSwitch: record.lastSwitch } : {}) });
+        }),
+        acquireNativeHistoryAuthority: (options) => owned(async () => {
+          if (options?.exclusiveWriters !== true) throw new TypeError("Native root authority requires exclusive upgraded writers");
+          if (id.length > 512 || held.logical.logicalConversationId.length > 512) return { status: "unsupported" as const, reason: "id_limit" as const };
+          const lease = await this.acquireHeldNativeHistoryAuthority(id, borrowed, false);
+          if (lease.status === "unsupported") return lease;
+          children.add(lease.release);
+          return { status: "owned" as const, authority: lease.authority,
+            assertOwned: async () => { await assertOwned(); await lease.assertOwned(); }, release: () => serialize(() => lease.release()) };
+        }),
+        beginModelSwitchStorage: (input) => owned(async () => {
+          validateModelSwitchState(input); const intent = structuredClone(input);
+          if (intent.identity.historyBucket !== id || intent.identity.ownerKey !== logicalConversationIdForFence(id)) throw new Error("Prepared switch belongs to another owner/bucket");
+          if (id.length > 512 || intent.identity.ownerKey.length > 512) return { status: "unsupported" as const, reason: "id_limit" as const };
+          const lease = await this.beginHeldModelSwitchStorage(intent, borrowed, false);
+          if (lease.status === "unsupported") return lease;
+          children.add(lease.release);
+          return { status: "owned" as const, read: () => owned(() => lease.read()),
+            admit: (producer) => owned(() => lease.admit(producer)), finish: (producer, outcome) => owned(() => lease.finish(producer, outcome)),
+            advanceUnfit: () => owned(() => lease.advanceUnfit()), authorizeMessage: (digest) => owned(() => lease.authorizeMessage(digest)),
+            accept: (artifact) => owned(() => lease.accept(artifact)), recoverArtifact: () => owned(() => lease.recoverArtifact()),
+            release: () => serialize(() => lease.release()) };
+        }),
+        rollForwardModelSwitch: (switchId, options) => owned(async () => {
+          if (options?.exclusiveWriters !== true || !this.nativeJournalStorage) throw new Error("Managed native switch capability and exclusive writers required");
+          return await this.rollForwardHeldModelSwitch(id, switchId, borrowed, options.onPhase);
+        }),
+        admit: (input) => {
+          let binding: ProviderSessionTurnBinding;
+          try { binding = structuredClone(input); } catch (error) { return Promise.reject(error); }
+          return owned(async () => {
+            assertSessionModelKey(binding.modelKey);
+            if (binding.reconciliation && Buffer.byteLength(normalizedRunId) > 512) throw new TypeError("Reconciled turn id exceeds 512 bytes.");
+            await this.settleHeldTurn(id, borrowed);
+            await this.requireNoModelSwitch(id, held.rootIdentity);
+            const record = await this.readRecord(id, held.rootIdentity);
+            if (record.providerSession?.modelKey !== undefined && record.providerSession.modelKey !== binding.modelKey) {
+              throw new Error("Prepared provider admission requires a ready canonical model binding");
+            }
+            await closeChildren();
+            // All borrowed operations have drained. Only the P2 turn may now own
+            // this physical claim; preparation abort cannot release it afterward.
+            state = "transferred";
+            try {
+              if (binding.reconciliation) await this.drainBeforeAdmission(id, normalizedRunId, binding);
+            } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity); throw error; }
+            let turnOwned!: () => Promise<void>;
+            try {
+              const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion) => { turnOwned = assertion; });
+              return { ...turn, assertOwned: () => turnOwned() };
+            } catch (error) { state = "closed"; throw error; } // P2 helper released its owner.
+          });
+        },
+        abort: () => serialize(async () => {
+          if (state !== "prepared") return;
+          state = "closed"; await closeChildren(); await this.releaseConversation(held, held.rootIdentity);
+        }),
+      };
+    } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity).catch(() => undefined); throw error; }
+  }
+
   async beginProviderSessionTurn(
     conversationId: string,
     runId: string,
@@ -1318,6 +1434,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (binding?.reconciliation && Buffer.byteLength(normalizedRunId) > 512) throw new TypeError("Reconciled turn id exceeds 512 bytes.");
     if (binding?.reconciliation !== undefined) await this.drainBeforeAdmission(normalizedId, normalizedRunId, binding);
     const held = await this.acquireConversation(normalizedId);
+    return await this.beginHeldProviderSessionTurn(normalizedId, normalizedRunId, binding, held);
+  }
+  private async beginHeldProviderSessionTurn(normalizedId: string, normalizedRunId: string, binding: ProviderSessionTurnBinding | undefined,
+    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>) => void): Promise<ConversationHistoryProviderSessionTurn> {
     const rootIdentity = held.rootIdentity;
     let turnSettled = false;
     let prepared: PreparedHistoryAppend | undefined;
@@ -1437,6 +1557,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       });
       const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
 
+      captureOwnership?.(async () => await serializeTurn(async () => {
+        if (turnSettled || prepared) throw new Error("Prepared provider turn no longer owns executable storage");
+        await held.assertOwned();
+      }));
       return {
         ...(recovery.status === "clean" ? {} : { recovery }),
         ...(payload === undefined ? {} : { reconciliation: {

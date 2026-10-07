@@ -8,7 +8,7 @@ export { createDurableHistoryStore, DurableConversationHistoryStore } from "./du
 export { isProcessAlive } from "./history-process-liveness.js";
 export { createToolHistoryArtifactSink } from "./tool-history-artifacts.js";
 export type { ToolHistoryArtifactSinkInput } from "./tool-history-artifacts.js";
-export type { DurableHistoryStoreOptions, DurableHistoryStoreStats } from "./durable-history.js";
+export type { DurableHistoryStoreOptions, DurableHistoryStoreStats, ManagedProviderSessionPreparation, ProviderSessionPreparationSnapshot } from "./durable-history.js";
 export {
   acquireToolHistoryWriter,
   ToolHistoryReader,

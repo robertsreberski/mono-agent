@@ -306,6 +306,24 @@ evicted; turn receipts still settle exactly once. Native reconciliation must
 match the authoritative current journal. Optimistic versions and switch-source
 digests include the v4 metadata, not just messages and the provider binding.
 
+`beginProviderSessionPreparation(conversationId, runId)` is an additive,
+claim-only storage substrate; no configured host opts in yet. It settles old
+work and returns detached history/source/native metadata without an incoming
+execution fence. Its authority/switch/roll-forward methods borrow the same owner
+rather than reacquiring it; child release never releases the preparation.
+Mutations are serialized, while `assertOwned` can verify ownership during native
+I/O. Long native I/O and future producer work stay outside root transactions.
+`admit(binding)` consumes the claim exactly once only after pending switch
+settlement and a matching canonical model binding; a ready artifact alone is not
+ready admission. It does not cold-rotate a different bound model. First/unbound
+ordinary admission remains supported. Preparation abort releases only an
+untransferred claim; afterward the existing P2 turn owns commit/abort. The
+returned turn's `assertOwned` proves storage ownership, not artifact readiness,
+account compatibility or native execution authority. Held child capabilities
+expire on transfer/abort. These APIs do not dispatch summaries, create a native
+projection or enable configuration; complete frozen native preparation and host
+switch orchestration remain a separate integration step.
+
 With explicit `nativeJournalStorage`, v4 host-only append/exclusive/import,
 unsynced/cancelled/interrupted provider settlement and stale-current admission
 use a durable `.native-history-op.<owner-hash>.json` C intent. The exact target
@@ -555,11 +573,13 @@ LoadSelectedSkillsInput
 LoadedSkill
 LoadedSkillContext
 LoadedSkillFile
+ManagedProviderSessionPreparation
 MarkdownContextBlock
 MemoryWriteMode
 NoopRunRecorder
 PreparedHistoryAppend
 ProviderSessionHandle
+ProviderSessionPreparationSnapshot
 ProviderSessionTurnBinding
 ProviderSessionTurnCommitOptions
 RuntimeSessionEvictReason
