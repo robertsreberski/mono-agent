@@ -5,10 +5,11 @@ import type { HandoffReference, ModelSwitchIdentity, ModelSwitchReservation, Mod
  * user action. Each later explicit user message authorizes one new attempt per
  * producer, with a new two-call cap for that message generation. Unknown
  * outcomes remain charged; callers persist state BEFORE any paid call. */
-export function createModelSwitchState(coordinates: Omit<ModelSwitchIdentity, "switchId">, reservation: ModelSwitchReservation, frozenBudget?: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget): ModelSwitchState {
+export function createModelSwitchState(coordinates: Omit<ModelSwitchIdentity, "switchId">, reservation: ModelSwitchReservation, frozenBudget?: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget, initialMessageDigest?: string): ModelSwitchState {
   const state: ModelSwitchState = { version: 1, identity: { ...structuredClone(coordinates), switchId: switchDigest(coordinates) }, reservation: structuredClone(reservation),
     billingPolicy: MODEL_SWITCH_BILLING_POLICY, authorizationGeneration: 0, authorizations: [], attempts: [], phase: "outgoing", artifact: null, ...(frozenBudget === undefined ? {} : { frozenBudget: structuredClone(frozenBudget) }) };
-  validateModelSwitchState(state); return state;
+  const result = initialMessageDigest === undefined ? state : { ...state, initialMessageDigest };
+  validateModelSwitchState(result); return result;
 }
 export class SummaryAttemptAlreadyRecordedError extends Error {
   readonly code = "ERR_HANDOFF_ATTEMPT_ALREADY_RECORDED";
@@ -59,7 +60,7 @@ export function acceptHandoffReference(state: ModelSwitchState, artifact: Handof
  * used identity and accidentally treat an old user message as fresh authority. */
 export function authorizeSummaryMessage(state: ModelSwitchState, messageDigest: string): ModelSwitchState {
   validateModelSwitchState(state); switchHash(messageDigest);
-  if (state.authorizations.some((authorization) => authorization.messageDigest === messageDigest)) return structuredClone(state);
+  if (state.initialMessageDigest === messageDigest || state.authorizations.some((authorization) => authorization.messageDigest === messageDigest)) return structuredClone(state);
   if (state.phase !== "pending") throw new Error("A new summary authorization requires handoff pending");
   if (state.authorizations.length >= 32) throw new RangeError("Summary authorization journal is full");
   const generation = state.authorizationGeneration + 1;

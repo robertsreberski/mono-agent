@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix prepared model-switch recovery after canonical publication and retain
+  committed results across producer cleanup failures; refuse later-message
+  budget overflow before further summary billing.
+
+- Add durable prepared model-switch producer orchestration with explicit-message
+  billing generations and ready-only incoming admission; keep configured
+  switching disabled until activation wiring is complete.
+
 - Fix routed prepared start allowances and post-admission reserves; refuse
   non-persisting credential refresh and keep evidence filesystem failures generic.
 

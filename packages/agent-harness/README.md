@@ -181,6 +181,33 @@ Older binaries must not run against a P2b history root. Rollback means stopping
 writers and restoring a consistent pre-P2b backup, losing later turns. There is
 no downgrade/strip tool; offline conversion is outside this scope.
 
+Internal prepared-switch orchestration now runs the outgoing no-tools producer,
+then the free exact checkpoint plus complete suffix, then incoming reduction,
+under the conversation claim but outside root transactions. Durable delivery
+identities authorize at most one call per producer per explicit-message
+generation; unknown attempts stay charged and never auto-repeat. Accepted
+content rolls forward storage-only before incoming P2 admission. The incoming
+owner is exposed before post-admission refusal so the host can account/abort it
+and wait, never automatically replay the blocked message. A ready pending intent
+rolls forward before attempting to begin storage again, even after canonical
+rename changed the source. After fence removal, the current `lastSwitch` receipt
+can reconstruct the ready result without another call. Outgoing-producer cleanup
+failures are diagnostic (`onCleanupError`), never replacements for a committed
+result or the original error.
+
+These internal helpers require `messageId` to be the durable host delivery
+identity across retries, never a run ID or message-text hash. Bounded shape checks
+cannot establish that semantic identity. Every production path, including later
+explicit-message generations, remeasures the prepared host and current input
+against the original frozen caps before authorization/billing. The input estimate
+retains the same conservative normalization reserve as intent creation. Failure
+preserves the pending intent and its charged attempts, not cold-replay success.
+Ready storage-only roll-forward is never blocked by the next message's size;
+normalized dispatch remains the final bound and late refusal never rebills a
+summary or automatically replays an admitted message. This is an inert
+implementation boundary: configured activation, cold fallback policy and
+activation-critical lifecycle forwarding are not enabled by these helpers.
+
 ## Architecture
 
 Memory reads receive the host-confirmed `retainedContext` signal from history
