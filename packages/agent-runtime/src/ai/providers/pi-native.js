@@ -91,7 +91,7 @@ import { finalReplyText } from "./pi-native/reply-text.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
 import { appendStructuredOutputInstruction } from "./pi-native/structured-output.js";
-import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData } from "./pi-native/prepared-dispatch.js";
+import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./pi-native/prepared-dispatch.js";
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
@@ -643,13 +643,14 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
       prepared.runtime = { ...prepared.runtime, model: auth.model };
       // Pin actual declarations, not names/config guesses; execute closures stay
       // attached to this exact runState and are never initialized a second time.
-      for (const tool of prepared.tools) tool.parameters = freezeDispatchData(structuredClone(tool.parameters));
+      for (const tool of prepared.tools) tool.parameters = freezeDispatchData(copyDispatchData(tool.parameters));
       systemPrompt = appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts);
       const binding = await control.ready({ systemPrompt, messages: structuredClone(options.messages ?? []),
         model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
         provenance: auth.provenance, authSource: auth.authSource });
+      auth.assertValid(true); // Before any native lookup/open or incoming mutation.
       options = { ...options, ...binding };
       providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;
       providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
@@ -856,7 +857,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
     if (!options.nativeSessionProjection?.dispatchBudget) await runProactiveCompaction(runState, {
       harness,
       systemPrompt,
-      options,
+      options: control ? { ...options, outputSchema: undefined } : options,
       tools,
       promptText,
       promptImages,

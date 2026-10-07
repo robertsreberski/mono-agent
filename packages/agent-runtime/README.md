@@ -154,14 +154,33 @@ OAuth account metadata is an account proof; API-key, ambient and unsupported
 accounts remain null. Authentication can perform the selected store's normal
 OAuth refresh during preparation. The accepted auth is pinned to this dispatch;
 credential/environment changes afterward do not silently select another account.
+Preparation requests at least ten minutes of OAuth validity, including after
+refresh, and rejects a still-near-expiry or unmeasured OAuth token. Start the
+lease within five minutes; a stale lease fails before session resolution. Every
+later provider request on a running lease checks that the same token still has
+at least five minutes remaining. A long-running stream is authorized when its
+request starts; it is not renewed in flight. Later requests fail rather than
+refreshing/rebinding the account or replaying tools. Prepare a new lease on a
+subsequent explicit request, never an automatic rerun of a started turn.
+
+The pinned collection exposes only its selected model and refuses another
+model's authentication, including a same-provider/API model selected by a
+resumed/compaction path. Provider methods retain their original receiver, so
+prototype/private-field providers are not flattened. Runtime schema copies
+retain TypeBox metadata/symbols before freezing; host snapshots contain only
+serializable declaration data. Real Codex conversion of frozen TypeBox and
+StructuredOutput declarations is covered by an intercepted-transport test.
 
 The single-use lease's `run(binding)` accepts only late host-owned session keys,
 turn/recovery descriptors and native authority/projection. It cannot replace the
 frozen root, model, instructions, input or policy. Tools keep their original
 runState/execute closures; no second MCP initialization or request extension is
 performed. `close()` is idempotent and closes unused preparation without native
-mutation; while running it waits for normal settlement. Cancel using the
-original abort signal. Hosts must hold their concurrency permit until run/close
+mutation; while running it waits for settlement without rethrowing a run's
+rejection. Invalid binding validation does not consume a direct or routed lease
+or release its resources; corrected binding can still run once. Routed results
+retain normal authentication classification and a single-attempt failover history,
+without executing any backup. Cancel using the original abort signal. Hosts must hold their concurrency permit until run/close
 settles and always close the lease in a finally block. Incomplete MCP
 declarations or auth/model disagreement fail preparation, not cold-fallback
 success. Certified routers prepare only the primary's first attempt and resolve

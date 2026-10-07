@@ -11,6 +11,9 @@ import { preparePiNativeDispatch, generatePiNativeResponse } from "../../ai/prov
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { probeNativeAccountProvenance } from "../../ai/providers/pi-native/account-provenance.js";
+import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData, PREPARED_DISPATCH_MAX_AGE_MS } from "../../ai/providers/pi-native/prepared-dispatch.js";
+import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { Type } from "@earendil-works/pi-ai";
 
 const cleanups = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
@@ -51,6 +54,7 @@ it("resolves actual built-in/MCP/StructuredOutput declarations before opening an
   const instruction = vi.fn((prompt) => `${prompt}\nFictional StructuredOutput instructions`);
   const lease = await prepare(f, { allowedTools: ["Read"], mcpServers: { fictional: { type: "http", url: endpoint.url } },
     prompts: { structuredOutputInstruction: instruction },
+    compaction: { enabled: true }, // Proactive estimation must not augment the prepared prompt a second time.
     outputSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } });
   expect(await readdir(f.root)).toEqual([]); expect(endpoint.methods.filter((method) => method === "tools/list")).toHaveLength(1);
   expect(lease.snapshot.tools.map((tool) => tool.name)).toEqual(["Read", "Lookup", "StructuredOutput"]);
@@ -212,4 +216,119 @@ it("cleans successfully initialized MCP clients when authentication then fails",
   f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { resolve: async () => undefined } } });
   await expect(prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } })).rejects.toThrow();
   expect(closed).toHaveBeenCalledTimes(1); expect(endpoint.methods).toContain("tools/list"); expect(await readdir(f.root)).toEqual([]);
+});
+
+
+it.each([false, true])("invalid binding retains the direct/routed lease and resource claim: routed=%s", async (routed) => {
+  const f = await fixture(), cleanup = vi.fn(), closed = vi.spyOn(Client.prototype, "close"), endpoint = await mcp();
+  const runtime = routed ? createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models }, cleanup }) }) : undefined;
+  const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } }, runtime);
+  await expect(lease.run({ model: f.options.model })).rejects.toThrow("only host session binding");
+  await expect(lease.run({ [Symbol("invalid-binding")]: true })).rejects.toThrow("only host session binding");
+  await expect(lease.run(Object.create({ model: f.options.model }))).rejects.toThrow("only host session binding");
+  await expect(lease.run({ get sessionId() { throw new Error("Fictional binding getter rejection"); } })).rejects.toThrow("binding getter rejection");
+  expect(closed).not.toHaveBeenCalled(); expect(cleanup).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Corrected binding")])]);
+  expect((await lease.run()).text).toBe("Corrected binding");
+  await lease.close(); expect(closed).toHaveBeenCalledTimes(1); expect(cleanup).toHaveBeenCalledTimes(routed ? 1 : 0);
+  await expect(lease.run()).rejects.toThrow("no longer available");
+});
+
+it("routed prepared failure normalizes authentication and records one attempt without failover", async () => {
+  const f = await fixture(), close = vi.fn(), run = vi.fn(async () => ({ error: "401 Unauthorized: invalid API key", failureKind: "provider_unavailable",
+    text: null, events: [], usage: {}, cancelled: false }));
+  const resolveAttempt = vi.fn(async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1",
+    prepareNativeDispatch: async () => ({ snapshot: {}, run, close }) } }));
+  const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }, { model: { provider: "faux", model: "backup" } }],
+    resolveAttempt, sessionTurnReconciliation: "v1" });
+  const lease = await router.prepareNativeDispatch("Rules", f.options), result = await lease.run();
+  expect(result.failureKind).toBe("provider_auth");
+  expect(result.failoverHistory).toMatchObject([{ model: f.options.model, failureKind: "provider_auth" }]);
+  expect(run).toHaveBeenCalledOnce(); expect(resolveAttempt).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+});
+
+it.each([false, true])("close settles rather than rethrowing a consumed run's rejection: routed=%s", async (routed) => {
+  const direct = await createPreparedDispatchLease(async ({ ready }) => { await ready({}); throw new Error("Fictional execution rejection"); });
+  const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1", prepareNativeDispatch: async () => direct } }) });
+  const lease = routed ? await router.prepareNativeDispatch("Fictional rules", f.options) : direct;
+  await expect(lease.run()).rejects.toThrow("Fictional execution rejection");
+  await expect(lease.close()).resolves.toBeUndefined(); await expect(lease.close()).resolves.toBeUndefined();
+});
+
+it("refuses a stale prepared lease before any native mutation or provider call", async () => {
+  const f = await fixture(), lease = await prepare(f), provider = vi.spyOn(f.faux.provider, "streamSimple"), now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now + PREPARED_DISPATCH_MAX_AGE_MS + 1);
+  expect((await lease.run()).error).toContain("lease expired"); expect(await readdir(f.root)).toEqual([]); expect(provider).not.toHaveBeenCalled();
+});
+
+it("requires ten-minute OAuth validity after refresh and never accepts a near-expiry pin", async () => {
+  const f = await fixture("openai-codex", "openai-codex-responses");
+  let credential = { type: "oauth", access: token("fictional-account", 1), expires: Date.now() + 60_000 };
+  const refresh = vi.fn(async () => credential), store = { read: async () => credential, list: async () => [], delete: vi.fn(),
+    modify: async (_id, update) => { credential = await update(credential); return credential; } };
+  const models = createModels({ credentials: store });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh, toAuth: (value) => ({ apiKey: value.access }) } } });
+  await expect(prepare(f, { piResolvedModels: models })).rejects.toThrow("expires too soon");
+  expect(refresh).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
+});
+
+it("a long run keeps the selected credential but refuses new calls as it approaches expiry", async () => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
+  const credential = { type: "oauth", access: token("fictional-account", 1), expires: now + 60 * 60_000 };
+  const read = vi.fn(async () => credential), models = createModels({ credentials: { read, list: async () => [], delete: vi.fn(), modify: vi.fn() } });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh: vi.fn(), toAuth: (value) => ({ apiKey: value.access }) } } });
+  const pin = await prepareDispatchAuth(models, f.faux.getModel()); const reads = read.mock.calls.length;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000);
+  await expect(pin.models.getAuth(pin.model)).resolves.toMatchObject({ auth: { apiKey: credential.access } });
+  expect(() => pin.assertValid(true)).toThrow("lease expired"); // Start is bounded; already-running authorization is not refreshed.
+  clock.mockReturnValue(credential.expires - 5 * 60_000);
+  await expect(pin.models.getAuth(pin.model)).rejects.toThrow("expires too soon"); expect(read).toHaveBeenCalledTimes(reads);
+});
+
+it("the pinned collection refuses another model even when it shares the same provider/API", async () => {
+  const f = await fixture(), pin = await prepareDispatchAuth(f.models, f.faux.getModel());
+  expect(pin.models.getModel("faux", "other")).toBeUndefined();
+  await expect(pin.models.getAuth({ ...pin.model, id: "other" })).rejects.toThrow("cannot select another model");
+  const provider = vi.spyOn(f.faux.provider, "streamSimple");
+  const result = await pin.models.completeSimple({ ...pin.model, id: "other" }, { messages: [{ role: "user", content: "Fictional input", timestamp: 0 }] });
+  expect(result.errorMessage).toContain("cannot select another model"); expect(provider).not.toHaveBeenCalled();
+});
+
+it("preserves prototype methods and their original private-field receiver", async () => {
+  const f = await fixture();
+  class Provider {
+    #delegate = f.faux.provider;
+    get id() { return this.#delegate.id; }
+    get auth() { return this.#delegate.auth; }
+    getModels() { return this.#delegate.getModels(); }
+    streamSimple(...args) { return this.#delegate.streamSimple(...args); }
+  }
+  const models = createModels(); models.setProvider(new Provider());
+  const pin = await prepareDispatchAuth(models, f.faux.getModel());
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Prototype preserved")])]);
+  const result = await pin.models.completeSimple(pin.model, { messages: [{ role: "user", content: "Fictional input", timestamp: 0 }] });
+  expect(result.errorMessage).toBeUndefined();
+  expect(result).toMatchObject({ stopReason: "stop" });
+  expect(result.content[0].text).toBe("Prototype preserved");
+});
+
+it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations without mutation", async () => {
+  const provider = openaiCodexProvider(), model = provider.getModels()[0], schema = Type.Object({ answer: Type.String() }, { additionalProperties: false });
+  const legacyKind = Symbol.for("TypeBox.Kind"), declaration = Type.Unsafe(schema);
+  declaration[legacyKind] = "Object"; declaration.properties.answer[legacyKind] = "String";
+  const parameters = freezeDispatchData(copyDispatchData(declaration));
+  expect(parameters[legacyKind]).toBe("Object"); expect(parameters.properties.answer[legacyKind]).toBe("String");
+  expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String");
+  const credential = { type: "oauth", access: token("fictional-account", 1), expires: Date.now() + 3600000, refresh: "fictional-refresh" };
+  const models = createModels({ credentials: { read: async () => credential, list: async () => [], delete: vi.fn(), modify: vi.fn() } }); models.setProvider(provider);
+  const pin = await prepareDispatchAuth(models, model), payload = vi.fn();
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Fictional transport refusal", { status: 400 }));
+  const result = await pin.models.completeSimple(pin.model, { messages: [{ role: "system", content: "Fictional instructions",
+    toolsAdded: [{ name: "StructuredOutput", description: "Fictional structure", parameters }] }, { role: "user", content: "Fictional input", timestamp: 0 }] },
+    { transport: "sse", maxRetries: 0, onPayload: payload });
+  expect(result.errorMessage).toContain("Fictional transport refusal"); expect(fetch).toHaveBeenCalledOnce();
+  expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0][0].tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
+  expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
 });

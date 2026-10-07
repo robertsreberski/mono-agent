@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep direct and routed native preparation reusable after invalid binding,
+  normalize routed authentication failures, and settle cleanup after rejection.
+  Bound preparation age and pinned OAuth validity without changing default runs.
+
 - Add opt-in native dispatch preparation with resolved tool declarations, pinned
   authentication and single-use resource leases, without enabling configured
   model switching or changing existing session paths.

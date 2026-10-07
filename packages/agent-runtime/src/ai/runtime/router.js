@@ -1,4 +1,4 @@
-import { snapshotNativeDispatchOptions } from "../providers/pi-native/prepared-dispatch.js";
+import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../providers/pi-native/prepared-dispatch.js";
 // Provider fallback router.
 //
 // Wraps `createRuntime` with an ordered chain of model references. If a run
@@ -536,9 +536,21 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         }
         if (attemptRuntime.nativePreparedDispatch !== "v1" || !attemptRuntime.prepareNativeDispatch) throw new Error("Native prepared dispatch unavailable");
         const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
+        let available = true;
         return { snapshot: lease.snapshot,
-          run: async (binding) => { try { return await lease.run(binding); } finally { await lease.close(); await release(); } },
-          close: async () => { try { await lease.close(); } finally { await release(); } } };
+          run: async (input) => {
+            if (!available) throw new Error("Prepared dispatch is no longer available");
+            const binding = prepareNativeDispatchBinding(input); // Rejection does not consume either lease.
+            available = false;
+            try {
+              const result = normalizeProviderAuthFailure(await lease.run(binding));
+              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind });
+              return { ...result, failoverHistory: result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
+                failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
+                requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [] };
+            } finally { await lease.close(); await release(); }
+          },
+          close: async () => { available = false; try { await lease.close(); } finally { await release(); } } };
       } catch (error) { await release(); throw error; }
     },
     chain: () => entries.slice(),

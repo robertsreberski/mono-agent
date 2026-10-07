@@ -1,5 +1,18 @@
 // @ts-check
-import { createModels } from "@earendil-works/pi-ai";
+import { createModels, ModelsError } from "@earendil-works/pi-ai";
+
+export { copy as copyDispatchData };
+export const PREPARED_DISPATCH_MAX_AGE_MS = 5 * 60_000;
+const OAUTH_REQUEST_RESERVE_MS = 5 * 60_000;
+
+/** Validate and copy before consuming either a direct or routed lease.
+ * @param {any} [input] @returns {any} */
+export function prepareNativeDispatchBinding(input = {}) {
+  if (!input || typeof input !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Reflect.ownKeys(input).some((key) => typeof key !== "string" || !bindingKeys.has(key))) {
+    throw new TypeError("Prepared dispatch accepts only host session binding fields");
+  }
+  return snapshotNativeDispatchOptions(input);
+}
 import { probeNativeAccountProvenance } from "./account-provenance.js";
 
 /** @typedef {import('../../types.js').NativeDispatchBinding} NativeDispatchBinding */
@@ -17,7 +30,7 @@ const dataKeys = ["model", "messages", "outputSchema", "mcpServers", "skills", "
 function copy(value) {
   if (Array.isArray(value)) return value.map(copy);
   if (value && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copy(item)]));
+    return Object.fromEntries(Reflect.ownKeys(value).map((key) => [key, copy(value[key])]));
   }
   return value;
 }
@@ -33,7 +46,7 @@ export function snapshotNativeDispatchOptions(options) {
 /** @param {any} value @returns {any} */
 export function freezeDispatchData(value) {
   if (value && typeof value === "object") {
-    for (const child of Object.values(value)) freezeDispatchData(child);
+    for (const key of Reflect.ownKeys(value)) freezeDispatchData(value[key]);
     Object.freeze(value);
   }
   return value;
@@ -59,15 +72,38 @@ export async function prepareDispatchAuth(models, model, signal) {
     list: (...args) => store.list(...args),
   }, authContext: models.authContext }) : models;
   if (store) resolving.setProvider(provider);
-  const resolution = await resolving.getAuth(model, { signal });
+  const resolution = await resolving.getAuth(model, { signal, minOAuthValidityMs: PREPARED_DISPATCH_MAX_AGE_MS + OAUTH_REQUEST_RESERVE_MS });
   if (!resolution) throw new Error("Prepared dispatch provider authentication is unavailable");
   signal?.throwIfAborted();
   const auth = copy(resolution);
   const probe = probeNativeAccountProvenance({ provider: model.provider, api: model.api, credential,
     dispatchApiKey: auth.auth.apiKey });
+  const preparedAt = Date.now();
+  const assertValid = (starting = false) => {
+    if (starting && Date.now() - preparedAt >= PREPARED_DISPATCH_MAX_AGE_MS) throw new ModelsError("auth", "Prepared dispatch lease expired; prepare again before dispatch");
+    if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires) || Date.now() + OAUTH_REQUEST_RESERVE_MS >= credential.expires)) {
+      throw new ModelsError("oauth", "Prepared OAuth authentication expires too soon; prepare again before dispatch");
+    }
+  };
+  assertValid(true);
   const pinned = createModels();
-  pinned.setProvider({ ...provider, getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: async () => copy(auth) } } });
-  return { models: pinned, model: freezeDispatchData(copy(model)), authSource: credential?.type === "oauth" && resolution.source === "OAuth" ? "oauth" : credential?.type === "api_key" ? "api_key" : "provider",
+  // Forward methods/getters with the original receiver, including prototype or
+  // private-field implementations. Do not flatten a provider by object spread.
+  const overrides = { getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: async () => { assertValid(); return copy(auth); } } } };
+  pinned.setProvider(/** @type {any} */ (new Proxy(overrides, { get: (target, key) => {
+    if (Object.hasOwn(target, key)) return Reflect.get(target, key);
+    const value = Reflect.get(provider, key, provider);
+    return typeof value === "function" ? value.bind(provider) : value;
+  } })));
+  const getAuth = pinned.getAuth.bind(pinned);
+  pinned.getAuth = async (requested, options) => {
+    if (typeof requested === "string" ? requested !== model.provider
+      : requested.provider !== model.provider || requested.id !== model.id || requested.api !== model.api) {
+      throw new ModelsError("provider", "Prepared dispatch cannot select another model");
+    }
+    assertValid(); return getAuth(requested, options);
+  };
+  return { models: pinned, assertValid, model: freezeDispatchData(copy(model)), authSource: credential?.type === "oauth" && resolution.source === "OAuth" ? "oauth" : credential?.type === "api_key" ? "api_key" : "provider",
     provenance: { provider: model.provider, api: model.api, model: model.id, account: probe.supported ? probe.provenance.account : null } };
 }
 
@@ -96,13 +132,11 @@ export function createPreparedDispatchLease(execute, signal) {
     resolvePrepared({ snapshot: freezeDispatchData(snapshot),
       run: (input = {}) => {
         if (state !== "prepared") return Promise.reject(new Error("Prepared dispatch is no longer available"));
-        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !bindingKeys.has(key))) {
-          return Promise.reject(new TypeError("Prepared dispatch accepts only host session binding fields"));
-        }
-        const frozen = snapshotNativeDispatchOptions(input);
+        let frozen;
+        try { frozen = prepareNativeDispatchBinding(input); } catch (error) { return Promise.reject(error); }
         state = "running"; resume(frozen); return outcome;
       },
-      close: async () => { cancel(); await outcome; },
+      close: async () => { cancel(); await outcome.catch(() => {}); },
     });
     return await binding;
   } });
