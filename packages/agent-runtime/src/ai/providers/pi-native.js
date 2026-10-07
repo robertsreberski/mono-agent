@@ -654,6 +654,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
         model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
+        compactionSummaryMaxTokens: resolveAgentCompactionPolicy(options, auth.model).summaryMaxTokens,
         provenance: auth.provenance, authSource: auth.authSource, expiresAt: auth.expiresAt }, {
         assertReady: (remainingStartMs = 0) => auth.assertValid(true, remainingStartMs),
         check: (input) => { auth.assertValid(true); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
@@ -739,7 +740,8 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-    if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss)) {
+    if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss
+      || control && options.nativeSessionAuthority && runState.sessionBaselineCount === 0)) {
       for (const message of priorMessages) {
         await harness.appendMessage(message);
         runState.sessionBaselineCount += 1;

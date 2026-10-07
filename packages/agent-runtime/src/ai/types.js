@@ -531,6 +531,7 @@
 
 /**
  * @typedef {Object} NativeDispatchSnapshot
+ * @property {number} [compactionSummaryMaxTokens] Effective real-compaction output policy, captured after request extensions.
  * @property {number} expiresAt Absolute latest start time (milliseconds).
  * @property {{provider: string, id: string, api: string, contextWindow: number, maxTokens: number}} model
  * @property {{provider: string, api: string, model: string, account: string|null}} provenance

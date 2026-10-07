@@ -2,7 +2,7 @@ import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, Runtim
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
-import { MODEL_SWITCH_DIRECTORY, switchDigest, validateModelSwitchState, validateTurnHistoryV4, recognizesModelSwitchBinding, MAX_JOURNAL_CHAIN, validateJournalChain, validateFrozenHandoffBudget, switchHash, validateSwitchReference } from "./durable-model-switch-contract.js";
+import { MODEL_SWITCH_DIRECTORY, ModelSwitchCapacityError, switchDigest, validateModelSwitchState, validateTurnHistoryV4, recognizesModelSwitchBinding, MAX_JOURNAL_CHAIN, validateJournalChain, validateFrozenHandoffBudget, switchHash, validateSwitchReference } from "./durable-model-switch-contract.js";
 import type { ModelSwitchState, HandoffReference, SummaryAttempt, TurnHistoryV4, CanonicalJournalDescriptor } from "./durable-model-switch-contract.js";
 import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
 import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
@@ -163,12 +163,20 @@ export interface ManagedModelSwitchStorageLease {
  * preparation/child methods serialize behind the running action. Do not call
  * same-conversation standalone store APIs while this preparation is held; they
  * acquire its claim and cannot proceed until admission or abort releases it. */
+/** Pre-intent contention, not unsupported storage or permission to cold replay.
+ * Never wait holding a conversation claim: two contenders can pin each other. */
+export class NativeHistoryAuthorityBusyError extends Error {
+  readonly code = "ERR_NATIVE_HISTORY_AUTHORITY_BUSY";
+  readonly retryable = true;
+  constructor() { super("Native root authority requires drained host owners and settled fences"); this.name = "NativeHistoryAuthorityBusyError"; }
+}
+
 export interface ManagedProviderSessionPreparation {
   readonly recovery: ConversationHistoryTurnRecovery;
   read(): Promise<ProviderSessionPreparationSnapshot>;
   /** Caller-supplied provenance is used only for a legacy source's API/model;
    * its account is explicitly null, never inferred from current credentials. */
-  captureNativeEvidence(legacyProvenance: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
+  captureNativeEvidence(legacyProvenance?: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
     readonly sources: readonly CanonicalJournalDescriptor[]; readonly view: import("@mono-agent/runtime-adapter").RuntimeNativeEvidenceView;
   }>;
   readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
@@ -177,7 +185,8 @@ export interface ManagedProviderSessionPreparation {
   acquireNativeHistoryAuthority(options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
   beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
   rollForwardModelSwitch(switchId: string, options: { readonly exclusiveWriters: true; readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
-  admit(binding: ProviderSessionTurnBinding): Promise<ConversationHistoryProviderSessionTurn & { assertOwned(): Promise<void> }>;
+  /** coldModelChange explicitly selects today's cold rotation, never while a switch is pending. */
+  admit(binding: ProviderSessionTurnBinding, options?: { readonly coldModelChange: true }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: TurnHistoryV4["native"]; assertOwned(): Promise<void> }>;
   abort(): Promise<void>;
 }
 export interface ProviderSessionPreparationSnapshot {
@@ -425,7 +434,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (active.some((entry) => entry.path !== held.marker.path)
           || (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).length
           || (await this.pendingPayloads(rootIdentity).list()).length) {
-          throw new Error("Native root authority requires drained host owners and settled fences");
+          throw new NativeHistoryAuthorityBusyError();
         }
         const rootStore = this.nativeHistoryRoot(rootIdentity);
         if (!await rootStore.read()) {
@@ -436,7 +445,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         marker = await rootStore.ensure({ assertOwned, reserve: async (bytes) => {
           const plan = await this.retentionPlan(rootIdentity, []);
           if (plan.projectedBytes + bytes > this.maxStoreBytes || await this.scanStagedBytes(rootIdentity) + bytes > this.maxStagedBytes) {
-            throw new Error("Native root authority capacity unavailable");
+            throw new ModelSwitchCapacityError("Native root authority capacity unavailable");
           }
         } });
       } finally { await releaseRoot(); }
@@ -583,9 +592,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             ordinal: state.identity.sources.length, handleId: deriveProviderSessionId(id, state.identity.targetEpoch), predecessorJournalId: state.identity.sources.at(-1)!.journalId,
             ownerKey, historyBucket: id, sourceTipId: null, sourceSeq: 4, sourceDigest: "0".repeat(64), provenance: state.identity.targetProvenance }];
         const previewState = { ...state, artifact: { id: "0".repeat(64), hash: "0".repeat(64) } };
-        if (serializeHistoryFile(switchCanonicalRecord(existing, previewState, authority, preview)).byteLength > state.reservation.canonicalBytes) throw new Error("Canonical switch capacity unavailable before intent publication");
+        if (serializeHistoryFile(switchCanonicalRecord(existing, previewState, authority, preview)).byteLength > state.reservation.canonicalBytes) throw new ModelSwitchCapacityError("Canonical switch capacity unavailable before intent publication");
         const measured = await this.nativeJournalStorage.measureSwitch(state.identity.sources, this.nativeSwitchContext(state, authority, assertOwned));
-        if (measured.retainedNativeBytes > state.reservation.retainedNativeBytes || measured.headerCopyBytes > state.reservation.headerCopyBytes) throw new Error("Native switch measured capacity exceeds the frozen plan");
+        if (measured.retainedNativeBytes > state.reservation.retainedNativeBytes || measured.headerCopyBytes > state.reservation.headerCopyBytes) throw new ModelSwitchCapacityError("Native switch measured capacity exceeds the frozen plan");
         const physical = await this.managedNativeInventory(rootIdentity);
         initialNativeCredit = state.identity.sources.reduce((total, row) => total + (physical.journals[row.journalId]?.retainedBytes ?? 0), 0);
       }
@@ -600,8 +609,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const plan = await this.retentionPlan(rootIdentity, []);
         // Storage admission never deletes unrelated owners merely to reserve a
         // switch; failure precedes publication/provider work.
-        if (plan.projectedBytes + additional > this.maxStoreBytes || plan.projectedCount > this.maxConversations) throw new Error("Model-switch aggregate history capacity unavailable");
-        if (await this.scanStagedBytes(rootIdentity) + additional > this.maxStagedBytes) throw new Error("Model-switch staged capacity unavailable");
+        if (plan.projectedBytes + additional > this.maxStoreBytes || plan.projectedCount > this.maxConversations) throw new ModelSwitchCapacityError("Model-switch aggregate history capacity unavailable");
+        if (await this.scanStagedBytes(rootIdentity) + additional > this.maxStagedBytes) throw new ModelSwitchCapacityError("Model-switch staged capacity unavailable");
       };
       const owner: ModelSwitchStorageOwner = { ownerKey, historyBucket: bucket, assertOwned,
         withRootTransaction: async (action) => { await assertOwned(); const unlock = await this.acquireRootTransaction(rootIdentity); try {
@@ -1382,11 +1391,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (native?.nativeEvidence !== "v1" || !native.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
           const source = await this.modelSwitchStorageSource(id), record = await this.readRecord(id, held.rootIdentity);
           if (source.status !== "supported") throw new Error("Native evidence source unavailable");
-          if (`${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
+          if (legacyProvenance && `${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
           const sources = record.native ? [...record.native.chain] : [{ epoch: source.sourceEpoch, ordinal: 0,
             handleId: deriveProviderSessionId(id, source.sourceEpoch), predecessorJournalId: null, ownerKey: source.ownerKey, historyBucket: id,
-            provenance: { ...structuredClone(legacyProvenance), account: null } }];
+            ...(legacyProvenance ? { provenance: { ...structuredClone(legacyProvenance), account: null } } : {}) }];
           const current = await native.freeze(sources.at(-1)!);
+          if (`${current.provenance.provider}:${current.provenance.model}` !== source.fromModelKey) throw new Error("Captured source model disagrees with canonical binding");
           const frozen = [...sources.slice(0, -1), current] as CanonicalJournalDescriptor[];
           const view = await native.captureEvidence(frozen, { ownerKey: source.ownerKey, historyBucket: id,
             ...(record.native ? { hostAuthority: record.native.authority } : {}), assertOwned });
@@ -1429,7 +1439,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (options?.exclusiveWriters !== true || !this.nativeJournalStorage) throw new Error("Managed native switch capability and exclusive writers required");
           return await this.rollForwardHeldModelSwitch(id, switchId, borrowed, options.onPhase);
         }),
-        admit: (input) => {
+        admit: (input, options) => {
+          const coldModelChange = options?.coldModelChange === true;
           let binding: ProviderSessionTurnBinding;
           try { binding = structuredClone(input); } catch (error) { return Promise.reject(error); }
           return owned(async () => {
@@ -1439,7 +1450,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             await this.settleHeldTurn(id, borrowed);
             await this.requireNoModelSwitch(id, held.rootIdentity);
             const record = await this.readRecord(id, held.rootIdentity);
-            if (record.providerSession?.modelKey !== undefined && record.providerSession.modelKey !== binding.modelKey) {
+            if (!coldModelChange && record.providerSession?.modelKey !== undefined && record.providerSession.modelKey !== binding.modelKey) {
               throw new Error("Prepared provider admission requires a ready canonical model binding");
             }
             await closeChildren();
@@ -1450,9 +1461,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               if (binding.reconciliation) await this.drainBeforeAdmission(id, normalizedRunId, binding);
             } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity); throw error; }
             let turnOwned!: () => Promise<void>;
+            let native: TurnHistoryV4["native"] | undefined;
             try {
-              const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion) => { turnOwned = assertion; });
-              return { ...turn, assertOwned: () => turnOwned() };
+              const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion, binding) => { turnOwned = assertion; native = binding; });
+              return { ...turn, ...(native ? { native } : {}), assertOwned: () => turnOwned() };
             } catch (error) { state = "closed"; throw error; } // P2 helper released its owner.
           });
         },
@@ -1478,7 +1490,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return await this.beginHeldProviderSessionTurn(normalizedId, normalizedRunId, binding, held);
   }
   private async beginHeldProviderSessionTurn(normalizedId: string, normalizedRunId: string, binding: ProviderSessionTurnBinding | undefined,
-    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>) => void): Promise<ConversationHistoryProviderSessionTurn> {
+    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>, native?: TurnHistoryV4["native"]) => void): Promise<ConversationHistoryProviderSessionTurn> {
     const rootIdentity = held.rootIdentity;
     let turnSettled = false;
     let prepared: PreparedHistoryAppend | undefined;
@@ -1601,7 +1613,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       captureOwnership?.(async () => await serializeTurn(async () => {
         if (turnSettled || prepared) throw new Error("Prepared provider turn no longer owns executable storage");
         await held.assertOwned();
-      }));
+      }), existing.native ? structuredClone(existing.native) : undefined);
       return {
         ...(recovery.status === "clean" ? {} : { recovery }),
         ...(payload === undefined ? {} : { reconciliation: {

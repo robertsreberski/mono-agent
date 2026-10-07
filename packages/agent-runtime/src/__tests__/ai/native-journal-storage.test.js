@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
-import { createManagedNativeJournalStorage } from "../../ai/providers/pi-native/native-journal-storage.js";
+import { createManagedNativeJournalStorage, NativeEvidenceCapacityError, MAX_CAPTURE_JOURNALS } from "../../ai/providers/pi-native/native-journal-storage.js";
 const roots = [], repos = [];
 const authority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const from = { provider: "openai", api: "responses", model: "gpt-5.5", account: null };
@@ -346,4 +346,18 @@ it.each(["model_change_started", "model_change_appended", "model_change_synced"]
 it("rejects foreign reference bytes without granting automatic ready recovery", async () => {
   const f = await fixture(); await appendFile(f.metadata.path, "foreign reference"); const before = await readFile(f.metadata.path);
   await expect(f.bridge.hasSwitchReference([f.source], context)).rejects.toThrow(); expect(await readFile(f.metadata.path)).toEqual(before);
+});
+
+
+it("capture throws the exported typed capacity error for the actual native chain limit", async () => {
+  const f = await fixture();
+  const capture = () => f.bridge.captureEvidence(Array.from({ length: MAX_CAPTURE_JOURNALS + 1 }, () => f.source), { assertOwned: async () => {}, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
+  await expect(capture()).rejects.toBeInstanceOf(NativeEvidenceCapacityError);
+  await expect(capture()).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
+  expect(await readFile(f.metadata.path)).toEqual(f.before);
+});
+it("freezes legacy model/API from owned binding bytes without auth, never inventing account evidence", async () => {
+  const f = await fixture(), { provenance: _provenance, ...coordinate } = f.source;
+  expect(await f.bridge.freeze(coordinate)).toEqual(f.source); expect(f.source.provenance.account).toBeNull();
+  await expect(f.bridge.freeze({ ...coordinate, ownerKey: "fictional-wrong-owner" })).rejects.toThrow();
 });

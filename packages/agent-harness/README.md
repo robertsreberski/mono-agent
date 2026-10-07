@@ -205,8 +205,43 @@ preserves the pending intent and its charged attempts, not cold-replay success.
 Ready storage-only roll-forward is never blocked by the next message's size;
 normalized dispatch remains the final bound and late refusal never rebills a
 summary or automatically replays an admitted message. This is an inert
-implementation boundary: configured activation, cold fallback policy and
-activation-critical lifecycle forwarding are not enabled by these helpers.
+implementation boundary: configured activation and activation-critical APP
+lifecycle forwarding remain disabled.
+
+The private constructor staging path now prepares the complete host context,
+request extensions and permit before P2 under the same conversation claim. It
+sizes aggregate reservations before paid work, falls back to the existing cold
+path for unsupported capabilities or legacy-source typed pre-intent capacity refusal, and
+surfaces corruption/ownership/pending failures. It preflights the real future
+compaction-summary envelope and derived output cap against the maximum accepted
+inherited prefix before intent or billing, then checks the exact projection before
+acceptance. Pending messages are reported without appending, admission or queuing;
+post-P2 failures are accounted without automatic replay. Ordinary same-model
+reopening inherits accepted content without a switch-only account/window gate.
+The constructor's `nativeModelSwitch` member is **@internal / unstable**. It is
+structurally callable by a programmatic consumer, not a supported public opt-in;
+no app/config/factory caller passes it. Exposure additionally requires APP to
+forward its persisted delivery ID across retries, never generate it from a run
+ID or text hash.
+
+An unavailable outgoing provider/auth skips its unbilled slot and advances to
+exact checkpoint, incoming producer, then pending. Legacy API/model provenance
+comes from validated owned native binding bytes without resolving credentials;
+legacy account identity remains unknown. Capture overflow throws the exported
+`NativeEvidenceCapacityError`; matching an error-code string is insufficient to
+authorize cold fallback.
+
+`NativeHistoryAuthorityBusyError` is a typed retryable pre-intent root contention
+outcome. The host surfaces `native_switch_busy` with `retryable: true` and releases
+its claim/resources. It never cold-falls back or waits holding a claim: concurrent
+contenders could otherwise keep each other from draining. The caller must drain
+or serialize host owners and explicitly retry; no message is queued or billed.
+
+Exposed
+opt-in, stopped-writer validation, compatible whole-chain switch-back, long-ID
+native-owner handling, guarded-chain cold fallback, APP key forwarding and lifecycle activation are still
+required before it can be enabled. Fixture reset/retention proof is not proof
+of every configured APP cleanup path.
 
 ## Architecture
 
@@ -673,6 +708,7 @@ LoadedSkillFile
 ManagedProviderSessionPreparation
 MarkdownContextBlock
 MemoryWriteMode
+NativeHistoryAuthorityBusyError
 NoopRunRecorder
 PreparedHistoryAppend
 ProviderSessionHandle

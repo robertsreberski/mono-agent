@@ -3,10 +3,11 @@ import type { RuntimeNativePreparationStorage } from "./types.js";
 /** Administrative storage capability. No runtime/configured host opts in here. */
 export function createManagedNativeJournalStorage(options: {
   readonly sessionsRoot: string; readonly onPhase?: (phase: string) => Promise<void>;
-}): RuntimeNativePreparationStorage {
+}): RuntimeNativePreparationStorage & { readonly checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]> } {
   const storage = nativeStorage(options);
   return { nativeEvidence: "v1", captureEvidence: (sources, context) => storage.captureEvidence([...sources], context),
     createBudget: (input) => storage.createBudget(input), prepareHandoff: (view, options) => storage.prepareHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["prepareHandoff"]>,
+    checkInheritedPrefix: async (messages, model, compaction, prefixTokenCap) => await storage.checkInheritedPrefix([...messages], model, compaction, prefixTokenCap) as Awaited<ReturnType<NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]>>>,
     buildHandoff: (view, options) => storage.buildHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["buildHandoff"]>,
     projectChain: (view, options) => storage.projectChain(view, options) as ReturnType<RuntimeNativePreparationStorage["projectChain"]>,
     planColdEpoch: (chain, context) => storage.planColdEpoch([...chain], context),

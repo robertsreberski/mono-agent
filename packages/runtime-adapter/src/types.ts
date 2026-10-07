@@ -774,7 +774,7 @@ export interface RuntimeNativeJournalStorage {
   /** Caller retains canonical membership and deletion intent through completion. */
   deletionBlocked(chain: readonly RuntimeNativeJournalDescriptor[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
   deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
-  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest">): Promise<RuntimeNativeJournalDescriptor>;
+  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest" | "provenance"> & { readonly provenance?: RuntimeNativeJournalDescriptor["provenance"] }): Promise<RuntimeNativeJournalDescriptor>;
   measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
   /** Prove an exact full/partial ready reference already exists; never publish one. */
   hasSwitchReference(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<boolean>;
@@ -822,6 +822,8 @@ export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalSto
   captureEvidence(sources: readonly RuntimeNativeJournalDescriptor[], context: { readonly ownerKey: string; readonly historyBucket: string;
     readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void> }): Promise<RuntimeNativeEvidenceView>;
   createBudget(input: { readonly contextWindow: number; readonly outputReserve: number; readonly inputTokens: number; readonly hostContext: Readonly<Record<string, unknown>> }): RuntimeHandoffBudget;
+  /** Pure real-compaction input/output preflight; no provider or native writes. */
+  checkInheritedPrefix?(messages: readonly Readonly<Record<string, unknown>>[], model: RuntimeNativeDispatchSnapshot["model"], compaction?: RuntimeRunOptions["compaction"], prefixTokenCap?: number): Promise<RuntimeHandoffFit>;
   prepareHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimePreparedHandoff | { readonly status: "budget_failure"; readonly reason: string };
   buildHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimeHandoffProposal;
   projectChain(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): { readonly status: "ready"; readonly messages: readonly Readonly<Record<string, unknown>>[]; readonly coverage: unknown }
@@ -830,6 +832,7 @@ export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalSto
 
 /** Actual resolved native request, never credentials/auth headers. */
 export interface RuntimeNativeDispatchSnapshot {
+  readonly compactionSummaryMaxTokens?: number;
   readonly expiresAt: number;
   readonly model: { readonly provider: string; readonly id: string; readonly api: string; readonly contextWindow: number; readonly maxTokens: number };
   readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
