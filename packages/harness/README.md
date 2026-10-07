@@ -194,7 +194,16 @@ billing; the final publication guard also rejects copied predecessor envelopes.
 The first projected turn durably records a v3 `projectionBinding` with artifact
 id/hash, coverage and inherited-message digest, not another content copy. Until
 a composed checkpoint subsumes it, a runtime reopen cannot omit or change that
-projection. Afterward, supplied coverage must match the composed checkpoint. Raw current-journal evidence inspection is unchanged.
+projection. Afterward, supplied coverage must match the composed checkpoint,
+and later compactions carry that coverage even when the projection is omitted.
+The binding's `evidenceDigest` hashes JSON bytes, including object key order:
+hosts must preserve the accepted message/coverage key order when rebuilding it;
+semantically equivalent reordered objects are not an identical projection.
+If the inherited prefix alone exceeds the summarizer's context budget, the
+runtime cannot compact it. The configured host must prepare a bounded accepted
+projection/new epoch at switch time or refuse/reseed; this is a known limit for
+configured switching, not permission to clip a cached handoff. Raw
+current-journal evidence inspection is unchanged.
 
 The optional run-driver `handoffDispatchBudget` rechecks normalized instructions,
 resolved tool declarations, required history and current input before every

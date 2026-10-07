@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createHandoffBudget, digestTurnInput } from "@mono-agent/harness";
+import { assertNativeProjectionBinding } from "../../ai/providers/pi-native/session-authority.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { createPiSessionAdapter, createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
@@ -276,4 +277,54 @@ it("allows the intended host-owned P2 matcher to inspect a guarded bound project
     expectedInputs: [{ id: "input-1", placement: "initial", requestDigest: digestTurnInput([{ type: "text", text: "current-1" }]) }] });
   expect(result).toMatchObject({ status: "matched", outcome: "completed", handleId: handle });
   expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(before);
+});
+
+it.each([false, true])("carries composed coverage through omitted-projection compaction and cold reopening (projection restored=%s)", async (restore) => {
+  const f = await setup();
+  const final = vi.fn((context) => { expect(JSON.stringify(context)).not.toContain(inherited.messages[0].content); return fauxAssistantMessage([fauxText("reopened reply")]); });
+  const summary = vi.fn(() => fauxAssistantMessage([fauxText("## Goal\nContinue fictional work.\n## Progress\nInherited work covered; current work compacted.\n## Next Steps\nWait for instruction.")]));
+  f.faux.setResponses([fauxAssistantMessage([fauxText("initial reply")]), fauxAssistantMessage([fauxText("growth one")]), fauxAssistantMessage([fauxText("growth two")]), summary, final]);
+  expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
+  const repo = new JsonlSessionRepo({ sessionsRoot: f.root });
+  let raw = await repo.open((await repo.list())[0]); raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
+  await raw.appendCompaction({ summary: "Inherited work consumed", tokensBefore: 100, retainedTail: [] }, coverage, { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
+  for (const turn of [2, 3]) {
+    const opts = f.options(turn); delete opts.nativeSessionProjection;
+    opts.messages = [{ role: "user", content: `growth-${turn} ` + "x".repeat(80000) }];
+    expect((await generatePiNativeResponse("Rules", opts)).error).toBeNull();
+  }
+  await refreshProviderSession(handle);
+  raw = await repo.open((await repo.list())[0]); raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
+  const session = createPiSessionAdapter(raw), driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [] });
+  expect(await tryCompact(driver, { trigger: "manual", model: "faux:projection", session,
+    policy: { keepRecentTokens: 20000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 1 }, runtimeWarnings: [] })).toMatchObject({ applied: true, reduced: true });
+  expect(summary).toHaveBeenCalledOnce(); await driver.close();
+  const checkpoints = (await journal(f.root)).filter((record) => record.kind === "compaction");
+  expect(checkpoints).toHaveLength(2);
+  for (const checkpoint of checkpoints) { expect(checkpoint.schemaVersion).toBe(3); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage); }
+  await refreshProviderSession(handle);
+  const reopened = f.options(4); if (!restore) delete reopened.nativeSessionProjection;
+  const result = await generatePiNativeResponse("Rules", reopened);
+  expect(result.error).toBeNull(); expect(result.text).toBe("reopened reply"); expect(final).toHaveBeenCalledOnce();
+});
+
+it("recognizes a subsumed binding from any historical composed checkpoint when no projection is supplied", async () => {
+  const raw = { validator: { projectionBinding: { version: 1 } }, getEntries: async () => [
+    { type: "compaction", checkpoint: { inheritedCoverage: coverage } }, { type: "compaction", checkpoint: {} }] };
+  await expect(assertNativeProjectionBinding(raw, undefined)).resolves.toBeUndefined();
+});
+
+it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "artifact-extra"])("rejects %s projection shape as protected authority failure before admission", async (variant) => {
+  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
+  const opts = f.options(); opts.nativeSessionProjection = structuredClone(opts.nativeSessionProjection);
+  const projection = opts.nativeSessionProjection;
+  if (variant === "coverage-extra") projection.inherited.coverage.extra = "not allowed";
+  if (variant === "source-extra") projection.inherited.coverage.sources[0].extra = "not allowed";
+  if (variant === "long-journal-id") projection.inherited.coverage.sources[0].journalId = "j".repeat(513);
+  if (variant === "long-tip-id") projection.inherited.coverage.sources[0].sourceTipId = "t".repeat(513);
+  if (variant === "artifact-extra") projection.artifact.extra = "not allowed";
+  const result = await generatePiNativeResponse("Rules", opts);
+  expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
+  expect(provider).not.toHaveBeenCalled(); expect(f.assertCurrent).not.toHaveBeenCalled();
+  expect(await readdir(f.root)).not.toContain("mono-v2");
 });

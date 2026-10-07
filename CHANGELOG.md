@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep inherited coverage through later native compactions without a projection,
+  reject malformed projection identities before admission, and allow detached
+  route resolvers to select their own native roots.
+
 - Fix guarded native projections to pin accepted handoff identity and the native
   root, summarize inherited prefixes before retaining current context, and reject
   uncoordinated terminal recovery before journal repair.

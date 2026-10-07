@@ -3,6 +3,9 @@ import { JsonlSessionRepo, projectInheritedContext, evidenceDigest } from "@mono
 
 import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 
+const onlyKeys = (value, allowed) => value !== null && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value).every((key) => allowed.includes(key));
+const coverageId = (value) => typeof value === "string" && value.length > 0 && value.length <= 512;
 const failure = () => Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
 /** Host-only opt-in. The callback proves current canonical handle, ready artifact
  * and held conversation ownership; catalogue presence is never that proof.
@@ -28,6 +31,10 @@ export function validateNativeSessionAuthority(options, handleId, requestedId) {
       if ((options.manualCompaction && projection.dispatchBudget) || projection.version !== 1 || !/^[a-f0-9]{64}$/.test(projection.artifact?.id)
         || !/^[a-f0-9]{64}$/.test(projection.artifact?.hash)) throw failure();
       projectInheritedContext([], projection.inherited);
+      const coverage = projection.inherited.coverage;
+      if (!onlyKeys(projection.artifact, ["id", "hash"]) || !onlyKeys(coverage, ["version", "sources"])
+        || coverage.sources.some((source) => !onlyKeys(source, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
+          || !coverageId(source.journalId) || source.sourceTipId !== null && !coverageId(source.sourceTipId))) throw failure();
     }
   } catch { throw failure(); }
 }
@@ -58,8 +65,7 @@ export async function assertNativeProjectionBinding(raw, projection) {
   if (!binding) return;
   try {
     const entries = await raw.getEntries();
-    const checkpoint = entries.filter((entry) => entry.type === "compaction").at(-1)?.checkpoint;
-    if (checkpoint?.inheritedCoverage) {
+    if (entries.some((entry) => entry.type === "compaction" && entry.checkpoint?.inheritedCoverage)) {
       if (projection) projectInheritedContext(entries, projection.inherited);
       return;
     }

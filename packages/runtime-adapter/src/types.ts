@@ -528,7 +528,8 @@ export type RuntimeSessionTurnReconciliationResult =
 export interface RuntimeNativeSessionAuthority {
   readonly version: 1;
   readonly currentHandleId: string;
-  /** Pinned dedicated native root; normalized path and repository inode are checked. */
+  /** Pinned dedicated native root; runtime checks normalized path equality.
+   * assertCurrent receives that path; host must prove any stronger root identity. */
   readonly sessionsRoot: string;
   readonly hostAuthority: RuntimeNativeJournalAuthority;
   readonly assertCurrent: (request: { readonly handleId: string; readonly action: "open" | "create"; readonly sessionsRoot: string }) => Promise<void>;

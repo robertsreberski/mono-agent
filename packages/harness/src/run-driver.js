@@ -247,7 +247,11 @@ export function createRunDriver(store, options) {
         inherited.messages.some((prior) => JSON.stringify(prior) === JSON.stringify(message)))) {
         throw new Error("Composed compaction must cover the inherited prefix");
       }
-      const id = await store.appendCompaction(decision.compaction, inherited?.coverage, inherited ? source : undefined);
+      // Omission after a composed checkpoint means the native summary owns the
+      // prefix. Every later checkpoint must carry its coverage, not revert to v2.
+      const inheritedCoverage = inherited?.coverage ?? nativeEntries.filter((prior) => prior.type === "compaction"
+        && prior.checkpoint?.inheritedCoverage).at(-1)?.checkpoint.inheritedCoverage;
+      const id = await store.appendCompaction(decision.compaction, inheritedCoverage, inheritedCoverage ? source : undefined);
       await barrier();
       entry = await store.getEntry(id);
       // Publish completion only after the exact checkpoint and terminal

@@ -263,6 +263,19 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           let attemptRuntime = inner;
           /** @type {(() => (void|Promise<void>))|undefined} */
           let attemptCleanup;
+          // Strip ownership before private resolution: detached retries/backups
+          // may select their own native root but never inherit primary authority.
+          const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
+          if (!sessionEligibleAttempt) {
+            delete callOptions.nativeSessionAuthority;
+            delete callOptions.nativeSessionProjection;
+            delete callOptions.sessionTurn;
+            delete callOptions.sessionRecovery;
+            delete callOptions.sessionId;
+            delete callOptions.providerSessionId;
+            delete callOptions.sessionKeepAlive;
+            delete callOptions.sessionIdleTimeoutMs;
+          }
           try {
             const resolved = resolveAttempt === undefined
               ? undefined
@@ -302,22 +315,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // Only the primary's first attempt may own a provider session. Retries
           // replay the logical turn and must not resume a transcript the failed
           // attempt may have appended to; backup routes never inherit that session.
-          const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
           if (i === 0 && retryIndex === 0 && !sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
             descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex,
             result: { text: null, error: "Primary route cannot own the protected native session", failureKind: "skipped_capability_mismatch", events: [], cancelled: false, usage: {} },
           };
           delete callOptions.onSessionTurnDetached;
-          if (!sessionEligibleAttempt) {
-            delete callOptions.nativeSessionAuthority;
-            delete callOptions.nativeSessionProjection;
-            delete callOptions.sessionTurn;
-            delete callOptions.sessionRecovery;
-            delete callOptions.sessionId;
-            delete callOptions.providerSessionId;
-            delete callOptions.sessionKeepAlive;
-            delete callOptions.sessionIdleTimeoutMs;
-          }
           if (pendingDetach && !sessionEligibleAttempt) {
             try {
               if (typeof options.onSessionTurnDetached !== "function") throw new Error("Detached native turn acknowledgement unavailable");

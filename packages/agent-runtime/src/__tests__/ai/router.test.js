@@ -1481,3 +1481,19 @@ it("preserves ordinary resolver native-root selection without native authority",
   expect((await router.run("Rules", { model: primary, messages: [] })).text).toBe("ordinary reply");
   expect(executeMock.mock.calls[0][1].piSessionsRoot).toBe("/fictional/ordinary-native");
 });
+
+it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resolver to choose its own native root", async (variant) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("openai-codex", "backup");
+  if (variant === "unsupported primary") runtimeCapabilitiesMock.mockReturnValue({ supports_session_resume: false });
+  else executeMock.mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", cancelled: false, events: [] });
+  executeMock.mockResolvedValueOnce({ text: "detached root selected", events: [] });
+  const chain = variant === "backup" ? [primary, backup] : [{ model: primary, attempts: variant === "retry" ? 2 : 1 }];
+  const router = createRouterRuntime({ chain, retry: { backoffMs: 0, maxBackoffMs: 0 }, resolveAttempt: async ({ attemptIndex, retryIndex }) => ({
+    options: attemptIndex > 0 || retryIndex > 0 || variant === "unsupported primary" ? { piSessionsRoot: "/fictional/detached-native" } : {} }) });
+  const result = await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true,
+    nativeSessionAuthority: { fixture: "host-owned" }, nativeSessionProjection: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toBeFalsy(); expect(result.text).toBe("detached root selected");
+  const detached = executeMock.mock.calls.at(-1)[1]; expect(detached.piSessionsRoot).toBe("/fictional/detached-native");
+  expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+  expect(detached).not.toHaveProperty("sessionTurn"); expect(detached).not.toHaveProperty("providerSessionId");
+});
