@@ -1115,7 +1115,7 @@ export class MonoAgentHarness implements AgentHarness {
     try {
       if (this.nativeModelSwitch?.implicitModel && this.nativeModelSwitch.deliveryId(request) === undefined) {
         const binding = await this.options.historyStore?.readProviderSessionBinding?.(request.conversationId);
-        if (binding?.native === true) {
+        if (binding?.native === true || this.nativeModelSwitch.requirePersistedIdentity && binding?.modelKey) {
           if (!binding.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
           const implicit = await this.nativeModelSwitch.implicitModel(request, binding.modelKey);
           if (implicit) turnOptions = { ...this.options, model: implicit.model,
@@ -1188,7 +1188,7 @@ export class MonoAgentHarness implements AgentHarness {
           // no-ID wakes. It grants no authority; preparation rechecks under claim.
           const nativeCurrent = this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(activeRequest) === undefined
             ? (await historyStore?.readProviderSessionBinding?.(request.conversationId))?.native === true : false;
-          if (this.nativeModelSwitch && reconcileTurn && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent)) {
+          if (this.nativeModelSwitch && (reconcileTurn || this.nativeModelSwitch.requirePersistedIdentity && this.nativeModelSwitch.deliveryId(activeRequest) === undefined) && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent || this.nativeModelSwitch.requirePersistedIdentity)) {
             nativePreparationActive = true;
             preparedNativeTurn = await prepareConfiguredModelSwitch({ policy: this.nativeModelSwitch,
               preparation: { options: turnOptions, ...(this.runLimiter ? { runLimiter: this.runLimiter } : {}), sessionsEnabled: this.sessionsEnabled(), request: activeRequest, recorder,

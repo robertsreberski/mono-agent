@@ -10,9 +10,11 @@ import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPrep
 
 /** @internal
  * @unstable Constructor capability, structurally callable but not
- * passed by config or ordinary app composition. Not a supported public opt-in. */
+ * supplied only by the configured host, not an ordinary constructor API. */
 export interface InternalNativeSwitchPolicy {
   readonly exclusiveWriters: true;
+  /** Public opt-in forbids no-ID changes even before native root upgrade. */
+  readonly requirePersistedIdentity?: true;
   readonly native: RuntimeNativePreparationStorage;
   readonly sessionsRoot: string;
   /** Durable host delivery identity, never run ID or text hash. Undefined means
@@ -44,8 +46,10 @@ export async function prepareConfiguredModelSwitch(input: {
   const messageId = policy.deliveryId(host.request);
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);
-  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
-    || runtime.nativePreparedDispatch !== "v1" || !runtime.prepareNativeDispatch || runtime.sessionTurnReconciliation !== "v1" || !runtime.reconcileSessionTurn) return undefined;
+  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation) return undefined;
+  const supportedRuntime = policy.native.nativeEvidence === "v1" && checkInheritedPrefix
+    && runtime.nativePreparedDispatch === "v1" && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
+  if (!supportedRuntime && !(policy.requirePersistedIdentity && messageId === undefined)) return undefined;
   if (policy.exclusiveWriters !== true || resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "Explicit upgraded-writer acknowledgement and the configured native root are required.");
   const owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId);
   let assertOwned = () => owner.assertOwned();
@@ -60,10 +64,13 @@ export async function prepareConfiguredModelSwitch(input: {
       // Ordinary same-model dispatch can borrow the accepted current chain,
       // but may not recover/open a model change or authorize a producer slot.
       if (snapshot.pending) throw pending();
+      if (policy.requirePersistedIdentity && snapshot.source.status === "supported" && snapshot.source.fromModelKey !== host.routing.modelKey) throw new AgentHarnessError(
+        "native_cold_model_change_unavailable", "A model change requires a persisted Web message identity; history was preserved.");
       if (!snapshot.native) { await owner.abort(); return undefined; }
       if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== host.routing.modelKey) throw new AgentHarnessError(
         "native_cold_model_change_unavailable", "A guarded model change requires a persisted explicit delivery identity; native evidence was preserved.");
     }
+    if (!supportedRuntime || !checkInheritedPrefix || !runtime.prepareNativeDispatch) { await owner.abort(); return undefined; }
     if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
       const recovered = await recoverPreparedModelSwitch(owner, { exclusiveWriters: true });

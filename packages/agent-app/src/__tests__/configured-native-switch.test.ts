@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -8,22 +9,24 @@ import { AgentHarnessFailureError, type AgentHarness, type AgentHarnessRequest, 
 import type { AgentRequestBase, AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createManagedNativeJournalStorage, createMonoRuntime, type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-agent/runtime-adapter";
-import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
+import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
 import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "../configured-native-switch.js";
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../agent-root-coordinator.js";
 import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
+import { loadAppCoreConfig } from "../app-config.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const reply = (value: string) => fauxAssistantMessage([fauxText(value)]);
 const summary = JSON.stringify({ intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: ["Fictional progress"], failures: [], openWork: [], nextActions: [], references: [] });
-async function fixture() {
+async function fixture(publicConfig = false) {
   const root = await mkdtemp(join(tmpdir(), "app-native-switch-")); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const identityPath = join(root, "IDENTITY.md"), nativeRoot = join(root, "native"); await writeFile(identityPath, "Fictional stable instructions");
   const faux = fauxProvider({ models: [{ id: "A", contextWindow: 1000000, maxTokens: 4096 }, { id: "B", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: 1000000 });
   const models = createModels(); models.setProvider(faux.provider);
+  const originalTransport = faux.provider.streamSimple.bind(faux.provider);
   const transport = vi.spyOn(faux.provider, "streamSimple"), native = createManagedNativeJournalStorage({ sessionsRoot: nativeRoot });
   const config: MonoAgentConfig = {
     runtime: { model: { provider: "faux", model: "A", reference: "faux:A" }, workspace: root, maxTurns: 4, session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none" } },
@@ -38,8 +41,20 @@ async function fixture() {
     const owned = wrapOwnedConfiguredRuntime(raw, config, root, undefined); cleanup.push(() => owned.disposeAllSessions!()); return owned;
   };
   let store: ConversationHistoryStore | undefined;
+  let activeNative = native;
   let preparation = vi.fn(), draining = vi.fn();
   const make = async (enabled: boolean, unsupported?: "non-native" | "routed") => {
+    let resolved = config;
+    if (publicConfig) {
+      const configPath = join(root, "mono-agent.config.json");
+      await writeFile(configPath, JSON.stringify({ ...config, runtime: { ...config.runtime, model: "pi:openai-codex:gpt-5.5", session: {
+        ...config.runtime.session, modelSwitch: { enabled, ...(enabled ? { olderWritersStopped: true } : {}) },
+      } } }));
+      // A real validated public config; the local faux transport is the only
+      // provider replacement. No private native-switch capability is injected.
+      resolved = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
+      resolved = { ...resolved, runtime: { ...resolved.runtime, model: config.runtime.model } };
+    }
     const incoming = (id: string): MonoRuntimeLike => {
       const runtime = runtimeFor(id);
       if (id !== "A" || unsupported === undefined) return runtime;
@@ -49,9 +64,9 @@ async function fixture() {
       return nonNative;
     };
     const posted = createSlackPostedReplyHistory({ maxMessages: 64 });
-    const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime: incoming("A"), runtimeForModel: (ref) => incoming(ref.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } }, {
-      sessionRollover: "none", wrapHistoryStore: (base) => { store = base; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
-      ...(enabled ? { nativeModelSwitch: { exclusiveWriters: true as const, native } } : {}),
+    const responder = await createConfiguredAgentResponderForApp({ config: resolved, cwd: root, runtime: incoming("A"), runtimeForModel: (ref) => incoming(ref.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } }, {
+      sessionRollover: "none", wrapHistoryStore: (base) => { store = base; if (publicConfig && enabled) activeNative = (base as unknown as { nativeJournalStorage: typeof native }).nativeJournalStorage; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
+      ...(enabled && !publicConfig ? { nativeModelSwitch: { exclusiveWriters: true as const, native } } : {}),
     });
     const wrapped = posted.wrapResponder(responder); cleanup.push(() => (wrapped as AgentResponder & { dispose(): Promise<void> }).dispose()); return wrapped;
   };
@@ -66,11 +81,22 @@ async function fixture() {
   };
   const dispose = async (responder: AgentResponder) => await (responder as AgentResponder & { dispose(): Promise<void> }).dispose();
   const seed = async () => { const h = await make(false); faux.setResponses([reply("Fictional A reply")]); await h.respond(request(undefined), { append: async () => {} }); await dispose(h); };
-  return { root, config, native, nativeRoot, faux, transport, request, record, make, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getDraining: () => draining };
+  const makePublic = async () => {
+    const configPath = join(root, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({ ...config, runtime: { ...config.runtime, model: "pi:openai-codex:gpt-5.5", session: {
+      ...config.runtime.session, modelSwitch: { enabled: true, olderWritersStopped: true },
+    } } }));
+    const loaded = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
+    const resolved = { ...loaded, runtime: { ...loaded.runtime, model: config.runtime.model } };
+    const h = await createConfiguredAgentResponder({ config: resolved, cwd: root, runtime: runtimeFor("A"), runtimeForModel: (ref) => runtimeFor(ref.model),
+      runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } });
+    cleanup.push(() => dispose(h)); return h;
+  };
+  return { root, config, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getDraining: () => draining };
 }
 
-it("same-model no-ID wakes dispatch the current chain without a switch; no-ID model changes refuse", async () => {
-  const f = await fixture(); await f.seed(); const h = await f.make(true);
+it.each([false, true])("same-model no-ID wakes inherit the chain; explicit no-ID changes refuse (public=%s)", async (publicConfig) => {
+  const f = await fixture(publicConfig); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
   await h.respond(f.request("fictional-web-message", "faux:B"), { append: async () => {} });
   const before = await f.record(); expect(before.version).toBe(4); expect(before.native.chain).toHaveLength(2);
@@ -119,12 +145,13 @@ it("operator per-attempt UUIDs select the original cold path before native prepa
   expect(f.transport).toHaveBeenCalledTimes(3);
 });
 
-it("Web retry and responder restart reuse the persisted message id without a new billed generation", async () => {
-  const f = await fixture(); await f.seed();
+it.each([false, true])("Web retry/reopen never authorize a new billed generation (public=%s)", async (publicConfig) => {
+  const f = await fixture(publicConfig); await f.seed();
   // Force the paid producer boundary without an expensive large-history setup.
   // Real evidence capture, producer dispatch, billing and durable state remain real.
+  const h = await f.make(true);
   vi.spyOn(f.native, "buildHandoff").mockReturnValue({ status: "budget_failure", reason: "fixture-forced-summary" });
-  const h = await f.make(true), request = f.request("fictional-persisted-user-message", "faux:B");
+  const request = { ...f.request("fictional-persisted-user-message", "faux:B"), text: "Fictional blocked input must never replay" };
   f.faux.setResponses([reply("Fictional invalid structured summary")]);
   await expect(h.respond(request, { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
   const inspect = async () => { const owner = await f.getStore().beginProviderSessionPreparation!(request.conversationId, "fictional-inspection"); try { return (await owner.read()).pending!; } finally { await owner.abort(); } };
@@ -134,6 +161,21 @@ it("Web retry and responder restart reuse the persisted message id without a new
   await f.dispose(h); const restarted = await f.make(true);
   await expect(restarted.respond(f.request("fictional-persisted-user-message", "faux:B"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
   const redelivered = await inspect(); expect(redelivered.authorizationGeneration).toBe(0); expect(redelivered.authorizations).toEqual(first.authorizations); expect(redelivered.attempts).toEqual(first.attempts); expect(f.transport).toHaveBeenCalledTimes(calls);
+  if (publicConfig) {
+    await expect(restarted.respond({ ...request, metadata: { source: "web", web: { trigger: "job" } } }, { append: async () => {} }))
+      .rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
+    expect(f.transport).toHaveBeenCalledTimes(calls);
+    const build = f.native.buildHandoff.bind(f.native);
+    vi.spyOn(f.native, "buildHandoff").mockImplementation((view, options) => options.summary
+      ? build(view, options) : { status: "budget_failure", reason: "fixture-forced-summary" });
+    f.faux.setResponses([reply(summary), reply("Fictional newly authorized answer")]);
+    await restarted.respond({ ...f.request("fictional-next-persisted-id", "faux:B"), text: "Fictional next explicit input" }, { append: async () => {} });
+    expect(f.transport).toHaveBeenCalledTimes(calls + 2); // One paid producer + ordinary incoming turn.
+    expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+    const messages = await f.getStore().load(request.conversationId);
+    expect(messages.some((message) => message.content === request.text)).toBe(false);
+    expect(messages.at(-2)?.content).toBe("Fictional next explicit input");
+  }
 });
 
 it("real typed root contention drains without waiting on a pinned foreign claim or replaying the Web message", async () => {
@@ -252,4 +294,117 @@ it("identity seam requires a host-stamped Web source and excludes background aut
   expect(persistedWebDeliveryId(request)).toBe("fictional-message");
   expect(persistedWebDeliveryId({ ...request, metadata: { web: { turnId: "fictional-turn" }, tui: { requestId: randomUUID() } } })).toBeUndefined();
   for (const metadata of [{ cron: {} }, { webhook: {} }, { processJob: {} }, { source: "tui" }, { source: "acp" }, { source: undefined }]) expect(persistedWebDeliveryId({ ...request, metadata: { ...request.metadata, ...metadata } })).toBeUndefined();
+});
+
+async function nativeFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) files.push(...await nativeFiles(join(root, entry.name)));
+    else if (entry.name.endsWith(".jsonl")) files.push(join(root, entry.name));
+  }
+  return files;
+}
+async function modelChanges(root: string) {
+  return (await Promise.all((await nativeFiles(root)).map((file) => readFile(file, "utf8"))))
+    .flatMap((text) => text.trim().split("\n").map((line) => JSON.parse(line)))
+    .filter((record) => record.kind === "model_change");
+}
+it.each([false, true])("public config switches once before incoming dispatch, including different-model reopen (fresh=%s)", async (fresh) => {
+  const f = await fixture(true);
+  if (!fresh) await f.seed();
+  const h = await f.makePublic();
+  if (fresh) {
+    f.faux.setResponses([reply("Fictional initial A answer")]);
+    await h.respond(f.request("fictional-first-id"), { append: async () => {} });
+  }
+  const before = await f.record(); expect(before.version).toBe(3);
+  const canonicalPath = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
+  const sourcePath = (await nativeFiles(f.nativeRoot))[0]!;
+  let incomingDispatches = 0;
+  f.transport.mockImplementation((...args) => {
+    if (args[0].id === "B") {
+      incomingDispatches++;
+      const record = JSON.parse(readFileSync(canonicalPath, "utf8"));
+      expect(record.version).toBe(4); expect(record.providerSession.modelKey).toBe("faux:B");
+      expect(readFileSync(sourcePath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.kind === "model_change")).toHaveLength(1);
+    }
+    return f.originalTransport(...args);
+  });
+  f.faux.setResponses([reply(summary), reply("Fictional incoming B answer")]);
+  const seen: unknown[] = [];
+  await h.respond(f.request("fictional-switch-id", "faux:B"), { append: async () => {
+    seen.push(await f.record()); expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+  } });
+  const switched = await f.record(); expect(switched.version).toBe(4); expect(switched.native.chain).toHaveLength(2);
+  expect(switched.providerSession.modelKey).toBe("faux:B"); expect(seen.length).toBeGreaterThan(0); expect(incomingDispatches).toBe(1);
+  expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+  const calls = f.transport.mock.calls.length;
+  await f.dispose(h); const reopened = await f.makePublic();
+  f.faux.setResponses([reply("Fictional retry B answer")]);
+  await reopened.respond(f.request("fictional-switch-id", "faux:B"), { append: async () => {} });
+  expect(f.transport).toHaveBeenCalledTimes(calls + 1); // Ordinary dispatch, no summary.
+  expect((await f.record()).lastSwitch).toEqual(switched.lastSwitch);
+  expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+});
+it("public no-ID change refuses before root authority bootstrap", async () => {
+  const f = await fixture(true); await f.seed(); const before = await f.record(), h = await f.makePublic();
+  await expect(h.respond(f.request(undefined, "faux:B"), { append: async () => {} }))
+    .rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+  expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(1);
+  expect((await readdir(join(f.root, "history"))).some((name) => name.includes("native-history-root"))).toBe(false);
+});
+it.each(["reset", "retention"])("public activation %s deletes the whole upgraded native chain", async (kind) => {
+  const f = await fixture(true); await f.seed(); const h = await f.make(true);
+  f.faux.setResponses([reply(summary), reply("Fictional B answer")]);
+  await h.respond(f.request("fictional-upgrade-id", "faux:B"), { append: async () => {} });
+  expect(await nativeFiles(f.nativeRoot)).toHaveLength(2); await f.dispose(h);
+  if (kind === "reset") await f.getStore().reset!("web:fictional-thread");
+  else {
+    // Retention uses file age; age only this fictional canonical fixture.
+    const old = new Date("2000-01-01T00:00:00Z");
+    for (const name of (await readdir(join(f.root, "history"))).filter((name) => name.endsWith(".history.json"))) await utimes(join(f.root, "history", name), old, old);
+    const successor = await f.makePublic(); f.faux.setResponses([reply("Fictional successor answer")]);
+    await successor.respond({ ...f.request("fictional-successor-id"), conversationId: "web:fictional-successor" }, { append: async () => {} });
+    await f.dispose(successor);
+  }
+  expect(await f.getStore().load("web:fictional-thread")).toEqual([]);
+  expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
+  expect(await nativeFiles(f.nativeRoot)).toHaveLength(kind === "reset" ? 0 : 1);
+});
+
+it("public constructor rejects missing acknowledgement before acquiring or upgrading roots", async () => {
+  const f = await fixture();
+  await expect(createConfiguredAgentResponder({ config: { ...f.config, runtime: { ...f.config.runtime, session: {
+    ...f.config.runtime.session, modelSwitch: { enabled: true },
+  } } } })).rejects.toThrow("stopped older writers");
+  expect(await readdir(f.root)).toEqual(["IDENTITY.md"]);
+});
+
+it("public upgrade reconciles a legacy pending turn, refusing missing evidence without replay", async () => {
+  const f = await fixture(true); await f.seed();
+  const abandoned = await f.getStore().beginProviderSessionTurn!("web:fictional-thread", "fictional-abandoned-run", {
+    modelKey: "faux:A", reconciliation: { purpose: "execution", ownerKey: "web:fictional-thread",
+      initial: { persistText: "Fictional abandoned input", timestamp: "2000-01-01T00:00:00.000Z" } },
+  });
+  // Fixture simulates storage left after abandoned admission, not a process-kill
+  // drill. No provider/tool call belongs to this abandoned turn.
+  await abandoned.abort();
+  const calls = f.transport.mock.calls.length, h = await f.makePublic();
+  await expect(h.respond(f.request("fictional-post-interruption-id", "faux:B"), { append: async () => {} }))
+    .rejects.toThrow("native journal evidence");
+  expect(f.transport).toHaveBeenCalledTimes(calls); // Storage-only settlement.
+  const settled = await f.record(); expect(settled.version).toBe(3);
+  expect(settled.messages.some((message: { content: string }) => message.content.includes("interrupted"))).toBe(true);
+  // Absent native evidence cannot be invented. A new explicit current-model
+  // turn seeds its fresh epoch; a later explicit switch can then upgrade it.
+  f.faux.setResponses([reply("Fictional new A answer")]);
+  await h.respond(f.request("fictional-new-current-id"), { append: async () => {} });
+  f.faux.setResponses([reply(summary), reply("Fictional new explicit B answer")]);
+  await h.respond({ ...f.request("fictional-later-switch-id", "faux:B"), text: "Fictional new explicit input" }, { append: async () => {} });
+  const record = await f.record(); expect(record.version).toBe(4); expect(record.native.chain).toHaveLength(2);
+  expect(record.messages.some((message: { content: string }) => message.content.includes("Fictional abandoned input"))).toBe(true);
+  expect(record.messages.some((message: { content: string }) => message.content.includes("interrupted"))).toBe(true);
+  expect(record.messages.at(-2).content).toBe("Fictional new explicit input");
+  expect(f.transport.mock.calls.length - calls).toBeLessThanOrEqual(3); // Current turn + summary + new turn, never replay.
+  expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
 });

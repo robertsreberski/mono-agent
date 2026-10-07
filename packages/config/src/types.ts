@@ -298,6 +298,11 @@ export interface MonoAgentConfig {
        * (non-cron) turns are unaffected. Default false (no behavior change).
        */
       readonly isolateProactive?: boolean;
+      /** OFF-default Web-only durable model switching. Stop older writers first. */
+      readonly modelSwitch?: {
+        readonly enabled: boolean;
+        readonly olderWritersStopped?: true;
+      };
     };
   };
   /**

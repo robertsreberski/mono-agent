@@ -11,6 +11,81 @@
     {
       "if": {
         "required": [
+          "runtime"
+        ],
+        "properties": {
+          "runtime": {
+            "required": [
+              "session"
+            ],
+            "properties": {
+              "session": {
+                "required": [
+                  "modelSwitch"
+                ],
+                "properties": {
+                  "modelSwitch": {
+                    "required": [
+                      "enabled"
+                    ],
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "runtime": {
+            "properties": {
+              "session": {
+                "properties": {
+                  "mode": {
+                    "const": "continuous"
+                  },
+                  "modelSwitch": {
+                    "required": [
+                      "olderWritersStopped"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "providers": {
+            "required": [
+              "piNative"
+            ],
+            "properties": {
+              "piNative": {
+                "required": [
+                  "piSessionsRoot"
+                ],
+                "properties": {
+                  "piSessionsRoot": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
           "tools"
         ],
         "properties": {
@@ -352,6 +427,28 @@
               ],
               "type": "boolean",
               "default": false
+            },
+            "modelSwitch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "description": "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot and explicit olderWritersStopped acknowledgement. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); no-ID model changes refuse. Pending messages are not queued or replayed.",
+                  "examples": [
+                    true
+                  ],
+                  "type": "boolean",
+                  "default": false
+                },
+                "olderWritersStopped": {
+                  "description": "Explicit operator acknowledgement: stop all older writers and back up host/native roots before enabling model switching. Must be true when supplied and required when enabled. Older binaries refuse upgraded conversations; mixed writers are prohibited. Rollback requires restoring a consistent backup, not disabling this flag.",
+                  "examples": [
+                    true
+                  ],
+                  "type": "boolean",
+                  "const": true
+                }
+              }
             }
           }
         }

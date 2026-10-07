@@ -72,6 +72,8 @@ export const CORE_CONFIG_FIELD_IDS = {
   "runtime.session.rolloverTimezone": true,
   "runtime.session.rolloverNotice": true,
   "runtime.session.isolateProactive": true,
+  "runtime.session.modelSwitch.enabled": true,
+  "runtime.session.modelSwitch.olderWritersStopped": true,
   "concurrency.maxConcurrentRuns": true,
   "concurrency.maxPendingRuns": true,
   "context.identityPath": true,
@@ -421,6 +423,12 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         value: session.rolloverNotice === true ? "yes" : "no",
         jsonPresent: json.runtime?.session?.rolloverNotice !== undefined,
       }),
+      ...(session.modelSwitch?.enabled ? [
+        toField({ id: "runtime.session.modelSwitch.enabled", label: "Web model switching", value: "yes",
+          jsonPresent: json.runtime?.session?.modelSwitch?.enabled !== undefined }),
+        toField({ id: "runtime.session.modelSwitch.olderWritersStopped", label: "Older writers stopped acknowledgement", value: "yes",
+          jsonPresent: json.runtime?.session?.modelSwitch?.olderWritersStopped !== undefined }),
+      ] : []),
       toField({
         id: "runtime.session.isolateProactive",
         label: "Isolate proactive runs",

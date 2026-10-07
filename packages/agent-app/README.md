@@ -45,7 +45,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   recovery never reruns a model or tool. Host cancellation wins over a completed
   native seal, and manual compaction changes metadata rather than answers.
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
-  The private model-switch staging seam preserves owned preparation through
+  The opt-in Web model-switch host preserves owned preparation through
   runtime/history decorators and serializes logical-conversation admission before claims. Web's
   host-stamped `source: "web"` and persisted inbound user-message ID identify
   explicit delivery; borrowed Web metadata on TUI/ACP does not authorize work.
@@ -54,11 +54,26 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   never the base model on a native-authority conversation.
   Same-model requests without that ID may dispatch the current owned native
   chain without authorizing switch work; guarded model changes and unsupported
-  dispatch fallbacks refuse before rotation or dispatch. The staging-only gate
+  dispatch fallbacks refuse before rotation or dispatch. The opt-in gate
   can reject detached same-conversation work started during a turn with retryable
   `native_switch_busy`; it never waits on its own claim. Retryable
   `native_switch_busy` drains only bounded inactive owners after claim release,
-  never automatically replaying the message. Public config remains unexposed.
+  never automatically replaying the message. Enable only with
+  `runtime.session.modelSwitch: { "enabled": true, "olderWritersStopped": true }`,
+  continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
+  existing roots acquire native authority lazily under ownership; method presence
+  is not acknowledgement. Back up host/native stores and stop every older writer
+  first. Older binaries refuse upgraded v4 conversations and root scans, but this
+  is not a universal old-writer admission barrier: mixed writers are prohibited.
+  Rollback means stopping writers and restoring the consistent backup, not
+  disabling the option or stripping format markers. Defaults and explicit OFF
+  leave existing behavior and on-disk bytes unchanged. Only Web persisted
+  `started.userMessageId` authorizes a switch/new summary generation: at most two
+  billed summary calls per switch per generation, never an automatic repeat of
+  an outcome-unknown call. Pending messages are not queued or replayed. Native
+  switch-back reuse requires positive provider/API/account compatibility; otherwise
+  a fitting structured handoff is required. Over-limit/capacity cold changes on
+  upgraded chains remain fail-closed.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.

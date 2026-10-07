@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add OFF-default Web-only durable model switching through
+  `runtime.session.modelSwitch.enabled`, requiring explicit
+  `olderWritersStopped: true`, continuous sessions and durable Pi storage.
+  Persisted Web message IDs bound summary billing; pending messages never replay.
+  Stop older writers before upgrade; rollback requires restoring a backup.
+
 - Keep undeclared no-ID wakes on the durable current model, not the base model;
   explicit other-model requests still refuse. The staging-only conversation gate
   can return retryable `native_switch_busy` for detached same-conversation work.
