@@ -1,11 +1,14 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { evidenceDigest } from "@mono-agent/harness";
+import { JsonlSessionRepo, MemorySessionRepo } from "@mono-agent/harness/session-store.js";
 import { createMonoRuntime, type RuntimeNativePreparationStorage } from "@mono-agent/runtime-adapter";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
+import type { CanonicalJournalDescriptor } from "../durable-model-switch-contract.js";
 import { ModelSwitchPayloadStore, serializeModelSwitchArtifact } from "../model-switch-payloads.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, prepareNativeSwitchProjection, nativeSwitchArtifactFits } from "../harness/model-switch-preparation.js";
@@ -171,31 +174,39 @@ it.each(["provider", "api"])("refuses raw native envelopes on same-model reopeni
 
 it("falls through a near-allowance 30-journal native artifact before intent, and redelivery cannot get stuck", async () => {
   const f = await setup();
-  // Build a real long retained chain, not caller-fabricated descriptors. Each
-  // intervening epoch binds and seals a fictional operation under the host turn.
+  // Bootstrap predecessor fixtures directly: this regression needs 30 real,
+  // validated journals, not 28 repetitions of switch lifecycle publication.
+  // The final switch/intent/billing/redelivery below still use the real store.
+  await f.prep.abort();
+  const canonical = JSON.parse(await readFile(f.canonicalPath, "utf8"));
+  const prefixes: CanonicalJournalDescriptor[] = [];
   for (let index = 0; index < 28; index++) {
-    const captured = await f.prep.captureNativeEvidence(), source = (await f.prep.read()).source;
-    if (source.status !== "supported") throw new Error("Expected bound source");
-    const model = index % 2 === 0 ? "A" : "B";
-    const incoming = { ...f.incoming, snapshot: { ...f.incoming.snapshot, model: { ...f.incoming.snapshot.model, id: model }, provenance: { ...provenance, model } } };
-    const state = createPreparedModelSwitchState({ source, sources: captured.sources, incoming: incoming.snapshot, native: f.native,
-      targetEpoch: (index + 30).toString(16).padStart(64, "0"), timestamp: 17, messageId: `fictional-chain-delivery-${index}`, outputReserve: 2000,
-      reservation: { canonicalBytes: 1048576, artifactBytes: 1048576, retainedNativeBytes: 1048576, headerCopyBytes: 1048576, pendingBytes: 1048576 } });
-    const result = await advancePreparedModelSwitch({ preparation: f.prep, native: f.native, incoming, state, view: captured.view,
-      messageId: `fictional-chain-delivery-${index}`, exclusiveWriters: true });
-    if (result.status !== "ready") throw new Error("Expected native fixture transition");
-    const turn = await f.prep.admit({ modelKey: `faux:${model}` });
-    const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
-    const session = await repo.open((await repo.listOwned()).find((row: { id: string }) => row.id === turn.providerSessionId)!);
-    await session.beginTurn(`chain-${index}`, {}, "synthetic", undefined);
+    const repo = new MemorySessionRepo(), model = index % 2 === 0 ? "A" : "B";
+    const epoch = (index + 30).toString(16).padStart(64, "0");
+    const handleId = createHash("sha256").update("mono-agent-provider-session-v2\0").update(bucket).update("\0").update(epoch).digest("hex");
+    const session = await repo.create({ id: handleId, cwd: "/fictional",
+      hostAuthority: canonical.native.authority, assertOwned: async () => {} });
+    await session.beginTurn(`prefix-${index}`, {}, "synthetic", undefined);
     await session.write("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
-    await session.write("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", api: "faux-api", id: model } });
-    await session.openOperation(`chain-op-${index}`, { model: { provider: "faux", api: "faux-api", id: model }, nativeProvenance: { ...provenance, model } });
-    await session.appendMessage({ role: "user", content: `Fictional intervening chain fact ${index}`, timestamp: 17 });
-    await session.closeOperation(`chain-op-${index}`, "completed"); await session.endTurn(`chain-${index}`, "completed"); await session.sync(); await session.close(); await repo.close();
-    await (await turn.prepareCommit([{ role: "user", content: `Fictional intervening chain fact ${index}` }], { providerSessionSynced: true })).commit();
-    f.prep = await f.store.beginProviderSessionPreparation(bucket, `chain-preparation-${index}`);
+    await session.write("handle_binding", { handleId: session.metadata.id, baseRevision: 0, authoritative: true, model: { provider: "faux", api: "faux-api", id: model } });
+    await session.openOperation(`prefix-op-${index}`, { model: { provider: "faux", api: "faux-api", id: model }, nativeProvenance: { ...provenance, model } });
+    await session.appendMessage({ role: "user", content: `F${index}`, timestamp: 17 });
+    await session.closeOperation(`prefix-op-${index}`, "completed"); await session.endTurn(`prefix-${index}`, "completed");
+    // In-memory schema validation constructs exact native records, then one
+    // private fixture file write replaces per-record fsync/28 root transactions.
+    await writeFile(join(f.base, "native", "mono-v2", "journals", `${session.metadata.journalId}.jsonl`),
+      [session.metadata, ...session.records].map((record) => JSON.stringify(record)).join("\n") + "\n", { mode: 0o600 });
+    prefixes.push({ journalId: session.metadata.journalId, epoch, ordinal: index,
+      handleId: session.metadata.id, predecessorJournalId: prefixes.at(-1)?.journalId ?? null, ownerKey: bucket, historyBucket: bucket,
+      sourceTipId: session.tip, sourceSeq: session.seq, sourceDigest: evidenceDigest(session.records), provenance: { ...provenance, model } });
+    await session.close(); await repo.close();
   }
+  // Canonical fixture authority names the exact published prefix; subsequent
+  // capture checks all header ownership, record schemas, linkage, tips/digests.
+  canonical.native.chain = [...prefixes, ...f.captured.sources.map((source, index) => ({ ...source, ordinal: index + prefixes.length,
+    predecessorJournalId: index ? f.captured.sources[index - 1]!.journalId : prefixes.at(-1)!.journalId }))];
+  await writeFile(f.canonicalPath, JSON.stringify(canonical) + "\n");
+  f.prep = await f.store.beginProviderSessionPreparation(bucket, "large-chain-preparation");
   // Fill with opaque native reasoning: native envelopes are large, but the
   // approved neutral handoff references (rather than copies) that reasoning.
   let captured = await f.prep.captureNativeEvidence(), source = (await f.prep.read()).source;
@@ -234,7 +245,7 @@ it("falls through a near-allowance 30-journal native artifact before intent, and
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce(); expect(f.incoming.produceHandoffSummary).toHaveBeenCalledOnce();
   expect((await f.prep.readHandoff(result.switchId, result.artifact)).artifact.nativeProjection).toBeUndefined();
   expect(await advance()).toEqual(result); expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce(); await f.prep.abort();
-}, 60000);
+});
 
 it("treats the maximum serialized artifact bound as native-unfit too", async () => {
   const f = await setup(), proposal = prepareNativeSwitchProjection(f.native, f.captured.view, f.state)!;
