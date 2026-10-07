@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -16,6 +16,8 @@ import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "../configu
 import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../agent-root-coordinator.js";
 import { completionOnlyRuntime } from "../configured-runtime-capabilities.js";
 import { loadAppCoreConfig } from "../app-config.js";
+// White-box fixture uses Web's existing persisted inbound identity, not an APP ledger.
+import { WebStore } from "../../../web/dist/store.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
@@ -312,6 +314,18 @@ async function modelChanges(root: string) {
 it.each([false, true])("public config switches once before incoming dispatch, including different-model reopen (fresh=%s)", async (fresh) => {
   const f = await fixture(true);
   if (!fresh) await f.seed();
+  const stateDir = join(await realpath(f.root), "web-state");
+  let web = await WebStore.open({ stateDir, clock: () => new Date("2000-01-01T00:00:00Z") });
+  cleanup.push(async () => web.close());
+  web.replaceAgents([{ sourceId: "fictional-agent", label: "Fictional Agent", status: "online", health: "running", supportsAttachments: false,
+    models: [], efforts: [], modelOptions: {}, runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
+    updatedAt: "2000-01-01T00:00:00Z" }]);
+  const thread = web.createThread("fictional-agent");
+  const started = web.beginTurn({ threadId: thread.id, text: "Fictional current input", attachmentIds: [] });
+  const persistedId = started.userMessageId;
+  expect(web.getMessage(persistedId)?.id).toBe(persistedId);
+  web.close(); web = await WebStore.open({ stateDir });
+  expect(web.getMessage(persistedId)?.id).toBe(persistedId);
   const h = await f.makePublic();
   if (fresh) {
     f.faux.setResponses([reply("Fictional initial A answer")]);
@@ -332,7 +346,7 @@ it.each([false, true])("public config switches once before incoming dispatch, in
   });
   f.faux.setResponses([reply(summary), reply("Fictional incoming B answer")]);
   const seen: unknown[] = [];
-  await h.respond(f.request("fictional-switch-id", "faux:B"), { append: async () => {
+  await h.respond(f.request(persistedId, "faux:B"), { append: async () => {
     seen.push(await f.record()); expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
   } });
   const switched = await f.record(); expect(switched.version).toBe(4); expect(switched.native.chain).toHaveLength(2);
@@ -341,7 +355,7 @@ it.each([false, true])("public config switches once before incoming dispatch, in
   const calls = f.transport.mock.calls.length;
   await f.dispose(h); const reopened = await f.makePublic();
   f.faux.setResponses([reply("Fictional retry B answer")]);
-  await reopened.respond(f.request("fictional-switch-id", "faux:B"), { append: async () => {} });
+  await reopened.respond(f.request(persistedId, "faux:B"), { append: async () => {} });
   expect(f.transport).toHaveBeenCalledTimes(calls + 1); // Ordinary dispatch, no summary.
   expect((await f.record()).lastSwitch).toEqual(switched.lastSwitch);
   expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
