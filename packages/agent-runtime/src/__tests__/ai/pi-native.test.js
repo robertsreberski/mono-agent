@@ -1443,6 +1443,7 @@ describe("pi-native AgentHarness bridge", () => {
       maxTurns: 1,
     }));
     expect(result).toMatchObject({ text: "", error: null, turnDisposition: "silent" });
+    expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
     expect(result.diagnostics).toMatchObject({ max_turns_hit: false });
     expect(result.events.some((event) => event.type === "user"
       && event.message?.content?.some((part) => part.type === "tool_result"))).toBe(true);
@@ -1537,6 +1538,99 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result).toMatchObject({ error: null, text: "", turnDisposition: "silent" });
     expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
       part.type === "tool_result" && part.is_error && part.content.includes("not_sole_call")))).toBe(true);
+  });
+
+  it.each(["Here is the draft.", ""])("finalizes a thinking-only presentation turn once (reply: %j)", async (reply) => {
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "SuggestReplies", description: "Present choices", inputSchema: { type: "object", properties: {} } }],
+    });
+    const call = vi.spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "Choices attached beneath reply text" }] });
+    let retryContext;
+    let requests = 0;
+    try {
+      const model = setup({ reasoning: true });
+      faux.setResponses([
+        () => { requests++; return fauxAssistantMessage([fauxThinking("Private draft, not reply text"), fauxToolCall("SuggestReplies", {}, { id: "choices-empty" })], { stopReason: "toolUse" }); },
+        () => { requests++; return fauxAssistantMessage([]); },
+        (context) => { requests++; retryContext = structuredClone(context); return fauxAssistantMessage(reply ? [fauxText(reply)] : [fauxThinking("Still private")]); },
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Draft an email" }],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+      }));
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(requests).toBe(3); // two original provider messages, one finalization
+      expect(result).toMatchObject({ error: null, text: reply });
+      expect(result.text).not.toContain("Private");
+      expect(getCurrentTools(retryContext.messages)).toEqual([]);
+      expect(retryContext.messages.at(-1)).toMatchObject({ role: "user" });
+      expect(JSON.stringify(retryContext.messages.at(-1))).toContain("user-facing reply");
+      expect(result.runtimeWarnings.filter((warning) => warning.warning_kind === "empty_reply_retry")
+        .map((warning) => warning.outcome)).toEqual(["started", reply ? "text" : "empty"]);
+      // Framework-authored user text must never reach channel history/activity.
+      expect(result.events.filter((event) => event.type === "user").every((event) =>
+        event.message.content.every((block) => block.type === "tool_result"))).toBe(true);
+    } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+  });
+
+  it.each(["cancelled", "provider failure", "max turns", "pending question"])("does not finalize %s runs", async (kind) => {
+    const model = setup();
+    const controller = new AbortController();
+    let requests = 0;
+    const submit = vi.fn(async () => {});
+    faux.setResponses([() => {
+      requests++;
+      if (kind === "cancelled") controller.abort();
+      return fauxAssistantMessage(kind === "pending question"
+        ? [fauxToolCall("AskParent", { question: "Which draft should I use?" }, { id: "parent-1" })]
+        : kind === "max turns" ? [fauxToolCall("Read", { file_path: "missing-draft.txt" }, { id: "read-limit" })] : [],
+      kind === "provider failure" ? { stopReason: "error", errorMessage: "Provider unavailable" }
+        : kind === "max turns" ? { stopReason: "toolUse" } : {});
+    }]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Draft an email" }],
+      abortSignal: controller.signal,
+      ...(kind === "max turns" ? { maxTurns: 1, allowedTools: ["Read"], toolContext: createToolContext({ workspace: sessionsRoot }) } : {}),
+      ...(kind === "pending question" ? { allowedTools: ["AskParent"], askParentController: { submit } } : {}),
+    }));
+    expect(requests).toBe(1);
+    expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
+    if (kind === "cancelled") expect(result.cancelled).toBe(true);
+    if (kind === "provider failure") expect(result.error).toContain("Provider unavailable");
+    if (kind === "max turns") expect(result.diagnostics.max_turns_hit).toBe(true);
+    if (kind === "pending question") expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors abort during reply finalization", async () => {
+    const model = setup();
+    const controller = new AbortController();
+    let requests = 0;
+    faux.setResponses([
+      () => { requests++; return fauxAssistantMessage([]); },
+      () => { requests++; controller.abort(); return fauxAssistantMessage([]); },
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Draft an email" }], abortSignal: controller.signal,
+    }));
+    expect(requests).toBe(2);
+    expect(result.cancelled).toBe(true);
+    expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "cancelled" }));
+  });
+
+  it("preserves provider failures from reply finalization", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([]),
+      fauxAssistantMessage([], { stopReason: "error", errorMessage: "Finalization provider unavailable" }),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Draft an email" }],
+    }));
+    expect(result.error).toContain("Finalization provider unavailable");
+    expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "failed" }));
   });
 
   it.each(["Saved.", ""])("returns presentation-tool answer text through the real harness (final: %j)", async (finalText) => {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix empty Pi replies after tool use with one same-session, tools-disabled
+  finalization request; keep reasoning private and presentation attachments
+  additive to normal reply text.
+
 - Fix the `sharp` dependency vulnerability across the agent runtime,
   documentation and marketing sites.
 

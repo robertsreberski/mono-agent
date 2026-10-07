@@ -54,6 +54,8 @@ describe("ProposeRestart request-scoped tool", () => {
           const first = await client.callTool({ name: PROPOSE_RESTART_TOOL_NAME, arguments: { reason: `Useful\n${"x".repeat(300)}` } });
           expect(first.structuredContent).toEqual({ status: "proposed", restarted: false });
           expect(JSON.stringify(first.content)).toContain("Nothing has been restarted");
+          expect(JSON.stringify(first.content)).toContain("beneath your reply text");
+          expect(JSON.stringify(first.content)).toContain("must still write your user-facing reply as normal assistant text");
           const second = await client.callTool({ name: PROPOSE_RESTART_TOOL_NAME, arguments: { reason: "another" } });
           expect(second.structuredContent).toEqual({ status: "already_proposed", restarted: false });
         } finally {

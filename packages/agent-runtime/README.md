@@ -99,6 +99,20 @@ messages call only `SuggestReplies`, `PublishReplyFile`, or `ProposeRestart`
 is not promoted. If that chain has no text, the existing whole-run streamed-text
 fallback still applies. This reply selection is shared by all channels.
 
+If a normally settled Pi turn has no reply text, the runtime requests the
+user-facing reply once more in the same session with all tools disabled. Thinking
+is never used as reply text. Cancelled, failed, max-turn-limited, silent,
+AskParent-pending, and structured-output turns are excluded. A second empty reply
+still follows the host's existing `empty_response` path. Runtime warnings named
+`empty_reply_retry` report attempt 1 and its outcome (`started`, then `text`,
+`empty`, `cancelled`, or `failed`). Hosts or runs can override the framework nudge
+with `prompts.emptyReplyFinalization`; no new configuration toggle is required.
+Like structured-output finalization, the nudge remains in native provider-session
+history but is not projected as a user message into channel history or Activity.
+Cancellation or provider failure during either plain-text or structured-output
+finalization declines native terminal recovery and uses the host's retire-and-reseed
+fallback.
+
 See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ### Anthropic cache retention
