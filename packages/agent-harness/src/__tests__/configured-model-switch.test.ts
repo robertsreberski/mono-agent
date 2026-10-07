@@ -82,6 +82,12 @@ it("private configured override prepares extensions once, emits one switch, and 
   expect(extension).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce(); expect(settleCleanup).toHaveBeenCalledOnce();
   const record = await f.canonical(); expect(record.version).toBe(4); expect(record.providerSession).toMatchObject({ modelKey: "faux:B", revision: 1 });
   expect(record.native.chain).toHaveLength(2); expect(record.lastCommit.turnId).toBe(result.metadata.runId); expect(record.native.projection).toEqual(record.lastSwitch.artifact);
+  const rows = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
+  const operation = rows.find((row) => row.kind === "operation_start" && row.payload.config?.model?.id === "B");
+  // Actual prepared credential is unsupported for the fictional transport, so
+  // pin explicit unknown rather than trusting switch-time metadata or options.
+  expect(operation.payload.config.nativeProvenance).toMatchObject({ provider: "faux", model: "B", account: null });
+  expect(operation.payload.config.nativeProvenance.api).toBe(operation.payload.config.model.api);
   expect(await f.changes()).toHaveLength(1); expect(f.retire).not.toHaveBeenCalled(); expect(f.inspect).toHaveBeenCalled();
   expect(await f.store.recoverProviderSessionTurn("fictional")).toEqual({ status: "clean" });
   expect((await f.store.load("fictional")).at(-2)?.content).toBe("Fictional override");
@@ -247,4 +253,18 @@ it("root authority contention is typed/retryable, preserves evidence and publish
   expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); expect(await f.changes()).toHaveLength(0);
   await other.abort(); f.faux.setResponses([text(summary), text("Fictional serialized retry")]);
   expect((await f.makeHarness("B", true).run(f.request("busy-delivery"))).failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(3);
+});
+
+it("unguarded default and unguarded prepared turns emit no nativeProvenance", async () => {
+  const f = await fixture(); await f.seed();
+  const runtime = f.runtimeFor("A");
+  const lease = await runtime.prepareNativeDispatch!("Fictional unguarded rules", { model: parseMonoRuntimeModelReference("faux:A"),
+    abortSignal: new AbortController().signal, messages: [{ role: "user", content: "Fictional unguarded prepared input" }], allowedTools: [],
+    piSessionsRoot: f.nativeRoot, sessionId: "fictional-unguarded-prepare", sessionKeepAlive: true, compaction: { enabled: false } });
+  try { f.faux.setResponses([text("Fictional unguarded reply")]); expect((await lease.run()).error).toBeFalsy(); }
+  finally { await lease.close(); }
+  const records = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
+  const starts = records.filter((record) => ["turn_start", "operation_start"].includes(record.kind));
+  expect(starts.some((record) => record.payload.config?.model?.id === "A")).toBe(true);
+  expect(starts.every((record) => !Object.hasOwn(record.payload.config, "nativeProvenance"))).toBe(true);
 });

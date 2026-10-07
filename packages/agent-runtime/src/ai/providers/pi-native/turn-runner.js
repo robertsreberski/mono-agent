@@ -296,6 +296,7 @@ export async function buildTurnHarness(runState, {
   maxRetryDelayMs,
   steeringMode,
   options,
+  nativeProvenance,
 }) {
   const harness = await createHarnessAdapter(session, {
     session,
@@ -320,6 +321,7 @@ export async function buildTurnHarness(runState, {
     inheritedProjection: options.nativeSessionProjection?.inherited,
     inheritedProjectionRef: options.nativeSessionProjection?.artifact,
     handoffDispatchBudget: options.nativeSessionProjection?.dispatchBudget,
+    nativeProvenance,
     promptCacheDiagnostics: options.promptCacheDiagnostics,
     cacheRetention: options.cacheRetention,
     onEvent: options.onEvent,

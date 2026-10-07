@@ -296,7 +296,9 @@ it("captures and projects composed checkpoints whose exact inherited prefix pred
   const positive = createEvidenceView({ ownerKey: bucket, historyBucket: bucket, segments: captured.view.segments.map((segment) => ({ ...segment,
     descriptor: { ...segment.descriptor, provenance: { ...segment.descriptor.provenance, account: "fictional-positive-account" } } })) });
   const projected = f.native.projectChain(positive, { ...options, target: { ...options.target, account: "fictional-positive-account" } });
-  expect(projected.status).toBe("ready"); expect(JSON.stringify(projected)).toContain("Fictional inherited checkpoint");
+  // Positive creation descriptors cannot manufacture missing per-operation
+  // credential proof for seeded history or administrative compaction.
+  expect(projected).toMatchObject({ status: "handoff_required", reason: "unknown_provider" });
   const { evidenceDigest } = await import("@mono-agent/harness");
   const forged = JSON.parse(JSON.stringify(captured.view));
   forged.segments[1].records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);

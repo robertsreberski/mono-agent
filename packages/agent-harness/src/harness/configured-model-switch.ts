@@ -6,7 +6,7 @@ import { MAX_JOURNAL_CHAIN, MAX_MODEL_SWITCH_BYTES, ModelSwitchCapacityError } f
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./runtime-execution.js";
-import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, type PreparedSwitchProducer } from "./model-switch-preparation.js";
+import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, prepareNativeSwitchProjection, type PreparedSwitchProducer } from "./model-switch-preparation.js";
 
 /** @internal
  * @unstable Constructor capability, structurally callable but not
@@ -101,14 +101,21 @@ export async function prepareConfiguredModelSwitch(input: {
                 targetEpoch, timestamp: Date.now(), messageId, outputReserve: incoming.snapshot.model.maxTokens,
                 reservation: { canonicalBytes: 0, artifactBytes: 0, retainedNativeBytes: 0, headerCopyBytes: 0, pendingBytes: 0 } });
               const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget!, timestamp: state.identity.timestamp, hostContext: {} };
+              let nativeProposal = prepareNativeSwitchProjection(policy.native, captured.view, state);
+              if (nativeProposal && (await checkInheritedPrefix(nativeProposal.nativeProjection.messages, incoming.snapshot.model, compaction)).status !== "ready") nativeProposal = undefined;
               const prepared = policy.native.prepareHandoff(captured.view, handoffOptions);
-              if (prepared.status !== "prepared") throw budgetFailure(prepared.reason);
+              if (!nativeProposal && prepared.status !== "prepared") throw budgetFailure(prepared.reason);
               // Bound ANY subsequently accepted structured artifact, including a
               // not-yet-produced summary: its serialized projection is capped by
               // historyAllowance. Add that cap to the real empty summary envelope.
+              // Intentionally also checked for a fitting native candidate: exact
+              // artifact-byte refusal can still select structured handoff below.
+              // Do not publish intent/authorize paid fallback without proving
+              // its worst-case inherited prefix is compactable.
               const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget!.historyAllowance);
               if (capacityFit.status !== "ready") throw budgetFailure(capacityFit.reason);
-              const proposal = policy.native.buildHandoff(captured.view, handoffOptions);
+              const proposal = nativeProposal ? { status: "ready" as const, messages: nativeProposal.nativeProjection.messages }
+                : policy.native.buildHandoff(captured.view, handoffOptions);
               // Prove the exact free projection's future compaction viability before
               // intent/paid work. Paid proposals are checked again before acceptance.
               if (proposal.status === "ready") {

@@ -34,6 +34,13 @@ export interface ModelSwitchArtifact {
   readonly attemptId: string | null;
   readonly artifact: Record<string, unknown>;
 }
+/** @internal Exact publication framing shared with native selection preflight. */
+export function serializeModelSwitchArtifact(state: ModelSwitchState, artifact: Record<string, unknown>, attemptId: string | null): Buffer {
+  const envelope: ModelSwitchArtifact = { version: 1, switchId: state.identity.switchId, ownerKey: state.identity.ownerKey,
+    historyBucket: state.identity.historyBucket, attemptId, artifact };
+  return boundedSwitchBytes(envelope, MAX_MODEL_SWITCH_BYTES);
+}
+
 const hash = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 const same = (a: ModelSwitchDirectoryIdentity, b: ModelSwitchDirectoryIdentity): boolean => a.dev === b.dev && a.ino === b.ino;
 const unchanged = (a: Stats, b: Stats): boolean => same(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
@@ -357,9 +364,7 @@ export class ModelSwitchPayloadStore {
       this.validateProposal(state, artifact);
       const attempt = state.attempts.find((entry) => entry.generation === state.authorizationGeneration && entry.producer === artifact.producer);
       if (state.phase !== "ready" && artifact.producer !== state.phase) throw new Error("Handoff producer does not match durable admission");
-      const envelope: ModelSwitchArtifact = { version: 1, switchId, ownerKey: state.identity.ownerKey, historyBucket: bucket,
-        attemptId: attempt?.id ?? null, artifact: structuredClone(artifact) };
-      const bytes = boundedSwitchBytes(envelope, MAX_MODEL_SWITCH_BYTES), reference = { id: hash(bytes), hash: hash(bytes) };
+      const bytes = serializeModelSwitchArtifact(state, artifact, attempt?.id ?? null), reference = { id: hash(bytes), hash: hash(bytes) };
       const next = acceptHandoffReference(state, reference); await this.owner(owner, next);
       if (bytes.byteLength > state.reservation.artifactBytes) throw new RangeError("Handoff exceeds reserved artifact capacity");
       // Ready replay does not consume another reservation or rewrite content.
@@ -378,7 +383,17 @@ export class ModelSwitchPayloadStore {
     });
   }
   private validateProposal(state: ModelSwitchState, artifact: Record<string, unknown>): void {
-    switchObject(artifact); switchKeys(artifact, ["version", "policy", "coverage", "summary", "checkpoint", "recent", "ledger", "retainedIds", "producer", "timestamp", "target", "budget"]);
+    switchObject(artifact); switchKeys(artifact, ["version", "policy", "coverage", "summary", "checkpoint", "recent", "ledger", "retainedIds", "producer", "timestamp", "target", "budget"], ["nativeProjection"]);
+    if (artifact.nativeProjection !== undefined) {
+      const projection = artifact.nativeProjection;
+      switchObject(projection); switchKeys(projection, ["version", "messages"]);
+      if (projection.version !== 1 || !Array.isArray(projection.messages) || !projection.messages.length
+        || projection.messages.some((message: unknown) => !message || typeof message !== "object"
+          || !["user", "assistant", "toolResult", "compactionSummary", "branchSummary"].includes((message as { role: string }).role))
+        || artifact.producer !== "checkpoint" || artifact.summary !== null || artifact.checkpoint !== null
+        || [artifact.recent, artifact.ledger, artifact.retainedIds].some((value) => !Array.isArray(value) || value.length)
+        || state.authorizationGeneration !== 0 || state.attempts.length !== 0) throw new Error("Invalid native switch projection");
+    }
     const sources = state.identity.sources.map(({ ordinal, epoch: _epoch, ...source }) => ({ ...source, epoch: ordinal }));
     if (artifact.version !== 1 || artifact.policy !== state.identity.projectionPolicy || !Array.isArray(artifact.recent) || !Array.isArray(artifact.ledger)
       || !Array.isArray(artifact.retainedIds) || artifact.timestamp !== state.identity.timestamp || !["outgoing", "checkpoint", "incoming"].includes(artifact.producer as string)

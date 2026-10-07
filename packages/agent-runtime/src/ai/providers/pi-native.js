@@ -646,6 +646,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
       const auth = await prepareDispatchAuth(prepared.piModels, prepared.runtime.model, options.abortSignal);
       if (auth.model.provider !== resolved.provider || auth.model.id !== resolved.model) throw new Error("Prepared dispatch does not match its canonical requested model");
       prepared.runtime = { ...prepared.runtime, model: auth.model };
+      prepared.nativeProvenance = auth.provenance;
       // Pin actual declarations, not names/config guesses; execute closures stay
       // attached to this exact runState and are never initialized a second time.
       for (const tool of prepared.tools) tool.parameters = freezeDispatchData(copyDispatchData(tool.parameters));
@@ -713,6 +714,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
     // surface as output from this run.
     harness = await buildTurnHarness(runState, {
       session: runState.session,
+      nativeProvenance: options.nativeSessionAuthority ? prepared?.nativeProvenance : undefined,
       piModels,
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,

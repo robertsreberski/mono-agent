@@ -292,6 +292,11 @@ supplies authority, and ambiguous mixed arguments reject. Neither API nor the
 header guard enables host switching, supplies canonical history/retention
 transactions, or grants replay permission. No default host enables v3 writes.
 
+Chain compatibility checks also require positive provider/API/account proof on
+all content-bearing operations, not just frozen epoch descriptors. The guarded
+prepared runtime pins the credentials actually selected for each later turn;
+old or unproven evidence takes handoff. Array/default projection remains unchanged.
+
 ## Public API
 
 ### Start here

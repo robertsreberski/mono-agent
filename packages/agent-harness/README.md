@@ -243,6 +243,31 @@ native-owner handling, guarded-chain cold fallback, APP key forwarding and lifec
 required before it can be enabled. Fixture reset/retention proof is not proof
 of every configured APP cleanup path.
 
+Native switch-back behind the internal constructor capability accepts a complete
+fitting chain only when provider/API/account match both each epoch descriptor
+and every content-bearing operation's dispatch-pinned provenance. Intervening
+turns, compacted evidence and later credential changes cannot borrow an epoch's
+creation-time proof. Missing historical provenance remains unknown and selects
+the approved handoff path. Legacy retained evidence is not a promise of native
+eligibility. Ordinary same-model reopening remains account-ungated. Raw native
+projection reopening still requires the accepted provider/API; a changed provider/API is
+refused before admission. Neutral structured handoffs retain their previous
+API-ungated ordinary reopening behaviour.
+
+Native envelopes are retained in one immutable host artifact (not copied into
+the new journal), using the free checkpoint acceptance/recovery slot. Summary
+billing, frozen budgets and inherited-prefix growth checks still apply. Native
+selection measures the exact accepted envelope against both the artifact-byte
+reservation and the serialized file limit, not just a token allowance. Byte
+refusal takes the approved handoff chain. The configured host intentionally
+still preflights the worst-case structured-summary inherited prefix even for a
+native candidate: byte refusal can select that fallback, and intent must not
+start paid work whose accepted projection cannot later be compacted. This may
+conservatively refuse otherwise fitting native history; it is not clipping or
+successful fallback. This substrate does not expose config or activate APP;
+persisted delivery forwarding
+and root drain/serialization remain prerequisites for a supported opt-in.
+
 ## Architecture
 
 Memory reads receive the host-confirmed `retainedContext` signal from history

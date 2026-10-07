@@ -20,7 +20,9 @@ const summary = { intent: ["Fictional goal"], constraints: ["No deployment appro
 async function segment(id, epoch, predecessorJournalId = null, messages = [text(id)], guarded = false) {
   const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional", ...(guarded ? { hostAuthority, assertOwned: async () => {} } : {}) });
   await store.beginTurn(`turn-${id}`);
+  await store.openOperation(`op-${id}`, { model: { provider: provenance.provider, api: provenance.api, id }, nativeProvenance: provenance });
   for (let i = 0; i < messages.length; i++) await store.appendMessage(messages[i], `${id}-message-${i}`);
+  await store.closeOperation(`op-${id}`, "completed");
   await store.endTurn(`turn-${id}`, "completed");
   const descriptor = { ownerKey: "fictional-owner", historyBucket: "fictional-bucket", epoch, journalId: store.metadata.journalId,
     handleId: id, predecessorJournalId, sourceDigest: evidenceDigest(store.records), sourceSeq: store.seq, sourceTipId: store.tip, provenance };
@@ -59,7 +61,10 @@ it("persists opt-in composed coverage and replays inherited material exactly onc
   const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId, [text("B")], true);
   b.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   const frozen = view([a, b]);
-  await b.store.appendComposedCompaction({ summary: "A and B checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, frozen);
+  await b.store.beginTurn("composed-turn");
+  await b.store.openOperation("composed-op", { model: { provider: provenance.provider, api: provenance.api, id: "B" }, nativeProvenance: provenance }, "compaction");
+  await b.store.appendComposedCompaction({ summary: "A and B checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, view([a, refreshed(b)]));
+  await b.store.closeOperation("composed-op", "completed"); await b.store.endTurn("composed-turn", "completed");
   expect(b.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
   const c = await segment("C", 3, b.header.journalId); const result = projectContext(view([a, refreshed(b), c]), { ...options, switching: true });
   expect(result.messages).toHaveLength(2); expect(result.messages[0].summary).toBe("A and B checkpoint");
@@ -204,7 +209,7 @@ it("view and store share exact repair projection timestamps and last-account sel
   const clock = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
   try {
     const a = await segment("repair-differential", 0); const store = a.store;
-    await store.beginTurn("repair-turn"); await store.openOperation("repair-op", {});
+    await store.beginTurn("repair-turn"); await store.openOperation("repair-op", { model: { provider: provenance.provider, api: provenance.api, id: "A" }, nativeProvenance: provenance });
     clock.mockReturnValue(1700000000010);
     await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "repair-call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 10 }, "repair-call-message");
     for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "repair-call", name: "Read", messageId: "repair-call-message", admission }, { operationId: "repair-op" });
@@ -346,4 +351,23 @@ it("does not project a guarded journal under a contradictory host owner", async 
   const foreign = { ...a, header: { ...a.header, hostAuthority: { ...hostAuthority, ownerKey: "foreign" } } };
   expect(() => view([foreign])).toThrow("upgraded header owner");
   expect(() => view([a])).not.toThrow();
+});
+
+it.each([undefined, null, "unknown", "different-account"])("does not trust switch-time account after a later operation uses %s", async (account) => {
+  const a = await segment("A", 0), b = await segment("B", 1, a.header.journalId);
+  await b.store.beginTurn("later-turn");
+  await b.store.openOperation("later-op", { model: { provider: provenance.provider, api: provenance.api, id: "B" },
+    ...(account === undefined ? {} : { nativeProvenance: { ...provenance, account } }) });
+  await b.store.appendMessage(text("Later B evidence"));
+  await b.store.closeOperation("later-op", "completed"); await b.store.endTurn("later-turn", "completed");
+  const evidence = view([a, refreshed(b)]);
+  expect(projectContext(evidence, { ...options, switching: true })).toMatchObject({ status: "handoff_required",
+    reason: account === "different-account" ? "different_account" : account === undefined ? "unknown_provider" : "unknown_account" });
+  expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Later B evidence");
+});
+it.each(["provider", "api"])("requires later-operation %s to match the target too", async (key) => {
+  const a = await segment("A", 0);
+  const changed = structuredClone(a.records); changed.find((record) => record.kind === "operation_start").payload.config.nativeProvenance[key] = "different";
+  const evidence = view([{ ...a, records: changed, descriptor: { ...a.descriptor, sourceDigest: evidenceDigest(changed) } }]);
+  expect(projectContext(evidence, { ...options, switching: true })).toMatchObject({ status: "handoff_required", reason: `different_${key}` });
 });
