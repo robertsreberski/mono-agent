@@ -204,15 +204,16 @@ it("configured queued responder disposal does not wait for a foreign gate or pro
   } finally { release(); await active; await allSettled; }
 });
 
-it("runtime disposal drains its own prepared lease, not another runtime's lease on the root", async () => {
+it("bounded runtime disposal preserves own and foreign protection leases until true settlement", async () => {
   const f = await fixture(), first = f.runtimeFor("A"), foreign = f.runtimeFor("B");
   const options = { model: f.config.runtime.model, messages: [], abortSignal: new AbortController().signal };
   const own = await first.prepareNativeDispatch!("Fictional own instructions", options); cleanup.push(() => own.close());
   const other = await foreign.prepareNativeDispatch!("Fictional foreign instructions", { ...options, model: { provider: "faux", model: "B", reference: "faux:B" } }); cleanup.push(() => other.close());
-  let disposed = false; const disposing = first.disposeAllSessions!().then(() => { disposed = true; });
-  await Promise.resolve(); await Promise.resolve(); expect(disposed).toBe(false);
-  try { await own.close(); await disposing; expect(disposed).toBe(true); other.assertReady?.(); }
-  finally { await other.close(); }
+  const owner = await acquireAgentRootOwnership(f.root); cleanup.push(() => releaseAgentRootOwnershipWhenIdle(owner));
+  const settled = vi.fn(), waiting = owner.coordinator.waitForSettlement().then(settled);
+  await first.disposeAllSessions!(); expect(settled).not.toHaveBeenCalled();
+  try { await own.close(); await Promise.resolve(); expect(settled).not.toHaveBeenCalled(); other.assertReady?.(); }
+  finally { await other.close(); await waiting; }
 });
 
 it("conversation gate serializes siblings and mutations before claims, drains typed busy after release, never replays", async () => {
