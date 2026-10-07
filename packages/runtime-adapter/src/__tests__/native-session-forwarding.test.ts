@@ -1,6 +1,8 @@
 import { it, expect, vi, beforeEach } from "vitest";
 const prepared = vi.hoisted(() => ({ snapshot: Object.freeze({ model: { provider: "faux", id: "fixture", api: "faux", contextWindow: 100000, maxTokens: 4096 },
   provenance: { provider: "faux", api: "faux", model: "fixture", account: null }, authSource: "provider", systemPrompt: "Resolved rules", tools: [], messages: [] }),
+  assertReady: vi.fn(), checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })),
+  produceHandoffSummary: vi.fn(async (_input: unknown) => ({ status: "summary_rejected" as const, reason: "fictional-refusal" })),
   run: vi.fn(async (_binding?: unknown) => ({ text: "Prepared fictional answer" })), close: vi.fn(async () => {}) }));
 const kernel = vi.hoisted(() => ({ run: vi.fn(async (_system: string, _options: Record<string, any>) => ({ text: "Fictional answer" })),
   nativePreparedDispatch: "v1" as "v1" | undefined,
@@ -32,6 +34,10 @@ it.each([false, true])("forwards typed native preparation and its exact lease wi
   const forwarded = kernel.prepareNativeDispatch.mock.calls[0]![1];
   expect(forwarded).toMatchObject({ model, piSessionsRoot: "/fictional/native" }); expect(forwarded.abortSignal).toBe(signal);
   expect(forwarded).not.toHaveProperty("sandbox"); expect(kernel.run).not.toHaveBeenCalled();
+  lease.assertReady!(); expect(prepared.assertReady).toHaveBeenCalledOnce();
+  const producer = { prepared: { status: "prepared" as const, checkpoints: [], ledger: [], recent: [], older: [], coverage: [] }, outputReserve: 256 };
+  expect(lease.checkHandoffSummary!(producer)).toEqual({ status: "ready" });
+  expect(await lease.produceHandoffSummary!(producer)).toMatchObject({ status: "summary_rejected" }); expect(prepared.produceHandoffSummary).toHaveBeenCalledWith(producer);
   const binding = { sessionId: "fictional-handle", sessionKeepAlive: true };
   expect((await lease.run(binding)).text).toBe("Prepared fictional answer"); expect(prepared.run).toHaveBeenCalledWith(binding);
   await lease.close(); expect(prepared.close).toHaveBeenCalledTimes(1);

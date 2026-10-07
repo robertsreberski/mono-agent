@@ -7,13 +7,16 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCal
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRuntime } from "../../runtime.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
-import { preparePiNativeDispatch, generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { preparePiNativeDispatch, generatePiNativeResponse, createDynamicCredentialStore } from "../../ai/providers/pi-native.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { probeNativeAccountProvenance } from "../../ai/providers/pi-native/account-provenance.js";
+import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData, PREPARED_DISPATCH_MAX_AGE_MS } from "../../ai/providers/pi-native/prepared-dispatch.js";
+import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { Type } from "@earendil-works/pi-ai";
 
 const cleanups = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 async function fixture(provider = "faux", api) {
   const root = await mkdtemp(join(tmpdir(), "native-prepared-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
   const faux = fauxProvider({ provider, ...(api ? { api } : {}), models: [{ id: "fixture", ...(api ? { api } : {}), contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
@@ -51,6 +54,7 @@ it("resolves actual built-in/MCP/StructuredOutput declarations before opening an
   const instruction = vi.fn((prompt) => `${prompt}\nFictional StructuredOutput instructions`);
   const lease = await prepare(f, { allowedTools: ["Read"], mcpServers: { fictional: { type: "http", url: endpoint.url } },
     prompts: { structuredOutputInstruction: instruction },
+    compaction: { enabled: true }, // Proactive estimation must not augment the prepared prompt a second time.
     outputSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } });
   expect(await readdir(f.root)).toEqual([]); expect(endpoint.methods.filter((method) => method === "tools/list")).toHaveLength(1);
   expect(lease.snapshot.tools.map((tool) => tool.name)).toEqual(["Read", "Lookup", "StructuredOutput"]);
@@ -212,4 +216,256 @@ it("cleans successfully initialized MCP clients when authentication then fails",
   f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { resolve: async () => undefined } } });
   await expect(prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } })).rejects.toThrow();
   expect(closed).toHaveBeenCalledTimes(1); expect(endpoint.methods).toContain("tools/list"); expect(await readdir(f.root)).toEqual([]);
+});
+
+
+it.each([false, true])("invalid binding retains the direct/routed lease and resource claim: routed=%s", async (routed) => {
+  const f = await fixture(), cleanup = vi.fn(), closed = vi.spyOn(Client.prototype, "close"), endpoint = await mcp();
+  const runtime = routed ? createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models }, cleanup }) }) : undefined;
+  const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } }, runtime);
+  await expect(lease.run({ model: f.options.model })).rejects.toThrow("only host session binding");
+  await expect(lease.run({ [Symbol("invalid-binding")]: true })).rejects.toThrow("only host session binding");
+  await expect(lease.run(Object.create({ model: f.options.model }))).rejects.toThrow("only host session binding");
+  await expect(lease.run({ get sessionId() { throw new Error("Fictional binding getter rejection"); } })).rejects.toThrow("binding getter rejection");
+  expect(closed).not.toHaveBeenCalled(); expect(cleanup).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Corrected binding")])]);
+  expect((await lease.run()).text).toBe("Corrected binding");
+  await lease.close(); expect(closed).toHaveBeenCalledTimes(1); expect(cleanup).toHaveBeenCalledTimes(routed ? 1 : 0);
+  await expect(lease.run()).rejects.toThrow("no longer available");
+});
+
+it("routed prepared failure normalizes authentication and records one attempt without failover", async () => {
+  const f = await fixture(), close = vi.fn(), run = vi.fn(async () => ({ error: "401 Unauthorized: invalid API key", failureKind: "provider_unavailable",
+    text: null, events: [], usage: {}, cancelled: false }));
+  const resolveAttempt = vi.fn(async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1",
+    prepareNativeDispatch: async () => ({ snapshot: {}, run, close }) } }));
+  const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }, { model: { provider: "faux", model: "backup" } }],
+    resolveAttempt, sessionTurnReconciliation: "v1" });
+  const lease = await router.prepareNativeDispatch("Rules", f.options), result = await lease.run();
+  expect(result.failureKind).toBe("provider_auth");
+  expect(result.failoverHistory).toMatchObject([{ model: f.options.model, failureKind: "provider_auth" }]);
+  expect(run).toHaveBeenCalledOnce(); expect(resolveAttempt).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+});
+
+it.each([false, true])("close settles rather than rethrowing a consumed run's rejection: routed=%s", async (routed) => {
+  const direct = await createPreparedDispatchLease(async ({ ready }) => { await ready({}); throw new Error("Fictional execution rejection"); });
+  const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1", prepareNativeDispatch: async () => direct } }) });
+  const lease = routed ? await router.prepareNativeDispatch("Fictional rules", f.options) : direct;
+  await expect(lease.run()).rejects.toThrow("Fictional execution rejection");
+  await expect(lease.close()).resolves.toBeUndefined(); await expect(lease.close()).resolves.toBeUndefined();
+});
+
+it("refuses a stale prepared lease before any native mutation or provider call", async () => {
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f), now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now + PREPARED_DISPATCH_MAX_AGE_MS + 1);
+  expect(() => lease.assertReady()).toThrow("lease expired");
+  expect((await lease.run()).error).toContain("lease expired"); expect(await readdir(f.root)).toEqual([]); expect(provider).not.toHaveBeenCalled();
+});
+
+it("requires ten-minute OAuth validity after refresh and never accepts a near-expiry pin", async () => {
+  const f = await fixture("openai-codex", "openai-codex-responses");
+  let credential = { type: "oauth", access: token("fictional-account", 1), expires: Date.now() + 60_000 };
+  const refresh = vi.fn(async () => credential), store = { read: async () => credential, list: async () => [], delete: vi.fn(),
+    modify: async (_id, update) => { credential = await update(credential); return credential; } };
+  const models = createModels({ credentials: store });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh, toAuth: (value) => ({ apiKey: value.access }) } } });
+  await expect(prepare(f, { piResolvedModels: models })).rejects.toThrow("expires too soon");
+  expect(refresh).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
+});
+
+it("unknown-account long runs refuse refresh distinctly without touching the shared store", async () => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
+  const credential = { type: "oauth", access: token("fictional-account", 1), expires: now + 60 * 60_000 };
+  const read = vi.fn(async () => credential), models = createModels({ credentials: { read, list: async () => [], delete: vi.fn(), modify: vi.fn() } });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh: vi.fn(), toAuth: (value) => ({ apiKey: value.access }) } } });
+  const pin = await prepareDispatchAuth(models, f.faux.getModel()); const reads = read.mock.calls.length;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000);
+  await expect(pin.models.getAuth(pin.model)).resolves.toMatchObject({ auth: { apiKey: credential.access } });
+  expect(() => pin.assertValid(true)).toThrow("lease expired");
+  clock.mockReturnValue(credential.expires - 5 * 60_000 + 1);
+  await expect(pin.models.getAuth(pin.model)).rejects.toThrow("Prepared credential refresh refused"); expect(read).toHaveBeenCalledTimes(reads);
+});
+
+it("the pinned collection refuses another model even when it shares the same provider/API", async () => {
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), pin = await prepareDispatchAuth(f.models, f.faux.getModel());
+  expect(pin.models.getModel("faux", "other")).toBeUndefined();
+  await expect(pin.models.getAuth({ ...pin.model, id: "other" })).rejects.toThrow("cannot select another model");
+  const result = await pin.models.completeSimple({ ...pin.model, id: "other" }, { messages: [{ role: "user", content: "Fictional input", timestamp: 0 }] });
+  expect(result.errorMessage).toContain("cannot select another model"); expect(provider).not.toHaveBeenCalled();
+});
+
+it("preserves prototype methods and their original private-field receiver", async () => {
+  const f = await fixture();
+  class Provider {
+    #delegate = f.faux.provider;
+    get id() { return this.#delegate.id; }
+    get auth() { return this.#delegate.auth; }
+    getModels() { return this.#delegate.getModels(); }
+    streamSimple(...args) { return this.#delegate.streamSimple(...args); }
+  }
+  const models = createModels(); models.setProvider(new Provider());
+  const pin = await prepareDispatchAuth(models, f.faux.getModel());
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Prototype preserved")])]);
+  const result = await pin.models.completeSimple(pin.model, { messages: [{ role: "user", content: "Fictional input", timestamp: 0 }] });
+  expect(result.errorMessage).toBeUndefined();
+  expect(result).toMatchObject({ stopReason: "stop" });
+  expect(result.content[0].text).toBe("Prototype preserved");
+});
+
+it("real Codex provider serializes frozen TypeBox/StructuredOutput declarations without mutation", async () => {
+  const provider = openaiCodexProvider(), model = provider.getModels()[0], schema = Type.Object({ answer: Type.String() }, { additionalProperties: false });
+  const legacyKind = Symbol.for("TypeBox.Kind"), declaration = Type.Unsafe(schema);
+  declaration[legacyKind] = "Object"; declaration.properties.answer[legacyKind] = "String";
+  const parameters = freezeDispatchData(copyDispatchData(declaration));
+  expect(parameters[legacyKind]).toBe("Object"); expect(parameters.properties.answer[legacyKind]).toBe("String");
+  expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String");
+  const credential = { type: "oauth", access: token("fictional-account", 1), expires: Date.now() + 3600000, refresh: "fictional-refresh" };
+  const models = createModels({ credentials: { read: async () => credential, list: async () => [], delete: vi.fn(), modify: vi.fn() } }); models.setProvider(provider);
+  const pin = await prepareDispatchAuth(models, model), payload = vi.fn();
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Fictional transport refusal", { status: 400 }));
+  const result = await pin.models.completeSimple(pin.model, { messages: [{ role: "system", content: "Fictional instructions",
+    toolsAdded: [{ name: "StructuredOutput", description: "Fictional structure", parameters }] }, { role: "user", content: "Fictional input", timestamp: 0 }] },
+    { transport: "sse", maxRetries: 0, onPayload: payload });
+  expect(result.errorMessage).toContain("Fictional transport refusal"); expect(fetch).toHaveBeenCalledOnce();
+  expect(payload).toHaveBeenCalledOnce(); expect(payload.mock.calls[0][0].tools[0].parameters).toMatchObject({ type: "object", required: ["answer"] });
+  expect(parameters["~kind"]).toBe(schema["~kind"]); expect(parameters.properties.answer["~kind"]).toBe("String"); expect(Object.isFrozen(parameters.properties.answer)).toBe(true);
+});
+
+const producerInput = () => ({ prepared: { status: "prepared", checkpoints: [], ledger: [{ kind: "tool", outcome: "unknown" }],
+  recent: [], older: [], coverage: [] }, outputReserve: 256 });
+const summaryText = () => JSON.stringify(Object.fromEntries(["intent", "constraints", "decisions", "completedWork", "failures", "openWork", "nextActions", "references"]
+  .map((key) => [key, key === "intent" ? ["Fictional pending work"] : []])));
+it.each([false, true])("one typed prepared producer uses pinned auth, no tools/session/retry and leaves dispatch reusable: routed=%s", async (routed) => {
+  const f = await fixture(), requests = [], resolve = vi.fn(async () => ({ auth: { apiKey: "fictional-pinned-producer" } }));
+  f.models.setProvider({ ...f.faux.provider, auth: { apiKey: { resolve } }, streamSimple(model, context, options) {
+    requests.push({ model, context, options }); return f.faux.provider.streamSimple(model, context, options); } });
+  const router = routed ? createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) }) : undefined;
+  const lease = await prepare(f, { allowedTools: ["Read"], piTransport: "auto" }, router), input = producerInput();
+  expect(lease.checkHandoffSummary(input)).toEqual({ status: "ready" }); expect(await readdir(f.root)).toEqual([]);
+  f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())]), fauxAssistantMessage([fauxText("Incoming dispatch")])]);
+  const result = await lease.produceHandoffSummary(input); expect(result.status).toBe("ready");
+  expect(requests[0].context.messages[0].toolsAdded ?? []).toEqual([]); expect(requests[0].options.maxRetries).toBe(0); expect(requests[0].options.transport).toBe("auto");
+  expect(requests[0].options.apiKey).toBe("fictional-pinned-producer"); expect(resolve).toHaveBeenCalledOnce();
+  expect(await readdir(f.root)).toEqual([]); await expect(lease.produceHandoffSummary(input)).rejects.toThrow("no longer available");
+  expect((await lease.run()).text).toBe("Incoming dispatch"); expect(requests).toHaveLength(2); expect(resolve).toHaveBeenCalledOnce();
+});
+it("producer preflight refuses unfit complete input without consuming the producer or creating native state", async () => {
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f);
+  const oversized = producerInput(); oversized.prepared.older = [{ text: "x".repeat(400000) }];
+  expect(lease.checkHandoffSummary(oversized)).toMatchObject({ status: "budget_failure" });
+  expect(await lease.produceHandoffSummary(oversized)).toMatchObject({ status: "budget_failure" });
+  expect(provider).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
+  f.faux.setResponses([fauxAssistantMessage([fauxText(summaryText())])]); expect((await lease.produceHandoffSummary(producerInput())).status).toBe("ready");
+});
+it.each(["malformed", "truncated", "error"])("producer rejects %s without automatic rebilling", async (variant) => {
+  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f);
+  f.faux.setResponses([variant === "error" ? new Error("Fictional summary error") : fauxAssistantMessage([fauxText(variant === "malformed" ? "not JSON" : summaryText())],
+    variant === "truncated" ? { stopReason: "length" } : {})]);
+  expect((await lease.produceHandoffSummary(producerInput())).status).toBe("summary_rejected");
+  await expect(lease.produceHandoffSummary(producerInput())).rejects.toThrow("no longer available"); expect(provider).toHaveBeenCalledOnce();
+});
+it("close waits for an active producer before closing native/MCP resources; run rejects without consumption", async () => {
+  const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close");
+  let enter, release; const entered = new Promise((resolve) => { enter = resolve; }), gate = new Promise((resolve) => { release = resolve; });
+  f.faux.setResponses([async () => { enter(); await gate; return fauxAssistantMessage([fauxText(summaryText())]); }]);
+  const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
+  const production = lease.produceHandoffSummary(producerInput()); await entered;
+  await expect(lease.run()).rejects.toThrow("still running"); let done = false; const closing = lease.close().then(() => { done = true; });
+  await Promise.resolve(); expect(done).toBe(false); expect(closed).not.toHaveBeenCalled();
+  release(); expect((await production).status).toBe("ready"); await closing; expect(closed).toHaveBeenCalledOnce(); expect(await readdir(f.root)).toEqual([]);
+});
+
+
+it.each(["same", "different", "missing", "failure", "provider", "api", "short"])("long native run crosses the old window with %s-account refresh under the original store lock", async (variant) => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now(), requests = [];
+  let credential = { type: "oauth", accountId: "fictional-selected", access: token("fictional-selected", 1), refresh: "fictional-old", expires: now + 10 * 60_000 + 5000 };
+  let locked = false;
+  const refresh = vi.fn(async (current) => {
+    expect(locked).toBe(true); expect(current.refresh).toBe("fictional-rotated-by-peer");
+    if (variant === "failure") throw new Error("Fictional refresh refusal");
+    if (variant === "provider") models.getProvider("openai-codex").id = "foreign-provider";
+    if (variant === "api") models.setProvider({ ...models.getProvider("openai-codex"), getModels: () => [{ ...f.faux.getModel(), api: "foreign-api" }] });
+    const accountId = variant === "different" ? "fictional-other" : "fictional-selected";
+    return { ...current, accountId: variant === "missing" ? undefined : accountId, access: token(accountId, 2), refresh: "fictional-next", expires: Date.now() + (variant === "short" ? 240000 : 3600000) };
+  });
+  const store = { read: vi.fn(async () => credential), list: async () => [], delete: vi.fn(), modify: vi.fn(async (id, update) => {
+    expect(id).toBe("openai-codex"); expect(locked).toBe(false); locked = true;
+    try { credential = await update(credential) ?? credential; return credential; } finally { locked = false; }
+  }) };
+  const models = createModels({ credentials: store });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh, toAuth: (value) => ({ apiKey: value.access }) } },
+    streamSimple(model, context, options) { requests.push(options.apiKey); return f.faux.provider.streamSimple(model, context, options); } });
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const lease = await prepare(f, { piResolvedModels: models, allowedTools: ["Write"] }, createRuntime({ workspace: f.root }));
+  const original = credential.access;
+  f.faux.setResponses([() => { credential = { ...credential, refresh: "fictional-rotated-by-peer" }; clock.mockReturnValue(now + 6 * 60_000);
+    return fauxAssistantMessage([fauxToolCall("Write", { file_path: "effect.txt", content: "Fictional effect once" })]); }, fauxAssistantMessage([fauxText("Refreshed success")])]);
+  const result = await lease.run(); expect(await readFile(join(f.root, "effect.txt"), "utf8")).toBe("Fictional effect once");
+  expect(store.modify).toHaveBeenCalledOnce(); expect(refresh).toHaveBeenCalledOnce();
+  if (variant === "same") { expect(result.error).toBeNull(); expect(result.text).toBe("Refreshed success"); expect(requests).toEqual([original, credential.access]); }
+  else { expect(result.failureKind).toBe("safety_prepared_credentials"); expect(result.error).toContain("Prepared credential refresh refused"); expect(requests).toEqual([original]); }
+  if (variant === "different") expect(credential.accountId).toBe("fictional-other"); // Keep rotated tokens consistent, but do not use them in this lease.
+});
+
+it("locally rejects insufficient idle-age plus reserve after a resolver spent part of the token lifetime", async () => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
+  const credential = { type: "oauth", accountId: "fictional-selected", access: token("fictional-selected", 1), expires: now + 10 * 60_000 + 5000 };
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const models = createModels({ credentials: { read: async () => credential, list: async () => [], delete: vi.fn(), modify: vi.fn() } });
+  models.setProvider({ ...f.faux.provider, auth: { oauth: { refresh: vi.fn(), toAuth: (value) => { clock.mockReturnValue(now + 60_000); return { apiKey: value.access }; } } } });
+  await expect(prepare(f, { piResolvedModels: models })).rejects.toThrow("expires too soon"); expect(await readdir(f.root)).toEqual([]);
+});
+
+it("forgotten idle native leases expire and close MCP/runState exactly once without provider/native mutation", async () => {
+  const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close"), provider = vi.spyOn(f.faux.provider, "streamSimple");
+  // Capture just lease-age callbacks instead of advancing filesystem/network timers.
+  const observed = [];
+  const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, ms, ...args) => {
+    const actual = originalTimer(callback, ms, ...args); if (ms > 290000 && ms <= 300000) observed.push({ callback, actual }); return actual;
+  });
+  const second = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
+  expect(observed).toHaveLength(1); expect(observed[0].actual.hasRef()).toBe(false);
+  observed[0].callback(); await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce()); await second.close(); timer.mockRestore();
+  expect(closed).toHaveBeenCalledOnce(); expect(provider).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
+  await expect(second.run()).rejects.toThrow("no longer available"); expect(closed).toHaveBeenCalledOnce();
+});
+const originalTimer = globalThis.setTimeout;
+
+
+it("routed assertReady forwards the requested minimum start allowance without consuming the lease", async () => {
+  const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
+    resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) });
+  const lease = await prepare(f, {}, router), clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 29999);
+  expect(() => lease.assertReady(30000)).toThrow("start allowance"); expect(() => lease.assertReady(5000)).not.toThrow();
+  clock.mockReturnValue(lease.snapshot.expiresAt - 30000); expect(() => lease.assertReady(30000)).not.toThrow();
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Routed allowance")])]); expect((await lease.run()).text).toBe("Routed allowance");
+});
+
+it.each(["dynamic-read-only", "lying-modify", "persisting-dynamic"])("in-lease OAuth refresh requires persisted modification: %s", async (kind) => {
+  const f = await fixture("openai-codex", "openai-codex-responses"), now = Date.now();
+  let credential = { type: "oauth", accountId: "fictional-selected", access: token("fictional-selected", 1), refresh: "fictional-old", expires: now + 10 * 60_000 + 5000 };
+  const refresh = vi.fn(async () => ({ ...credential, access: token("fictional-selected", 2), refresh: "fictional-new", expires: Date.now() + 3600000 }));
+  const modifier = vi.fn(async (_id, update) => { credential = await update(credential) ?? credential; return credential; });
+  const resolver = Object.assign(async () => credential.access, { readCredential: async () => credential,
+    ...(kind === "persisting-dynamic" ? { modifyCredential: modifier } : {}) });
+  const store = kind === "lying-modify" ? { read: async () => credential, list: async () => [], delete: vi.fn(),
+    modify: vi.fn(async (_id, update) => await update(credential) ?? credential) } : createDynamicCredentialStore(undefined, resolver, []);
+  const models = createModels({ credentials: store }); models.setProvider({ ...f.faux.provider,
+    auth: { oauth: { refresh, toAuth: (value) => ({ apiKey: value.access }) } } });
+  const pin = await prepareDispatchAuth(models, f.faux.getModel()); vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000);
+  if (kind === "persisting-dynamic") { expect((await pin.models.getAuth(pin.model)).auth.apiKey).toBe(credential.access); expect(modifier).toHaveBeenCalledOnce(); expect(refresh).toHaveBeenCalledOnce(); }
+  else { await expect(pin.models.getAuth(pin.model)).rejects.toThrow("Prepared credential refresh refused"); expect(refresh).toHaveBeenCalledTimes(kind === "dynamic-read-only" ? 0 : 1); }
+  if (kind === "dynamic-read-only") { await expect(store.modify("openai-codex", refresh)).rejects.toThrow("persisting credential resolver"); expect(refresh).not.toHaveBeenCalled(); }
+});
+
+it("installed pi-ai Codex oauth.refresh returns a complete typed OAuth credential without normalisation", async () => {
+  const provider = openaiCodexProvider(), access = token("fictional-stock-account", 2);
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: access,
+    refresh_token: "fictional-rotated", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } }));
+  const refreshed = await provider.auth.oauth.refresh({ type: "oauth", accountId: "fictional-stock-account", access: token("fictional-stock-account", 1), refresh: "fictional-old", expires: 0 });
+  expect(refreshed).toMatchObject({ type: "oauth", access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
+  expect(refreshed.expires).toBeGreaterThan(Date.now() + 3500000); expect(fetch).toHaveBeenCalledOnce();
 });

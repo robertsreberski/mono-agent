@@ -531,6 +531,7 @@
 
 /**
  * @typedef {Object} NativeDispatchSnapshot
+ * @property {number} expiresAt Absolute latest start time (milliseconds).
  * @property {{provider: string, id: string, api: string, contextWindow: number, maxTokens: number}} model
  * @property {{provider: string, api: string, model: string, account: string|null}} provenance
  * @property {string} authSource Nonsecret provider-reported source, not an account proof.
@@ -551,8 +552,16 @@
  * @property {any} [nativeSessionProjection]
  */
 /**
+ * @typedef {{prepared: {status: "prepared", checkpoints: ReadonlyArray<Record<string, any>>, ledger: ReadonlyArray<Record<string, any>>, recent: ReadonlyArray<Record<string, any>>, older: ReadonlyArray<Record<string, any>>, coverage: ReadonlyArray<Record<string, any>>}, outputReserve: number}} NativeHandoffProducerRequest
+ * @typedef {Readonly<Record<"intent"|"constraints"|"decisions"|"completedWork"|"failures"|"openWork"|"nextActions"|"references", ReadonlyArray<string>>>} NativeHandoffSummary
+ * @typedef {{status: "ready", summary: NativeHandoffSummary, usage?: any, durationMs?: number}|{status: "summary_rejected", reason: string, usage?: any, durationMs?: number}|{status: "budget_failure", reason: string}} NativeHandoffProducerResult
+ */
+/**
  * @typedef {Object} NativePreparedDispatch
+ * @property {(remainingStartMs?: number) => void} [assertReady] Check lifetime before host P2 admission, without consuming the lease.
  * @property {NativeDispatchSnapshot} snapshot Deep-frozen nonsecret dispatch metadata.
+ * @property {(input: NativeHandoffProducerRequest) => {status: "ready"}|{status: "budget_failure", reason: string}} [checkHandoffSummary] Pure preflight; no billing or native mutation.
+ * @property {(input: NativeHandoffProducerRequest) => Promise<NativeHandoffProducerResult>} [produceHandoffSummary] One auth-pinned no-tools call per lease; host owns durable admission.
  * @property {(binding?: NativeDispatchBinding) => Promise<RuntimeResult>} run Single use; no router replay/failover, tools are not rebuilt.
  * @property {() => Promise<void>} close Idempotent; while running waits for its normal cleanup. Host owns concurrency/abort.
  */

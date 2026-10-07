@@ -129,6 +129,7 @@ export function contextUsageFromAssistantMessage(assistantMessage) {
  */
 export function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {}) {
   if (!message) return null;
+  if (message.includes("Prepared credential refresh refused:")) return "safety_prepared_credentials";
   if (message.startsWith("Handoff dispatch budget exceeded:")) return "safety_handoff_dispatch_budget";
   if (message.startsWith("Invalid protected native session authority")) return "safety_native_session_authority";
   if (maxTurnsHit) return "usage_limit";

@@ -1,7 +1,11 @@
+import { dirname } from "node:path";
+import { copyFile, truncate, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
+function frozenBudget(f: Awaited<ReturnType<typeof fixture>>) { validateFrozenHandoffBudget(f.budget); return f.budget; }
 import { createPendingInitialInput } from "../durable-turn-contract.js";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
@@ -224,4 +228,119 @@ it("aborts directly after marker loss and releases the logical claim for the nex
   const next = await store.beginProviderSessionPreparation("fictional", "second");
   await next.assertOwned(); expect(await markers(path)).toHaveLength(1); await next.abort();
   expect(await markers(path)).toEqual([]);
+});
+
+it("persists the exact frozen budget before production and exposes detached pending state after reopening", async () => {
+  const f = await fixture(await root()); f.state = { ...f.state, frozenBudget: structuredClone(frozenBudget(f)) };
+  const prep = await f.store.beginProviderSessionPreparation(bucket, "budget"), lease = await prep.beginModelSwitchStorage(f.state);
+  if (lease.status !== "owned") throw new Error("Expected switch"); await lease.admit("outgoing"); await prep.abort();
+  const reopened = openStore(f.base).store, next = await reopened.beginProviderSessionPreparation(bucket, "next");
+  const captured = await next.read(); expect(captured.pending?.frozenBudget).toEqual(f.budget);
+  (captured.pending!.frozenBudget as unknown as { inputTokens: number }).inputTokens = 999;
+  expect((await next.read()).pending?.frozenBudget).toEqual(f.budget); expect((await next.read()).pending?.attempts).toHaveLength(1);
+  await next.abort(); expect(await readFile(f.nativePath)).toEqual(f.original);
+});
+it("reads accepted pending/current artifacts under the same claim without admission or inferred budgets", async () => {
+  const f = await fixture(await root()); f.state = { ...f.state, frozenBudget: structuredClone(frozenBudget(f)) };
+  const prep = await f.store.beginProviderSessionPreparation(bucket, "artifact"), lease = await prep.beginModelSwitchStorage(f.state);
+  if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); const reference = await lease.accept(artifact(f));
+  const cached = await prep.readHandoff(f.state.identity.switchId, reference); expect(cached.budget).toEqual(f.budget); expect(cached.artifact).toEqual(artifact(f));
+  (cached.budget as unknown as { inputTokens: number }).inputTokens = 999;
+  expect((await prep.readHandoff(f.state.identity.switchId, reference)).budget).toEqual(f.budget);
+  await expect(prep.readHandoff(f.state.identity.switchId, { id: "a".repeat(64), hash: "a".repeat(64) })).rejects.toThrow("accepted");
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  expect((await prep.readHandoff(f.state.identity.switchId, reference)).budget).toEqual(f.budget); await prep.abort();
+  await expect(prep.readHandoff(f.state.identity.switchId, reference)).rejects.toThrow("no longer owned");
+});
+it("rejects changed frozen budget before intent publication and captures complete legacy evidence without inventing account ownership", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "capture");
+  await expect(prep.beginModelSwitchStorage({ ...f.state, frozenBudget: { ...frozenBudget(f), inputTokens: 999 } })).rejects.toThrow();
+  expect((await prep.read()).pending).toBeUndefined();
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: "not-legacy-proof" });
+  expect(captured.sources[0]!.provenance.account).toBeNull(); expect(captured.view.segments[0]!.entries.length).toBeGreaterThan(0);
+  expect(captured.view.segments[0]!.records.length).toBe(captured.sources[0]!.sourceSeq);
+  expect(Object.isFrozen(captured.view.segments[0]!.records)).toBe(true); expect(await readFile(f.nativePath)).toEqual(f.original);
+  await prep.abort();
+});
+it("captures the whole switched chain read-only and exposes typed pure handoff/native preparation", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "whole-chain"), lease = await prep.beginModelSwitchStorage(f.state);
+  if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "B", api: "faux-api", account: "unproven" });
+  expect(captured.sources).toHaveLength(2); expect(captured.view.segments).toHaveLength(2);
+  const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] } };
+  expect(f.native.prepareHandoff(captured.view, options).status).toBe("prepared");
+  const proposal = f.native.buildHandoff(captured.view, options); expect(proposal.status).toBe("ready"); expect(JSON.stringify(proposal)).toContain("Fictional source fact");
+  expect(f.native.projectChain(captured.view, options)).toMatchObject({ status: "handoff_required", reason: "unknown_account" });
+  expect(() => f.native.prepareHandoff(structuredClone(captured.view), options)).toThrow("unvalidated view");
+  const tiny = f.native.createBudget({ contextWindow: 20000, inputTokens: 100, outputReserve: 4096, hostContext: options.hostContext });
+  expect(f.native.prepareHandoff(captured.view, { ...options, budget: tiny })).toMatchObject({ status: "budget_failure" });
+  await prep.abort();
+});
+it("captures and projects composed checkpoints whose exact inherited prefix predates the switch reference frame", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "composed"), lease = await prep.beginModelSwitchStorage(f.state);
+  if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  const snapshot = await prep.read();
+  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
+  const metadata = (await repo.list()).find((entry) => entry.id === snapshot.native!.chain.at(-1)!.handleId)!;
+  const current = await repo.open(metadata); current.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: snapshot.native!.authority });
+  await current.appendCompaction({ summary: "Fictional inherited checkpoint", tokensBefore: 10, retainedTail: [] }, { version: 1,
+    sources: f.state.identity.sources.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }, { sourceTipId: current.tip, sourceSeq: current.seq });
+  await current.sync(); await current.close(); await repo.close();
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "B", api: "faux-api", account: null });
+  expect(captured.view.segments[1]!.entries.at(-1)?.type).toBe("compaction");
+  const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] } };
+  expect(f.native.buildHandoff(captured.view, options).status).toBe("ready");
+  const { createEvidenceView } = await import("@mono-agent/harness");
+  const positive = createEvidenceView({ ownerKey: bucket, historyBucket: bucket, segments: captured.view.segments.map((segment) => ({ ...segment,
+    descriptor: { ...segment.descriptor, provenance: { ...segment.descriptor.provenance, account: "fictional-positive-account" } } })) });
+  const projected = f.native.projectChain(positive, { ...options, target: { ...options.target, account: "fictional-positive-account" } });
+  expect(projected.status).toBe("ready"); expect(JSON.stringify(projected)).toContain("Fictional inherited checkpoint");
+  const { evidenceDigest } = await import("@mono-agent/harness");
+  const forged = JSON.parse(JSON.stringify(captured.view));
+  forged.segments[1].records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
+  forged.segments[1].descriptor.sourceDigest = evidenceDigest(forged.segments[1].records);
+  expect(() => createEvidenceView(forged)).toThrow("composed coverage");
+  await prep.abort();
+});
+
+
+it("capture rejects excess chain count and aggregate/single journal bytes before allocating or scanning records", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "bounded-capture");
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
+  const source = captured.sources[0]!;
+  const context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
+  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"); const scan = vi.spyOn(JournalReader.prototype, "scan");
+  await expect(f.native.captureEvidence(Array.from({ length: 33 }, () => source), context)).rejects.toThrow("journal/chain limit");
+  await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
+  await expect(f.native.captureEvidence([source], context)).rejects.toThrow("journal/chain limit");
+  await truncate(f.nativePath, 8 * 1024 * 1024 + 1);
+  const extra = join(dirname(f.nativePath), "fictional-extra.jsonl"); await copyFile(f.nativePath, extra);
+  await expect(f.native.captureEvidence([source, { ...source, ordinal: 1, predecessorJournalId: source.journalId, journalId: "fictional-extra" }], context)).rejects.toThrow("journal/chain limit");
+  expect(scan).not.toHaveBeenCalled(); scan.mockRestore();
+  await writeFile(f.nativePath, f.original);
+  const original = JournalReader.prototype.scan;
+  const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit, options) {
+    await truncate(f.nativePath, 16 * 1024 * 1024 + 1); return original.call(this, visit, options);
+  });
+  await expect(f.native.captureEvidence([source], context)).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
+  expect(growing).toHaveBeenCalledOnce(); growing.mockRestore(); await prep.abort();
+});
+
+
+it("capture maps missing and other filesystem errors to generic unavailable without target paths or causes", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "generic-capture");
+  const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
+  const source = captured.sources[0]!, context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
+  const check = async (sources: typeof captured.sources): Promise<void> => {
+    const error = await f.native.captureEvidence(sources, context).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error); expect((error as Error).message).toBe("Managed native journal evidence changed or is unavailable");
+    expect((error as Error).message).not.toContain(f.nativePath); expect(error).not.toHaveProperty("path"); expect(error).not.toHaveProperty("cause");
+  };
+  await check([{ ...source, journalId: "fictional-missing" }]); // lstat ENOENT
+  await check([{ ...source, journalId: "j".repeat(4096) }]); // other preflight filesystem failure
+  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js");
+  const scan = vi.spyOn(JournalReader.prototype, "scan").mockRejectedValueOnce(Object.assign(new Error(`EACCES: ${f.nativePath}`), { code: "EACCES", path: f.nativePath }));
+  await check([source]); scan.mockRestore(); await prep.abort();
 });

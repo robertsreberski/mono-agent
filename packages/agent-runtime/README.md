@@ -152,22 +152,70 @@ declarations, model limits and nonsecret provider/API/account provenance; it
 never contains credentials or auth headers. Only positively established Codex
 OAuth account metadata is an account proof; API-key, ambient and unsupported
 accounts remain null. Authentication can perform the selected store's normal
-OAuth refresh during preparation. The accepted auth is pinned to this dispatch;
-credential/environment changes afterward do not silently select another account.
+OAuth refresh during preparation. The accepted auth is pinned to this dispatch.
+Preparation requires locally measured validity of at least the five-minute maximum
+idle lease age plus a five-minute request reserve. Pi-ai 1.0.1 honours the requested
+`minOAuthValidityMs`, including after refresh; the lease also checks it locally.
+Start within five minutes; the host requires at least 30 seconds remaining before
+P2 admission. An unref'd max-age timer closes forgotten idle leases automatically,
+releasing MCP/runState resources; active production settles first. Timers do not
+abort already-running dispatches.
+
+A later request with less than five minutes of OAuth validity may refresh **only**
+through the original shared store's persisting `modify` and same credential id,
+using its current rotating token. The host auth-file resolver provides in-process
+serialization (`enqueueAuthFile`); multi-process sharing of `auth.json` is not
+coordinated, same as ordinary refresh. Custom stores must honour their persistence
+contract. Callback-only dynamic stores without `modifyCredential` refuse before
+refresh; read-after-write verifies the committed credential. Re-probe it and require the
+same non-null account, provider and API plus sufficient validity. A foreign or
+unknown account, changed provider/API, short-lived refresh or refresh failure
+refuses the next request as `safety_prepared_credentials`, not `provider_auth`.
+Keep the newly rotated credential in that original store even if this lease
+refuses it; never overwrite it with the old token. No implicit refresh for
+unknown-account OAuth, other stores, or API-key/ambient auth. No auto-replay of a
+turn that may already have tool effects. In-flight streams are authorized at
+request start, not renewed mid-stream. The no-tools producer uses the configured
+`piTransport` (default `sse`) and remains one attempt without provider fallback.
+
+The pinned collection exposes only its selected model and refuses another
+model's authentication, including a same-provider/API model selected by a
+resumed/compaction path. Provider methods retain their original receiver, so
+prototype/private-field providers are not flattened. Runtime schema copies
+retain TypeBox metadata/symbols before freezing; host snapshots contain only
+serializable declaration data. Real Codex conversion of frozen TypeBox and
+StructuredOutput declarations is covered by an intercepted-transport test.
 
 The single-use lease's `run(binding)` accepts only late host-owned session keys,
 turn/recovery descriptors and native authority/projection. It cannot replace the
 frozen root, model, instructions, input or policy. Tools keep their original
 runState/execute closures; no second MCP initialization or request extension is
 performed. `close()` is idempotent and closes unused preparation without native
-mutation; while running it waits for normal settlement. Cancel using the
-original abort signal. Hosts must hold their concurrency permit until run/close
+mutation; while running it waits for settlement without rethrowing a run's
+rejection. Invalid binding validation does not consume a direct or routed lease
+or release its resources; corrected binding can still run once. Routed results
+retain normal authentication classification and a single-attempt failover history,
+without executing any backup. Cancel using the original abort signal. Hosts must hold their concurrency permit until run/close
 settles and always close the lease in a finally block. Incomplete MCP
 declarations or auth/model disagreement fail preparation, not cold-fallback
 success. Certified routers prepare only the primary's first attempt and resolve
 it once; the lease never performs router-level replay or falls through to a
 backup route. Normal native transport retry policy still applies. Custom
 resolvers need explicit `sessionTurnReconciliation: "v1"` certification.
+
+The lease also exposes `assertReady()` (non-consuming lifetime validation before
+host P2 admission), `checkHandoffSummary({ prepared, outputReserve })` (pure full
+input/output-window preflight), and `produceHandoffSummary` (one no-tools call
+per lease, using the **same selected auth/model**, no fallback/retry/persistence).
+A rejected/truncated/unknown output never repeats automatically. The host must
+persist attempt admission before invoking it; this API does not authorize billing.
+Producer input is captured synchronously. Run refuses while production is active
+without consuming dispatch; close/abort retain resources until it settles.
+
+Managed storage exposes typed read-only complete evidence capture plus pure budget,
+native projection and handoff/checkpoint preparation. Composed checkpoint coverage
+can precede a later switch reference frame only when its exact hashed prefix and
+sole following model-change triplet are proved; changed/missing coverage fails.
 
 No configured host invokes this capability yet. Frozen host preparation,
 durable producer admission/summary billing, ready model-switch publication and

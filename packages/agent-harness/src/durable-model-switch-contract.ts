@@ -3,7 +3,7 @@ import { assertSessionModelKey } from "./session-runtime.js";
 import { validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { HistoryMessage } from "./context/index.js";
-import type { RuntimeNativeJournalAuthority } from "@mono-agent/runtime-adapter";
+import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-agent/runtime-adapter";
 
 /** Private additive storage contracts. No host dispatch/admission opts in yet. */
 export const MODEL_SWITCH_DIRECTORY = ".model-switches";
@@ -80,6 +80,8 @@ export interface ModelSwitchState {
   readonly attempts: readonly SummaryAttempt[];
   readonly phase: "outgoing" | "checkpoint" | "incoming" | "pending" | "ready";
   readonly artifact: HandoffReference | null;
+  /** Optional for legacy administrative plans; configured preparation persists it. */
+  readonly frozenBudget?: RuntimeHandoffBudget;
 }
 export interface ModelSwitchPointer { readonly generation: string; readonly sha256: string }
 export interface ModelSwitchFence {
@@ -167,9 +169,20 @@ export function reservationBytes(value: ModelSwitchReservation): number {
   switchObject(value); switchKeys(value, ["canonicalBytes", "artifactBytes", "retainedNativeBytes", "headerCopyBytes", "pendingBytes"]);
   let sum = 0; for (const amount of Object.values(value)) { switchNumber(amount); sum += amount; if (!Number.isSafeInteger(sum)) switchInvalid(); } return sum;
 }
+/** Exact persisted budget, not an inferred/recomputed preparation allowance. */
+export function validateFrozenHandoffBudget(value: unknown): asserts value is RuntimeHandoffBudget {
+  switchObject(value); switchKeys(value, ["policy", "contextWindow", "outputReserve", "inputTokens", "hostCap", "hostContextDigest", "safety", "historyAllowance"]);
+  for (const key of ["contextWindow", "outputReserve", "inputTokens", "hostCap", "safety"]) switchNumber(value[key]);
+  switchHash(value.hostContextDigest);
+  if (value.policy !== "mono-handoff-v1" || !(value.contextWindow as number) || !(value.outputReserve as number)
+    || (value.hostCap as number) < 16384 || value.safety !== Math.max(4096, Math.ceil((value.contextWindow as number) * 0.05))
+    || value.historyAllowance !== (value.contextWindow as number) - (value.outputReserve as number) - (value.inputTokens as number) - (value.hostCap as number) - (value.safety as number)) switchInvalid();
+}
+
 export function validateModelSwitchState(value: unknown): asserts value is ModelSwitchState {
-  switchObject(value); switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"]);
+  switchObject(value); switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"], ["frozenBudget"]);
   if (value.version !== 1 || value.billingPolicy !== MODEL_SWITCH_BILLING_POLICY || !["outgoing", "checkpoint", "incoming", "pending", "ready"].includes(value.phase as string)) switchInvalid();
+  if (value.frozenBudget !== undefined) { validateFrozenHandoffBudget(value.frozenBudget); if (switchDigest(value.frozenBudget) !== (value.identity as ModelSwitchIdentity).frozenBudgetDigest) switchInvalid(); }
   const identity = value.identity; switchObject(identity);
   switchKeys(identity, ["ownerKey", "historyBucket", "switchId", "sourceCanonicalDigest", "sourceRevision", "sources", "fromModelKey", "toModelKey", "targetProvenance", "targetEpoch", "projectionPolicy", "timestamp", "frozenBudgetDigest"]);
   text(identity.ownerKey); text(identity.historyBucket); text(identity.projectionPolicy); switchNumber(identity.timestamp);

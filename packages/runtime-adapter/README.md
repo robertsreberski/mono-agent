@@ -112,6 +112,13 @@ No native session opens during preparation. Always close the lease, and retain
 the host concurrency permit through its settlement; abort via the original
 signal. Prepared routed execution is one primary attempt with no automatic
 router-level replay or backup (native transport retry policy is unchanged).
+`assertReady()` checks lifetime without consuming the lease before incoming P2.
+The typed lease optionally forwards pure `checkHandoffSummary` and one pinned
+`produceHandoffSummary` request/result; producers have no tools, router retry,
+provider/auth override or native persistence. Host durable admission owns billing.
+`createManagedNativeJournalStorage` additionally returns typed complete read-only
+evidence capture and pure budget/handoff/native projection helpers. The validated
+view is immutable and identity-bound: cloned raw JSON is not a validated view.
 This additive API does not enable configured host switching.
 
 `MonoRuntimeLike.recoverSession(receipt, { appliedInputIds })` forwards optional
@@ -358,6 +365,13 @@ RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
 RuntimeEventLike
+RuntimeHandoffBudget
+RuntimeHandoffFit
+RuntimeHandoffOptions
+RuntimeHandoffProducerRequest
+RuntimeHandoffProducerResult
+RuntimeHandoffProposal
+RuntimeHandoffSummary
 RuntimeLiveInputCallbackDisposition
 RuntimeLiveInputEvidence
 RuntimeLiveInputMessage
@@ -371,14 +385,17 @@ RuntimeNativeChainDeletion
 RuntimeNativeColdEpochContext
 RuntimeNativeDispatchBinding
 RuntimeNativeDispatchSnapshot
+RuntimeNativeEvidenceView
 RuntimeNativeJournalAuthority
 RuntimeNativeJournalDeletion
 RuntimeNativeJournalDescriptor
 RuntimeNativeJournalStorage
+RuntimeNativePreparationStorage
 RuntimeNativePreparedDispatch
 RuntimeNativeSessionAuthority
 RuntimeNativeSessionProjection
 RuntimeNativeSwitchContext
+RuntimePreparedHandoff
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions

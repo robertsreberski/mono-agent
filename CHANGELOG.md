@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Fix routed prepared start allowances and post-admission reserves; refuse
+  non-persisting credential refresh and keep evidence filesystem failures generic.
+
+- Fix prepared dispatch credential refresh through the original shared store with
+  same-account proof, expire forgotten idle resources, and reserve start time
+  before admission. Keep preparation inert; bound materialized chain capture.
+
+- Add reusable claim-and-permit-held host preparation, pinned no-tools producers,
+  complete read-only chain capture and persisted frozen-budget/artifact access.
+  Keep configured switching inert and existing configurations unchanged.
+
+- Keep direct and routed native preparation reusable after invalid binding,
+  normalize routed authentication failures, and settle cleanup after rejection.
+  Bound preparation age and pinned OAuth validity without changing default runs.
+
 - Add opt-in native dispatch preparation with resolved tool declarations, pinned
   authentication and single-use resource leases, without enabling configured
   model switching or changing existing session paths.

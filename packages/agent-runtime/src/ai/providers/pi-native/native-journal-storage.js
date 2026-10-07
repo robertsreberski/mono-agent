@@ -1,5 +1,6 @@
 // @ts-check
 // Private storage-only bridge: no provider dispatch, repair accounting or tools.
+import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, projectContext } from "@mono-agent/harness";
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -11,6 +12,11 @@ import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 /** @returns {never} */
 function fail() { throw new Error("Managed native journal evidence changed or is unavailable"); }
 const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordered(v[k])])) : v;
+// Matches the host's 32-entry chain / 16 MiB switch-payload ceiling. Raw
+// capture is bounded separately from streaming inspection; never clip evidence.
+export const MAX_CAPTURE_JOURNALS = 32;
+export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
+const captureLimit = () => { throw Object.assign(new RangeError("Managed native evidence capture exceeds its journal/chain limit"), { code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" }); };
 const hex64 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error) => error?.code === "ENOENT";
@@ -27,17 +33,20 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   /** Streaming digests; only the three reference-frame records are retained.
    * An immutable intent admits only an exact prefix of those deterministic bytes.
    * @param {any} coordinate @param {any} [event] */
-  const snapshot = async (coordinate, event, prefixOnly = false) => {
-    const meta = await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
+  const snapshot = async (coordinate, event, prefixOnly = false, capture = 0) => {
+    const meta = capture ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
     try {
+      if (capture && reader.identity.size > (typeof capture === "number" ? capture : MAX_CAPTURE_BYTES)) captureLimit();
       /** @type {any} */ let header;
       /** @type {any} */ let handleBinding;
       let parentId = null, first = true, frozenFirst = true, frozenTip = null;
       const validator = new JournalValidator(), full = createHash("sha256").update("["), frozen = createHash("sha256").update("[");
       let referenceBytes = 0;
+      const records = [];
       let plan = [], planIndex = 0, frozenFound = coordinate.sourceSeq === undefined, frozenDigest, boundary = 0;
       const evidence = await reader.scan((record, address) => {
         if (!header) { validateJournalHeader(record); header = record; boundary = address.offset + address.length + 1; return; }
+        if (capture) records.push(record);
         const wire = JSON.stringify(record);
         if (!first) full.update(","); full.update(wire); first = false;
         if (!frozenFound) {
@@ -56,7 +65,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           boundary = address.offset + address.length + 1;
           if (event) plan = SessionStore.modelChangeRecords(event, { seq: validator.seq, parentId, tip: validator.tip });
         }
-      });
+      }, capture ? { maxBytes: capture } : undefined);
       if (!header || header.id !== coordinate.handleId || header.journalId !== meta.journalId || !frozenFound) fail();
       const digest = full.update("]").digest("hex");
       if (event) {
@@ -70,10 +79,10 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       } else if (!prefixOnly && (evidence.torn || validator.openTurns.size || validator.openOperations.size)) fail();
       const current = await reader.assertIdentity();
       if (current.nlink !== 1 || current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
-      return { metadata: meta, header, handleBinding, referenceBytes, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
+      return { metadata: meta, header, records, handleBinding, referenceBytes, owner: validator.owner, bytes: current.size, descriptor: { ...coordinate, journalId: meta.journalId,
         sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: digest }, parentId,
         };
-    } finally { await reader.close(); }
+    } catch (error) { if (capture && error?.code === "ERR_JOURNAL_READ_LIMIT") captureLimit(); throw error; } finally { await reader.close(); }
   };
   // Canonical membership is supplied by the held host owner, never inferred
   // from catalogue presence. Native storage validates all coordinates again.
@@ -139,6 +148,42 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       sourceDigest: createHash("sha256").update(JSON.stringify(plan.records)).digest("hex") } };
   };
   return {
+    nativeEvidence: "v1",
+    createBudget: createHandoffBudget, prepareHandoff, buildHandoff,
+    projectChain: (view, options) => projectContext(view, { ...options, switching: true }),
+    /** Read only: no detach/open-for-writing, repair, import or publication.
+     * Caller first freezes the current coordinate under its settled claim.
+     * @param {any[]} sources @param {any} context */
+    async captureEvidence(sources, context) {
+      if (!sources.length || typeof context?.assertOwned !== "function") fail();
+      if (sources.length > MAX_CAPTURE_JOURNALS) captureLimit();
+      const statEvidence = async (source) => { try { return await lstat(path(source.journalId)); } catch { fail(); } };
+      const readEvidence = async (source, remaining) => {
+        try { return await snapshot(source, undefined, false, remaining); }
+        catch (error) { if (error?.code === "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT") throw error; fail(); }
+      };
+      let bytes = 0;
+      // Stat every exact published path before allocating records or parsing even
+      // the first header. Also bounds single oversized JSONL lines. Rechecked by
+      // the secure reader before each scan and by its identity CAS afterward.
+      await context.assertOwned();
+      for (const source of sources) { bytes += (await statEvidence(source)).size; if (bytes > MAX_CAPTURE_BYTES) captureLimit(); }
+      let capturedBytes = 0;
+      const segments = [], seen = new Set();
+      for (let index = 0; index < sources.length; index++) {
+        const source = sources[index]; await context.assertOwned();
+        if (source.ordinal !== index || source.ownerKey !== context.ownerKey || source.historyBucket !== context.historyBucket
+          || source.predecessorJournalId !== (index ? sources[index - 1].journalId : null) || seen.has(source.journalId)) fail();
+        seen.add(source.journalId);
+        if (capturedBytes >= MAX_CAPTURE_BYTES) captureLimit();
+        const captured = await readEvidence(source, MAX_CAPTURE_BYTES - capturedBytes);
+        capturedBytes += captured.bytes; if (capturedBytes > MAX_CAPTURE_BYTES) captureLimit();
+        if (!same(captured.descriptor, source) || captured.header.ownershipSchemaVersion === 2 && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
+        const { epoch: _epoch, ordinal, ...descriptor } = source;
+        segments.push({ descriptor: { ...descriptor, epoch: ordinal }, header: captured.header, records: captured.records });
+      }
+      await context.assertOwned(); return createEvidenceView({ ownerKey: context.ownerKey, historyBucket: context.historyBucket, segments });
+    },
     /** @param {any} coordinates */
     async freeze(coordinates) { await detachDurableNativeSession(coordinates.handleId, root); return (await snapshot(coordinates)).descriptor; },
     /** Before intent publication: no upgrade/event/create side effects. @param {any[]} sources @param {any} context */

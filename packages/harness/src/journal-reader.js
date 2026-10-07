@@ -73,9 +73,11 @@ export class JournalReader {
    * Consume records one at a time. The callback may retain small catalogs of
    * IDs/offsets; retaining native envelopes would defeat the storage boundary.
    * @param {(record:any, address:{offset:number, length:number}) => Promise<void>|void} visit
+   * @param {{maxBytes?:number}} [options] Explicit materializing-consumer cap; streaming defaults remain uncapped.
    */
-  async scan(visit) {
+  async scan(visit, { maxBytes = Infinity } = {}) {
     const before = await this.assertIdentity();
+    if (before.size > maxBytes) throw Object.assign(new RangeError("Harness journal read exceeds configured byte limit"), { code: "ERR_JOURNAL_READ_LIMIT" });
     const chunk = Buffer.alloc(64 * 1024);
     let offset = 0, lineOffset = 0, completeBytes = 0, fragments = [], fragmentBytes = 0;
     while (offset < before.size) {

@@ -64,11 +64,26 @@ export function createEvidenceView(input) {
   for (let index = 0; index < segments.length; index++) for (const entry of segments[index].entries) {
     const coverage = entry.checkpoint?.inheritedCoverage;
     if (coverage && (coverage.sources.length !== index || coverage.sources.some((s, i) =>
-      ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"].some((key) => s[key] !== segments[i].descriptor[key])))) fail("composed coverage");
+      !matchesEvidenceCoverage(s, segments[i])))) fail("composed coverage");
   }
   if (gaps.some((g) => g.afterJournalId !== null && !seen.has(g.afterJournalId))) fail("gap linkage");
   const view = freeze({ version: 1, gaps, ownerKey: input.ownerKey, historyBucket: input.historyBucket, segments });
   views.add(view); return view;
+}
+
+/** A composed checkpoint can name the exact source before its later reference
+ * frame. Only a proved model-change triplet may follow that covered prefix.
+ * @param {any} reference @param {any} segment */
+export function matchesEvidenceCoverage(reference, segment) {
+  const source = segment.descriptor;
+  if (reference.journalId !== source.journalId || reference.sourceTipId !== source.sourceTipId) return false;
+  if (reference.sourceSeq === source.sourceSeq) return reference.sourceDigest === source.sourceDigest;
+  if (!Number.isSafeInteger(reference.sourceSeq) || reference.sourceSeq < 0 || reference.sourceSeq + 3 !== source.sourceSeq) return false;
+  const prefix = segment.records.slice(0, reference.sourceSeq), [start, change, end] = segment.records.slice(reference.sourceSeq);
+  return evidenceDigest(prefix) === reference.sourceDigest && start?.kind === "turn_start" && start.payload.identitySource === "synthetic"
+    && start.payload.config?.cause === "model-change" && start.payload.baselineTipId === reference.sourceTipId
+    && change?.kind === "model_change" && end?.kind === "turn_end" && end.payload.status === "completed"
+    && end.payload.tipId === reference.sourceTipId && start.turnId === change.turnId && start.turnId === end.turnId;
 }
 
 /** @param {any} view */
