@@ -82,6 +82,12 @@ it("private configured override prepares extensions once, emits one switch, and 
   expect(extension).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce(); expect(settleCleanup).toHaveBeenCalledOnce();
   const record = await f.canonical(); expect(record.version).toBe(4); expect(record.providerSession).toMatchObject({ modelKey: "faux:B", revision: 1 });
   expect(record.native.chain).toHaveLength(2); expect(record.lastCommit.turnId).toBe(result.metadata.runId); expect(record.native.projection).toEqual(record.lastSwitch.artifact);
+  const rows = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
+  const operation = rows.find((row) => row.kind === "operation_start" && row.payload.config?.model?.id === "B");
+  // Actual prepared credential is unsupported for the fictional transport, so
+  // pin explicit unknown rather than trusting switch-time metadata or options.
+  expect(operation.payload.config.nativeProvenance).toMatchObject({ provider: "faux", model: "B", account: null });
+  expect(operation.payload.config.nativeProvenance.api).toBe(operation.payload.config.model.api);
   expect(await f.changes()).toHaveLength(1); expect(f.retire).not.toHaveBeenCalled(); expect(f.inspect).toHaveBeenCalled();
   expect(await f.store.recoverProviderSessionTurn("fictional")).toEqual({ status: "clean" });
   expect((await f.store.load("fictional")).at(-2)?.content).toBe("Fictional override");

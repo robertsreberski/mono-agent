@@ -33,7 +33,8 @@ export function createRunDriver(store, options) {
   let turnBeginning = false, turnEnding = false;
   const inputAdmissions = new Set();
   let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId, initialMessageId;
-  const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
+  const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api },
+    ...(options.nativeProvenance ? { nativeProvenance: structuredClone(options.nativeProvenance) } : {}) });
   async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
     if (turnId || turnBeginning || turnEnding) throw new Error("Pi logical turn is already open");
     turnBeginning = true;

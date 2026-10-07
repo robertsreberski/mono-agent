@@ -378,7 +378,17 @@ export class ModelSwitchPayloadStore {
     });
   }
   private validateProposal(state: ModelSwitchState, artifact: Record<string, unknown>): void {
-    switchObject(artifact); switchKeys(artifact, ["version", "policy", "coverage", "summary", "checkpoint", "recent", "ledger", "retainedIds", "producer", "timestamp", "target", "budget"]);
+    switchObject(artifact); switchKeys(artifact, ["version", "policy", "coverage", "summary", "checkpoint", "recent", "ledger", "retainedIds", "producer", "timestamp", "target", "budget"], ["nativeProjection"]);
+    if (artifact.nativeProjection !== undefined) {
+      const projection = artifact.nativeProjection;
+      switchObject(projection); switchKeys(projection, ["version", "messages"]);
+      if (projection.version !== 1 || !Array.isArray(projection.messages) || !projection.messages.length
+        || projection.messages.some((message: unknown) => !message || typeof message !== "object"
+          || !["user", "assistant", "toolResult", "compactionSummary", "branchSummary"].includes((message as { role: string }).role))
+        || artifact.producer !== "checkpoint" || artifact.summary !== null || artifact.checkpoint !== null
+        || [artifact.recent, artifact.ledger, artifact.retainedIds].some((value) => !Array.isArray(value) || value.length)
+        || state.authorizationGeneration !== 0 || state.attempts.length !== 0) throw new Error("Invalid native switch projection");
+    }
     const sources = state.identity.sources.map(({ ordinal, epoch: _epoch, ...source }) => ({ ...source, epoch: ordinal }));
     if (artifact.version !== 1 || artifact.policy !== state.identity.projectionPolicy || !Array.isArray(artifact.recent) || !Array.isArray(artifact.ledger)
       || !Array.isArray(artifact.retainedIds) || artifact.timestamp !== state.identity.timestamp || !["outgoing", "checkpoint", "incoming"].includes(artifact.producer as string)

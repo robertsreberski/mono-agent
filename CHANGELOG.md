@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add whole-chain native switch-back behind the inert model-switch capability,
+  requiring positive provider, API and account proof for every recorded operation;
+  keep public configuration unexposed and use handoffs when proof or fit fails.
+
 - Preserve ordinary cancellation continuity after inert switch preparation selects
   fallback; skip unavailable outgoing producers without billing and distinguish
   native capture capacity and retryable root contention from generic failures.

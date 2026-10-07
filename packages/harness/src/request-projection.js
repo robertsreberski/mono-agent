@@ -27,6 +27,19 @@ export function projectContext(source, options = {}) {
   for (const segment of source.segments) {
     const compatible = nativeCompatibility(segment.descriptor.provenance, options.target);
     if (!compatible.compatible) return { status: "handoff_required", reason: compatible.reason, journalId: segment.descriptor.journalId };
+    // Epoch metadata describes creation, not credentials used by later turns.
+    // Require dispatch-pinned provenance on every content-bearing operation,
+    // including compacted/rewound evidence; missing historical proof is unknown.
+    const operations = new Map(segment.records.filter((r) => r.kind === "operation_start").map((r) => [r.operationId, r]));
+    for (const record of segment.records) {
+      if (!["message", "compaction"].includes(record.kind)) continue;
+      const actual = operations.get(record.operationId)?.payload.config?.nativeProvenance;
+      const proof = nativeCompatibility(actual, options.target);
+      if (!proof.compatible) return { status: "handoff_required", reason: proof.reason, journalId: segment.descriptor.journalId };
+      if (record.kind === "message" && ["provider", "api"].some((key) => record.payload.provenance[key] !== actual[key])) {
+        return { status: "handoff_required", reason: "message_provenance", journalId: segment.descriptor.journalId };
+      }
+    }
   }
   let start = 0;
   // A composed checkpoint summarizes exactly the frozen prefix it names. Never
