@@ -28,14 +28,20 @@
 // Result:
 //   The success run's result, with `failoverHistory` appended describing every
 //   prior attempt: [{ model, failureKind, requestId, retryableSubkind }].
-//   Successful retries/backups withhold providerSessionId: their stateless
-//   answer cannot synchronize the primary provider session.
+//   Every attempt other than the primary's session-eligible first attempt runs
+//   with a fresh provider attribution id, and its result (success or failure)
+//   never carries providerSessionId or providerSessionRecovery: a stateless
+//   retry/backup cannot synchronize or recover the primary provider session.
 //   If every eligible retryable/auth entry in the chain fails, returns the last
 //   result with `failureKind: "provider_unavailable_exhausted"`. Terminal
 //   non-retryable failures are returned as-is with their failover history.
+//   Tools are never re-run: once a failed attempt started a tool or consumed a
+//   live input, no retry or backup runs. That failure is returned with a
+//   `provider_failover_blocked` runtime warning naming the reason.
 
 // @ts-check
 
+import { randomUUID } from "node:crypto";
 import { createRuntime } from "../../runtime.js";
 import { isProviderAuthFailureText, retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "./capabilities.js";
@@ -183,6 +189,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
       };
+      /** @type {AttemptSideEffects|null} Side-effect evidence of the running attempt. */
+      let currentAttemptEffects = null;
       const liveInputHub = options.liveInput === undefined
         ? undefined
         : createObserverHub({
@@ -195,7 +203,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       if (options.liveInput !== undefined && liveInputHub !== undefined) {
         options = {
           ...options,
-          liveInput: instrumentLiveInputAppliedEvents(options.liveInput, liveInputHub.emit),
+          liveInput: instrumentLiveInputAppliedEvents(options.liveInput, (event) => {
+            if (currentAttemptEffects !== null && isLiveInputTakenEvent(event)) currentAttemptEffects.liveInput = true;
+            liveInputHub.emit(event);
+          }),
         };
       }
       try {
@@ -301,6 +312,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             delete callOptions.providerSessionId;
             delete callOptions.sessionKeepAlive;
             delete callOptions.sessionIdleTimeoutMs;
+            // A stateless attempt must not present itself as the primary's
+            // session (Pi session id, OpenCode x-opencode-session header).
+            callOptions.providerAttributionSessionId = randomUUID();
           }
           let attemptSystemPrompt = promptBase;
           if (pendingSnapshot) {
@@ -333,6 +347,15 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             });
           }
 
+          /** @type {AttemptSideEffects} */
+          const attemptEffects = { tool: false, liveInput: false };
+          currentAttemptEffects = attemptEffects;
+          const hostOnEvent = callOptions.onEvent;
+          callOptions.onEvent = (/** @type {import('../types.js').RuntimeEvent} */ event) => {
+            if (isToolActivityEvent(event)) attemptEffects.tool = true;
+            hostOnEvent?.(event);
+          };
+
           let result;
           try {
             result = await attemptRuntime.run(attemptSystemPrompt, callOptions);
@@ -355,9 +378,14 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
 
           result = normalizeProviderAuthFailure(result);
           if (!sessionEligibleAttempt) {
-            const { providerSessionRecovery: _receipt, ...unownedResult } = result;
+            // Scrub once here so every return path (success, cancelled,
+            // terminal, exhausted) inherits it. Pi may report the attribution
+            // id as its session id even on a stateless call; never let host
+            // history synchronize or recover a session this attempt does not own.
+            const { providerSessionRecovery: _receipt, providerSessionId: _sessionId, ...unownedResult } = result;
             result = unownedResult;
           }
+          if (Array.isArray(result.events) && result.events.some(isToolActivityEvent)) attemptEffects.tool = true;
 
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
@@ -380,10 +408,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
                 model: modelKey(entry.model),
               });
             }
-            // Pi may report the attribution id as its session id even on a
-            // stateless call. Withhold that resumable id so host history cannot
-            // synchronize an untouched or failed primary transcript.
-            return { ...result, ...(sessionEligibleAttempt ? {} : { providerSessionId: undefined }), failoverHistory };
+            return { ...result, failoverHistory };
           }
 
           failoverHistory.push({
@@ -412,6 +437,31 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             break;
           }
 
+          // context_limit is forced retryable so the chain can reach a model with
+          // a bigger window, but it is deterministic against the SAME window:
+          // another attempt here is a guaranteed second failure. Advance instead.
+          const sameModelRetryable = retryability.retryable
+            && retryability.subkind !== "context_limit"
+            && retryability.subkind !== "subscription_limit"
+            && retryIndex + 1 < entry.attempts;
+
+          // Tools are never re-run. Another attempt replays the logical turn, so
+          // once this attempt started a tool or consumed a live input, neither a
+          // same-model retry nor a backup may run: end with this failure.
+          const blockedReason = attemptEffects.tool
+            ? "tool_already_executed"
+            : (attemptEffects.liveInput ? "live_input_consumed" : null);
+          if (blockedReason !== null && (sameModelRetryable
+            || entries.slice(i + 1).some((next) => entrySatisfiesRequirements(next, options)))) {
+            const warning = failoverBlockedWarning(modelKey(entry.model), blockedReason);
+            emit(callOptions, { type: "runtime_warning", ...warning });
+            terminalResult = {
+              ...result,
+              runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning],
+            };
+            break;
+          }
+
           // Build a transcript-tail snapshot from this run's events so the next
           // attempt — same model or next route — can continue. A run that
           // produced no usable events yields a falsy snapshot and merges to a
@@ -423,13 +473,6 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             buildTranscriptTailSnapshot(result.events, { runtimeBrand }),
           );
 
-          // context_limit is forced retryable so the chain can reach a model with
-          // a bigger window, but it is deterministic against the SAME window:
-          // another attempt here is a guaranteed second failure. Advance instead.
-          const sameModelRetryable = retryability.retryable
-            && retryability.subkind !== "context_limit"
-            && retryability.subkind !== "subscription_limit"
-            && retryIndex + 1 < entry.attempts;
           if (!sameModelRetryable) break;
 
           const backoffMs = Math.min(retryPolicy.maxBackoffMs, retryPolicy.backoffMs * (2 ** retryIndex));
@@ -775,6 +818,56 @@ function attemptResolutionFailureResult(error) {
     events: [],
     cancelled: false,
     usage: {},
+  };
+}
+
+/**
+ * @typedef {{tool: boolean, liveInput: boolean}} AttemptSideEffects
+ * Evidence that one attempt had effects another attempt would repeat.
+ */
+
+/**
+ * Normalized tool activity: a started/admitted tool call (`tool_use`, Pi's raw
+ * `tool_execution_start`) or its result. Pi emits its `tool_use` block only
+ * when execution starts, so a model that merely requested a tool before the
+ * provider failed does not count.
+ * @param {*} event
+ * @returns {boolean}
+ */
+function isToolActivityEvent(event) {
+  if (!event || typeof event !== "object") return false;
+  const type = event.type;
+  if (type === "tool_use" || type === "tool_result" || type === "tool_execution_start") return true;
+  if ((type !== "assistant" && type !== "user") || !Array.isArray(event.message?.content)) return false;
+  return event.message.content.some((/** @type {*} */ block) => block?.type === "tool_use" || block?.type === "tool_result");
+}
+
+const LIVE_INPUT_TAKEN_EVENTS = new Set([
+  "live_input_consumed", "live_input_applied", "live_input_uncertain", "live_input_settlement_unconfirmed",
+]);
+
+/**
+ * A live input the provider consumed (or may have consumed). An input that is
+ * only leased or queued and then removed stays replayable by a later attempt.
+ * @param {*} event
+ * @returns {boolean}
+ */
+function isLiveInputTakenEvent(event) {
+  return typeof event?.type === "string" && LIVE_INPUT_TAKEN_EVENTS.has(event.type);
+}
+
+/**
+ * @param {string} model
+ * @param {"tool_already_executed"|"live_input_consumed"} reason
+ */
+function failoverBlockedWarning(model, reason) {
+  const effect = reason === "tool_already_executed" ? "a tool already ran" : "a live input was already consumed";
+  return {
+    warning_kind: "provider_failover_blocked",
+    source: "router",
+    reason,
+    model,
+    message: `${model} failed after ${effect}; no retry or backup model was started so nothing runs twice (${reason}).`,
   };
 }
 
