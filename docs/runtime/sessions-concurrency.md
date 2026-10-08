@@ -128,6 +128,66 @@ universal old-writer admission barrier. Mixed binaries must not run on upgraded
 roots. Rollback means stop writers and restore consistent host/native backups;
 disabling the option, stripping markers or downgrading records is not rollback.
 
+### Enable, verify and roll back
+
+Scope: only the Web console's persisted messages can switch models durably. Every
+other surface keeps today's behavior described above. To enable:
+
+1. Stop **every** writer for the agent root: the app service, CLI runs, managed
+   workers and any older binary. Nothing verifies this for you; the
+   acknowledgement is your statement that it is true.
+2. While stopped, back up the canonical history directory (beside
+   `artifacts.dir`) and `piSessionsRoot` together, as one consistent snapshot.
+3. Set `runtime.session.modelSwitch` to
+   `{ "enabled": true, "olderWritersStopped": true }` with continuous sessions
+   and a durable `piSessionsRoot`, then start only upgraded binaries.
+
+Rollback: stop all writers, then restore **both** backups from step 2.
+Setting `enabled: false` afterwards does not convert upgraded conversations back.
+
+| Acceptance | Behavior | Observable evidence | Verified by |
+| --- | --- | --- | --- |
+| A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical `lastSwitch` receipt and one `model_change` record in the outgoing native journal | `configured-switch-kill-matrix.test.ts` (12 SIGKILL boundaries, two fresh-process recoveries each), `managed-native-switch.test.ts` |
+| A2 complete fitting context | The incoming model receives a native projection or a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | Immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `native-switch-back.test.ts`, kill-matrix incoming-context assertions |
+| A3 switch-back | Returning to an earlier model retains all native evidence. Native reuse happens only when provider, API, account and window fit are all positively established; otherwise it takes a structured handoff. | Chain length grows by one per switch; predecessor journals stay byte-stable | `native-switch-back.test.ts` (positive reuse), kill-matrix return boundaries (retained evidence and handoff) |
+| A4 crash, upgrade, reset, retention | Crashes recover from storage alone: no provider, summary or tool replay, and no leaked reservation or fence. Reset and retention delete the whole chain and its artifacts. Upgrade settles old pending turns first. | Empty `.pending-turns`/dirty fences, no `.native-history-op.*` intent, zero reserved bytes | `configured-switch-kill-lifecycle.test.ts`, `managed-native-lifecycle.test.ts`, `managed-native-cold-change.test.ts`, `host-turn-reconciliation.test.ts` |
+
+Billing during recovery: an admitted summary call interrupted by a crash stays
+charged as outcome-unknown and is never repeated. The free checkpoint and then
+the incoming producer follow. Each switch generation allows at most two billed
+summary calls (outgoing, then incoming producer), plus the incoming turn itself.
+
+Retrying the same persisted Web message after a crash finishes the recorded
+switch in its original generation and never opens a new billed one. The message
+ID authorizes switch work only; it does not deduplicate turns. An interrupted
+turn is reported, and a redelivered message is admitted as a new turn. The Web
+console never resends a dispatched message: if the agent or Web service stops
+mid-turn, that turn ends failed or interrupted and you send a new message.
+
+Warnings and refusals:
+
+- `degraded_native_context` is the only user-facing warning. It appears once,
+  on the turn that applied an owned cold change. If the process dies after
+  that change became durable but before that turn streamed the warning,
+  recovery finishes the change without it. The warning is then never shown,
+  and the canonical `lastSwitch.kind: "cold"` receipt is the only record.
+- Structured handoffs and native reuse produce no warning.
+- `handoff_pending`, `handoff_budget_exceeded`,
+  `native_cold_model_change_unavailable` and retryable `native_switch_busy`
+  are refusals. The message was not admitted; send another message when ready.
+
+Limits:
+
+- A conversation's first epoch is written before any switch, so it records no
+  account provenance. In the configured host, switch-back therefore keeps its
+  native evidence but takes a structured handoff. Positive native reuse is
+  proven by storage-level fixtures, not by configured conversations.
+- Handoff summaries are model-written prose. The deterministic ledger and the
+  verbatim recent turns remain the authoritative evidence.
+- Older binaries are not technically blocked from an upgraded root.
+- No downgrade tool exists. Native-only data in a cold-retired current epoch is
+  lost, as described above.
+
 ## Provider sessions
 
 `runtime.session` decides whether the runtime keeps a warm provider session per conversation or starts fresh on every message.

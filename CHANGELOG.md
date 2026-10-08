@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an operator guide for Web durable model switching: enable and
+  restore-backup rollback steps, A1–A4 acceptance mapped to observable
+  evidence, warning and refusal semantics, and limits. In the configured host
+  a switch-back keeps native evidence but takes a structured handoff, because
+  the first epoch predates switching and records no account provenance.
+
 - Show plain-language cold-model context warnings in Web activity, using
   structured harness warnings only on the turn that applied the change. Keep
   unsupported storage/authority results from authorizing a cold model change.
