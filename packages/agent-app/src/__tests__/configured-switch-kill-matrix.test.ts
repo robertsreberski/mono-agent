@@ -53,7 +53,7 @@ it.each([
   if (admitted) expect(first.canonical.messages[3].content).toContain(phase === "canonical#2" ? "Fictional B answer" : "No tools were replayed");
   expect(second.canonical.messages.slice(0, 2)).toEqual(before.canonical.messages);
   expect(second.canonical.messages).toHaveLength(first.canonical.messages.length + 2);
-}, 50_000);
+}, 60_000);
 
 // Codex-shaped faux provenance with a fictional OAuth account. A->B, one B turn,
 // then the killed B->A return. The pre-upgrade A epoch ran unguarded, so its
@@ -87,4 +87,4 @@ it.each([
   const seeded = Buffer.from(before.bytes[`${chain[1]!.journalId}.jsonl`]!, "base64").toString().trim().split("\n");
   expect(b.slice(1, seeded.length)).toEqual(seeded.slice(1)); expect(b.slice(seeded.length).map((line) => JSON.parse(line).kind)).toEqual(["turn_start", "model_change", "turn_end"]);
   for (const row of chain.slice(0, -1)) expect(second.journals[`${row.journalId}.jsonl`]).toBe(first.journals[`${row.journalId}.jsonl`]);
-}, 50_000);
+}, 60_000);

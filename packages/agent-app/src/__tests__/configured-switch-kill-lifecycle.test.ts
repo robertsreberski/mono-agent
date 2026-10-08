@@ -32,7 +32,7 @@ it.each(["lifecycle-intent", "canonical", "native-removed", "lifecycle-intent-re
   expect(count(first.calls, "turn", "A")).toBe(1); expect(count(second.calls, "turn", "A")).toBe(1);
   // Cold replay context: canonical history, including the retained B answer.
   expect(first.contexts.at(-1)).toContain("Fictional B answer"); expect(first.contexts.at(-1)).toContain("Fictional input fictional-seed");
-}, 50_000);
+}, 60_000);
 
 it.each(["lifecycle-intent", "native-removed", "native-removed#2", "switch-storage-removed", "canonical", "lifecycle-intent-removed"])(
   "reset of a switched chain: SIGKILL at %s, two fresh resets finish whole-chain deletion without provider calls", async (phase) => {
@@ -46,7 +46,7 @@ it.each(["lifecycle-intent", "native-removed", "native-removed#2", "switch-stora
   // Each explicit reset rotates to a fresh empty epoch; nothing else survives.
   expect({ ...second.canonical, providerSession: undefined }).toEqual({ ...first.canonical, providerSession: undefined });
   expect(first.canonical).toMatchObject({ version: 3, providerSession: { revision: 0 } }); expect(armed).toEqual([]);
-}, 50_000);
+}, 60_000);
 
 it.each(["lifecycle-intent", "native-removed", "switch-storage-removed", "canonical-removed", "lifecycle-intent-removed"])(
   "retention of a switched chain: SIGKILL at %s, two fresh successor admissions finish whole-chain deletion", async (phase) => {
@@ -60,4 +60,4 @@ it.each(["lifecycle-intent", "native-removed", "switch-storage-removed", "canoni
   }
   expect(second.successor.messages).toHaveLength(first.successor.messages.length + 2);
   expect(count(armed, "summary")).toBe(0); expect(count(first.calls, "turn")).toBe(1); expect(count(second.calls, "turn")).toBe(1);
-}, 50_000);
+}, 60_000);

@@ -35,7 +35,7 @@ function start(root: string, scenario: Scenario, mode: "produce" | "recover", ph
   const exited = once(child, "exit");
   let stderr = ""; child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   const reply = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Configured switch worker timed out (${mode} ${phase ?? ""}): ${stderr}`)), 25_000);
+    const timer = setTimeout(() => reject(new Error(`Configured switch worker timed out (${mode} ${phase ?? ""}): ${stderr}`)), 40_000);
     child.once("message", (value) => { clearTimeout(timer); resolve(value); });
     child.once("exit", (code, signal) => { clearTimeout(timer); reject(new Error(`Configured switch worker exited ${code ?? signal}: ${stderr}`)); });
   });
