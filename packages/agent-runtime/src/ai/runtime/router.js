@@ -98,7 +98,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "onSessionTurnDetached", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "nativeSessionAuthority", "nativeSessionProjection", "nativeProvenanceRecording", "sessionTurn", "onSessionTurnDetached", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -270,6 +270,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           if (!sessionEligibleAttempt) {
             delete callOptions.nativeSessionAuthority;
             delete callOptions.nativeSessionProjection;
+            delete callOptions.nativeProvenanceRecording;
             delete callOptions.sessionTurn;
             delete callOptions.sessionRecovery;
             delete callOptions.sessionId;

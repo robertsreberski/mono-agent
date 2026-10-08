@@ -664,6 +664,9 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
           signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
       });
       auth.assertValid(true); // Before any native lookup/open or incoming mutation.
+      // Only the host's run-time binding (never prepare-time/caller options) can
+      // ask an unguarded opt-in turn to record this lease's pinned provenance.
+      prepared.recordProvenance = binding?.nativeProvenanceRecording === true;
       options = { ...options, ...binding };
       providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;
       providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
@@ -714,7 +717,9 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
     // surface as output from this run.
     harness = await buildTurnHarness(runState, {
       session: runState.session,
-      nativeProvenance: options.nativeSessionAuthority ? prepared?.nativeProvenance : undefined,
+      // Lease provenance only: guarded authority, or the host's opt-in binding flag.
+      // A caller-supplied options.nativeProvenance is never read.
+      nativeProvenance: options.nativeSessionAuthority || prepared?.recordProvenance ? prepared?.nativeProvenance : undefined,
       piModels,
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,

@@ -260,16 +260,20 @@ it("root authority contention is typed/retryable, preserves evidence and publish
   expect((await f.makeHarness("B", true).run(f.request("busy-delivery"))).failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(3);
 });
 
-it("unguarded default and unguarded prepared turns emit no nativeProvenance", async () => {
+it("unguarded default and unguarded prepared turns emit no nativeProvenance; prepare-time flags/values are ignored", async () => {
   const f = await fixture(); await f.seed();
   const runtime = f.runtimeFor("A");
+  // Only the host's run-time binding may request recording; a caller's
+  // prepare-time flag or forged provenance value is never honoured or copied.
   const lease = await runtime.prepareNativeDispatch!("Fictional unguarded rules", { model: parseMonoRuntimeModelReference("faux:A"),
     abortSignal: new AbortController().signal, messages: [{ role: "user", content: "Fictional unguarded prepared input" }], allowedTools: [],
-    piSessionsRoot: f.nativeRoot, sessionId: "fictional-unguarded-prepare", sessionKeepAlive: true, compaction: { enabled: false } });
+    piSessionsRoot: f.nativeRoot, sessionId: "fictional-unguarded-prepare", sessionKeepAlive: true, compaction: { enabled: false },
+    nativeProvenanceRecording: true, ...{ nativeProvenance: { provider: "faux", api: "forged", model: "A", account: "forged" } } });
   try { f.faux.setResponses([text("Fictional unguarded reply")]); expect((await lease.run()).error).toBeFalsy(); }
   finally { await lease.close(); }
   const records = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
   const starts = records.filter((record) => ["turn_start", "operation_start"].includes(record.kind));
   expect(starts.some((record) => record.payload.config?.model?.id === "A")).toBe(true);
   expect(starts.every((record) => !Object.hasOwn(record.payload.config, "nativeProvenance"))).toBe(true);
+  expect(JSON.stringify(records)).not.toContain("forged");
 });

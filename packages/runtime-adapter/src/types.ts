@@ -580,6 +580,10 @@ export interface RuntimeRunOptions {
   readonly sessionTurn?: RuntimeSessionTurnDescriptor | undefined;
   readonly nativeSessionAuthority?: RuntimeNativeSessionAuthority;
   readonly nativeSessionProjection?: RuntimeNativeSessionProjection;
+  /** @internal Host opt-in binding flag for prepared dispatch only: record the
+   * lease's pinned provider/API/account provenance on unguarded operations.
+   * Honoured only from the run-time binding; carries no provenance values. */
+  readonly nativeProvenanceRecording?: true;
   readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
@@ -846,7 +850,7 @@ export interface RuntimeNativeDispatchSnapshot {
 /** Only session binding is supplied after preparation. Instructions, input,
  * root, model, policy and resolved tools cannot be replaced at run time. */
 export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sessionId" | "providerSessionId" | "providerAttributionSessionId"
-  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
+  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection" | "nativeProvenanceRecording">>;
 export interface RuntimeNativePreparedDispatch {
   readonly snapshot: RuntimeNativeDispatchSnapshot;
   assertReady?(remainingStartMs?: number): void;

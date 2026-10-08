@@ -72,7 +72,14 @@ export async function prepareConfiguredModelSwitch(input: {
         "native_cold_model_change_unavailable", "A guarded model change requires a persisted explicit delivery identity; native evidence was preserved.");
     }
     if (!supportedRuntime || !checkInheritedPrefix || !runtime.prepareNativeDispatch) { await owner.abort(); return undefined; }
-    if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending) { await owner.abort(); return undefined; }
+    // A brand-new conversation (no binding, no history) takes the same prepared,
+    // non-switching, unguarded route as a same-model Web turn on v3, so its first
+    // epoch records the pinned lease provenance. Other unbound/unsupported
+    // records (legacy unbound history, long IDs) keep the original path.
+    const fresh = snapshot.source.status === "unsupported" && snapshot.source.reason === "unbound" && snapshot.history.length === 0 && !snapshot.native && !snapshot.pending;
+    // A cancellation that arrived while waiting for the claim keeps the original
+    // path's ordinary cancelled-turn continuity, exactly as before this route.
+    if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending && (!fresh || host.request.abortSignal.aborted)) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
       const recovered = await recoverPreparedModelSwitch(owner, { exclusiveWriters: true });
       if (recovered.status === "ready") {
@@ -175,7 +182,7 @@ export async function prepareConfiguredModelSwitch(input: {
         }
       }
     }
-    if (snapshot.source.status === "unsupported") cold = true;
+    if (snapshot.source.status === "unsupported" && !fresh) cold = true;
     if (cold && snapshot.native) {
       if (!coldReason || !messageId || snapshot.pending || !owner.coldModelChange || !incoming || snapshot.source.status !== "supported") throw new AgentHarnessError("native_cold_model_change_unavailable", "Owned explicit cold model transition unavailable; native evidence was preserved.");
       incoming.assertReady();
@@ -211,8 +218,11 @@ export async function prepareConfiguredModelSwitch(input: {
           const turn = await owner.admit(binding, cold ? { coldModelChange: true } : undefined); onTurn(turn, notify); await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
+          // Opt-in only: unguarded (pre-first-switch) epochs record the pinned
+          // lease provenance too, so a later switch-back can prove the account.
           return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
             sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor,
+            nativeProvenanceRecording: true as const,
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         });

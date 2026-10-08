@@ -131,7 +131,17 @@ disabling the option, stripping markers or downgrading records is not rollback.
 ### Enable, verify and roll back
 
 Scope: only the Web console's persisted messages can switch models durably. Every
-other surface keeps today's behavior described above. To enable:
+other surface keeps today's behavior described above.
+
+With the opt-in on, every Web turn that carries a persisted message ID uses the
+**primary model only**. That includes the first message of a new conversation.
+These turns get no configured fallback-chain backup model and no router-level
+re-attempt; transport retries within the attempt are unchanged. Non-Web turns and
+turns without a persisted ID keep their configured fallbacks. A cancel that
+arrives after such a turn's preparation has started, but before admission, is
+reported and not appended to history.
+
+To enable:
 
 1. Stop **every** writer for the agent root: the app service, CLI runs, managed
    workers and any older binary. Nothing verifies this for you; the
@@ -149,7 +159,7 @@ Setting `enabled: false` afterwards does not convert upgraded conversations back
 | --- | --- | --- | --- |
 | A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical `lastSwitch` receipt and one `model_change` record in the outgoing native journal | `configured-switch-kill-matrix.test.ts` (12 SIGKILL boundaries, two fresh-process recoveries each), `managed-native-switch.test.ts` |
 | A2 complete fitting context | The incoming model receives a native projection or a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | Immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `native-switch-back.test.ts`, kill-matrix incoming-context assertions |
-| A3 switch-back | Returning to an earlier model retains all native evidence. Native reuse happens only when provider, API, account and window fit are all positively established; otherwise it takes a structured handoff. | Chain length grows by one per switch; predecessor journals stay byte-stable | `native-switch-back.test.ts` (positive reuse), kill-matrix return boundaries (retained evidence and handoff) |
+| A3 switch-back | Returning to an earlier model retains all native evidence. Native reuse happens only when provider, API, account and window fit are all positively established on every reused segment and every content-bearing operation; otherwise it takes a structured handoff. Under the opt-in, Web turns record the account of their pinned dispatch credentials, so conversations started with the opt-in on can reuse native evidence. | Chain length grows by one per switch; predecessor journals stay byte-stable; a native switch-back artifact carries a native projection and makes no summary call | `configured-native-provenance.test.ts`, kill-matrix native return boundaries, `native-switch-back.test.ts` |
 | A4 crash, upgrade, reset, retention | Crashes recover from storage alone: no provider, summary or tool replay, and no leaked reservation or fence. Reset and retention delete the whole chain and its artifacts. Upgrade settles old pending turns first. | Empty `.pending-turns`/dirty fences, no `.native-history-op.*` intent, zero reserved bytes | `configured-switch-kill-lifecycle.test.ts`, `managed-native-lifecycle.test.ts`, `managed-native-cold-change.test.ts`, `host-turn-reconciliation.test.ts` |
 
 Billing during recovery: an admitted summary call interrupted by a crash stays
@@ -178,10 +188,12 @@ Warnings and refusals:
 
 Limits:
 
-- A conversation's first epoch is written before any switch, so it records no
-  account provenance. In the configured host, switch-back therefore keeps its
-  native evidence but takes a structured handoff. Positive native reuse is
-  proven by storage-level fixtures, not by configured conversations.
+- Native reuse needs positive account evidence on every segment. Epochs written
+  before the opt-in, or holding any content written without recorded dispatch
+  provenance (for example background wakes or turns without a persisted ID),
+  stay unknown and take the handoff. Accounts are never
+  inferred or backfilled. Only providers whose credentials expose a stable
+  account (today: Codex OAuth) can match; API-key providers stay unknown.
 - Handoff summaries are model-written prose. The deterministic ledger and the
   verbatim recent turns remain the authoritative evidence.
 - Older binaries are not technically blocked from an upgraded root.

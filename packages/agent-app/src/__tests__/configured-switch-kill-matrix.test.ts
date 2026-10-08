@@ -57,42 +57,40 @@ it.each([
   expect(second.canonical.messages).toHaveLength(first.canonical.messages.length + 2);
 }, TEST_TIMEOUT_MS);
 
-// Codex-shaped faux provenance with a fictional OAuth account. A->B, one B turn,
-// then the killed B->A return. The first A epoch was written before any switch
-// by the ordinary path, which records no account provenance: the return keeps
-// all native evidence but takes the approved structured handoff (native reuse
-// proof: native-switch-back.test.ts). The outgoing B summary is accepted, so no
-// attempt-finished boundary exists in this scenario.
+// Codex-shaped faux provenance with one stable fictional OAuth account. Under
+// the opt-in every epoch, including the first one written before any switch,
+// records the pinned lease provenance, so A->B and the killed B->A return both
+// reuse native evidence: no summary producer is ever admitted or called.
 it.each([
-  "switch-intent", "attempt-started-outgoing", "summary-B", "artifact", "switch-ready", "model-change", "canonical",
+  "switch-intent", "artifact", "switch-ready", "model-change", "canonical",
   "switch-fence-removed", "turn-fence", "turn-A", "canonical#2",
-])("A->B->A return: SIGKILL at %s retains every native segment, records one return switch and explains its handoff", async (phase) => {
+])("A->B->A native return: SIGKILL at %s reuses every native segment once, with zero summary calls", async (phase) => {
   const { before, killed, first, second, armed, journal } = await killAndRecover("return", phase);
   for (const report of [first, second]) {
     expect(report.results).toEqual([{ text: "Fictional A answer", warnings: [] }]);
     expect(report.modelChanges).toBe(2); expect(report.canonical.native.chain).toHaveLength(3);
     expect(report.canonical.providerSession.modelKey).toBe("openai-codex:A");
     expect(report.switchStates.map((state) => state.phase)).toEqual(["ready", "ready"]);
+    expect(report.switchStates.every((state) => state.attempts.length === 0 && state.generation === 0 && state.authorizations === 0)).toBe(true);
+    expect(report.artifacts).toHaveLength(2);
+    for (const artifact of report.artifacts) expect(artifact).toMatchObject({ native: true, producer: "checkpoint", summary: false });
     expectSettled(report);
   }
   const chain = first.canonical.native.chain as { journalId: string; provenance: { account: string | null } }[];
-  expect(chain[0]!.provenance.account).toBeNull(); // first epoch, written before any switch: account unknown
-  for (const row of chain.slice(1)) expect(row.provenance.account).toMatch(/^codex-account-v1:[a-f0-9]{64}$/u);
+  for (const row of chain) expect(row.provenance.account).toMatch(/^codex-account-v1:[a-f0-9]{64}$/u);
+  expect(new Set(chain.map((row) => row.provenance.account)).size).toBe(1);
   expect(second.canonical.lastSwitch).toEqual(first.canonical.lastSwitch); expect(second.switchStates).toEqual(first.switchStates);
-  const returned = first.switchStates.find((state) => state.to === "openai-codex:A")!;
-  const unknown = phase === "attempt-started-outgoing" || phase === "summary-B";
-  expect(returned.attempts).toEqual([{ producer: "outgoing", outcome: unknown ? "started" : "accepted", generation: 0 }]);
-  expect(returned).toMatchObject({ generation: 0, authorizations: 0 });
+  expect(armed.filter((call) => call.kind === "summary")).toEqual([]);
+  expect(killed.calls.filter((call) => call.kind === "summary")).toEqual([]);
   // One incoming A dispatch per delivery; a killed admitted turn settles once, never replayed.
   const admitted = ["turn-fence", "turn-A", "canonical#2"].includes(phase);
   expect(count(killed.calls.filter((call) => call.armed), "turn")).toBe(["turn-A", "canonical#2"].includes(phase) ? 1 : 0);
   expect(first.canonical.messages).toHaveLength(before.canonical.messages.length + (admitted ? 4 : 2));
   if (admitted) expect(first.canonical.messages[before.canonical.messages.length + 1].content).toContain(phase === "canonical#2" ? "Fictional A answer" : "No tools were replayed");
   expect(second.canonical.messages).toHaveLength(first.canonical.messages.length + 2);
-  expect(first.artifacts.find((artifact) => artifact.switchId === returned.switchId)).toMatchObject({ native: false, producer: unknown ? "checkpoint" : "outgoing", summary: !unknown });
-  expect(count(armed, "summary")).toBe(phase === "attempt-started-outgoing" ? 0 : 1); expect(count(second.calls, "summary")).toBe(0);
   expect(count(first.calls, "turn", "A")).toBe(1); expect(count(second.calls, "turn", "A")).toBe(1);
-  expect(first.contexts.at(-1)).toContain("Fictional input fictional-b-turn"); expect(first.contexts.at(-1)).toContain("Historical handoff");
+  // Native projection, not a structured handoff: the B turn arrives as native evidence.
+  expect(first.contexts.at(-1)).toContain("Fictional input fictional-b-turn"); expect(first.contexts.at(-1)).not.toContain("Historical handoff");
   // A0 is byte-identical to before the return; B1 keeps its body and gains one model_change frame.
   expect(await journal(`${chain[0]!.journalId}.jsonl`)).toBe(before.bytes[`${chain[0]!.journalId}.jsonl`]);
   const b = Buffer.from(await journal(`${chain[1]!.journalId}.jsonl`), "base64").toString().trim().split("\n");

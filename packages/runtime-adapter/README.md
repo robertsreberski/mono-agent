@@ -108,6 +108,8 @@ protection as ordinary runs and forwards the exact single-use lease.
 declarations, augmented instructions, input, model limits and nonsecret selected
 auth provenance. `RuntimeNativeDispatchBinding` allows only late session and
 protected native-authority/projection decisions, not a root/model/input rewrite.
+Its internal `nativeProvenanceRecording` flag asks an unguarded run to record the
+lease's own pinned provenance; it carries no values and is ignored at prepare time.
 No native session opens during preparation. Always close the lease, and retain
 the host concurrency permit through its settlement; abort via the original
 signal. Prepared routed execution is one primary attempt with no automatic
