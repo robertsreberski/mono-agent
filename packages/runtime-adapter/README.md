@@ -214,7 +214,8 @@ Hosts must preserve accepted message/coverage object key order on reconstruction
 the binding's digest is JSON-byte based, not semantic canonicalization.
 Its optional frozen dispatch budget refuses overruns without cached-handoff
 repair. Private route resolution cannot replace either field; stateless retries
-and backups strip both. Configured hosts do not supply them yet.
+and backups strip both. Configured hosts supply them only on the validated
+OFF-default Web model-switch path.
 
 The separately exported `createManagedNativeJournalStorage` provides a typed
 administrative storage capability, not a `MonoRuntimeLike` dispatch capability or
@@ -227,7 +228,12 @@ Cold planning/publication retains predecessors and replaces only the same-model
 current epoch. Reference-checked C and complete-set D native deletion are
 restartable storage primitives, not host reset/retention transactions. Callers
 must durably retain the exact cold plan or deletion membership until all physical
-files and publication barriers have completed.
+files and publication barriers have completed. Preserving disposal (P) does
+not grant deletion authority. Generic retirement without C/D host authority
+cannot remove a guarded host-chain member; rejection is not cleanup success.
+Stateless and subagent cleanup retain their isolated ownership boundaries.
+Native ownership IDs remain bounded to 512 characters; bypassing host switch
+preparation for longer IDs does not make the original native dispatch eligible.
 
 ## Architecture
 

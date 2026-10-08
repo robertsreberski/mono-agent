@@ -9,7 +9,8 @@ import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { createPiSessionAdapter, createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
 import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/pi-native/compaction-driver.js";
-import { recoverDurableNativeSession, reconcileNativeSessionTurn } from "../../ai/providers/pi-native/session-lifecycle.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo,
+  discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 
 const roots = [];
@@ -328,3 +329,20 @@ it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "ar
   expect(provider).not.toHaveBeenCalled(); expect(f.assertCurrent).not.toHaveBeenCalled();
   expect(await readdir(f.root)).not.toContain("mono-v2");
 });
+
+it.each([discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow].map((cleanup) => [cleanup.name, cleanup]))(
+  "P preserves guarded bytes without rewind or delete through %s, including poisoned evidence", async (_name, cleanup) => {
+    const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("Fictional durable evidence")])]);
+    await generatePiNativeResponse("Fictional stable instructions", f.options());
+    const repo = resolveDurableNativeSessionRepo(f.root), metadata = (await repo.listOwned()).find((entry) => entry.id === handle);
+    const bytes = await readFile(metadata.path), raw = await repo.open(metadata, { repair: false, wait: false });
+    const deletion = vi.spyOn(repo, "delete"), close = vi.spyOn(raw, "close"), rewind = vi.fn(); raw.moveTo = rewind;
+    const reservation = { release: vi.fn() };
+    await cleanup({ preserveTurnEvidence: true, session: raw, sessionEntry: { repo, metadata }, reservation,
+      hasBaselineLeaf: true, baselineLeafId: "fictional-previous-leaf" },
+    { durableRepo: repo, options: { sessionKeepAlive: true }, requestedSessionId: handle, providerSessionId: handle,
+      externalAbort: true, errorMessage: "Fictional poisoned transcript", onEvent: vi.fn() });
+    expect(close).toHaveBeenCalledTimes(1); expect(reservation.release).toHaveBeenCalledTimes(1);
+    expect(rewind).not.toHaveBeenCalled(); expect(deletion).not.toHaveBeenCalled(); expect(await readFile(metadata.path)).toEqual(bytes);
+    deletion.mockRestore();
+  });

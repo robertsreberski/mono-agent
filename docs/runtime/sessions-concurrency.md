@@ -88,6 +88,26 @@ reported; tools never rerun. Detached same-conversation work may receive retryab
 `native_switch_busy` rather than waiting on its own claim. Whole-chain reset and
 retention delete the conversation's retained native evidence and handoff artifacts.
 Over-limit/capacity cold changes on upgraded chains remain fail-closed.
+Conversation IDs longer than 512 characters bypass switch preparation before
+native authority or intent. This preserves the original path, not a successful
+cold-dispatch guarantee: the existing native host-turn contract rejects those
+ownership IDs with the option OFF too. Its 512-character bound is unchanged.
+
+### Native lifecycle boundaries
+
+| Disposition | Allowed effect | Ownership boundary |
+| --- | --- | --- |
+| P — preserve/detach | Drop stale liveness/mappings without deleting or rewinding retained evidence | Native chain members and unresolved protected turns remain preserved, even with a stale model key or persistence failure |
+| C — ordinary cold cleanup | Replace only the current same-model epoch; delete eligible unreferenced retirement targets | Held host claim, exact authority, reference check and durable lifecycle intent; predecessors remain unchanged |
+| D — whole-chain deletion | Reset/retention delete the authorized chain and switch artifacts; operator purge removes attested owned roots | Whole membership remains recoverable until deletion and directory barriers finish |
+| U — uncoordinated cleanup | Existing stateless/subagent behavior within its own isolated storage | No authority to delete a guarded host-chain predecessor |
+
+Manual compaction uses P for native-bound stale mappings. Generic cleanup cannot
+infer physical deletion permission from a cached runtime/model owner. Guarded
+rejection means preserved evidence, **not successful cleanup**. Unsettled P2
+turns stay protected/charged and reconcile storage-only, without provider or tool
+replay. Ordinary durable registry disposal/TTL removes metadata, not journal bytes.
+These boundaries do not add a different-model cold coordinator for guarded chains.
 
 Older binaries refuse upgraded v4 conversations and scans, but this is **not** a
 universal old-writer admission barrier. Mixed binaries must not run on upgraded

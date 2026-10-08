@@ -305,7 +305,13 @@ prove the ready canonical binding/artifact and current creation eligibility. A p
 runtime opens without authority fail before native repair, including stale warm
 metadata. The runtime pin checks normalized path equality, not a host-owned
 filesystem inode identity; `assertCurrent` must prove any stronger root identity.
-Default unguarded, stateless and subagent behavior is unchanged.
+Default unguarded, stateless and subagent behavior is unchanged. Their cleanup
+cannot target guarded host-chain predecessors: destructive APIs require owned
+C/D disposition, and a guarded refusal is not successful physical cleanup.
+Protected unresolved turn cleanup closes/detaches without rewind or deletion,
+including persistence failures and late cancellation. Ordinary durable TTL and
+disposal evict liveness metadata, not journals. Host ownership IDs stay bounded
+to 512 characters; long-ID switch bypass does not relax native admission.
 
 `nativeSessionProjection` carries the accepted artifact reference, inherited
 messages/coverage and optional frozen `dispatchBudget`. True warm/cold resumes
