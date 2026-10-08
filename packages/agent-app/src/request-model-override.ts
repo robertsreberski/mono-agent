@@ -374,7 +374,8 @@ function applyLocalProviderBlock(
  * Read model/effort from webhook, cron, web-console, TUI, Telegram, or Slack request metadata.
  * Webhook takes precedence, then cron, then the web block, then its optional TUI
  * compatibility mirror, then Telegram, then Slack. A turn carrying none of these blocks
- * returns `{}`, leaving only the keyword escalation scan.
+ * returns `{}`. Message-text effort/model keyword escalation is retired; prose
+ * never declares or changes a route.
  */
 /** APP-private declaration check; use the same precedence as model resolution.
  * Invalid explicit strings still count as declarations, not implicit wakes. */

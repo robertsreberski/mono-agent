@@ -1,4 +1,4 @@
-import { OrdinaryNativeDispatchUnavailableError } from "./durable-history.js";
+import { ModelSwitchPendingError, OrdinaryNativeDispatchUnavailableError } from "./durable-history.js";
 import { DurableTurnAlreadyCommittedError, assertDetachedTurnDescriptor } from "./durable-turn-contract.js";
 import { senderLabel as canonicalSenderLabel } from "./harness/speaker-context.js";
 import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./harness/session-recovery.js";
@@ -1113,10 +1113,14 @@ export class MonoAgentHarness implements AgentHarness {
     request.abortSignal.addEventListener("abort", onAbort, { once: true });
     if (request.abortSignal.aborted) onAbort();
     try {
-      if (this.nativeModelSwitch?.implicitModel && this.nativeModelSwitch.deliveryId(request) === undefined) {
+      // One cheap binding read selects only already-native no-ID turns. Ordinary
+      // conversations retain their original path, without a switch claim or scan.
+      let nativeCurrent = false;
+      if (this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(request) === undefined) {
         const binding = await this.options.historyStore?.readProviderSessionBinding?.(request.conversationId);
-        if (binding?.native === true) {
-          if (!binding.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
+        nativeCurrent = binding?.native === true;
+        if (nativeCurrent && this.nativeModelSwitch.implicitModel) {
+          if (!binding?.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
           const implicit = await this.nativeModelSwitch.implicitModel(request, binding.modelKey);
           if (implicit) turnOptions = { ...this.options, model: implicit.model,
             runtimeOptions: mergeRuntimeOptions(this.options.runtimeOptions, implicit.runtimeOptions) };
@@ -1186,8 +1190,6 @@ export class MonoAgentHarness implements AgentHarness {
         const beginMutation = (async () => {
           // The read-only native hint selects owned CURRENT-chain dispatch for
           // no-ID wakes. It grants no authority; preparation rechecks under claim.
-          const nativeCurrent = this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(activeRequest) === undefined
-            ? (await historyStore?.readProviderSessionBinding?.(request.conversationId))?.native === true : false;
           if (this.nativeModelSwitch && reconcileTurn && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent)) {
             nativePreparationActive = true;
             preparedNativeTurn = await prepareConfiguredModelSwitch({ policy: this.nativeModelSwitch,
@@ -1887,7 +1889,8 @@ export class MonoAgentHarness implements AgentHarness {
       };
     } catch (error) {
       if (error instanceof OrdinaryNativeDispatchUnavailableError) error = new AgentHarnessError("native_cold_model_change_unavailable", error.message);
-      if ((nativePreparationActive || error instanceof AgentHarnessError && error.failureKind === "native_cold_model_change_unavailable")
+      if (error instanceof ModelSwitchPendingError) error = new AgentHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit Web message to authorize further summary work.");
+      if ((nativePreparationActive || error instanceof AgentHarnessError && (error.failureKind === "native_cold_model_change_unavailable" || error.failureKind === "handoff_pending"))
         && providerHistoryTurn === undefined && p2Turn === undefined && !providerHistoryOwnershipTransferred) {
         if (sessionRecord) this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
         const summary = request.abortSignal.aborted ? await safeRecorderCancel(recorder, cancellationFailureKind(request.abortSignal), cancelledTurnReason(request.abortSignal.reason, cancellationFailureKind(request.abortSignal)), context?.systemPrompt)

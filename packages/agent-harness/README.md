@@ -204,11 +204,11 @@ retains the same conservative normalization reserve as intent creation. Failure
 preserves the pending intent and its charged attempts, not cold-replay success.
 Ready storage-only roll-forward is never blocked by the next message's size;
 normalized dispatch remains the final bound and late refusal never rebills a
-summary or automatically replays an admitted message. This is an inert
-implementation boundary: configured activation and activation-critical APP
-lifecycle forwarding remain disabled.
+summary or automatically replays an admitted message. The configured app enables
+this path only through its OFF-default Web model-switch option, explicit stopped-
+older-writers acknowledgement and activation-critical lifecycle forwarding.
 
-The private constructor staging path now prepares the complete host context,
+The internal constructor path prepares the complete host context,
 request extensions and permit before P2 under the same conversation claim. It
 sizes aggregate reservations before paid work, falls back to the existing cold
 path for unsupported capabilities or legacy-source typed pre-intent capacity refusal, and
@@ -220,9 +220,11 @@ post-P2 failures are accounted without automatic replay. Ordinary same-model
 reopening inherits accepted content without a switch-only account/window gate.
 The constructor's `nativeModelSwitch` member is **@internal / unstable**. It is
 structurally callable by a programmatic consumer, not a supported public opt-in;
-no app/config/factory caller passes it. Exposure additionally requires APP to
-forward its persisted delivery ID across retries, never generate it from a run
-ID or text hash.
+the configured app supplies it only for its validated Web-only opt-in and
+forwards Web's persisted inbound message ID across retries, never a run ID or text
+hash. No-ID turns on non-native conversations retain the original cold path;
+already-native conversations inherit their durable model unless a persisted Web
+message moves them. Declared different-model no-ID turns refuse only there.
 
 An unavailable outgoing provider/auth skips its unbilled slot and advances to
 exact checkpoint, incoming producer, then pending. Legacy API/model provenance
@@ -394,7 +396,8 @@ match the authoritative current journal. Optimistic versions and switch-source
 digests include the v4 metadata, not just messages and the provider binding.
 
 `beginProviderSessionPreparation(conversationId, runId)` is an additive,
-claim-only storage substrate; no configured host opts in yet. It settles old
+claim-only storage substrate used by the configured app's acknowledged Web-only
+opt-in. It settles old
 work and returns detached history/source/native metadata without an incoming
 execution fence. Its authority/switch/roll-forward methods borrow the same owner
 rather than reacquiring it; child release never releases the preparation.
@@ -528,8 +531,9 @@ intent fence. Recovered receipt cleanup never repairs or creates missing native
 evidence. Artifact and winning attempt storage remain retained for later D deletion.
 Physical native bytes replace provisional native credits without process-local
 refund counters; committed native bytes do not consume the unpublished-stage
-quota. No configured host opts in; incoming dispatch and model-switch policy
-remain separate runtime integration. This is not a standalone real-root rollout.
+quota. The configured app supplies incoming dispatch and model-switch policy
+through its acknowledged Web-only opt-in. These storage APIs alone are not a
+standalone real-root rollout.
 
 Pending switching stays entirely in host intent/attempt storage: no native
 `model_change` or incoming binding is published before accepted handoff content
@@ -622,7 +626,8 @@ rather than releasing after extension cleanup while a cancellation-ignoring
 provider is still running. This prevents reuse/destruction of producer resources
 under an unresolved turn. Callers must await settlement and reconcile P2; a
 cancellation signal or `close()` is not proof of provider termination. Default
-execution retains ordinary R10 and no configured caller enables preparation yet.
+execution retains ordinary R10; configured preparation is limited to persisted
+Web deliveries and already-native current-chain turns under the explicit opt-in.
 
 Read-only materialized native evidence is limited to 32 journals and 16 MiB of
 aggregate raw journal bytes (also the single-journal bound). Capacity refusal is

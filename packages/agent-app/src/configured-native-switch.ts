@@ -48,7 +48,7 @@ const forwardedKeys = {
 } satisfies Record<keyof AgentHarness, true>;
 void forwardedKeys;
 
-/** Staging-only per-logical-conversation gate shared across responder instances.
+/** Opt-in per-logical-conversation gate shared across responder instances.
  * Other conversations can run/mutate concurrently. Root bootstrap contention is
  * handled by the store's try/check + typed busy refusal, not a root-wide wait.
  * submit shares this gate because APP responders prefer it; the harness's own

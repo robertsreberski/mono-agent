@@ -40,7 +40,7 @@ import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalStr
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { isProviderAuthFailureText } from "@mono-agent/agent-runtime/ai/failure.js";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
-import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
+import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
@@ -51,6 +51,7 @@ import type {
 } from "@mono-agent/observability";
 import {
   createMonoRuntime,
+  createManagedNativeJournalStorage,
   createPiOAuthApiKeyResolver,
   createSrtSandboxEngine,
   describeMonoRuntimeSupport,
@@ -258,7 +259,7 @@ interface ConfiguredAgentInternalHooks {
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
   /** App-only read decoration around the configured canonical history store. */
   readonly wrapHistoryStore?: (store: ConversationHistoryStore) => ConversationHistoryStore;
-  /** @internal Staging only. No config or controller supplies this capability.
+  /** @internal Test/staging injection only; public config derives its own policy.
    * Explicit acknowledgement cannot be inferred from wrappers/methods. */
   readonly nativeModelSwitch?: {
     readonly exclusiveWriters: true;
@@ -1159,6 +1160,20 @@ async function createConfiguredAgentHarnessInternal(
 ): Promise<AgentHarness> {
   const config = options.config;
   assertNoRetiredMonoAgentConfig(config);
+  const switchConfig = config.runtime.session.modelSwitch;
+  if (switchConfig?.enabled === true) {
+    if (switchConfig.olderWritersStopped !== true) throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires explicit acknowledgement that older writers are stopped.", { path: "runtime.session.modelSwitch.olderWritersStopped" });
+    if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires continuous sessions.", { path: "runtime.session.mode" });
+    if (!config.providers?.piNative?.piSessionsRoot) throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires durable providers.piNative.piSessionsRoot.", { path: "providers.piNative.piSessionsRoot" });
+  }
+  // The acknowledgement is a distinct operator statement, never inferred from
+  // runtime methods/capabilities. Storage authority remains lazy and owner-held.
+  const nativeModelSwitch = switchConfig?.enabled === true
+    ? { exclusiveWriters: true as const, native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
+    : internalHooks.nativeModelSwitch;
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;
@@ -1431,7 +1446,7 @@ async function createConfiguredAgentHarnessInternal(
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
-    ...(internalHooks.nativeModelSwitch === undefined ? {} : { nativeJournalStorage: internalHooks.nativeModelSwitch.native }),
+    ...(nativeModelSwitch === undefined ? {} : { nativeJournalStorage: nativeModelSwitch.native }),
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
@@ -1603,11 +1618,11 @@ async function createConfiguredAgentHarnessInternal(
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
     };
-    const harness = internalHooks.nativeModelSwitch === undefined
+    const harness = nativeModelSwitch === undefined
       ? createAgentHarness(harnessOptions)
       : createAgentHarness(harnessOptions, {
       nativeModelSwitch: {
-        ...internalHooks.nativeModelSwitch,
+        ...nativeModelSwitch,
         sessionsRoot: piSessionsRoot ?? "",
         deliveryId: persistedWebDeliveryId,
         implicitModel: async (request, modelKey) => {
@@ -1625,7 +1640,7 @@ async function createConfiguredAgentHarnessInternal(
     });
     ownershipTransferred = true;
     const owned = harnessWithAgentRootOwnership(harness, ownership);
-    return internalHooks.nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore);
+    return nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore);
 
   } catch (error) {
     await toolHistory?.release?.().catch(() => undefined);

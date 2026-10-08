@@ -9,8 +9,8 @@ import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./ru
 import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, prepareNativeSwitchProjection, type PreparedSwitchProducer } from "./model-switch-preparation.js";
 
 /** @internal
- * @unstable Constructor capability, structurally callable but not
- * passed by config or ordinary app composition. Not a supported public opt-in. */
+ * @unstable Constructor capability supplied by the configured host,
+ * not a supported ordinary constructor API. */
 export interface InternalNativeSwitchPolicy {
   readonly exclusiveWriters: true;
   readonly native: RuntimeNativePreparationStorage;
@@ -44,8 +44,10 @@ export async function prepareConfiguredModelSwitch(input: {
   const messageId = policy.deliveryId(host.request);
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);
-  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation || policy.native.nativeEvidence !== "v1" || !checkInheritedPrefix
-    || runtime.nativePreparedDispatch !== "v1" || !runtime.prepareNativeDispatch || runtime.sessionTurnReconciliation !== "v1" || !runtime.reconcileSessionTurn) return undefined;
+  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation) return undefined;
+  const supportedRuntime = policy.native.nativeEvidence === "v1" && checkInheritedPrefix
+    && runtime.nativePreparedDispatch === "v1" && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
+  if (!supportedRuntime) return undefined;
   if (policy.exclusiveWriters !== true || resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "Explicit upgraded-writer acknowledgement and the configured native root are required.");
   const owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId);
   let assertOwned = () => owner.assertOwned();
@@ -64,6 +66,7 @@ export async function prepareConfiguredModelSwitch(input: {
       if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== host.routing.modelKey) throw new AgentHarnessError(
         "native_cold_model_change_unavailable", "A guarded model change requires a persisted explicit delivery identity; native evidence was preserved.");
     }
+    if (!supportedRuntime || !checkInheritedPrefix || !runtime.prepareNativeDispatch) { await owner.abort(); return undefined; }
     if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
       const recovered = await recoverPreparedModelSwitch(owner, { exclusiveWriters: true });

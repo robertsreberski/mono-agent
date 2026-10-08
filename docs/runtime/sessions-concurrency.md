@@ -25,7 +25,7 @@ Boundary rules:
 | --- | --- | --- | --- |
 | Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the web console | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
 | Isolated proactive turn (`runtime.session.isolateProactive: true`) | Nothing shared; the proactive turn intentionally skips the conversation's warm provider session | Existing interactive warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "proactive"` |
-| Model change within a continuous conversation | The previous model-bound provider epoch; the new model starts from canonical history | Durable message and tool history, memory, and run artifacts | `session_boundary` with `kind: "resume_replay"` and `reason: "model_change"` |
+| Default model change within a continuous conversation | The previous model-bound provider epoch; the new model starts from canonical history | Durable message and tool history, memory, and run artifacts | `session_boundary` with `kind: "resume_replay"` and `reason: "model_change"` |
 | First bound turn for a legacy unbound provider record | The pre-model-binding provider epoch; the requested model starts from canonical history without guessing the previous owner | Durable message and tool history, memory, and run artifacts | One cold session event plus `session_boundary` with `kind: "resume_replay"`, both with `reason: "legacy_unbound_model"` |
 | Resume replay after stale/missing provider session | The stale provider session id | Durable history, memory, run artifacts, and the run itself, which retries once | `runtime_warning` `session_resume_retry` plus `session_boundary` with `kind: "resume_replay"` |
 | Host-only history append / unsynchronized provider result | The prior durable provider epoch | Canonical history, memory, and run artifacts | The next provider turn receives a fresh epoch id and replays canonical history |
@@ -39,6 +39,60 @@ Boundary rules:
 | Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, submission receipts, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; unmarked live offers become queued normal turns, dispatch-marked offers become uncertain, and browsers recover a known submission with `GET` instead of repeating `POST` |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
 | `mono-agent web-control reset` | Validated idle host admission, cooldown and quota metadata under `~/.mono-agent/web-control`; active requests prevent reset | Conversations, artifacts, documents and account quota; ordinary session resets and restarts preserve web-control state | CLI operational metadata only |
+
+## Web-only durable model-switch opt-in
+
+Defaults retain cold model-change replay. After backing up consistent host history
+and native Pi roots and stopping **every older writer**, opt in explicitly:
+
+```json
+{
+  "runtime": {
+    "session": {
+      "mode": "continuous",
+      "modelSwitch": { "enabled": true, "olderWritersStopped": true }
+    }
+  },
+  "providers": { "piNative": { "piSessionsRoot": ".mono-agent/pi-sessions" } }
+}
+```
+
+This partial config requires the usual model and identity fields. Missing
+acknowledgement is a validation error, never inferred from runtime capabilities.
+Absent or explicit OFF produces unchanged behavior/files. Fresh and existing roots
+bootstrap authority lazily under conversation ownership, settling old turn fences
+before capturing evidence. Read-only history loading does not upgrade roots.
+
+Only Web's persisted inbound `started.userMessageId` with `source: "web"` authorizes
+model switching or a new summary generation. Transport IDs, run IDs, text hashes,
+TUI/ACP IDs and background wakes do not. No-ID turns on never-upgraded conversations
+keep the original path, including cold-replay model changes for cron, webhook,
+Slack, Telegram, TUI, ACP and Web wakes. They make only one cheap binding read to
+select that path, with no switch preparation, switch claim or authority bootstrap.
+On already-native/v4 conversations, a no-ID undeclared wake inherits the current
+durable model; an explicit other-model no-ID request refuses without rotation.
+Changing `runtime.model` changes the default for ordinary conversations but does
+not move existing native conversations: they retain their durable model until a
+persisted Web message selects the new model. Prose keywords do not escalate models
+or effort; they are ordinary message text.
+Switches retain predecessor journals and admit the incoming turn only after one
+durable switch and a complete fitting projection or structured handoff. Native
+reuse requires positive provider/API/account compatibility, including switch-back;
+missing provenance selects a handoff, not guessed compatibility.
+
+Each switch permits at most two billed summary calls per explicit-message generation.
+An outcome-unknown call never auto-repeats. Retries/reopening with the same persisted
+ID grant no new generation; the next explicit message permits one attempt per
+producer. Pending messages are **not queued or replayed**. Interrupted turns are
+reported; tools never rerun. Detached same-conversation work may receive retryable
+`native_switch_busy` rather than waiting on its own claim. Whole-chain reset and
+retention delete the conversation's retained native evidence and handoff artifacts.
+Over-limit/capacity cold changes on upgraded chains remain fail-closed.
+
+Older binaries refuse upgraded v4 conversations and scans, but this is **not** a
+universal old-writer admission barrier. Mixed binaries must not run on upgraded
+roots. Rollback means stop writers and restore consistent host/native backups;
+disabling the option, stripping markers or downgrading records is not rollback.
 
 ## Provider sessions
 

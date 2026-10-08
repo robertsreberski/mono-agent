@@ -20,6 +20,7 @@ idempotency key and a 4096-byte conversation id.
 | Same-model retries before failover | config | `runtime.retry.primaryAttempts` (default 2) gives the primary a second attempt before the chain advances; per-route `runtime.fallbacks[].attempts` opts a backup in. Only transient provider failures retry — context overflow and bad credentials still advance. Set `primaryAttempts` to 1 to disable | `runtime.retry` |
 | Backup models on retryable provider failure | config | `runtime.fallbacks[]`, each route owning optional exact effort (omission = provider default) | `runtime.fallback-models` |
 | Effort, max turns, workspace | config + cli | `runtime.effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `mono-agent init --effort <level>`). Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` validates effort against the model's advertised levels and warns, naming the nearest supported level, when a configured value is outside that set. Message text never changes effort. `runtime.maxTurns`, `runtime.workspace` | `runtime.effort`, `runtime.max-turns`, `runtime.workspace` |
+| OFF-default Web-only durable model switching; requires stopped older writers and consistent backups | config | `runtime.session.modelSwitch.{enabled,olderWritersStopped}`, `providers.piNative.piSessionsRoot` | `runtime.web-model-switch` |
 | Continuous provider sessions with idle eviction and optional daily rollover | config | `runtime.session.{mode,idleTimeoutMs,rollover,rolloverTimezone,rolloverNotice}` | `runtime.provider-sessions` |
 | Per-channel run admission/execution bounds | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` | `runtime.concurrency` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.<id>.{type,baseUrl,enabled,trustPublicUrl,apiKeyEnv,models,maxAdvertisedModels}`; the legacy `providers.local[]` array is still accepted and migrated on load | `runtime.local-providers` |
@@ -235,3 +236,14 @@ there is no backfill or persisted marker. `memory.recall.recency` ranks qualifie
 deliberate transient hits with a bounded 30-day half-life term, never decaying
 facts/preferences or changing automatic scores. All require BuJo; capture also
 requires `writeMode: "capture"`. Do not enable without reviewed coverage/usefulness.
+
+## Web model changes are not fallback retries
+
+`runtime.session.modelSwitch.enabled` is OFF by default. Web-only durable model
+changes require continuous sessions, `providers.piNative.piSessionsRoot`, and a
+separate `runtime.session.modelSwitch.olderWritersStopped: true` acknowledgement
+that all older writers are stopped. Back up consistent host/native roots first;
+rollback restores those backups. Only persisted Web inbound message IDs authorize
+switch/summary work; pending messages are not replayed. This does not enable native
+switching on fallback routes, TUI/ACP requests or subagents. See the session-switch
+section in the runtime sessions documentation for limits and billing behavior.

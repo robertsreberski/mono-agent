@@ -172,6 +172,10 @@ export class OrdinaryNativeDispatchUnavailableError extends Error {
     this.name = "OrdinaryNativeDispatchUnavailableError";
   }
 }
+/** @internal A pending switch is a pre-admission refusal, not a failed turn. */
+export class ModelSwitchPendingError extends Error {
+  constructor() { super("Model-switch storage pending; ordinary admission/mutation is unavailable until transaction settlement"); this.name = "ModelSwitchPendingError"; }
+}
 export class NativeHistoryAuthorityBusyError extends Error {
   readonly code = "ERR_NATIVE_HISTORY_AUTHORITY_BUSY";
   readonly retryable = true;
@@ -544,7 +548,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
   private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
     if ((await this.switchInventory(rootIdentity)).pending.some((entry) => entry.state.identity.historyBucket === conversationId)) {
-      throw new Error("Model-switch storage pending; ordinary admission/mutation is unavailable until transaction settlement");
+      throw new ModelSwitchPendingError();
     }
   }
   /** Read-only support probe. Long IDs continue today's ordinary cold replay:

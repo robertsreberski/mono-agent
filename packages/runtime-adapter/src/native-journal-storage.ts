@@ -1,6 +1,7 @@
 import { createManagedNativeJournalStorage as nativeStorage } from "@mono-agent/agent-runtime";
 import type { RuntimeNativePreparationStorage } from "./types.js";
-/** Administrative storage capability. No runtime/configured host opts in here. */
+/** Administrative storage capability; configured APP opt-in owns policy/authority,
+ * never inferred from this factory or runtime capability presence. */
 export function createManagedNativeJournalStorage(options: {
   readonly sessionsRoot: string; readonly onPhase?: (phase: string) => Promise<void>;
 }): RuntimeNativePreparationStorage & { readonly checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]> } {
