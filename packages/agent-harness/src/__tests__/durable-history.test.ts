@@ -579,6 +579,8 @@ describe("DurableConversationHistoryStore", () => {
     }
   });
 
+  // Eighty fsync-backed writes contend with the package's crash fixtures. This
+  // tests serialization/retention, not a filesystem throughput guarantee.
   it("serializes concurrent appends and retains 64 messages independently of runtime turn limits", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
@@ -600,7 +602,7 @@ describe("DurableConversationHistoryStore", () => {
     await expect(createDurableHistoryStore({ root, maxMessages: 0 }).load("conversation"))
       .resolves.toEqual([]);
     expect((await readdir(root)).some((name) => name.endsWith(".tmp"))).toBe(false);
-  }, 15_000);
+  }, 30_000);
 
   it("recovers cold from a stable truncated record and replaces it on the next append", async () => {
     const dir = await tempDir();

@@ -48,6 +48,33 @@ it.each(["store", "staging"])("refuses insufficient safe %s capacity before a co
   expect(await readFile(f.canonicalPath)).toEqual(canonical); expect(await f.native.inventory()).toEqual(physical);
   expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
 });
+it.each(["store", "staging"])("cold %s capacity cannot credit canonical replacement before the publication peak", async (limit) => {
+  const sample = await setup(); let publicationBytes = 0;
+  const reference = openStore(sample.base, async (phase: string) => {
+    if (phase !== "epoch_stage_created") return;
+    const dir = join(sample.base, "history"), name = (await readdir(dir)).find((name) => name.startsWith(".native-history-op."))!;
+    const bytes = await readFile(join(dir, name)), operation = JSON.parse(bytes.toString());
+    const plan = reference.native.planColdEpoch(operation.source.native.chain, { hostAuthority: operation.source.native.authority,
+      assertOwned: async () => {}, targetEpoch: operation.next.providerSession.epoch,
+      targetHandleId: operation.next.native.chain.at(-1).handleId, timestamp: 0, targetProvenance: request.targetProvenance });
+    publicationBytes = bytes.length + plan.bytes;
+  });
+  const referencePrep = await reference.store.beginProviderSessionPreparation(bucket, "fictional-peak-reference");
+  try { await referencePrep.coldModelChange!({ ...request, sourceCanonicalDigest: switchDigest(sample.before) }); }
+  finally { await referencePrep.abort(); }
+  expect(publicationBytes).toBeGreaterThan(0);
+  const f = await setup(), before = await readFile(f.canonicalPath), physical = await f.native.inventory();
+  // Enough for intent/header, but not for the new canonical stage coexisting
+  // with the old canonical. The previous replacement-credit arithmetic fit.
+  const { store } = openStore(f.base, undefined, limit === "store"
+    ? { maxStoreBytes: (await f.store.stats()).bytes + publicationBytes + 512 }
+    : { maxStagedBytes: publicationBytes + 512 });
+  const prep = await store.beginProviderSessionPreparation(bucket, "fictional-peak-owner");
+  try { await expect(prep.coldModelChange!({ ...request, sourceCanonicalDigest: switchDigest(f.before) })).rejects.toThrow(/capacity/); }
+  finally { await prep.abort(); }
+  expect(await readFile(f.canonicalPath)).toEqual(before); expect(await f.native.inventory()).toEqual(physical);
+  expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
+});
 it.each(["source", "identity", "provenance"])("cold change refuses malformed/stale %s before intent or mutation", async (fault) => {
   const f = await setup(), before = await readFile(f.canonicalPath), physical = await f.native.inventory();
   const prep = await f.store.beginProviderSessionPreparation(bucket, "fictional-invalid-cold-owner");

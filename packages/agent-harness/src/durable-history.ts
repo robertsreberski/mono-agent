@@ -2164,9 +2164,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const next = operation.next!, plan = this.nativeJournalStorage!.planColdEpoch(operation.source.native.chain,
       this.coldContext(operation.source, next, async () => {}, operation.coldSwitch));
     const bytes = Buffer.byteLength(JSON.stringify(operation) + "\n"), projected = this.projectRecord(next);
-    const retention = await this.retentionPlan(rootIdentity, [projected]);
-    if (retention.minimumBytes + bytes + plan.bytes > this.maxStoreBytes || retention.minimumCount > this.maxConversations) throw new (operation.coldSwitch ? ModelSwitchCapacityError : Error)("Native cold history capacity unavailable");
-    if (await this.scanStagedBytes(rootIdentity) + bytes + plan.bytes > this.maxStagedBytes) throw new (operation.coldSwitch ? ModelSwitchCapacityError : Error)("Native cold staging capacity unavailable");
+    const retention = await this.retentionPlan(rootIdentity, operation.coldSwitch ? [] : [projected]);
+    // Exceptional model changes must fit the actual publication peak: neither
+    // replacing the old canonical nor hypothetical retention victims are credits
+    // before the intent, target header and new canonical stage are durable.
+    const canonicalStage = operation.coldSwitch ? projected.bytes : 0;
+    const charged = operation.coldSwitch ? retention.projectedBytes + canonicalStage : retention.minimumBytes;
+    const count = operation.coldSwitch ? retention.projectedCount : retention.minimumCount;
+    if (charged + bytes + plan.bytes > this.maxStoreBytes || count > this.maxConversations) throw new (operation.coldSwitch ? ModelSwitchCapacityError : Error)("Native cold history capacity unavailable");
+    if (await this.scanStagedBytes(rootIdentity) + bytes + plan.bytes + canonicalStage > this.maxStagedBytes) throw new (operation.coldSwitch ? ModelSwitchCapacityError : Error)("Native cold staging capacity unavailable");
   }
   private createNativePreparedAppend(stage: ActiveStage, operation: NativeHistoryOperation, held: HeldConversation, keepOwner: boolean, onSettled?: () => void): PreparedHistoryAppend {
     let state: "prepared" | "committed" | "aborted" = "prepared", pending = Promise.resolve();
