@@ -1,5 +1,7 @@
 // Shared driver for the configured-host model-switch SIGKILL matrix. Each
-// boundary: one producer process killed at a real fs/provider boundary, then
+// boundary: one producer process killed at or after a real fs/provider
+// boundary (the labelled operation has completed; the reporting async chain is
+// parked, but unrelated in-process work may advance until SIGKILL lands), then
 // two fresh-process recoveries through the same public configured host.
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -20,22 +22,31 @@ export interface Report {
   readonly modelChanges: number; readonly toolRecords: number;
   readonly switchFiles: readonly string[]; readonly operations: readonly string[];
   readonly pending: readonly string[]; readonly dirty: readonly string[];
-  readonly switchStates: readonly { switchId: string; phase: string; from: string; to: string; attempts: { producer: string; outcome: string; generation: number }[] }[];
+  readonly switchStates: readonly { switchId: string; phase: string; from: string; to: string; generation: number; authorizations: number; attempts: { producer: string; outcome: string; generation: number }[] }[];
   readonly artifacts: readonly { switchId: string; producer: string; native: boolean; summary: boolean; ledger: number; recent: number; budget: Record<string, unknown> }[];
   readonly stats: { readonly reservedBytes: number; readonly conversations: number };
 }
 const worker = new URL("./configured-switch-kill-worker.mjs", import.meta.url);
 const preload = fileURLToPath(new URL("./configured-switch-kill-preload.cjs", import.meta.url));
 const roots: string[] = [];
-export async function cleanupRoots(): Promise<void> { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); }
+const live = new Set<ChildProcess>();
+/** One shared deadline per test (below vitest's 60s test timeout), not per process. */
+export const TEST_TIMEOUT_MS = 60_000;
+const BUDGET_MS = 55_000;
+/** afterEach: SIGKILL any still-live worker BEFORE deleting its root. */
+export async function cleanupRoots(): Promise<void> {
+  await Promise.all([...live].map((child) => stopped(child)));
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+}
 
-function start(root: string, scenario: Scenario, mode: "produce" | "recover", phase?: string): { child: ChildProcess; reply: Promise<any>; exited: Promise<unknown[]> } {
+function start(root: string, scenario: Scenario, mode: "produce" | "recover", deadline: number, phase?: string): { child: ChildProcess; reply: Promise<any>; exited: Promise<unknown[]> } {
   const child = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: ["--require", preload],
     env: { ...process.env, MONO_AGENT_FIXTURE_SCENARIO: scenario === "return" ? "native" : scenario, MONO_AGENT_FIXTURE_CRASH_PHASE: phase ?? "" } });
-  const exited = once(child, "exit");
+  live.add(child);
+  const exited = once(child, "exit"); void exited.then(() => live.delete(child));
   let stderr = ""; child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   const reply = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Configured switch worker timed out (${mode} ${phase ?? ""}): ${stderr}`)), 40_000);
+    const timer = setTimeout(() => reject(new Error(`Configured switch worker timed out (${mode} ${phase ?? ""}): ${stderr}`)), Math.max(1, deadline - Date.now()));
     child.once("message", (value) => { clearTimeout(timer); resolve(value); });
     child.once("exit", (code, signal) => { clearTimeout(timer); reject(new Error(`Configured switch worker exited ${code ?? signal}: ${stderr}`)); });
   });
@@ -49,14 +60,15 @@ async function stopped(child: ChildProcess): Promise<void> {
 
 /** SIGKILL the producer at a labelled durable boundary, then recover twice. */
 export async function killAndRecover(scenario: Scenario, phase: string) {
+  const deadline = Date.now() + BUDGET_MS;
   const root = await mkdtemp(join(tmpdir(), "configured-switch-kill-")); roots.push(root);
-  const producer = start(root, scenario, "produce", phase);
+  const producer = start(root, scenario, "produce", deadline, phase);
   let killed: { phase: string; calls: Call[] };
   try { killed = await producer.reply; } finally { await stopped(producer.child); }
   expect(producer.child.signalCode).toBe("SIGKILL"); expect(killed.phase).toBe(phase);
   const before = JSON.parse(await readFile(join(root, "before.json"), "utf8")) as Report & { bytes: Record<string, string> };
   const recover = async (): Promise<Report> => {
-    const run = start(root, scenario, "recover");
+    const run = start(root, scenario, "recover", deadline);
     try { const value = await run.reply; const [code] = await run.exited; expect(code).toBe(0); return value; }
     finally { await stopped(run.child); }
   };

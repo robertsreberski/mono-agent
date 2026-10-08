@@ -154,15 +154,23 @@ Setting `enabled: false` afterwards does not convert upgraded conversations back
 
 Billing during recovery: an admitted summary call interrupted by a crash stays
 charged as outcome-unknown and is never repeated. The free checkpoint and then
-the incoming producer follow; at most two billed calls happen per explicit
-message generation.
+the incoming producer follow. Each switch generation allows at most two billed
+summary calls (outgoing, then incoming producer), plus the incoming turn itself.
+
+Retrying the same persisted Web message after a crash finishes the recorded
+switch in its original generation and never opens a new billed one. The message
+ID authorizes switch work only; it does not deduplicate turns. An interrupted
+turn is reported, and a redelivered message is admitted as a new turn. The Web
+console never resends a dispatched message: if the agent or Web service stops
+mid-turn, that turn ends failed or interrupted and you send a new message.
 
 Warnings and refusals:
 
 - `degraded_native_context` is the only user-facing warning. It appears once,
   on the turn that applied an owned cold change. If the process dies after
-  that change became durable, recovery finishes it without reissuing the
-  warning. The canonical `lastSwitch.kind: "cold"` receipt is the durable record.
+  that change became durable but before that turn streamed the warning,
+  recovery finishes the change without it. The warning is then never shown,
+  and the canonical `lastSwitch.kind: "cold"` receipt is the only record.
 - Structured handoffs and native reuse produce no warning.
 - `handoff_pending`, `handoff_budget_exceeded`,
   `native_cold_model_change_unavailable` and retryable `native_switch_busy`

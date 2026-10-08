@@ -3,7 +3,7 @@
 // disabled. Storage-level boundary matrices stay in agent-harness:
 // managed-native-switch / managed-model-switch-storage / native-switch-back.
 import { afterEach, expect, it } from "vitest";
-import { cleanupRoots, count, expectSettled, killAndRecover } from "./fixtures/configured-switch-kill.js";
+import { TEST_TIMEOUT_MS, cleanupRoots, count, expectSettled, killAndRecover } from "./fixtures/configured-switch-kill.js";
 
 afterEach(cleanupRoots);
 
@@ -29,6 +29,8 @@ it.each([
   // Billing: one outgoing slot per switchId generation. An admitted attempt
   // killed before/while calling the provider stays charged as outcome-unknown
   // ("started") and is never repeated; the free checkpoint follows.
+  // Redelivering the same persisted Web message never opens a new billed generation.
+  expect(first.switchStates[0]).toMatchObject({ generation: 0, authorizations: 0 });
   const unknown = phase === "attempt-started-outgoing" || phase === "summary-A";
   expect(first.switchStates[0]!.attempts).toEqual([{ producer: "outgoing", outcome: unknown ? "started" : "rejected", generation: 0 }]);
   expect(count(armed, "summary")).toBe(phase === "attempt-started-outgoing" ? 0 : 1);
@@ -53,16 +55,19 @@ it.each([
   if (admitted) expect(first.canonical.messages[3].content).toContain(phase === "canonical#2" ? "Fictional B answer" : "No tools were replayed");
   expect(second.canonical.messages.slice(0, 2)).toEqual(before.canonical.messages);
   expect(second.canonical.messages).toHaveLength(first.canonical.messages.length + 2);
-}, 60_000);
+}, TEST_TIMEOUT_MS);
 
 // Codex-shaped faux provenance with a fictional OAuth account. A->B, one B turn,
-// then the killed B->A return. The pre-upgrade A epoch ran unguarded, so its
-// account is not positively established: the return keeps all native evidence
-// but takes the approved structured handoff (native reuse proof: native-switch-back.test.ts).
+// then the killed B->A return. The first A epoch was written before any switch
+// by the ordinary path, which records no account provenance: the return keeps
+// all native evidence but takes the approved structured handoff (native reuse
+// proof: native-switch-back.test.ts). The outgoing B summary is accepted, so no
+// attempt-finished boundary exists in this scenario.
 it.each([
-  "switch-intent", "attempt-started-outgoing", "summary-B", "artifact", "switch-ready", "model-change", "canonical", "turn-A",
+  "switch-intent", "attempt-started-outgoing", "summary-B", "artifact", "switch-ready", "model-change", "canonical",
+  "switch-fence-removed", "turn-fence", "turn-A", "canonical#2",
 ])("A->B->A return: SIGKILL at %s retains every native segment, records one return switch and explains its handoff", async (phase) => {
-  const { before, first, second, armed, journal } = await killAndRecover("return", phase);
+  const { before, killed, first, second, armed, journal } = await killAndRecover("return", phase);
   for (const report of [first, second]) {
     expect(report.results).toEqual([{ text: "Fictional A answer", warnings: [] }]);
     expect(report.modelChanges).toBe(2); expect(report.canonical.native.chain).toHaveLength(3);
@@ -71,12 +76,19 @@ it.each([
     expectSettled(report);
   }
   const chain = first.canonical.native.chain as { journalId: string; provenance: { account: string | null } }[];
-  expect(chain[0]!.provenance.account).toBeNull(); // unguarded pre-upgrade epoch: account unknown
+  expect(chain[0]!.provenance.account).toBeNull(); // first epoch, written before any switch: account unknown
   for (const row of chain.slice(1)) expect(row.provenance.account).toMatch(/^codex-account-v1:[a-f0-9]{64}$/u);
   expect(second.canonical.lastSwitch).toEqual(first.canonical.lastSwitch); expect(second.switchStates).toEqual(first.switchStates);
   const returned = first.switchStates.find((state) => state.to === "openai-codex:A")!;
   const unknown = phase === "attempt-started-outgoing" || phase === "summary-B";
   expect(returned.attempts).toEqual([{ producer: "outgoing", outcome: unknown ? "started" : "accepted", generation: 0 }]);
+  expect(returned).toMatchObject({ generation: 0, authorizations: 0 });
+  // One incoming A dispatch per delivery; a killed admitted turn settles once, never replayed.
+  const admitted = ["turn-fence", "turn-A", "canonical#2"].includes(phase);
+  expect(count(killed.calls.filter((call) => call.armed), "turn")).toBe(["turn-A", "canonical#2"].includes(phase) ? 1 : 0);
+  expect(first.canonical.messages).toHaveLength(before.canonical.messages.length + (admitted ? 4 : 2));
+  if (admitted) expect(first.canonical.messages[before.canonical.messages.length + 1].content).toContain(phase === "canonical#2" ? "Fictional A answer" : "No tools were replayed");
+  expect(second.canonical.messages).toHaveLength(first.canonical.messages.length + 2);
   expect(first.artifacts.find((artifact) => artifact.switchId === returned.switchId)).toMatchObject({ native: false, producer: unknown ? "checkpoint" : "outgoing", summary: !unknown });
   expect(count(armed, "summary")).toBe(phase === "attempt-started-outgoing" ? 0 : 1); expect(count(second.calls, "summary")).toBe(0);
   expect(count(first.calls, "turn", "A")).toBe(1); expect(count(second.calls, "turn", "A")).toBe(1);
@@ -87,4 +99,4 @@ it.each([
   const seeded = Buffer.from(before.bytes[`${chain[1]!.journalId}.jsonl`]!, "base64").toString().trim().split("\n");
   expect(b.slice(1, seeded.length)).toEqual(seeded.slice(1)); expect(b.slice(seeded.length).map((line) => JSON.parse(line).kind)).toEqual(["turn_start", "model_change", "turn_end"]);
   for (const row of chain.slice(0, -1)) expect(second.journals[`${row.journalId}.jsonl`]).toBe(first.journals[`${row.journalId}.jsonl`]);
-}, 60_000);
+}, TEST_TIMEOUT_MS);

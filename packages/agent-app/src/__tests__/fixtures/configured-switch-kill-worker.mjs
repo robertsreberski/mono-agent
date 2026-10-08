@@ -116,6 +116,7 @@ async function switchStorage() {
   const handoffs = await Promise.all(names.filter((name) => name.endsWith(".handoff.json")).map(read));
   return {
     switchStates: states.map((state) => ({ switchId: state.identity.switchId, phase: state.phase, from: state.identity.fromModelKey, to: state.identity.toModelKey,
+      generation: state.authorizationGeneration, authorizations: state.authorizations.length,
       attempts: state.attempts.map(({ producer, outcome, generation }) => ({ producer, outcome, generation })) })),
     artifacts: handoffs.map(({ switchId, artifact }) => ({ switchId, producer: artifact.producer, native: artifact.nativeProjection !== undefined,
       summary: artifact.summary !== null, ledger: artifact.ledger.length, recent: artifact.recent.length, budget: artifact.budget })),

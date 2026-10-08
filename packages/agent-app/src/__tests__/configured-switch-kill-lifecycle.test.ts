@@ -2,21 +2,23 @@
 // retention of a multi-epoch chain (P3 A4). Storage-level phase matrices remain
 // in agent-harness managed-native-lifecycle / managed-native-cold-change.
 import { afterEach, expect, it } from "vitest";
-import { cleanupRoots, count, expectSettled, killAndRecover } from "./fixtures/configured-switch-kill.js";
+import { TEST_TIMEOUT_MS, cleanupRoots, count, expectSettled, killAndRecover } from "./fixtures/configured-switch-kill.js";
 
 afterEach(cleanupRoots);
 
 // A real 32-member guarded chain (structured A->B first), then an explicit
 // persisted Web B->A message selects the owned current-only cold change.
-it.each(["lifecycle-intent", "canonical", "native-removed", "lifecycle-intent-removed", "turn-A"])(
+it.each(["lifecycle-intent", "canonical", "native-removed", "lifecycle-intent-removed", "turn-A", "canonical#2"])(
   "current-only cold change: SIGKILL at %s records one cold receipt, keeps 31 predecessors and never bills a summary", async (phase) => {
   const { before, killed, first, second, armed } = await killAndRecover("cold", phase);
   const retired = `${before.canonical.native.chain.at(-1).journalId}.jsonl`;
   for (const report of [first, second]) {
-    // Warning semantics: the one-turn degraded-context warning belongs to the
-    // turn that applied the cold change. Every boundary here is after durable
-    // cold intent, so recovery completes it storage-only and the next turn is
-    // ordinary same-model work: no repeated (or late) warning.
+    // Warning semantics: the one-turn degraded-context warning is emitted only
+    // by the process whose run() applied the cold change. Every boundary here
+    // is at or after durable cold intent, so recovery completes the change
+    // storage-only (appliedCold is false) and the next turn is ordinary
+    // same-model work. When the kill lands before that run() streamed its
+    // warning, the user never sees it: lastSwitch.kind "cold" is the only record.
     expect(report.results).toEqual([{ text: "Fictional A answer", warnings: [] }]);
     expect(report.canonical.lastSwitch.kind).toBe("cold"); expect(report.canonical.providerSession.modelKey).toBe("faux:A");
     expect(report.canonical.native.chain).toHaveLength(32); expect(report.canonical.native.projection).toBeNull();
@@ -28,11 +30,14 @@ it.each(["lifecycle-intent", "canonical", "native-removed", "lifecycle-intent-re
   }
   expect(second.canonical.lastSwitch).toEqual(first.canonical.lastSwitch);
   expect(count(armed, "summary")).toBe(0);
-  expect(count(killed.calls.filter((call) => call.armed), "turn")).toBe(phase === "turn-A" ? 1 : 0);
+  const admitted = phase === "turn-A" || phase === "canonical#2";
+  expect(count(killed.calls.filter((call) => call.armed), "turn")).toBe(admitted ? 1 : 0);
+  expect(first.canonical.messages).toHaveLength(before.canonical.messages.length + (admitted ? 4 : 2));
+  if (admitted) expect(first.canonical.messages[before.canonical.messages.length + 1].content).toContain(phase === "canonical#2" ? "Fictional A answer" : "No tools were replayed");
   expect(count(first.calls, "turn", "A")).toBe(1); expect(count(second.calls, "turn", "A")).toBe(1);
   // Cold replay context: canonical history, including the retained B answer.
   expect(first.contexts.at(-1)).toContain("Fictional B answer"); expect(first.contexts.at(-1)).toContain("Fictional input fictional-seed");
-}, 60_000);
+}, TEST_TIMEOUT_MS);
 
 it.each(["lifecycle-intent", "native-removed", "native-removed#2", "switch-storage-removed", "canonical", "lifecycle-intent-removed"])(
   "reset of a switched chain: SIGKILL at %s, two fresh resets finish whole-chain deletion without provider calls", async (phase) => {
@@ -46,7 +51,7 @@ it.each(["lifecycle-intent", "native-removed", "native-removed#2", "switch-stora
   // Each explicit reset rotates to a fresh empty epoch; nothing else survives.
   expect({ ...second.canonical, providerSession: undefined }).toEqual({ ...first.canonical, providerSession: undefined });
   expect(first.canonical).toMatchObject({ version: 3, providerSession: { revision: 0 } }); expect(armed).toEqual([]);
-}, 60_000);
+}, TEST_TIMEOUT_MS);
 
 it.each(["lifecycle-intent", "native-removed", "switch-storage-removed", "canonical-removed", "lifecycle-intent-removed"])(
   "retention of a switched chain: SIGKILL at %s, two fresh successor admissions finish whole-chain deletion", async (phase) => {
@@ -60,4 +65,4 @@ it.each(["lifecycle-intent", "native-removed", "switch-storage-removed", "canoni
   }
   expect(second.successor.messages).toHaveLength(first.successor.messages.length + 2);
   expect(count(armed, "summary")).toBe(0); expect(count(first.calls, "turn")).toBe(1); expect(count(second.calls, "turn")).toBe(1);
-}, 60_000);
+}, TEST_TIMEOUT_MS);

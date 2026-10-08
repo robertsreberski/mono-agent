@@ -1,6 +1,9 @@
 // Test-only real fs boundaries for the configured switch kill matrix. No
 // production hooks: the worker arms this after its setup turns, and each
-// labelled durable boundary reports once over IPC, then waits for SIGKILL.
+// labelled durable boundary reports once over IPC, then parks that async chain
+// until SIGKILL. The event loop stays alive, so the kill lands AT OR AFTER the
+// boundary: the labelled operation is complete, and unrelated in-process work
+// (timers, other promise chains) may advance before the signal arrives.
 const fs = require("node:fs/promises");
 const { readFileSync } = require("node:fs");
 const { syncBuiltinESMExports } = require("node:module");
