@@ -2,11 +2,16 @@
 
 ## Unreleased
 
+- With Web model switching on, record the pinned dispatch account on every Web
+  turn with a persisted message ID, from a new conversation's first message on.
+  A compatible switch-back can then reuse native evidence without a summary
+  call. Earlier epochs and mixed epochs stay unknown and take the handoff.
+  These Web turns now use the primary model only, with no configured fallback
+  backup. Non-Web turns and turns without an ID keep fallbacks.
+
 - Add an operator guide for Web durable model switching: enable and
   restore-backup rollback steps, A1–A4 acceptance mapped to observable
-  evidence, warning and refusal semantics, and limits. In the configured host
-  a switch-back keeps native evidence but takes a structured handoff, because
-  the first epoch predates switching and records no account provenance.
+  evidence, warning and refusal semantics, and limits.
 
 - Show plain-language cold-model context warnings in Web activity, using
   structured harness warnings only on the turn that applied the change. Keep

@@ -361,3 +361,29 @@ it("freezes legacy model/API from owned binding bytes without auth, never invent
   expect(await f.bridge.freeze(coordinate)).toEqual(f.source); expect(f.source.provenance.account).toBeNull();
   await expect(f.bridge.freeze({ ...coordinate, ownerKey: "fictional-wrong-owner" })).rejects.toThrow();
 });
+it.each([
+  ["identical positive lease provenance on every content operation", ["fictional-account", "fictional-account"], "fictional-account"],
+  ["different accounts across operations", ["fictional-account", "fictional-other"], null],
+  ["one operation without recorded provenance", ["fictional-account", undefined], null],
+  ["explicit unknown account", [null, null], null],
+  ["no content-bearing operation", [], null],
+])("freezes an unguarded opt-in epoch account only from %s", async (_name, accounts, expected) => {
+  const root = await mkdtemp(join(tmpdir(), "mono-native-lease-")); roots.push(root);
+  const repo = new JsonlSessionRepo({ sessionsRoot: root }); repos.push(repo);
+  const store = await repo.create({ id: "3".repeat(64), cwd: "/fictional" });
+  await store.scopedWrite(async () => {
+    await store.writeRecord("owner_binding", { kind: "host", ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
+    await store.writeRecord("handle_binding", { handleId: store.metadata.id, baseRevision: 0, authoritative: true, model: { provider: from.provider, id: from.model, api: from.api } });
+  }, "bind");
+  for (const [index, account] of accounts.entries()) {
+    await store.beginTurn(`fictional-turn-${index}`);
+    await store.openOperation(`fictional-op-${index}`, { model: { provider: from.provider, api: from.api, id: from.model },
+      ...(account === undefined ? {} : { nativeProvenance: { ...from, account } }) });
+    await store.appendMessage({ role: "user", content: `Fictional fact ${index}`, timestamp: 17 });
+    await store.closeOperation(`fictional-op-${index}`, "completed"); await store.endTurn(`fictional-turn-${index}`, "completed");
+  }
+  await store.sync(); const metadata = { ...store.metadata }; await store.close();
+  const bridge = createManagedNativeJournalStorage({ sessionsRoot: root });
+  const frozen = await bridge.freeze({ epoch: "9".repeat(64), ordinal: 0, handleId: metadata.id, predecessorJournalId: null, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
+  expect(frozen.provenance).toEqual({ ...from, account: expected });
+});

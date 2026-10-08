@@ -229,7 +229,10 @@ message moves them. Declared different-model no-ID turns refuse only there.
 An unavailable outgoing provider/auth skips its unbilled slot and advances to
 exact checkpoint, incoming producer, then pending. Legacy API/model provenance
 comes from validated owned native binding bytes without resolving credentials;
-legacy account identity remains unknown. Capture overflow throws the exported
+legacy account identity remains unknown. With the opt-in, unguarded Web turns
+ask the prepared lease (binding flag only) to record its pinned provenance; an
+unguarded epoch freezes with that account only when every content-bearing
+operation recorded the identical positive provenance, otherwise unknown. Capture overflow throws the exported
 `NativeEvidenceCapacityError`; matching an error-code string is insufficient to
 authorize cold fallback.
 

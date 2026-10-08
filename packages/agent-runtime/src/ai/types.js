@@ -551,6 +551,9 @@
  * @property {RuntimeRunOptions['sessionRecovery']} [sessionRecovery]
  * @property {any} [nativeSessionAuthority]
  * @property {any} [nativeSessionProjection]
+ * @property {true} [nativeProvenanceRecording] @internal Host opt-in signal: record
+ *   this lease's pinned dispatch provenance on unguarded operations. A flag only;
+ *   provenance values always come from the prepared auth lease.
  */
 /**
  * @typedef {{prepared: {status: "prepared", checkpoints: ReadonlyArray<Record<string, any>>, ledger: ReadonlyArray<Record<string, any>>, recent: ReadonlyArray<Record<string, any>>, older: ReadonlyArray<Record<string, any>>, coverage: ReadonlyArray<Record<string, any>>}, outputReserve: number}} NativeHandoffProducerRequest
