@@ -461,9 +461,11 @@ it.each(["acknowledgement", "continuous", "piSessionsRoot"])("programmatic switc
   await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each([false, true])("long-ID Web requests bypass native switching without weakening the existing host contract (enabled=%s)", async (enabled) => {
+it.each([false, true].flatMap((enabled) => [false, true].map((padded) => ({ enabled, padded }))))(
+  "long-ID Web requests bypass native switching without weakening the existing host contract (enabled=$enabled, padded=$padded)", async ({ enabled, padded }) => {
   const f = await fixture(true), h = await f.make(enabled);
-  const request = { ...f.request("fictional-persisted-long-id", "faux:B"), conversationId: "web:" + "x".repeat(513) };
+  const conversationId = "web:" + "x".repeat(padded ? 508 : 513) + (padded ? " " : "");
+  const request = { ...f.request("fictional-persisted-long-id", "faux:B"), conversationId };
   const measure = vi.spyOn(f.native, "measureSwitch"), begin = vi.spyOn(f.getStore(), "beginProviderSessionPreparation");
   f.faux.setResponses([reply("Fictional cold answer")]);
   await expect(h.respond(request, { append: async () => {} })).rejects.toThrow("Invalid protected sessionTurn host contract");
