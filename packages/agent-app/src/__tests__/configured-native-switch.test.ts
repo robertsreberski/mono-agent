@@ -583,14 +583,14 @@ it.each([false, true])("persisted Web cold change preserves predecessors, replay
   const response = await h.respond(f.request(id, "faux:A"), { append: async () => {}, event: async (event) => { events.push(event); } });
   const after = await f.record(); expect(response.text).toBe("Fictional bounded cold answer");
   expect(response.metadata?.runtime).toMatchObject({ runtimeWarnings: [expect.objectContaining({
-    warning_kind: "degraded_native_context", source: "harness", message: expect.stringContaining("not a complete native handoff") })] });
+    warning_kind: "degraded_native_context", source: "harness", message: expect.stringContaining("may need key details repeated") })] });
   expect(events.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(true);
   const timeline = delivery.web;
   try {
     timeline.applyStreamFrames(delivery.turnId, events.map((event) => ({ kind: "event" as const, event })));
     const detail = timeline.completeTurn(delivery.turnId, response.text, response.metadata);
     expect(detail.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ type: "telemetry", event: "runtime_warning",
-      data: expect.objectContaining({ warningKind: "degraded_native_context", message: expect.stringContaining("not a complete native handoff") }) }));
+      data: expect.objectContaining({ warningKind: "degraded_native_context", message: expect.stringContaining("may need key details repeated") }) }));
   } finally { timeline.close(); }
   expect(f.transport).toHaveBeenCalledTimes(calls + 1); expect(measure).not.toHaveBeenCalled();
   expect(events.some((event) => (event as { type?: string }).type?.startsWith("tool_"))).toBe(false);

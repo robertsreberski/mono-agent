@@ -190,7 +190,7 @@ export async function prepareConfiguredModelSwitch(input: {
       snapshot = await owner.read(); cold = false;
     }
     const warning = { warning_kind: "degraded_native_context", source: "harness",
-      message: "Cold model change uses bounded canonical/tool-history replay, not a complete native handoff. The settled outgoing current epoch was retired; frozen predecessors remain retained." } as const;
+      message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." } as const;
     if (!ready && !cold && snapshot.native?.projection && snapshot.lastSwitch?.artifact) ready = {
       status: "ready", switchId: snapshot.lastSwitch.switchId, artifact: snapshot.native.projection, modelKey: host.routing.modelKey };
     snapshot.native?.chain.forEach((row) => protectedHandles.add(row.handleId));

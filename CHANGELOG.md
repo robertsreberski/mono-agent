@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Show cold-model context downgrade warnings in Web conversation activity, using
+- Show plain-language cold-model context warnings in Web activity, using
   structured harness warnings only on the turn that applied the change. Keep
   unsupported storage/authority results from authorizing a cold model change.
 

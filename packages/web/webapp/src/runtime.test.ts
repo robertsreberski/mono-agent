@@ -1441,14 +1441,14 @@ it("places quick replies immediately after the answer outside activity", () => {
 describe("cold model context warning projection", () => {
   it("maps only degraded_native_context runtime warnings to an existing activity note", () => {
     const result = convertWebMessage(message({ role: "assistant", parts: [
-      { type: "telemetry", event: "runtime_warning", data: { type: "runtime_warning", warningKind: "degraded_native_context", message: "Fictional bounded context, not a complete native handoff." } },
+      { type: "telemetry", event: "runtime_warning", data: { type: "runtime_warning", warningKind: "degraded_native_context", message: "Fictional model change: key details may need repeating." } },
       { type: "telemetry", event: "runtime_warning", data: { warningKind: "provider", message: "Fictional provider diagnostics remain hidden." } },
       { type: "telemetry", event: "runtime_telemetry", data: { warningKind: "degraded_native_context", message: "Wrong event remains hidden." } },
       { type: "text", text: "Fictional answer." },
     ] }));
     expect(result.content).toEqual([
       { type: "text", text: "Fictional answer." },
-      { type: "data-note", data: { text: "Fictional bounded context, not a complete native handoff." } },
+      { type: "data-note", data: { text: "Fictional model change: key details may need repeating." } },
     ]);
   });
   it.each([undefined, null, 7, " "])("does not render a missing or malformed cold warning message: %s", (value) => {

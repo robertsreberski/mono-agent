@@ -7,7 +7,7 @@ import type { WebMessage } from "../types";
 import { AssistantMessage, UserMessage } from "./Messages";
 import "../styles.css";
 
-const warning = "Cold model change uses bounded canonical/tool-history replay, not a complete native handoff. The settled outgoing current epoch was retired; frozen predecessors remain retained.";
+const warning = "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated.";
 const common = { threadId: "fictional-garden", status: "complete" as const, attachments: [],
   createdAt: "2000-01-01T00:00:00Z", updatedAt: "2000-01-01T00:00:01Z" };
 const messages: WebMessage[] = [
