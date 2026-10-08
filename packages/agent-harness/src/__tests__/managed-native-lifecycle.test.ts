@@ -487,7 +487,7 @@ it("manual/stale-map P disposal preserves a switched predecessor under the curre
     // This stale B mapping names A's retained journal. Host disposition, not the
     // stale model label, prevents destructive runtime callbacks.
     await retireRunResultSession({ model: { provider: "faux", model: "B", reference: "faux:B" }, runtime,
-      identityPath: "/unused", piSessionsRoot: join(f.base, "native") }, () => runtime, undefined, true, bucket, undefined, "P",
+      identityPath: "/unused", piSessionsRoot: join(f.base, "native") }, () => runtime, undefined, true, bucket, undefined, "preserve",
       { providerSessionId: f.before.native.chain[0].handleId, modelKey: "faux:B" });
     expect(invalidation).not.toHaveBeenCalled(); expect(retirement).not.toHaveBeenCalled();
     expect(await readFile(f.nativePath)).toEqual(predecessor);

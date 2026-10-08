@@ -243,15 +243,29 @@ Conversation IDs longer than 512 characters bypass switch preparation before
 any authority claim or switch intent. This preserves the original path, not a
 new dispatch guarantee: the existing native host-turn contract rejects these
 ownership IDs with the option OFF too. The 512-character bound is unchanged.
-Over-limit/capacity cold model changes on guarded chains remain fail-closed;
-there is no whole-chain different-model cold coordinator yet.
+Persisted-ID Web requests may select an owned cold model change when the chain
+is full or typed pre-intent capacity refuses switching. The coordinator replaces
+only the settled current epoch (C), preserves every frozen predecessor (P), and
+keeps chain length constant. The incoming model receives ordinary bounded
+canonical/tool-history replay, not a complete native handoff; the
+`degraded_native_context` warning exposes this loss of current native-only
+context only on the turn that applies the change, as a structured harness warning.
+Later same-model turns and no-ID wakes do not repeat it; unsupported storage or
+authority results do not authorize this cold transition. No handoff producer is billed. A v2 lifecycle intent and a host
+`lastSwitch.kind: "cold"` receipt make publication/cleanup reconcilable and
+exactly once; cold receipts do not emit a native `model_change` with null content
+references. Physical cleanup must complete before P2 admission. Pending/unknown
+billed work never takes this shortcut, and insufficient safe publication space
+still refuses without deletion or admission.
 
 Lifecycle cleanup separates preserve/detach (P), reference-checked current-only
 cold cleanup (C), authorized whole-chain reset/retention (D), and uncoordinated
 stateless/subagent cleanup (U). The execution helper excludes every owned native
 chain member and protected pending turn from generic deletion. Manual compaction
-uses P for native-bound stale mappings, regardless of their cached model key;
-ordinary mappings retain C. Guarded denial of an uncoordinated deletion is not
+uses advisory P for native-bound stale mappings as defence-in-depth, based on a
+pre-claim read-only hint; owned membership/header checks remain the physical
+backstop. The helper's `preserve`, `legacy-current` and `isolated` modes carry no
+native C/D deletion authority. Ordinary mappings retain best-effort legacy cleanup. Guarded denial of an uncoordinated deletion is not
 successful physical cleanup. Storage-only recovery retains unresolved evidence
 and charges its bytes until settlement; reset/retention use the managed
 whole-chain transaction. These guarantees do not imply live operator acceptance.

@@ -305,6 +305,10 @@ prove the ready canonical binding/artifact and current creation eligibility. A p
 runtime opens without authority fail before native repair, including stale warm
 metadata. The runtime pin checks normalized path equality, not a host-owned
 filesystem inode identity; `assertCurrent` must prove any stronger root identity.
+The administrative cold-epoch plan can use host-pinned `targetProvenance` for
+an explicitly coordinated cold model change. Only the settled current epoch is
+retired; frozen predecessor bytes remain unchanged. This is bounded canonical
+replay, not a native handoff, and the host exposes `degraded_native_context`.
 Default unguarded, stateless and subagent behavior is unchanged. Their cleanup
 cannot target guarded host-chain predecessors: destructive APIs require owned
 C/D disposition, and a guarded refusal is not successful physical cleanup.

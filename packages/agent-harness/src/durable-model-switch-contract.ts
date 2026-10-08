@@ -30,6 +30,9 @@ export interface CanonicalJournalDescriptor {
 }
 export interface HandoffReference { readonly id: string; readonly hash: string }
 export interface ModelSwitchReceipt {
+  /** Cold transitions have no accepted handoff or native model_change event. */
+  readonly kind?: "cold";
+  readonly messageDigest?: string;
   readonly version: 1;
   readonly switchId: string;
   readonly intentDigest: string;
@@ -153,7 +156,8 @@ export function validateTurnHistoryV4(value: unknown, validateMessage: (message:
   if (native.chain.at(-1)!.epoch !== value.providerSession.epoch) switchInvalid();
   if (native.projection !== null) validateSwitchReference(native.projection);
   if (value.lastSwitch !== undefined) {
-    const receipt = value.lastSwitch; switchObject(receipt); switchKeys(receipt, ["version", "switchId", "intentDigest", "fromEpoch", "toEpoch", "artifact"]);
+    const receipt = value.lastSwitch; switchObject(receipt); switchKeys(receipt, ["version", "switchId", "intentDigest", "fromEpoch", "toEpoch", "artifact", ...(receipt.kind === "cold" ? ["kind", "messageDigest"] : [])]);
+    if (receipt.kind === "cold") { switchHash(receipt.messageDigest); if (receipt.artifact !== null) switchInvalid(); }
     if (receipt.version !== 1) switchInvalid(); for (const key of ["switchId", "intentDigest", "fromEpoch", "toEpoch"]) switchHash(receipt[key]);
     // Like the P2 last-commit receipt, this records its own transition. Later
     // cold rotations/context publication must not erase or rebind that receipt.

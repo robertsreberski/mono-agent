@@ -58,7 +58,9 @@ export async function prepareConfiguredModelSwitch(input: {
   let outgoing: PreparedSwitchProducer | undefined;
   const protectedHandles = new Set<string>();
   let ready: Extract<Awaited<ReturnType<typeof advancePreparedModelSwitch>>, { status: "ready" }> | undefined;
-  let switched = false, cold = false;
+  let switched = false, cold = false, appliedCold = false;
+  // Legacy unsupported fallback is not authority for an owned cold transition.
+  let coldReason: "chain_limit" | "capacity" | undefined;
   try {
     let snapshot = await owner.read();
     if (messageId === undefined) {
@@ -86,7 +88,7 @@ export async function prepareConfiguredModelSwitch(input: {
       if (messageId === undefined) { if (snapshot.pending) throw pending(); cold = true; }
       else {
         try {
-          if (snapshot.native && snapshot.native.chain.length >= MAX_JOURNAL_CHAIN && !snapshot.pending) cold = true;
+          if (snapshot.native && snapshot.native.chain.length >= MAX_JOURNAL_CHAIN && !snapshot.pending) { cold = true; coldReason = "chain_limit"; }
           else {
             const from = snapshot.pending?.identity.fromModelKey ?? (snapshot.source.status === "supported" ? snapshot.source.fromModelKey : undefined);
             if (!from) throw new Error("Pending switch has no source owner");
@@ -168,13 +170,27 @@ export async function prepareConfiguredModelSwitch(input: {
         } catch (error) {
           // Only typed PRE-INTENT capacity/size refusal is cold fallback. Never
           // disguise corruption, lost ownership, unknown paid work or pending.
-          if (!snapshot.pending && capacity(error) && !(await owner.read()).pending) cold = true;
+          if (!snapshot.pending && capacity(error) && !(await owner.read()).pending) { cold = true; coldReason = "capacity"; }
           else throw error;
         }
       }
     }
     if (snapshot.source.status === "unsupported") cold = true;
-    if (cold && snapshot.native) throw new AgentHarnessError("native_cold_model_change_unavailable", "Cold model change on a guarded chain requires the unactivated whole-chain lifecycle coordinator; native evidence was preserved.");
+    if (cold && snapshot.native) {
+      if (!coldReason || !messageId || snapshot.pending || !owner.coldModelChange || !incoming || snapshot.source.status !== "supported") throw new AgentHarnessError("native_cold_model_change_unavailable", "Owned explicit cold model transition unavailable; native evidence was preserved.");
+      incoming.assertReady();
+      try {
+        const receipt = await owner.coldModelChange({ messageId, modelKey: host.routing.modelKey, sourceCanonicalDigest: snapshot.source.sourceCanonicalDigest, targetProvenance: incoming.snapshot.provenance,
+          reason: coldReason });
+        appliedCold = receipt.switchId !== snapshot.lastSwitch?.switchId;
+      } catch (error) {
+        if (error instanceof ModelSwitchCapacityError) throw new AgentHarnessError("native_cold_model_change_unavailable", "Safe cold publication capacity unavailable; no incoming turn was admitted and native evidence was preserved.");
+        throw error;
+      }
+      snapshot = await owner.read(); cold = false;
+    }
+    const warning = { warning_kind: "degraded_native_context", source: "harness",
+      message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." } as const;
     if (!ready && !cold && snapshot.native?.projection && snapshot.lastSwitch?.artifact) ready = {
       status: "ready", switchId: snapshot.lastSwitch.switchId, artifact: snapshot.native.projection, modelKey: host.routing.modelKey };
     snapshot.native?.chain.forEach((row) => protectedHandles.add(row.handleId));
@@ -184,10 +200,14 @@ export async function prepareConfiguredModelSwitch(input: {
     };
     return { context: prepared.context, protectedHandles,
       run: async (binding, notify) => {
+        if (appliedCold) {
+          const event = { type: "runtime_warning", ...warning };
+          host.recorder.onEvent(event); host.request.onEvent?.(event);
+        }
         const refresh = async (turn: Awaited<ReturnType<typeof owner.admit>>) => { if (!runtime.refreshSession) throw new Error("Strict native refresh unavailable"); await runtime.refreshSession(turn.providerSessionId); };
         if (ready) return await runPreparedModelSwitch({ preparation: owner, incoming: prepared, ready, binding, sessionsRoot: host.durablePiSessionsRoot,
           switching: switched, onAdmitted: (turn) => onTurn(turn, notify), beforeDispatch: refresh });
-        return await prepared.run(async () => {
+        const result = await prepared.run(async () => {
           const turn = await owner.admit(binding, cold ? { coldModelChange: true } : undefined); onTurn(turn, notify); await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
@@ -196,6 +216,7 @@ export async function prepareConfiguredModelSwitch(input: {
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         });
+        return appliedCold ? { ...result, runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning] } : result;
       }, close: async () => { try { await prepared.close(); } finally { await owner.abort(); } } };
   } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw error; }
   finally { await outgoing?.close().catch(() => {}); }

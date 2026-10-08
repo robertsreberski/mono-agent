@@ -224,8 +224,11 @@ validate accepted content and coordinate canonical publication/deletion. It
 forwards only journal storage operations. The configured app creates it only
 with the OFF-default Web model-switch opt-in and explicit stopped-writer
 acknowledgement; runtime capability presence alone does not enable switching.
-Cold planning/publication retains predecessors and replaces only the same-model
-current epoch. Reference-checked C and complete-set D native deletion are
+Cold planning/publication retains predecessors and replaces only the current
+epoch. By default provenance is unchanged; administrative `targetProvenance`
+permits the host's persisted-ID Web cold model transition. It grants no authority
+by itself: the host must settle the outgoing turn and persist/validate the exact
+C plan before publication, with a cold-context downgrade warning. Reference-checked C and complete-set D native deletion are
 restartable storage primitives, not host reset/retention transactions. Callers
 must durably retain the exact cold plan or deletion membership until all physical
 files and publication barriers have completed. Preserving disposal (P) does

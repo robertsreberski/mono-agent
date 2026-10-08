@@ -5,6 +5,8 @@ import type { AgentHarnessOptions } from "../types.js";
 /**
  * Invalidates provider sessions attached to a turn that canonical host history
  * will not commit, then removes the confirmed warm mapping.
+ * Advisory routing only: these modes grant no guarded native C/D authority.
+ * Missing-authority rejection is preservation, not successful physical cleanup.
  */
 export async function retireRunResultSession(
   options: AgentHarnessOptions,
@@ -13,7 +15,7 @@ export async function retireRunResultSession(
   sessionsEnabled: boolean,
   conversationId: string,
   sessionRecord: RuntimeSessionRecord | undefined,
-  disposition: "P" | "C" | "U",
+  mode: "preserve" | "legacy-current" | "isolated",
   ...handles: readonly ProviderSessionHandle[]
 ): Promise<void> {
   if (!sessionsEnabled) return;
@@ -23,7 +25,7 @@ export async function retireRunResultSession(
   ])) {
     const id = handle.providerSessionId;
     const runtime = runtimeForSession(handle.modelKey);
-    if (disposition === "P") {
+    if (mode === "preserve") {
       // Never invalidate/delete a native predecessor through a stale model map.
       // Ordinary disposal preserves durable bytes; failure is not cleanup proof.
       try { await runtime.disposeSession?.(id); } catch { /* preserve, evict mapping below */ }

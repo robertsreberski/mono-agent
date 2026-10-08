@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Show plain-language cold-model context warnings in Web activity, using
+  structured harness warnings only on the turn that applied the change. Keep
+  unsupported storage/authority results from authorizing a cold model change.
+
+- Add owned current-only cold model changes for full or capacity-refused native
+  chains on persisted-ID Web requests. Preserve frozen predecessors, keep chain
+  length fixed and warn about bounded canonical/tool-history replay instead of
+  a complete native handoff. Pending billed work and unsafe publication space
+  still refuse; recovery never replays tools or summaries.
+
 - Keep native predecessor evidence during manual-compaction stale-map cleanup;
   reserve physical deletion for owned current-epoch or whole-chain operations.
   Bypass switch preparation for conversation IDs over 512 characters without

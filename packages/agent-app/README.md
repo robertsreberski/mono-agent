@@ -80,11 +80,16 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   an outcome-unknown call. Pending messages are not queued or replayed. Native
   switch-back reuse requires positive provider/API/account compatibility; otherwise
   a fitting structured handoff is required. Stale native manual-compaction mappings
-  preserve predecessor bytes; current-only cleanup and whole-chain reset/retention
+  select preserving disposal as defence-in-depth; owned header/membership checks
+  remain the physical backstop; current-only cleanup and whole-chain reset/retention
   require owned membership, not a cached model label. Subagent/stateless cleanup
   cannot delete guarded host-chain evidence; a guarded denial is not successful
-  physical cleanup. Over-limit/capacity cold changes on
-  upgraded chains remain fail-closed.
+  physical cleanup. Persisted-ID Web requests may take an owned
+  current-only cold change on a full/capacity-refused chain: settle and retire only
+  the current, retain frozen predecessors, and keep chain length fixed. The
+  `degraded_native_context` warning reports bounded canonical/tool-history replay,
+  not a complete native handoff. Pending billed work and insufficient safe
+  publication space still refuse; no summaries or tools automatically replay.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
