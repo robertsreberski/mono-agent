@@ -161,7 +161,7 @@ it.each([false, true])("first persisted Web turn with a fallback chain: opt-in i
     expect((await result).text).toContain("Fictional backup answer");
     expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("B");
   }
-});
+}, 60_000); // Real in-attempt transport backoff dominates; ~8-10s locally.
 
 it("a cancel during first-turn preparation is reported and never appended", async () => {
   const f = await fixture(), controller = new AbortController();
