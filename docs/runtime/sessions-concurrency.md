@@ -87,7 +87,18 @@ producer. Pending messages are **not queued or replayed**. Interrupted turns are
 reported; tools never rerun. Detached same-conversation work may receive retryable
 `native_switch_busy` rather than waiting on its own claim. Whole-chain reset and
 retention delete the conversation's retained native evidence and handoff artifacts.
-Over-limit/capacity cold changes on upgraded chains remain fail-closed.
+For a full chain or typed pre-intent capacity refusal, a persisted-ID Web request
+may select an owned cold model change: settle outgoing work, retire only the
+eligible current epoch with C, preserve every frozen predecessor with P, and
+keep chain length constant. The new model receives ordinary bounded canonical
+and tool-history replay, **not a complete native handoff**. The streamed
+`degraded_native_context` warning and response runtime warnings make that
+context downgrade explicit. Native-only data in the retired current is lost;
+frozen predecessors and their artifacts remain retained/charged. No paid
+handoff summary runs. A restartable v2 lifecycle intent and a host cold-switch
+receipt survive crashes; incoming P2 waits for physical cleanup completion.
+Pending/unknown billed work cannot take this shortcut. Insufficient safe
+publication space still refuses. No-ID inheritance/refusal rules are unchanged.
 Conversation IDs longer than 512 characters bypass switch preparation before
 native authority or intent. This preserves the original path, not a successful
 cold-dispatch guarantee: the existing native host-turn contract rejects those
@@ -98,16 +109,19 @@ ownership IDs with the option OFF too. Its 512-character bound is unchanged.
 | Disposition | Allowed effect | Ownership boundary |
 | --- | --- | --- |
 | P — preserve/detach | Drop stale liveness/mappings without deleting or rewinding retained evidence | Native chain members and unresolved protected turns remain preserved, even with a stale model key or persistence failure |
-| C — ordinary cold cleanup | Replace only the current same-model epoch; delete eligible unreferenced retirement targets | Held host claim, exact authority, reference check and durable lifecycle intent; predecessors remain unchanged |
+| C — ordinary cold cleanup | Replace only the current epoch (same-model by default; explicit Web cold change may change model); delete eligible unreferenced retirement targets | Held host claim, exact authority, reference check and durable lifecycle intent; predecessors remain unchanged |
 | D — whole-chain deletion | Reset/retention delete the authorized chain and switch artifacts; operator purge removes attested owned roots | Whole membership remains recoverable until deletion and directory barriers finish |
 | U — uncoordinated cleanup | Existing stateless/subagent behavior within its own isolated storage | No authority to delete a guarded host-chain predecessor |
 
-Manual compaction uses P for native-bound stale mappings. Generic cleanup cannot
+Manual compaction's advisory P for native-bound stale mappings is defence-in-depth
+from a pre-claim read-only hint, not ownership proof. The generic helper modes
+`preserve`, `legacy-current` and `isolated` grant no native C/D deletion authority.
+Owned membership and guarded headers remain the physical backstop. Generic cleanup cannot
 infer physical deletion permission from a cached runtime/model owner. Guarded
 rejection means preserved evidence, **not successful cleanup**. Unsettled P2
 turns stay protected/charged and reconcile storage-only, without provider or tool
 replay. Ordinary durable registry disposal/TTL removes metadata, not journal bytes.
-These boundaries do not add a different-model cold coordinator for guarded chains.
+Cold model changes do not authorize whole-chain D deletion or drop predecessors.
 
 Older binaries refuse upgraded v4 conversations and scans, but this is **not** a
 universal old-writer admission barrier. Mixed binaries must not run on upgraded

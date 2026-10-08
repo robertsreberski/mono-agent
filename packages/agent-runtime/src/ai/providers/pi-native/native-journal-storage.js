@@ -146,13 +146,16 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   };
   const coldPlan = (chain, context) => {
     validateChain(chain, context);
-    const current = chain.at(-1);
+    const current = chain.at(-1), provenance = context.targetProvenance;
+    if (provenance !== undefined && (!provenance || Object.keys(provenance).sort().join(",") !== "account,api,model,provider"
+      || ["provider", "api", "model"].some((key) => typeof provenance[key] !== "string" || !provenance[key].length || provenance[key].length > 512)
+      || provenance.account !== null && (typeof provenance.account !== "string" || !provenance.account.length || provenance.account.length > 512))) fail();
     if (chain.some((entry) => entry.predecessorJournalId === current.journalId)
       || chain.some((entry) => entry.handleId === context.targetHandleId || entry.epoch === context.targetEpoch)
       || !/^[a-f0-9]{64}$/.test(context.targetEpoch)) fail();
     const plan = JsonlSessionRepo.guardedEpochPlan({ id: context.targetHandleId, timestamp: context.timestamp, hostAuthority: context.hostAuthority });
     return { plan, descriptor: { ...current, epoch: context.targetEpoch, handleId: context.targetHandleId,
-      journalId: plan.header.journalId, sourceTipId: null, sourceSeq: 4,
+      journalId: plan.header.journalId, ...(context.targetProvenance ? { provenance: context.targetProvenance } : {}), sourceTipId: null, sourceSeq: 4,
       sourceDigest: createHash("sha256").update(JSON.stringify(plan.records)).digest("hex") } };
   };
   return {

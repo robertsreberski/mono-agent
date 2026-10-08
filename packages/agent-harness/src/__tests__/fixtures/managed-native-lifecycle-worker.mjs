@@ -9,7 +9,13 @@ const { store } = openStore(base, phase, { onNativeHistoryPhase: phase, ...(oper
   if (nativeHandles.includes(handle)) throw new Error("Managed native evidence cannot use legacy retirement");
 } } : {}) });
 if (stop) {
-  if (operation === "cold") await store.append(bucket, [{ role: "assistant", content: "Fictional cold update" }]);
+  if (operation === "cold-model") {
+    const prep = await store.beginProviderSessionPreparation(bucket, "fictional-cold-kill-owner");
+    const source = (await prep.read()).source; if (source.status !== "supported") throw new Error("Expected cold source");
+    await prep.coldModelChange({ sourceCanonicalDigest: source.sourceCanonicalDigest, messageId: "fictional-persisted-cold-message", modelKey: "faux:C",
+      targetProvenance: { provider: "faux", api: "faux-api", model: "C", account: null }, reason: "capacity" });
+    await prep.abort();
+  } else if (operation === "cold") await store.append(bucket, [{ role: "assistant", content: "Fictional cold update" }]);
   else if (operation === "reset") await store.reset(bucket);
   else await store.append(winner, [{ role: "assistant", content: "Fictional retention winner" }]);
 } else {

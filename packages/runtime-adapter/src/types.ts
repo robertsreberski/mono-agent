@@ -758,6 +758,8 @@ export interface RuntimeNativeSwitchContext {
     readonly artifactRef: { readonly id: string; readonly hash: string } };
 }
 export interface RuntimeNativeColdEpochContext {
+  /** Administrative host-owned cold model transition; absent preserves the current provenance. */
+  readonly targetProvenance?: RuntimeNativeJournalDescriptor["provenance"];
   readonly hostAuthority: RuntimeNativeJournalAuthority;
   readonly assertOwned: () => Promise<void>;
   readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
