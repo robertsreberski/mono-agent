@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Show cold-model context downgrade warnings in Web conversation activity, using
+  structured harness warnings only on the turn that applied the change. Keep
+  unsupported storage/authority results from authorizing a cold model change.
+
 - Add owned current-only cold model changes for full or capacity-refused native
   chains on persisted-ID Web requests. Preserve frozen predecessors, keep chain
   length fixed and warn about bounded canonical/tool-history replay instead of

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { AgentHarnessFailureError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
-import type { AgentRequestBase, AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentRequestBase, AgentResponder, AgentStreamEvent } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createManagedNativeJournalStorage, createMonoRuntime, type MonoRuntimeLike, type RuntimeNativePreparedDispatch } from "@mono-agent/runtime-adapter";
 import { createConfiguredAgentResponder, createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
@@ -511,16 +511,18 @@ it("a 512-character Web conversation remains eligible for the bounded native swi
   expect(measure).toHaveBeenCalled(); expect(f.transport).toHaveBeenCalledTimes(3);
 });
 
-async function persistedColdId(root: string) {
+async function persistedColdDelivery(root: string, keepOpen = false) {
   const web = await WebStore.open({ stateDir: join(await realpath(root), "cold-web-state"), clock: () => new Date("2000-01-01T00:00:00Z") });
+  if (keepOpen) cleanup.push(async () => { web.close(); });
   try {
     web.replaceAgents([{ sourceId: "fictional-agent", label: "Fictional Agent", status: "online", health: "running", supportsAttachments: false,
       models: [], efforts: [], modelOptions: {}, runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
       updatedAt: "2000-01-01T00:00:00Z" }]);
     const thread = web.createThread("fictional-agent"), started = web.beginTurn({ threadId: thread.id, text: "Fictional cold input", attachmentIds: [] });
-    expect(web.getMessage(started.userMessageId)?.id).toBe(started.userMessageId); return started.userMessageId;
-  } finally { web.close(); }
+    expect(web.getMessage(started.userMessageId)?.id).toBe(started.userMessageId); return { ...started, web };
+  } finally { if (!keepOpen) web.close(); }
 }
+async function persistedColdId(root: string) { return (await persistedColdDelivery(root)).userMessageId; }
 async function seedGuardedCold(full: boolean) {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional retained B answer")]);
@@ -547,7 +549,7 @@ async function seedGuardedCold(full: boolean) {
   return { f, h };
 }
 it.each([false, true])("persisted Web cold change preserves predecessors, replays canonical context and warns without handoff billing (full=%s)", async (full) => {
-  const { f, h } = await seedGuardedCold(full), before = await f.record(), id = await persistedColdId(f.root);
+  const { f, h } = await seedGuardedCold(full), before = await f.record(), delivery = await persistedColdDelivery(f.root, true), id = delivery.userMessageId;
   const { acquireToolHistoryWriter } = await import("@mono-agent/agent-harness");
   const tools = await acquireToolHistoryWriter({ root: join(f.root, "history"), artifactRoot: join(f.config.artifacts.dir, "tool-output") });
   const binding = { conversationId: "web:fictional-thread", logicalConversationId: "web:fictional-thread", runId: "fictional-retained-tool-run", isolated: false };
@@ -569,7 +571,7 @@ it.each([false, true])("persisted Web cold change preserves predecessors, replay
     await expect(h.respond(refused, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
   }
   expect(await readFile(canonicalPath)).toEqual(untouched); expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal);
-  const measure = vi.spyOn(f.native, "measureSwitch"), calls = f.transport.mock.calls.length, events: unknown[] = [];
+  const measure = vi.spyOn(f.native, "measureSwitch"), calls = f.transport.mock.calls.length, events: AgentStreamEvent[] = [];
   f.faux.setResponses([(context) => {
     const text = JSON.stringify(context.messages);
     expect(text).toContain("Fictional retained B answer"); expect(text).toContain("Fictional A reply");
@@ -580,8 +582,16 @@ it.each([false, true])("persisted Web cold change preserves predecessors, replay
   }]);
   const response = await h.respond(f.request(id, "faux:A"), { append: async () => {}, event: async (event) => { events.push(event); } });
   const after = await f.record(); expect(response.text).toBe("Fictional bounded cold answer");
-  expect(JSON.stringify(response.metadata)).toContain("not a complete native handoff");
+  expect(response.metadata?.runtime).toMatchObject({ runtimeWarnings: [expect.objectContaining({
+    warning_kind: "degraded_native_context", source: "harness", message: expect.stringContaining("not a complete native handoff") })] });
   expect(events.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(true);
+  const timeline = delivery.web;
+  try {
+    timeline.applyStreamFrames(delivery.turnId, events.map((event) => ({ kind: "event" as const, event })));
+    const detail = timeline.completeTurn(delivery.turnId, response.text, response.metadata);
+    expect(detail.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ type: "telemetry", event: "runtime_warning",
+      data: expect.objectContaining({ warningKind: "degraded_native_context", message: expect.stringContaining("not a complete native handoff") }) }));
+  } finally { timeline.close(); }
   expect(f.transport).toHaveBeenCalledTimes(calls + 1); expect(measure).not.toHaveBeenCalled();
   expect(events.some((event) => (event as { type?: string }).type?.startsWith("tool_"))).toBe(false);
   expect(after.native.chain).toHaveLength(before.native.chain.length); expect(after.native.projection).toBeNull();
@@ -590,13 +600,19 @@ it.each([false, true])("persisted Web cold change preserves predecessors, replay
   for (const predecessor of predecessors) expect(await readFile(predecessor.path)).toEqual(predecessor.bytes);
   await expect(readFile(join(f.nativeRoot, "mono-v2", "journals", `${before.native.chain.at(-1).journalId}.jsonl`))).rejects.toMatchObject({ code: "ENOENT" });
   await f.dispose(h); const reopened = await f.make(true); f.faux.setResponses([reply("Fictional ordinary same-model answer")]);
-  await reopened.respond(f.request(id, "faux:A"), { append: async () => {} });
+  const laterEvents: unknown[] = [], laterStream = { append: async () => {}, event: async (event: unknown) => { laterEvents.push(event); } };
+  const later = await reopened.respond(f.request(id, "faux:A"), laterStream);
+  expect(JSON.stringify(later.metadata)).not.toContain("degraded_native_context");
+  expect(laterEvents.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(false);
   expect((await f.record()).lastSwitch).toEqual(after.lastSwitch); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
   const refused = f.request(undefined, "faux:B");
   await expect(reopened.respond(refused, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
   await f.dispose(reopened);
   const changedDefault = await f.make(true, undefined, { provider: "faux", model: "B", reference: "faux:B" }); f.faux.setResponses([reply("Fictional inherited wake")]);
-  expect((await changedDefault.respond({ ...f.request(undefined), metadata: { source: "web", web: { trigger: "job" } } }, { append: async () => {} })).text).toBe("Fictional inherited wake");
+  laterEvents.length = 0;
+  const wake = await changedDefault.respond({ ...f.request(undefined), metadata: { source: "web", web: { trigger: "job" } } }, laterStream);
+  expect(wake.text).toBe("Fictional inherited wake"); expect(JSON.stringify(wake.metadata)).not.toContain("degraded_native_context");
+  expect(laterEvents.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(false);
   expect((await f.record()).lastSwitch).toEqual(after.lastSwitch); expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("A");
 }, 40000);
 
@@ -620,4 +636,23 @@ it("guarded pending unknown billing cannot use typed capture capacity as a cold 
   const inspection = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-inspection");
   try { const pending = (await inspection.read()).pending!; expect(pending.attempts).toHaveLength(1); expect(pending.attempts[0]?.outcome).toBe("started"); }
   finally { await inspection.abort(); }
+});
+
+
+
+it.each([
+  ["acquireNativeHistoryAuthority", "id_limit"], ["acquireNativeHistoryAuthority", "unbound"],
+  ["beginModelSwitchStorage", "id_limit"], ["beginModelSwitchStorage", "unbound"],
+] as const)("unsupported %s/%s cannot authorize a guarded cold change as capacity", async (method, reason) => {
+  const { f, h } = await seedGuardedCold(false), before = await f.record(), calls = f.transport.mock.calls.length;
+  const prepare = f.getPreparation(), begin = prepare.getMockImplementation()! as NonNullable<ConversationHistoryStore["beginProviderSessionPreparation"]>, cold = vi.fn();
+  prepare.mockImplementation(async (...args: Parameters<typeof begin>) => {
+    const owned = await begin(...args), change = owned.coldModelChange!.bind(owned);
+    return { ...owned, [method]: async () => ({ status: "unsupported" as const, reason }),
+      coldModelChange: async (input: Parameters<NonNullable<typeof owned.coldModelChange>>[0]) => { cold(input); return await change(input); } };
+  });
+  const deletion = vi.spyOn(f.native, "deleteJournals");
+  await expect(h.respond(f.request(await persistedColdId(f.root), "faux:A"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+  expect(cold).not.toHaveBeenCalled(); expect(deletion).not.toHaveBeenCalled();
+  expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
 });

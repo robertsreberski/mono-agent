@@ -21,6 +21,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   loopback operator endpoints.
 - Publish a separate sanitized ACP import contract with canonical agent-owned
   workspace and compatibility metadata, never operator credentials or paths.
+- Render the host's `degraded_native_context` runtime warning in the existing
+  conversation activity-note presentation; leave every other runtime warning
+  store-only rather than displaying raw provider diagnostics.
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.

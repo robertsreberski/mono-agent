@@ -249,7 +249,9 @@ only the settled current epoch (C), preserves every frozen predecessor (P), and
 keeps chain length constant. The incoming model receives ordinary bounded
 canonical/tool-history replay, not a complete native handoff; the
 `degraded_native_context` warning exposes this loss of current native-only
-context. No handoff producer is billed. A v2 lifecycle intent and a host
+context only on the turn that applies the change, as a structured harness warning.
+Later same-model turns and no-ID wakes do not repeat it; unsupported storage or
+authority results do not authorize this cold transition. No handoff producer is billed. A v2 lifecycle intent and a host
 `lastSwitch.kind: "cold"` receipt make publication/cleanup reconcilable and
 exactly once; cold receipts do not emit a native `model_change` with null content
 references. Physical cleanup must complete before P2 admission. Pending/unknown

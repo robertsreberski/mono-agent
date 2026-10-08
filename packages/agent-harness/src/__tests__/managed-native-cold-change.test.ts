@@ -123,11 +123,12 @@ it("manual compactConversation on real v4 fails guarded dispatch without generic
   } finally { await harness.dispose?.(); }
 });
 const worker = fileURLToPath(new URL("./fixtures/managed-native-lifecycle-worker.mjs", import.meta.url));
-it.each(["lifecycle_intent_renamed", "lifecycle_intent_directory_synced", "epoch_stage_created", "epoch_renamed", "epoch_directory_synced",
+it.each(["lifecycle_intent_stage_synced", "lifecycle_intent_renamed", "lifecycle_intent_directory_synced", "epoch_stage_created", "epoch_renamed", "epoch_directory_synced",
   "lifecycle_canonical_stage_synced", "lifecycle_canonical_published", "lifecycle_canonical_directory_synced", "native_file_removed",
-  "native_member_directory_synced", "lifecycle_native_deleted", "lifecycle_intent_removed", "lifecycle_intent_removal_synced"])(
+  "native_member_directory_synced", "lifecycle_native_deleted", "lifecycle_fence_cleaned", "lifecycle_intent_removed", "lifecycle_intent_removal_synced"])(
   "cold model change recovers twice storage-only after SIGKILL at %s", async (phase) => {
     const f = await setup(), predecessor = await readFile(f.nativePath);
+    const currentPath = join(f.base, "native", "mono-v2", "journals", `${f.before.native.chain.at(-1).journalId}.jsonl`), current = await readFile(currentPath);
     await writeFile(join(f.base, "lifecycle-proof.json"), JSON.stringify({ operation: "cold-model" }), { mode: 0o600 });
     const child = fork(worker, [f.base, phase], { silent: true }), exited = once(child, "exit"); let stderr = "", timer: ReturnType<typeof setTimeout> | undefined;
     child.stderr!.on("data", (bytes) => { stderr += bytes; });
@@ -139,6 +140,14 @@ it.each(["lifecycle_intent_renamed", "lifecycle_intent_directory_synced", "epoch
     const run = promisify(execFile), first = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 10000 })).stdout);
     const second = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 10000 })).stdout);
     expect(second).toEqual(first); expect(first.operations).toEqual([]); expect(first.stats.reservedBytes).toBe(0);
+    if (phase === "lifecycle_intent_stage_synced") {
+      // An fsynced but unpublished intent stage is not transition authority.
+      expect(first.canonical).toEqual(f.before);
+      expect(first.journals).toEqual(f.before.native.chain.map((row: { journalId: string }) => `${row.journalId}.jsonl`).sort());
+      expect(await readFile(currentPath)).toEqual(current);
+      expect(await readFile(f.canonicalPath)).toEqual(Buffer.from(JSON.stringify(f.before) + "\n"));
+      expect(await readFile(f.nativePath)).toEqual(predecessor); return;
+    }
     expect(first.canonical.providerSession.modelKey).toBe("faux:C"); expect(first.canonical.native.chain).toHaveLength(2);
     expect(first.canonical.lastSwitch.artifact).toBeNull(); expect(first.canonical.native.projection).toBeNull();
     expect(first.canonical.messages).toEqual(f.before.messages); expect(first.journals).toHaveLength(2);
