@@ -10,6 +10,7 @@ import { createDurableHistoryStore } from "../durable-history.js";
 import { NATIVE_HISTORY_ROOT_FILE } from "../native-history-root.js";
 import { fixture, ready, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
+import { retireRunResultSession } from "../harness/session-retirement.js";
 import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey } from "../durable-model-switch-contract.js";
 const roots: string[] = [];
@@ -474,4 +475,25 @@ it("keeps a fresh failed D for recovery and prunes the next free victim in the s
   await store.append("fictional-fresh-D-winner", [{ role: "assistant", content: "Next maintenance opportunity" }]);
   expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
   expect((await store.stats()).conversations).toBe(1);
+});
+
+it("manual/stale-map P disposal preserves a switched predecessor under the current host claim", async () => {
+  const f = await setup(), predecessor = await readFile(f.nativePath);
+  const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-manual-owner", { modelKey: "faux:B" });
+  const { createMonoRuntime } = await import("@mono-agent/runtime-adapter");
+  const runtime = createMonoRuntime({ workspace: f.base });
+  const invalidation = vi.spyOn(runtime, "invalidateSession"), retirement = vi.spyOn(runtime, "retireDurableSession");
+  try {
+    // This stale B mapping names A's retained journal. Host disposition, not the
+    // stale model label, prevents destructive runtime callbacks.
+    await retireRunResultSession({ model: { provider: "faux", model: "B", reference: "faux:B" }, runtime,
+      identityPath: "/unused", piSessionsRoot: join(f.base, "native") }, () => runtime, undefined, true, bucket, undefined, "P",
+      { providerSessionId: f.before.native.chain[0].handleId, modelKey: "faux:B" });
+    expect(invalidation).not.toHaveBeenCalled(); expect(retirement).not.toHaveBeenCalled();
+    expect(await readFile(f.nativePath)).toEqual(predecessor);
+    // U has no host C/D authority: this is honest guarded denial, not cleanup.
+    await expect(runtime.retireDurableSession!(f.before.native.chain[0].handleId, join(f.base, "native")))
+      .rejects.toThrow("Invalid host journal upgrade authority");
+    expect(await readFile(f.nativePath)).toEqual(predecessor);
+  } finally { await turn.abort(); await runtime.disposeAllSessions?.(); }
 });

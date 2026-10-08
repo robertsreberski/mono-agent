@@ -277,9 +277,10 @@ export class MonoAgentHarness implements AgentHarness {
     let providerTurn: ConversationHistoryProviderSessionTurn | undefined;
     let prepared: PreparedHistoryAppend | undefined;
     let slotHeld = false;
+    let cleanupDisposition: "P" | "C" = "C";
     const retire = async (...handles: readonly ProviderSessionHandle[]): Promise<void> => {
       await retireRunResultSession(this.options, this.runtimeForSession, this.sessionStore,
-        true, conversationId, record, ...handles);
+        true, conversationId, record, cleanupDisposition, ...handles);
     };
     try {
       if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
@@ -292,6 +293,7 @@ export class MonoAgentHarness implements AgentHarness {
         // A turn under this model would rotate a session bound to another
         // (or a legacy unbound) model. Compaction must not: decline untouched.
         const binding = await historyStore.readProviderSessionBinding!(conversationId);
+        if (binding?.native) cleanupDisposition = "P";
         if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
         if (binding !== undefined && (binding.modelKey === undefined ? binding.revision > 0 : binding.modelKey !== modelKey)) {
           return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
@@ -728,7 +730,7 @@ export class MonoAgentHarness implements AgentHarness {
       if (record !== undefined && retained(record.providerSessionId)) await this.sessionStore?.evict(request.conversationId, "stale", record.providerSessionId);
       if (protectedId !== undefined && record?.providerSessionId === protectedId) await this.sessionStore?.evict(request.conversationId, "stale", protectedId);
       await retireRunResultSession(this.options, this.runtimeForSession, this.sessionStore,
-        this.sessionsEnabled(), request.conversationId, record !== undefined && (record.providerSessionId === protectedId || retained(record.providerSessionId)) ? undefined : record,
+        this.sessionsEnabled(), request.conversationId, record !== undefined && (record.providerSessionId === protectedId || retained(record.providerSessionId)) ? undefined : record, isolated ? "U" : "C",
         ...handles.filter((handle) => handle.providerSessionId !== protectedId && !retained(handle.providerSessionId)));
     };
     let runtimeResult: RuntimeResult | undefined;

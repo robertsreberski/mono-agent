@@ -239,11 +239,22 @@ its claim/resources. It never cold-falls back or waits holding a claim: concurre
 contenders could otherwise keep each other from draining. The caller must drain
 or serialize host owners and explicitly retry; no message is queued or billed.
 
-Exposed
-opt-in, stopped-writer validation, compatible whole-chain switch-back, long-ID
-native-owner handling, guarded-chain cold fallback, APP key forwarding and lifecycle activation are still
-required before it can be enabled. Fixture reset/retention proof is not proof
-of every configured APP cleanup path.
+Conversation IDs longer than 512 characters bypass switch preparation before
+any authority claim or switch intent. This preserves the original path, not a
+new dispatch guarantee: the existing native host-turn contract rejects these
+ownership IDs with the option OFF too. The 512-character bound is unchanged.
+Over-limit/capacity cold model changes on guarded chains remain fail-closed;
+there is no whole-chain different-model cold coordinator yet.
+
+Lifecycle cleanup separates preserve/detach (P), reference-checked current-only
+cold cleanup (C), authorized whole-chain reset/retention (D), and uncoordinated
+stateless/subagent cleanup (U). The execution helper excludes every owned native
+chain member and protected pending turn from generic deletion. Manual compaction
+uses P for native-bound stale mappings, regardless of their cached model key;
+ordinary mappings retain C. Guarded denial of an uncoordinated deletion is not
+successful physical cleanup. Storage-only recovery retains unresolved evidence
+and charges its bytes until settlement; reset/retention use the managed
+whole-chain transaction. These guarantees do not imply live operator acceptance.
 
 Native switch-back behind the internal constructor capability accepts a complete
 fitting chain only when provider/API/account match both each epoch descriptor

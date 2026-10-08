@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep native predecessor evidence during manual-compaction stale-map cleanup;
+  reserve physical deletion for owned current-epoch or whole-chain operations.
+  Bypass switch preparation for conversation IDs over 512 characters without
+  changing the existing native host-contract rejection, including with opt-in OFF.
+
 - Add OFF-default Web-only durable model switching through
   `runtime.session.modelSwitch.enabled`, requiring explicit
   `olderWritersStopped: true`, continuous sessions and durable Pi storage.

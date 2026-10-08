@@ -41,6 +41,9 @@ export async function prepareConfiguredModelSwitch(input: {
   readonly prepareContext: HarnessRuntimePreparationInput["prepareContext"];
 }): Promise<ConfiguredPreparedTurn | undefined> {
   const { policy, preparation: host } = input, options = host.options;
+  // Match the bounded native authority contract without weakening it. Long
+  // conversation IDs use the original path, including its existing P2 limitations.
+  if (host.request.conversationId.length > 512) return undefined;
   const messageId = policy.deliveryId(host.request);
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);

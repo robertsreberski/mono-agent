@@ -29,7 +29,7 @@ describe("session runtime ownership", () => {
     const resolve = createSessionRuntimeResolver({ model, runtime: base });
     expect(uniqueSessionHandles([{ providerSessionId: "id" }, { providerSessionId: "id", modelKey: "faux:base" }]))
       .toEqual([{ providerSessionId: "id", modelKey: "faux:base" }]);
-    await expect(retireRunResultSession({ model, runtime: base, identityPath: "/unused" }, resolve, undefined, true, "c", undefined,
+    await expect(retireRunResultSession({ model, runtime: base, identityPath: "/unused" }, resolve, undefined, true, "c", undefined, "C",
       { providerSessionId: "id", modelKey: "faux:base" }, { providerSessionId: "id", modelKey: "faux:override" })).rejects.toThrow("conflicting");
     expect(base.invalidateSession).not.toHaveBeenCalled();
   });
@@ -57,7 +57,7 @@ describe("session runtime ownership", () => {
     const alternate = runtime();
     const resolve = createSessionRuntimeResolver({ model, runtime: base, runtimeForModel: () => alternate });
     await retireRunResultSession({ model, runtime: base, identityPath: "/unused", piSessionsRoot: "/sessions" },
-      resolve, undefined, true, "c", undefined,
+      resolve, undefined, true, "c", undefined, "C",
       { providerSessionId: "base-id", modelKey: "faux:base" },
       { providerSessionId: "late-id", modelKey: "faux:override" });
     expect(base.invalidateSession.mock.calls).toEqual([["base-id"]]);
@@ -65,4 +65,14 @@ describe("session runtime ownership", () => {
     expect(base.retireDurableSession).toHaveBeenCalledWith("base-id", "/sessions");
     expect(alternate.retireDurableSession).toHaveBeenCalledWith("late-id", "/sessions");
   });
+});
+
+it("P disposal never invokes destructive callbacks even for a stale model mapping or failed disposal", async () => {
+  const base = runtime(), alternate = runtime();
+  alternate.disposeSession.mockRejectedValueOnce(new Error("Fictional busy writer"));
+  const resolve = createSessionRuntimeResolver({ model, runtime: base, runtimeForModel: () => alternate });
+  await retireRunResultSession({ model, runtime: base, identityPath: "/unused", piSessionsRoot: "/sessions" },
+    resolve, undefined, true, "fictional", undefined, "P", { providerSessionId: "fictional-predecessor", modelKey: "faux:override" });
+  expect(alternate.disposeSession).toHaveBeenCalledWith("fictional-predecessor");
+  expect(alternate.invalidateSession).not.toHaveBeenCalled(); expect(alternate.retireDurableSession).not.toHaveBeenCalled();
 });

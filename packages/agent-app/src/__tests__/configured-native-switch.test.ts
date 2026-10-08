@@ -36,11 +36,12 @@ async function fixture(publicConfig = false) {
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
     traceability: { registryDir: join(root, "trace") },
   };
+  const runtimes: MonoRuntimeLike[] = [];
   const runtimeFor = (id: string) => {
     const raw = createMonoRuntime({ workspace: root }), run = raw.run.bind(raw), prepare = raw.prepareNativeDispatch!.bind(raw);
     raw.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
     raw.prepareNativeDispatch = (prompt, options) => prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
-    const owned = wrapOwnedConfiguredRuntime(raw, config, root, undefined); cleanup.push(() => owned.disposeAllSessions!()); return owned;
+    const owned = wrapOwnedConfiguredRuntime(raw, config, root, undefined); runtimes.push(owned); cleanup.push(() => owned.disposeAllSessions!()); return owned;
   };
   let store: ConversationHistoryStore | undefined;
   let activeNative = native;
@@ -94,7 +95,7 @@ async function fixture(publicConfig = false) {
       runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } });
     cleanup.push(() => dispose(h)); return h;
   };
-  return { root, config, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
+  return { root, config, runtimes, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
 }
 
 it.each([false, true])("same-model no-ID wakes inherit the chain; explicit no-ID changes refuse (public=%s)", async (publicConfig) => {
@@ -458,4 +459,54 @@ it.each(["acknowledgement", "continuous", "piSessionsRoot"])("programmatic switc
   } }, ...(missing === "piSessionsRoot" ? { providers: {} } : {}) };
   await expect(createConfiguredAgentResponder({ cwd: f.root, config })).rejects.toThrow(missing);
   await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.each([false, true].flatMap((enabled) => [false, true].map((padded) => ({ enabled, padded }))))(
+  "long-ID Web requests bypass native switching without weakening the existing host contract (enabled=$enabled, padded=$padded)", async ({ enabled, padded }) => {
+  const f = await fixture(true), h = await f.make(enabled);
+  const conversationId = "web:" + "x".repeat(padded ? 508 : 513) + (padded ? " " : "");
+  const request = { ...f.request("fictional-persisted-long-id", "faux:B"), conversationId };
+  const measure = vi.spyOn(f.native, "measureSwitch"), begin = vi.spyOn(f.getStore(), "beginProviderSessionPreparation");
+  f.faux.setResponses([reply("Fictional cold answer")]);
+  await expect(h.respond(request, { append: async () => {} })).rejects.toThrow("Invalid protected sessionTurn host contract");
+  expect(begin).not.toHaveBeenCalled(); // Entry seam exits before claiming/reading.
+  expect(measure).not.toHaveBeenCalled(); expect(f.transport).not.toHaveBeenCalled();
+  expect((await readdir(join(f.root, "history"))).some((name) => name.includes("native-history-root") || name.includes("model-switch"))).toBe(false);
+});
+
+it("post-switch host publication failure preserves predecessor bytes and never delegates native deletion through a stale model runtime", async () => {
+  const f = await fixture(true); await f.seed(); const h = await f.make(true);
+  f.faux.setResponses([reply(summary), reply("Fictional switched answer")]);
+  await h.respond(f.request("fictional-switch-publication", "faux:B"), { append: async () => {} });
+  const before = await f.record(), predecessor = join(f.nativeRoot, "mono-v2", "journals", `${before.native.chain[0].journalId}.jsonl`);
+  const bytes = await readFile(predecessor), calls = f.transport.mock.calls.length;
+  const destructive = f.runtimes.flatMap((runtime) => [vi.spyOn(runtime, "invalidateSession"), vi.spyOn(runtime, "retireDurableSession")]);
+  const original = f.getPreparation().getMockImplementation() as NonNullable<ConversationHistoryStore["beginProviderSessionPreparation"]>;
+  f.getPreparation().mockImplementation(async (...args: Parameters<typeof original>) => {
+    const preparation = await original(...args), admit = preparation.admit.bind(preparation);
+    preparation.admit = async (...bindings) => {
+      const turn = await admit(...bindings), prepareCommit = turn.prepareCommit.bind(turn);
+      turn.prepareCommit = async (...commitArgs) => {
+        const prepared = await prepareCommit(...commitArgs);
+        return { ...prepared, commit: async () => { throw new Error("Fictional host publication failure"); } };
+      };
+      return turn;
+    };
+    return preparation;
+  });
+  f.faux.setResponses([reply("Fictional uncommitted answer")]);
+  await expect(h.respond(f.request("fictional-publication-failure", "faux:B"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  expect(f.transport).toHaveBeenCalledTimes(calls + 1);
+  for (const callback of destructive) expect(callback).not.toHaveBeenCalled();
+  expect(await readFile(predecessor)).toEqual(bytes);
+});
+
+it("a 512-character Web conversation remains eligible for the bounded native switch contract", async () => {
+  const f = await fixture(true), h = await f.make(true), conversationId = "web:" + "x".repeat(508);
+  const request = (id: string, model: string) => ({ ...f.request(id, model), conversationId });
+  f.faux.setResponses([reply("Fictional boundary A answer")]);
+  await h.respond(request("fictional-boundary-A", "faux:A"), { append: async () => {} });
+  const measure = vi.spyOn(f.native, "measureSwitch"); f.faux.setResponses([reply(summary), reply("Fictional boundary B answer")]);
+  expect((await h.respond(request("fictional-boundary-B", "faux:B"), { append: async () => {} })).text).toBe("Fictional boundary B answer");
+  expect(measure).toHaveBeenCalled(); expect(f.transport).toHaveBeenCalledTimes(3);
 });

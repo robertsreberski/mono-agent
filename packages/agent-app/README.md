@@ -56,6 +56,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   conversations, undeclared no-ID requests inherit the durable current model;
   declared other-model no-ID requests refuse. Changing `runtime.model` does not
   move these native conversations until a persisted Web message selects it.
+  Conversation IDs longer than 512 characters bypass switch preparation without
+  native authority or intent. Their existing native host-contract rejection is
+  unchanged with the option ON or OFF; the bound is not relaxed.
   Same-model requests without that ID may dispatch the current owned native
   chain without authorizing switch work; guarded model changes and unsupported
   dispatch fallbacks refuse before rotation or dispatch. The opt-in gate
@@ -76,7 +79,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   billed summary calls per switch per generation, never an automatic repeat of
   an outcome-unknown call. Pending messages are not queued or replayed. Native
   switch-back reuse requires positive provider/API/account compatibility; otherwise
-  a fitting structured handoff is required. Over-limit/capacity cold changes on
+  a fitting structured handoff is required. Stale native manual-compaction mappings
+  preserve predecessor bytes; current-only cleanup and whole-chain reset/retention
+  require owned membership, not a cached model label. Subagent/stateless cleanup
+  cannot delete guarded host-chain evidence; a guarded denial is not successful
+  physical cleanup. Over-limit/capacity cold changes on
   upgraded chains remain fail-closed.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical

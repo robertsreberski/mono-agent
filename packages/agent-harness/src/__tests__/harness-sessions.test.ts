@@ -2586,3 +2586,16 @@ describe("coordinated terminal recovery", () => {
   });
 
 });
+
+it("manual compaction routes a native-bound stale process mapping through P rather than C", async () => {
+  const { fake, makeHarness, historyStore } = await manualFixture(); const harness = makeHarness();
+  await harness.run(request("manual", "Fictional first input")); const stale = fake.calls[0]!.options.sessionId as string;
+  await historyStore.append("manual", [{ role: "assistant", content: "Fictional host epoch boundary" }]);
+  const readBinding = historyStore.readProviderSessionBinding!.bind(historyStore);
+  // Routing unit: physical guarded-byte preservation is covered separately.
+  historyStore.readProviderSessionBinding = async (id) => ({ ...(await readBinding(id))!, native: true });
+  await harness.compactConversation!("manual");
+  expect(fake.disposedSessions).toContain(stale); expect(fake.invalidatedSessions).not.toContain(stale);
+  expect(fake.retiredSessions.some((entry) => entry.providerSessionId === stale)).toBe(false);
+  await harness.dispose?.();
+});

@@ -13,6 +13,7 @@ export async function retireRunResultSession(
   sessionsEnabled: boolean,
   conversationId: string,
   sessionRecord: RuntimeSessionRecord | undefined,
+  disposition: "P" | "C" | "U",
   ...handles: readonly ProviderSessionHandle[]
 ): Promise<void> {
   if (!sessionsEnabled) return;
@@ -22,6 +23,12 @@ export async function retireRunResultSession(
   ])) {
     const id = handle.providerSessionId;
     const runtime = runtimeForSession(handle.modelKey);
+    if (disposition === "P") {
+      // Never invalidate/delete a native predecessor through a stale model map.
+      // Ordinary disposal preserves durable bytes; failure is not cleanup proof.
+      try { await runtime.disposeSession?.(id); } catch { /* preserve, evict mapping below */ }
+      continue;
+    }
     try {
       if (runtime.invalidateSession !== undefined) {
         await runtime.invalidateSession(id);
