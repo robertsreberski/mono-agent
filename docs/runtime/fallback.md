@@ -183,7 +183,16 @@ Text or reasoning output alone also still fails over. A live input counts once
 the provider consumed it, or its delivery is uncertain; an input that was
 removed from the provider queue unconsumed is replayed to the next attempt. A
 custom route runtime that emits none of these events cannot be gated and keeps
-the earlier behaviour. When no further attempt could run anyway, the chain
+the earlier behaviour.
+
+The router checks this evidence when the attempt fails and again immediately
+before it admits the next attempt — after the retry backoff and after the route
+resolver returns — so a late tool event or live-input acknowledgement still
+blocks the retry or backup. Evidence that arrives after the next attempt was
+admitted cannot be honoured. A custom route runtime (the private
+`resolveAttempt` seam) must therefore emit its tool events and settle every
+live-input lease (acknowledge, mark uncertain, or reject) before its `run()`
+returns; the built-in Pi runtime does this. When no further attempt could run anyway, the chain
 reports `provider_unavailable_exhausted` as before, without the warning.
 
 The runtime result includes `failoverHistory`. An

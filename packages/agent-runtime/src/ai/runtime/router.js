@@ -37,7 +37,11 @@
 //   non-retryable failures are returned as-is with their failover history.
 //   Tools are never re-run: once a failed attempt started a tool or consumed a
 //   live input, no retry or backup runs. That failure is returned with a
-//   `provider_failover_blocked` runtime warning naming the reason.
+//   `provider_failover_blocked` runtime warning naming the reason. The evidence
+//   is re-checked immediately before every new attempt is admitted (after
+//   backoff and after the route resolver). Evidence that arrives after another
+//   attempt was admitted cannot be honoured, so a route runtime must settle its
+//   tool events and live-input leases before its run() returns.
 
 // @ts-check
 
@@ -88,7 +92,9 @@ import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
  * @typedef {Object} RouterAttemptResolution
  * Private host seam for route-specific provider options/runtime ownership.
  * Returned options are never copied into router telemetry.
- * @property {AgentRuntimeInstance} [runtime]
+ * @property {AgentRuntimeInstance} [runtime] Must emit its tool events and
+ * settle every live-input lease before run() returns: the router re-checks a
+ * failed attempt's side effects only until it admits the next attempt.
  * @property {Object<string, *>} [options]
  * @property {{allowedTools?: ReadonlyArray<string>, disallowedTools?: ReadonlyArray<string>}} [policyOptions]
  * Provider-specific projection of the logical tool policy. This deliberately
@@ -189,8 +195,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
       };
-      /** @type {AttemptSideEffects|null} Side-effect evidence of the running attempt. */
+      /** @type {AttemptSideEffects|null} Side-effect evidence of the latest admitted attempt. */
       let currentAttemptEffects = null;
+      /** @type {Array<{effects: AttemptSideEffects, model: RuntimeModelRef, result: RuntimeResult}>} Failed attempts followed by another. */
+      const failedAttempts = [];
       const liveInputHub = options.liveInput === undefined
         ? undefined
         : createObserverHub({
@@ -299,6 +307,18 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             // A resolver fault is a config/credential problem, not a transient
             // provider blip: retrying the same route cannot fix it. Advance.
             break;
+          }
+
+          // Admission fence: a route runtime may settle side effects late (e.g.
+          // acknowledge a live input during backoff or while the resolver ran).
+          // Re-check the failed attempt immediately before admitting another.
+          const lateEffects = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
+          const lateReason = lateEffects === undefined ? null : sideEffectReason(lateEffects.effects);
+          if (lateEffects !== undefined && lateReason !== null) {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            const blocked = failoverBlockedResult(lateEffects.result, modelKey(lateEffects.model), lateReason);
+            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+            return { ...blocked.result, failoverHistory };
           }
 
           applyEntryEffort(callOptions, entry.effort);
@@ -448,19 +468,15 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // Tools are never re-run. Another attempt replays the logical turn, so
           // once this attempt started a tool or consumed a live input, neither a
           // same-model retry nor a backup may run: end with this failure.
-          const blockedReason = attemptEffects.tool
-            ? "tool_already_executed"
-            : (attemptEffects.liveInput ? "live_input_consumed" : null);
+          const blockedReason = sideEffectReason(attemptEffects);
           if (blockedReason !== null && (sameModelRetryable
             || entries.slice(i + 1).some((next) => entrySatisfiesRequirements(next, options)))) {
-            const warning = failoverBlockedWarning(modelKey(entry.model), blockedReason);
-            emit(callOptions, { type: "runtime_warning", ...warning });
-            terminalResult = {
-              ...result,
-              runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning],
-            };
+            const blocked = failoverBlockedResult(result, modelKey(entry.model), blockedReason);
+            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+            terminalResult = blocked.result;
             break;
           }
+          failedAttempts.push({ effects: attemptEffects, model: entry.model, result });
 
           // Build a transcript-tail snapshot from this run's events so the next
           // attempt — same model or next route — can continue. A run that
@@ -857,17 +873,35 @@ function isLiveInputTakenEvent(event) {
 }
 
 /**
+ * @param {AttemptSideEffects} effects
+ * @returns {"tool_already_executed"|"live_input_consumed"|null}
+ */
+function sideEffectReason(effects) {
+  if (effects.tool) return "tool_already_executed";
+  return effects.liveInput ? "live_input_consumed" : null;
+}
+
+/**
+ * End the logical run with the failed attempt's own result plus a warning.
+ * @param {RuntimeResult} result
  * @param {string} model
  * @param {"tool_already_executed"|"live_input_consumed"} reason
  */
-function failoverBlockedWarning(model, reason) {
+function failoverBlockedResult(result, model, reason) {
   const effect = reason === "tool_already_executed" ? "a tool already ran" : "a live input was already consumed";
-  return {
+  const warning = {
     warning_kind: "provider_failover_blocked",
     source: "router",
     reason,
     model,
     message: `${model} failed after ${effect}; no retry or backup model was started so nothing runs twice (${reason}).`,
+  };
+  return {
+    warning,
+    result: {
+      ...result,
+      runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning],
+    },
   };
 }
 

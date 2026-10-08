@@ -1798,6 +1798,46 @@ describe("durable primary sessions through the fallback router", () => {
     }
   }, 30_000);
 
+  it("still fails over a warm turn whose earlier native turn ran a tool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-router-warm-tools-"));
+    writeFileSync(join(root, "evidence.txt"), "fictional evidence");
+    const { model, attempts, router } = routedFixture();
+    const id = "warm-tool-epoch";
+    const options = runOptions(model, {
+      cwd: root, allowedTools: ["Read"], piMaxRetries: 0,
+      providerAttributionSessionId: id, sessionKeepAlive: true,
+    });
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "earlier-read" })]),
+        fauxAssistantMessage([fauxText("first answer")]),
+      ]);
+      const first = await router.run("stable system", { ...options, messages: [{ role: "user", content: "read it" }] });
+      expect(first.error).toBeNull();
+      expect(first.providerSessionId).toBe(id);
+      attempts.length = 0;
+      let primaryContext;
+      faux.setResponses(primaryFailsBackupAnswers((modelId, context) => {
+        if (modelId === "faux-model") primaryContext ??= structuredClone(context);
+      }));
+      const events = [];
+      const result = await router.run("stable system", {
+        ...options, sessionId: id, providerSessionId: id,
+        messages: [{ role: "user", content: "and now?" }], onEvent: (event) => events.push(event),
+      });
+      // The warm primary carried the earlier tool turn natively ...
+      expect(primaryContext.messages.some((message) => message.role === "toolResult")).toBe(true);
+      // ... but that history is not this attempt's side effect: failover proceeds.
+      expect(attempts).toEqual(["faux-model", "faux-backup"]);
+      expect(result.text).toBe("backup answer");
+      expect(result.runtimeWarnings ?? []).not.toContainEqual(expect.objectContaining({ warning_kind: "provider_failover_blocked" }));
+      expect(events.some((event) => event.type === "provider_failover_started")).toBe(true);
+    } finally {
+      await router.disposeAllSessions();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("ends the run with the primary failure instead of re-running a tool on a backup", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-router-no-rerun-"));
     writeFileSync(join(root, "evidence.txt"), "fictional evidence");

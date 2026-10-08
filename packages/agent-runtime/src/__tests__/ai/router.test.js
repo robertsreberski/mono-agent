@@ -1510,6 +1510,107 @@ describe("createRouterRuntime — tools are never re-run", () => {
     expect(result.runtimeWarnings).toEqual([expect.objectContaining({ reason: "live_input_consumed" })]);
   });
 
+  /**
+   * A route runtime that leases a live input, fails, and leaves the lease open
+   * so the test can settle it after the attempt returned.
+   */
+  function leaseAndFail(held) {
+    return async (_systemPrompt, options) => {
+      const next = await options.liveInput[Symbol.asyncIterator]().next();
+      held.message = next.value;
+      return failure([]);
+    };
+  }
+
+  function oneLiveInput() {
+    return (async function* () {
+      yield { body: "one more thing", id: "follow-up-1", acknowledge: () => "recorded" };
+    })();
+  }
+
+  it("blocks a same-model retry when the failed attempt consumes a live input during backoff", async () => {
+    const held = {};
+    executeMock.mockImplementationOnce(leaseAndFail(held));
+    executeMock.mockResolvedValueOnce({ text: "retry", events: [], failureKind: null });
+    const events = [];
+    const router = createRouterRuntime({
+      chain: [{ model: primary, attempts: 2 }, backup],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", {
+      messages: [], liveInput: oneLiveInput(),
+      onEvent: (event) => {
+        events.push(event);
+        // Late settlement by the route runtime, after run() returned.
+        if (event.type === "provider_retry_started") held.message.acknowledge();
+      },
+    });
+    expect(events.some((event) => event.type === "provider_retry_started")).toBe(true);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.failureKind).toBe("provider_unavailable");
+    expect(result.failoverHistory).toHaveLength(1);
+    expect(result.runtimeWarnings).toEqual([expect.objectContaining({ model: primary.reference, reason: "live_input_consumed" })]);
+    expect(blockedWarnings(events)).toHaveLength(1);
+  });
+
+  it("blocks a backup when the failed attempt consumes a live input while the resolver runs", async () => {
+    const held = {};
+    executeMock.mockImplementationOnce(leaseAndFail(held));
+    executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
+    const cleanup = vi.fn();
+    const resolveAttempt = vi.fn(async ({ attemptIndex }) => {
+      if (attemptIndex === 1) held.message.acknowledge();
+      return { cleanup };
+    });
+    const events = [];
+    const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt });
+    const result = await router.run("sys", { messages: [], liveInput: oneLiveInput(), onEvent: (event) => events.push(event) });
+    expect(resolveAttempt).toHaveBeenCalledTimes(2);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    // The resolved-but-never-run backup still releases its resources.
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(result.failureKind).toBe("provider_unavailable");
+    expect(result.runtimeWarnings).toEqual([expect.objectContaining({ model: primary.reference, reason: "live_input_consumed" })]);
+    expect(events.some((event) => event.type === "provider_failover_started")).toBe(false);
+  });
+
+  it("blocks a backup when the failed attempt streams tool evidence while the resolver runs", async () => {
+    let lateOnEvent;
+    executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
+      lateOnEvent = options.onEvent;
+      return failure([]);
+    });
+    executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [primary, backup],
+      resolveAttempt: async ({ attemptIndex }) => {
+        if (attemptIndex === 1) lateOnEvent({ type: "tool_execution_start", toolCallId: "call-1", toolName: "Bash" });
+        return {};
+      },
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.runtimeWarnings).toEqual([expect.objectContaining({ reason: "tool_already_executed" })]);
+  });
+
+  it("still fails over when only earlier turns in the seeded history used tools", async () => {
+    executeMock.mockResolvedValueOnce(failure([]));
+    executeMock.mockResolvedValueOnce({ text: "backup", events: [], failureKind: null });
+    const router = createRouterRuntime({ chain: [primary, backup] });
+    const result = await router.run("sys", {
+      messages: [
+        { role: "user", content: "earlier question" },
+        { role: "assistant", content: [{ type: "tool_use", id: "old-call", name: "Read", input: { file_path: "notes.txt" } }] },
+        { role: "toolResult", toolCallId: "old-call", content: [{ type: "text", text: "old notes" }] },
+        { role: "assistant", content: "earlier answer" },
+        { role: "user", content: "new question" },
+      ],
+    });
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("backup");
+    expect(result.runtimeWarnings).toBeUndefined();
+  });
+
   it("still fails over a retryable failure that only streamed text", async () => {
     const text = { type: "assistant", message: { content: [{ type: "text", text: "partial" }] } };
     executeMock.mockResolvedValueOnce(failure([text]));
