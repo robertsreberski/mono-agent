@@ -370,6 +370,13 @@ there is no host switch transaction or live native switch-back guarantee yet.
 
 ## Architecture
 
+Pi results include a monotonic `dispatchProgress` snapshot (version 1), armed
+only after replay seeding: assistant output, tool admission and yielded live
+input are distinct flags. Ordinary retries/backups stop after tool or live-input
+progress, with normalized-event evidence retained for other backends. Missing,
+malformed or unarmed evidence never certifies an untouched prepared attempt;
+prepared native dispatch remains primary-only.
+
 The provider bridge imports the model-run loop, native journal/storage and
 compaction kit from `@mono-agent/harness`. The separate `agent-harness` host
 package owns conversation/history orchestration.

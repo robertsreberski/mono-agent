@@ -1,3 +1,4 @@
+import { isDispatchProgress } from "../providers/pi-native/dispatch-progress.js";
 import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../providers/pi-native/prepared-dispatch.js";
 // Provider fallback router.
 //
@@ -152,48 +153,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   // inner runtime uses — createRuntime no longer publishes it to a process global.
   const runtimeBrand = resolveRuntimeBrand(host.runtimeBrand);
 
-  return {
-    /**
-     * @param {string} systemPrompt
-     * @param {Partial<RuntimeRunOptions>} [options] Optional so a bare `{}` call
-     *   is legal; the router always overrides `model` per chain entry (see
-     *   AgentRuntimeInstance.run for the public, model-required contract).
-     * @returns {Promise<RuntimeResult>}
-     */
-    async run(systemPrompt, options = {}) {
-      if (options.manualCompaction === true) {
-        // A provider session belongs to exactly one route. Never retry/fail over
-        // a mutating manual operation against a different model or session.
-        const primary = entries[0];
-        if (!primary || !entrySupportsSessionResume(primary)
-          || (options.model && modelKey(options.model) !== modelKey(primary.model))) {
-          throw new Error("Manual compaction is unavailable for this session model.");
-        }
-        /** @type {*} */
-        let attemptOptions = { ...options, model: primary.model };
-        delete attemptOptions.detachedContext;
-        let attemptRuntime = inner;
-        let cleanup;
-        try {
-          const resolution = normalizeAttemptResolution(await resolveAttempt?.({
-            model: primary.model, attemptIndex: 0, retryIndex: 0,
-          }));
-          cleanup = resolution?.cleanup;
-          if (resolution) {
-            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
-            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
-            if (resolution.runtime) {
-              assertRuntimeLike(resolution.runtime);
-              attemptRuntime = resolution.runtime;
-              projectPiRuntimeToolContext(attemptRuntime, effectiveRouterToolOptions(host, configuredTools));
-            }
-          }
-          applyEntryEffort(attemptOptions, primary.effort);
-          return await attemptRuntime.run(systemPrompt, attemptOptions);
-        } finally {
-          await cleanup?.();
-        }
-      }
+  // Single ordinary attempt engine. Prepared continuation can enter this
+  // internal seam in a later change without forking gates, replay or cleanup.
+  /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options
+   * @returns {Promise<RuntimeResult>} */
+  async function runAttemptLoop(systemPrompt, options) {
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
@@ -363,7 +327,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           };
           delete callOptions.onSessionTurnDetached;
           delete callOptions.detachedContext;
-          if (callOptions.abortSignal?.aborted) {
+          if (!sessionEligibleAttempt && callOptions.abortSignal?.aborted) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
           }
@@ -419,7 +383,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             emit(callOptions, { type: "runtime_warning", ...blocked.warning });
             return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
           }
-          if (callOptions.abortSignal?.aborted) {
+          if (!sessionEligibleAttempt && callOptions.abortSignal?.aborted) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
           }
@@ -479,6 +443,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               events: [],
               cancelled: false,
               usage: {},
+              ...(isDispatchProgress(err?.dispatchProgress) ? { dispatchProgress: err.dispatchProgress } : {}),
             };
           } finally {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
@@ -486,6 +451,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
 
           result = normalizeAttemptResult(result, sessionEligibleAttempt);
           if (Array.isArray(result.events) && result.events.some(isToolActivityEvent)) attemptEffects.tool = true;
+          if (isDispatchProgress(result.dispatchProgress)) {
+            if (result.dispatchProgress.toolAdmitted) attemptEffects.tool = true;
+            if (result.dispatchProgress.liveInputTaken) attemptEffects.liveInput = true;
+          }
 
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
@@ -626,6 +595,51 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       } finally {
         await liveInputHub?.flush();
       }
+  }
+
+  return {
+    /**
+     * @param {string} systemPrompt
+     * @param {Partial<RuntimeRunOptions>} [options] Optional so a bare `{}` call
+     *   is legal; the router always overrides `model` per chain entry (see
+     *   AgentRuntimeInstance.run for the public, model-required contract).
+     * @returns {Promise<RuntimeResult>}
+     */
+    async run(systemPrompt, options = {}) {
+      if (options.manualCompaction === true) {
+        // A provider session belongs to exactly one route. Never retry/fail over
+        // a mutating manual operation against a different model or session.
+        const primary = entries[0];
+        if (!primary || !entrySupportsSessionResume(primary)
+          || (options.model && modelKey(options.model) !== modelKey(primary.model))) {
+          throw new Error("Manual compaction is unavailable for this session model.");
+        }
+        /** @type {*} */
+        let attemptOptions = { ...options, model: primary.model };
+        delete attemptOptions.detachedContext;
+        let attemptRuntime = inner;
+        let cleanup;
+        try {
+          const resolution = normalizeAttemptResolution(await resolveAttempt?.({
+            model: primary.model, attemptIndex: 0, retryIndex: 0,
+          }));
+          cleanup = resolution?.cleanup;
+          if (resolution) {
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
+            if (resolution.runtime) {
+              assertRuntimeLike(resolution.runtime);
+              attemptRuntime = resolution.runtime;
+              projectPiRuntimeToolContext(attemptRuntime, effectiveRouterToolOptions(host, configuredTools));
+            }
+          }
+          applyEntryEffort(attemptOptions, primary.effort);
+          return await attemptRuntime.run(systemPrompt, attemptOptions);
+        } finally {
+          await cleanup?.();
+        }
+      }
+      return runAttemptLoop(systemPrompt, options);
     },
     // Preparation is a primary-only single attempt, never a routed retry or
     // backup. A custom resolver must explicitly certify native ownership.
@@ -1010,8 +1024,10 @@ const LIVE_INPUT_TAKEN_EVENTS = new Set([
 ]);
 
 /**
- * A live input the provider consumed (or may have consumed). An input that is
- * only leased or queued and then removed stays replayable by a later attempt.
+ * Event evidence for consumed/uncertain live input on marker-less runtimes.
+ * Their removed, unconsumed inputs remain mailbox-replay-safe. Real Pi also
+ * gates on liveInputTaken at iterator yield, even if native later removes it;
+ * only never-yielded inputs can reach another Pi attempt.
  * @param {*} event
  * @returns {boolean}
  */

@@ -193,15 +193,28 @@ the run. The run ends with that attempt's own failure (for example
 host reports the failure and waits for the next message instead of answering
 from a different model.
 
+Pi results also carry monotonic `dispatchProgress` evidence, armed only after
+historical replay seeding. Tool admission and yielded live input block another
+ordinary attempt even when no corresponding event reached the router. Other
+backends retain the normalized-event fallback. Assistant text, thinking and
+tool-call output are tracked separately; output alone does not change ordinary
+fallback policy. Missing, malformed or unarmed markers cannot certify an untouched
+prepared attempt. Prepared dispatch remains primary-only.
+
 The router decides from the attempt's normalized events: a `tool_use` or
 `tool_result` block, or Pi's `tool_execution_start`, whether streamed or in the
-attempt result. Pi emits `tool_use` only when a tool starts executing, so a
-model that merely requested a tool before the provider failed still fails over.
-Text or reasoning output alone also still fails over. A live input counts once
-the provider consumed it, or its delivery is uncertain; an input that was
-removed from the provider queue unconsumed is replayed to the next attempt. A
-custom route runtime that emits none of these events cannot be gated and keeps
-the earlier behaviour.
+attempt result. Pi emits `tool_use` at its conservative execution-start boundary,
+which can precede argument validation or hook blocking. A model that merely
+requested a tool before either admission boundary still fails over.
+Text or reasoning output alone also still fails over. On Pi, a live input counts
+as taken as soon as its iterator yields it, before steering or provider
+consumption. Even if it is later removed from the provider queue unconsumed,
+Pi starts no retry or backup; only never-yielded inputs can transfer. Tool
+admission is conservative too: a call reaching `before_tool` counts even when
+another hook blocks that call before execution. For marker-less custom runtimes,
+consumed or uncertain input events still block failover; a removed, unconsumed
+input remains mailbox-replay-safe. A custom runtime emitting neither progress
+markers nor these events cannot be gated and keeps the earlier behaviour.
 
 The router checks this evidence when the attempt fails and again immediately
 before it admits the next attempt — after the retry backoff and after the route

@@ -120,6 +120,7 @@ export async function createHarnessAdapter(session, options) {
     waitForIdle: () => driver.waitForIdle(),
     compact: () => driver.compact(),
     on(type, handler) {
+      if (type === "after_response" || type === "before_tool") return driver.hooks.on(type, handler);
       if (type === "tool_result") return driver.hooks.on("after_tool", handler);
       if (type === "session_before_compact") return driver.hooks.on("before_compaction", async (event) => {
         const result = await handler(event);

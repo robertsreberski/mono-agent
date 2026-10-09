@@ -160,6 +160,7 @@ export type {
   RuntimeModelReference,
   PiTransport,
   RuntimePromptOverrides,
+  RuntimeDispatchProgress,
   RuntimeResult,
   RuntimeRunOptions,
   RuntimeSessionTurnDescriptor,
