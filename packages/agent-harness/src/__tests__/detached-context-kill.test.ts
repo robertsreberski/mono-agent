@@ -32,6 +32,9 @@ async function stop(child: ChildProcess) {
   const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
 }
 
+// Scope: this fixture uses a test-written owner-held loader and built dist.
+// It proves router/durable-history detachment and fresh-process recovery, not
+// execution of runHarnessRuntime's loader or prepared native continuation.
 it("KA1: SIGKILL during owner-held replay after detach fsync, then recover twice without execution", async () => {
   const root = await mkdtemp(join(tmpdir(), "detached-context-kill-"));
   try {

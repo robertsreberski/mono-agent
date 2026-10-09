@@ -1,3 +1,4 @@
+import { createDispatchProgress } from "./pi-native/dispatch-progress.js";
 import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, repairInterruptedSession } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
@@ -341,6 +342,12 @@ export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlem
 }
 
 async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
+  const dispatchProgress = createDispatchProgress();
+  const result = await executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress);
+  return { ...result, dispatchProgress: Object.freeze({ ...dispatchProgress }) };
+}
+
+async function executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress) {
   if (Object.hasOwn(options, "settings")) {
     throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
   }
@@ -384,6 +391,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
   // `runtimeWarnings` stay as consts shared by reference. `toolStartTimes` maps
   // toolCallId -> start timestamp so per-tool execution latency can be emitted.
   const runState = {
+    dispatchProgress,
     assistantTexts: [],
     assistantThinking: [],
     textDeltaIndexes: new Set(),
@@ -920,7 +928,7 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
     }
 
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
-    const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch });
+    const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch, dispatchProgress });
 
     // Report the live harness value, not a downstream recreation of Pi's
     // thinking-level normalization. This also captures any future adapter-side

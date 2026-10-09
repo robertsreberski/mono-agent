@@ -293,7 +293,18 @@ function optionalLiteral(
   return !(key in value) || (typeof value[key] === "string" && choices.includes(value[key]));
 }
 
+/** Monotonic per-execution evidence, armed only after canonical replay seeding. */
+export interface RuntimeDispatchProgress {
+  readonly version: 1;
+  readonly armed: boolean;
+  readonly assistantOutput: boolean;
+  readonly toolAdmitted: boolean;
+  readonly liveInputTaken: boolean;
+}
+
 export interface RuntimeResult {
+  /** Missing, malformed or unarmed evidence cannot certify no progress. */
+  readonly dispatchProgress?: RuntimeDispatchProgress;
   /** Certified only by a successful, terminal FinishSilently attempt. */
   readonly turnDisposition?: "silent" | "visible";
   readonly subagentQuestion?: { question: string; options?: string[] };

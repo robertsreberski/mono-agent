@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep monotonic Pi dispatch evidence for assistant output, tool admission and
+  live input, including prepared turns and early failures. Stop ordinary retries
+  and backups after tool admission or live input even without streamed events.
+
 - Keep earlier conversation and bounded tool history in ordinary warm-turn
   retries and backups. Stop failover with `detached_context_unavailable` if
   canonical history cannot be loaded, and keep detached identities private

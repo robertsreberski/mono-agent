@@ -4,7 +4,7 @@ const prepared = vi.hoisted(() => ({ snapshot: Object.freeze({ model: { provider
   assertReady: vi.fn(), checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })),
   produceHandoffSummary: vi.fn(async (_input: unknown) => ({ status: "summary_rejected" as const, reason: "fictional-refusal" })),
   run: vi.fn(async (_binding?: unknown) => ({ text: "Prepared fictional answer" })), close: vi.fn(async () => {}) }));
-const kernel = vi.hoisted(() => ({ run: vi.fn(async (_system: string, _options: Record<string, any>) => ({ text: "Fictional answer" })),
+const kernel = vi.hoisted(() => ({ run: vi.fn(async (_system: string, _options: Record<string, any>): Promise<import("../types.js").RuntimeResult> => ({ text: "Fictional answer" })),
   nativePreparedDispatch: "v1" as "v1" | undefined,
   prepareNativeDispatch: vi.fn(async (_system: string, _options: Record<string, any>) => prepared) }));
 beforeEach(() => { vi.clearAllMocks(); kernel.nativePreparedDispatch = "v1"; });
@@ -51,4 +51,11 @@ it("refuses method-only preparation and invalid requests without invoking kernel
   await expect(runtime.prepareNativeDispatch!("", options)).rejects.toMatchObject({ code: "invalid_runtime_options" });
   await expect(runtime.prepareNativeDispatch!("Rules", { ...options, model: { ...model, reference: "wrong" } })).rejects.toMatchObject({ code: "invalid_model_reference" });
   expect(kernel.prepareNativeDispatch).not.toHaveBeenCalled();
+});
+
+it("forwards Pi dispatch progress without dropping fields", async () => {
+  const dispatchProgress = { version: 1 as const, armed: true, assistantOutput: true, toolAdmitted: true, liveInputTaken: true };
+  kernel.run.mockResolvedValueOnce({ text: "Fictional result", dispatchProgress });
+  const result = await createMonoRuntime().run("Fictional rules", { model, messages: [], abortSignal: new AbortController().signal });
+  expect(result.dispatchProgress).toEqual(dispatchProgress);
 });

@@ -254,6 +254,8 @@ export interface MonoRuntimeAttemptResolution {
     readonly ownedForegroundProcesses?: never;
     /** Attempt plugins cannot replace the host's run-bound artifact sink. */
     readonly persistArtifact?: never;
+    /** Host conversation replay cannot be supplied by a private route resolver. */
+    readonly detachedContext?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<

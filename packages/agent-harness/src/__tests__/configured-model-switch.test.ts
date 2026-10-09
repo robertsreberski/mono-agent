@@ -26,12 +26,13 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   const retire = vi.fn(async (id: string) => { await inspector.retireDurableSession!(id, nativeRoot); });
   const makeStore = () => createDurableHistoryStore({ root: historyRoot, nativeJournalStorage: native, reconcileProviderSessionTurn: inspect, retireProviderSession: retire, ...limits });
   const store = makeStore(), runtimes: MonoRuntimeLike[] = [];
+  const prepareCalls: Array<{ id: string; options: import("@mono-agent/runtime-adapter").RuntimeRunOptions }> = [];
   const runtimeFor = (id: string) => {
     const runtime = createMonoRuntime({ workspace: base }), run = runtime.run.bind(runtime), prepare = runtime.prepareNativeDispatch!.bind(runtime);
     // Fixture catalog injection only; real preparation, native storage, P2 and
     // execution remain untouched. No completion/inspector stubs.
     runtime.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
-    runtime.prepareNativeDispatch = (prompt, options) => prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
+    runtime.prepareNativeDispatch = (prompt, options) => { prepareCalls.push({ id, options }); return prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
     runtimes.push(runtime); return runtime;
   };
   const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}) => {
@@ -49,7 +50,7 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   const journals = async () => await readdir(nativeRoot, { recursive: true }).then((entries) => entries.filter((entry) => entry.endsWith(".jsonl")));
   const changes = async () => (await Promise.all((await journals()).map(async (entry) => (await readFile(join(nativeRoot, entry), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat().filter((record) => record.kind === "model_change");
   const seed = async (message = "Fictional source fact", delivery = "seed") => { const h = makeHarness(); faux.setResponses([text("Fictional A reply")]); const response = await h.run(request(delivery, message)); expect(response.failure).toBeUndefined(); await h.dispose(); return response; };
-  return { base, identityPath, nativeRoot, historyRoot, faux, models, native, transport, store, makeStore, makeHarness, request, canonical, changes, journals, seed, inspect, retire, runtimes, runtimeFor, canonicalBytes };
+  return { base, identityPath, nativeRoot, historyRoot, faux, models, native, transport, store, makeStore, makeHarness, request, canonical, changes, journals, seed, inspect, retire, runtimes, runtimeFor, canonicalBytes, prepareCalls };
 }
 
 it("default OFF leaves legacy bytes/root format alone and keeps today's cold override", async () => {
@@ -276,4 +277,13 @@ it("unguarded default and unguarded prepared turns emit no nativeProvenance; pre
   expect(starts.some((record) => record.payload.config?.model?.id === "A")).toBe(true);
   expect(starts.every((record) => !Object.hasOwn(record.payload.config, "nativeProvenance"))).toBe(true);
   expect(JSON.stringify(records)).not.toContain("forged");
+});
+
+it("strips static detached replay from outgoing handoff and incoming preparation", async () => {
+  const f = await fixture(); await f.seed(); const detachedContext = vi.fn(async () => []);
+  f.faux.setResponses([text(summary), text("Fictional B reply")]);
+  const result = await f.makeHarness("A", true, { runtimeOptions: { piResolvedModels: f.models, allowedTools: [], compaction: { enabled: false }, detachedContext } }).run(f.request("fictional-switch", "Fictional override", { metadata: { web: { model: "faux:B" } } }));
+  expect(result.failure).toBeUndefined(); expect(f.prepareCalls.map((call) => call.id)).toContain("A"); expect(f.prepareCalls.map((call) => call.id)).toContain("B");
+  for (const call of f.prepareCalls) expect(call.options).not.toHaveProperty("detachedContext");
+  expect(detachedContext).not.toHaveBeenCalled();
 });

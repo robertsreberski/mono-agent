@@ -193,6 +193,14 @@ the run. The run ends with that attempt's own failure (for example
 host reports the failure and waits for the next message instead of answering
 from a different model.
 
+Pi results also carry monotonic `dispatchProgress` evidence, armed only after
+historical replay seeding. Tool admission and yielded live input block another
+ordinary attempt even when no corresponding event reached the router. Other
+backends retain the normalized-event fallback. Assistant text, thinking and
+tool-call output are tracked separately; output alone does not change ordinary
+fallback policy. Missing, malformed or unarmed markers cannot certify an untouched
+prepared attempt. Prepared dispatch remains primary-only.
+
 The router decides from the attempt's normalized events: a `tool_use` or
 `tool_result` block, or Pi's `tool_execution_start`, whether streamed or in the
 attempt result. Pi emits `tool_use` only when a tool starts executing, so a

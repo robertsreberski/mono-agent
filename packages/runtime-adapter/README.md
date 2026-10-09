@@ -378,6 +378,7 @@ RuntimeAdapterError
 RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
+RuntimeDispatchProgress
 RuntimeEventLike
 RuntimeHandoffBudget
 RuntimeHandoffFit

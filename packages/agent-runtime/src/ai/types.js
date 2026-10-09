@@ -379,7 +379,18 @@
  */
 
 /**
+ * Monotonic Pi dispatch evidence, armed only after replay seeding.
+ * @typedef {Object} RuntimeDispatchProgress
+ * @property {1} version
+ * @property {boolean} armed
+ * @property {boolean} assistantOutput
+ * @property {boolean} toolAdmitted
+ * @property {boolean} liveInputTaken
+ */
+
+/**
  * @typedef {Object} RuntimeResult
+ * @property {RuntimeDispatchProgress} [dispatchProgress] Absence/malformed evidence never certifies no progress.
  * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]

@@ -535,7 +535,7 @@ export interface AgentHarnessOptions {
    * contract remain in-memory. Unset = in-memory only.
    */
   readonly piSessionsRoot?: string;
-  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">;
+  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
@@ -638,7 +638,7 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // piSessionsRoot are accepted structurally for compatibility but stripped
   // and replaced by the harness's coordinated decision.
   readonly runtimeOptions?: Omit<
-    Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>,
+    Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">>,
     "effort"
   > & {
     /**

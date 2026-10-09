@@ -1854,7 +1854,7 @@ describe("private detached host replay", () => {
     const loader = vi.fn(async () => []), backupRun = vi.fn(), cleanup = vi.fn();
     const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex === 0 ? run : backupRun, configureTools() {} }, cleanup }) });
     const result = await router.run("sys", { messages, sessionTurn, onSessionTurnDetached: ack, detachedContext: loader,
-      ...(effect === "live input" ? { liveInput: { async *[Symbol.asyncIterator]() { yield { body: "Fictional steer", acknowledge: () => "recorded" }; } } } : {}) });
+      ...(effect === "live input" ? { liveInput: { async *[Symbol.asyncIterator]() { yield { body: "Fictional steer", id: "fictional-input", acknowledge: () => "recorded" }; } } } : {}) });
     expect(ack).toHaveBeenCalledOnce(); expect(loader).not.toHaveBeenCalled(); expect(backupRun).not.toHaveBeenCalled();
     expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
     expect(result.runtimeWarnings[0].reason).toBe(effect === "tool" ? "tool_already_executed" : "live_input_consumed");
@@ -1886,7 +1886,7 @@ describe("private detached host replay", () => {
   });
 });
 
-it.each(["before primary", "resolver", "ack", "loader"])("never loads or dispatches after cancellation at %s", async (phase) => {
+it.each(["before primary", "resolver", "ack", "loader"])("prevents detached dispatch after cancellation at %s", async (phase) => {
   const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), controller = new AbortController();
   const failure = { error: "Connection error.", failureKind: "provider_unavailable", events: [], providerSessionId: "primary-id", providerSessionRecovery: { runId: "turn" } };
   const backupRun = vi.fn(async () => ({ text: "Must not run", events: [] })), cleanup = vi.fn();
@@ -1904,6 +1904,58 @@ it.each(["before primary", "resolver", "ack", "loader"])("never loads or dispatc
   expect(result.cancelled).toBe(true); expect(backupRun).not.toHaveBeenCalled();
   expect(loader).toHaveBeenCalledTimes(phase === "loader" ? 1 : 0);
   expect(ack).toHaveBeenCalledTimes(phase === "ack" || phase === "loader" ? 1 : 0);
-  expect(cleanup).toHaveBeenCalledTimes(phase === "before primary" ? 1 : 2);
+  expect(cleanup).toHaveBeenCalledTimes(2);
+  if (phase === "before primary") expect(primaryRun).toHaveBeenCalledOnce();
   if (phase === "ack" || phase === "loader") { expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery"); }
+});
+
+
+it("preserves pre-aborted eligible-primary behavior for direct callers", async () => {
+  const primary = modelRef("openai-codex", "primary"), controller = new AbortController(); controller.abort();
+  executeMock.mockResolvedValueOnce({ text: "Fictional provider result", providerSessionId: "primary-id", events: [] });
+  const result = await createRouterRuntime({ chain: [primary] }).run("sys", { messages: [], abortSignal: controller.signal });
+  expect(executeMock).toHaveBeenCalledOnce(); expect(result.text).toBe("Fictional provider result"); expect(result.providerSessionId).toBe("primary-id"); expect(result.cancelled).not.toBe(true);
+});
+
+it.each(["toolAdmitted", "liveInputTaken"])("gates ordinary retry/backup on %s evidence without streamed events", async (field) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), ack = vi.fn();
+  const progress = { version: 1, armed: true, assistantOutput: false, toolAdmitted: false, liveInputTaken: false, [field]: true };
+  executeMock.mockResolvedValueOnce({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: progress, providerSessionId: "primary-id" });
+  const result = await createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [], onSessionTurnDetached: ack });
+  expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled(); expect(result.failureKind).toBe("provider_unavailable");
+  expect(result.runtimeWarnings[0].reason).toBe(field === "toolAdmitted" ? "tool_already_executed" : "live_input_consumed");
+});
+
+it("keeps ordinary output-only failover and blocks a backup's marker-admitted tool", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), last = modelRef("openai", "last");
+  const empty = { version: 1, armed: true, assistantOutput: false, toolAdmitted: false, liveInputTaken: false };
+  const failure = { error: "Connection error.", failureKind: "provider_unavailable", events: [] };
+  executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: { ...empty, assistantOutput: true } });
+  executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: { ...empty, toolAdmitted: true } });
+  const result = await createRouterRuntime({ chain: [primary, { model: backup, attempts: 2 }, last], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [] });
+  expect(executeMock).toHaveBeenCalledTimes(2); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+});
+
+it("gives an unconsumed live input a fresh consumer on the backup", async () => {
+  let consumers = 0;
+  const liveInput = { [Symbol.asyncIterator]() { consumers++; return (async function* () { yield { body: "Fictional steer", id: "fictional-input", acknowledge: () => "recorded" }; })(); } };
+  executeMock.mockImplementationOnce(async (_prompt, options) => { options.liveInput[Symbol.asyncIterator](); return { error: "Connection error.", failureKind: "provider_unavailable", events: [] }; });
+  executeMock.mockImplementationOnce(async (_prompt, options) => { const iterator = options.liveInput[Symbol.asyncIterator](), next = await iterator.next(); next.value.acknowledge(); await iterator.return(); return { text: "Fictional backup", events: [] }; });
+  const result = await createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] }).run("sys", { messages: [], liveInput });
+  expect(result.error).toBeFalsy(); expect(result.text).toBe("Fictional backup"); expect(consumers).toBe(2);
+});
+
+it("keeps prepared dispatch and handoff producers primary-only after an empty-progress failure", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), ack = vi.fn(), loader = vi.fn();
+  const producer = vi.fn(async () => ({ status: "summary_rejected", reason: "Fictional provider failure" }));
+  const run = vi.fn(async () => ({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: { version: 1, armed: true, assistantOutput: false, toolAdmitted: false, liveInputTaken: false } }));
+  const prepared = vi.fn(async () => ({ snapshot: {}, checkHandoffSummary: () => ({ status: "ready" }), produceHandoffSummary: producer, run, close: vi.fn() }));
+  const resolver = vi.fn(() => ({ runtime: { run: vi.fn(), configureTools() {}, nativePreparedDispatch: "v1", prepareNativeDispatch: prepared } }));
+  const router = createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], resolveAttempt: resolver, sessionTurnReconciliation: "v1" });
+  const lease = await router.prepareNativeDispatch("sys", { model: primary, messages: [], onSessionTurnDetached: ack, detachedContext: loader });
+  expect(await lease.checkHandoffSummary({})).toEqual({ status: "ready" }); await lease.produceHandoffSummary({});
+  const result = await lease.run();
+  expect(result.failureKind).toBe("provider_unavailable"); expect(result.failoverHistory).toHaveLength(1);
+  expect(resolver).toHaveBeenCalledOnce(); expect(prepared).toHaveBeenCalledOnce(); expect(producer).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
+  expect(ack).not.toHaveBeenCalled(); expect(loader).not.toHaveBeenCalled(); expect(executeMock).not.toHaveBeenCalled();
 });

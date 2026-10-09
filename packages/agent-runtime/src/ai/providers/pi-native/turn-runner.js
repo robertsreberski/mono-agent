@@ -1,3 +1,4 @@
+import { noteAssistantContent } from "./dispatch-progress.js";
 import { assertNativeSessionAccess } from "./session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
@@ -369,6 +370,11 @@ export function activateTurnHarness(runState, {
   sdk,
   reference,
 }) {
+  if (runState.dispatchProgress) {
+    harness.on("after_response", (event) => noteAssistantContent(runState.dispatchProgress, event.message));
+    harness.on("before_tool", () => { runState.dispatchProgress.toolAdmitted = true; });
+    runState.dispatchProgress.armed = true;
+  }
   harness.subscribe(createStreamSubscriber(runState, {
     onEvent,
     options,
@@ -393,10 +399,10 @@ export function activateTurnHarness(runState, {
  * the harness mid-run; the consumer is tied to run completion (an internal
  * runComplete flag) so it stops steering once the run finishes and does not
  * swallow a follow-up meant for a later turn. Returns a `stop()` teardown.
- * @param {{harness: any, options: any, onEvent: (event: any) => void, promptEpoch?: any}} deps
+ * @param {{harness: any, options: any, onEvent: (event: any) => void, promptEpoch?: any, dispatchProgress?: any}} deps
  * @returns {{stop: () => Promise<void>}}
  */
-export function startLiveInput({ harness, options, onEvent, promptEpoch }) {
+export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatchProgress }) {
   if (!options.liveInput) return { stop: async () => {} };
   const iterator = typeof options.liveInput[Symbol.asyncIterator] === "function"
     ? options.liveInput[Symbol.asyncIterator]()
@@ -411,7 +417,10 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch }) {
     try {
       while (!runComplete && !options.abortSignal?.aborted) {
         const next = await Promise.race([
-          iterator.next(),
+          Promise.resolve(iterator.next()).then((next) => {
+            if (!next.done && dispatchProgress?.armed) dispatchProgress.liveInputTaken = true;
+            return next;
+          }),
           stopped.then(() => ({ done: true, value: undefined })),
         ]);
         if (next.done || runComplete || options.abortSignal?.aborted) break;
