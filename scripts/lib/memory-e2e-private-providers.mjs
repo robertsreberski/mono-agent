@@ -43,7 +43,7 @@ export function validatePrivateRoute(route, allowed, registration, runtime) {
  * audited path is admitted: no external adapters, tools, recorder, observers,
  * artifact sink, durable sessions, fallback routing or provider debug flags. */
 export function assertPrivateRuntimeOptions(options) {
-  if (["piSessionsRoot", "persistArtifact", "onEvent", "onTrace", "toolLifecycleSink", "sessionRecovery", "sessionTurn"].some((key) => options[key] !== undefined)
+  if (["piSessionsRoot", "persistArtifact", "onEvent", "onTrace", "toolLifecycleSink", "sessionRecovery", "sessionTurn", "detachedContext"].some((key) => options[key] !== undefined)
     || (options.observers?.length ?? 0) !== 0 || (options.allowedTools?.length ?? 0) !== 0
     || Object.keys(options.mcpServers ?? {}).length !== 0) throw new PrivateError("private_isolation_required");
 }

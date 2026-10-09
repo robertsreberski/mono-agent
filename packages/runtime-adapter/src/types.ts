@@ -585,6 +585,8 @@ export interface RuntimeRunOptions {
    * lease's pinned provider/API/account provenance on unguarded operations.
    * Honoured only from the run-time binding; carries no provenance values. */
   readonly nativeProvenanceRecording?: true;
+  /** Protected, lazy host replay prefix for stateless attempts; never telemetry. */
+  readonly detachedContext?: () => Promise<readonly RuntimeMessage[]>;
   readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];

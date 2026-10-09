@@ -110,7 +110,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "nativeSessionAuthority", "nativeSessionProjection", "nativeProvenanceRecording", "sessionTurn", "onSessionTurnDetached", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "nativeSessionAuthority", "nativeSessionProjection", "nativeProvenanceRecording", "sessionTurn", "onSessionTurnDetached", "detachedContext", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -171,6 +171,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         }
         /** @type {*} */
         let attemptOptions = { ...options, model: primary.model };
+        delete attemptOptions.detachedContext;
         let attemptRuntime = inner;
         let cleanup;
         try {
@@ -225,6 +226,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       /** @type {RuntimeResult|null} */
       let lastResult = null;
       let pendingDetach;
+      let detachedAcknowledged = false;
+      /** @type {ReadonlyArray<Object>|undefined} */
+      let detachedMessages;
       /** @type {RuntimeResult|null} */
       let lastRouteSkip = null;
       const promptBase = systemPrompt;
@@ -341,7 +345,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             const blocked = failoverBlockedResult(lateEffects.result, modelKey(lateEffects.model), lateReason);
             emit(callOptions, { type: "runtime_warning", ...blocked.warning });
-            return { ...blocked.result, failoverHistory };
+            return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
           }
 
           applyEntryEffort(callOptions, entry.effort);
@@ -358,11 +362,17 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             result: { text: null, error: "Primary route cannot own the protected native session", failureKind: "skipped_capability_mismatch", events: [], cancelled: false, usage: {} },
           };
           delete callOptions.onSessionTurnDetached;
+          delete callOptions.detachedContext;
+          if (callOptions.abortSignal?.aborted) {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
+          }
           if (pendingDetach && !sessionEligibleAttempt) {
             try {
               if (typeof options.onSessionTurnDetached !== "function") throw new Error("Detached native turn acknowledgement unavailable");
               await options.onSessionTurnDetached(pendingDetach);
               pendingDetach = undefined;
+              detachedAcknowledged = true;
             } catch {
               try { await attemptCleanup?.(); } catch { /* retain native evidence */ }
               return { ...normalizeAttemptResult(lastResult || lastRouteSkip || pendingDetach.result, false), error: "Protected native turn could not be durably detached", failureKind: "safety_session_turn_reconciliation",
@@ -377,7 +387,41 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             const blocked = failoverBlockedResult(detachedEffects.result, modelKey(detachedEffects.model), detachedReason);
             emit(callOptions, { type: "runtime_warning", ...blocked.warning });
-            return { ...blocked.result, failoverHistory };
+            return { ...normalizeAttemptResult(blocked.result, false), failoverHistory };
+          }
+
+          // Host replay is private, lazy and shared across detached attempts.
+          // Replace the prior prefix, rather than doubling cold-turn history.
+          if (!sessionEligibleAttempt && !callOptions.abortSignal?.aborted && typeof options.detachedContext === "function") {
+            try {
+              if (detachedMessages === undefined) {
+                const replay = structuredClone(await options.detachedContext());
+                if (!Array.isArray(replay)) throw new Error("Invalid detached replay");
+                detachedMessages = freezeDetachedContext(replay);
+              }
+            } catch {
+              try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+              const warning = { warning_kind: "detached_context_unavailable", source: "router",
+                message: "Conversation history unavailable; no retry or backup model was started." };
+              const failure = normalizeAttemptResult(lastResult || lastRouteSkip || { error: "Conversation history unavailable", failureKind: "provider_unavailable", events: [] }, !detachedAcknowledged);
+              emit(callOptions, { type: "runtime_warning", ...warning });
+              return { ...failure, runtimeWarnings: [...(failure.runtimeWarnings || []), warning], failoverHistory };
+            }
+            callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
+          }
+          // The loader can await I/O. Never admit an attempt if side effects or
+          // cancellation settled during that await. No await follows this fence.
+          const contextEffects = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
+          const contextReason = contextEffects === undefined ? null : sideEffectReason(contextEffects.effects);
+          if (contextEffects !== undefined && contextReason !== null) {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            const blocked = failoverBlockedResult(contextEffects.result, modelKey(contextEffects.model), contextReason);
+            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+            return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
+          }
+          if (callOptions.abortSignal?.aborted) {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
           }
 
           let attemptSystemPrompt = promptBase;
@@ -475,6 +519,14 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             ...(retryIndex > 0 ? { retryIndex } : {}),
           });
           if (result.failureKind === "skipped_capability_mismatch") {
+            const blockedReason = sideEffectReason(attemptEffects);
+            if (blockedReason !== null && entries.slice(i + 1).some((next) => entrySatisfiesRequirements(next, options))) {
+              const blocked = failoverBlockedResult(result, modelKey(entry.model), blockedReason);
+              emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+              terminalResult = blocked.result;
+              break;
+            }
+            failedAttempts.push({ effects: attemptEffects, model: entry.model, result });
             lastRouteSkip = result;
             if (sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
               descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result,
@@ -1157,4 +1209,14 @@ function normalizeAttemptResult(result, sessionEligibleAttempt) {
   if (sessionEligibleAttempt) return normalized;
   const { providerSessionRecovery: _receipt, providerSessionId: _sessionId, ...unownedResult } = normalized;
   return unownedResult;
+}
+
+/** Freeze the private replay snapshot, including nested attachment data.
+ * @template T @param {T} value @returns {T} */
+function freezeDetachedContext(value) {
+  if (value && typeof value === "object") {
+    Object.values(value).forEach(freezeDetachedContext);
+    Object.freeze(value);
+  }
+  return value;
 }

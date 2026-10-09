@@ -861,14 +861,32 @@ toolPolicyToRuntimeOptions
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every harness-prepared cold/fresh run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.
 
-On a warm turn whose primary attempt fails, the retry or backup attempt runs
-stateless with the current message and a bounded snapshot of the failed attempt,
-without the earlier conversation; the next turn reseeds from canonical history.
+On an ordinary warm turn whose primary fails, an eligible retry or backup gets
+canonical earlier conversation messages, the bounded tool-history projection,
+and the current input, just as on a cold turn. A bounded failed-attempt snapshot
+may accompany that replay. The host loads history lazily under conversation
+ownership, only after any required durable detach acknowledgement; it reuses one
+frozen replay across detached attempts and never doubles a cold-turn prefix.
+Durable, custom and in-memory history stores are supported. If warm canonical
+history is absent or cannot be loaded, no retry or backup starts: the primary
+failure returns with `detached_context_unavailable`. A tool-projection failure
+alone keeps canonical replay and emits `tool_history_projection_degraded`.
+The next turn still reseeds from canonical history.
+
+Configuring any fallback route counts as consent for that route to receive the
+conversation history, including when a local primary falls back to a cloud
+provider. Replay neutralises instruction markup but is not secret redaction.
+The replay loader and its output are not returned in results, failover history
+or router telemetry. Persistent subagents remain excluded: they have no host
+canonical replay loader, and detached answers still lose session continuity.
+Direct router callers without a loader retain their existing behaviour; private
+memory completion-only runtimes ignore the loader. Prepared native dispatch
+remains primary-only, with no routed retry or backup.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next
