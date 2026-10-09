@@ -8,7 +8,7 @@ process.once("message", async ({ mode, conversationId }) => {
       retired.push({ id, modelKey });
       if (mode === "reset-stop") {
         process.send({ phase: "retirement-intent-durable" });
-        await new Promise(() => {});
+        await new Promise(() => { setInterval(() => {}, 1_000); });
       }
     } });
     await store.reset(conversationId);

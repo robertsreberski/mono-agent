@@ -13,7 +13,7 @@ if (mode === "admit") {
   raw.sync = async () => {
     await sync();
     if (raw.validator.turns.get(descriptor.turnId)?.start && raw.seq === raw.validator.turns.get(descriptor.turnId).start.seq) {
-      process.send({ phase: "inline-start-synced" }); await new Promise(() => {});
+      process.send({ phase: "inline-start-synced" }); await new Promise(() => { setInterval(() => {}, 1_000); });
     }
   };
   const driver = createRunDriver(raw, { model, tools: [], systemPrompt: "Fictional contract." });

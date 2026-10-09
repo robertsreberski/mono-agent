@@ -4,7 +4,7 @@ import { createManagedNativeJournalStorage } from "../../../ai/providers/pi-nati
 const [root, stop] = process.argv.slice(2);
 const { source, context } = JSON.parse(await readFile(join(root, "native-proof.json"), "utf8"));
 const storage = createManagedNativeJournalStorage({ sessionsRoot: root, onPhase: async (phase) => {
-  if (phase === stop) { process.send?.({ phase }); await new Promise(() => {}); }
+  if (phase === stop) { process.send?.({ phase }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
 } });
 // Component-level native proof; the host coordinator supplies actual SQLite
 // authority in the integrated suite, not this explicitly fictional callback.

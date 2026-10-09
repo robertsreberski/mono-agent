@@ -11,14 +11,14 @@ try {
       let publishing = false;
       return admit.call(this, bucket, switchId, producer, { ...owner, onPhase: async (phase) => {
         if (phase === "payload_file_synced") publishing = true;
-        if (publishing && phase === killPhase) { process.send?.({ phase }); await new Promise(() => {}); }
+        if (publishing && phase === killPhase) { process.send?.({ phase }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
       } });
     };
   }
   const state = JSON.parse(await readFile(statePath, "utf8"));
   const lease = await store.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned storage");
   if (action === "admit") {
-    await lease.admit("outgoing"); process.send?.({ phase: "admitted" }); await new Promise(() => {});
+    await lease.admit("outgoing"); process.send?.({ phase: "admitted" }); await new Promise(() => { setInterval(() => {}, 1_000); });
   } else {
     let refused = false;
     // Never advance a pre-fence crash's orphan admission during storage-only recovery.

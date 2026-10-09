@@ -12,7 +12,7 @@ async function stop(at) {
   let counter = 0;
   try { counter = (await readFile(join(root, "effect-count.txt"), "utf8")).trim().split("\n").length; } catch (error) { if (error.code !== "ENOENT") throw error; }
   process.send({ phase: at, counter });
-  await new Promise(() => {});
+  await new Promise(() => { setInterval(() => {}, 1_000); });
 }
 fs.open = async (...args) => {
   const handle = await realOpen(...args), path = String(args[0]);

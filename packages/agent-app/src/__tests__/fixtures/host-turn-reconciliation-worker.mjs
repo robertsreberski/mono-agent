@@ -77,9 +77,9 @@ process.once("message", async ({ mode, crash }) => {
         if (mode === "produce" && liveCase) {
           const settlements = await Promise.all(liveOffers.map((offer) => offer.settled));
           if (settlements.length !== 2 || settlements.some((value) => value.status !== "applied")) throw new Error("Fixture requires both native live inputs to be consumed.");
-          process.send({ phase: "live-consumed", nativeConsumedIds: ["fictional-human", "fictional-wake"], counter: await counter() }); await new Promise(() => {});
+          process.send({ phase: "live-consumed", nativeConsumedIds: ["fictional-human", "fictional-wake"], counter: await counter() }); await new Promise(() => { setInterval(() => {}, 1_000); });
         }
-        if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => {}); }
+        if (mode === "produce" && (crash === "native-return" || crash === "legacy-unbound")) { process.send({ phase: crash, counter: await counter() }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
         return crash === "silent" ? { ...result, text: "", turnDisposition: "silent" } : result;
       } },
       ...(["enriched", "candidate-fence"].includes(crash) ? { turnHistoryEnricher: {
@@ -102,7 +102,7 @@ process.once("message", async ({ mode, crash }) => {
         fauxToolCall("Bash", { command: "printf 'effect-marker\\n' >> effect-count.txt" }, { id: "fictional-counted-effect" })]),
       async (value) => {
         context = structuredClone(value.messages);
-        if (crash === "returned-tool") { process.send({ phase: "returned-tool", counter: await counter() }); await new Promise(() => {}); }
+        if (crash === "returned-tool") { process.send({ phase: "returned-tool", counter: await counter() }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
         return fauxAssistantMessage([fauxText("Fictional verbatim final reply.")]);
       },
     ];
@@ -148,7 +148,7 @@ process.once("message", async ({ mode, crash }) => {
       try { await harness.compactConversation(bucket, undefined, manualAbort.signal); }
       catch (error) { if (crash !== "manual-cancelled" || error.failureKind !== "compaction_failed") throw error; }
       if (crash === "manual-cancelled") {
-        process.send({ phase: crash, counter: await counter() }); await new Promise(() => {});
+        process.send({ phase: crash, counter: await counter() }); await new Promise(() => { setInterval(() => {}, 1_000); });
       }
     }
     await harness.dispose(); harness = undefined;
