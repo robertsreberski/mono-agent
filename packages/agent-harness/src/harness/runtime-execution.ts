@@ -1,4 +1,4 @@
-import type { prepareHarnessContext } from "./context-preparation.js";
+import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
 import { randomUUID } from "node:crypto";
 import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../durable-turn-contract.js";
 import { sessionModelKey } from "../session-runtime.js";
@@ -49,6 +49,7 @@ interface HarnessRuntimeRouting {
   readonly recoveryRevision?: number | undefined;
   readonly turnRevision?: number | undefined;
   readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
+  readonly detachedHistoryOverride?: readonly HistoryMessage[];
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -326,6 +327,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       delete merged.nativeProvenanceRecording;
       delete merged.sessionTurn;
       delete merged.onSessionTurnDetached;
+      delete merged.detachedContext;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
       delete merged.toolLifecycleSink;
@@ -454,6 +456,22 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         // Replace the provisional pre-context digest before any native dispatch.
         await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
       }
+      let contextOwned = true;
+      let detachedReplay: Promise<readonly RuntimeMessage[]> | undefined;
+      const detachedContext = (): Promise<readonly RuntimeMessage[]> => {
+        if (!contextOwned || request.abortSignal.aborted) return Promise.reject(new Error("Detached context ownership ended"));
+        detachedReplay ??= (async () => {
+          if (!historyOmitted) return freezePreparationData(coldReplayMessages(history, toolHistoryProjection));
+          if (routing.detachedHistoryOverride === undefined && options.historyStore === undefined) {
+            throw new Error("Warm detached context requires canonical history");
+          }
+          const canonical = routing.detachedHistoryOverride ?? await options.historyStore!.load(request.conversationId);
+          if (!contextOwned || request.abortSignal.aborted) throw new Error("Detached context ownership ended");
+          const projection = loadToolHistoryProjection(options, request.conversationId, runId, canonical, emitRuntimeEvent);
+          return freezePreparationData(coldReplayMessages(canonical, projection?.text));
+        })();
+        return detachedReplay;
+      };
       let runtimeOptions: RuntimeRunOptions = {
         ...merged,
         ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
@@ -465,6 +483,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           && sessionsEnabled && !sessionIsolated && durablePiSessionsRoot !== undefined
           ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
+        ...(!preparation ? { detachedContext } : {}),
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
@@ -616,6 +635,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           ...(runtimeOptions.nativeSessionProjection ? { nativeSessionProjection: runtimeOptions.nativeSessionProjection } : {}),
           ...(runtimeOptions.nativeProvenanceRecording === true ? { nativeProvenanceRecording: true as const } : {}) })
           : await runtime.run(context.systemPrompt, runtimeOptions);
+        contextOwned = false;
         if (reconciliation !== undefined) {
           const outcome = result.cancelled ? "cancelled" : result.error || result.failureKind ? "failed" : "completed";
           await reconciliation.claim(outcome, outcome !== "completed" ? undefined : { outcome, text: result.text ?? null, timestamp: new Date().toISOString(),
@@ -633,6 +653,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         }
         return result;
       } finally {
+        contextOwned = false;
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",
           durationMs: Date.now() - bridgeStartMs,

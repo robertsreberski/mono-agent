@@ -204,6 +204,7 @@
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
+ * @property {() => Promise<ReadonlyArray<Object>>} [detachedContext] Protected lazy host replay prefix; never returned or included in telemetry.
  * @property {(attempt: {descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}) => Promise<void>} [onSessionTurnDetached] Protected awaited host claim before stateless replay.
  * @property {{kind: "host"|"instance", ownerKey: string, historyBucket: string|null, turnId: string, handleId: string, baseRevision: number|null, reconciliation?: {version: 1, purpose: "execution"|"compaction", fenceDigest: string, initialInputId: string|null}}} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.

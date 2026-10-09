@@ -1412,6 +1412,7 @@ export class MonoAgentHarness implements AgentHarness {
           providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             ...(coordinatedProviderAttemptEligibleForSync ? { turnRevision: coordinatedProviderSessionRevision } : {}),
             ...(this.options.historyStore?.providerSessionRecovery === "v1" && coordinatedProviderAttemptEligibleForSync
               ? { recoveryRevision: coordinatedProviderSessionRevision } : {}),
@@ -1483,6 +1484,7 @@ export class MonoAgentHarness implements AgentHarness {
           undefined,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
+            ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,
           prepared.history,

@@ -325,3 +325,11 @@ it("strips both inherited storage recovery methods from the per-run completion c
   expect(await completion.run("Fictional prompt", { model: { provider: "openai", model: "fictional", reference: "openai:fictional" }, messages: [], abortSignal: new AbortController().signal })).toMatchObject({ text: "Fictional completion" });
   expect(runtime.recoverSession).toBe(recoverSession); expect(runtime.reconcileSessionTurn).toBe(reconcileSessionTurn); expect(recoverSession).not.toHaveBeenCalled(); expect(reconcileSessionTurn).not.toHaveBeenCalled();
 });
+
+it("ignores detached conversation replay on completion-only memory calls", async () => {
+  const detachedContext = vi.fn(async () => [{ role: "user" as const, content: "Fictional prior conversation" }]);
+  const run = vi.fn(async (_prompt, options) => { await options.detachedContext?.(); return { text: "Fictional completion", events: [] }; });
+  const completion = completionOnlyRuntime({ run });
+  await completion.run("Fictional prompt", { model: { provider: "openai", model: "fictional", reference: "openai:fictional" }, messages: [], abortSignal: new AbortController().signal, detachedContext });
+  expect(run.mock.calls[0]![1]).not.toHaveProperty("detachedContext"); expect(detachedContext).not.toHaveBeenCalled();
+});

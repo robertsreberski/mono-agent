@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep earlier conversation and bounded tool history in ordinary warm-turn
+  retries and backups. Stop failover with `detached_context_unavailable` if
+  canonical history cannot be loaded, and keep detached identities private
+  even when side effects settle during detachment. Configuring a fallback
+  consents to history sharing; prepared native dispatch stays primary-only.
+
 - With Web model switching on, record the pinned dispatch account on every Web
   turn with a persisted message ID, from a new conversation's first message on.
   A compatible switch-back can then reuse native evidence without a summary

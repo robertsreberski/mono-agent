@@ -205,14 +205,32 @@ Limits:
 `runtime.session` decides whether the runtime keeps a warm provider session per conversation or starts fresh on every message.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.
 
-On a warm turn whose primary attempt fails, the retry or backup attempt runs
-stateless with the current message and a bounded snapshot of the failed attempt,
-without the earlier conversation; the next turn reseeds from canonical history.
+On an ordinary warm turn whose primary fails, an eligible retry or backup gets
+canonical earlier conversation messages, the bounded tool-history projection,
+and the current input, just as on a cold turn. A bounded failed-attempt snapshot
+may accompany that replay. The host loads history lazily under conversation
+ownership, only after any required durable detach acknowledgement; it reuses one
+frozen replay across detached attempts and never doubles a cold-turn prefix.
+Durable, custom and in-memory history stores are supported. If warm canonical
+history is absent or cannot be loaded, no retry or backup starts: the primary
+failure returns with `detached_context_unavailable`. A tool-projection failure
+alone keeps canonical replay and emits `tool_history_projection_degraded`.
+The next turn still reseeds from canonical history.
+
+Configuring any fallback route counts as consent for that route to receive the
+conversation history, including when a local primary falls back to a cloud
+provider. Replay neutralises instruction markup but is not secret redaction.
+The replay loader and its output are not returned in results, failover history
+or router telemetry. Persistent subagents remain excluded: they have no host
+canonical replay loader, and detached answers still lose session continuity.
+Direct router callers without a loader retain their existing behaviour; private
+memory completion-only runtimes ignore the loader. Prepared native dispatch
+remains primary-only, with no routed retry or backup.
 
 A continuous conversation binds its provider session to the requested primary model, including a thread or channel model override. Repeating that model stays warm; changing it (including returning to the default) retires the old session on its owning runtime and starts a fresh epoch. The cold turn is seeded from canonical user/assistant text and the existing bounded tool-history projection; subsequent warm turns retain the native transcript, including tool results and signed reasoning. Effort-only and same-model overrides do not rotate the session. Continuations and opt-in proactive isolation keep their existing one-shot behavior. Configured retry/fallback behavior follows the [fallback session policy](/runtime/fallback/).
 
