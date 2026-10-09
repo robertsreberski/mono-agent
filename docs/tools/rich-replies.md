@@ -65,6 +65,16 @@ joined with blank lines, followed by any final assistant text. Ordinary tool cal
 break the chain; their interim narration is not promoted. The settled web console
 shows promoted text in the answer, not again in Activity.
 
+Presentation tools attach parts beneath the reply text; they do not replace the
+answer or finish the turn. Their successful results remind the model to write its user-facing
+reply as normal assistant text. If a normally settled Pi turn contains no text at
+all, the runtime makes one same-session finalization request with tools disabled.
+It never exposes thinking as an answer. Cancelled or failed turns, silent
+completions, pending parent questions, max-turn stops, and structured-output turns
+are excluded. If the retry is still empty, the existing `empty_response` failure
+remains. The framework nudge is retained only in native provider-session history,
+not displayed as a user message in channel transcripts or web Activity.
+
 ## Web-only quick replies
 
 `SuggestReplies` is an app-owned, request-scoped MCP tool on web-console

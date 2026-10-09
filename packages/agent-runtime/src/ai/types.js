@@ -186,6 +186,8 @@
  *   system prompt, returns the augmented one). Only applied when an outputSchema is active.
  * @property {() => string} [structuredOutputFinalization]
  *   Replaces the structured-output finalization re-prompt.
+ * @property {() => string} [emptyReplyFinalization]
+ *   Replaces the single plain-text finalization re-prompt after an empty reply.
  * @property {(body: string) => string} [liveInputGuidance]
  *   Replaces the live-input steering wrapper (receives the raw guidance body).
  */

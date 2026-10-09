@@ -177,7 +177,9 @@ Telegram chat id, Slack channel id, web thread id, cron id, or other channel
 conversation id. Continuous conversations reuse it across turns and rotate it
 after a session reset, invalidation, or requested-primary model change. A stable
 model override reuses the continuous conversation identity. Per-message, isolated,
-and otherwise unkeyed direct runtime calls use a fresh one-shot identity.
+and otherwise unkeyed direct runtime calls use a fresh one-shot identity. A
+same-model retry or fallback attempt also gets a fresh one-shot identity, never
+the primary's (see [Fallback & failover](/runtime/fallback/)).
 
 Existing auth, model, and request headers win case-insensitively; an explicit
 `null` suppresses the automatic value, and a caller header transform can replace

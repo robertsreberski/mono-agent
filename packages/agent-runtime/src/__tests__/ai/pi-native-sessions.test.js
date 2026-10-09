@@ -56,9 +56,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 let faux = null;
 let fauxModels = null;
 
-function setup({ reasoning = false, fallback = false } = {}) {
+function setup({ reasoning = false, fallback = false, provider = "faux" } = {}) {
   faux = fauxProvider({
-    provider: "faux",
+    provider,
     models: [{ id: "faux-model", reasoning }, ...(fallback ? [{ id: "faux-backup", reasoning }] : [])],
     tokensPerSecond: undefined,
   });
@@ -127,6 +127,48 @@ function findJsonlFiles(root) {
 }
 
 describe("pi-native sessions", () => {
+  it("fails closed and retires a durable turn cancelled during reply finalization", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-reply-cancel-recovery-"));
+    const model = setup();
+    const controller = new AbortController();
+    let sessionId;
+    let nextContext;
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([]),
+        () => { controller.abort(); return fauxAssistantMessage([], { stopReason: "aborted" }); },
+      ]);
+      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+        piSessionsRoot: root, sessionKeepAlive: true, sessionRecovery: { runId: "reply-cancel", revision: 1 },
+        abortSignal: controller.signal, messages: [{ role: "user", content: "Draft an email" }],
+      }));
+      sessionId = cancelled.providerSessionId;
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.providerSessionRecovery).toBeDefined();
+      expect(cancelled.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "cancelled" }));
+      // The terminal proof intentionally certifies only the original operation.
+      // A two-operation cancelled tail cannot be silently reused.
+      await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
+      const blocked = await generatePiNativeResponse("stable", runOptions(model, {
+        piSessionsRoot: root, sessionId, messages: [{ role: "user", content: "Must not resume pending tail" }],
+      }));
+      expect(blocked.failureKind).toBe("session_busy");
+      // The host's existing fallback retires the unsafe tail and reseeds.
+      await expect(retireDurableNativeSession(sessionId, root)).resolves.toBeUndefined();
+      expect(countJsonlFiles(root)).toBe(0);
+      faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("Fresh draft.")]); }]);
+      const next = await generatePiNativeResponse("stable", runOptions(model, {
+        piSessionsRoot: root, sessionId, sessionKeepAlive: true,
+        messages: [{ role: "user", content: "New draft request" }],
+      }));
+      expect(next).toMatchObject({ error: null, text: "Fresh draft." });
+      expect(transcriptOf(nextContext)).toEqual(["user:New draft request"]);
+    } finally {
+      if (sessionId) await retireDurableNativeSession(sessionId, root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resumes a cancelled tool-bearing durable Pi turn with a byte-stable valid request prefix", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-terminal-recovery-"));
     writeFileSync(join(root, "evidence.txt"), "native tool evidence");
@@ -1644,6 +1686,37 @@ describe("pi-native sessions", () => {
     expect(invoked).toBe(false);
   });
 
+  it("persists an overridable reply nudge only in the native session and resumes it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-reply-finalization-"));
+    const model = setup();
+    let resumedContext;
+    let sessionId;
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([]),
+        fauxAssistantMessage([fauxText("Here is the draft.")]),
+        (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("Updated draft.")]); },
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Draft an email" }], piSessionsRoot: root, sessionKeepAlive: true,
+        prompts: { emptyReplyFinalization: () => "Framework reply nudge" },
+      }));
+      sessionId = result.providerSessionId;
+      expect(result).toMatchObject({ error: null, text: "Here is the draft." });
+      const persisted = findJsonlFiles(root).map((path) => readFileSync(path, "utf8")).join("\n");
+      expect(persisted).toContain("Framework reply nudge");
+      expect(result.events.some((event) => event.type === "user" && JSON.stringify(event).includes("Framework reply nudge"))).toBe(false);
+      const resumed = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Revise the draft" }], piSessionsRoot: root, sessionId, sessionKeepAlive: true,
+      }));
+      expect(resumed).toMatchObject({ error: null, text: "Updated draft." });
+      expect(transcriptOf(resumedContext)).toContain("user:Framework reply nudge");
+    } finally {
+      if (sessionId) await disposeProviderSession(sessionId);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("re-prompts once for structured output when a turn ends with no result", async () => {
     const model = setup();
     // First turn yields neither text nor a StructuredOutput call; the bridge
@@ -1666,6 +1739,7 @@ describe("pi-native sessions", () => {
     expect(result.error).toBeNull();
     expect(result.structuredResult).toEqual({ answer: 7 });
     expect(result.structuredResultSource).toBe("StructuredOutput");
+    expect(result.runtimeWarnings.some((warning) => warning.warning_kind === "empty_reply_retry")).toBe(false);
     expect(result.diagnostics.structured_output_finalization_retry_attempts).toBe(1);
     expect(result.diagnostics.structured_output_finalization_retry_reason).toBe("empty_final_output");
     expect(result.diagnostics.structured_output_finalization_retry_failed).toBe(false);
@@ -1734,23 +1808,39 @@ describe("stateless Pi attribution ownership", () => {
 });
 
 describe("durable primary sessions through the fallback router", () => {
-  it("retires a failed durable primary after a stateless backup answers with the same attribution id", async () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-router-retirement-"));
-    const sessionsRoot = join(root, "pi");
-    writeFileSync(join(root, "evidence.txt"), "durable failure evidence");
-    const model = setup({ fallback: true });
-    const id = "coordinated-router-epoch";
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+  function routedFixture(provider = "faux") {
+    const model = setup({ fallback: true, provider });
     const attempts = [];
     const router = createRouterRuntime({
-      chain: ["faux-model", "faux-backup"].map((name) => ({ provider: "faux", model: name, reference: `faux:${name}` })),
-      resolveAttempt: ({ model }) => {
-        attempts.push(model.model);
-        return { options: { piResolvedModel: faux.getModel(model.model), piResolvedModels: fauxModels } };
+      chain: ["faux-model", "faux-backup"].map((name) => ({ provider, model: name, reference: `${provider}:${name}` })),
+      resolveAttempt: ({ model: route }) => {
+        attempts.push(route.model);
+        return { options: { piResolvedModel: faux.getModel(route.model), piResolvedModels: fauxModels } };
       },
       retry: { backoffMs: 0, maxBackoffMs: 0 },
     });
+    return { model, attempts, router };
+  }
+
+  // piMaxRetries controls transport retries, not Pi core's lane retries, so the
+  // primary fails on every request it makes and only the backup answers.
+  function primaryFailsBackupAnswers(onRequest, backupText = "backup answer") {
+    return Array.from({ length: 8 }, () => (context, options, _state, dispatched) => {
+      onRequest?.(dispatched.id, context, options);
+      if (dispatched.id === "faux-model") throw new Error("Connection error.");
+      return fauxAssistantMessage([fauxText(backupText)]);
+    });
+  }
+
+  it("retires a failed durable primary after a backup answers under its own attribution id", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-router-retirement-"));
+    const sessionsRoot = join(root, "pi");
+    const { model, attempts, router } = routedFixture();
+    const id = "coordinated-router-epoch";
     const options = runOptions(model, {
-      cwd: root, allowedTools: ["Read"], piMaxRetries: 0, piSessionsRoot: sessionsRoot,
+      cwd: root, piMaxRetries: 0, piSessionsRoot: sessionsRoot,
       sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true,
       messages: [{ role: "user", content: "first turn" }],
     });
@@ -1762,38 +1852,24 @@ describe("durable primary sessions through the fallback router", () => {
       await expect(router.syncSession(id)).resolves.toBe(true);
       expect(findJsonlFiles(sessionsRoot)).toHaveLength(1);
       attempts.length = 0;
-      let persistedFailedTool = false;
       let backupContext;
-      faux.setResponses([
-        fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "failed-read" })]),
-        // piMaxRetries controls transport retries, not Pi core's three lane
-        // retries. Exhaust those too so only the router's backup can answer.
-        ...Array.from({ length: 4 }, () => (context) => {
-          expect(context.messages.some((message) => message.role === "toolResult")).toBe(true);
-          persistedFailedTool ||= findJsonlFiles(sessionsRoot).some((path) => readFileSync(path, "utf8").includes("failed-read"));
-          throw new Error("Connection error.");
-        }),
-        (context) => {
-          backupContext = structuredClone(context);
-          return fauxAssistantMessage([fauxText("backup answer")]);
-        },
-      ]);
+      faux.setResponses(primaryFailsBackupAnswers((modelId, context) => {
+        if (modelId === "faux-backup") backupContext = structuredClone(context);
+      }));
       const result = await router.run("stable system", { ...options, messages: [{ role: "user", content: "failing turn" }] });
-      expect(persistedFailedTool).toBe(true);
       expect(attempts).toEqual(["faux-model", "faux-backup"]);
       expect(result.error).toBeNull();
       expect(result.text).toBe("backup answer");
-      expect(result.providerSessionId).toBeUndefined();
-      expect(result.diagnostics.provider_session_id).toBe(id);
+      expect(result).not.toHaveProperty("providerSessionId");
+      expect(result).not.toHaveProperty("providerSessionRecovery");
+      // The stateless backup ran under its own identity, not the primary's.
+      expect(result.diagnostics.provider_session_id).toMatch(UUID_PATTERN);
+      expect(result.diagnostics.provider_session_id).not.toBe(id);
       expect(result.failoverHistory).toHaveLength(1);
       expect(result.failoverHistory[0].failureKind).toBe("provider_unavailable");
       expect(result.failoverHistory.some((attempt) => attempt.failureKind === "session_busy")).toBe(false);
-      // Accepted policy: warm failover carries this turn's snapshot, not older history.
+      // Accepted policy: warm failover carries this turn only, not older history.
       expect(JSON.stringify(backupContext)).not.toContain("first answer");
-      // pi-ai 0.86.0 folds the prompt into the transcript's leading system
-      // message: replay it with getCurrentSystemPrompt(), not context.systemPrompt.
-      expect(getCurrentSystemPrompt(backupContext.messages)).toContain("Tool call: Read");
-      expect(getCurrentSystemPrompt(backupContext.messages)).toContain("durable failure evidence");
       expect(findJsonlFiles(sessionsRoot)).toHaveLength(1);
       // This still-syncable primary is why the routed success must withhold id.
       await expect(router.syncSession(id)).resolves.toBe(true);
@@ -1802,6 +1878,111 @@ describe("durable primary sessions through the fallback router", () => {
       await expect(router.syncSession(id)).resolves.toBe(false);
       await expect(router.refreshSession(id)).resolves.toBeUndefined();
       await expect(router.retireDurableSession(id, sessionsRoot)).resolves.toBeUndefined();
+    } finally {
+      await router.disposeAllSessions();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("sends a backup OpenCode request under a fresh session header", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-router-opencode-"));
+    const { model, attempts, router } = routedFixture("opencode-go");
+    const headers = [];
+    try {
+      faux.setResponses(primaryFailsBackupAnswers((modelId, _context, options) => {
+        headers.push({ modelId, session: options?.headers?.["x-opencode-session"] });
+      }));
+      const result = await router.run("stable system", runOptions(model, {
+        cwd: root, piMaxRetries: 0, providerAttributionSessionId: "conversation-epoch",
+        messages: [{ role: "user", content: "hello" }],
+      }));
+      expect(attempts).toEqual(["faux-model", "faux-backup"]);
+      expect(result.text).toBe("backup answer");
+      const primarySessions = new Set(headers.filter((entry) => entry.modelId === "faux-model").map((entry) => entry.session));
+      const backupSessions = headers.filter((entry) => entry.modelId === "faux-backup").map((entry) => entry.session);
+      // The primary eligible attempt keeps the host attribution id.
+      expect([...primarySessions]).toEqual(["conversation-epoch"]);
+      expect(backupSessions).toHaveLength(1);
+      expect(backupSessions[0]).toMatch(UUID_PATTERN);
+      expect(backupSessions[0]).not.toBe("conversation-epoch");
+      expect(result.diagnostics.provider_session_id).toBe(backupSessions[0]);
+    } finally {
+      await router.disposeAllSessions();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("still fails over a warm turn whose earlier native turn ran a tool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-router-warm-tools-"));
+    writeFileSync(join(root, "evidence.txt"), "fictional evidence");
+    const { model, attempts, router } = routedFixture();
+    const id = "warm-tool-epoch";
+    const options = runOptions(model, {
+      cwd: root, allowedTools: ["Read"], piMaxRetries: 0,
+      providerAttributionSessionId: id, sessionKeepAlive: true,
+    });
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "earlier-read" })]),
+        fauxAssistantMessage([fauxText("first answer")]),
+      ]);
+      const first = await router.run("stable system", { ...options, messages: [{ role: "user", content: "read it" }] });
+      expect(first.error).toBeNull();
+      expect(first.providerSessionId).toBe(id);
+      attempts.length = 0;
+      let primaryContext;
+      faux.setResponses(primaryFailsBackupAnswers((modelId, context) => {
+        if (modelId === "faux-model") primaryContext ??= structuredClone(context);
+      }));
+      const events = [];
+      const result = await router.run("stable system", {
+        ...options, sessionId: id, providerSessionId: id,
+        messages: [{ role: "user", content: "and now?" }], onEvent: (event) => events.push(event),
+      });
+      // The warm primary carried the earlier tool turn natively ...
+      expect(primaryContext.messages.some((message) => message.role === "toolResult")).toBe(true);
+      // ... but that history is not this attempt's side effect: failover proceeds.
+      expect(attempts).toEqual(["faux-model", "faux-backup"]);
+      expect(result.text).toBe("backup answer");
+      expect(result.runtimeWarnings ?? []).not.toContainEqual(expect.objectContaining({ warning_kind: "provider_failover_blocked" }));
+      expect(events.some((event) => event.type === "provider_failover_started")).toBe(true);
+    } finally {
+      await router.disposeAllSessions();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("ends the run with the primary failure instead of re-running a tool on a backup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-router-no-rerun-"));
+    writeFileSync(join(root, "evidence.txt"), "fictional evidence");
+    const { model, attempts, router } = routedFixture();
+    const events = [];
+    let backupCalls = 0;
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "read-1" })]),
+        ...Array.from({ length: 8 }, () => (_context, _options, _state, dispatched) => {
+          if (dispatched.id === "faux-backup") {
+            backupCalls += 1;
+            return fauxAssistantMessage([fauxText("backup answer")]);
+          }
+          throw new Error("Connection error.");
+        }),
+      ]);
+      const result = await router.run("stable system", runOptions(model, {
+        cwd: root, allowedTools: ["Read"], piMaxRetries: 0,
+        messages: [{ role: "user", content: "read the evidence" }],
+        onEvent: (event) => events.push(event),
+      }));
+      expect(attempts).toEqual(["faux-model"]);
+      expect(backupCalls).toBe(0);
+      expect(result.failureKind).toBe("provider_unavailable");
+      expect(result.text).not.toBe("backup answer");
+      expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({
+        warning_kind: "provider_failover_blocked", reason: "tool_already_executed", model: "faux:faux-model",
+      }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "runtime_warning", warning_kind: "provider_failover_blocked" }));
+      expect(events.some((event) => event.type === "provider_failover_started")).toBe(false);
     } finally {
       await router.disposeAllSessions();
       rmSync(root, { recursive: true, force: true });

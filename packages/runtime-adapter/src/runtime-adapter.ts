@@ -239,7 +239,11 @@ export interface MonoRuntimeAttemptContext {
 }
 
 export interface MonoRuntimeAttemptResolution {
-  /** Optional isolated runtime for this route. */
+  /**
+   * Optional isolated runtime for this route. It must emit its tool events and
+   * settle every live-input lease before `run()` returns: the router stops a
+   * retry/backup on that evidence only until it admits the next attempt.
+   */
   readonly runtime?: MonoRuntimeLike;
   /** Private per-attempt provider options. These are never copied into router telemetry. */
   readonly options?: Readonly<Record<string, unknown>> & {

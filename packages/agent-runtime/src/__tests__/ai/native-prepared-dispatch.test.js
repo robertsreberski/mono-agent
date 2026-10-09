@@ -469,3 +469,27 @@ it("installed pi-ai Codex oauth.refresh returns a complete typed OAuth credentia
   expect(refreshed).toMatchObject({ type: "oauth", access, refresh: "fictional-rotated", accountId: "fictional-stock-account" });
   expect(refreshed.expires).toBeGreaterThan(Date.now() + 3500000); expect(fetch).toHaveBeenCalledOnce();
 });
+
+it.each([false, true])("recovers one empty reply on the prepared path without tools or router failover: routed=%s", async (routed) => {
+  const f = await fixture("anthropic"), requests = [];
+  const runtime = routed ? createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 },
+    { model: { provider: "openai", model: "backup", reference: "openai:backup" } }] }) : createRuntime();
+  f.faux.setResponses([
+    (context) => { requests.push(context); return fauxAssistantMessage([]); },
+    (context) => { requests.push(context); return fauxAssistantMessage([fauxText("Fictional recovered reply")]); },
+  ]);
+  const lease = await prepare(f, { allowedTools: ["Read"], prompts: { emptyReplyFinalization: () => "Fictional final reply nudge" } }, runtime);
+  const result = await lease.run();
+  expect(result.error).toBeNull(); expect(result.text).toBe("Fictional recovered reply"); expect(requests).toHaveLength(2);
+  expect(requests[0].messages[0].toolsAdded.map((tool) => tool.name)).toEqual(["Read"]);
+  const activeTools = new Set();
+  for (const message of requests[1].messages) {
+    for (const tool of message.toolsAdded ?? []) activeTools.add(tool.name);
+    for (const tool of message.toolsRemoved ?? []) activeTools.delete(tool);
+  }
+  expect([...activeTools]).toEqual([]);
+  expect(JSON.stringify(requests[1].messages)).toContain("Fictional final reply nudge");
+  expect(result.events.some((event) => event.type === "user" && JSON.stringify(event).includes("Fictional final reply nudge"))).toBe(false);
+  expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "text" }));
+  if (routed) expect(result.failoverHistory).toEqual([]);
+});

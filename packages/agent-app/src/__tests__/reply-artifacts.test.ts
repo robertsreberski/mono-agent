@@ -154,10 +154,12 @@ describe("reply artifact publication", () => {
     const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
     const publisher = await openPublisher(service, "run-1", "bucketed-conversation");
     try {
-      await publisher.client.callTool({
+      const published = await publisher.client.callTool({
         name: PUBLISH_REPLY_FILE_TOOL_NAME,
         arguments: { path: "one.txt", name: "report.txt", mediaType: "text/plain" },
       });
+      expect(JSON.stringify(published.content)).toContain("beneath your reply text");
+      expect(JSON.stringify(published.content)).toContain("must still write your user-facing reply as normal assistant text");
       await publisher.client.callTool({
         name: PUBLISH_REPLY_FILE_TOOL_NAME,
         arguments: { path: "two.txt", name: "report.txt", mediaType: "text/plain" },
