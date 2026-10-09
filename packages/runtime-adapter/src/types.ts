@@ -364,6 +364,7 @@ export interface RuntimeCompactionPolicy {
 export interface RuntimePromptOverrides {
   readonly structuredOutputInstruction?: (systemPrompt: string) => string;
   readonly structuredOutputFinalization?: () => string;
+  readonly emptyReplyFinalization?: () => string;
   readonly liveInputGuidance?: (body: string) => string;
 }
 

@@ -87,6 +87,7 @@ import {
   startLiveInput,
   thinkingLevelForEffort,
 } from "./pi-native/turn-runner.js";
+import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./pi-native/empty-reply.js";
 import { finalReplyText } from "./pi-native/reply-text.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
@@ -995,12 +996,13 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
     };
 
     let state = await captureState();
+    const initialRunFailed = !!runError || state.stopReason === "error" || state.stopReason === "aborted";
 
     // Structured-output finalization retry: if the turn ended with neither
     // text nor a StructuredOutput call, re-prompt ONCE in the same session with
     // only StructuredOutput active so the model can submit the required result.
     // This replicates the legacy bridge's single re-prompt via the harness's
-    // followUp + setActiveTools instead of the low-level agent.continue() loop.
+    // prompt + setActiveTools instead of the low-level agent.continue() loop.
     if (!runError && shouldRetryStructuredOutputFinalization({
       outputSchema: options.outputSchema,
       structuredResult: runState.structuredResult,
@@ -1033,6 +1035,31 @@ async function executePiNativeResponse(systemPrompt, options = {}, control = und
       runError,
       captureState,
     }));
+
+    // Plain-text finalization is separate from structured-output and continuity
+    // recovery. Never turn an error/abort, terminal tool, or pending question
+    // into another model request. This block executes at most once per run.
+    if (!initialRunFailed && shouldRetryEmptyReply({
+      finalText: state.finalText, stopReason: state.stopReason,
+      outputSchema: options.outputSchema, runError,
+      externalAbort: runState.externalAbort || !!options.abortSignal?.aborted,
+      maxTurnsHit: runState.maxTurnsHit,
+      silent: runState.silentTurn.completed || runState.silentTurn.accepted,
+      pendingQuestion: runState.silentTurn.pendingQuestion,
+    })) {
+      const retry = await runEmptyReplyRetry({ harness, runtimeWarnings, abortSignal: options.abortSignal, prompts: options.prompts });
+      if (retry.error) runError = retry.error;
+      runState.externalAbort ||= !!options.abortSignal?.aborted;
+      state = await captureState();
+      if (retry.attempted) runtimeWarnings.push({
+        warning_kind: "empty_reply_retry", source: "pi", attempt: 1,
+        reason: "empty_final_output",
+        outcome: runState.externalAbort ? "cancelled"
+          : runError || state.stopReason === "error" || state.stopReason === "aborted" ? "failed"
+          : state.finalText.trim() ? "text" : "empty",
+        message: "Pi same-session reply finalization settled.",
+      });
+    }
 
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;

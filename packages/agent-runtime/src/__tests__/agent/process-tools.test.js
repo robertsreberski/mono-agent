@@ -485,9 +485,8 @@ describe("Exec", () => {
     }, { waitForProcessGroup: true, timeoutMs: 400 });
     try {
       await handle.release();
-      await waitForPath(childPidPath);
+      const childPid = await waitForPid(childPidPath);
       const outcome = await within(handle.completion, 3_500);
-      const childPid = Number(readFileSync(childPidPath, "utf8").trim());
       expect(outcome).toMatchObject({ timedOut: true, groupExitConfirmed: true });
       await waitForProcessExit(childPid);
     } finally {
@@ -506,6 +505,7 @@ describe("Exec", () => {
     const probes = [];
     let handle;
     let terminal;
+    let tree;
     const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       if (handle?.pgid !== null && handle?.pgid !== undefined
         && pid === -handle.pgid && signal === 0) probes.push(pid);
@@ -516,7 +516,7 @@ describe("Exec", () => {
         handle = request.launch({ timeoutMs: 10_000 });
         terminal = (async () => {
           await handle.release();
-          await waitForPath(treePath);
+          tree = await waitForProcessTree(treePath);
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);
           // The known group leader stayed live throughout the stall, so long
           // jobs need no 25 ms presence polling and cancellation remains safe.
@@ -542,7 +542,6 @@ describe("Exec", () => {
         background: true,
       }, { ctx: { workspace, sandbox }, processJobsController: controller });
       const outcome = await within(terminal, 4_000);
-      const tree = readProcessTree(treePath);
       expect(outcome).toMatchObject({ aborted: false, timedOut: false, groupExitConfirmed: true });
       await Promise.all([handle.pid, tree.target, tree.descendant].map(async (pid) => await waitForProcessExit(pid)));
       expect(cleanup).toHaveBeenCalledOnce();
@@ -562,13 +561,14 @@ describe("Exec", () => {
     const cleanup = vi.fn(async () => rmSync(settingsPath, { force: true }));
     let handle;
     let terminal;
+    let tree;
     const controller = {
       async start(request) {
         const timeoutMs = 1_000;
         handle = request.launch({ timeoutMs });
         terminal = (async () => {
           await handle.release();
-          await waitForPath(treePath);
+          tree = await waitForProcessTree(treePath);
           const pastDeadlineMs = Math.max(
             350,
             Date.parse(handle.startedAt) + timeoutMs - Date.now() + 300,
@@ -594,7 +594,6 @@ describe("Exec", () => {
         background: true,
       }, { ctx: { workspace, sandbox }, processJobsController: controller });
       const outcome = await within(terminal, 4_000);
-      const tree = readProcessTree(treePath);
       expect(outcome).toMatchObject({ timedOut: true, groupExitConfirmed: true });
       await Promise.all([handle.pid, tree.target, tree.descendant].map(async (pid) => await waitForProcessExit(pid)));
       expect(cleanup).toHaveBeenCalledOnce();
@@ -621,13 +620,12 @@ describe("Exec", () => {
     }, { waitForProcessGroup: true, timeoutMs: 10_000 });
     try {
       await handle.release();
-      await waitForPath(childPidPath);
+      const childPid = await waitForPid(childPidPath);
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
       try { if (handle.pid !== null) process.kill(handle.pid, "SIGKILL"); } catch { /* leader already exited */ }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
       handle.cancel();
       const outcome = await within(handle.completion, 3_000);
-      const childPid = Number(readFileSync(childPidPath, "utf8").trim());
       expect(outcome.groupExitConfirmed).toBe(true);
       await waitForProcessExit(childPid);
     } finally {
@@ -658,7 +656,7 @@ describe("Exec", () => {
     });
     try {
       await handle.release();
-      await waitForPath(targetPidPath);
+      const targetPid = await waitForPid(targetPidPath);
       leaderKilled = true;
       if (handle.pid !== null) nativeKill(handle.pid, "SIGKILL");
       await vi.waitFor(() => expect(postExitProbeObserved).toBe(true));
@@ -666,7 +664,6 @@ describe("Exec", () => {
 
       handle.cancel();
       const outcome = await within(handle.completion, 3_500);
-      const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
       expect(outcome).toMatchObject({ groupExitConfirmed: false });
       expect(outcome.spawnError?.message).toMatch(/identity could not be re-attested/u);
       expect(groupSignals).toEqual([]);
@@ -705,14 +702,13 @@ describe("Exec", () => {
     });
     try {
       await handle.release();
-      await waitForPath(targetPidPath);
+      const targetPid = await waitForPid(targetPidPath);
       reportPostExitAbsence = true;
       if (handle.pid !== null) nativeKill(handle.pid, "SIGKILL");
       await vi.waitFor(() => expect(absenceObserved).toBe(true));
       const outcome = await within(handle.completion, 3_000);
       // The still-live fixture stands in for a different group that reused the
       // number after the first proven absence. It must never receive a signal.
-      const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
       expect(outcome.groupExitConfirmed).toBe(true);
       expect(groupSignals).toEqual([]);
       expect(() => nativeKill(targetPid, 0)).not.toThrow();
@@ -747,7 +743,7 @@ describe("Exec", () => {
     });
     try {
       await handle.release();
-      await waitForPath(targetPidPath);
+      const targetPid = await waitForPid(targetPidPath);
       injectIndeterminateProbe = true;
       try { if (handle.pid !== null) nativeKill(handle.pid, "SIGKILL"); } catch { /* leader already exited */ }
       await vi.waitFor(() => expect(injectIndeterminateProbe).toBe(false));
@@ -756,7 +752,6 @@ describe("Exec", () => {
 
       handle.cancel();
       const outcome = await within(handle.completion, 3_500);
-      const targetPid = Number(readFileSync(targetPidPath, "utf8").trim());
       expect(outcome).toMatchObject({ groupExitConfirmed: false });
       expect(groupSignals).toEqual([]);
       expect(() => nativeKill(targetPid, 0)).not.toThrow();
@@ -783,10 +778,9 @@ describe("Exec", () => {
     }, { waitForProcessGroup: true, timeoutMs: 10_000, signal: shutdown.signal });
     try {
       await handle.release();
-      await waitForPath(childPidPath);
+      const childPid = await waitForPid(childPidPath);
       shutdown.abort(new Error("runtime shutdown"));
       const outcome = await within(handle.completion, 3_000);
-      const childPid = Number(readFileSync(childPidPath, "utf8").trim());
       expect(outcome).toMatchObject({ aborted: true, groupExitConfirmed: true });
       await waitForProcessExit(childPid);
     } finally {
@@ -1088,15 +1082,13 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     const childPidPath = resolve(workspace, "child.pid");
     const cleanup = vi.fn(async () => {});
     let terminal;
+    let childPid;
     const controller = {
       async start(request) {
         const handle = request.launch({ timeoutMs: 10_000 });
         await handle.release();
         terminal = (async () => {
-          const deadline = Date.now() + 3_000;
-          while (!existsSync(childPidPath) && Date.now() < deadline) {
-            await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
-          }
+          childPid = await waitForPid(childPidPath, 3_000);
           handle.cancel();
           const outcome = await handle.completion;
           await request.prepared.cleanup();
@@ -1117,7 +1109,6 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     }, { ctx: { workspace, sandbox }, processJobsController: controller });
     expect(result.outcome).toMatchObject({ code: "background_started" });
     const outcome = await terminal;
-    const childPid = Number(readFileSync(childPidPath, "utf8").trim());
     expect(outcome.signal).toBeTruthy();
     expect(() => process.kill(childPid, 0)).toThrow();
     expect(cleanup).toHaveBeenCalledTimes(1);
@@ -1252,10 +1243,96 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
   });
 });
 
-async function waitForPath(path, timeoutMs = 2_000) {
+describe("process fixture readiness", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("waits for PID content after file creation", async () => {
+    vi.useFakeTimers();
+    const path = resolve(tempWorkspace(), "delayed.pid");
+    writeFileSync(path, "");
+    let settled = false;
+    const pending = waitForPid(path).then((pid) => { settled = true; return pid; });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(settled).toBe(false);
+    writeFileSync(path, " 4321\n");
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(pending).resolves.toBe(4321);
+  });
+
+  it.each(["", "0", "-1", "1.5", "1e3", "12junk", "9007199254740992"])(
+    "times out loudly on invalid PID content %j", async (content) => {
+      vi.useFakeTimers();
+      const path = resolve(tempWorkspace(), "invalid.pid");
+      writeFileSync(path, content);
+      const pending = expect(waitForPid(path, 20)).rejects.toThrow(
+        `Timed out waiting for a positive safe-integer PID in ${path}.`,
+      );
+      await vi.advanceTimersByTimeAsync(20);
+      await pending;
+    },
+  );
+
+  it("waits for a complete process tree with valid PIDs", async () => {
+    vi.useFakeTimers();
+    const path = resolve(tempWorkspace(), "delayed-tree.json");
+    let settled = false;
+    const pending = waitForProcessTree(path).then((tree) => { settled = true; return tree; });
+    await vi.advanceTimersByTimeAsync(10);
+    writeFileSync(path, "");
+    await vi.advanceTimersByTimeAsync(10);
+    writeFileSync(path, '{"target":');
+    await vi.advanceTimersByTimeAsync(10);
+    writeFileSync(path, JSON.stringify({ target: 0, descendant: 4322 }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(settled).toBe(false);
+    writeFileSync(path, JSON.stringify({ target: 4321, descendant: 4322 }));
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(pending).resolves.toEqual({ target: 4321, descendant: 4322 });
+  });
+
+  it("times out loudly on an invalid process tree", async () => {
+    vi.useFakeTimers();
+    const path = resolve(tempWorkspace(), "invalid-tree.json");
+    writeFileSync(path, JSON.stringify({ target: 4321, descendant: -1 }));
+    const pending = expect(waitForProcessTree(path, 20)).rejects.toThrow(
+      `Timed out waiting for valid process-tree PIDs in ${path}.`,
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    await pending;
+  });
+
+  it.each([0, -1, NaN, 1.5, 9007199254740992])("never probes an invalid PID %s", async (pid) => {
+    const kill = vi.spyOn(process, "kill");
+    await expect(waitForProcessExit(pid)).rejects.toThrow("Invalid process PID:");
+    expect(kill).not.toHaveBeenCalled();
+  });
+});
+
+async function waitForPid(path, timeoutMs = 2_000) {
+  return await waitForFixture(path, () => {
+    const content = readFileSync(path, "utf8").trim();
+    const pid = Number(content);
+    if (!/^\d+$/.test(content) || !Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error(`Invalid PID content: ${JSON.stringify(content)}.`);
+    }
+    return pid;
+  }, "a positive safe-integer PID", timeoutMs);
+}
+
+async function waitForProcessTree(path, timeoutMs = 2_000) {
+  return await waitForFixture(path, () => readProcessTree(path), "valid process-tree PIDs", timeoutMs);
+}
+
+async function waitForFixture(path, read, description, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}.`);
+  for (;;) {
+    // File creation precedes its write: existence alone is not readiness.
+    try { return read(); }
+    catch (cause) {
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ${description} in ${path}.`, { cause });
+      }
+    }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
 }
@@ -1279,6 +1356,7 @@ function readProcessTree(path) {
 }
 
 async function waitForProcessExit(pid, timeoutMs = 2_000) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`Invalid process PID: ${String(pid)}.`);
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try { process.kill(pid, 0); }

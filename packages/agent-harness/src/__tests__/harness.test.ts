@@ -2808,6 +2808,19 @@ describe("AgentHarness", () => {
     });
   }
 
+  it("keeps empty_response when plain-text finalization still returns no text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are a concise assistant.", "utf8");
+    const response = await createAgentHarness({
+      identityPath, model,
+      runtime: createFakeRuntime(async () => ({ text: "", error: null,
+        runtimeWarnings: [{ warning_kind: "empty_reply_retry", attempt: 1, outcome: "empty" }],
+      })).runtime,
+    }).run({ conversationId: "empty-reply", userMessage: "Draft an email", abortSignal: new AbortController().signal });
+    expect(response.failure).toMatchObject({ kind: "empty_response", message: "Runtime completed without assistant text." });
+  });
+
   it("commits certified textless silence without empty_response or memory capture", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

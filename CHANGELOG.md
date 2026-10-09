@@ -235,6 +235,20 @@
   identity/state on mutations and roll resumed provider suspensions back as
   unreceipted failures.
 
+- Fix fallback retries and backup models to run under a fresh provider
+  attribution id instead of the primary's session (including the OpenCode
+  `x-opencode-session` header), and withhold the provider session id and
+  recovery receipt from every retry or backup result, not only successes.
+
+- Fix fallback routing to never re-run tools: after an attempt started a tool
+  or consumed a live input, no same-model retry or backup runs. The run ends
+  with that failure and a `provider_failover_blocked` runtime warning naming
+  the reason.
+
+- Fix empty Pi replies after tool use with one same-session, tools-disabled
+  finalization request; keep reasoning private and presentation attachments
+  additive to normal reply text.
+
 - Fix the `sharp` dependency vulnerability across the agent runtime,
   documentation and marketing sites.
 

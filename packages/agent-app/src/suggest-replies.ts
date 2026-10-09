@@ -109,7 +109,7 @@ function createSuggestionServer(suggest: (options: readonly string[]) => { reado
     return {
       ...(result.status === "unavailable" ? { isError: true } : {}),
       content: [{ type: "text" as const, text: result.status === "suggested"
-        ? "Quick reply choices were attached to this final reply. This run does not wait for a selection."
+        ? "Quick reply choices will appear beneath your reply text. You must still write your user-facing reply as normal assistant text. This run does not wait for a selection."
         : "Quick reply choices could not be added because the reply-part budget is full." }],
       structuredContent: result,
     };
