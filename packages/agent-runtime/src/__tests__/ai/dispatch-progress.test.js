@@ -3,7 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { createDispatchProgress, isDispatchProgress, hasNoDispatchProgress } from "../../ai/providers/pi-native/dispatch-progress.js";
+import { createDispatchProgress, isDispatchProgress, hasNoDispatchProgress, withDispatchProgress } from "../../ai/providers/pi-native/dispatch-progress.js";
+import * as sessionAdapter from "../../ai/providers/pi-native/harness-adapter.js";
+import * as sessionLifecycle from "../../ai/providers/pi-native/session-lifecycle.js";
+import { createRouterRuntime } from "../../ai/runtime/router.js";
 import { activateTurnHarness, startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
 import { generatePiNativeResponse, preparePiNativeDispatch } from "../../ai/providers/pi-native.js";
 
@@ -82,7 +85,7 @@ it.each(["abort", "invalid descriptor", "no output error", "tool then error"])("
   const f = await fixture();
   const controller = new AbortController(); if (path === "abort") controller.abort();
   const failure = fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional connection failure" });
-  f.faux.setResponses(path === "tool then error" ? [fauxAssistantMessage([fauxToolCall("Read", { path: join(f.root, "fictional-missing.txt") })]), failure] : [failure]);
+  f.faux.setResponses(path === "tool then error" ? [fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional-missing.txt") })]), failure] : [failure]);
   const result = await generatePiNativeResponse("Fictional rules", { ...f.options, messages: [{ role: "assistant", content: "Fictional restored output" }, ...f.options.messages], abortSignal: controller.signal,
     ...(path === "invalid descriptor" ? { sessionTurn: { kind: "invalid" } } : {}), ...(path === "tool then error" ? { allowedTools: ["Read"] } : {}) });
   expect(isDispatchProgress(result.dispatchProgress)).toBe(true);
@@ -97,4 +100,71 @@ it("stamps the native catch result without treating seeded history as output", a
   vi.spyOn(f.faux.provider, "streamSimple").mockImplementation(() => { throw new Error("Fictional provider exception"); });
   const result = await generatePiNativeResponse("Fictional rules", { ...f.options, messages: [{ role: "assistant", content: "Fictional seeded answer" }, ...f.options.messages] });
   expect(result.error).toBeTruthy(); expect(hasNoDispatchProgress(result.dispatchProgress)).toBe(true);
+});
+
+
+it.each([new Error("Fictional error"), Object.freeze(new Error("Fictional frozen error")), "Fictional primitive throw"])("attaches immutable progress to extensible/frozen/primitive throws", (error) => {
+  const progress = { ...createDispatchProgress(), armed: true, toolAdmitted: true };
+  const annotated = withDispatchProgress(error, progress);
+  expect(annotated.dispatchProgress.toolAdmitted).toBe(true); expect(Object.isFrozen(annotated.dispatchProgress)).toBe(true);
+  progress.toolAdmitted = false; expect(annotated.dispatchProgress.toolAdmitted).toBe(true);
+  if (error instanceof Error && Object.isExtensible(error)) expect(annotated).toBe(error); else expect(annotated.cause).toBe(error);
+});
+
+function beforeToolHook(handler, { hideToolStarts = false, execute } = {}) {
+  const create = sessionAdapter.createHarnessAdapter;
+  vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, options) => {
+    const harness = await create(session, { ...options, tools: options.tools.map((tool) =>
+      tool.name === "Read" && execute ? { ...tool, execute } : tool) }), on = harness.on.bind(harness);
+    harness.on = (type, callback) => {
+      const remove = on(type, callback);
+      if (type === "before_tool") on(type, handler); // after the bridge's progress hook
+      return remove;
+    };
+    if (hideToolStarts) {
+      const subscribe = harness.subscribe.bind(harness);
+      harness.subscribe = (listener) => subscribe((event) => { if (!event.type.startsWith("tool_execution_")) listener(event); });
+    }
+    return harness;
+  });
+}
+
+it("retains before-tool evidence when native cleanup throws, blocking retry and backup", async () => {
+  const f = await fixture(), beforeTool = vi.fn(() => { throw new Error("Fictional failure before execution"); });
+  beforeToolHook(beforeTool, { hideToolStarts: true });
+  vi.spyOn(sessionLifecycle, "commitSession").mockRejectedValue(new Error("Fictional settlement failure after admission"));
+  const cleanup = vi.spyOn(sessionLifecycle, "cleanupSessionOnThrow").mockRejectedValue(new Error("Connection error."));
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional-missing.txt") })])]);
+  const primaryRun = vi.fn((prompt, options) => generatePiNativeResponse(prompt, { ...f.options, ...options, allowedTools: ["Read"] })), backupRun = vi.fn();
+  const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 2 }, { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" }], retry: { backoffMs: 0, maxBackoffMs: 0 },
+    resolveAttempt: ({ attemptIndex }) => ({ runtime: { configureTools() {}, run: attemptIndex ? backupRun : primaryRun } }) });
+  const events = [], result = await router.run("Fictional rules", { ...f.options, onEvent: (event) => events.push(event) });
+  expect(beforeTool, String(result.error)).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce();
+  expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun).not.toHaveBeenCalled();
+  expect(result.dispatchProgress).toMatchObject({ armed: true, toolAdmitted: true });
+  expect(Object.isFrozen(result.dispatchProgress)).toBe(true);
+  expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ reason: "tool_already_executed" }));
+  expect(events.some((event) => event.type === "tool_execution_start" || event.message?.content?.some((part) => part.type === "tool_use"))).toBe(false);
+});
+
+it("counts a before-tool hook-blocked call conservatively without executing it", async () => {
+  const f = await fixture(), blocked = vi.fn(() => ({ block: { reason: "Fictional blocked admission", terminate: true } })), execute = vi.fn();
+  beforeToolHook(blocked, { execute });
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: join(f.root, "fictional-missing.txt") })])]);
+  const result = await generatePiNativeResponse("Fictional rules", { ...f.options, allowedTools: ["Read"] });
+  expect(blocked, String(result.error)).toHaveBeenCalledOnce(); expect(result.dispatchProgress.toolAdmitted).toBe(true);
+  expect(execute).not.toHaveBeenCalled();
+});
+
+it("blocks a real faux-Pi backup after yielded live input and provider failure", async () => {
+  const f = await fixture(), yielded = Promise.withResolvers(), backupRun = vi.fn();
+  f.faux.setResponses([async () => { await yielded.promise; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Connection error." }); }]);
+  const liveInput = { async *[Symbol.asyncIterator]() { yielded.resolve(); yield { id: "fictional-live", body: "Fictional guidance" }; } };
+  const primaryRun = vi.fn((prompt, options) => generatePiNativeResponse(prompt, { ...f.options, ...options }));
+  const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 2 }, { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" }], retry: { backoffMs: 0, maxBackoffMs: 0 },
+    resolveAttempt: ({ attemptIndex }) => ({ runtime: { configureTools() {}, run: attemptIndex ? backupRun : primaryRun } }) });
+  const result = await router.run("Fictional rules", { ...f.options, liveInput });
+  expect(result.dispatchProgress).toMatchObject({ armed: true, liveInputTaken: true, assistantOutput: false });
+  expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun).not.toHaveBeenCalled();
+  expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ reason: "live_input_consumed" }));
 });

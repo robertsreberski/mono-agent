@@ -3,8 +3,10 @@
 ## Unreleased
 
 - Keep monotonic Pi dispatch evidence for assistant output, tool admission and
-  live input, including prepared turns and early failures. Stop ordinary retries
-  and backups after tool admission or live input even without streamed events.
+  live input, including prepared turns, early failures and thrown cleanup errors.
+  Stop ordinary retries and backups once Pi yields a live input, even if it is
+  later removed unconsumed; only never-yielded input transfers. Count a tool
+  reaching admission conservatively even when a hook blocks its execution.
 
 - Keep earlier conversation and bounded tool history in ordinary warm-turn
   retries and backups. Stop failover with `detached_context_unavailable` if

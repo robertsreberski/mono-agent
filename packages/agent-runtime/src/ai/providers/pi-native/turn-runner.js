@@ -372,6 +372,8 @@ export function activateTurnHarness(runState, {
 }) {
   if (runState.dispatchProgress) {
     harness.on("after_response", (event) => noteAssistantContent(runState.dispatchProgress, event.message));
+    // Conservative admission: later hooks may block execution, but reaching
+    // this boundary still forbids another attempt.
     harness.on("before_tool", () => { runState.dispatchProgress.toolAdmitted = true; });
     runState.dispatchProgress.armed = true;
   }

@@ -443,6 +443,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               events: [],
               cancelled: false,
               usage: {},
+              ...(isDispatchProgress(err?.dispatchProgress) ? { dispatchProgress: err.dispatchProgress } : {}),
             };
           } finally {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
@@ -1023,8 +1024,10 @@ const LIVE_INPUT_TAKEN_EVENTS = new Set([
 ]);
 
 /**
- * A live input the provider consumed (or may have consumed). An input that is
- * only leased or queued and then removed stays replayable by a later attempt.
+ * Event evidence for consumed/uncertain live input on marker-less runtimes.
+ * Their removed, unconsumed inputs remain mailbox-replay-safe. Real Pi also
+ * gates on liveInputTaken at iterator yield, even if native later removes it;
+ * only never-yielded inputs can reach another Pi attempt.
  * @param {*} event
  * @returns {boolean}
  */

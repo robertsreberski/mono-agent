@@ -1,4 +1,4 @@
-import { createDispatchProgress } from "./pi-native/dispatch-progress.js";
+import { createDispatchProgress, withDispatchProgress } from "./pi-native/dispatch-progress.js";
 import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, repairInterruptedSession } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
@@ -343,8 +343,12 @@ export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlem
 
 async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
   const dispatchProgress = createDispatchProgress();
-  const result = await executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress);
-  return { ...result, dispatchProgress: Object.freeze({ ...dispatchProgress }) };
+  try {
+    const result = await executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress);
+    return { ...result, dispatchProgress: Object.freeze({ ...dispatchProgress }) };
+  } catch (error) {
+    throw withDispatchProgress(error, dispatchProgress);
+  }
 }
 
 async function executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress) {

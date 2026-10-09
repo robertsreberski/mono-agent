@@ -31,3 +31,19 @@ export function noteAssistantContent(progress, message) {
     return Object.keys(part).length > 0;
   })) progress.assistantOutput = true;
 }
+
+/** Preserve side-effect evidence even when native teardown itself throws.
+ * @param {unknown} error @param {import('../../types.js').RuntimeDispatchProgress} progress
+ * @returns {Error & {dispatchProgress: import('../../types.js').RuntimeDispatchProgress}} */
+export function withDispatchProgress(error, progress) {
+  const snapshot = Object.freeze({ ...progress });
+  // Prefer the original error (including its identity, code and cause chain).
+  // Frozen/non-object throws need an annotatable wrapper instead.
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    try {
+      Object.defineProperty(error, "dispatchProgress", { value: snapshot, configurable: true, enumerable: true });
+      return /** @type {Error & {dispatchProgress: import('../../types.js').RuntimeDispatchProgress}} */ (error);
+    } catch { /* retain the original as cause below */ }
+  }
+  return Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), { dispatchProgress: snapshot });
+}
