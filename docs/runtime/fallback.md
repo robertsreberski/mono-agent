@@ -115,6 +115,8 @@ deliberately advance instead:
 
 Cancellation and mid-turn sandbox/safety failures never retry, and a failed
 attempt resolver advances immediately rather than burning the route's budget.
+An attempt that already ran a tool or consumed a live input never retries
+either; see [No failover after a tool ran](#no-failover-after-a-tool-ran).
 
 A same-model retry drops the provider session (the failed attempt already
 appended to it), emits `provider_retry_started` rather than a failover event, and
@@ -149,11 +151,49 @@ On a warm turn whose primary attempt fails, the retry or backup attempt runs
 stateless with the current message and a bounded snapshot of the failed attempt,
 without the earlier conversation; the next turn reseeds from canonical history.
 
-Provider attribution remains stable across attempts, but the router withholds the
-resumable result id from successful retries and backups so the harness cannot
-synchronize an untouched or failed primary transcript. Fresh stateless Pi calls
-use a private in-memory repository; they do not create a second durable session
-with the primary's attribution id.
+Only the primary's first attempt carries the conversation's provider
+attribution id. Every retry and backup gets a fresh attribution id of its own,
+so it never reaches the provider as the primary's session (for OpenCode, its
+`x-opencode-session` header differs from the primary's). The router withholds
+the resumable result id and recovery receipt from every retry and backup result
+— successful, cancelled, failed or exhausted — so the harness cannot synchronize
+or recover an untouched or failed primary transcript from it. Fresh stateless Pi
+calls use a private in-memory repository; they do not create a second durable
+session.
+
+### No failover after a tool ran
+
+Tools are never re-run. A retry or backup replays the whole logical turn, so
+once a failed attempt started a tool or consumed a mid-turn (live) input, the
+router starts no same-model retry and no backup. This applies to every
+conversation and to backups too: a backup that ran a tool and then failed ends
+the run. The run ends with that attempt's own failure (for example
+`provider_unavailable`, not `provider_unavailable_exhausted`) plus a
+`provider_failover_blocked` runtime warning whose `reason` is
+`tool_already_executed` or `live_input_consumed`. The warning is streamed as a
+`runtime_warning` event and recorded in the result's `runtimeWarnings`, so the
+host reports the failure and waits for the next message instead of answering
+from a different model.
+
+The router decides from the attempt's normalized events: a `tool_use` or
+`tool_result` block, or Pi's `tool_execution_start`, whether streamed or in the
+attempt result. Pi emits `tool_use` only when a tool starts executing, so a
+model that merely requested a tool before the provider failed still fails over.
+Text or reasoning output alone also still fails over. A live input counts once
+the provider consumed it, or its delivery is uncertain; an input that was
+removed from the provider queue unconsumed is replayed to the next attempt. A
+custom route runtime that emits none of these events cannot be gated and keeps
+the earlier behaviour.
+
+The router checks this evidence when the attempt fails and again immediately
+before it admits the next attempt — after the retry backoff and after the route
+resolver returns — so a late tool event or live-input acknowledgement still
+blocks the retry or backup. Evidence that arrives after the next attempt was
+admitted cannot be honoured. A custom route runtime (the private
+`resolveAttempt` seam) must therefore emit its tool events and settle every
+live-input lease (acknowledge, mark uncertain, or reject) before its `run()`
+returns; the built-in Pi runtime does this. When no further attempt could run anyway, the chain
+reports `provider_unavailable_exhausted` as before, without the warning.
 
 The runtime result includes `failoverHistory`. An
 exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,
