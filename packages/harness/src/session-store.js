@@ -430,6 +430,13 @@ async function syncPath(path) {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 const sameIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino;
+/** The single journal-directory naming rule shared by every catalogue walk and
+ * retention inventory: anything else (`.DS_Store`, temp files, subdirectories)
+ * is not a journal and is never read, charged, reclaimed or deleted.
+ * @param {string} name */
+export function journalEntrySuffix(name) {
+  return [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((suffix) => name.endsWith(suffix));
+}
 async function absent(path) { try { await lstat(path); return false; } catch (error) { if (error.code === "ENOENT") return true; throw error; } }
 export class JsonlSessionRepo {
   constructor({ sessionsRoot, onImportPhase = async (_phase) => {}, onHeaderUpgradePhase = async (_phase) => {}, onRootPermissionsTightened = () => {} }) {
@@ -479,7 +486,9 @@ export class JsonlSessionRepo {
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        if (this.openSessions.has(id) || (await this.listOwnedUnlocked(true)).some((m) => m.id === id)) throw new Error("Harness session already exists");
+        const catalogue = await this.catalogueUnlocked(true);
+        if (this.openSessions.has(id) || catalogue.owned.some((m) => m.id === id)) throw new Error("Harness session already exists");
+        this.assertNotDamaged(catalogue.unattributed, id);
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
         if (hostAuthority !== undefined) await assertOwned();
         await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: hostAuthority ? 2 : 1,
@@ -527,7 +536,9 @@ export class JsonlSessionRepo {
       const committed = !await absent(metadata.path);
       if (committed) { await validate(metadata.path, false); await syncPath(metadata.path); await this.syncDirectories(); }
       // Never overwrite/discard a foreign same-handle journal or unknown stage.
-      if ((await this.listOwnedUnlocked()).some((entry) => entry.id === options.id && entry.journalId !== metadata.journalId)) fail();
+      const catalogue = await this.catalogueUnlocked();
+      if (catalogue.owned.some((entry) => entry.id === options.id && entry.journalId !== metadata.journalId)) fail();
+      this.assertNotDamaged(catalogue.unattributed, options.id);
       if (!await absent(stage)) {
         const identity = await validate(stage, true); await options.assertOwned();
         const named = await lstat(stage);
@@ -813,7 +824,8 @@ export class JsonlSessionRepo {
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        const owned = await this.listOwnedUnlocked(true);
+        const { owned, unattributed } = await this.catalogueUnlocked(true);
+        this.assertNotDamaged(unattributed, metadata.id);
         const legacy = await listLegacySessions(this.root);
         const sources = legacy.filter((m) => m.id === metadata.id);
         if (owned.some((m) => m.id === metadata.id && m.journalId !== journalId)
@@ -898,43 +910,67 @@ export class JsonlSessionRepo {
       } else if (session.closed) writer.release();
     }
   }
-  async listOwned({ wait = true } = {}) {
-    if (await absent(this.directory)) return [];
+  async listOwned({ wait = true } = {}) { return (await this.catalogue({ wait })).owned; }
+  /** Locked catalogue with unattributed journal-named entries (see catalogueUnlocked). */
+  async catalogue({ wait = true } = {}) {
+    if (await absent(this.directory)) return { owned: [], unattributed: [] };
     const locks = await this.ensureDirectory();
-    return locks.withCatalog(() => this.listOwnedUnlocked(), { wait });
+    return locks.withCatalog(() => this.catalogueUnlocked(), { wait });
   }
-  async listOwnedUnlocked(includeStaging = false) {
+  async listOwnedUnlocked(includeStaging = false) { return (await this.catalogueUnlocked(includeStaging)).owned; }
+  /** Catalogue walk shared by list/create/import/retire. Names without a
+   * journal suffix (`.DS_Store`, temp files, subdirectories) are not journals
+   * and are ignored. A journal-named entry whose header cannot be read or
+   * validated is reported as unattributed (with its handle when a parsed header
+   * names one) and skipped: it is never reclaimed, rewritten or deleted, and it
+   * never blocks another handle's valid journal. Callers refuse any handle it
+   * is attributable to, exactly as the whole-catalogue failure used to.
+   * @returns {Promise<{owned:any[], unattributed:{name:string, id?:string}[]}>} */
+  async catalogueUnlocked(includeStaging = false) {
     let files;
     try { files = await readdir(this.directory, { withFileTypes: true }); }
-    catch (error) { if (error.code === "ENOENT") return []; throw error; }
+    catch (error) { if (error.code === "ENOENT") return { owned: [], unattributed: [] }; throw error; }
     if (this.directoryIdentity) await this.assertDirectory();
-    const result = [];
+    const owned = [], unattributed = [];
     for (const file of files) {
-      const creating = file.name.endsWith(".jsonl.creating");
-      if (!file.name.endsWith(".jsonl") && !creating && !(includeStaging && file.name.endsWith(".jsonl.importing"))) continue;
-      if (!file.isFile()) fail();
+      const suffix = journalEntrySuffix(file.name), creating = suffix === ".jsonl.creating";
+      if (!suffix || suffix === ".jsonl.upgrading" || suffix === ".jsonl.importing" && !includeStaging) continue;
+      const skip = (header) => { unattributed.push({ name: file.name, ...(typeof header?.id === "string" ? { id: header.id } : {}) }); };
+      if (!file.isFile()) { skip(); continue; }
       const path = join(this.directory, file.name);
-      const reader = await JournalReader.open(path, this.root);
+      let reader;
+      try { reader = await JournalReader.open(path, this.root); }
+      catch (error) { if (error?.code !== "ENOENT") skip(); continue; }
+      let header;
       try {
-        const header = await reader.readHeader({ allowIncomplete: file.name.endsWith(".jsonl.creating") });
+        try { header = await reader.readHeader({ allowIncomplete: creating }); } catch { skip(); continue; }
         // Native create uses UUIDs; imports use deterministic SHA-256 IDs. An
         // incomplete import header must remain available to source-bound recovery.
         const journalId = file.name.slice(0, -".jsonl.creating".length);
         if (creating && (!header || !header.import) && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(journalId)) {
           if (header) {
-            validateJournalHeader(header); this.checkMetadata({ ...header, path });
-            let count = 0; const scan = await reader.scan(() => { count += 1; });
-            if (count !== 1 || scan.torn) fail(); // never discard context or future phase data
+            try {
+              validateJournalHeader(header); this.checkMetadata({ ...header, path });
+              let count = 0; const scan = await reader.scan(() => { count += 1; });
+              // Never discard context or future phase data: keep it, unattributed.
+              if (count !== 1 || scan.torn) { skip(header); continue; }
+            } catch { skip(header); continue; }
           }
           await this.#reclaimNativeCreation(reader, { journalId });
           continue; // a busy failed creator's unpublished header is not a live session
         }
         if (!header || (creating && !includeStaging)) continue;
-        validateJournalHeader(header);
-        const metadata = { ...header, path }; this.checkMetadata(metadata); result.push(metadata);
+        const metadata = { ...header, path };
+        try { validateJournalHeader(header); this.checkMetadata(metadata); } catch { skip(header); continue; }
+        owned.push(metadata);
       } finally { await reader.close(); }
     }
-    return result;
+    return { owned, unattributed };
+  }
+  /** Refuse a handle that an unattributed entry names: damaged own evidence is
+   * never silently replaced, recreated or treated as retired. */
+  assertNotDamaged(unattributed, id) {
+    if (unattributed.some((entry) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
   }
   // Caller holds catalogue: every native creating->rename transaction holds it
   // too. Try the writer, never wait under catalogue or reclaim a live owner.
@@ -1036,7 +1072,10 @@ export class JsonlSessionRepo {
       if (await absent(this.root)) return;
       const locks = await this.ensureDirectory();
       const matches = await locks.withCatalog(async () => {
-        const owned = await this.listOwnedUnlocked(true);
+        const { owned, unattributed } = await this.catalogueUnlocked(true);
+        // Attributable damage is never treated as retired. A headerless entry
+        // of unknown ownership is not reclaimable either: it is left untouched.
+        this.assertNotDamaged(unattributed, id);
         const legacy = await listLegacySessions(this.root, { includeArchives: true });
         // A headerless/corrupt legacy exact-name candidate is uncertainty, not
         // authority to unlink it outside ownership or acknowledge complete loss.

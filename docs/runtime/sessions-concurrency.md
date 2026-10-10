@@ -179,6 +179,14 @@ complete record, staged-only bytes or a catalogue that cannot be read refuse the
 message with `native_journal_unreadable` and leave every file unchanged. An
 incomplete final line still goes to the existing open/repair path.
 
+With or without the opt-in, unrelated entries in the native journals directory
+(for example `.DS_Store`, editor temp files or subdirectories) are ignored. A
+damaged journal-named file whose owner cannot be read is skipped and kept: it
+never blocks another conversation's journal, and retention never charges or
+deletes it. It refuses only a conversation whose own journal cannot be found, with
+`native_journal_unreadable`, because it might be that conversation's damaged
+journal.
+
 Predecessor journals use the same split. A lost predecessor does not affect
 same-model turns and stays absent; C never recreates it, while any predecessor
 bytes that remain must still match exactly. A persisted-ID switch whose chain has

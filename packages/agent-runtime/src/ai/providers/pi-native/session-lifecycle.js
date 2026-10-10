@@ -197,13 +197,19 @@ function isSafeSessionId(id) {
     && !id.includes("\\");
 }
 
+/** Reopen by handle. Unrelated or unattributed journal-named entries never
+ * block another handle's valid journal. `uncertain` reports that no journal was
+ * found while an unreadable entry could be this handle's own damaged journal. */
 async function reopenDurableNativeSession(repo, sessionId) {
   try {
     const metadata = (await repo.list(undefined, HARNESS_CONTEXT)).find((entry) => entry?.id === sessionId);
-    if (!metadata) return null;
-    return { metadata, repo, durable: true, busy: false };
+    if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
+    if (typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
+    const { unattributed } = await repo.catalogue();
+    return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId) };
   } catch {
-    return null;
+    // Unchanged: a catalogue failure stays a resume miss (as before).
+    return { entry: null, uncertain: false };
   }
 }
 
@@ -271,11 +277,11 @@ export async function resolveSession(runState, {
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
-    let entry = liveness.adoptIfPresent(requestedSessionId);
+    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false;
     if (!entry && durableRepo) {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
-        entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
+        ({ entry, uncertain } = await reopenDurableNativeSession(durableRepo, requestedSessionId));
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
           // cold resume could have reopened+inserted its own entry in this
@@ -301,6 +307,11 @@ export async function resolveSession(runState, {
         // P2 canonical revision proves an earlier native turn existed. Missing
         // bytes cannot become an empty warm transcript. Fail before dispatch;
         // the host must establish a cold boundary, never silently lose context.
+        // A possibly-own damaged journal is not "missing": refuse without the
+        // session-resume replay, never replacing it (unchanged recovery limit).
+        if (uncertain) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} may be an unreadable journal; it was preserved`,
+          failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) };
         return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
           sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is not live`,
           failureKind: "session_not_found", piErrorCode: "pi_session_not_found", piTransport }) };
