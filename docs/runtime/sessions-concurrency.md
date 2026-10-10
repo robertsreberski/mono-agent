@@ -163,7 +163,8 @@ moved to another machine, a partial restore), the prepared turn no longer fails
 with `session_not_found`. Before admission, while it holds the conversation, the
 host checks that journal. It counts as **missing** only when no published or
 staged file exists for the recorded journal (or, before the first switch, no
-catalogued journal for the current handle). The turn then replaces only the
+published, staged or archived journal for the current handle; the check never
+reclaims a stage). The turn then replaces only the
 current stretch through the same durable cold boundary that ordinary cold turns
 use: the unguarded first epoch is rotated, and a switched chain takes current-only
 C with predecessors and the switch receipt untouched. The model answers from the
@@ -185,8 +186,9 @@ a lost predecessor never attempts native reuse or a handoff from the missing
 bytes: it takes the owned cold model change (`predecessor_missing`) with canonical
 replay, one `degraded_native_context` warning and no summary call or billed
 generation. Losing the whole native root, for example after moving to another
-machine, recovers on the next message without a reset. A damaged predecessor is
-refused with `native_journal_unreadable` before any intent.
+machine, recovers on the next message without a reset. A damaged predecessor, or
+a valid one that no longer matches its recorded state (for example an older
+restored copy), is refused with `native_journal_unreadable` before any intent.
 
 To enable:
 

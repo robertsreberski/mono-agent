@@ -2,7 +2,7 @@
 // (deleted, moved machine, partial restore). Real public config path, Web-shaped
 // persisted IDs, Codex-shaped faux provider with fictional in-memory OAuth.
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -252,6 +252,36 @@ it.each(["switch", "lost current"] as const)("a corrupt predecessor refuses type
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
   expect(await readFile(path, "utf8")).toBe(bytes);
   expect((await readdir(join(f.journals, "..", "..", "..", "history"))).some((name) => name.startsWith(".native-history-op"))).toBe(false);
+}, 20_000);
+
+it("v3: a staged-only restore of the current journal refuses typed and is never rotated or reclaimed", async () => {
+  const f = await fixture(), first = await f.make();
+  f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional never answer")]);
+  await f.send(first, "fictional-seed", "A");
+  const before = await f.record(), [name] = (await readdir(f.journals)).filter((entry) => entry.endsWith(".jsonl"));
+  const staged = join(f.journals, `${name}.upgrading`), bytes = await readFile(join(f.journals, name!));
+  await first.dispose(); await rename(join(f.journals, name!), staged);
+  const reopened = await f.make(), calls = f.transport.mock.calls.length;
+  expect(await f.send(reopened, "fictional-after-partial-restore", "A")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
+  expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
+  expect(await readFile(staged)).toEqual(bytes); expect(await readdir(f.journals)).toEqual([`${name}.upgrading`]);
+}, 20_000);
+
+it("v4: a valid but older restored predecessor refuses typed before any C intent when the current is lost", async () => {
+  const f = await fixture(), h = await f.make();
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional never answer")]);
+  await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
+  const before = await f.record(), predecessor = join(f.journals, `${before.native.chain[0].journalId}.jsonl`);
+  // Partial restore: the predecessor's own valid prefix, before its model-change frames.
+  const restored = (await readFile(predecessor, "utf8")).trim().split("\n").slice(0, -3).join("\n") + "\n";
+  await writeFile(predecessor, restored); await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
+  const calls = f.transport.mock.calls.length;
+  for (const attempt of ["fictional-after-restore", "fictional-again"]) {
+    expect(await f.send(h, attempt, "B")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
+  }
+  expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
+  expect(await readFile(predecessor, "utf8")).toBe(restored);
+  expect((await readdir(join(f.journals, "..", "..", "..", "history"))).some((entry) => entry.startsWith(".native-history-op"))).toBe(false);
 }, 20_000);
 
 it("OFF keeps the ordinary session-resume replay for a missing journal, without the prepared probe or degradation warning", async () => {

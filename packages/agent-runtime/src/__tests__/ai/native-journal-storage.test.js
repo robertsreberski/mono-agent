@@ -422,3 +422,25 @@ it("cold creation leaves a definitively absent predecessor absent but rejects a 
   await f.bridge.verifyColdEpoch(f.chain, coldContext);
   await expect(readFile(predecessor)).rejects.toMatchObject({ code: "ENOENT" });
 });
+it.each([".upgrading", ".importing", ".creating"])("a handle-only staged-only %s journal is unreadable, never missing, and is never reclaimed", async (suffix) => {
+  const f = await fixture(), staged = `${f.metadata.path}${suffix}`;
+  await writeFile(staged, f.before, { mode: 0o600 }); await rm(f.metadata.path);
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "unreadable", reason: "staged_only" });
+  expect(await readFile(staged)).toEqual(f.before);
+  // An unattributable partial creation stage could be this handle too.
+  await rm(staged); const partial = join(f.repo.directory, "00000000-0000-4000-8000-000000000000.jsonl.creating");
+  await writeFile(partial, "{\"format\"", { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "unreadable", reason: "staged_unattributed" });
+  expect(await readFile(partial, "utf8")).toBe("{\"format\"");
+});
+it("a valid but older restored predecessor prefix is refused against its frozen descriptor, before any C", async () => {
+  const f = await lifecycleFixture(), predecessor = f.chain[0];
+  const frozen = { handleId: predecessor.handleId, journalId: predecessor.journalId, frozen: predecessor, hostAuthority: authority };
+  expect(await f.bridge.inspectCurrentJournal(frozen)).toEqual({ status: "present" });
+  const restored = (await readFile(f.metadata.path, "utf8")).trim().split("\n").slice(0, -3).join("\n") + "\n";
+  await writeFile(f.metadata.path, restored);
+  expect(await f.bridge.inspectCurrentJournal({ handleId: predecessor.handleId, journalId: predecessor.journalId })).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal(frozen)).toEqual({ status: "unreadable", reason: "predecessor_changed" });
+  await expect(f.bridge.publishColdEpoch(f.chain, coldContext)).rejects.toThrow();
+  expect(await readFile(f.metadata.path, "utf8")).toBe(restored);
+});

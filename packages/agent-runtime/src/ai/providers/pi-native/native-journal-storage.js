@@ -7,6 +7,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { SessionStore, JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { JournalReader } from "@mono-agent/harness/journal-reader.js";
+import { listLegacySessions } from "@mono-agent/harness/legacy-import.js";
 import { JournalValidator, validateJournalHeader } from "@mono-agent/harness/journal-schema.js";
 import { resolveDurableNativeSessionRepo, detachDurableNativeSession } from "./session-lifecycle.js";
 import { normalizeDurableSessionsRoot } from "./sessions-root.js";
@@ -45,8 +46,8 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   /** Streaming digests; only the three reference-frame records are retained.
    * An immutable intent admits only an exact prefix of those deterministic bytes.
    * @param {any} coordinate @param {any} [event] */
-  const snapshot = async (coordinate, event, prefixOnly = false, capture = 0) => {
-    const meta = capture ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
+  const snapshot = async (coordinate, event, prefixOnly = false, capture = 0, direct = false) => {
+    const meta = capture || direct ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
     try {
       if (capture && reader.identity.size > (typeof capture === "number" ? capture : MAX_CAPTURE_BYTES)) captureLimit();
       /** @type {any} */ let header;
@@ -144,6 +145,36 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const frozen = await snapshot(predecessor);
       if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
     }
+  };
+  // Read-only, stage-aware catalogue for one v3 handle. Unlike repo.list() it
+  // never reclaims a `.creating` stage and counts `.importing`/`.upgrading`
+  // copies and legacy archives, so a staged-only restore is never "absent".
+  // Serialized with native creators by the catalogue lock.
+  const handleCatalogue = async (handleId) => {
+    const found = { published: /** @type {any[]} */ ([]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
+    let names = [];
+    try { names = await readdir(repo.directory); } catch (error) { if (!missing(error)) throw error; }
+    if (names.length) {
+      const locks = await repo.ensureDirectory();
+      await locks.withCatalog(async () => {
+        for (const name of await readdir(repo.directory)) {
+          const match = /^([A-Za-z0-9_-]+)\.jsonl(\.(?:creating|importing|upgrading))?$/.exec(name); if (!match) fail();
+          const reader = await JournalReader.open(join(repo.directory, name), root);
+          try {
+            const header = await reader.readHeader({ allowIncomplete: true });
+            if (header === undefined) { if (!match[2]) fail(); found.unattributed += 1; continue; }
+            if (header?.id !== handleId) continue;
+            if (match[2]) { found.staged += 1; continue; }
+            validateJournalHeader(header);
+            found.published.push({ id: handleId, journalId: match[1], path: join(repo.directory, name) });
+          } finally { await reader.close(); }
+        }
+      });
+    }
+    for (const entry of await listLegacySessions(root, { includeArchives: true })) {
+      if (entry.id === handleId) { if (entry.path.endsWith(".migrated")) found.archived += 1; else found.legacy += 1; }
+    }
+    return found;
   };
   const deletionMetadata = (entry) => ({ id: entry.handleId, journalId: entry.journalId, path: path(entry.journalId) });
   // Preflight the complete physical set, including stages, before any unlink.
@@ -443,9 +474,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
      * no catalogue entry (owned or legacy) for the handle. Any other doubt is
      * `unreadable`, never cold authority. A torn final line is left to the
      * existing open/repair path; every complete line must parse and validate.
-     * @param {{handleId:string, journalId?:string}} coordinates */
+     * With `frozen` (a predecessor), present bytes must also match that exact
+     * canonical descriptor and host authority, as C later requires.
+     * @param {{handleId:string, journalId?:string, frozen?:any, hostAuthority?:any}} coordinates */
     async inspectCurrentJournal(coordinates) {
-      const { handleId, journalId } = coordinates ?? {};
+      const { handleId, journalId, frozen, hostAuthority } = coordinates ?? {};
+      if (frozen !== undefined && (journalId === undefined || frozen?.journalId !== journalId || frozen.handleId !== handleId || !hostAuthority)) fail();
       if (!hex64(handleId) || journalId !== undefined && (typeof journalId !== "string" || !/^[A-Za-z0-9_-]+$/.test(journalId))) fail();
       const unreadable = (reason) => ({ status: /** @type {const} */ ("unreadable"), reason });
       let meta;
@@ -455,12 +489,15 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           try { await lstat(path(journalId)); } catch (error) { if (missing(error)) return unreadable("staged_only"); throw error; }
           meta = { id: handleId, journalId, path: path(journalId) };
         } else {
-          const matches = (await repo.list()).filter((item) => item.id === handleId);
-          if (!matches.length) return { status: "missing" };
-          if (matches.length !== 1) return unreadable("ambiguous");
-          meta = matches[0];
+          const found = await handleCatalogue(handleId);
+          // An unattributable stage could belong to this handle: not definitive.
+          if (found.unattributed) return unreadable("staged_unattributed");
+          if (found.published.length > 1) return unreadable("ambiguous");
+          if (found.published.length === 1) meta = found.published[0];
           // Legacy sources are imported by the ordinary open path; presence suffices.
-          if (meta.legacy) return { status: "present" };
+          else if (found.legacy) return { status: "present" };
+          else if (found.staged || found.archived) return unreadable("staged_only");
+          else return { status: "missing" };
         }
         const reader = await JournalReader.open(meta.path, root);
         try {
@@ -468,6 +505,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           await reader.scan((record) => { if (!header) { validateJournalHeader(record); header = record; } else validator.apply(record); });
           if (!header || header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
         } finally { await reader.close(); }
+        if (frozen !== undefined) {
+          // A valid but older/foreign predecessor (e.g. a restored prefix) is not
+          // the frozen evidence: refuse before any C intent can depend on it.
+          let exact; try { exact = await snapshot(frozen, undefined, false, 0, true); } catch { return unreadable("predecessor_changed"); }
+          if (!same(exact.descriptor, frozen) || !same(exact.header.hostAuthority, hostAuthority)) return unreadable("predecessor_changed");
+        }
         return { status: "present" };
       } catch (error) {
         return unreadable(error?.code === "ENOENT" ? "changed" : error instanceof SyntaxError ? "malformed" : "invalid");

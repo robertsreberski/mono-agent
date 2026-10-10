@@ -324,8 +324,10 @@ an explicitly coordinated cold model change. Only the settled current epoch is
 retired; frozen predecessor bytes remain unchanged. This is bounded canonical
 replay, not a native handoff, and the host exposes `degraded_native_context`.
 `inspectCurrentJournal` is a read-only presence probe for the host-held current
-journal: `missing` only for definitive absence, `unreadable` for any damaged
-complete line, staged-only bytes or catalogue failure; a torn final line is left
+journal: `missing` only for definitive absence (handle-only lookups are
+read-only and stage-aware), `unreadable` for any damaged complete line,
+staged-only bytes, catalogue failure or a predecessor that differs from its
+supplied frozen descriptor; a torn final line is left
 to the ordinary open/repair path. Cold-epoch publication/verification leaves a
 definitively absent predecessor absent; present predecessor bytes must match.
 Prepared leases can continue to configured backups only after certified

@@ -806,7 +806,9 @@ export interface RuntimeNativeJournalStorage {
    * held host claim. `missing` only when no published or staged bytes exist for
    * the exact coordinate; any doubt (unreadable header/record, staged-only bytes,
    * catalogue failure) is `unreadable` and never authorizes a cold boundary. */
-  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string }): Promise<RuntimeNativeJournalPresence>;
+  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string;
+    /** Predecessor check: present bytes must equal this frozen descriptor under this authority. */
+    readonly frozen?: RuntimeNativeJournalDescriptor; readonly hostAuthority?: RuntimeNativeJournalAuthority }): Promise<RuntimeNativeJournalPresence>;
 }
 export type RuntimeNativeJournalPresence = { readonly status: "present" | "missing" } | { readonly status: "unreadable"; readonly reason: string };
 

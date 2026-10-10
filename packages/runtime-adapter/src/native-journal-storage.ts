@@ -23,6 +23,7 @@ export function createManagedNativeJournalStorage(options: {
     verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),
     publishSwitch: (sources, context) => storage.publishSwitch([...sources], context),
     inspectCurrentJournal: async (coordinates) => await storage.inspectCurrentJournal({ handleId: coordinates.handleId,
-      ...(coordinates.journalId === undefined ? {} : { journalId: coordinates.journalId }) }) as RuntimeNativeJournalPresence,
+      ...(coordinates.journalId === undefined ? {} : { journalId: coordinates.journalId }),
+      ...(coordinates.frozen === undefined ? {} : { frozen: structuredClone(coordinates.frozen), hostAuthority: structuredClone(coordinates.hostAuthority) }) }) as RuntimeNativeJournalPresence,
     inventory: (ids, owners) => storage.inventory(ids === undefined ? undefined : [...ids], owners === undefined ? undefined : { ...owners, conversationKeys: [...owners.conversationKeys] }) };
 }

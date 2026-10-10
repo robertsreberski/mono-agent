@@ -1547,8 +1547,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           let lostPredecessor = false;
           if (presence.status === "missing" || options?.predecessors === true) {
             for (const predecessor of chain?.slice(0, -1) ?? []) {
-              const prior = await native.inspectCurrentJournal({ handleId: predecessor.handleId, journalId: predecessor.journalId });
-              if (prior.status === "unreadable") { await assertOwned(); return { status: "unreadable", reason: `predecessor_${prior.reason}` }; }
+              const prior = await native.inspectCurrentJournal({ handleId: predecessor.handleId, journalId: predecessor.journalId,
+                frozen: predecessor, hostAuthority: record.native!.authority });
+              if (prior.status === "unreadable") { await assertOwned(); return { status: "unreadable", reason: prior.reason.startsWith("predecessor_") ? prior.reason : `predecessor_${prior.reason}` }; }
               if (prior.status === "missing") lostPredecessor = true;
             }
           }
