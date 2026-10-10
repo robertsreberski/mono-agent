@@ -457,6 +457,7 @@ buildHarnessSessionContext
 JsonlSessionRepo
 MemorySessionRepo
 SessionStore
+journalEntrySuffix
 ```
 
 <!-- public-api-inventory:end -->

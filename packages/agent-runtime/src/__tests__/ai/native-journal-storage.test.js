@@ -465,3 +465,16 @@ it("a valid but older restored predecessor prefix is refused against its frozen 
   await expect(f.bridge.publishColdEpoch(f.chain, coldContext)).rejects.toThrow();
   expect(await readFile(f.metadata.path, "utf8")).toBe(restored);
 });
+it("retention inventory and whole-chain deletion ignore stray entries and unattributed damaged journals, never deleting them", async () => {
+  const f = await lifecycleFixture(), all = await f.bridge.inventory(), scoped = await f.bridge.inventory(f.chain.map((row) => row.journalId));
+  const strays = { ".DS_Store": "fictional", "notes.txt~": "fictional", "11111111-1111-4111-8111-111111111111.jsonl": "", "bad name.jsonl": "{not json\n" };
+  for (const [name, text] of Object.entries(strays)) await writeFile(join(f.repo.directory, name), text, { mode: 0o600 });
+  await mkdir(join(f.repo.directory, "scratch")); await mkdir(join(f.repo.directory, "33333333-3333-4333-8333-333333333333.jsonl"));
+  expect(await f.bridge.inventory()).toEqual(all);
+  expect(await f.bridge.inventory(f.chain.map((row) => row.journalId))).toEqual(scoped);
+  expect(await f.bridge.inventory(f.chain.map((row) => row.journalId), { rootId: authority.rootId, conversationKeys: ["c".repeat(64)] })).toEqual(scoped);
+  await f.bridge.deleteJournals(f.chain, { hostAuthority: authority, assertOwned: context.assertOwned, disposition: "D" });
+  expect((await f.bridge.inventory()).bytes).toBe(0);
+  for (const [name, text] of Object.entries(strays)) expect(await readFile(join(f.repo.directory, name), "utf8")).toBe(text);
+  expect((await stat(join(f.repo.directory, "scratch"))).isDirectory()).toBe(true);
+});

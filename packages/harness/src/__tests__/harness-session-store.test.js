@@ -400,8 +400,35 @@ it("does not reclaim context-bearing or future native creation artifacts", async
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "context-preserved" });
   await session.appendMessage(message); const metadata = session.metadata; await session.close();
   const path = `${metadata.path}.creating`; await rename(metadata.path, path); const bytes = await readFile(path);
-  await expect(repo.list()).rejects.toThrow("Invalid"); expect((await readFile(path)).equals(bytes)).toBe(true);
+  // Kept and reported as unattributed for its own handle; other handles are not blocked.
+  expect(await repo.list()).toEqual([]); expect((await readFile(path)).equals(bytes)).toBe(true);
+  expect((await repo.catalogue()).unattributed).toEqual([{ name: `${metadata.journalId}.jsonl.creating`, id: "context-preserved" }]);
+  await expect(repo.create({ id: "context-preserved" })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
   expect((await stat(join(r, "mono-v2", "locks", `${metadata.journalId}.sqlite`))).isFile()).toBe(true);
+});
+
+it("ignores stray entries and skips unattributed damaged journal-named files without blocking, reclaiming or deleting them", async () => {
+  const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }), journals = join(r, "mono-v2", "journals");
+  const kept = await repo.create({ id: "fictional-kept" }); await kept.appendMessage(message); await kept.close();
+  const gone = await repo.create({ id: "fictional-retired" }); await gone.close();
+  const strays = { ".DS_Store": "fictional", "notes.txt~": "fictional", "11111111-1111-4111-8111-111111111111.jsonl": "",
+    "22222222-2222-4222-8222-222222222222.jsonl": "{not json\n" };
+  for (const [name, text] of Object.entries(strays)) await writeFile(join(journals, name), text, { mode: 0o600 });
+  await mkdir(join(journals, "scratch")); await mkdir(join(journals, "33333333-3333-4333-8333-333333333333.jsonl"));
+  // A parsed header that fails validation is attributable to its handle.
+  const damagedHeader = JSON.parse((await readFile(kept.metadata.path, "utf8")).split("\n")[0]);
+  await writeFile(join(journals, "44444444-4444-4444-8444-444444444444.jsonl"), `${JSON.stringify({ ...damagedHeader, id: "fictional-damaged", format: "fictional" })}\n`, { mode: 0o600 });
+  expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-kept", "fictional-retired"]);
+  expect((await repo.catalogue()).unattributed.map((entry) => entry.id ?? null).sort()).toEqual(["fictional-damaged", null, null, null]);
+  const reopened = await repo.open((await repo.list()).find((m) => m.id === "fictional-kept")); await reopened.close();
+  await (await repo.create({ id: "fictional-new" })).close();
+  await repo.retireByHandle("fictional-retired"); await repo.retireByHandle("fictional-absent");
+  await expect(repo.retireByHandle("fictional-damaged")).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
+  await expect(repo.create({ id: "fictional-damaged" })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
+  expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-kept", "fictional-new"]);
+  for (const [name, text] of Object.entries(strays)) expect(await readFile(join(journals, name), "utf8")).toBe(text);
+  expect((await stat(join(journals, "scratch"))).isDirectory()).toBe(true);
+  expect((await stat(join(journals, "44444444-4444-4444-8444-444444444444.jsonl"))).isFile()).toBe(true);
 });
 
 it("rejects pre-write schema validation without I/O or poison and can close the failed operation", async () => {

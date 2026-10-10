@@ -5,7 +5,7 @@ import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, 
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { SessionStore, JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { SessionStore, JsonlSessionRepo, journalEntrySuffix } from "@mono-agent/harness/session-store.js";
 import { JournalReader } from "@mono-agent/harness/journal-reader.js";
 import { listLegacySessions } from "@mono-agent/harness/legacy-import.js";
 import { JournalValidator, validateJournalHeader } from "@mono-agent/harness/journal-schema.js";
@@ -165,9 +165,9 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const locks = await repo.ensureDirectory();
       await locks.withCatalog(async () => {
         for (const file of await readdir(repo.directory, { withFileTypes: true })) {
-          const suffix = [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((end) => file.name.endsWith(end));
+          const suffix = journalEntrySuffix(file.name);
           if (!suffix) continue;
-          if (!file.isFile()) fail();
+          if (!file.isFile()) { found.unattributed += 1; continue; }
           const filePath = join(repo.directory, file.name);
           let header, bodyless = false;
           try {
@@ -571,9 +571,14 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
       /** @type {Record<string,{retainedBytes:number,headerCopyBytes:number,stagedBytes:number}>} */ const journals = Object.create(null);
       for (const name of await readdir(directory)) {
-        if (!/^[A-Za-z0-9_-]+\.jsonl(?:\.(?:creating|importing|upgrading))?$/.test(name)) fail();
-        const id = name.split(".")[0]; if (scope && !scope.has(id) && !unreadableOwners) continue;
-        const reader = await JournalReader.open(join(directory, name), root);
+        // Shared skip rule: non-journal names and unattributed journal-named
+        // entries are neither charged nor credited, and retention never deletes them.
+        const suffix = journalEntrySuffix(name), id = suffix ? name.slice(0, -suffix.length) : "";
+        if (!/^[A-Za-z0-9_-]+$/.test(id)) continue;
+        if (scope && !scope.has(id) && !unreadableOwners) continue;
+        let reader;
+        try { reader = await JournalReader.open(join(directory, name), root); }
+        catch (error) { if (scope?.has(id)) throw error; continue; }
         try {
           if (!scope || !scope.has(id)) {
             let header; try { header = await reader.readHeader({ allowIncomplete: true }); validateJournalHeader(header); }

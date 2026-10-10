@@ -2,7 +2,7 @@
 // (deleted, moved machine, partial restore). Real public config path, Web-shaped
 // persisted IDs, Codex-shaped faux provider with fictional in-memory OAuth.
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -316,4 +316,52 @@ it("OFF keeps the ordinary session-resume replay for a missing journal, without 
   expect(replayed.returned.some((warning) => warning.warning_kind === "degraded_native_context")).toBe(false);
   expect(f.leaseRuns).toEqual([]); expect((await f.record()).version).toBe(3);
   expect(occurrences(f.contexts().at(-1)!, "Fictional input fictional-seed")).toBe(1);
+}, 20_000);
+
+// P4 PR E: the journal directory tolerates unrelated entries (shared skip rule).
+const strays = { ".DS_Store": "fictional", "notes.txt~": "fictional" };
+const foreign = { "11111111-1111-4111-8111-111111111111.jsonl": "", "22222222-2222-4222-8222-222222222222.jsonl": "{not json\n" };
+async function plant(directory: string, entries: Record<string, string>) {
+  for (const [name, text] of Object.entries(entries)) await writeFile(join(directory, name), text, { mode: 0o600 });
+}
+async function untouched(directory: string, entries: Record<string, string>) {
+  for (const [name, text] of Object.entries(entries)) expect(await readFile(join(directory, name), "utf8")).toBe(text);
+}
+const ownJournals = async (directory: string) => (await readdir(directory)).filter((name) => name.endsWith(".jsonl") && !(name in foreign));
+
+it.each([true, false])("stray entries never block present or missing journals, and reset leaves them (opt-in=%s)", async (enabled) => {
+  const f = await fixture(enabled), first = await f.make();
+  f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional present answer"), f.reply("Fictional recovered answer")]);
+  await f.send(first, "fictional-seed", "A");
+  await plant(f.journals, strays); await mkdir(join(f.journals, "scratch"));
+  await first.dispose();
+  const reopened = await f.make();
+  expect(await f.send(reopened, "fictional-present", "A")).toMatchObject({ text: "Fictional present answer", streamed: [] });
+  for (const name of await ownJournals(f.journals)) await unlink(join(f.journals, name));
+  const recovered = await f.send(reopened, "fictional-after-loss", "A");
+  expect(recovered.text).toBe("Fictional recovered answer");
+  expect(recovered.streamed).toEqual([enabled ? "degraded_native_context" : "session_resume_retry"]);
+  await (reopened as unknown as { startNewSession(id: string): Promise<void> }).startNewSession("web:fictional-thread");
+  await untouched(f.journals, strays); expect((await readdir(join(f.journals, "scratch")))).toEqual([]);
+}, 20_000);
+
+it.each([true, false])("a foreign damaged journal never blocks a present journal; a missing one refuses typed and it is never deleted (opt-in=%s)", async (enabled) => {
+  const f = await fixture(enabled), first = await f.make();
+  f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional present answer"), f.reply("Fictional later answer")]);
+  await f.send(first, "fictional-seed", "A"); await plant(f.journals, foreign);
+  await first.dispose();
+  const reopened = await f.make();
+  expect(await f.send(reopened, "fictional-present", "A")).toMatchObject({ text: "Fictional present answer", streamed: [] });
+  for (const name of await ownJournals(f.journals)) await unlink(join(f.journals, name));
+  // Possibly this conversation's own damaged journal: never replayed past.
+  const calls = f.transport.mock.calls.length;
+  expect(await f.send(reopened, "fictional-after-loss", "A")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
+  expect(f.transport).toHaveBeenCalledTimes(calls);
+  if (!enabled) {
+    // Ordinary path, unchanged: the failed turn settles cold, so the next message
+    // starts a fresh epoch (canonical replay); the file stays untouched.
+    expect(await f.send(reopened, "fictional-later", "A")).toMatchObject({ text: "Fictional later answer" });
+  }
+  await (reopened as unknown as { startNewSession(id: string): Promise<void> }).startNewSession("web:fictional-thread");
+  await untouched(f.journals, foreign);
 }, 20_000);
