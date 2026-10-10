@@ -942,6 +942,9 @@ function storedRestartOperation(row: RestartOperationRow): StoredRestartOperatio
 
 const STREAM_SEQUENCE_CONFLICT = Symbol("stream sequence conflict");
 
+/** Durable Web note for an AskUser question whose turn ended before an answer. */
+export const INTERRUPTED_QUESTION_NOTE = "The question was interrupted. Answer in a new message; no tool was replayed.";
+
 export class WebStore {
   restartProposalBinding(messageId: string, partId: string): StoredRestartProposalBinding | undefined {
     const row = this.database.prepare(`SELECT message_id, part_id, thread_id, source_id, generation, operation_id
@@ -4100,6 +4103,23 @@ export class WebStore {
     return created;
   }
 
+  /** Interruption notes the Web recorded for a turn, so a parent-interruption wake can carry them. */
+  parentInterruptionNotes(turnId: string): { readonly questionInterrupted: boolean; readonly unconfirmedLiveInputs: number } {
+    const turn = this.database.prepare(`SELECT t.thread_id AS threadId, t.started_at AS startedAt, t.assistant_message_id AS messageId,
+      n.created_at AS noticedAt FROM turns t LEFT JOIN parent_turn_interruptions n ON n.turn_id = t.id WHERE t.id = ?`)
+      .get(turnId) as { threadId: string; startedAt: string; messageId: string; noticedAt: string | null } | undefined;
+    if (turn === undefined) return { questionInterrupted: false, unconfirmedLiveInputs: 0 };
+    const questionInterrupted = this.getMessage(turn.messageId)?.parts
+      .some((part) => part.type === "text" && part.text.includes(INTERRUPTED_QUESTION_NOTE)) ?? false;
+    // Uncertain inputs lose their turn link, so bound them by the interrupted turn's window.
+    const uncertain = (this.database.prepare(`SELECT id FROM messages WHERE thread_id = ? AND role = 'user'
+      AND created_at >= ? AND created_at <= ?`).all(turn.threadId, turn.startedAt, turn.noticedAt ?? this.now()) as Array<{ id: string }>)
+      .filter((row) => liveInputStatusFromParts(this.requireRawParts(row.id)) === "uncertain").length;
+    const inFlight = (this.database.prepare(`SELECT COUNT(*) AS count FROM live_inputs
+      WHERE active_turn_id = ? AND dispatch_started_at IS NOT NULL`).get(turnId) as { count: number }).count;
+    return { questionInterrupted, unconfirmedLiveInputs: uncertain + inFlight };
+  }
+
   pendingParentInterruptions(sourceId: string): ReadonlyArray<{
     readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string;
   }> {
@@ -6830,7 +6850,7 @@ export class WebStore {
         // This is a display-only terminal status, not an AskUser result or answer.
         return { ...part, status: "failed" as const };
       });
-      const notice = "The question was interrupted. Answer in a new message; no tool was replayed.";
+      const notice = INTERRUPTED_QUESTION_NOTE;
       if (interruptedAsk && !parts.some((part) => part.type === "text" && part.text.includes(notice))) {
         parts.push({ type: "text", text: notice });
       }

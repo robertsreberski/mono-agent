@@ -28,6 +28,7 @@ import type { ConfiguredAgentSessionEvent, createConfiguredMemory } from "./conf
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
+  requestSuppressesInteractionTools,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
 import {
@@ -122,7 +123,7 @@ export interface ResponderControllerPort {
   reportMemoryRecallStatus(coreConfig: MonoAgentConfig, service: MemoryRetrievalService | undefined): boolean;
   adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
     readonly createExtension?: (
-      targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+      suppressInteractionTools: (metadata: Record<string, unknown> | undefined) => boolean,
     ) => RuntimeOptionsExtension;
     readonly blockingToolNames: readonly string[];
   }>;
@@ -314,9 +315,7 @@ export async function buildResponder(
   // Always active: a no-op for interactive turns (which carry no cron/webhook
   // metadata), it applies the per-trigger model/effort override otherwise.
   const requestModelOverride = controller.requestModelOverrideRuntimeOptions(modelBoundaryConfig);
-  const adapterSendToolsExtension = adapterSendTools.createExtension?.(
-    () => false,
-  );
+  const adapterSendToolsExtension = adapterSendTools.createExtension?.(requestSuppressesInteractionTools);
   const observabilityContext = await controller.observabilityContext();
   const datedConversationSearch = coreConfig.memory?.mode === "bujo" && coreConfig.memory.backend === "bujo" && coreConfig.tools.conversationSearch?.datedSnippets === true;
   const consoleProjectsExtension = observabilityContext.sourceId === undefined ? undefined : createConsoleProjectsRuntimeExtension({
@@ -530,7 +529,7 @@ export function buildRuntimeForModel(
 
 export async function adapterSendToolsRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): Promise<{
   readonly createExtension?: (
-    targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+    suppressInteractionTools: (metadata: Record<string, unknown> | undefined) => boolean,
   ) => RuntimeOptionsExtension;
   readonly blockingToolNames: readonly string[];
 }> {
@@ -567,9 +566,9 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
     ? agentArtifactDerivedRoots(coreConfig.artifacts.dir).outbound
     : undefined;
   const createExtension = (
-    targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+    suppressInteractionTools: (metadata: Record<string, unknown> | undefined) => boolean,
   ): RuntimeOptionsExtension => async (requestInput) => {
-    const effectiveToolNames = targetsDirectOpenCode(requestInput.request.metadata)
+    const effectiveToolNames = suppressInteractionTools(requestInput.request.metadata)
       ? toolNames.filter((name) => !isInteractionToolName(name))
       : toolNames;
     if (effectiveToolNames.length === 0) {
