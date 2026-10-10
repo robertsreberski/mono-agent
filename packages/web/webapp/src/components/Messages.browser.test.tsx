@@ -16,7 +16,7 @@ import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import { RouteCapabilitiesProvider } from "./route-capabilities";
 import type { WebMessage } from "../types";
 import "../styles.css";
-import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import { AskReconciliationProvider, AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 
 declare module "@vitest/browser/context" {
   interface BrowserCommands {
@@ -44,10 +44,11 @@ const consoleStoreMock = vi.hoisted(() => ({
     replyToCronRun: vi.fn().mockResolvedValue(undefined),
     selectedAgent: null,
     selectedThread: null as null | {
+      id?: string;
       sourceId: string;
-      trigger: { kind: "cron"; jobId: string; configured: boolean };
+      trigger?: { kind: "cron"; jobId: string; configured: boolean };
     },
-    transcriptMovedAt: 0,
+    transcriptMovedAt: () => 0,
   },
 }));
 
@@ -555,6 +556,34 @@ function SteerHarness({ width, messages }: { readonly width: number; readonly me
     </div>
   );
 }
+
+describe("interrupted AskUser recovery in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)("shows the durable note without an active old question at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const prior = consoleStoreMock.current.selectedThread;
+    consoleStoreMock.current.selectedThread = { id: "fictional-thread", sourceId: "fictional-agent" };
+    const pending = vi.spyOn(api, "pendingAsk").mockResolvedValue(undefined);
+    const ask = vi.spyOn(api, "ask").mockResolvedValue(undefined);
+    try {
+      const note = "The question was interrupted. Answer in a new message; no tool was replayed.";
+      const response: WebMessage = { id: "fictional-interrupted", threadId: "fictional-thread", role: "assistant", status: "interrupted",
+        createdAt: "2000-01-01T00:00:00.000Z", updatedAt: "2000-01-01T00:00:00.000Z", attachments: [], parts: [
+          { type: "tool-call", toolCallId: "fictional-old", toolName: "AskUser", args: { message: "Which fictional option?" }, status: "failed" },
+          { type: "text", text: note },
+        ] };
+      render(<AskReconciliationProvider><SteerHarness width={Math.min(width - 24, 760)} messages={[response]} /></AskReconciliationProvider>);
+      expect(await screen.findByText(note)).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      expect(await screen.findByText("Question interrupted")).toBeVisible();
+      expect(screen.queryByText(/Question unavailable/)).toBeNull();
+      expect(screen.queryByText("Input needed")).toBeNull();
+      expect(document.querySelector(".ask-user-card .tool-status")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Submit answers" })).toBeNull();
+      expect(pending).not.toHaveBeenCalled(); expect(ask).not.toHaveBeenCalled();
+      await capture(`p6-question-interrupted-${label}-${width}x${height}`);
+    } finally { consoleStoreMock.current.selectedThread = prior; pending.mockRestore(); ask.mockRestore(); }
+  });
+});
 
 describe("inline steer in Chromium", () => {
   it.each([

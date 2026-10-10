@@ -97,7 +97,7 @@ import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
 import { latestMessageCostUsd, messageUsageRollup, sumMessageCosts, type MessageUsageRollup } from "./message-cost.js";
 import { sumThreadUsage } from "./thread-usage.js";
-import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
+import { isAskUserToolName, runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
 import { nextWakeOccurrence } from "./wake-schedule.js";
@@ -6820,6 +6820,20 @@ export class WebStore {
     if (replyParts !== undefined) parts = boundedWebReplyParts(replyParts, parts);
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
+    }
+    if (status !== "complete") {
+      let interruptedAsk = false;
+      parts = parts.map((part) => {
+        if (part.type !== "tool-call" || !isAskUserToolName(part.toolName) || part.status !== "running"
+          || part.result !== undefined || part.structuredResult !== undefined) return part;
+        interruptedAsk = true;
+        // This is a display-only terminal status, not an AskUser result or answer.
+        return { ...part, status: "failed" as const };
+      });
+      const notice = "The question was interrupted. Answer in a new message; no tool was replayed.";
+      if (interruptedAsk && !parts.some((part) => part.type === "text" && part.text.includes(notice))) {
+        parts.push({ type: "text", text: notice });
+      }
     }
     const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
     if (processJobAssociated) {
