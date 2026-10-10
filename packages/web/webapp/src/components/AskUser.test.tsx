@@ -112,12 +112,28 @@ describe("AskUser web form", () => {
     await screen.findByRole("button", { name: "Submit answers" });
     const [active, old] = [...container.querySelectorAll<HTMLElement>(".ask-user-card")];
     expect(within(old!).queryByRole("button", { name: "Submit answers" })).not.toBeInTheDocument();
-    expect(within(old!).getByText(/Question unavailable/)).toBeVisible();
+    expect(within(old!).getByText("Question interrupted")).toBeVisible();
+    expect(within(old!).queryByText(/Question unavailable/)).not.toBeInTheDocument();
+    expect(old!.querySelector(".tool-status")).toBeNull();
     fireEvent.click(within(active!).getByRole("radio", { name: /Send/ }));
     fireEvent.click(within(active!).getByRole("checkbox", { name: /Owner/ }));
     fireEvent.click(within(active!).getByRole("button", { name: "Submit answers" }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith("thread-1", "fictional-later-ask", expect.any(Array)));
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["recorded-result", "running", "non-error"])("leaves the %s AskUser heading unchanged", (kind) => {
+    vi.spyOn(api, "pendingAsk").mockResolvedValue(undefined);
+    vi.spyOn(api, "ask").mockResolvedValue(undefined);
+    const { container } = render(<AskReconciliationProvider>
+      <ToolFallback type="tool-call" toolName="AskUser" toolCallId="fictional-unaffected" args={{}} argsText="{}"
+        result={kind === "recorded-result" ? "Fictional terminal result." : undefined} isError={kind !== "non-error"}
+        status={kind === "running" ? { type: "running" } : { type: "incomplete", reason: "other" }}
+        addResult={vi.fn()} resume={vi.fn()} respondToApproval={vi.fn()} />
+    </AskReconciliationProvider>);
+    expect(screen.getByText("Input needed")).toBeVisible();
+    expect(container.querySelector(".tool-status")).not.toBeNull();
+    expect(screen.queryByText("Question interrupted")).not.toBeInTheDocument();
   });
 
   it("does not locally expire a pending snapshot whose expiry is explicitly null", async () => {

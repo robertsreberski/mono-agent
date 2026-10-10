@@ -574,7 +574,10 @@ describe("interrupted AskUser recovery in Chromium", () => {
       render(<AskReconciliationProvider><SteerHarness width={Math.min(width - 24, 760)} messages={[response]} /></AskReconciliationProvider>);
       expect(await screen.findByText(note)).toBeVisible();
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-      expect(await screen.findByText(/Question unavailable/)).toBeVisible();
+      expect(await screen.findByText("Question interrupted")).toBeVisible();
+      expect(screen.queryByText(/Question unavailable/)).toBeNull();
+      expect(screen.queryByText("Input needed")).toBeNull();
+      expect(document.querySelector(".ask-user-card .tool-status")).toBeNull();
       expect(screen.queryByRole("button", { name: "Submit answers" })).toBeNull();
       expect(pending).not.toHaveBeenCalled(); expect(ask).not.toHaveBeenCalled();
       await capture(`p6-question-interrupted-${label}-${width}x${height}`);
