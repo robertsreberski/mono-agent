@@ -102,13 +102,21 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
     const initial = payload.inputs.find((input) => input.kind === "initial")!;
     if (initial.kind === "initial") messages.push({ role: "user", content: initial.persistText, timestamp: candidate?.initialTimestamp ?? initial.timestamp,
       runId: payload.identity.turnId, ...(initial.senderLabel === undefined ? {} : { name: initial.senderLabel }) });
-    for (const id of detached ? payload.candidate?.consumedInputIds ?? matched?.consumedInputIds ?? [] : matched?.consumedInputIds ?? []) {
+    const consumedIds = detached ? payload.candidate?.consumedInputIds ?? matched?.consumedInputIds ?? [] : matched?.consumedInputIds ?? [];
+    for (const id of consumedIds) {
       const input = payload.inputs.find((entry) => entry.id === id);
       if (input?.kind === "live") messages.push({ role: "user", content: input.persistText, timestamp: input.receivedAt, runId: payload.identity.turnId });
     }
     if (candidate?.text !== null && candidate?.text !== undefined) messages.push({ role: "assistant", content: candidate.text,
       timestamp: candidate.timestamp, runId: payload.identity.turnId,
       ...(outcome === "cancelled" || outcome === "failed" ? { idempotencyKey: `${outcome === "cancelled" ? CANCELLED_TURN_HISTORY_KEY_PREFIX : FAILED_TURN_HISTORY_KEY_PREFIX}${payload.identity.turnId}` } : {}) });
+    const unconsumed = payload.inputs.filter((input) => input.kind === "live" && !consumedIds.includes(input.id)).length;
+    // Completed turns can return unconsumed inputs to the caller for requeue.
+    // Keep the recovery notice outside the bounded runtime candidate. The canonical
+    // receipt commits it with this turn, including when candidate text is null.
+    if (outcome !== "completed" && unconsumed > 0) messages.push({ role: "assistant",
+      content: `Some messages sent during the previous turn (${unconsumed} total) were not confirmed as applied and were not replayed. Resend them if still needed.`,
+      timestamp: candidate?.timestamp ?? timestamp, runId: payload.identity.turnId });
   }
   return { outcome, ...(candidate === undefined ? {} : { candidate }), messages,
     nativeReusable: matched !== undefined && !detached && !(matched.outcome === "completed" && outcome !== "completed") && matched.currentTipId === matched.tipId

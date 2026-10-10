@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Report messages admitted during an interrupted turn but not confirmed as
+  applied, once on recovery. Do not replay them; resend them if still needed.
+
 - Fix one stray file (for example `.DS_Store`) or one damaged file in the Pi
   session folder breaking every conversation. Unrelated entries are ignored and
   never deleted; a damaged file of unknown ownership blocks only a conversation

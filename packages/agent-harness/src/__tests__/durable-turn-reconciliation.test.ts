@@ -352,12 +352,66 @@ it("receipt cleanup retires cold native evidence outside the global root transac
   expect(await f.record()).toEqual(committed); expect(f.inspect).toHaveBeenCalledOnce(); expect(f.retire).toHaveBeenCalledTimes(2);
 }, 5_000);
 
-it("does not invent canonical live input when the offer was durable but native never consumed it", async () => {
+it.each(["interrupted", "failed", "cancelled", "absent", "detached"] as const)("Unconsumed host admission is reported once (%s)", async (state) => {
   const f = await fixture(); const turn = await f.begin();
-  await turn.reconciliation!.admit(createPendingLiveInput({ id: "fictional-unconsumed", persistText: "Fictional unconsumed offer.", receivedAt: timestamp }, "Fictional unconsumed offer.", "live"));
+  for (const id of ["fictional-unconsumed", "fictional-second"]) {
+    await turn.reconciliation!.admit(createPendingLiveInput({ id, persistText: "Fictional unconsumed offer.", receivedAt: timestamp }, "Fictional unconsumed offer.", "live"));
+  }
+  await turn.reconciliation!.admit(createPendingLiveInput({ id: "fictional-wake", persistText: "", receivedAt: timestamp }, "Fictional private wake body.", "wake"));
+  if (state === "detached") await turn.reconciliation!.claim("detached", { outcome: "interrupted", text: null, timestamp, error: null, failureKind: "interrupted", consumedInputIds: [] });
+  f.inspect.mockImplementation(async (request) => state === "absent" ? { status: "absent" } : evidence(request, state === "detached" ? "completed" : state));
   await turn.abort(); await f.store.recoverProviderSessionTurn(bucket);
-  const record = await f.record(); expect(record.lastCommit.outcome).toBe("completed"); expect(record.messages).toHaveLength(2);
+  const record = await f.record();
+  expect(record.messages.filter((message: { role: string }) => message.role === "user")).toHaveLength(1);
   expect(JSON.stringify(record.messages)).not.toContain("Fictional unconsumed offer.");
+  expect(JSON.stringify(record.messages)).not.toContain("private wake body");
+  expect(record.messages.filter((message: { content: string }) => message.content.includes("not confirmed as applied"))).toEqual([
+    expect.objectContaining({ role: "assistant", content: "Some messages sent during the previous turn (2 total) were not confirmed as applied and were not replayed. Resend them if still needed." }),
+  ]);
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
+  expect(await f.record()).toEqual(record); expect(f.inspect).toHaveBeenCalledOnce();
+});
+
+it.each(["live", "recovered", "detached"] as const)("Completed turn with an unconsumed admitted input gets no recovery notice (%s)", async (state) => {
+  const f = await fixture(); const turn = await f.begin();
+  const admittedAt = "2000-01-01T00:00:00.000Z";
+  await turn.reconciliation!.admit(createPendingLiveInput({ id: "fictional-unconsumed", persistText: "Fictional unconsumed offer.", receivedAt: admittedAt }, "Fictional unconsumed offer.", "live"));
+  if (state === "live") {
+    // Exercise both projections in normal settlement, including the liveMessages
+    // host-candidate replacement. The caller still owns requeue/discard policy.
+    await (await turn.prepareCommit([
+      { role: "user", content: "Fictional redacted input.", timestamp: admittedAt, runId: "fictional-turn" },
+      { role: "assistant", content: "Fictional live final reply.", timestamp: admittedAt, runId: "fictional-turn" },
+    ], { providerSessionSynced: true })).commit();
+  } else {
+    if (state === "detached") await turn.reconciliation!.claim("detached", { outcome: "completed", text: null, timestamp: admittedAt, error: null, failureKind: null, consumedInputIds: [] });
+    await turn.abort(); await f.store.recoverProviderSessionTurn(bucket);
+  }
+  const record = await f.record();
+  expect(record.lastCommit.outcome).toBe("completed");
+  expect(record.messages.map((message: { content: string }) => message.content)).toEqual([
+    "Fictional redacted input.", ...(state === "detached" ? [] : [state === "live" ? "Fictional live final reply." : "Fictional final reply."]),
+  ]);
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
+  expect(await f.record()).toEqual(record); expect(f.inspect).toHaveBeenCalledOnce();
+});
+
+it("Duplicate consumption/receipt settles once", async () => {
+  const f = await fixture(); const turn = await f.begin();
+  const human = createPendingLiveInput({ id: "fictional-consumed", persistText: "Fictional applied offer.", receivedAt: timestamp }, "Fictional applied offer.", "live");
+  await turn.reconciliation!.admit(human); await turn.reconciliation!.admit(human);
+  f.inspect.mockImplementation(async (request) => {
+    expect(request.expectedInputs).toHaveLength(2);
+    const result = evidence(request); if (result.status !== "matched") throw new Error("fixture");
+    return { ...result, consumedInputIds: request.expectedInputs.map((input) => input.id),
+      inputs: request.expectedInputs.map((input) => ({ ...input, messageId: `envelope:${input.id}`, complete: true })) };
+  });
+  fault.unlinkFence = true;
+  await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+  const record = await f.record();
+  expect(record.messages.map((message: { content: string }) => message.content)).toEqual(["Fictional redacted input.", "Fictional applied offer.", "Fictional final reply."]);
+  await f.store.recoverProviderSessionTurn(bucket); await f.store.recoverProviderSessionTurn(bucket);
+  expect(await f.record()).toEqual(record); expect(f.inspect).toHaveBeenCalledOnce();
 });
 
 
