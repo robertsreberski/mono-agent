@@ -6,6 +6,13 @@
   offers `AskUser`. It now includes the turn's interrupted-question and
   unapplied-message notes, so the agent does not re-ask the question.
 
+- Use the structured handoff for every opt-in Web model change, including a
+  return to an earlier model: outgoing summary, then the exact checkpoint plus
+  later history, then incoming summary. Native session state is no longer
+  reused across models. Keep opt-in prepared turns on the primary model only;
+  a failure there waits for the next message instead of starting a backup.
+  Ordinary fallback, billing caps and recovery are unchanged.
+
 - Keep a durable note for interrupted `AskUser` questions; answer in a new
   message rather than reviving the old question or replaying its tool.
 
@@ -29,17 +36,8 @@
 - Keep the current native journal when starting consecutive opt-in Web turns;
   forget only the advisory warm mapping until owned preparation admits the turn.
 
-- Let opt-in persisted-ID Web turns and no-ID wakes on native-bound conversations
-  use configured backups after strictly pre-output/tool/live-input failure and
-  durable detachment. Keep prepared producers and compaction primary-only;
-  accept a backup answer once, reset only the current native stretch, and report
-  `degraded_native_context` while retaining conversation history and predecessors.
-  Reseed every canonical turn after a backup, including turns after a switch.
-  Allow certified untouched provider-auth failures to use independent backup
-  credentials; report degradation only once when cold change and backup coincide.
-
-- Keep monotonic Pi dispatch evidence for assistant output, tool admission and
-  live input, including prepared turns, early failures and thrown cleanup errors.
+- Keep monotonic Pi dispatch evidence for tool admission and live input,
+  including prepared turns, early failures and thrown cleanup errors.
   Stop ordinary retries and backups once Pi yields a live input, even if it is
   later removed unconsumed; only never-yielded input transfers. Count a tool
   reaching admission conservatively even when a hook blocks its execution.
@@ -52,8 +50,6 @@
 
 - With Web model switching on, record the pinned dispatch account on every Web
   turn with a persisted message ID, from a new conversation's first message on.
-  A compatible switch-back can then reuse native evidence without a summary
-  call. Earlier epochs and mixed epochs stay unknown and take the handoff.
   These Web turns now use the primary model only, with no configured fallback
   backup. Non-Web turns and turns without an ID keep fallbacks.
 
@@ -99,13 +95,6 @@
 - Forward owned native preparation through configured APP wrappers and preserve
   Web message identities across redelivery; keep guarded model changes without
   persisted identities fail-closed.
-
-- Keep native switch projections within exact artifact byte reservations and
-  require the accepted provider/API on native reopening, while leaving ordinary
-  account changes ungated.
-- Add whole-chain native switch-back behind the opt-in model-switch capability,
-  requiring positive provider, API and account proof for every recorded operation;
-  use handoffs when proof or fit fails.
 
 - Preserve ordinary cancellation continuity after switch preparation selects
   fallback; skip unavailable outgoing producers without billing and distinguish

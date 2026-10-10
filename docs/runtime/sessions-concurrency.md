@@ -76,9 +76,11 @@ not move existing native conversations: they retain their durable model until a
 persisted Web message selects the new model. Prose keywords do not escalate models
 or effort; they are ordinary message text.
 Switches retain predecessor journals and admit the incoming turn only after one
-durable switch and a complete fitting projection or structured handoff. Native
-reuse requires positive provider/API/account compatibility, including switch-back;
-missing provenance selects a handoff, not guessed compatibility.
+durable switch and a complete fitting structured handoff. Every model change,
+including a return to an earlier model, takes the same approved order: outgoing
+summary, then the exact accepted checkpoint plus its complete later history, then
+incoming summary, then `handoff_pending`. Native session state (raw envelopes,
+signed reasoning) is never reused across models, even with matching provenance.
 
 Each switch permits at most two billed summary calls per explicit-message generation.
 An outcome-unknown call never auto-repeats. Retries/reopening with the same persisted
@@ -134,28 +136,12 @@ Scope: only the Web console's persisted messages can switch models durably. Ever
 other surface keeps today's behavior described above.
 
 With the opt-in on, persisted-ID Web turns (including the first message) and
-no-ID wakes on native-bound conversations use prepared native dispatch. A
-retryable primary failure or provider-auth failure **before any assistant output,
-tool admission or live-input yield** can use the configured backups, after durable
-detachment. A backup's independent credentials may work even when the primary's do not.
-Missing, malformed or unarmed progress evidence fails closed. There is no
-router-level same-model retry of the single-use prepared lease; transport
-retries within its conversational request are unchanged. Preparation, manual
-compaction and handoff producers remain primary-only. Refusals and pending
-model switches never start a backup.
-
-A backup gets the prepared canonical floor plus current input, not the primary's
-native session or its private route options. If it answers, the host accepts and
-commits the answer once, resets the primary's current native stretch, and keeps
-predecessor journals and the accepted switch receipt. After cold settlement it
-streams and returns `degraded_native_context`: conversation history is kept,
-but the model did not get the previous model's full working context and may need
-key details repeated. A cold model change and backup in the same turn report this
-warning kind only once, both streamed and returned. The next turn reseeds every
-canonical turn, including
-those after an earlier switch artifact. A crash before the warning leaves only
-the canonical receipt. Once output, tool admission or yielded live input occurs,
-the prepared path cannot retry or fail over. A cancellation before admission is
+no-ID wakes on native-bound conversations use prepared native dispatch with the
+**primary model only**. These turns get no configured fallback-chain backup model
+and no router-level re-attempt; transport retries within the attempt are
+unchanged. A primary failure is returned for that message; send another message
+to try again. Other turns keep their configured fallbacks. A cancel that
+arrives after such a turn's preparation has started, but before admission, is
 reported and not appended to history.
 
 If the current native journal is gone for an outside reason (deleted, the agent
@@ -190,8 +176,7 @@ journal.
 Predecessor journals use the same split. A lost predecessor does not affect
 same-model turns and stays absent; C never recreates it, while any predecessor
 bytes that remain must still match exactly. A persisted-ID switch whose chain has
-a lost predecessor never attempts native reuse or a handoff from the missing
-bytes: it takes the owned cold model change (`predecessor_missing`) with canonical
+a lost predecessor never attempts a handoff from the missing bytes: it takes the owned cold model change (`predecessor_missing`) with canonical
 replay, one `degraded_native_context` warning and no summary call or billed
 generation. Losing the whole native root, for example after moving to another
 machine, recovers on the next message without a reset. A damaged predecessor, or
@@ -215,8 +200,8 @@ Setting `enabled: false` afterwards does not convert upgraded conversations back
 | Acceptance | Behavior | Observable evidence | Verified by |
 | --- | --- | --- | --- |
 | A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical `lastSwitch` receipt and one `model_change` record in the outgoing native journal | `configured-switch-kill-matrix.test.ts` (12 SIGKILL boundaries, two fresh-process recoveries each), `managed-native-switch.test.ts` |
-| A2 complete fitting context | The incoming model receives a native projection or a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | Immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `native-switch-back.test.ts`, kill-matrix incoming-context assertions |
-| A3 switch-back | Returning to an earlier model retains all native evidence. Native reuse happens only when provider, API, account and window fit are all positively established on every reused segment and every content-bearing operation; otherwise it takes a structured handoff. Under the opt-in, Web turns record the account of their pinned dispatch credentials, so conversations started with the opt-in on can reuse native evidence. | Chain length grows by one per switch; predecessor journals stay byte-stable; a native switch-back artifact carries a native projection and makes no summary call | `configured-native-provenance.test.ts`, kill-matrix native return boundaries, `native-switch-back.test.ts` |
+| A2 complete fitting context | The incoming model receives a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | Immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `model-switch-return.test.ts`, kill-matrix incoming-context assertions |
+| A3 return to an earlier model | Returning to an earlier model is an ordinary structured transfer that includes the intervening work. It never reuses the earlier model's native session state. | Chain length grows by one per switch; predecessor journals stay byte-stable; the return's artifact comes from the approved producer order | `configured-native-provenance.test.ts`, kill-matrix structured return boundaries, `model-switch-return.test.ts` |
 | A4 crash, upgrade, reset, retention | Crashes recover from storage alone: no provider, summary or tool replay, and no leaked reservation or fence. Reset and retention delete the whole chain and its artifacts. Upgrade settles old pending turns first. | Empty `.pending-turns`/dirty fences, no `.native-history-op.*` intent, zero reserved bytes | `configured-switch-kill-lifecycle.test.ts`, `managed-native-lifecycle.test.ts`, `managed-native-cold-change.test.ts`, `host-turn-reconciliation.test.ts` |
 
 Billing during recovery: an admitted summary call interrupted by a crash stays
@@ -240,7 +225,7 @@ Warnings and refusals:
   The warning is then never shown. The only record is the canonical
   `lastSwitch.kind: "cold"` receipt for a model change, or the rotated current
   epoch for a recovered journal.
-- Structured handoffs and native reuse produce no warning.
+- Structured handoffs produce no warning.
 - `handoff_pending`, `handoff_budget_exceeded`,
   `native_cold_model_change_unavailable`, `native_journal_unreadable` and
   retryable `native_switch_busy` are refusals. The message was not admitted;
@@ -248,12 +233,11 @@ Warnings and refusals:
 
 Limits:
 
-- Native reuse needs positive account evidence on every segment. Epochs written
-  before the opt-in, or holding any content written without recorded dispatch
-  provenance (for example background wakes or turns without a persisted ID),
-  stay unknown and take the handoff. Accounts are never
-  inferred or backfilled. Only providers whose credentials expose a stable
-  account (today: Codex OAuth) can match; API-key providers stay unknown.
+- Every model change, including a quick return, runs the handoff producers:
+  normally one billed outgoing summary call, at most two per generation. Signed
+  reasoning and provider caches do not carry across models.
+- Opt-in prepared turns have no same-message fallback model. A primary failure
+  waits for the next message.
 - Handoff summaries are model-written prose. The deterministic ledger and the
   verbatim recent turns remain the authoritative evidence.
 - Older binaries are not technically blocked from an upgraded root.
@@ -290,8 +274,7 @@ or router telemetry. Persistent subagents remain excluded: they have no host
 canonical replay loader, and detached answers still lose session continuity.
 Direct router callers without a loader retain their existing behaviour; private
 memory completion-only runtimes ignore the loader. Prepared native dispatch
-uses its already-captured canonical floor for strictly pre-progress backup
-continuation, as described in the opt-in section above.
+remains primary-only, with no routed retry or backup.
 
 A continuous conversation binds its provider session to the requested primary model, including a thread or channel model override. Repeating that model stays warm; changing it (including returning to the default) retires the old session on its owning runtime and starts a fresh epoch. The cold turn is seeded from canonical user/assistant text and the existing bounded tool-history projection; subsequent warm turns retain the native transcript, including tool results and signed reasoning. Effort-only and same-model overrides do not rotate the session. Continuations and opt-in proactive isolation keep their existing one-shot behavior. Configured retry/fallback behavior follows the [fallback session policy](/runtime/fallback/).
 

@@ -119,7 +119,7 @@ The typed lease optionally forwards pure `checkHandoffSummary` and one pinned
 `produceHandoffSummary` request/result; producers have no tools, router retry,
 provider/auth override or native persistence. Host durable admission owns billing.
 `createManagedNativeJournalStorage` additionally returns typed complete read-only
-evidence capture and pure budget/handoff/native projection helpers. The validated
+evidence capture and pure budget/handoff helpers. The validated
 view is immutable and identity-bound: cloned raw JSON is not a validated view.
 This additive API does not enable configured host switching.
 

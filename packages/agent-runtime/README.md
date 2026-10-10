@@ -226,8 +226,9 @@ persist attempt admission before invoking it; this API does not authorize billin
 Producer input is captured synchronously. Run refuses while production is active
 without consuming dispatch; close/abort retain resources until it settles.
 
-Managed storage exposes typed read-only complete evidence capture plus pure budget,
-native projection and handoff/checkpoint preparation. Composed checkpoint coverage
+Managed storage exposes typed read-only complete evidence capture plus pure budget
+and handoff/checkpoint preparation. It never projects native envelopes across a
+model change. Composed checkpoint coverage
 can precede a later switch reference frame only when its exact hashed prefix and
 sole following model-change triplet are proved; changed/missing coverage fails.
 
@@ -330,9 +331,8 @@ staged-only bytes, catalogue failure or a predecessor that differs from its
 supplied frozen descriptor; a torn final line is left
 to the ordinary open/repair path. Cold-epoch publication/verification leaves a
 definitively absent predecessor absent; present predecessor bytes must match.
-Prepared leases can continue to configured backups only after certified
-pre-output/tool/live-input failure and durable host detachment. They never retry
-the consumed primary lease; producers and manual compaction stay primary-only.
+Prepared leases are primary-only: no routed retry or backup, and producers and
+manual compaction stay primary-only too.
 Default unguarded, stateless and subagent behavior is unchanged. Their cleanup
 cannot target guarded host-chain predecessors: destructive APIs require owned
 C/D disposition, and a guarded refusal is not successful physical cleanup.
@@ -374,18 +374,15 @@ OAuth login and refresh expose `accountId` from the access-token auth claim.
 The probe requires that claim to match the credential metadata **and** the exact
 dispatch token, returning an opaque nonsecret account reference. Other credentials
 remain explicitly unknown; token hashes and credential paths are not proof.
-Positive provider/API/account matching applies only to switch/switch-back native
-reuse, never ordinary same-model reopen. These APIs are opt-in foundations;
-there is no host switch transaction or live native switch-back guarantee yet.
+Account provenance is recorded only; no switch reuses native evidence on it.
 
 ## Architecture
 
 Pi results include a monotonic `dispatchProgress` snapshot (version 1), armed
-only after replay seeding: assistant output, tool admission and yielded live
-input are distinct flags. Ordinary retries/backups stop after tool or live-input
-progress, with normalized-event evidence retained for other backends. Missing,
-malformed or unarmed evidence never certifies an untouched prepared attempt;
-prepared continuation requires that certification and durable detachment.
+only after replay seeding: tool admission and yielded live input are distinct
+flags. Ordinary retries/backups stop after tool or live-input progress, with
+normalized-event evidence retained for other backends. Prepared native dispatch
+remains primary-only.
 
 The provider bridge imports the model-run loop, native journal/storage and
 compaction kit from `@mono-agent/harness`. The separate `agent-harness` host
