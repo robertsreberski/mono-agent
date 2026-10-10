@@ -149,29 +149,47 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   // Read-only, stage-aware catalogue for one v3 handle. Unlike repo.list() it
   // never reclaims a `.creating` stage and counts `.importing`/`.upgrading`
   // copies and legacy archives, so a staged-only restore is never "absent".
-  // Serialized with native creators by the catalogue lock.
+  // Serialized with native creators by the catalogue lock. Entry selection
+  // matches listOwnedUnlocked: unrelated names are skipped and a matching
+  // non-file fails. Like its reclaim rule, a `.creating` stage with an
+  // incomplete or header-only body is a failed unpublished creation, not
+  // evidence (ignored here, never unlinked). Any other matching file whose
+  // header cannot be read, parsed or validated is unattributed: it could be
+  // this handle's damaged journal, so it blocks only a "missing" verdict, never
+  // a found published journal. repo.list() rejects the whole catalogue for it.
   const handleCatalogue = async (handleId) => {
     const found = { published: /** @type {any[]} */ ([]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
-    let names = [];
-    try { names = await readdir(repo.directory); } catch (error) { if (!missing(error)) throw error; }
-    if (names.length) {
+    let present = false;
+    try { present = (await lstat(repo.directory)).isDirectory(); } catch (error) { if (!missing(error)) throw error; }
+    if (present) {
       const locks = await repo.ensureDirectory();
       await locks.withCatalog(async () => {
-        for (const name of await readdir(repo.directory)) {
-          const match = /^([A-Za-z0-9_-]+)\.jsonl(\.(?:creating|importing|upgrading))?$/.exec(name); if (!match) fail();
-          const reader = await JournalReader.open(join(repo.directory, name), root);
+        for (const file of await readdir(repo.directory, { withFileTypes: true })) {
+          const suffix = [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((end) => file.name.endsWith(end));
+          if (!suffix) continue;
+          if (!file.isFile()) fail();
+          const filePath = join(repo.directory, file.name);
+          let header, bodyless = false;
           try {
-            const header = await reader.readHeader({ allowIncomplete: true });
-            if (header === undefined) { if (!match[2]) fail(); found.unattributed += 1; continue; }
-            if (header?.id !== handleId) continue;
-            if (match[2]) { found.staged += 1; continue; }
-            validateJournalHeader(header);
-            found.published.push({ id: handleId, journalId: match[1], path: join(repo.directory, name) });
-          } finally { await reader.close(); }
+            const reader = await JournalReader.open(filePath, root);
+            try {
+              header = await reader.readHeader({ allowIncomplete: true });
+              if (suffix === ".jsonl.creating" && header) { let count = 0; const scan = await reader.scan(() => { count += 1; }); bodyless = count === 1 && !scan.torn; }
+            } finally { await reader.close(); }
+          } catch (error) { if (missing(error)) continue; header = null; }
+          if (suffix === ".jsonl.creating" && (header === undefined || bodyless)) continue;
+          if (!header || typeof header !== "object") { found.unattributed += 1; continue; }
+          if (header.id !== handleId) continue;
+          if (suffix !== ".jsonl") { found.staged += 1; continue; }
+          try { validateJournalHeader(header); } catch { found.unattributed += 1; continue; }
+          found.published.push({ id: handleId, journalId: file.name.slice(0, -suffix.length), path: filePath });
         }
       });
     }
-    for (const entry of await listLegacySessions(root, { includeArchives: true })) {
+    let legacy;
+    try { legacy = await listLegacySessions(root, { includeArchives: true }); }
+    catch { legacy = await listLegacySessions(root); found.unattributed += 1; } // an unreadable archive could be ours
+    for (const entry of legacy) {
       if (entry.id === handleId) { if (entry.path.endsWith(".migrated")) found.archived += 1; else found.legacy += 1; }
     }
     return found;
@@ -490,13 +508,13 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           meta = { id: handleId, journalId, path: path(journalId) };
         } else {
           const found = await handleCatalogue(handleId);
-          // An unattributable stage could belong to this handle: not definitive.
-          if (found.unattributed) return unreadable("staged_unattributed");
           if (found.published.length > 1) return unreadable("ambiguous");
           if (found.published.length === 1) meta = found.published[0];
           // Legacy sources are imported by the ordinary open path; presence suffices.
           else if (found.legacy) return { status: "present" };
           else if (found.staged || found.archived) return unreadable("staged_only");
+          // An unattributable file could be this handle's damaged journal.
+          else if (found.unattributed) return unreadable("unattributed");
           else return { status: "missing" };
         }
         const reader = await JournalReader.open(meta.path, root);

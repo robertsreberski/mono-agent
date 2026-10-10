@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { appendFile, mkdtemp, open, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, open, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { fork, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
@@ -427,11 +427,32 @@ it.each([".upgrading", ".importing", ".creating"])("a handle-only staged-only %s
   await writeFile(staged, f.before, { mode: 0o600 }); await rm(f.metadata.path);
   expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "unreadable", reason: "staged_only" });
   expect(await readFile(staged)).toEqual(f.before);
-  // An unattributable partial creation stage could be this handle too.
+  // Like listOwnedUnlocked's reclaim rule, a partial or header-only creation
+  // stage is a failed unpublished create, not evidence: ignored, never unlinked.
   await rm(staged); const partial = join(f.repo.directory, "00000000-0000-4000-8000-000000000000.jsonl.creating");
   await writeFile(partial, "{\"format\"", { mode: 0o600 });
-  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "unreadable", reason: "staged_unattributed" });
-  expect(await readFile(partial, "utf8")).toBe("{\"format\"");
+  const headerOnly = `${f.metadata.path}.creating`; await writeFile(headerOnly, `${f.before.toString().split("\n")[0]}\n`, { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "missing" });
+  expect(await readFile(partial, "utf8")).toBe("{\"format\""); expect((await readFile(headerOnly, "utf8")).split("\n")).toHaveLength(2);
+});
+it("handle lookup skips unrelated entries; an unattributable damaged journal blocks only a missing verdict", async () => {
+  const f = await fixture(), present = { handleId: f.metadata.id }, absent = { handleId: "a".repeat(64) };
+  await writeFile(join(f.repo.directory, ".DS_Store"), "fictional", { mode: 0o600 });
+  await writeFile(join(f.repo.directory, "notes.txt~"), "fictional", { mode: 0o644 });
+  await mkdir(join(f.repo.directory, "scratch"));
+  expect(await f.bridge.inspectCurrentJournal(present)).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
+  // A headerless published journal cannot be attributed: it may be the lost one.
+  const foreign = join(f.repo.directory, "11111111-1111-4111-8111-111111111111.jsonl");
+  for (const bytes of ["", "{not json\n"]) {
+    await writeFile(foreign, bytes, { mode: 0o600 });
+    expect(await f.bridge.inspectCurrentJournal(present)).toEqual({ status: "present" });
+    expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "unreadable", reason: "unattributed" });
+    expect(await readFile(foreign, "utf8")).toBe(bytes);
+  }
+  // A readable header for another handle is unrelated evidence and never blocks.
+  await writeFile(foreign, f.before.toString().replaceAll(f.metadata.id, "b".repeat(64)).replaceAll(f.metadata.journalId, "11111111-1111-4111-8111-111111111111"), { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
 });
 it("a valid but older restored predecessor prefix is refused against its frozen descriptor, before any C", async () => {
   const f = await lifecycleFixture(), predecessor = f.chain[0];

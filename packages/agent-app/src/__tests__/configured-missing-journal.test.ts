@@ -267,6 +267,27 @@ it("v3: a staged-only restore of the current journal refuses typed and is never 
   expect(await readFile(staged)).toEqual(bytes); expect(await readdir(f.journals)).toEqual([`${name}.upgrading`]);
 }, 20_000);
 
+// Stray non-journal entries are covered at probe level (native-journal-storage
+// test): the probe skips them, but the pre-existing native inventory used by
+// retention accounting still rejects them for every opt-in turn (recorded limit).
+it("v3: an unattributable damaged journal blocks only the missing verdict; once removed, recovery proceeds", async () => {
+  const f = await fixture(), first = await f.make();
+  f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional recovered answer")]);
+  await f.send(first, "fictional-seed", "A");
+  for (const name of await readdir(f.journals)) await unlink(join(f.journals, name));
+  // Headerless, so it cannot be proved foreign: it may be this conversation's journal.
+  const damaged = join(f.journals, "11111111-1111-4111-8111-111111111111.jsonl");
+  await writeFile(damaged, "", { mode: 0o600 });
+  await first.dispose();
+  const reopened = await f.make(), before = await f.record();
+  expect(await f.send(reopened, "fictional-refused", "A")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
+  expect(await f.record()).toEqual(before); expect(await readFile(damaged, "utf8")).toBe("");
+  await unlink(damaged);
+  const recovered = await f.send(reopened, "fictional-after-loss", "A");
+  expect(recovered.text).toBe("Fictional recovered answer"); expect(recovered.streamed).toEqual(["degraded_native_context"]);
+  expect((await readdir(f.journals)).filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
+}, 20_000);
+
 it("v4: a valid but older restored predecessor refuses typed before any C intent when the current is lost", async () => {
   const f = await fixture(), h = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional never answer")]);
