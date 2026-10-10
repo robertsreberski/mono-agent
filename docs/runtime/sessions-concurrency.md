@@ -133,12 +133,26 @@ disabling the option, stripping markers or downgrading records is not rollback.
 Scope: only the Web console's persisted messages can switch models durably. Every
 other surface keeps today's behavior described above.
 
-With the opt-in on, every Web turn that carries a persisted message ID uses the
-**primary model only**. That includes the first message of a new conversation.
-These turns get no configured fallback-chain backup model and no router-level
-re-attempt; transport retries within the attempt are unchanged. Non-Web turns and
-turns without a persisted ID keep their configured fallbacks. A cancel that
-arrives after such a turn's preparation has started, but before admission, is
+With the opt-in on, persisted-ID Web turns (including the first message) and
+no-ID wakes on native-bound conversations use prepared native dispatch. A
+retryable primary failure **before any assistant output, tool admission or
+live-input yield** can use the configured backups, after durable detachment.
+Missing, malformed or unarmed progress evidence fails closed. There is no
+router-level same-model retry of the single-use prepared lease; transport
+retries within its conversational request are unchanged. Preparation, manual
+compaction and handoff producers remain primary-only. Refusals and pending
+model switches never start a backup.
+
+A backup gets the prepared canonical floor plus current input, not the primary's
+native session or its private route options. If it answers, the host accepts and
+commits the answer once, resets the primary's current native stretch, and keeps
+predecessor journals and the accepted switch receipt. After cold settlement it
+streams and returns `degraded_native_context`: conversation history is kept,
+but the model did not get the previous model's full working context and may need
+key details repeated. The next turn reseeds every canonical turn, including
+those after an earlier switch artifact. A crash before the warning leaves only
+the canonical receipt. Once output, tool admission or yielded live input occurs,
+the prepared path cannot retry or fail over. A cancellation before admission is
 reported and not appended to history.
 
 To enable:
@@ -230,7 +244,8 @@ or router telemetry. Persistent subagents remain excluded: they have no host
 canonical replay loader, and detached answers still lose session continuity.
 Direct router callers without a loader retain their existing behaviour; private
 memory completion-only runtimes ignore the loader. Prepared native dispatch
-remains primary-only, with no routed retry or backup.
+uses its already-captured canonical floor for strictly pre-progress backup
+continuation, as described in the opt-in section above.
 
 A continuous conversation binds its provider session to the requested primary model, including a thread or channel model override. Repeating that model stays warm; changing it (including returning to the default) retires the old session on its owning runtime and starts a fresh epoch. The cold turn is seeded from canonical user/assistant text and the existing bounded tool-history projection; subsequent warm turns retain the native transcript, including tool results and signed reasoning. Effort-only and same-model overrides do not rotate the session. Continuations and opt-in proactive isolation keep their existing one-shot behavior. Configured retry/fallback behavior follows the [fallback session policy](/runtime/fallback/).
 

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Let opt-in persisted-ID Web turns and no-ID wakes on native-bound conversations
+  use configured backups after strictly pre-output/tool/live-input failure and
+  durable detachment. Keep prepared producers and compaction primary-only;
+  accept a backup answer once, reset only the current native stretch, and report
+  `degraded_native_context` while retaining conversation history and predecessors.
+  Reseed every canonical turn after a backup, including turns after a switch.
+
 - Keep monotonic Pi dispatch evidence for assistant output, tool admission and
   live input, including prepared turns, early failures and thrown cleanup errors.
   Stop ordinary retries and backups once Pi yields a live input, even if it is

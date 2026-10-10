@@ -39,7 +39,14 @@ it.each([
   expect(count(killed.calls.filter((call) => call.armed), "turn")).toBe(["turn-B", "canonical#2"].includes(phase) ? 1 : 0);
   expect(count(first.calls, "turn", "B")).toBe(1); expect(count(second.calls, "turn", "B")).toBe(1);
   // A2: incoming request carries the handoff; seed history is never cut.
-  expect(first.contexts.at(-1)).toContain("Fictional input fictional-seed"); expect(first.contexts.at(-1)).toContain("Historical handoff");
+  expect(first.contexts.at(-1)).toContain("Fictional input fictional-seed");
+  if (first.canonical.providerSession.epoch === first.canonical.lastSwitch.toEpoch) expect(first.contexts.at(-1)).toContain("Historical handoff");
+  else {
+    // C after a pre-dispatch interruption must reseed newer canonical turns,
+    // not reapply a switch artifact whose epoch was already retired.
+    expect(first.contexts.at(-1)).not.toContain("Historical handoff");
+    expect(first.contexts.at(-1)).toContain("No tools were replayed");
+  }
   // Predecessor A evidence: every seeded body record retained byte-for-byte; the
   // header is upgraded once with host authority and only the single
   // model_change frame is appended. Recovery never rewrites it again.

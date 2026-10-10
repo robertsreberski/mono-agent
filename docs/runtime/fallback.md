@@ -167,7 +167,13 @@ or router telemetry. Persistent subagents remain excluded: they have no host
 canonical replay loader, and detached answers still lose session continuity.
 Direct router callers without a loader retain their existing behaviour; private
 memory completion-only runtimes ignore the loader. Prepared native dispatch
-remains primary-only, with no routed retry or backup.
+uses its already-captured canonical floor for backups only after a retryable,
+strictly pre-output/tool/live-input failure and successful durable detachment.
+It never retries the consumed primary lease. Missing progress evidence fails
+closed; handoff producers and manual compaction remain primary-only. An accepted
+backup resets the current native stretch, keeps predecessor journals and the
+switch receipt, and streams/returns `degraded_native_context` after settlement.
+The next turn reseeds all canonical history, not a stale switch artifact.
 
 Only the primary's first attempt carries the conversation's provider
 attribution id. Every retry and backup gets a fresh attribution id of its own,
@@ -199,7 +205,7 @@ ordinary attempt even when no corresponding event reached the router. Other
 backends retain the normalized-event fallback. Assistant text, thinking and
 tool-call output are tracked separately; output alone does not change ordinary
 fallback policy. Missing, malformed or unarmed markers cannot certify an untouched
-prepared attempt. Prepared dispatch remains primary-only.
+prepared attempt. Prepared continuation requires that certification and durable detachment.
 
 The router decides from the attempt's normalized events: a `tool_use` or
 `tool_result` block, or Pi's `tool_execution_start`, whether streamed or in the
