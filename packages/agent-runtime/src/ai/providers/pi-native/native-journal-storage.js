@@ -128,6 +128,23 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       journals.add(entry.journalId); handles.add(entry.handleId);
     }
   };
+  // Definitive absence of every published/staged member of one exact journal.
+  const journalAbsent = async (journalId) => {
+    for (const suffix of ["", ".creating", ".importing", ".upgrading"]) {
+      try { await lstat(path(journalId) + suffix); return false; } catch (error) { if (!missing(error)) throw error; }
+    }
+    return true;
+  };
+  // Frozen predecessors must still be exact. A DEFINITIVELY absent one (lost
+  // externally) stays absent and untouched: C never recreates or depends on it.
+  // Any present bytes, including damaged or staged ones, must still match.
+  const verifyPredecessors = async (chain, context) => {
+    for (const predecessor of chain.slice(0, -1)) {
+      if (await journalAbsent(predecessor.journalId)) continue;
+      const frozen = await snapshot(predecessor);
+      if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
+    }
+  };
   const deletionMetadata = (entry) => ({ id: entry.handleId, journalId: entry.journalId, path: path(entry.journalId) });
   // Preflight the complete physical set, including stages, before any unlink.
   // Rejected current tails are not repaired or promoted into frozen evidence.
@@ -360,12 +377,9 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     async publishColdEpoch(chain, context) {
       const { plan, descriptor } = coldPlan(chain, context);
       await context.assertOwned();
-      // Frozen predecessors must still be exact; current may have a rejected or
-      // interrupted tail, so only its immutable header is deletion evidence.
-      for (const predecessor of chain.slice(0, -1)) {
-        const frozen = await snapshot(predecessor);
-        if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
-      }
+      // Current may have a rejected or interrupted tail, so only its immutable
+      // header is deletion evidence.
+      await verifyPredecessors(chain, context);
       await inspectDeletion([chain.at(-1)], context);
       await repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: context.timestamp,
         hostAuthority: context.hostAuthority, assertOwned: context.assertOwned, onPhase: phase });
@@ -377,10 +391,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
      * evidence behind a canonical receipt. @param {any[]} chain @param {any} context */
     async verifyColdEpoch(chain, context) {
       const { plan, descriptor } = coldPlan(chain, context); await context.assertOwned();
-      for (const predecessor of chain.slice(0, -1)) {
-        const frozen = await snapshot(predecessor);
-        if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
-      }
+      await verifyPredecessors(chain, context);
       const target = await snapshot(descriptor, undefined, true);
       if (!same(target.header, plan.header)) fail(); await context.assertOwned();
     },
@@ -440,12 +451,8 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       let meta;
       try {
         if (journalId !== undefined) {
-          const present = [];
-          for (const suffix of ["", ".creating", ".importing", ".upgrading"]) {
-            try { await lstat(path(journalId) + suffix); present.push(suffix); } catch (error) { if (!missing(error)) throw error; }
-          }
-          if (!present.length) return { status: "missing" };
-          if (!present.includes("")) return unreadable("staged_only");
+          if (await journalAbsent(journalId)) return { status: "missing" };
+          try { await lstat(path(journalId)); } catch (error) { if (missing(error)) return unreadable("staged_only"); throw error; }
           meta = { id: handleId, journalId, path: path(journalId) };
         } else {
           const matches = (await repo.list()).filter((item) => item.id === handleId);

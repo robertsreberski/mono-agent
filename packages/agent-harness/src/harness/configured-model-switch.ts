@@ -60,10 +60,10 @@ export async function prepareConfiguredModelSwitch(input: {
   let ready: Extract<Awaited<ReturnType<typeof advancePreparedModelSwitch>>, { status: "ready" }> | undefined;
   let switched = false, cold = false, appliedCold = false;
   // Legacy unsupported fallback is not authority for an owned cold transition.
-  let coldReason: "chain_limit" | "capacity" | "journal_missing" | undefined;
+  let coldReason: "chain_limit" | "capacity" | "journal_missing" | "predecessor_missing" | undefined;
   // Canonical epoch whose current journal is definitively absent (deleted, moved
   // machine, partial restore). Admission rotates exactly that epoch cold.
-  let missingEpoch: string | undefined;
+  let missingEpoch: string | undefined, lostPredecessor = false;
   try {
     let snapshot = await owner.read();
     if (messageId === undefined) {
@@ -95,9 +95,12 @@ export async function prepareConfiguredModelSwitch(input: {
     // lease. Corruption or any doubt fails closed with evidence preserved; only a
     // definitive absence selects the owner-approved cold boundary (canonical replay).
     if (!snapshot.pending && owner.inspectCurrentJournal) {
-      const presence = await owner.inspectCurrentJournal();
+      // A switch capture needs every predecessor; same-model turns never read them.
+      const switching = messageId !== undefined && !ready && snapshot.source.status === "supported" && snapshot.source.fromModelKey !== host.routing.modelKey;
+      const presence = await owner.inspectCurrentJournal(switching ? { predecessors: true } : undefined);
       if (presence.status === "unreadable") throw new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason: presence.reason });
       if (presence.status === "missing") { missingEpoch = presence.epoch; ready = undefined; switched = false; }
+      lostPredecessor = presence.lostPredecessor;
     }
     incoming = await prepareHarnessRuntime({ ...host, assertOwned: () => assertOwned(), prepareContext: input.prepareContext });
     const compaction = incoming.snapshot.compactionSummaryMaxTokens === undefined ? {} : { summaryMaxTokens: incoming.snapshot.compactionSummaryMaxTokens };
@@ -108,6 +111,9 @@ export async function prepareConfiguredModelSwitch(input: {
         try {
           // No evidence remains to capture: the new model gets canonical replay.
           if (missingEpoch !== undefined) { cold = true; coldReason = "journal_missing"; }
+          // Native reuse or a handoff would need the lost bytes: never attempt a
+          // switch-back into it; the owned cold change replays canonical history.
+          else if (lostPredecessor) { cold = true; coldReason = "predecessor_missing"; }
           else if (snapshot.native && snapshot.native.chain.length >= MAX_JOURNAL_CHAIN && !snapshot.pending) { cold = true; coldReason = "chain_limit"; }
           else {
             const from = snapshot.pending?.identity.fromModelKey ?? (snapshot.source.status === "supported" ? snapshot.source.fromModelKey : undefined);

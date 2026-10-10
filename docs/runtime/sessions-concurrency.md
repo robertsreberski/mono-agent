@@ -176,10 +176,17 @@ summary call is repeated, and a crash at any step recovers from storage alone.
 Damage is never treated as loss. An unreadable header, a malformed or invalid
 complete record, staged-only bytes or a catalogue that cannot be read refuse the
 message with `native_journal_unreadable` and leave every file unchanged. An
-incomplete final line still goes to the existing open/repair path. A lost
-predecessor journal does not affect same-model turns; if the current journal and
-a predecessor are both lost, the message is refused the same way, because C cannot
-prove the predecessors are unchanged.
+incomplete final line still goes to the existing open/repair path.
+
+Predecessor journals use the same split. A lost predecessor does not affect
+same-model turns and stays absent; C never recreates it, while any predecessor
+bytes that remain must still match exactly. A persisted-ID switch whose chain has
+a lost predecessor never attempts native reuse or a handoff from the missing
+bytes: it takes the owned cold model change (`predecessor_missing`) with canonical
+replay, one `degraded_native_context` warning and no summary call or billed
+generation. Losing the whole native root, for example after moving to another
+machine, recovers on the next message without a reset. A damaged predecessor is
+refused with `native_journal_unreadable` before any intent.
 
 To enable:
 

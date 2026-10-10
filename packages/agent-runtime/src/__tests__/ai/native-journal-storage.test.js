@@ -409,3 +409,16 @@ it("classifies the current journal as present, definitively missing or unreadabl
   expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "unreadable", reason: "staged_only" });
   await expect(f.bridge.inspectCurrentJournal({ handleId: "../escape" })).rejects.toThrow();
 });
+it("cold creation leaves a definitively absent predecessor absent but rejects a damaged one before any epoch", async () => {
+  const f = await lifecycleFixture(), predecessor = f.metadata.path, bytes = await readFile(predecessor);
+  const lines = bytes.toString().split("\n");
+  await writeFile(predecessor, [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n"));
+  await expect(f.bridge.publishColdEpoch(f.chain, coldContext)).rejects.toThrow();
+  const plan = f.bridge.planColdEpoch(f.chain, coldContext);
+  expect(await readdir(f.repo.directory)).not.toContain(`${plan.descriptor.journalId}.jsonl`);
+  await rm(predecessor);
+  const published = await f.bridge.publishColdEpoch(f.chain, coldContext);
+  expect(published).toEqual([f.chain[0], plan.descriptor]);
+  await f.bridge.verifyColdEpoch(f.chain, coldContext);
+  await expect(readFile(predecessor)).rejects.toMatchObject({ code: "ENOENT" });
+});

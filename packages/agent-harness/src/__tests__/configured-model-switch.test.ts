@@ -137,7 +137,8 @@ it("owned native evidence corruption surfaces; it is never disguised as cold rep
   const f = await fixture(); await f.seed();
   const path = join(f.nativeRoot, (await f.journals())[0]!); await writeFile(path, "{fictional-corrupt-record}\n");
   f.faux.setResponses([text("Must not execute")]); const result = await f.makeHarness("B", true).run(f.request("corrupt"));
-  expect(result.failure?.kind).toBe("SyntaxError"); expect(f.transport).toHaveBeenCalledTimes(1); expect((await f.canonical()).providerSession.modelKey).toBe("faux:A");
+  // The pre-admission probe types corruption; it is never classified as missing.
+  expect(result.failure?.kind).toBe("native_journal_unreadable"); expect(f.transport).toHaveBeenCalledTimes(1); expect((await f.canonical()).providerSession.modelKey).toBe("faux:A");
 });
 
 it("inherited-prefix check captures real compaction prompt/output, refuses oversized prefix without dispatch or intent", async () => {

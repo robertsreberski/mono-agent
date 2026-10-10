@@ -6,8 +6,10 @@
   was deleted, moved or lost in a partial restore. The turn rotates only that
   current stretch through the durable cold path, answers once from the
   conversation history, warns `degraded_native_context` once and continues warm
-  afterwards. Unreadable journals refuse with `native_journal_unreadable` and
-  are preserved, never treated as missing.
+  afterwards. A lost earlier journal no longer blocks switching: the switch
+  takes the cold model change with conversation history, and losing the whole
+  session folder recovers on the next message. Unreadable journals refuse with
+  `native_journal_unreadable` and are preserved, never treated as missing.
 
 - Keep the current native journal when starting consecutive opt-in Web turns;
   forget only the advisory warm mapping until owned preparation admits the turn.

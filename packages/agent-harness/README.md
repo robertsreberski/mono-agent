@@ -903,8 +903,11 @@ file, or no catalogued handle before the first switch) is passed to admission as
 same-model cold path (v3 retire/new epoch, v4 durable C intent), the turn
 dispatches once on canonical replay and reports `degraded_native_context` once.
 A switch request with a lost current takes the owned cold model change
-(`journal_missing`). Unreadable bytes, staged-only bytes, catalogue failure or a
-lost predecessor refuse with `native_journal_unreadable` and preserve evidence.
+(`journal_missing`); one whose chain has a definitively absent predecessor takes
+it with `predecessor_missing` (never native reuse or a handoff from lost bytes).
+C leaves absent predecessors absent and still verifies present ones exactly.
+Unreadable bytes, staged-only bytes or catalogue failure (current or predecessor)
+refuse with `native_journal_unreadable` and preserve evidence.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next

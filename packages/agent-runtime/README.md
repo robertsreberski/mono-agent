@@ -326,7 +326,8 @@ replay, not a native handoff, and the host exposes `degraded_native_context`.
 `inspectCurrentJournal` is a read-only presence probe for the host-held current
 journal: `missing` only for definitive absence, `unreadable` for any damaged
 complete line, staged-only bytes or catalogue failure; a torn final line is left
-to the ordinary open/repair path.
+to the ordinary open/repair path. Cold-epoch publication/verification leaves a
+definitively absent predecessor absent; present predecessor bytes must match.
 Prepared leases can continue to configured backups only after certified
 pre-output/tool/live-input failure and durable host detachment. They never retry
 the consumed primary lease; producers and manual compaction stay primary-only.

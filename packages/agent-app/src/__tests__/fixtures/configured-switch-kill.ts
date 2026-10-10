@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
-export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal" | "fallback-cold" | "missing" | "missing-v3" | "missing-switch";
+export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal" | "fallback-cold" | "missing" | "missing-v3" | "missing-switch" | "missing-chain" | "missing-predecessor" | "missing-root";
 export interface Call { readonly model: string; readonly kind: "summary" | "turn" | "tool"; readonly armed: boolean }
 export interface Report {
   readonly preparedRuns?: readonly { readonly model: string; readonly armed: boolean }[];
@@ -79,12 +79,16 @@ export async function killAndRecover(scenario: Scenario, phase: string) {
   return { root, before, killed, first, second, armed, journal };
 }
 
-/** One later explicit message on a fresh process after the recoveries. */
-export async function resumeAfter(root: string, scenario: Scenario): Promise<Report> {
-  const run = start(root, scenario, "resume", Date.now() + 20_000);
+/** One unkilled worker job (setup or a later explicit message) on a fresh process. */
+export async function runFresh(root: string, scenario: Scenario, mode: "produce" | "resume"): Promise<Report> {
+  const run = start(root, scenario, mode, Date.now() + 20_000);
   try { const value = await run.reply; const [code] = await run.exited; expect(code).toBe(0); return value; }
   finally { await stopped(run.child); }
 }
+
+export const resumeAfter = (root: string, scenario: Scenario) => runFresh(root, scenario, "resume");
+/** A fresh temporary agent root registered for cleanup. */
+export async function freshRoot(): Promise<string> { const root = await mkdtemp(join(tmpdir(), "configured-switch-kill-")); roots.push(root); return root; }
 
 /** No leaked reservation, switch fence, lifecycle intent, P2 fence/payload or tool record. */
 export function expectSettled(report: Report): void {
