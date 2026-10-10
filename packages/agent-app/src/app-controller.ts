@@ -748,7 +748,7 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
     readonly createExtension?: (
-      targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+      suppressInteractionTools: (metadata: Record<string, unknown> | undefined) => boolean,
     ) => RuntimeOptionsExtension;
     readonly blockingToolNames: readonly string[];
   }> { return responderOperations.adapterSendToolsRuntimeOptions(this, coreConfig); }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- After an agent restart, the Web wake for an interrupted turn no longer
+  offers `AskUser`. It now includes the turn's interrupted-question and
+  unapplied-message notes, so the agent does not re-ask the question.
+
 - Keep a durable note for interrupted `AskUser` questions; answer in a new
   message rather than reviving the old question or replaying its tool.
 
