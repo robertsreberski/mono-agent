@@ -88,14 +88,3 @@ export function matchesEvidenceCoverage(reference, segment) {
 
 /** @param {any} view */
 export function assertEvidenceView(view) { if (!views.has(view)) fail("unvalidated view"); }
-
-/** Positive account matching is ONLY a switch rule, never a same-model reopen rule. */
-export function nativeCompatibility(source, target) {
-  for (const key of ["provider", "api", "account"]) {
-    if (typeof source?.[key] !== "string" || !source[key].trim() || source[key].trim().toLowerCase() === "unknown"
-      || typeof target?.[key] !== "string" || !target[key].trim() || target[key].trim().toLowerCase() === "unknown") return { compatible: false, reason: `unknown_${key}` };
-    if (source[key] !== target[key]) return { compatible: false, reason: `different_${key}` };
-  }
-  return { compatible: true, reason: "matching_provenance" };
-}
-

@@ -273,28 +273,17 @@ successful physical cleanup. Storage-only recovery retains unresolved evidence
 and charges its bytes until settlement; reset/retention use the managed
 whole-chain transaction. These guarantees do not imply live operator acceptance.
 
-Native switch-back behind the internal constructor capability accepts a complete
-fitting chain only when provider/API/account match both each epoch descriptor
-and every content-bearing operation's dispatch-pinned provenance. Intervening
-turns, compacted evidence and later credential changes cannot borrow an epoch's
-creation-time proof. Missing historical provenance remains unknown and selects
-the approved handoff path. Legacy retained evidence is not a promise of native
-eligibility. Ordinary same-model reopening remains account-ungated. Raw native
-projection reopening still requires the accepted provider/API; a changed provider/API is
-refused before admission. Neutral structured handoffs retain their previous
-API-ungated ordinary reopening behaviour.
+Every model change behind the internal constructor capability, including a
+return to an earlier model, takes the approved structured handoff order:
+outgoing summary, exact accepted checkpoint plus complete suffix, incoming
+summary, then `handoff_pending`. Native envelopes are never reused across
+models, and accepted artifacts are always neutral structured handoffs. Ordinary
+same-model reopening of an accepted handoff remains provider/API/account-ungated.
 
-Native envelopes are retained in one immutable host artifact (not copied into
-the new journal), using the free checkpoint acceptance/recovery slot. Summary
-billing, frozen budgets and inherited-prefix growth checks still apply. Native
-selection measures the exact accepted envelope against both the artifact-byte
-reservation and the serialized file limit, not just a token allowance. Byte
-refusal takes the approved handoff chain. The configured host intentionally
-still preflights the worst-case structured-summary inherited prefix even for a
-native candidate: byte refusal can select that fallback, and intent must not
-start paid work whose accepted projection cannot later be compacted. This may
-conservatively refuse otherwise fitting native history; it is not clipping or
-successful fallback. This substrate does not expose config or activate APP;
+Summary billing, frozen budgets and inherited-prefix growth checks apply. The
+configured host preflights the worst-case structured-summary inherited prefix
+before intent, so it never starts paid work whose accepted projection cannot
+later be compacted. This substrate does not expose config or activate APP;
 persisted delivery forwarding
 and root drain/serialization remain prerequisites for a supported opt-in.
 
@@ -886,16 +875,7 @@ or router telemetry. Persistent subagents remain excluded: they have no host
 canonical replay loader, and detached answers still lose session continuity.
 Direct router callers without a loader retain their existing behaviour; private
 memory completion-only runtimes ignore the loader. Prepared native dispatch
-uses its already-captured canonical floor for backups only after a retryable
-provider failure or provider-auth failure, strictly before output/tool/live input,
-and successful durable detachment. A backup may have independent credentials;
-unarmed auth failures cannot certify this boundary.
-It never retries the consumed primary lease. Missing progress evidence fails
-closed; handoff producers and manual compaction remain primary-only. An accepted
-backup resets the current native stretch, keeps predecessor journals and the
-switch receipt, and streams/returns `degraded_native_context` after settlement.
-When a cold model change and backup coincide, that warning kind is reported once.
-The next turn reseeds all canonical history, not a stale switch artifact.
+remains primary-only, with no routed retry or backup.
 Before admission, the preparation owner probes the current native journal
 (`inspectCurrentJournal`). A definitively absent journal (no published/staged
 file, or no catalogued handle before the first switch) is passed to admission as
@@ -904,7 +884,7 @@ same-model cold path (v3 retire/new epoch, v4 durable C intent), the turn
 dispatches once on canonical replay and reports `degraded_native_context` once.
 A switch request with a lost current takes the owned cold model change
 (`journal_missing`); one whose chain has a definitively absent predecessor takes
-it with `predecessor_missing` (never native reuse or a handoff from lost bytes).
+it with `predecessor_missing` (never a handoff from lost bytes).
 C leaves absent predecessors absent and still verifies present ones exactly.
 Unreadable bytes, staged-only bytes or catalogue failure (current or predecessor)
 refuse with `native_journal_unreadable` and preserve evidence.

@@ -10,7 +10,6 @@ export function createManagedNativeJournalStorage(options: {
     createBudget: (input) => storage.createBudget(input), prepareHandoff: (view, options) => storage.prepareHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["prepareHandoff"]>,
     checkInheritedPrefix: async (messages, model, compaction, prefixTokenCap) => await storage.checkInheritedPrefix([...messages], model, compaction, prefixTokenCap) as Awaited<ReturnType<NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]>>>,
     buildHandoff: (view, options) => storage.buildHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["buildHandoff"]>,
-    projectChain: (view, options) => storage.projectChain(view, options) as ReturnType<RuntimeNativePreparationStorage["projectChain"]>,
     planColdEpoch: (chain, context) => storage.planColdEpoch([...chain], context),
     verifyColdEpoch: (chain, context) => storage.verifyColdEpoch([...chain], context),
     publishColdEpoch: (chain, context) => storage.publishColdEpoch([...chain], context),

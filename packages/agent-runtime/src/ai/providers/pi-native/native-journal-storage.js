@@ -1,7 +1,7 @@
 // @ts-check
 import { checkNativeInheritedPrefix } from "./handoff-producer.js";
 // Private storage-only bridge: no provider dispatch, repair accounting or tools.
-import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, projectContext } from "@mono-agent/harness";
+import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff } from "@mono-agent/harness";
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -247,7 +247,6 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   return {
     nativeEvidence: "v1",
     createBudget: createHandoffBudget, prepareHandoff, buildHandoff, checkInheritedPrefix: checkNativeInheritedPrefix,
-    projectChain: (view, options) => projectContext(view, { ...options, switching: true }),
     /** Read only: no detach/open-for-writing, repair, import or publication.
      * Caller first freezes the current coordinate under its settled claim.
      * @param {any[]} sources @param {any} context */

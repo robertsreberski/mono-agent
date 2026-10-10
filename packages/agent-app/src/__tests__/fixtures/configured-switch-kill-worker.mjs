@@ -5,7 +5,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../../../dist/configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../../../dist/request-model-override.js";
@@ -15,65 +15,36 @@ const root = process.argv[2], conversationId = "web:fictional-thread", successor
 const historyRoot = join(root, "history"), nativeRoot = join(root, "native"), callsPath = join(root, "calls.jsonl");
 const summary = JSON.stringify({ intent: ["Fictional garden plan"], constraints: ["Fictional constraint: no watering after dusk"], decisions: [],
   completedWork: ["Fictional seed answer"], failures: [], openWork: ["Fictional open work: label the trays"], nextActions: [], references: [] });
-// Codex-shaped faux identity lets the real prepared-dispatch probe establish a
-// fictional account; no network, real credentials or token files are involved.
-const fallback = (process.env.MONO_AGENT_FIXTURE_SCENARIO ?? "").startsWith("fallback");
-const native = (process.env.MONO_AGENT_FIXTURE_SCENARIO ?? "") === "native";
 // A stable API identity: faux otherwise randomizes it per process, which a
 // restarted host would correctly treat as a different recorded target.
-const provider = native ? "openai-codex" : "faux", api = native ? "openai-codex-responses" : "fictional-faux-api";
+const provider = "faux", api = "fictional-faux-api";
 const faux = fauxProvider({ provider, api, models: ["A", "B"].map((id) => ({ id, api, contextWindow: id === "A" ? 1_000_000 : 100_000, maxTokens: 4096 })), tokensPerSecond: 1_000_000 });
-const token = `fixture.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64url")}.fixture`;
-const credential = { type: "oauth", accountId: "fictional-account", access: token, refresh: "fictional-refresh", expires: Date.now() + 24 * 3_600_000 };
-const models = native ? createModels({ credentials: { read: async () => credential, list: async () => [], delete: async () => {}, modify: async () => credential } }) : createModels();
+const models = createModels();
 
 // Every provider request is appended BEFORE the response, so a killed process
 // still accounts the (possibly billed) call. Outgoing A summaries are rejected
-// as malformed so both approved producers are exercised.
-const contexts = [], preparedRuns = [];
+// as malformed so both approved producers are exercised; outgoing B summaries
+// are valid, so a B -> A return is accepted from the paid outgoing slot.
+const contexts = [];
 const original = faux.provider.streamSimple.bind(faux.provider);
 faux.provider.streamSimple = (model, context, options) => {
-  if (fallback && globalThis.__fixtureArmed && globalThis.__fixtureToolOffered
-    && context.messages.some((message) => message.role === "toolResult" && message.content?.some((part) => part.text?.includes("Fictional stable instructions")))) {
-    appendFileSync(callsPath, JSON.stringify({ pid: process.pid, model: model.id, kind: "tool", armed: true }) + "\n");
-  }
   const kind = JSON.stringify(context.messages[0] ?? null).includes("Summarize historical evidence") || context.systemPrompt?.startsWith("Summarize historical evidence") ? "summary" : "turn";
   appendFileSync(callsPath, JSON.stringify({ pid: process.pid, model: model.id, kind, armed: globalThis.__fixtureArmed === true }) + "\n");
   if (kind === "turn") contexts.push(JSON.stringify(context.messages));
   faux.setResponses([async () => {
-    if (fallback && globalThis.__fixtureArmed && kind === "turn") {
-      if (model.id === globalThis.__fixtureFailedModel) {
-        globalThis.__fixtureSwitchReceiptBefore = (await canonical())?.lastSwitch;
-        return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Connection error." });
-      }
-      if (process.env.MONO_AGENT_FIXTURE_CRASH_PHASE === "backup-tool" && !globalThis.__fixtureToolOffered) {
-        globalThis.__fixtureToolOffered = true;
-        return fauxAssistantMessage([fauxToolCall("Read", { file_path: "IDENTITY.md" })]);
-      }
-      await globalThis.__fixtureStop?.(globalThis.__fixtureToolOffered ? "backup-tool" : "backup");
-    } else await globalThis.__fixtureStop?.(`${kind}-${model.id}`);
+    await globalThis.__fixtureStop?.(`${kind}-${model.id}`);
     return fauxAssistantMessage([fauxText(kind === "turn" ? `Fictional ${model.id} answer` : model.id === "A" ? "Fictional malformed summary" : summary)]);
   }]);
   return original(model, context, options);
 };
-models.setProvider(native ? { ...faux.provider, auth: { oauth: { refresh: async () => credential, toAuth: (value) => ({ apiKey: value.access }) } } } : faux.provider);
+models.setProvider(faux.provider);
 const ref = (id) => ({ provider, model: id, reference: `${provider}:${id}` });
 const runtimeFor = (config, id) => {
   const raw = createMonoRuntime({ workspace: root }), run = raw.run.bind(raw), prepare = raw.prepareNativeDispatch.bind(raw);
   raw.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
-  raw.prepareNativeDispatch = async (prompt, options) => {
-    const lease = await prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
-    return { ...lease, run: (binding) => {
-      preparedRuns.push({ model: id, armed: globalThis.__fixtureArmed === true });
-      return lease.run(binding);
-    } };
-  };
+  raw.prepareNativeDispatch = (prompt, options) => prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
   return wrapOwnedConfiguredRuntime(raw, config, root, undefined);
 };
-const routedFor = (config, id) => fallback ? wrapOwnedConfiguredRuntime(createMonoRuntime({ workspace: root,
-  fallbackChain: [{ model: ref(id), attempts: 3 }, { model: ref(id === "A" ? "B" : "A") }], sessionTurnReconciliation: "v1",
-  resolveAttempt: ({ model }) => ({ runtime: runtimeFor(config, model.model) }),
-}), config, root, undefined) : runtimeFor(config, id);
 async function open(base = "A") {
   const configPath = join(root, "mono-agent.config.json");
   await writeFile(join(root, "IDENTITY.md"), "Fictional stable instructions");
@@ -81,7 +52,7 @@ async function open(base = "A") {
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
       session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: { enabled: true, olderWritersStopped: true } } },
     providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
-    tools: { allowedTools: process.env.MONO_AGENT_FIXTURE_CRASH_PHASE === "backup-tool" ? ["Read"] : [], disallowedTools: [] },
+    tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
     traceability: { registryDir: join(root, "trace") },
   }));
@@ -89,8 +60,8 @@ async function open(base = "A") {
   // Only the provider transport is replaced; the switch policy comes from the validated config.
   const config = { ...loaded, runtime: { ...loaded.runtime, model: ref(base) } };
   let store;
-  const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime: routedFor(config, base),
-    runtimeForModel: (selected) => routedFor(config, selected.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: ref(base) }),
+  const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime: runtimeFor(config, base),
+    runtimeForModel: (selected) => runtimeFor(config, selected.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: ref(base) }),
     runtimeOptions: { piResolvedModels: models, piMaxRetries: 0, compaction: { enabled: false } } }, { sessionRollover: "none", wrapHistoryStore: (value) => { store = value; return value; } });
   return { responder, store };
 }
@@ -100,7 +71,7 @@ async function respond(responder, id, model, conversation) {
   const warnings = [];
   try {
     const result = await responder.respond(request(id, model, conversation), { append: async () => {}, event: async (event) => { if (event.warningKind) warnings.push(event.warningKind); } });
-    return { text: result.text, warnings, ...(fallback ? { runtimeWarnings: result.metadata?.runtime?.runtimeWarnings ?? [] } : {}) };
+    return { text: result.text, warnings };
   } catch (error) { return { failure: error?.failure?.kind ?? error?.name ?? "error", message: String(error?.failure?.message ?? error?.message ?? error).slice(0, 300), warnings }; }
 }
 async function files(dir) {
@@ -143,7 +114,7 @@ async function switchStorage() {
     switchStates: states.map((state) => ({ switchId: state.identity.switchId, phase: state.phase, from: state.identity.fromModelKey, to: state.identity.toModelKey,
       generation: state.authorizationGeneration, authorizations: state.authorizations.length,
       attempts: state.attempts.map(({ producer, outcome, generation }) => ({ producer, outcome, generation })) })),
-    artifacts: handoffs.map(({ switchId, artifact }) => ({ switchId, producer: artifact.producer, native: artifact.nativeProjection !== undefined,
+    artifacts: handoffs.map(({ switchId, artifact }) => ({ switchId, producer: artifact.producer,
       summary: artifact.summary !== null, ledger: artifact.ledger.length, recent: artifact.recent.length, budget: artifact.budget })),
   };
 }
@@ -172,34 +143,6 @@ async function padChain(store) {
   } finally { await repo.close(); await prep.abort(); }
 }
 
-async function fallbackJob(scenario, mode) {
-  const opened = await open(), results = [];
-  try {
-    if (mode !== "recover") {
-      results.push(await respond(opened.responder, "fictional-seed", "A"));
-      if (scenario !== "fallback-switch") results.push(await respond(opened.responder, "fictional-seed-b", "B"));
-      if (scenario === "fallback-cold") await padChain(opened.store);
-      const journals = (await files(join(nativeRoot, "mono-v2", "journals"))).filter((path) => path.endsWith(".jsonl"));
-      const bytes = Object.fromEntries(await Promise.all(journals.map(async (path) => [path.split("/").at(-1), (await readFile(path)).toString("base64")])));
-      await writeFile(join(root, "before.json"), JSON.stringify({ ...await snapshot(opened.store), bytes }));
-      globalThis.__fixtureArmed = true;
-      const target = scenario === "fallback-refusal" || scenario === "fallback-cold" ? "A" : "B";
-      globalThis.__fixtureFailedModel = target;
-      results.push(await respond(opened.responder, scenario === "fallback-wake" || scenario === "fallback-refusal" ? undefined : "fictional-fallback", target));
-      globalThis.__fixtureArmed = false;
-      const detached = await snapshot(opened.store);
-      if (mode === "check" && scenario !== "fallback-refusal") results.push(await respond(opened.responder, "fictional-next", target));
-      await opened.responder.dispose();
-      process.send({ results, calls: calls(), contexts, preparedRuns, detached, receiptBefore: globalThis.__fixtureSwitchReceiptBefore ?? null, ...await snapshot(opened.store) }, () => process.exit(0));
-    } else {
-      // Recover the pending turn and native C through configured storage ONLY.
-      // Never redeliver an input or call a provider/summary/tool during recovery.
-      const recovery = await opened.store.recoverProviderSessionTurn(conversationId);
-      await opened.responder.dispose();
-      process.send({ results, recovery, calls: calls(), contexts, ...await snapshot(opened.store) }, () => process.exit(0));
-    }
-  } finally { await opened.responder.dispose(); }
-}
 // External loss of the current journal (P4 PR D): the producer deletes it, then
 // the killed turn establishes the owner-approved cold boundary. Recovery is
 // storage-only; "resume" is one later explicit message on a fresh process.
@@ -238,14 +181,13 @@ process.once("message", async ({ scenario, mode }) => {
   let opened;
   try {
     await mkdir(root, { recursive: true });
-    if (fallback) { await fallbackJob(scenario, mode); return; }
     if (scenario.startsWith("missing")) { await missingJob(scenario, mode); return; }
     const results = [];
     if (mode === "produce") {
       opened = await open();
       results.push(await respond(opened.responder, "fictional-seed", "A"));
       if (scenario !== "structured") results.push(await respond(opened.responder, "fictional-switch-b", "B"));
-      if (scenario === "native") results.push(await respond(opened.responder, "fictional-b-turn", "B"));
+      if (scenario === "return") results.push(await respond(opened.responder, "fictional-b-turn", "B"));
       if (scenario === "cold") await padChain(opened.store);
       if (scenario === "retention") {
         const old = new Date("2000-01-01T00:00:00Z");
@@ -257,7 +199,7 @@ process.once("message", async ({ scenario, mode }) => {
       globalThis.__fixtureArmed = true;
     } else opened = await open();
     if (scenario === "structured") results.push(await respond(opened.responder, "fictional-switch", "B"));
-    else if (scenario === "native" || scenario === "cold") results.push(await respond(opened.responder, "fictional-return", "A"));
+    else if (scenario === "return" || scenario === "cold") results.push(await respond(opened.responder, "fictional-return", "A"));
     else if (scenario === "reset") { await opened.responder.startNewSession(conversationId); results.push({ text: "reset" }); }
     else results.push(await respond(opened.responder, "fictional-successor-message", "A", successorId));
     globalThis.__fixtureArmed = false;

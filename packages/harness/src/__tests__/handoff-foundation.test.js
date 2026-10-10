@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { findContextBuilderBypasses } from "./projection-source-check.js";
 import { fileURLToPath } from "node:url";
 import { MemorySessionRepo } from "../session-store.js";
-import { createEvidenceView, evidenceDigest, nativeCompatibility } from "../evidence-view.js";
+import { createEvidenceView, evidenceDigest } from "../evidence-view.js";
 import { buildHarnessSessionContext } from "../session-context.js";
 import { projectContext, inspectCurrentLifecycle } from "../request-projection.js";
 import { createHandoffBudget, buildHandoff, buildOpenWorkLedger, renderHandoffMessage, prepareHandoff, checkHandoffDispatch, validateHandoffSummary } from "../handoff.js";
@@ -32,29 +32,24 @@ function view(segments) { return createEvidenceView({ ownerKey: "fictional-owner
 function refreshed(segment) { return { ...segment, records: segment.store.records, descriptor: { ...segment.descriptor,
   sourceDigest: evidenceDigest(segment.store.records), sourceSeq: segment.store.seq, sourceTipId: segment.store.tip } }; }
 
-describe("positive native compatibility", () => {
-  it.each(["provider", "api", "account"])("rejects missing, unknown and different %s", (key) => {
-    for (const value of [undefined, "", "unknown", " UNKNOWN ", "different"]) expect(nativeCompatibility({ ...provenance, [key]: value }, target).compatible).toBe(false);
-    expect(nativeCompatibility(provenance, target).compatible).toBe(true);
-  });
-});
-it("projects A -> B -> A including intervening B and opaque signatures, with no copies in current evidence mode", async () => {
+it("A -> B -> A returns through a neutral handoff with intervening B, referencing opaque reasoning instead of copying it", async () => {
   const a = await segment("A", 1, null, [text("A fact"), { role: "assistant", provider: "fictional", api: "fictional-api", model: "A", stopReason: "stop", timestamp: 1,
     content: [{ type: "thinking", thinking: "Fictional reasoning", thinkingSignature: "opaque-fixture-signature" }, { type: "text", text: "A reply" }] }]);
   const b = await segment("B", 2, a.header.journalId, [text("B fact")]); const c = await segment("A-return", 3, b.header.journalId);
-  const evidence = view([a, b, c]); const result = projectContext(evidence, { ...options, switching: true });
-  expect(result.status).toBe("ready"); expect(JSON.stringify(result.messages)).toContain("B fact"); expect(JSON.stringify(result.messages)).toContain("opaque-fixture-signature");
-  expect(projectContext(evidence, { mode: "evidence" }).entries.map((e) => e.id)).toEqual(["A-return-message-0"]);
-  const missing = structuredClone({ descriptor: b.descriptor, header: b.header, records: b.records }); missing.descriptor.provenance.account = undefined;
-  expect(projectContext(view([a, missing, c]), { ...options, switching: true })).toMatchObject({ status: "handoff_required", reason: "unknown_account" });
-  expect(projectContext(evidence, { ...options, budget: createHandoffBudget({ contextWindow: 20000, outputReserve: 2000, inputTokens: 100 }), switching: true }).status).toBe("handoff_required");
+  const evidence = view([a, b, c]);
+  // Native envelopes are never projected across a model change, even with matching provenance.
+  expect(() => projectContext(evidence, { ...options, switching: true })).toThrow("native journal entries");
+  const result = buildHandoff(evidence, { ...options, summary }); expect(result.status).toBe("ready");
+  expect(JSON.stringify(result.artifact)).toContain("B fact"); expect(JSON.stringify(result.artifact)).toContain("A reply");
+  expect(JSON.stringify(result.artifact)).not.toContain("opaque-fixture-signature"); expect(JSON.stringify(result.artifact)).toContain("opaque_native_reference");
+  expect(result.messages).toEqual([expect.objectContaining({ role: "user", content: [expect.objectContaining({ text: expect.stringContaining("Historical handoff") })] })]);
 });
 it("rejects fabricated views, cycles, foreign owners, changed frozen tips/digests and nonmonotonic epochs", async () => {
   const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId);
   for (const change of [{ predecessorJournalId: "cycle" }, { ownerKey: "foreign" }, { sourceTipId: "missing" }, { sourceDigest: "bad" }, { epoch: 0 }]) {
     expect(() => view([a, { ...b, descriptor: { ...b.descriptor, ...change } }])).toThrow("Invalid");
   }
-  expect(() => projectContext({ segments: [a] }, options)).toThrow("unvalidated");
+  expect(() => buildHandoff({ segments: [a], gaps: [] }, options)).toThrow("unvalidated");
   expect(() => view([a, a])).toThrow("Invalid");
 });
 it("persists opt-in composed coverage and replays inherited material exactly once", async () => {
@@ -66,11 +61,13 @@ it("persists opt-in composed coverage and replays inherited material exactly onc
   await b.store.appendComposedCompaction({ summary: "A and B checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, view([a, refreshed(b)]));
   await b.store.closeOperation("composed-op", "completed"); await b.store.endTurn("composed-turn", "completed");
   expect(b.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
-  const c = await segment("C", 3, b.header.journalId); const result = projectContext(view([a, refreshed(b), c]), { ...options, switching: true });
-  expect(result.messages).toHaveLength(2); expect(result.messages[0].summary).toBe("A and B checkpoint");
+  const c = await segment("C", 3, b.header.journalId); const result = buildHandoff(view([a, refreshed(b), c]), options);
+  // The composed checkpoint already covers A: the exact fallback never repeats A's prefix.
+  expect(result.status).toBe("ready"); expect(result.artifact.checkpoint.prefix).toEqual([]);
+  expect(JSON.stringify(result.artifact.checkpoint.envelope)).toContain("A and B checkpoint");
   const bad = refreshed(b); bad.records = structuredClone(bad.records); bad.records.find((r) => r.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
   bad.descriptor.sourceDigest = evidenceDigest(bad.records);
-  expect(() => projectContext(view([a, bad, c]), { ...options, switching: true })).toThrow("coverage");
+  expect(() => view([a, bad, c])).toThrow("coverage");
   await expect(b.store.appendComposedCompaction({}, frozen)).rejects.toThrow("changed");
 });
 it("keeps whole latest turns, visible text verbatim and historical calls as neutral data", async () => {
@@ -129,7 +126,6 @@ it("opt-in model-change records carry only an artifact reference; canonical gaps
   const evidence = createEvidenceView({ ownerKey: "fictional-owner", historyBucket: "fictional-bucket", segments: [refreshed(a)], gaps: [
     { afterJournalId: a.header.journalId, reference: "canonical-fixture-reference", reason: "missing-native-history", messages: [text("Canonical-only fictional fact")] },
   ] });
-  expect(projectContext(evidence, { ...options, switching: true })).toMatchObject({ status: "handoff_required", reason: "canonical_only_gap" });
   expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Canonical-only fictional fact");
 });
 
@@ -146,7 +142,7 @@ it("evidence inspection never hides rewound current-journal contradictions", asy
   const a = await segment("raw-evidence", 0);
   await a.store.appendMessage(text("Rewound native evidence"), "rewound-message");
   await a.store.moveTo("raw-evidence-message-0");
-  const evidence = projectContext(view([refreshed(a)]), { mode: "evidence" });
+  const evidence = view([refreshed(a)]).segments[0];
   expect(evidence.records.some((r) => r.id === "rewound-message")).toBe(true);
   expect(evidence.entries.some((r) => r.id === "rewound-message")).toBe(false);
 });
@@ -219,7 +215,7 @@ it("view and store share exact repair projection timestamps and last-account sel
     const evidence = view([refreshed(a)]); const repairs = await store.getRepairEntries();
     expect(evidence.segments[0].repairs).toEqual(repairs);
     expect(repairs.map((r) => r.calls.length)).toEqual([0, 1]); expect(repairs[1].calls[0].timestamp).toBe(1700000000010);
-    expect(projectContext(evidence, { ...options, switching: true }).messages).toEqual(buildHarnessSessionContext(await store.getEntries(), { repairs }));
+    expect(projectContext(evidence.segments[0].entries, { repairs: evidence.segments[0].repairs }).messages).toEqual(buildHarnessSessionContext(await store.getEntries(), { repairs }));
   } finally { clock.mockRestore(); }
 });
 it("lifecycle inspection is synchronous and performs no context payload reads", () => {
@@ -353,21 +349,3 @@ it("does not project a guarded journal under a contradictory host owner", async 
   expect(() => view([a])).not.toThrow();
 });
 
-it.each([undefined, null, "unknown", "different-account"])("does not trust switch-time account after a later operation uses %s", async (account) => {
-  const a = await segment("A", 0), b = await segment("B", 1, a.header.journalId);
-  await b.store.beginTurn("later-turn");
-  await b.store.openOperation("later-op", { model: { provider: provenance.provider, api: provenance.api, id: "B" },
-    ...(account === undefined ? {} : { nativeProvenance: { ...provenance, account } }) });
-  await b.store.appendMessage(text("Later B evidence"));
-  await b.store.closeOperation("later-op", "completed"); await b.store.endTurn("later-turn", "completed");
-  const evidence = view([a, refreshed(b)]);
-  expect(projectContext(evidence, { ...options, switching: true })).toMatchObject({ status: "handoff_required",
-    reason: account === "different-account" ? "different_account" : account === undefined ? "unknown_provider" : "unknown_account" });
-  expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Later B evidence");
-});
-it.each(["provider", "api"])("requires later-operation %s to match the target too", async (key) => {
-  const a = await segment("A", 0);
-  const changed = structuredClone(a.records); changed.find((record) => record.kind === "operation_start").payload.config.nativeProvenance[key] = "different";
-  const evidence = view([{ ...a, records: changed, descriptor: { ...a.descriptor, sourceDigest: evidenceDigest(changed) } }]);
-  expect(projectContext(evidence, { ...options, switching: true })).toMatchObject({ status: "handoff_required", reason: `different_${key}` });
-});

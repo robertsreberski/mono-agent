@@ -1919,18 +1919,18 @@ it("preserves pre-aborted eligible-primary behavior for direct callers", async (
 
 it.each(["toolAdmitted", "liveInputTaken"])("gates ordinary retry/backup on %s evidence without streamed events", async (field) => {
   const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), ack = vi.fn();
-  const progress = { version: 1, armed: true, assistantOutput: false, toolAdmitted: false, liveInputTaken: false, [field]: true };
+  const progress = { version: 1, armed: true, toolAdmitted: false, liveInputTaken: false, [field]: true };
   executeMock.mockResolvedValueOnce({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: progress, providerSessionId: "primary-id" });
   const result = await createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [], onSessionTurnDetached: ack });
   expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled(); expect(result.failureKind).toBe("provider_unavailable");
   expect(result.runtimeWarnings[0].reason).toBe(field === "toolAdmitted" ? "tool_already_executed" : "live_input_consumed");
 });
 
-it("keeps ordinary output-only failover and blocks a backup's marker-admitted tool", async () => {
+it("keeps ordinary failover after an untouched attempt and blocks a backup's marker-admitted tool", async () => {
   const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), last = modelRef("openai", "last");
-  const empty = { version: 1, armed: true, assistantOutput: false, toolAdmitted: false, liveInputTaken: false };
+  const empty = { version: 1, armed: true, toolAdmitted: false, liveInputTaken: false };
   const failure = { error: "Connection error.", failureKind: "provider_unavailable", events: [] };
-  executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: { ...empty, assistantOutput: true } });
+  executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: empty });
   executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: { ...empty, toolAdmitted: true } });
   const result = await createRouterRuntime({ chain: [primary, { model: backup, attempts: 2 }, last], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [] });
   expect(executeMock).toHaveBeenCalledTimes(2); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
@@ -1948,7 +1948,7 @@ it("gives an unconsumed live input a fresh consumer on the backup", async () => 
 it("keeps prepared dispatch and handoff producers primary-only after an empty-progress failure", async () => {
   const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), ack = vi.fn(), loader = vi.fn();
   const producer = vi.fn(async () => ({ status: "summary_rejected", reason: "Fictional provider failure" }));
-  const run = vi.fn(async () => ({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: { version: 1, armed: true, assistantOutput: false, toolAdmitted: false, liveInputTaken: false } }));
+  const run = vi.fn(async () => ({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: { version: 1, armed: true, toolAdmitted: false, liveInputTaken: false } }));
   const prepared = vi.fn(async () => ({ snapshot: {}, checkHandoffSummary: () => ({ status: "ready" }), produceHandoffSummary: producer, run, close: vi.fn() }));
   const resolver = vi.fn(() => ({ runtime: { run: vi.fn(), configureTools() {}, nativePreparedDispatch: "v1", prepareNativeDispatch: prepared } }));
   const router = createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], resolveAttempt: resolver, sessionTurnReconciliation: "v1" });

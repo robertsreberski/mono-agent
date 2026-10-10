@@ -1,4 +1,5 @@
-// Opt-in pinned-lease provenance for epochs written before any switch (P3 A3).
+// Opt-in pinned-lease provenance for epochs written before any switch. Matching
+// provenance never selects native reuse: every model change takes a handoff.
 // Real public config path, Web-shaped persisted IDs, Codex-shaped faux provider
 // with fictional in-memory OAuth credentials. No network, tools or real roots.
 import { randomUUID } from "node:crypto";
@@ -82,38 +83,26 @@ async function fixture(options: { enabled?: boolean; fallback?: boolean; runtime
     setAccount: (account: string) => { credential = { ...credential, accountId: account, access: token(account) }; } };
 }
 const summary = JSON.stringify({ intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] });
-const nativeOf = (artifacts: { switchId: string; artifact: { nativeProjection?: unknown } }[], switchId: string) => artifacts.find((entry) => entry.switchId === switchId)!.artifact.nativeProjection !== undefined;
+const artifactOf = (artifacts: { switchId: string; artifact: Record<string, unknown> }[], switchId: string) => artifacts.find((entry) => entry.switchId === switchId)!.artifact;
 
-it("fresh opt-in Web conversation records lease provenance from its first epoch; A->B->A reuses native evidence with zero summary calls", async () => {
+it("fresh opt-in Web conversation records lease provenance from its first epoch; A->B->A still takes a structured handoff each way", async () => {
   const f = await fixture(), h = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer")]); await h.respond(f.request("fictional-first", "A"), { append: async () => {} });
   const first = await f.journalRecords();
   expect(first.filter((row) => row.kind === "operation_start").map((row) => row.payload.config.nativeProvenance))
     .toEqual([{ provider, api, model: "A", account: expect.stringMatching(/^codex-account-v1:/u) }]);
   expect((await f.record()).version).toBe(3); // Recording grants no authority and does not upgrade the conversation.
-  f.faux.setResponses([f.reply("Fictional B answer")]); await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
+  f.faux.setResponses([f.reply(summary), f.reply("Fictional B answer")]); await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
   let returned = "";
-  f.faux.setResponses([(context) => { returned = JSON.stringify(context.messages); return f.reply("Fictional return answer"); }]);
+  f.faux.setResponses([f.reply(summary), (context) => { returned = JSON.stringify(context.messages); return f.reply("Fictional return answer"); }]);
   await h.respond(f.request("fictional-return-a", "A"), { append: async () => {} });
   const canonical = await f.record(), artifacts = await f.artifacts();
-  expect(canonical.native.chain).toHaveLength(3); expect(new Set(canonical.native.chain.map((row: { provenance: { account: string } }) => row.provenance.account)).size).toBe(1);
-  expect(canonical.native.chain[0].provenance.account).toMatch(/^codex-account-v1:/u);
-  expect(nativeOf(artifacts, canonical.lastSwitch.switchId)).toBe(true);
-  expect(f.summaryCalls()).toBe(0); expect(f.transport).toHaveBeenCalledTimes(3);
-  expect(returned).toContain("Fictional input fictional-switch-b"); expect(returned).toContain("Fictional A answer"); expect(returned).not.toContain("Historical handoff");
-});
-
-it("a changed account on the return takes the structured handoff while retaining native evidence", async () => {
-  const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer")]);
-  await h.respond(f.request("fictional-first", "A"), { append: async () => {} }); await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
-  f.setAccount("fictional-other-account");
-  f.faux.setResponses([f.reply(summary), f.reply("Fictional return answer")]);
-  await h.respond(f.request("fictional-return-a", "A"), { append: async () => {} });
-  const canonical = await f.record();
-  expect(nativeOf(await f.artifacts(), canonical.lastSwitch.switchId)).toBe(false);
-  expect(canonical.native.chain).toHaveLength(3); expect(canonical.native.chain[2].provenance.account).not.toBe(canonical.native.chain[0].provenance.account);
-  expect(f.summaryCalls()).toBe(1); expect(JSON.stringify(f.transport.mock.calls.at(-1)?.[1])).toContain("Historical handoff");
+  // Matching provider, API and account no longer reuse native envelopes.
+  expect(canonical.native.chain).toHaveLength(3); expect(canonical.providerSession.modelKey).toBe(`${provider}:A`);
+  expect(artifactOf(artifacts, canonical.lastSwitch.switchId)).toMatchObject({ producer: "outgoing", summary: expect.any(Object) });
+  expect(artifacts.every((entry) => !Object.hasOwn(entry.artifact, "nativeProjection"))).toBe(true);
+  expect(f.summaryCalls()).toBe(2); expect(f.transport).toHaveBeenCalledTimes(5);
+  expect(returned).toContain("Historical handoff"); expect(returned).toContain("Fictional input fictional-switch-b"); expect(returned).toContain("Fictional B answer");
 });
 
 it("OFF keeps the original unprepared route and writes no provenance, even with codex credentials and forged caller options", async () => {
@@ -144,22 +133,24 @@ it("caller provenance and flags are ignored; a mixed-provenance first epoch stay
   await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
   const canonical = await f.record();
   expect(canonical.native.chain[0].provenance.account).toBeNull(); // mixed epoch: unknown, never inferred
-  expect(nativeOf(await f.artifacts(), canonical.lastSwitch.switchId)).toBe(false); expect(f.summaryCalls()).toBe(1);
+  expect(artifactOf(await f.artifacts(), canonical.lastSwitch.switchId)).toMatchObject({ producer: "outgoing" }); expect(f.summaryCalls()).toBe(1);
   expect(JSON.stringify(canonical)).not.toContain("forged");
 });
 
-it.each([false, true])("first persisted Web turn with a fallback chain: both opt-in and OFF fail over before progress (enabled=%s)", async (enabled) => {
+it.each([false, true])("first persisted Web turn with a fallback chain: opt-in is primary-only, OFF fails over (enabled=%s)", async (enabled) => {
   const f = await fixture({ enabled, fallback: true }), h = await f.make();
   const overloaded = () => fauxAssistantMessage([], { stopReason: "error", errorMessage: "503 Service Unavailable: overloaded" });
   f.faux.setResponses([overloaded(), overloaded(), overloaded(), overloaded(), (context) => f.reply(`Fictional backup answer ${context.messages.length}`)]);
   const result = h.respond(f.request("fictional-first", "A"), { append: async () => {} });
-  // Conversational transport retries are unchanged; the single-use prepared
-  // lease now admits its backup after strict evidence and durable detachment.
-  const response = await result;
-  expect(response.text).toContain("Fictional backup answer");
-  expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("B");
-  if (enabled) expect(response.metadata?.runtime).toMatchObject({ runtimeWarnings: [expect.objectContaining({ warning_kind: "degraded_native_context" })] });
-
+  // Same-model transport retries inside the attempt are unchanged; only the
+  // configured backup model (router failover) is absent on the prepared route.
+  if (enabled) {
+    await expect(result).rejects.toMatchObject({ message: expect.stringContaining("overloaded") });
+    expect(f.transport.mock.calls.every(([model]) => model.id === "A")).toBe(true);
+  } else {
+    expect((await result).text).toContain("Fictional backup answer");
+    expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("B");
+  }
 }, 60_000); // Real in-attempt transport backoff dominates; ~8-10s locally.
 
 it("a cancel during first-turn preparation is reported and never appended", async () => {
@@ -205,7 +196,7 @@ it("fresh responder reopens the retained opt-in journal for the next persisted W
 }, 20_000);
 it("a second same-model persisted Web turn after a v4 switch retains every predecessor and the current journal", async () => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional second B answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional second B answer")]);
   await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
   await h.respond(f.request("fictional-switch", "B"), { append: async () => {} });
   const before = await f.record(); expect(before.version).toBe(4);
@@ -218,5 +209,5 @@ it("a second same-model persisted Web turn after a v4 switch retains every prede
   expect(retire.mock.calls.filter(([id]) => [predecessor.handleId, current.handleId].includes(id))).toEqual([]);
   expect(remove.mock.calls.filter(([metadata]) => [predecessor.handleId, current.handleId].includes(metadata.id))).toEqual([]);
   const after = await f.record(); expect(after.messages).toHaveLength(6); expect(after.lastSwitch).toEqual(before.lastSwitch);
-  expect(f.transport).toHaveBeenCalledTimes(3); expect(f.summaryCalls()).toBe(0);
+  expect(f.transport).toHaveBeenCalledTimes(4); expect(f.summaryCalls()).toBe(1); // only the A -> B handoff
 }, 20_000);

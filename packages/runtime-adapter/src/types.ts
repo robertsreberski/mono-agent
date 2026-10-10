@@ -297,7 +297,6 @@ function optionalLiteral(
 export interface RuntimeDispatchProgress {
   readonly version: 1;
   readonly armed: boolean;
-  readonly assistantOutput: boolean;
   readonly toolAdmitted: boolean;
   readonly liveInputTaken: boolean;
 }
@@ -854,8 +853,6 @@ export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalSto
   checkInheritedPrefix?(messages: readonly Readonly<Record<string, unknown>>[], model: RuntimeNativeDispatchSnapshot["model"], compaction?: RuntimeRunOptions["compaction"], prefixTokenCap?: number): Promise<RuntimeHandoffFit>;
   prepareHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimePreparedHandoff | { readonly status: "budget_failure"; readonly reason: string };
   buildHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimeHandoffProposal;
-  projectChain(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): { readonly status: "ready"; readonly messages: readonly Readonly<Record<string, unknown>>[]; readonly coverage: unknown }
-    | { readonly status: "handoff_required"; readonly reason: string };
 }
 
 /** Actual resolved native request, never credentials/auth headers. */

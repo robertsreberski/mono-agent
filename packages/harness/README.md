@@ -154,11 +154,9 @@ headers, frozen record digests/tips, ownership bindings and composed coverage.
 It does not authorize ancestry: the host must obtain descriptors from its
 canonical state. Missing evidence is an error or an explicit canonical-only gap,
 never an empty successful native resume. Predecessors are read-only evidence.
-`projectContext` retains its original array contract unchanged. A validated view
-requires an explicit switch target and frozen budget; native reuse positively
-matches provider, API and opaque account provenance across **every** segment,
-including intervening turns on switch-back. Missing/unknown provenance takes a
-handoff. This rule does not apply to ordinary same-model reopening.
+`projectContext` retains its original array contract unchanged and accepts only
+native journal entries. A validated view feeds handoffs only: native envelopes
+are never projected across a model change, including a return to an earlier model.
 
 `prepareHandoff` selects up to three whole recent logical turns and a complete
 mechanical open-work/outcome-unknown ledger (including started rewound effects). `buildHandoff` accepts a strict
@@ -292,11 +290,6 @@ supplies authority, and ambiguous mixed arguments reject. Neither API nor the
 header guard enables host switching, supplies canonical history/retention
 transactions, or grants replay permission. No default host enables v3 writes.
 
-Chain compatibility checks also require positive provider/API/account proof on
-all content-bearing operations, not just frozen epoch descriptors. The guarded
-prepared runtime pins the credentials actually selected for each later turn;
-old or unproven evidence takes handoff. Array/default projection remains unchanged.
-
 ## Public API
 
 ### Start here
@@ -304,8 +297,9 @@ old or unproven evidence takes handoff. Array/default projection remains unchang
 - `MemorySessionRepo` / `JsonlSessionRepo`: native storage, not canonical history.
 - `createRunDriver`: operations inside logical turns, using host-owned tools.
 - `JournalValidator`: validate versioned journal records without stripping native metadata.
-- `projectContext` / `createEvidenceView`: the validated native projection seam;
+- `projectContext`: the native request-context seam for journal entries;
   `buildHarnessSessionContext` remains a compatibility primitive.
+- `createEvidenceView`: validated read-only multi-journal evidence for handoffs.
 - `prepareHandoff` / `buildHandoff`: pure structured artifact proposals.
 - `createHandoffBudget` / `checkHandoffDispatch`: explicit fit/refusal contracts.
 - `inspectCurrentEvidence` / `inspectCurrentLifecycle`: unfiltered current-journal
@@ -345,7 +339,6 @@ inspectCurrentEvidence
 inspectCurrentLifecycle
 isJournalStorageError
 matchTurnEvidence
-nativeCompatibility
 prepareHandoff
 projectContext
 projectInheritedContext

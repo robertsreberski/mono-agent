@@ -82,6 +82,7 @@ async function fixture(enabled = true) {
   return { faux, transport, leaseRuns, make, send, reply, record, journals, contexts, summaryCalls: () => transport.mock.calls.filter(([, context]) => isSummary(context)).length };
 }
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+const summary = JSON.stringify({ intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] });
 
 it("v3: a deleted current journal recovers on canonical replay with one dispatch and one warning; the next turn is warm on the new epoch", async () => {
   const f = await fixture(), first = await f.make();
@@ -113,7 +114,7 @@ it("v3: a deleted current journal recovers on canonical replay with one dispatch
 
 it("v4: a deleted current journal after a switch takes current-only C; predecessors and the switch receipt are untouched", async () => {
   const f = await fixture(), first = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional recovered B answer"), f.reply("Fictional warm B answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional recovered B answer"), f.reply("Fictional warm B answer")]);
   await f.send(first, "fictional-seed", "A"); await f.send(first, "fictional-switch", "B");
   const before = await f.record(); expect(before.version).toBe(4); expect(before.native.chain).toHaveLength(2);
   const predecessor = join(f.journals, `${before.native.chain[0].journalId}.jsonl`), predecessorBytes = await readFile(predecessor);
@@ -122,8 +123,8 @@ it("v4: a deleted current journal after a switch takes current-only C; predecess
   const reopened = await f.make(), recovered = await f.send(reopened, "fictional-after-loss", "B");
   expect(recovered.text).toBe("Fictional recovered B answer");
   expect(recovered.streamed).toEqual(["degraded_native_context"]); expect(recovered.returned).toHaveLength(1);
-  expect(f.transport).toHaveBeenCalledTimes(3); expect(f.summaryCalls()).toBe(0);
-  const replay = f.contexts()[2]!;
+  expect(f.transport).toHaveBeenCalledTimes(4); expect(f.summaryCalls()).toBe(1); // only the A -> B handoff
+  const replay = f.contexts()[3]!;
   expect(occurrences(replay, "Fictional input fictional-seed")).toBe(1); expect(occurrences(replay, "Fictional B answer")).toBe(1);
   expect(replay).not.toContain("Historical handoff");
   const after = await f.record();
@@ -134,13 +135,13 @@ it("v4: a deleted current journal after a switch takes current-only C; predecess
   const warm = await f.send(reopened, "fictional-warm", "B");
   expect(warm).toMatchObject({ text: "Fictional warm B answer", streamed: [], returned: [] });
   expect((await f.record()).providerSession).toMatchObject({ epoch: after.providerSession.epoch, revision: 2 });
-  expect(occurrences(f.contexts()[3]!, "Fictional input fictional-seed")).toBe(1);
+  expect(occurrences(f.contexts()[4]!, "Fictional input fictional-seed")).toBe(1);
   expect(await readFile(predecessor)).toEqual(predecessorBytes);
 }, 20_000);
 
 it("a native-bound no-ID wake whose current journal is missing recovers through the same owned boundary", async () => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional wake answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional wake answer")]);
   await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
   const before = await f.record();
   await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
@@ -149,12 +150,12 @@ it("a native-bound no-ID wake whose current journal is missing recovers through 
   const after = await f.record();
   expect(after.native.chain[0]).toEqual(before.native.chain[0]); expect(after.lastSwitch).toEqual(before.lastSwitch);
   expect(after.providerSession.modelKey).toBe("openai-codex:B"); expect(after.messages).toHaveLength(6);
-  expect(f.leaseRuns.at(-1)).toBe("B"); expect(occurrences(f.contexts()[2]!, "Fictional input fictional-seed")).toBe(1);
+  expect(f.leaseRuns.at(-1)).toBe("B"); expect(occurrences(f.contexts()[3]!, "Fictional input fictional-seed")).toBe(1);
 }, 20_000);
 
 it("a switch request whose current journal is missing takes the owned cold model change instead of capturing absent evidence", async () => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional return answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional return answer")]);
   await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
   const before = await f.record(), predecessor = join(f.journals, `${before.native.chain[0].journalId}.jsonl`), predecessorBytes = await readFile(predecessor);
   await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
@@ -164,8 +165,8 @@ it("a switch request whose current journal is missing takes the owned cold model
   const after = await f.record();
   expect(after.lastSwitch).toMatchObject({ kind: "cold" }); expect(after.providerSession.modelKey).toBe("openai-codex:A");
   expect(after.native.chain).toHaveLength(2); expect(await readFile(predecessor)).toEqual(predecessorBytes);
-  expect(f.summaryCalls()).toBe(0); expect(f.transport).toHaveBeenCalledTimes(3);
-  expect(occurrences(f.contexts()[2]!, "Fictional B answer")).toBe(1);
+  expect(f.summaryCalls()).toBe(1); expect(f.transport).toHaveBeenCalledTimes(4); // no summary for the cold change
+  expect(occurrences(f.contexts()[3]!, "Fictional B answer")).toBe(1);
 }, 20_000);
 
 it("a first switch from a v3 conversation whose current journal is missing rotates cold with canonical replay", async () => {
@@ -198,9 +199,9 @@ it.each([
   expect(await f.record()).toEqual(before);
 }, 20_000);
 
-it("a lost predecessor never affects same-model turns; a switch-back into it takes the owned cold change, never native reuse", async () => {
+it("a lost predecessor never affects same-model turns; a return into it takes the owned cold change, never a handoff from lost bytes", async () => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional same answer"), f.reply("Fictional return answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional same answer"), f.reply("Fictional return answer")]);
   await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
   const before = await f.record();
   await unlink(join(f.journals, `${before.native.chain[0].journalId}.jsonl`));
@@ -213,10 +214,10 @@ it("a lost predecessor never affects same-model turns; a switch-back into it tak
   const after = await f.record();
   expect(after.lastSwitch).toMatchObject({ kind: "cold", artifact: null }); expect(after.providerSession.modelKey).toBe("openai-codex:A");
   expect(after.native.chain).toHaveLength(2); expect(after.native.chain[0]).toEqual(before.native.chain[0]);
-  // No summary, no switch intent/billing generation; canonical replay instead of a handoff.
-  expect(f.summaryCalls()).toBe(0); expect(f.transport).toHaveBeenCalledTimes(4);
+  // The return makes no summary or switch intent; canonical replay instead of a handoff.
+  expect(f.summaryCalls()).toBe(1); expect(f.transport).toHaveBeenCalledTimes(5);
   expect(await readdir(join(f.journals, "..", "..", "..", "history", ".model-switches")).catch(() => [] as string[])).toEqual(switches);
-  const replay = f.contexts()[3]!;
+  const replay = f.contexts()[4]!;
   expect(replay).not.toContain("Historical handoff"); expect(occurrences(replay, "Fictional same answer")).toBe(1);
   expect(occurrences(replay, "Fictional input fictional-seed")).toBe(1);
 }, 20_000);
@@ -225,13 +226,13 @@ it("a lost predecessor never affects same-model turns; a switch-back into it tak
 // kill-worker case (an in-process directory replacement fails closed by design).
 it("whole-chain loss (current and every predecessor) recovers on the next message without a reset", async () => {
   const f = await fixture(), first = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional recovered answer"), f.reply("Fictional warm answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional recovered answer"), f.reply("Fictional warm answer")]);
   await f.send(first, "fictional-seed", "A"); await f.send(first, "fictional-switch", "B");
   const before = await f.record();
   await first.dispose(); for (const name of await readdir(f.journals)) await unlink(join(f.journals, name));
   const reopened = await f.make(), recovered = await f.send(reopened, "fictional-after-loss", "B");
   expect(recovered.text).toBe("Fictional recovered answer"); expect(recovered.streamed).toEqual(["degraded_native_context"]);
-  expect(occurrences(f.contexts()[2]!, "Fictional input fictional-seed")).toBe(1); expect(occurrences(f.contexts()[2]!, "Fictional B answer")).toBe(1);
+  expect(occurrences(f.contexts()[3]!, "Fictional input fictional-seed")).toBe(1); expect(occurrences(f.contexts()[3]!, "Fictional B answer")).toBe(1);
   const after = await f.record();
   expect(after.native.chain).toHaveLength(2); expect(after.native.chain[0]).toEqual(before.native.chain[0]);
   expect(after.lastSwitch).toEqual(before.lastSwitch);

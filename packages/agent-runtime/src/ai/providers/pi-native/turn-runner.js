@@ -1,4 +1,3 @@
-import { noteAssistantContent } from "./dispatch-progress.js";
 import { assertNativeSessionAccess } from "./session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
@@ -373,7 +372,6 @@ export function activateTurnHarness(runState, {
   reference,
 }) {
   if (runState.dispatchProgress) {
-    harness.on("after_response", (event) => noteAssistantContent(runState.dispatchProgress, event.message));
     // Conservative admission: later hooks may block execution, but reaching
     // this boundary still forbids another attempt.
     harness.on("before_tool", () => { runState.dispatchProgress.toolAdmitted = true; });

@@ -77,9 +77,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   leave existing behavior and on-disk bytes unchanged. Only Web persisted
   `started.userMessageId` authorizes a switch/new summary generation: at most two
   billed summary calls per switch per generation, never an automatic repeat of
-  an outcome-unknown call. Pending messages are not queued or replayed. Native
-  switch-back reuse requires positive provider/API/account compatibility; otherwise
-  a fitting structured handoff is required. Stale native manual-compaction mappings
+  an outcome-unknown call. Pending messages are not queued or replayed. Every
+  model change, including a return to an earlier model, requires a fitting
+  structured handoff; native session state is never reused across models. Stale native manual-compaction mappings
   select preserving disposal as defence-in-depth; owned header/membership checks
   remain the physical backstop; current-only cleanup and whole-chain reset/retention
   require owned membership, not a cached model label. Subagent/stateless cleanup
