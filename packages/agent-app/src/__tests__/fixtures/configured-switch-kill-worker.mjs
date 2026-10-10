@@ -2,7 +2,7 @@
 // (runtime.session.modelSwitch enabled + olderWritersStopped), Web-shaped
 // persisted delivery IDs, faux providers only, no tools. One IPC job per process.
 import { appendFileSync, readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
@@ -200,11 +200,46 @@ async function fallbackJob(scenario, mode) {
     }
   } finally { await opened.responder.dispose(); }
 }
+// External loss of the current journal (P4 PR D): the producer deletes it, then
+// the killed turn establishes the owner-approved cold boundary. Recovery is
+// storage-only; "resume" is one later explicit message on a fresh process.
+async function missingJob(scenario, mode) {
+  // missing: current lost; missing-chain: current and predecessor lost;
+  // missing-predecessor: predecessor lost, then a switch back into it;
+  // missing-root: the whole native root is gone before a fresh process.
+  const opened = await open(), results = [], model = ["missing-v3", "missing-switch", "missing-predecessor"].includes(scenario) ? "A" : "B";
+  try {
+    if (mode === "produce") {
+      results.push(await respond(opened.responder, "fictional-seed", "A"));
+      if (scenario !== "missing-v3") results.push(await respond(opened.responder, "fictional-switch", "B"));
+      const record = await canonical(), journals = join(nativeRoot, "mono-v2", "journals");
+      if (scenario === "missing-root") {
+        const report = { results, calls: calls(), contexts, ...await snapshot(opened.store) };
+        await opened.responder.dispose(); await rm(nativeRoot, { recursive: true, force: true });
+        process.send(report, () => process.exit(0)); return;
+      }
+      const lost = !record.native ? (await readdir(journals)).filter((name) => name.endsWith(".jsonl"))
+        : (scenario === "missing-chain" ? record.native.chain : scenario === "missing-predecessor" ? record.native.chain.slice(0, -1) : [record.native.chain.at(-1)])
+          .map((row) => `${row.journalId}.jsonl`);
+      for (const name of lost) await unlink(join(journals, name));
+      const bytes = Object.fromEntries(await Promise.all((await files(journals)).filter((path) => path.endsWith(".jsonl")).map(async (path) => [path.split("/").at(-1), (await readFile(path)).toString("base64")])));
+      await writeFile(join(root, "before.json"), JSON.stringify({ ...await snapshot(opened.store), bytes }));
+      globalThis.__fixtureArmed = true;
+      results.push(await respond(opened.responder, "fictional-after-loss", model));
+      throw new Error("Missing-journal producer was not killed");
+    }
+    const recovery = mode === "recover" ? await opened.store.recoverProviderSessionTurn(conversationId) : undefined;
+    if (mode === "resume") results.push(await respond(opened.responder, "fictional-resume", model));
+    await opened.responder.dispose();
+    process.send({ results, recovery, calls: calls(), contexts, ...await snapshot(opened.store) }, () => process.exit(0));
+  } finally { await opened.responder.dispose(); }
+}
 process.once("message", async ({ scenario, mode }) => {
   let opened;
   try {
     await mkdir(root, { recursive: true });
     if (fallback) { await fallbackJob(scenario, mode); return; }
+    if (scenario.startsWith("missing")) { await missingJob(scenario, mode); return; }
     const results = [];
     if (mode === "produce") {
       opened = await open();

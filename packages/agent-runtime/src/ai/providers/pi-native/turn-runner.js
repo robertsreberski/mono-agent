@@ -311,8 +311,10 @@ export async function buildTurnHarness(runState, {
     streamOptions: { transport, maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // Harness retries are separate from pi-ai transport retries. A health probe
-    // must not issue another request even for a retryable terminal error.
+    // Harness retries are separate from pi-ai transport retries: piMaxRetries
+    // bounds the transport layer only, and the conversational retry keeps the
+    // run driver's inherited Pi harness policy. A health probe must not issue
+    // another request even for a retryable terminal error.
     ...(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0
       ? { retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } }
       : {}),

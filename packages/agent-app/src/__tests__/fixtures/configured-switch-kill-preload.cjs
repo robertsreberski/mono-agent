@@ -57,6 +57,19 @@ fs.open = async (...args) => {
     const sync = handle.sync.bind(handle);
     handle.sync = async () => { await sync(); if (coldRemoved) await stop("cold-finished"); };
   }
+  // Durable staging before a rename: lifecycle intent / canonical temp files in
+  // the history root, and a guarded epoch's `.jsonl.creating` stage.
+  if (dirname(path) === history && path.endsWith(".tmp") || path.endsWith(".jsonl.creating")) {
+    const sync = handle.sync.bind(handle);
+    handle.sync = async () => {
+      await sync();
+      if (!globalThis.__fixtureArmed) return;
+      if (path.endsWith(".jsonl.creating")) { await stop("guarded-epoch-staged"); return; }
+      const text = readFileSync(path, "utf8");
+      if (text.includes("\"disposition\":\"C\"")) await stop("intent-staged");
+      else if (text.includes("\"conversationId\"")) await stop("canonical-staged");
+    };
+  }
   if (path.endsWith(".jsonl")) {
     const sync = handle.sync.bind(handle);
     handle.sync = async () => {
@@ -83,6 +96,7 @@ fs.rename = async (...args) => {
   if (dirname(destination) === history && name.startsWith(".native-history-op.")) await stop("lifecycle-intent");
   if (basename(dirname(destination)) === ".locks" && name.endsWith(".dirty.json")) await stop("turn-fence");
   if (destination.endsWith(".jsonl") && String(args[0]).includes("stage")) await stop("epoch-published");
+  if (destination.endsWith(".jsonl") && String(args[0]).endsWith(".jsonl.creating")) await stop("guarded-epoch-renamed");
 };
 async function removed(path) {
   const name = basename(path);

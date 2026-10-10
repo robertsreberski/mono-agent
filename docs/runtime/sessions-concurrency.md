@@ -158,6 +158,38 @@ the canonical receipt. Once output, tool admission or yielded live input occurs,
 the prepared path cannot retry or fail over. A cancellation before admission is
 reported and not appended to history.
 
+If the current native journal is gone for an outside reason (deleted, the agent
+moved to another machine, a partial restore), the prepared turn no longer fails
+with `session_not_found`. Before admission, while it holds the conversation, the
+host checks that journal. It counts as **missing** only when no published or
+staged file exists for the recorded journal (or, before the first switch, no
+published, staged or archived journal for the current handle; the check never
+reclaims a stage). The turn then replaces only the
+current stretch through the same durable cold boundary that ordinary cold turns
+use: the unguarded first epoch is rotated, and a switched chain takes current-only
+C with predecessors and the switch receipt untouched. The model answers from the
+canonical conversation history, seeded once into the fresh epoch, and the turn
+streams and returns `degraded_native_context` once. Following turns are warm on
+the new epoch. A persisted-ID request for a different model with a missing current
+journal takes the owned cold model change instead of a handoff. No lease, tool or
+summary call is repeated, and a crash at any step recovers from storage alone.
+
+Damage is never treated as loss. An unreadable header, a malformed or invalid
+complete record, staged-only bytes or a catalogue that cannot be read refuse the
+message with `native_journal_unreadable` and leave every file unchanged. An
+incomplete final line still goes to the existing open/repair path.
+
+Predecessor journals use the same split. A lost predecessor does not affect
+same-model turns and stays absent; C never recreates it, while any predecessor
+bytes that remain must still match exactly. A persisted-ID switch whose chain has
+a lost predecessor never attempts native reuse or a handoff from the missing
+bytes: it takes the owned cold model change (`predecessor_missing`) with canonical
+replay, one `degraded_native_context` warning and no summary call or billed
+generation. Losing the whole native root, for example after moving to another
+machine, recovers on the next message without a reset. A damaged predecessor, or
+a valid one that no longer matches its recorded state (for example an older
+restored copy), is refused with `native_journal_unreadable` before any intent.
+
 To enable:
 
 1. Stop **every** writer for the agent root: the app service, CLI runs, managed
@@ -194,14 +226,17 @@ mid-turn, that turn ends failed or interrupted and you send a new message.
 Warnings and refusals:
 
 - `degraded_native_context` is the only user-facing warning. It appears once,
-  on the turn that applied an owned cold change. If the process dies after
-  that change became durable but before that turn streamed the warning,
-  recovery finishes the change without it. The warning is then never shown,
-  and the canonical `lastSwitch.kind: "cold"` receipt is the only record.
+  on the turn that applied an owned cold change or recovered a missing current
+  journal. If the process dies after that change became durable but before
+  that turn streamed the warning, recovery finishes the change without it.
+  The warning is then never shown. The only record is the canonical
+  `lastSwitch.kind: "cold"` receipt for a model change, or the rotated current
+  epoch for a recovered journal.
 - Structured handoffs and native reuse produce no warning.
 - `handoff_pending`, `handoff_budget_exceeded`,
-  `native_cold_model_change_unavailable` and retryable `native_switch_busy`
-  are refusals. The message was not admitted; send another message when ready.
+  `native_cold_model_change_unavailable`, `native_journal_unreadable` and
+  retryable `native_switch_busy` are refusals. The message was not admitted;
+  send another message when ready.
 
 Limits:
 
@@ -415,7 +450,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 | --- | --- | --- |
 | `providers.piNative.transport` | `auto` (default), `sse`, `websocket`, `websocket-cached` | Preferred provider transport; providers without multiple transports ignore it |
 | `providers.piNative.promptCacheDiagnostics` | boolean; default `false` | Metadata-only request fingerprints in run artifacts |
-| `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Transient provider-transport retries |
+| `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Transient provider-transport retries of one request; the fixed conversational retry is separate (see [Fallback](/runtime/fallback/)) |
 | `providers.piNative.maxRetryDelayMs` | default `60000` | Backoff cap between retries (ms) |
 | `providers.piNative.piSessionsRoot` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
 

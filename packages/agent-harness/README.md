@@ -896,6 +896,18 @@ backup resets the current native stretch, keeps predecessor journals and the
 switch receipt, and streams/returns `degraded_native_context` after settlement.
 When a cold model change and backup coincide, that warning kind is reported once.
 The next turn reseeds all canonical history, not a stale switch artifact.
+Before admission, the preparation owner probes the current native journal
+(`inspectCurrentJournal`). A definitively absent journal (no published/staged
+file, or no catalogued handle before the first switch) is passed to admission as
+`missingCurrentEpoch`: only that exact canonical epoch takes the existing
+same-model cold path (v3 retire/new epoch, v4 durable C intent), the turn
+dispatches once on canonical replay and reports `degraded_native_context` once.
+A switch request with a lost current takes the owned cold model change
+(`journal_missing`); one whose chain has a definitively absent predecessor takes
+it with `predecessor_missing` (never native reuse or a handoff from lost bytes).
+C leaves absent predecessors absent and still verifies present ones exactly.
+Unreadable bytes, staged-only bytes or catalogue failure (current or predecessor)
+refuse with `native_journal_unreadable` and preserve evidence.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next

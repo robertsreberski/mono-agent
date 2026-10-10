@@ -60,7 +60,10 @@ export async function prepareConfiguredModelSwitch(input: {
   let ready: Extract<Awaited<ReturnType<typeof advancePreparedModelSwitch>>, { status: "ready" }> | undefined;
   let switched = false, cold = false, appliedCold = false;
   // Legacy unsupported fallback is not authority for an owned cold transition.
-  let coldReason: "chain_limit" | "capacity" | undefined;
+  let coldReason: "chain_limit" | "capacity" | "journal_missing" | "predecessor_missing" | undefined;
+  // Canonical epoch whose current journal is definitively absent (deleted, moved
+  // machine, partial restore). Admission rotates exactly that epoch cold.
+  let missingEpoch: string | undefined, lostPredecessor = false;
   try {
     let snapshot = await owner.read();
     if (messageId === undefined) {
@@ -88,6 +91,17 @@ export async function prepareConfiguredModelSwitch(input: {
         ready = recovered;
       }
     }
+    // Probe under the held owner before capture, producers, P2 admission or the
+    // lease. Corruption or any doubt fails closed with evidence preserved; only a
+    // definitive absence selects the owner-approved cold boundary (canonical replay).
+    if (!snapshot.pending && owner.inspectCurrentJournal) {
+      // A switch capture needs every predecessor; same-model turns never read them.
+      const switching = messageId !== undefined && !ready && snapshot.source.status === "supported" && snapshot.source.fromModelKey !== host.routing.modelKey;
+      const presence = await owner.inspectCurrentJournal(switching ? { predecessors: true } : undefined);
+      if (presence.status === "unreadable") throw new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason: presence.reason });
+      if (presence.status === "missing") { missingEpoch = presence.epoch; ready = undefined; switched = false; }
+      lostPredecessor = presence.lostPredecessor;
+    }
     incoming = await prepareHarnessRuntime({ ...host, assertOwned: () => assertOwned(), prepareContext: input.prepareContext });
     const compaction = incoming.snapshot.compactionSummaryMaxTokens === undefined ? {} : { summaryMaxTokens: incoming.snapshot.compactionSummaryMaxTokens };
     if (!ready && (snapshot.source.status === "supported" && snapshot.source.fromModelKey !== host.routing.modelKey || snapshot.pending)) {
@@ -95,7 +109,12 @@ export async function prepareConfiguredModelSwitch(input: {
       if (messageId === undefined) { if (snapshot.pending) throw pending(); cold = true; }
       else {
         try {
-          if (snapshot.native && snapshot.native.chain.length >= MAX_JOURNAL_CHAIN && !snapshot.pending) { cold = true; coldReason = "chain_limit"; }
+          // No evidence remains to capture: the new model gets canonical replay.
+          if (missingEpoch !== undefined) { cold = true; coldReason = "journal_missing"; }
+          // Native reuse or a handoff would need the lost bytes: never attempt a
+          // switch-back into it; the owned cold change replays canonical history.
+          else if (lostPredecessor) { cold = true; coldReason = "predecessor_missing"; }
+          else if (snapshot.native && snapshot.native.chain.length >= MAX_JOURNAL_CHAIN && !snapshot.pending) { cold = true; coldReason = "chain_limit"; }
           else {
             const from = snapshot.pending?.identity.fromModelKey ?? (snapshot.source.status === "supported" ? snapshot.source.fromModelKey : undefined);
             if (!from) throw new Error("Pending switch has no source owner");
@@ -194,13 +213,21 @@ export async function prepareConfiguredModelSwitch(input: {
         if (error instanceof ModelSwitchCapacityError) throw new AgentHarnessError("native_cold_model_change_unavailable", "Safe cold publication capacity unavailable; no incoming turn was admitted and native evidence was preserved.");
         throw error;
       }
-      snapshot = await owner.read(); cold = false;
+      snapshot = await owner.read(); cold = false; missingEpoch = undefined;
     }
-    const warning = { warning_kind: "degraded_native_context", source: "harness",
-      message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." } as const;
+    // One degradation warning per turn, by kind: a cold model change already
+    // reports the lost working context, including a missing current journal.
+    const warning = appliedCold ? { warning_kind: "degraded_native_context", source: "harness",
+      message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." } as const
+      : { warning_kind: "degraded_native_context", source: "harness",
+        message: "This conversation's saved model session was missing, so the model continued from the available conversation history without its earlier internal session state. It may need key details repeated." } as const;
+    const recoversMissing = missingEpoch !== undefined, emitWarning = () => {
+      const event = { type: "runtime_warning", ...warning };
+      host.recorder.onEvent(event); host.request.onEvent?.(event);
+    };
     // A detached C resets the epoch but retains the accepted switch receipt.
     // Its older projection cannot replace canonical turns since that switch.
-    if (!ready && !cold && snapshot.native?.projection && snapshot.lastSwitch?.artifact
+    if (!ready && !cold && missingEpoch === undefined && snapshot.native?.projection && snapshot.lastSwitch?.artifact
       && snapshot.lastSwitch.toEpoch === snapshot.native.chain.at(-1)?.epoch) ready = {
       status: "ready", switchId: snapshot.lastSwitch.switchId, artifact: snapshot.native.projection, modelKey: host.routing.modelKey };
     snapshot.native?.chain.forEach((row) => protectedHandles.add(row.handleId));
@@ -210,15 +237,16 @@ export async function prepareConfiguredModelSwitch(input: {
     };
     return { context: prepared.context, protectedHandles,
       run: async (binding, notify) => {
-        if (appliedCold) {
-          const event = { type: "runtime_warning", ...warning };
-          host.recorder.onEvent(event); host.request.onEvent?.(event);
-        }
+        if (appliedCold) emitWarning();
         const refresh = async (turn: Awaited<ReturnType<typeof owner.admit>>) => { if (!runtime.refreshSession) throw new Error("Strict native refresh unavailable"); await runtime.refreshSession(turn.providerSessionId); };
         if (ready) return await runPreparedModelSwitch({ preparation: owner, incoming: prepared, ready, binding, sessionsRoot: host.durablePiSessionsRoot,
           switching: switched, onAdmitted: (turn) => onTurn(turn, notify), beforeDispatch: refresh });
         const result = await prepared.run(async () => {
-          const turn = await owner.admit(binding, cold ? { coldModelChange: true } : undefined); onTurn(turn, notify); await refresh(turn);
+          const turn = await owner.admit(binding, cold || recoversMissing ? { ...(cold ? { coldModelChange: true as const } : {}),
+            ...(recoversMissing ? { missingCurrentEpoch: missingEpoch! } : {}) } : undefined); onTurn(turn, notify);
+          // The cold boundary is durable once admission returns; report it before dispatch.
+          if (recoversMissing && !appliedCold) emitWarning();
+          await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
           // Opt-in only: unguarded (pre-first-switch) epochs record the pinned
@@ -229,7 +257,7 @@ export async function prepareConfiguredModelSwitch(input: {
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         });
-        return appliedCold ? { ...result, runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning] } : result;
+        return appliedCold || recoversMissing ? { ...result, runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning] } : result;
       }, close: async () => { try { await prepared.close(); } finally { await owner.abort(); } } };
   } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw error; }
   finally { await outgoing?.close().catch(() => {}); }

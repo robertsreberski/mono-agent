@@ -77,7 +77,7 @@ interface NativeHistoryOperation {
 interface NativeColdSwitch {
   readonly messageDigest: string;
   readonly targetProvenance: CanonicalJournalDescriptor["provenance"];
-  readonly reason: "chain_limit" | "capacity";
+  readonly reason: "chain_limit" | "capacity" | "journal_missing" | "predecessor_missing";
 }
 const CONVERSATION_LOCK_SHARDS = 16;
 const LOGICAL_SESSION_LOCK_SHARDS = 16;
@@ -202,13 +202,23 @@ export interface ManagedProviderSessionPreparation {
   acquireNativeHistoryAuthority(options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
   beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
   rollForwardModelSwitch(switchId: string, options: { readonly exclusiveWriters: true; readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
-  /** coldModelChange explicitly selects today's cold rotation, never while a switch is pending. */
-  admit(binding: ProviderSessionTurnBinding, options?: { readonly coldModelChange: true }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: TurnHistoryV4["native"]; assertOwned(): Promise<void> }>;
+  /** coldModelChange explicitly selects today's cold rotation, never while a switch is pending.
+   * missingCurrentEpoch is owner-approved recovery of an externally missing current
+   * journal: when that exact epoch is still canonical, admission first rotates it
+   * through the existing same-model cold path (v3 retire/new epoch, v4 durable C). */
+  admit(binding: ProviderSessionTurnBinding, options?: { readonly coldModelChange?: true; readonly missingCurrentEpoch?: string }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: TurnHistoryV4["native"]; assertOwned(): Promise<void> }>;
   /** @internal Explicit persisted-delivery cold transition: C current only, P predecessors; no producer/admission. */
   coldModelChange?(input: { readonly messageId: string; readonly modelKey: string; readonly sourceCanonicalDigest: string;
-    readonly targetProvenance: CanonicalJournalDescriptor["provenance"]; readonly reason: "chain_limit" | "capacity" }): Promise<NonNullable<TurnHistoryV4["lastSwitch"]>>;
+    readonly targetProvenance: CanonicalJournalDescriptor["provenance"]; readonly reason: NativeColdSwitch["reason"] }): Promise<NonNullable<TurnHistoryV4["lastSwitch"]>>;
+  /** @internal Read-only probe of the canonical current journal under this owner.
+   * `absent` means no current journal is expected yet (or no probe capability).
+   * Predecessors are probed when the current is missing or `predecessors` is set. */
+  inspectCurrentJournal?(options?: { readonly predecessors?: true }): Promise<CurrentJournalPresence>;
   abort(): Promise<void>;
 }
+export type CurrentJournalPresence = { readonly status: "absent" | "present"; readonly lostPredecessor: boolean }
+  | { readonly status: "missing"; readonly epoch: string; readonly lostPredecessor: boolean }
+  | { readonly status: "unreadable"; readonly reason: string };
 export interface ProviderSessionPreparationSnapshot {
   readonly history: readonly HistoryMessage[];
   readonly source: Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>;
@@ -794,7 +804,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (value.version === 2) {
       if (value.disposition !== "C" || !isRecord(value.coldSwitch)
         || Object.keys(value.coldSwitch).sort().join(",") !== "messageDigest,reason,targetProvenance"
-        || !["chain_limit", "capacity"].includes(value.coldSwitch.reason as string)) throw new TypeError("Invalid cold model transition");
+        || !["chain_limit", "capacity", "journal_missing", "predecessor_missing"].includes(value.coldSwitch.reason as string)) throw new TypeError("Invalid cold model transition");
       switchHash(value.coldSwitch.messageDigest);
       coldSwitch = value.coldSwitch as unknown as NativeColdSwitch;
       if (!value.next || value.next.version !== 4 || value.next.providerSession.revision !== 0
@@ -1518,8 +1528,36 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             return structuredClone(next.lastSwitch!);
           });
         },
+        inspectCurrentJournal: (options) => owned(async (): Promise<CurrentJournalPresence> => {
+          const native = this.nativeJournalStorage;
+          if (!native?.inspectCurrentJournal) return { status: "absent", lostPredecessor: false };
+          const record = await this.readRecord(id, held.rootIdentity), session = record.providerSession, chain = record.native?.chain;
+          if (session?.modelKey === undefined || session.revision === undefined || session.dirtyRunId !== undefined) return { status: "absent", lostPredecessor: false };
+          // An unguarded epoch has no journal before its first admitted turn; a
+          // guarded epoch is published with its initializer at C/switch time.
+          if (!chain && (record.sourceVersion !== STORE_VERSION || session.revision === 0)) return { status: "absent", lostPredecessor: false };
+          const current = chain?.at(-1);
+          if (current && current.epoch !== session.epoch) return { status: "unreadable", reason: "membership" };
+          const presence = await native.inspectCurrentJournal(current ? { handleId: current.handleId, journalId: current.journalId }
+            : { handleId: deriveProviderSessionId(id, session.epoch) });
+          if (presence.status === "unreadable") { await assertOwned(); return { status: "unreadable", reason: presence.reason }; }
+          // Predecessors matter only before C (current lost) or a switch capture.
+          // Same split as the current: definitive absence is a lost predecessor;
+          // damaged or staged bytes refuse before any intent.
+          let lostPredecessor = false;
+          if (presence.status === "missing" || options?.predecessors === true) {
+            for (const predecessor of chain?.slice(0, -1) ?? []) {
+              const prior = await native.inspectCurrentJournal({ handleId: predecessor.handleId, journalId: predecessor.journalId,
+                frozen: predecessor, hostAuthority: record.native!.authority });
+              if (prior.status === "unreadable") { await assertOwned(); return { status: "unreadable", reason: prior.reason.startsWith("predecessor_") ? prior.reason : `predecessor_${prior.reason}` }; }
+              if (prior.status === "missing") lostPredecessor = true;
+            }
+          }
+          await assertOwned();
+          return presence.status === "missing" ? { status: "missing", epoch: session.epoch, lostPredecessor } : { status: "present", lostPredecessor };
+        }),
         admit: (input, options) => {
-          const coldModelChange = options?.coldModelChange === true;
+          const coldModelChange = options?.coldModelChange === true, missingCurrentEpoch = options?.missingCurrentEpoch;
           let binding: ProviderSessionTurnBinding;
           try { binding = structuredClone(input); } catch (error) { return Promise.reject(error); }
           return owned(async () => {
@@ -1542,7 +1580,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             let turnOwned!: () => Promise<void>;
             let native: TurnHistoryV4["native"] | undefined;
             try {
-              const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion, binding) => { turnOwned = assertion; native = binding; });
+              const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion, binding) => { turnOwned = assertion; native = binding; }, missingCurrentEpoch);
               return { ...turn, ...(native ? { native } : {}), assertOwned: () => turnOwned() };
             } catch (error) { state = "closed"; throw error; } // P2 helper released its owner.
           });
@@ -1569,7 +1607,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return await this.beginHeldProviderSessionTurn(normalizedId, normalizedRunId, binding, held);
   }
   private async beginHeldProviderSessionTurn(normalizedId: string, normalizedRunId: string, binding: ProviderSessionTurnBinding | undefined,
-    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>, native?: TurnHistoryV4["native"]) => void): Promise<ConversationHistoryProviderSessionTurn> {
+    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>, native?: TurnHistoryV4["native"]) => void,
+    missingCurrentEpoch?: string): Promise<ConversationHistoryProviderSessionTurn> {
     const rootIdentity = held.rootIdentity;
     let turnSettled = false;
     let prepared: PreparedHistoryAppend | undefined;
@@ -1624,7 +1663,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           && existingProvider !== undefined
           && existingProvider.dirtyRunId === undefined
           && existingProvider.revision !== undefined
-          && existingProvider.revision < Number.MAX_SAFE_INTEGER;
+          && existingProvider.revision < Number.MAX_SAFE_INTEGER
+          // Owner-approved missing-journal recovery: only the exact epoch the
+          // preparation probed. A later rotation already replaced it (idempotent).
+          && !(missingCurrentEpoch !== undefined && existingProvider.epoch === missingCurrentEpoch);
         if (!reusable) {
           this.requireNativeCapability(existing, "native epoch transition", "provider admission cold rotation");
           if (existing.sourceVersion === 4) {

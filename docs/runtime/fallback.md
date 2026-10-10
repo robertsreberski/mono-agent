@@ -123,11 +123,16 @@ appended to it), emits `provider_retry_started` rather than a failover event, an
 appends its own `failoverHistory` entry carrying `retryIndex` — each retry keeps
 its own request id and failure subkind.
 
-Retries compose with, and multiply against, the provider-level retry inside a
-single attempt. With defaults on a `pi` primary, `runtime.retry.primaryAttempts: 2`
-and pi's own `maxRetries` of 2 mean up to **six** provider stream starts before the
-chain advances. Lower `providers.piNative.piMaxRetries` when raising
-`primaryAttempts`. The harness's one-shot session-resume retry is disjoint: it
+Retries compose with, and multiply against, two retry layers inside one Pi
+attempt. `providers.piNative.piMaxRetries` (default 2) bounds pi-ai's transport
+retries of one provider HTTP request. Separately, the Pi turn harness repeats a
+failed assistant request up to three more times, after 1 s, 2 s and 4 s, when the
+final error is retryable. That conversational layer is inherited from Pi's agent
+harness, is not controlled by `piMaxRetries`, and never re-runs a tool: tools run
+only after a successful response. With defaults, one attempt can therefore make
+up to **twelve** provider requests, and `runtime.retry.primaryAttempts: 2`
+doubles that before the chain advances. `piMaxRetries: 0` still allows four
+requests per attempt. Lower `piMaxRetries` when raising `primaryAttempts`. The harness's one-shot session-resume retry is disjoint: it
 fires on `session_not_found` / `session_busy`, which never retry at the router.
 
 ## What failover does

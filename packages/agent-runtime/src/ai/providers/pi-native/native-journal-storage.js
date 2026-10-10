@@ -7,6 +7,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { SessionStore, JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { JournalReader } from "@mono-agent/harness/journal-reader.js";
+import { listLegacySessions } from "@mono-agent/harness/legacy-import.js";
 import { JournalValidator, validateJournalHeader } from "@mono-agent/harness/journal-schema.js";
 import { resolveDurableNativeSessionRepo, detachDurableNativeSession } from "./session-lifecycle.js";
 import { normalizeDurableSessionsRoot } from "./sessions-root.js";
@@ -45,8 +46,8 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   /** Streaming digests; only the three reference-frame records are retained.
    * An immutable intent admits only an exact prefix of those deterministic bytes.
    * @param {any} coordinate @param {any} [event] */
-  const snapshot = async (coordinate, event, prefixOnly = false, capture = 0) => {
-    const meta = capture ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
+  const snapshot = async (coordinate, event, prefixOnly = false, capture = 0, direct = false) => {
+    const meta = capture || direct ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
     try {
       if (capture && reader.identity.size > (typeof capture === "number" ? capture : MAX_CAPTURE_BYTES)) captureLimit();
       /** @type {any} */ let header;
@@ -127,6 +128,71 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         || journals.has(entry.journalId) || handles.has(entry.handleId)) fail();
       journals.add(entry.journalId); handles.add(entry.handleId);
     }
+  };
+  // Definitive absence of every published/staged member of one exact journal.
+  const journalAbsent = async (journalId) => {
+    for (const suffix of ["", ".creating", ".importing", ".upgrading"]) {
+      try { await lstat(path(journalId) + suffix); return false; } catch (error) { if (!missing(error)) throw error; }
+    }
+    return true;
+  };
+  // Frozen predecessors must still be exact. A DEFINITIVELY absent one (lost
+  // externally) stays absent and untouched: C never recreates or depends on it.
+  // Any present bytes, including damaged or staged ones, must still match.
+  const verifyPredecessors = async (chain, context) => {
+    for (const predecessor of chain.slice(0, -1)) {
+      if (await journalAbsent(predecessor.journalId)) continue;
+      const frozen = await snapshot(predecessor);
+      if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
+    }
+  };
+  // Read-only, stage-aware catalogue for one v3 handle. Unlike repo.list() it
+  // never reclaims a `.creating` stage and counts `.importing`/`.upgrading`
+  // copies and legacy archives, so a staged-only restore is never "absent".
+  // Serialized with native creators by the catalogue lock. Entry selection
+  // matches listOwnedUnlocked: unrelated names are skipped and a matching
+  // non-file fails. Like its reclaim rule, a `.creating` stage with an
+  // incomplete or header-only body is a failed unpublished creation, not
+  // evidence (ignored here, never unlinked). Any other matching file whose
+  // header cannot be read, parsed or validated is unattributed: it could be
+  // this handle's damaged journal, so it blocks only a "missing" verdict, never
+  // a found published journal. repo.list() rejects the whole catalogue for it.
+  const handleCatalogue = async (handleId) => {
+    const found = { published: /** @type {any[]} */ ([]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
+    let present = false;
+    try { present = (await lstat(repo.directory)).isDirectory(); } catch (error) { if (!missing(error)) throw error; }
+    if (present) {
+      const locks = await repo.ensureDirectory();
+      await locks.withCatalog(async () => {
+        for (const file of await readdir(repo.directory, { withFileTypes: true })) {
+          const suffix = [".jsonl", ".jsonl.creating", ".jsonl.importing", ".jsonl.upgrading"].find((end) => file.name.endsWith(end));
+          if (!suffix) continue;
+          if (!file.isFile()) fail();
+          const filePath = join(repo.directory, file.name);
+          let header, bodyless = false;
+          try {
+            const reader = await JournalReader.open(filePath, root);
+            try {
+              header = await reader.readHeader({ allowIncomplete: true });
+              if (suffix === ".jsonl.creating" && header) { let count = 0; const scan = await reader.scan(() => { count += 1; }); bodyless = count === 1 && !scan.torn; }
+            } finally { await reader.close(); }
+          } catch (error) { if (missing(error)) continue; header = null; }
+          if (suffix === ".jsonl.creating" && (header === undefined || bodyless)) continue;
+          if (!header || typeof header !== "object") { found.unattributed += 1; continue; }
+          if (header.id !== handleId) continue;
+          if (suffix !== ".jsonl") { found.staged += 1; continue; }
+          try { validateJournalHeader(header); } catch { found.unattributed += 1; continue; }
+          found.published.push({ id: handleId, journalId: file.name.slice(0, -suffix.length), path: filePath });
+        }
+      });
+    }
+    let legacy;
+    try { legacy = await listLegacySessions(root, { includeArchives: true }); }
+    catch { legacy = await listLegacySessions(root); found.unattributed += 1; } // an unreadable archive could be ours
+    for (const entry of legacy) {
+      if (entry.id === handleId) { if (entry.path.endsWith(".migrated")) found.archived += 1; else found.legacy += 1; }
+    }
+    return found;
   };
   const deletionMetadata = (entry) => ({ id: entry.handleId, journalId: entry.journalId, path: path(entry.journalId) });
   // Preflight the complete physical set, including stages, before any unlink.
@@ -360,12 +426,9 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     async publishColdEpoch(chain, context) {
       const { plan, descriptor } = coldPlan(chain, context);
       await context.assertOwned();
-      // Frozen predecessors must still be exact; current may have a rejected or
-      // interrupted tail, so only its immutable header is deletion evidence.
-      for (const predecessor of chain.slice(0, -1)) {
-        const frozen = await snapshot(predecessor);
-        if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
-      }
+      // Current may have a rejected or interrupted tail, so only its immutable
+      // header is deletion evidence.
+      await verifyPredecessors(chain, context);
       await inspectDeletion([chain.at(-1)], context);
       await repo.createGuardedEpoch({ id: context.targetHandleId, timestamp: context.timestamp,
         hostAuthority: context.hostAuthority, assertOwned: context.assertOwned, onPhase: phase });
@@ -377,10 +440,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
      * evidence behind a canonical receipt. @param {any[]} chain @param {any} context */
     async verifyColdEpoch(chain, context) {
       const { plan, descriptor } = coldPlan(chain, context); await context.assertOwned();
-      for (const predecessor of chain.slice(0, -1)) {
-        const frozen = await snapshot(predecessor);
-        if (!same(frozen.descriptor, predecessor) || !same(frozen.header.hostAuthority, context.hostAuthority)) fail();
-      }
+      await verifyPredecessors(chain, context);
       const target = await snapshot(descriptor, undefined, true);
       if (!same(target.header, plan.header)) fail(); await context.assertOwned();
     },
@@ -425,6 +485,54 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           return false;
         } finally { for (const writer of writers) writer.release(); }
       }, { wait: false }); } catch (error) { if (error?.code === "ERR_HARNESS_WRITER_BUSY") return true; throw error; }
+    },
+    /** Read-only presence probe under the held host claim. Never opens for
+     * writing, repairs, imports, creates or deletes. `missing` requires a
+     * definitive absence: no published/staged file for an exact journal ID, or
+     * no catalogue entry (owned or legacy) for the handle. Any other doubt is
+     * `unreadable`, never cold authority. A torn final line is left to the
+     * existing open/repair path; every complete line must parse and validate.
+     * With `frozen` (a predecessor), present bytes must also match that exact
+     * canonical descriptor and host authority, as C later requires.
+     * @param {{handleId:string, journalId?:string, frozen?:any, hostAuthority?:any}} coordinates */
+    async inspectCurrentJournal(coordinates) {
+      const { handleId, journalId, frozen, hostAuthority } = coordinates ?? {};
+      if (frozen !== undefined && (journalId === undefined || frozen?.journalId !== journalId || frozen.handleId !== handleId || !hostAuthority)) fail();
+      if (!hex64(handleId) || journalId !== undefined && (typeof journalId !== "string" || !/^[A-Za-z0-9_-]+$/.test(journalId))) fail();
+      const unreadable = (reason) => ({ status: /** @type {const} */ ("unreadable"), reason });
+      let meta;
+      try {
+        if (journalId !== undefined) {
+          if (await journalAbsent(journalId)) return { status: "missing" };
+          try { await lstat(path(journalId)); } catch (error) { if (missing(error)) return unreadable("staged_only"); throw error; }
+          meta = { id: handleId, journalId, path: path(journalId) };
+        } else {
+          const found = await handleCatalogue(handleId);
+          if (found.published.length > 1) return unreadable("ambiguous");
+          if (found.published.length === 1) meta = found.published[0];
+          // Legacy sources are imported by the ordinary open path; presence suffices.
+          else if (found.legacy) return { status: "present" };
+          else if (found.staged || found.archived) return unreadable("staged_only");
+          // An unattributable file could be this handle's damaged journal.
+          else if (found.unattributed) return unreadable("unattributed");
+          else return { status: "missing" };
+        }
+        const reader = await JournalReader.open(meta.path, root);
+        try {
+          /** @type {any} */ let header; const validator = new JournalValidator();
+          await reader.scan((record) => { if (!header) { validateJournalHeader(record); header = record; } else validator.apply(record); });
+          if (!header || header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
+        } finally { await reader.close(); }
+        if (frozen !== undefined) {
+          // A valid but older/foreign predecessor (e.g. a restored prefix) is not
+          // the frozen evidence: refuse before any C intent can depend on it.
+          let exact; try { exact = await snapshot(frozen, undefined, false, 0, true); } catch { return unreadable("predecessor_changed"); }
+          if (!same(exact.descriptor, frozen) || !same(exact.header.hostAuthority, hostAuthority)) return unreadable("predecessor_changed");
+        }
+        return { status: "present" };
+      } catch (error) {
+        return unreadable(error?.code === "ENOENT" ? "changed" : error instanceof SyntaxError ? "malformed" : "invalid");
+      }
     },
     /** Reference-checked C or full-set D. Missing members are idempotent success,
      * not creation eligibility. Host retains membership until every barrier wins.

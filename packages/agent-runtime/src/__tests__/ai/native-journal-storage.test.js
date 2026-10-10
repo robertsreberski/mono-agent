@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { appendFile, mkdtemp, open, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, open, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { fork, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
@@ -386,4 +386,82 @@ it.each([
   const bridge = createManagedNativeJournalStorage({ sessionsRoot: root });
   const frozen = await bridge.freeze({ epoch: "9".repeat(64), ordinal: 0, handleId: metadata.id, predecessorJournalId: null, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
   expect(frozen.provenance).toEqual({ ...from, account: expected });
+});
+// Missing-vs-corrupt classification for owner-approved cold recovery (P4 PR D).
+it("classifies the current journal as present, definitively missing or unreadable without mutation", async () => {
+  const f = await fixture(), exact = { handleId: f.metadata.id, journalId: f.metadata.journalId };
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: "a".repeat(64) })).toEqual({ status: "missing" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: "a".repeat(64), journalId: "fictional-absent" })).toEqual({ status: "missing" });
+  // A torn final line belongs to the existing open/repair path, never to "missing".
+  await appendFile(f.metadata.path, "{\"torn\":");
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "present" });
+  const lines = f.before.toString().split("\n");
+  for (const [kind, bytes] of [["record", [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n")], ["header", ["{not json", ...lines.slice(1)].join("\n")]]) {
+    await writeFile(f.metadata.path, bytes);
+    expect(await f.bridge.inspectCurrentJournal(exact), kind).toMatchObject({ status: "unreadable" });
+    expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id }), kind).toMatchObject({ status: "unreadable" });
+    expect(await readFile(f.metadata.path, "utf8")).toBe(bytes);
+  }
+  // Staged-only bytes are uncertainty, not absence.
+  await writeFile(`${f.metadata.path}.upgrading`, f.before, { mode: 0o600 }); await rm(f.metadata.path);
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "unreadable", reason: "staged_only" });
+  await expect(f.bridge.inspectCurrentJournal({ handleId: "../escape" })).rejects.toThrow();
+});
+it("cold creation leaves a definitively absent predecessor absent but rejects a damaged one before any epoch", async () => {
+  const f = await lifecycleFixture(), predecessor = f.metadata.path, bytes = await readFile(predecessor);
+  const lines = bytes.toString().split("\n");
+  await writeFile(predecessor, [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n"));
+  await expect(f.bridge.publishColdEpoch(f.chain, coldContext)).rejects.toThrow();
+  const plan = f.bridge.planColdEpoch(f.chain, coldContext);
+  expect(await readdir(f.repo.directory)).not.toContain(`${plan.descriptor.journalId}.jsonl`);
+  await rm(predecessor);
+  const published = await f.bridge.publishColdEpoch(f.chain, coldContext);
+  expect(published).toEqual([f.chain[0], plan.descriptor]);
+  await f.bridge.verifyColdEpoch(f.chain, coldContext);
+  await expect(readFile(predecessor)).rejects.toMatchObject({ code: "ENOENT" });
+});
+it.each([".upgrading", ".importing", ".creating"])("a handle-only staged-only %s journal is unreadable, never missing, and is never reclaimed", async (suffix) => {
+  const f = await fixture(), staged = `${f.metadata.path}${suffix}`;
+  await writeFile(staged, f.before, { mode: 0o600 }); await rm(f.metadata.path);
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "unreadable", reason: "staged_only" });
+  expect(await readFile(staged)).toEqual(f.before);
+  // Like listOwnedUnlocked's reclaim rule, a partial or header-only creation
+  // stage is a failed unpublished create, not evidence: ignored, never unlinked.
+  await rm(staged); const partial = join(f.repo.directory, "00000000-0000-4000-8000-000000000000.jsonl.creating");
+  await writeFile(partial, "{\"format\"", { mode: 0o600 });
+  const headerOnly = `${f.metadata.path}.creating`; await writeFile(headerOnly, `${f.before.toString().split("\n")[0]}\n`, { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "missing" });
+  expect(await readFile(partial, "utf8")).toBe("{\"format\""); expect((await readFile(headerOnly, "utf8")).split("\n")).toHaveLength(2);
+});
+it("handle lookup skips unrelated entries; an unattributable damaged journal blocks only a missing verdict", async () => {
+  const f = await fixture(), present = { handleId: f.metadata.id }, absent = { handleId: "a".repeat(64) };
+  await writeFile(join(f.repo.directory, ".DS_Store"), "fictional", { mode: 0o600 });
+  await writeFile(join(f.repo.directory, "notes.txt~"), "fictional", { mode: 0o644 });
+  await mkdir(join(f.repo.directory, "scratch"));
+  expect(await f.bridge.inspectCurrentJournal(present)).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
+  // A headerless published journal cannot be attributed: it may be the lost one.
+  const foreign = join(f.repo.directory, "11111111-1111-4111-8111-111111111111.jsonl");
+  for (const bytes of ["", "{not json\n"]) {
+    await writeFile(foreign, bytes, { mode: 0o600 });
+    expect(await f.bridge.inspectCurrentJournal(present)).toEqual({ status: "present" });
+    expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "unreadable", reason: "unattributed" });
+    expect(await readFile(foreign, "utf8")).toBe(bytes);
+  }
+  // A readable header for another handle is unrelated evidence and never blocks.
+  await writeFile(foreign, f.before.toString().replaceAll(f.metadata.id, "b".repeat(64)).replaceAll(f.metadata.journalId, "11111111-1111-4111-8111-111111111111"), { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
+});
+it("a valid but older restored predecessor prefix is refused against its frozen descriptor, before any C", async () => {
+  const f = await lifecycleFixture(), predecessor = f.chain[0];
+  const frozen = { handleId: predecessor.handleId, journalId: predecessor.journalId, frozen: predecessor, hostAuthority: authority };
+  expect(await f.bridge.inspectCurrentJournal(frozen)).toEqual({ status: "present" });
+  const restored = (await readFile(f.metadata.path, "utf8")).trim().split("\n").slice(0, -3).join("\n") + "\n";
+  await writeFile(f.metadata.path, restored);
+  expect(await f.bridge.inspectCurrentJournal({ handleId: predecessor.handleId, journalId: predecessor.journalId })).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal(frozen)).toEqual({ status: "unreadable", reason: "predecessor_changed" });
+  await expect(f.bridge.publishColdEpoch(f.chain, coldContext)).rejects.toThrow();
+  expect(await readFile(f.metadata.path, "utf8")).toBe(restored);
 });
