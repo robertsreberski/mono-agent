@@ -4513,6 +4513,43 @@ describe("WebService", () => {
     }
   });
 
+  it("Web receipt follows persisted reservation", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let release!: (result: Record<string, unknown>) => void;
+    let dispatched!: () => void, dispatchFailed!: (error: unknown) => void;
+    const dispatch = new Promise<void>((resolve, reject) => { dispatched = resolve; dispatchFailed = reject; });
+    const held = new Promise<Record<string, unknown>>((resolve) => { release = resolve; });
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state");
+    const service = await createService({ stateDir, clock: () => new Date("2000-01-01T00:00:00.000Z"), fetchImpl: operatorFetch({
+      supportsLiveInput: true,
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      onLiveInput(_conversationId, body) {
+        const reader = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+        try {
+          const input = reader.prepare("SELECT message_id, text, dispatch_started_at FROM live_inputs WHERE id = ?").get(body.id as string);
+          expect(input).toMatchObject({ text: "Fictional correction.", dispatch_started_at: expect.any(String) });
+          const row = reader.prepare("SELECT parts_json FROM messages WHERE id = ?").get(input!.message_id as string);
+          expect(JSON.parse(row!.parts_json as string)).toContainEqual({ type: "text", text: "Fictional correction." });
+          dispatched();
+        } catch (error) { dispatchFailed(error); } finally { reader.close(); }
+        return held;
+      },
+    }) });
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Fictional initial task." });
+      const receipt = service.submitLiveInput(thread.id, "Fictional correction.");
+      expect(receipt).toMatchObject({ disposition: "pending", message: { liveInputStatus: "pending" } });
+      await dispatch;
+      // The receipt's row is visible to a separate SQLite connection while the
+      // operator response is still blocked, not just in the service's cache.
+      const reader = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try { expect(reader.prepare("SELECT id FROM messages WHERE id = ?").get(receipt.message.id)?.id).toBe(receipt.message.id); }
+      finally { reader.close(); }
+    } finally { release({ status: "uncertain" }); stream?.close(); await service.stop(); }
+  });
+
   it("delivers a live follow-up into the active operator run and publishes applied state", async () => {
     const encoder = new TextEncoder();
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;

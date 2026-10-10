@@ -1132,7 +1132,7 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("projects an applied human steer as one inline marker, not a Steered tool row", async () => {
+  it("Duplicate consumption/receipt settles once as one applied row and inline marker", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -1179,6 +1179,8 @@ describe("WebStore", () => {
       receivedAt: "2026-09-12T10:00:01.000Z",
       quote: { text: "the sync approach", messageId: turn.userMessageId },
     });
+    expect(assistant?.parts.filter((part) => part.type === "steer")).toHaveLength(1);
+    expect(detail.messages.filter((message) => message.id === reserved.message.id)).toHaveLength(1);
     // The steered user row keeps its standalone identity for search and quotes.
     expect(detail.messages.find((message) => message.id === reserved.message.id)).toMatchObject({
       role: "user",
