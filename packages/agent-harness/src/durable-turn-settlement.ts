@@ -111,9 +111,10 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
       timestamp: candidate.timestamp, runId: payload.identity.turnId,
       ...(outcome === "cancelled" || outcome === "failed" ? { idempotencyKey: `${outcome === "cancelled" ? CANCELLED_TURN_HISTORY_KEY_PREFIX : FAILED_TURN_HISTORY_KEY_PREFIX}${payload.identity.turnId}` } : {}) });
     const unconsumed = payload.inputs.filter((input) => input.kind === "live" && !consumedIds.includes(input.id)).length;
-    // Keep the notice outside the bounded runtime candidate. The canonical
+    // Completed turns can return unconsumed inputs to the caller for requeue.
+    // Keep the recovery notice outside the bounded runtime candidate. The canonical
     // receipt commits it with this turn, including when candidate text is null.
-    if (unconsumed > 0) messages.push({ role: "assistant",
+    if (outcome !== "completed" && unconsumed > 0) messages.push({ role: "assistant",
       content: `Some messages sent during the previous turn (${unconsumed} total) were not confirmed as applied and were not replayed. Resend them if still needed.`,
       timestamp: candidate?.timestamp ?? timestamp, runId: payload.identity.turnId });
   }
