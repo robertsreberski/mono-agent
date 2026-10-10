@@ -12,6 +12,7 @@ import type { ConversationHistoryStore } from "@mono-agent/agent-harness";
 import { createMonoRuntime, type MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
+import { JsonlSessionRepo } from "../../../harness/dist/session-store.js";
 import { loadAppCoreConfig } from "../app-config.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
@@ -171,3 +172,51 @@ it("a cancel during first-turn preparation is reported and never appended", asyn
   expect((await f.record())?.messages ?? []).toEqual([]);
   expect(await f.getStore().load("web:fictional-thread")).toEqual([]);
 });
+
+// A prepared lease defers P2 admission. Its advisory in-process warm mapping
+// must not physically retire the still-current unguarded (v3) native journal.
+it.each([false, true])("consecutive persisted Web turns retain the current journal without retirement (opt-in=%s)", async (enabled) => {
+  const f = await fixture({ enabled }), h = await f.make();
+  f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional second answer")]);
+  await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
+  const header = (await f.journalRecords()).find((row) => typeof row.journalId === "string" && typeof row.id === "string")!;
+  const path = join(f.root, "native", "mono-v2", "journals", `${header.journalId}.jsonl`), before = await readFile(path);
+  const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete");
+  const second = await h.respond(f.request("fictional-second", "A"), { append: async () => {} });
+  expect(second.text).toBe("Fictional second answer"); expect(f.transport).toHaveBeenCalledTimes(2);
+  expect((await readFile(path)).subarray(0, before.length)).toEqual(before);
+  expect(retire.mock.calls.filter(([id]) => id === header.id)).toEqual([]);
+  expect(remove.mock.calls.filter(([metadata]) => metadata.id === header.id)).toEqual([]);
+  const canonical = await f.record(); expect(canonical.messages).toHaveLength(4);
+  expect(canonical.messages.filter((message: { role: string }) => message.role === "assistant").map((message: { content: string }) => message.content)).toEqual(["Fictional seed answer", "Fictional second answer"]);
+}, 20_000);
+it("fresh responder reopens the retained opt-in journal for the next persisted Web turn", async () => {
+  const f = await fixture(), first = await f.make();
+  f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional reopened answer")]);
+  await first.respond(f.request("fictional-seed", "A"), { append: async () => {} });
+  const header = (await f.journalRecords()).find((row) => typeof row.journalId === "string" && typeof row.id === "string")!;
+  const path = join(f.root, "native", "mono-v2", "journals", `${header.journalId}.jsonl`), before = await readFile(path);
+  await (first as AgentResponder & { dispose(): Promise<void> }).dispose();
+  const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete"), reopened = await f.make();
+  expect((await reopened.respond(f.request("fictional-second", "A"), { append: async () => {} })).text).toBe("Fictional reopened answer");
+  expect(f.transport).toHaveBeenCalledTimes(2); expect((await readFile(path)).subarray(0, before.length)).toEqual(before);
+  expect(retire.mock.calls.filter(([id]) => id === header.id)).toEqual([]); expect(remove.mock.calls.filter(([metadata]) => metadata.id === header.id)).toEqual([]);
+  expect((await f.record()).messages).toHaveLength(4);
+}, 20_000);
+it("a second same-model persisted Web turn after a v4 switch retains every predecessor and the current journal", async () => {
+  const f = await fixture(), h = await f.make();
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional second B answer")]);
+  await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
+  await h.respond(f.request("fictional-switch", "B"), { append: async () => {} });
+  const before = await f.record(); expect(before.version).toBe(4);
+  const journals = join(f.root, "native", "mono-v2", "journals"), predecessor = before.native.chain[0], current = before.native.chain.at(-1);
+  const previousBytes = await readFile(join(journals, `${predecessor.journalId}.jsonl`)), currentBytes = await readFile(join(journals, `${current.journalId}.jsonl`));
+  const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete");
+  expect((await h.respond(f.request("fictional-second-b", "B"), { append: async () => {} })).text).toBe("Fictional second B answer");
+  expect(await readFile(join(journals, `${predecessor.journalId}.jsonl`))).toEqual(previousBytes);
+  expect((await readFile(join(journals, `${current.journalId}.jsonl`))).subarray(0, currentBytes.length)).toEqual(currentBytes);
+  expect(retire.mock.calls.filter(([id]) => [predecessor.handleId, current.handleId].includes(id))).toEqual([]);
+  expect(remove.mock.calls.filter(([metadata]) => [predecessor.handleId, current.handleId].includes(metadata.id))).toEqual([]);
+  const after = await f.record(); expect(after.messages).toHaveLength(6); expect(after.lastSwitch).toEqual(before.lastSwitch);
+  expect(f.transport).toHaveBeenCalledTimes(3); expect(f.summaryCalls()).toBe(0);
+}, 20_000);

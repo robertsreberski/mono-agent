@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep the current native journal when starting consecutive opt-in Web turns;
+  forget only the advisory warm mapping until owned preparation admits the turn.
+
 - Let opt-in persisted-ID Web turns and no-ID wakes on native-bound conversations
   use configured backups after strictly pre-output/tool/live-input failure and
   durable detachment. Keep prepared producers and compaction primary-only;

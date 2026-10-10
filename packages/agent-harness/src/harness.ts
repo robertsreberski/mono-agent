@@ -1330,7 +1330,11 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       if (sessionRecord !== undefined && !confirmedWarmSession) {
-        if (
+        if (preparedNativeTurn !== undefined) {
+          // P2 admission is deferred: the held preparation owner, not this
+          // advisory mapping, decides physical retirement of the current epoch.
+          this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
+        } else if (
           providerHistoryTurn !== undefined
           && sessionRecord.providerSessionId === providerHistoryTurn.providerSessionId
         ) {
