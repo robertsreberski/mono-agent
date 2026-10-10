@@ -54,7 +54,7 @@ it("refuses method-only preparation and invalid requests without invoking kernel
 });
 
 it("forwards Pi dispatch progress without dropping fields", async () => {
-  const dispatchProgress = { version: 1 as const, armed: true, assistantOutput: true, toolAdmitted: true, liveInputTaken: true };
+  const dispatchProgress = { version: 1 as const, armed: true, toolAdmitted: true, liveInputTaken: true };
   kernel.run.mockResolvedValueOnce({ text: "Fictional result", dispatchProgress });
   const result = await createMonoRuntime().run("Fictional rules", { model, messages: [], abortSignal: new AbortController().signal });
   expect(result.dispatchProgress).toEqual(dispatchProgress);

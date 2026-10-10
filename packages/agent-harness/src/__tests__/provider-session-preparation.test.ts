@@ -262,7 +262,7 @@ it("rejects changed frozen budget before intent publication and captures complet
   expect(Object.isFrozen(captured.view.segments[0]!.records)).toBe(true); expect(await readFile(f.nativePath)).toEqual(f.original);
   await prep.abort();
 });
-it("captures the whole switched chain read-only and exposes typed pure handoff/native preparation", async () => {
+it("captures the whole switched chain read-only and exposes typed pure handoff preparation", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "whole-chain"), lease = await prep.beginModelSwitchStorage(f.state);
   if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
   await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
@@ -271,13 +271,13 @@ it("captures the whole switched chain read-only and exposes typed pure handoff/n
   const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] } };
   expect(f.native.prepareHandoff(captured.view, options).status).toBe("prepared");
   const proposal = f.native.buildHandoff(captured.view, options); expect(proposal.status).toBe("ready"); expect(JSON.stringify(proposal)).toContain("Fictional source fact");
-  expect(f.native.projectChain(captured.view, options)).toMatchObject({ status: "handoff_required", reason: "unknown_account" });
+  expect("projectChain" in f.native).toBe(false); // no native-envelope projection across a model change
   expect(() => f.native.prepareHandoff(structuredClone(captured.view), options)).toThrow("unvalidated view");
   const tiny = f.native.createBudget({ contextWindow: 20000, inputTokens: 100, outputReserve: 4096, hostContext: options.hostContext });
   expect(f.native.prepareHandoff(captured.view, { ...options, budget: tiny })).toMatchObject({ status: "budget_failure" });
   await prep.abort();
 });
-it("captures and projects composed checkpoints whose exact inherited prefix predates the switch reference frame", async () => {
+it("captures and hands off composed checkpoints whose exact inherited prefix predates the switch reference frame", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "composed"), lease = await prep.beginModelSwitchStorage(f.state);
   if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
   await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
@@ -292,14 +292,7 @@ it("captures and projects composed checkpoints whose exact inherited prefix pred
   expect(captured.view.segments[1]!.entries.at(-1)?.type).toBe("compaction");
   const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] } };
   expect(f.native.buildHandoff(captured.view, options).status).toBe("ready");
-  const { createEvidenceView } = await import("@mono-agent/harness");
-  const positive = createEvidenceView({ ownerKey: bucket, historyBucket: bucket, segments: captured.view.segments.map((segment) => ({ ...segment,
-    descriptor: { ...segment.descriptor, provenance: { ...segment.descriptor.provenance, account: "fictional-positive-account" } } })) });
-  const projected = f.native.projectChain(positive, { ...options, target: { ...options.target, account: "fictional-positive-account" } });
-  // Positive creation descriptors cannot manufacture missing per-operation
-  // credential proof for seeded history or administrative compaction.
-  expect(projected).toMatchObject({ status: "handoff_required", reason: "unknown_provider" });
-  const { evidenceDigest } = await import("@mono-agent/harness");
+  const { createEvidenceView, evidenceDigest } = await import("@mono-agent/harness");
   const forged = JSON.parse(JSON.stringify(captured.view));
   forged.segments[1].records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
   forged.segments[1].descriptor.sourceDigest = evidenceDigest(forged.segments[1].records);

@@ -383,7 +383,6 @@
  * @typedef {Object} RuntimeDispatchProgress
  * @property {1} version
  * @property {boolean} armed
- * @property {boolean} assistantOutput
  * @property {boolean} toolAdmitted
  * @property {boolean} liveInputTaken
  */
