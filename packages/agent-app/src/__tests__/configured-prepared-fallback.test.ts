@@ -17,6 +17,7 @@ it.each(["fallback", "fallback-wake", "fallback-switch"] as const)("configured %
   // The existing harness retries one conversational request three times.
   // These are not additional router lease executions or replayed turns.
   expect(armed.filter((call) => call.kind === "turn").map((call) => call.model)).toEqual(["B", "B", "B", "B", "A"]);
+  expect(report.preparedRuns!.filter((run) => run.armed)).toEqual([{ model: "B", armed: true }]);
   expect(armed.filter((call) => call.kind === "summary")).toHaveLength(scenario === "fallback-switch" ? 1 : 0);
   // No duplicate prefix or extra handoff after the accepted switch. The cold
   // current epoch must not reapply its stale artifact over newer host turns.
@@ -57,3 +58,18 @@ it.each([
   expect(first.journals[predecessor]).toBe(before.journals[predecessor]);
   expect(second.toolRecords).toBe(first.toolRecords); if (phase === "backup-tool") expect(killed.calls.filter((call) => call.kind === "tool")).toHaveLength(1);
 }, 40_000);
+
+it("cold model change plus backup streams and returns degradation exactly once by kind", async () => {
+  const report = await checkFallback("fallback-cold"), answer = report.results.at(-2)!;
+  expect(answer.text).toContain("Fictional B answer");
+  expect(answer.warnings).toEqual(["degraded_native_context"]);
+  expect(answer.runtimeWarnings).toEqual([expect.objectContaining({ warning_kind: "degraded_native_context" })]);
+  expect(report.detached.canonical.native.chain).toHaveLength(32);
+  expect(report.detached.canonical.providerSession.modelKey).toBe("faux:A");
+  expect(report.detached.canonical.lastSwitch).toMatchObject({ kind: "cold" });
+  expect(report.detached.canonical.messages).toHaveLength(6);
+  expect(report.preparedRuns!.filter((run) => run.armed)).toEqual([{ model: "A", armed: true }]);
+  expect(report.calls.filter((call) => call.armed && call.kind === "turn").map((call) => call.model)).toEqual(["A", "A", "A", "A", "B"]);
+  expect(report.calls.filter((call) => call.armed && call.kind === "summary")).toEqual([]);
+  expect(report.results.at(-1)!.warnings).toEqual([]);
+}, 30_000);

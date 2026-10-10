@@ -1835,7 +1835,8 @@ export class MonoAgentHarness implements AgentHarness {
       }
       // Emit only after canonical commit and the current-epoch C have finished.
       // A crash before this event leaves the canonical receipt as sole evidence.
-      if (preparedNativeTurn && Array.isArray(runtimeResult.failoverHistory) && runtimeResult.failoverHistory.length && !runtimeResult.providerSessionId) {
+      if (preparedNativeTurn && Array.isArray(runtimeResult.failoverHistory) && runtimeResult.failoverHistory.length && !runtimeResult.providerSessionId
+        && !(Array.isArray(runtimeResult.runtimeWarnings) && runtimeResult.runtimeWarnings.some((warning) => warning?.warning_kind === "degraded_native_context"))) {
         const warning = { warning_kind: "degraded_native_context", source: "harness",
           message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." };
         runtimeResult = { ...runtimeResult, runtimeWarnings: [...(Array.isArray(runtimeResult.runtimeWarnings) ? runtimeResult.runtimeWarnings : []), warning] };

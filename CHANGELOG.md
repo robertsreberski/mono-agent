@@ -11,6 +11,8 @@
   accept a backup answer once, reset only the current native stretch, and report
   `degraded_native_context` while retaining conversation history and predecessors.
   Reseed every canonical turn after a backup, including turns after a switch.
+  Allow certified untouched provider-auth failures to use independent backup
+  credentials; report degradation only once when cold change and backup coincide.
 
 - Keep monotonic Pi dispatch evidence for assistant output, tool admission and
   live input, including prepared turns, early failures and thrown cleanup errors.

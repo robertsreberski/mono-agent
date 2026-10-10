@@ -135,8 +135,9 @@ other surface keeps today's behavior described above.
 
 With the opt-in on, persisted-ID Web turns (including the first message) and
 no-ID wakes on native-bound conversations use prepared native dispatch. A
-retryable primary failure **before any assistant output, tool admission or
-live-input yield** can use the configured backups, after durable detachment.
+retryable primary failure or provider-auth failure **before any assistant output,
+tool admission or live-input yield** can use the configured backups, after durable
+detachment. A backup's independent credentials may work even when the primary's do not.
 Missing, malformed or unarmed progress evidence fails closed. There is no
 router-level same-model retry of the single-use prepared lease; transport
 retries within its conversational request are unchanged. Preparation, manual
@@ -149,7 +150,9 @@ commits the answer once, resets the primary's current native stretch, and keeps
 predecessor journals and the accepted switch receipt. After cold settlement it
 streams and returns `degraded_native_context`: conversation history is kept,
 but the model did not get the previous model's full working context and may need
-key details repeated. The next turn reseeds every canonical turn, including
+key details repeated. A cold model change and backup in the same turn report this
+warning kind only once, both streamed and returned. The next turn reseeds every
+canonical turn, including
 those after an earlier switch artifact. A crash before the warning leaves only
 the canonical receipt. Once output, tool admission or yielded live input occurs,
 the prepared path cannot retry or fail over. A cancellation before admission is

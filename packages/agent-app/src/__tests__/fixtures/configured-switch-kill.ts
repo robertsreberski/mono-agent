@@ -11,9 +11,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
-export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal";
+export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal" | "fallback-cold";
 export interface Call { readonly model: string; readonly kind: "summary" | "turn" | "tool"; readonly armed: boolean }
 export interface Report {
+  readonly preparedRuns?: readonly { readonly model: string; readonly armed: boolean }[];
   readonly results: readonly { readonly text?: string; readonly failure?: string; readonly warnings: readonly string[]; readonly runtimeWarnings?: readonly { readonly warning_kind: string; readonly message: string }[] }[];
   readonly calls: readonly Call[];
   readonly contexts: readonly string[];

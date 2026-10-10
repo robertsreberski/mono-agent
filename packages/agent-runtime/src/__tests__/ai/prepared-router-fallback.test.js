@@ -92,3 +92,23 @@ it("scrubs exhausted prepared backups and their attribution identities", async (
   expect(result.providerSessionId).toBeUndefined(); expect(result.providerSessionRecovery).toBeUndefined();
   expect(f.backupRun.mock.calls[0][1].providerAttributionSessionId).not.toBe(f.backupRun.mock.calls[1][1].providerAttributionSessionId);
 });
+
+it.each(["provider_auth", "provider_unavailable"])("continues after certified provider auth failure (classified as %s)", async (failureKind) => {
+  const f = fixture(failure({ failureKind, error: "Invalid API key" }));
+  const lease = await f.router.prepareNativeDispatch("sys", { model: primary, messages: [], onSessionTurnDetached: f.ack });
+  const result = await lease.run(binding);
+  expect(result.text).toBe("Fictional backup answer"); expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+  expect(f.run).toHaveBeenCalledOnce(); expect(f.ack).toHaveBeenCalledOnce(); expect(f.backupRun).toHaveBeenCalledOnce();
+  expect(result.providerSessionId).toBeUndefined(); expect(result.providerSessionRecovery).toBeUndefined();
+});
+it.each([undefined, { ...empty, armed: false }, ...["assistantOutput", "toolAdmitted", "liveInputTaken"].map((key) => ({ ...empty, [key]: true }))])("auth failure still requires complete no-progress certification %#", async (dispatchProgress) => {
+  const f = fixture(failure({ failureKind: "provider_auth", error: "Invalid API key", dispatchProgress }));
+  const lease = await f.router.prepareNativeDispatch("sys", { model: primary, messages: [], onSessionTurnDetached: f.ack });
+  await lease.run(binding); expect(f.run).toHaveBeenCalledOnce(); expect(f.ack).not.toHaveBeenCalled(); expect(f.backupRun).not.toHaveBeenCalled();
+});
+
+it("does not detach a cancelled provider-auth failure", async () => {
+  const f = fixture(failure({ failureKind: "provider_auth", error: "Invalid API key", cancelled: true }));
+  const lease = await f.router.prepareNativeDispatch("sys", { model: primary, messages: [], onSessionTurnDetached: f.ack });
+  await lease.run(binding); expect(f.ack).not.toHaveBeenCalled(); expect(f.backupRun).not.toHaveBeenCalled();
+});

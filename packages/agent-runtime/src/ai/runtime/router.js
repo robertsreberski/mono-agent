@@ -699,7 +699,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             const history = result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
               failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
               requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [];
-            if (!retryability.retryable || result.cancelled || isMidTurnSafetyFailure(result.failureKind)
+            if (!(retryability.retryable || result.failureKind === "provider_auth") || result.cancelled || isMidTurnSafetyFailure(result.failureKind)
               || !hasNoDispatchProgress(result.dispatchProgress) || sideEffectReason(effects) !== null
               || captured.abortSignal?.aborted || !binding.sessionTurn?.reconciliation || !entries.slice(1).some((entry) => entrySatisfiesRequirements(entry, captured))) {
               return { ...result, failoverHistory: history };

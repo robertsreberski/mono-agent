@@ -30,7 +30,7 @@ const models = native ? createModels({ credentials: { read: async () => credenti
 // Every provider request is appended BEFORE the response, so a killed process
 // still accounts the (possibly billed) call. Outgoing A summaries are rejected
 // as malformed so both approved producers are exercised.
-const contexts = [];
+const contexts = [], preparedRuns = [];
 const original = faux.provider.streamSimple.bind(faux.provider);
 faux.provider.streamSimple = (model, context, options) => {
   if (fallback && globalThis.__fixtureArmed && globalThis.__fixtureToolOffered
@@ -61,7 +61,13 @@ const ref = (id) => ({ provider, model: id, reference: `${provider}:${id}` });
 const runtimeFor = (config, id) => {
   const raw = createMonoRuntime({ workspace: root }), run = raw.run.bind(raw), prepare = raw.prepareNativeDispatch.bind(raw);
   raw.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
-  raw.prepareNativeDispatch = (prompt, options) => prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
+  raw.prepareNativeDispatch = async (prompt, options) => {
+    const lease = await prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
+    return { ...lease, run: (binding) => {
+      preparedRuns.push({ model: id, armed: globalThis.__fixtureArmed === true });
+      return lease.run(binding);
+    } };
+  };
   return wrapOwnedConfiguredRuntime(raw, config, root, undefined);
 };
 const routedFor = (config, id) => fallback ? wrapOwnedConfiguredRuntime(createMonoRuntime({ workspace: root,
@@ -172,18 +178,19 @@ async function fallbackJob(scenario, mode) {
     if (mode !== "recover") {
       results.push(await respond(opened.responder, "fictional-seed", "A"));
       if (scenario !== "fallback-switch") results.push(await respond(opened.responder, "fictional-seed-b", "B"));
+      if (scenario === "fallback-cold") await padChain(opened.store);
       const journals = (await files(join(nativeRoot, "mono-v2", "journals"))).filter((path) => path.endsWith(".jsonl"));
       const bytes = Object.fromEntries(await Promise.all(journals.map(async (path) => [path.split("/").at(-1), (await readFile(path)).toString("base64")])));
       await writeFile(join(root, "before.json"), JSON.stringify({ ...await snapshot(opened.store), bytes }));
       globalThis.__fixtureArmed = true;
-      const target = scenario === "fallback-refusal" ? "A" : "B";
+      const target = scenario === "fallback-refusal" || scenario === "fallback-cold" ? "A" : "B";
       globalThis.__fixtureFailedModel = target;
       results.push(await respond(opened.responder, scenario === "fallback-wake" || scenario === "fallback-refusal" ? undefined : "fictional-fallback", target));
       globalThis.__fixtureArmed = false;
       const detached = await snapshot(opened.store);
       if (mode === "check" && scenario !== "fallback-refusal") results.push(await respond(opened.responder, "fictional-next", target));
       await opened.responder.dispose();
-      process.send({ results, calls: calls(), contexts, detached, receiptBefore: globalThis.__fixtureSwitchReceiptBefore ?? null, ...await snapshot(opened.store) }, () => process.exit(0));
+      process.send({ results, calls: calls(), contexts, preparedRuns, detached, receiptBefore: globalThis.__fixtureSwitchReceiptBefore ?? null, ...await snapshot(opened.store) }, () => process.exit(0));
     } else {
       // Recover the pending turn and native C through configured storage ONLY.
       // Never redeliver an input or call a provider/summary/tool during recovery.
