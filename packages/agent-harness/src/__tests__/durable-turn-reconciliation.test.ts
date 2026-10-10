@@ -396,6 +396,39 @@ it.each(["live", "recovered", "detached"] as const)("Completed turn with an unco
   expect(await f.record()).toEqual(record); expect(f.inspect).toHaveBeenCalledOnce();
 });
 
+it.each([
+  ["interrupted", "AskUser"], ["failed", "mcp__host__ask_user"], ["cancelled", "namespace:AskUser"],
+] as const)("Pending AskUser becomes a durable interruption note (%s, %s)", async (outcome, name) => {
+  const f = await fixture(); const turn = await f.begin();
+  await turn.reconciliation!.admit(createPendingLiveInput({ id: "fictional-unconsumed", persistText: "Fictional follow-up.", receivedAt: "2000-01-01T00:00:00.000Z" }, "Fictional follow-up.", "live"));
+  f.inspect.mockImplementation(async (request) => {
+    const result = evidence(request, outcome); if (result.status !== "matched") throw new Error("fixture");
+    const call = { callId: "fictional-ask", name, operationId: "fictional-operation", messageId: "fictional-assistant", admission: "started", cause: "crashed" };
+    return { ...result, interruptionEvidence: [{ cause: "crashed", operationIds: ["fictional-operation"], tipId: "fictional-tip", timestamp: Date.parse("2000-01-01T00:00:00.000Z"), calls: [call, { ...call, callId: "fictional-second-ask" }] }] };
+  });
+  await turn.abort(); fault.unlinkFence = true;
+  await expect(f.store.recoverProviderSessionTurn(bucket)).rejects.toThrow("durability settlement is pending");
+  const record = await f.record();
+  expect(record.messages.filter((message: { content: string }) => message.content === "The question was interrupted. Answer in a new message; no tool was replayed.")).toEqual([
+    expect.objectContaining({ role: "assistant" }),
+  ]);
+  expect(record.messages.filter((message: { content: string }) => message.content.includes("not confirmed as applied"))).toHaveLength(1);
+  await f.store.recoverProviderSessionTurn(bucket); await f.store.recoverProviderSessionTurn(bucket);
+  expect(await f.record()).toEqual(record); expect(f.inspect).toHaveBeenCalledOnce();
+});
+
+it.each(["completed", "observed_outcome", "skipped", "not-started", "other-tool"])("does not invent an interrupted question for %s evidence", async (kind) => {
+  const f = await fixture(); const turn = await f.begin(); await turn.abort();
+  f.inspect.mockImplementation(async (request) => {
+    const result = evidence(request, kind === "completed" ? "completed" : "interrupted"); if (result.status !== "matched") throw new Error("fixture");
+    return { ...result, interruptionEvidence: [{ cause: "crashed", operationIds: ["fictional-operation"], tipId: "fictional-tip", timestamp: Date.parse("2000-01-01T00:00:00.000Z"), calls: [{ callId: "fictional-call", operationId: "fictional-operation", messageId: "fictional-assistant",
+      name: kind === "other-tool" ? "Read" : "AskUser", admission: kind === "not-started" ? "admitted" : "started",
+      cause: ["observed_outcome", "skipped"].includes(kind) ? kind : "crashed" }] }] };
+  });
+  await f.store.recoverProviderSessionTurn(bucket);
+  expect(JSON.stringify((await f.record()).messages)).not.toContain("The question was interrupted.");
+});
+
 it("Duplicate consumption/receipt settles once", async () => {
   const f = await fixture(); const turn = await f.begin();
   const human = createPendingLiveInput({ id: "fictional-consumed", persistText: "Fictional applied offer.", receivedAt: timestamp }, "Fictional applied offer.", "live");

@@ -1,3 +1,4 @@
+import { toolNameLeaf } from "@mono-agent/agent-contracts";
 import { CANCELLED_TURN_HISTORY_KEY_PREFIX, FAILED_TURN_HISTORY_KEY_PREFIX } from "./harness/turn-continuity.js";
 import type { RuntimeSessionTurnDescriptor, RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
 import type { HistoryMessage } from "./context/index.js";
@@ -110,6 +111,12 @@ export function projectTurnSettlement(payload: PendingTurnPayload, result: Runti
     if (candidate?.text !== null && candidate?.text !== undefined) messages.push({ role: "assistant", content: candidate.text,
       timestamp: candidate.timestamp, runId: payload.identity.turnId,
       ...(outcome === "cancelled" || outcome === "failed" ? { idempotencyKey: `${outcome === "cancelled" ? CANCELLED_TURN_HISTORY_KEY_PREFIX : FAILED_TURN_HISTORY_KEY_PREFIX}${payload.identity.turnId}` } : {}) });
+    if (outcome !== "completed" && matched?.interruptionEvidence.some((account) => account.calls.some((call) =>
+      call.admission === "started" && call.cause !== "observed_outcome" && call.cause !== "skipped"
+      && toolNameLeaf(call.name).toLowerCase().replace(/[^a-z0-9]+/gu, "") === "askuser"))) {
+      messages.push({ role: "assistant", content: "The question was interrupted. Answer in a new message; no tool was replayed.",
+        timestamp: candidate?.timestamp ?? timestamp, runId: payload.identity.turnId });
+    }
     const unconsumed = payload.inputs.filter((input) => input.kind === "live" && !consumedIds.includes(input.id)).length;
     // Completed turns can return unconsumed inputs to the caller for requeue.
     // Keep the recovery notice outside the bounded runtime candidate. The canonical

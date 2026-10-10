@@ -600,12 +600,13 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
 }
 
 function AskUserTool({
+  isError,
   args,
   result,
   structuredResult,
   status,
   toolCallId,
-}: Pick<ToolCallMessagePartProps, "args" | "status" | "toolCallId">
+}: Pick<ToolCallMessagePartProps, "args" | "status" | "toolCallId" | "isError">
   & { readonly result?: unknown; readonly structuredResult?: unknown }) {
   const threadId = useConsoleStore().selectedThread?.id;
   const coordinator = useContext(AskReconciliationContext);
@@ -622,6 +623,7 @@ function AskUserTool({
     () => persistedAskStatus(structuredResult) ?? persistedAskStatus(result),
     [result, structuredResult],
   );
+  const interrupted = isError === true && status.type !== "running" && result === undefined && structuredResult === undefined;
   const lean = useDataMode() === "lean";
   const cardState = coordinator?.states[toolCallId];
   const snapshot = cardState?.snapshot;
@@ -640,13 +642,13 @@ function AskUserTool({
     && status.type !== "running";
 
   useEffect(() => {
-    if (settledWithoutAsking) return undefined;
+    if (interrupted || settledWithoutAsking) return undefined;
     return registerAsk?.({
       toolCallId,
       ...(expectedInteractionId === undefined ? {} : { expectedInteractionId }),
       running: status.type === "running",
     });
-  }, [expectedInteractionId, registerAsk, settledWithoutAsking, status.type, toolCallId]);
+  }, [expectedInteractionId, interrupted, registerAsk, settledWithoutAsking, status.type, toolCallId]);
 
   const remaining = snapshot?.questions.slice(snapshot.activeQuestionIndex) ?? [];
   const complete = remaining.length > 0 && remaining.every((question) => {
@@ -681,14 +683,14 @@ function AskUserTool({
   const answeredSummary = snapshot?.status === "answered" ? webAskAnsweredSummary(snapshot) : undefined;
   return (
     <section className="ask-user-card" aria-label="Question from the agent">
-      <div className="ask-user-heading">
-        <span className={`tool-status${status.type === "running" ? " is-running" : ""}`} />
-        <strong>Input needed</strong>
+      <div className={`ask-user-heading${interrupted ? " is-interrupted" : ""}`}>
+        {!interrupted && <span className={`tool-status${status.type === "running" ? " is-running" : ""}`} />}
+        <strong>{interrupted ? "Question interrupted" : "Input needed"}</strong>
       </div>
       {(snapshot?.message ?? (typeof input.message === "string" ? input.message : undefined)) && (
         <div className="ask-user-context">{snapshot?.message ?? String(input.message)}</div>
       )}
-      {snapshot === undefined ? terminalStatus !== undefined ? (
+      {interrupted ? null : snapshot === undefined ? terminalStatus !== undefined ? (
         <p className="ask-user-complete" role="status">{terminalStatus === "answered" ? "Answers submitted." : `Question ${terminalStatus}.`}</p>
       ) : cardState?.unavailable === true ? (
         <p className="ask-user-complete">Question unavailable. It may have expired, been evicted, or the agent may be offline.</p>
@@ -784,6 +786,7 @@ export function ToolFallback({
   if (toolName === "AskUser") {
     return (
       <AskUserTool
+        isError={isError}
         args={args}
         result={result}
         structuredResult={envelope?.structuredResult}

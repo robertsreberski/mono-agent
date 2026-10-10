@@ -1357,6 +1357,40 @@ describe("WebStore", () => {
   // the console reads interactionId/answered from the persisted part to re-render an
   // answered card after a reload, and without it every answered card degraded to
   // "Question unavailable".
+  it.each(["restart", "agent-restart", "cancelled", "failed", "existing-note"])("Pending AskUser becomes a durable interruption note (%s)", async (cause) => {
+    const base = await temporaryRoot(); cleanup.push(base); const stateDir = join(base, "state");
+    const open = () => WebStore.open({ stateDir, clock: () => new Date("2000-01-01T00:00:00.000Z") });
+    let store = await open(); store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one"), turn = store.beginTurn({ threadId: thread.id, text: "Fictional question task.", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "tool_call_started", id: "fictional-ask", name: "mcp__host__ask_user", arguments: { message: "Fictional question." } } }]);
+    if (cause === "existing-note") store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: "The question was interrupted. Answer in a new message; no tool was replayed." }]);
+    if (cause === "agent-restart") store.interruptTurnForRestart(turn.turnId);
+    else if (cause !== "restart") store.failTurn(turn.turnId, { message: "Fictional interruption.", cancelled: cause === "cancelled" });
+    store.close(); store = await open();
+    const message = store.getMessage(turn.assistantMessageId)!;
+    expect(message.parts.filter((part) => part.type === "text" && part.text === "The question was interrupted. Answer in a new message; no tool was replayed.")).toHaveLength(1);
+    expect(message.parts.find((part) => part.type === "tool-call")).toEqual({ type: "tool-call", toolCallId: "fictional-ask", toolName: "mcp__host__ask_user", args: { message: "Fictional question." }, status: "failed" });
+    store.interruptTurn(turn.turnId); store.close(); store = await open();
+    expect(store.getMessage(turn.assistantMessageId)).toEqual(message); store.close();
+  });
+
+  it.each(["answered", "expired", "result", "completed"])("does not interrupt an AskUser card with %s evidence", async (kind) => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date("2000-01-01T00:00:00.000Z") });
+    store.replaceAgents([agent()]); const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Fictional task.", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "fictional-ask", name: "AskUser" } },
+      ...(kind === "completed" ? [] : [{ kind: "event" as const, event: { type: "tool_call_completed" as const, id: "fictional-ask", name: "AskUser",
+        ...(kind === "result" ? { content: "Fictional terminal result." } : { structuredContent: { status: kind, answered: kind === "answered", interactionId: "fictional-ask" } }) } }]),
+    ]);
+    const before = store.getMessage(turn.assistantMessageId)!.parts.find((part) => part.type === "tool-call");
+    if (kind === "completed") store.completeTurn(turn.turnId, "Fictional reply."); else store.interruptTurn(turn.turnId);
+    const parts = store.getMessage(turn.assistantMessageId)!.parts;
+    expect(parts.find((part) => part.type === "tool-call")).toEqual(before);
+    expect(JSON.stringify(parts)).not.toContain("The question was interrupted."); store.close();
+  });
+
   it("persists an MCP tool's structuredContent beside its text result", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
