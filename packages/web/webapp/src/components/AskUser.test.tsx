@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
@@ -96,6 +96,30 @@ afterEach(() => {
 });
 
 describe("AskUser web form", () => {
+  it("Interrupted card cannot answer a later ask", async () => {
+    const later = { ...snapshot, interactionId: "fictional-later-ask", message: "Fictional later question.", createdAt: "2000-01-01T00:00:00.000Z", expiresAt: null };
+    vi.spyOn(api, "pendingAsk").mockResolvedValue(later);
+    vi.spyOn(api, "ask").mockResolvedValue(later);
+    const submit = vi.spyOn(api, "submitAsk").mockResolvedValue({ accepted: true, snapshot: { ...later, status: "answered" } });
+    const card = (id: string, status: ToolCallMessagePartProps["status"], message: string) => (
+      <ToolFallback key={id} type="tool-call" toolName="AskUser" toolCallId={id} args={{ message }} argsText="{}"
+        result={undefined} isError={status.type !== "running"} status={status} addResult={vi.fn()} resume={vi.fn()} respondToApproval={vi.fn()} />
+    );
+    const { container } = render(<AskReconciliationProvider>
+      {card("fictional-new", { type: "running" }, "Fictional later question.")}
+      {card("fictional-old", { type: "incomplete", reason: "other" }, "Fictional old question.")}
+    </AskReconciliationProvider>);
+    await screen.findByRole("button", { name: "Submit answers" });
+    const [active, old] = [...container.querySelectorAll<HTMLElement>(".ask-user-card")];
+    expect(within(old!).queryByRole("button", { name: "Submit answers" })).not.toBeInTheDocument();
+    expect(within(old!).getByText(/Question unavailable/)).toBeVisible();
+    fireEvent.click(within(active!).getByRole("radio", { name: /Send/ }));
+    fireEvent.click(within(active!).getByRole("checkbox", { name: /Owner/ }));
+    fireEvent.click(within(active!).getByRole("button", { name: "Submit answers" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith("thread-1", "fictional-later-ask", expect.any(Array)));
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it("does not locally expire a pending snapshot whose expiry is explicitly null", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2200-01-01T00:00:00.000Z"));

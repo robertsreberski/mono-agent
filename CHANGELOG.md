@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep a durable note for interrupted `AskUser` questions; answer in a new
+  message rather than reviving the old question or replaying its tool.
+
 - Report messages admitted during an interrupted turn but not confirmed as
   applied, once on recovery. Do not replay them; resend them if still needed.
 
