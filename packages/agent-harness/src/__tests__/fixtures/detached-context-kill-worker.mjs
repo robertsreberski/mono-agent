@@ -40,7 +40,7 @@ if (mode === "produce") {
       const pendingPath = paths.find((path) => path.startsWith(".pending-turns/") && path.endsWith(".json"));
       const pending = JSON.parse(await readFile(join(root, pendingPath), "utf8"));
       process.send({ phase: "loader", providers, backups, inspections, history, pending, paths });
-      await new Promise(() => {}); // Parent SIGKILLs this owned worker here.
+      await new Promise(() => { setInterval(() => {}, 1_000); }); // Parent SIGKILLs this owned worker here.
       return [];
     },
   });

@@ -1,4 +1,4 @@
-import { isDispatchProgress } from "../providers/pi-native/dispatch-progress.js";
+import { isDispatchProgress, hasNoDispatchProgress } from "../providers/pi-native/dispatch-progress.js";
 import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../providers/pi-native/prepared-dispatch.js";
 // Provider fallback router.
 //
@@ -153,11 +153,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   // inner runtime uses — createRuntime no longer publishes it to a process global.
   const runtimeBrand = resolveRuntimeBrand(host.runtimeBrand);
 
-  // Single ordinary attempt engine. Prepared continuation can enter this
-  // internal seam in a later change without forking gates, replay or cleanup.
+  // Shared attempt engine; a consumed prepared lease enters at the first backup.
   /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options
+   * @param {{result: RuntimeResult, history: Array<any>, effects: AttemptSideEffects}|undefined} [continuation]
    * @returns {Promise<RuntimeResult>} */
-  async function runAttemptLoop(systemPrompt, options) {
+  async function runAttemptLoop(systemPrompt, options, continuation) {
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
@@ -165,7 +165,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       /** @type {AttemptSideEffects|null} Side-effect evidence of the latest admitted attempt. */
       let currentAttemptEffects = null;
       /** @type {Array<{effects: AttemptSideEffects, model: RuntimeModelRef, result: RuntimeResult}>} Failed attempts followed by another. */
-      const failedAttempts = [];
+      const failedAttempts = continuation ? [{ effects: continuation.effects, model: entries[0].model, result: continuation.result }] : [];
       const liveInputHub = options.liveInput === undefined
         ? undefined
         : createObserverHub({
@@ -186,11 +186,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       }
       try {
       /** @type {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null|undefined), retryableSubkind?: (string|null|undefined), requirements?: (Object<string,*>|null), retryIndex?: number}>} */
-      const failoverHistory = [];
+      const failoverHistory = continuation ? [...continuation.history] : [];
       /** @type {RuntimeResult|null} */
-      let lastResult = null;
+      let lastResult = continuation?.result ?? null;
       let pendingDetach;
-      let detachedAcknowledged = false;
+      let detachedAcknowledged = continuation !== undefined;
       /** @type {ReadonlyArray<Object>|undefined} */
       let detachedMessages;
       /** @type {RuntimeResult|null} */
@@ -198,7 +198,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       const promptBase = systemPrompt;
       /** @type {*} */
       let pendingSnapshot = null;
-      for (let i = 0; i < entries.length; i += 1) {
+      for (let i = continuation ? 1 : 0; i < entries.length; i += 1) {
         const entry = entries[i];
         const effectiveToolOptions = effectiveRouterToolOptions(host, configuredTools);
         if (!entrySatisfiesRequirements(entry, options)) {
@@ -539,6 +539,12 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             terminalResult = blocked.result;
             break;
           }
+          // Unlike ordinary routing, every prepared-path continuation fails
+          // closed on missing/unarmed evidence or any assistant output.
+          if (continuation && !hasNoDispatchProgress(result.dispatchProgress)) {
+            terminalResult = result;
+            break;
+          }
           failedAttempts.push({ effects: attemptEffects, model: entry.model, result });
 
           // Build a transcript-tail snapshot from this run's events so the next
@@ -641,8 +647,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       }
       return runAttemptLoop(systemPrompt, options);
     },
-    // Preparation is a primary-only single attempt, never a routed retry or
-    // backup. A custom resolver must explicitly certify native ownership.
+    // Preparation and producers are primary-only. A consumed lease may enter
+    // the backup loop only after strict no-progress evidence and durable detach.
+    // A custom resolver must explicitly certify native ownership.
     nativePreparedDispatch: resolveAttempt === undefined || sessionTurnReconciliation === "v1" ? "v1" : undefined,
     async prepareNativeDispatch(systemPrompt, options) {
       const primary = entries[0];
@@ -651,7 +658,15 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         || !entrySupportsSessionResume(primary) || !entrySatisfiesRequirements(primary, options)) {
         throw new Error("Router primary does not support native prepared dispatch");
       }
-      let callOptions = snapshotNativeDispatchOptions({ ...options, model: primary.model }), attemptRuntime = inner;
+      // Capture before resolution: primary-private options must never become
+      // a backup's request. Binding is accepted only when the lease is consumed.
+      const captured = snapshotNativeDispatchOptions(options);
+      const effects = { tool: false, liveInput: false };
+      let callOptions = snapshotNativeDispatchOptions({ ...captured, model: primary.model,
+        onEvent: (event) => { if (isToolActivityEvent(event)) effects.tool = true; captured.onEvent?.(event); },
+        ...(captured.liveInput === undefined ? {} : { liveInput: instrumentLiveInputAppliedEvents(captured.liveInput,
+          (event) => { if (isLiveInputTakenEvent(event)) effects.liveInput = true; }) }),
+      }), attemptRuntime = inner;
       const capturedTools = snapshotNativeDispatchOptions(effectiveRouterToolOptions(host, configuredTools));
       /** @type {(() => (void|Promise<void>))|undefined} */ let cleanup;
       let cleaned = false;
@@ -677,13 +692,32 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             if (producing) throw new Error("Prepared handoff producer is still running");
             const binding = prepareNativeDispatchBinding(input); // Rejection does not consume either lease.
             available = false;
+            let result;
+            try { result = normalizeProviderAuthFailure(await lease.run(binding)); }
+            finally { try { await lease.close(); } finally { await release(); } }
+            const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind });
+            const history = result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
+              failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
+              requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [];
+            if (!(retryability.retryable || result.failureKind === "provider_auth") || result.cancelled || isMidTurnSafetyFailure(result.failureKind)
+              || !hasNoDispatchProgress(result.dispatchProgress) || sideEffectReason(effects) !== null
+              || captured.abortSignal?.aborted || !binding.sessionTurn?.reconciliation || !entries.slice(1).some((entry) => entrySatisfiesRequirements(entry, captured))) {
+              return { ...result, failoverHistory: history };
+            }
             try {
-              const result = normalizeProviderAuthFailure(await lease.run(binding));
-              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind });
-              return { ...result, failoverHistory: result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
-                failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
-                requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [] };
-            } finally { await lease.close(); await release(); }
+              if (!binding.sessionTurn?.reconciliation || typeof captured.onSessionTurnDetached !== "function") throw new Error("Detach acknowledgement unavailable");
+              await captured.onSessionTurnDetached({ descriptor: structuredClone(binding.sessionTurn), model: primary.model,
+                attemptIndex: 0, retryIndex: 0, result });
+            } catch {
+              return { ...normalizeAttemptResult(result, false), error: "Protected native turn could not be durably detached", failureKind: "safety_session_turn_reconciliation",
+                retryable: false, failoverHistory: history };
+            }
+            const backupOptions = withoutAttemptScopedOptions(captured);
+            // Include host binding solely for scrub/admission semantics; detached
+            // attempts strip these before resolution and never present them.
+            Object.assign(backupOptions, binding);
+            for (const key of ["piResolvedModel", "piModelMetadata", "piResolvedModels", "detachedContext", "onSessionTurnDetached"]) delete backupOptions[key];
+            return normalizeAttemptResult(await runAttemptLoop(systemPrompt, backupOptions, { result, history, effects }), false);
           },
           close: async () => { available = false; try { await lease.close(); } finally { await release(); } } };
       } catch (error) { await release(); throw error; }

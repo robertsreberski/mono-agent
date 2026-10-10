@@ -7,7 +7,7 @@ process.once("message", async (request) => {
   try {
     if (request.mode === "publish-stop") {
       owner.onPhase = async (phase) => {
-        if (phase === "directory_synced") { process.send({ phase }); await new Promise(() => {}); }
+        if (phase === "directory_synced") { process.send({ phase }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
       };
       await store.publish(request.value, owner);
     } else if (request.mode === "read-collect") {

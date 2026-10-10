@@ -8,7 +8,7 @@ try {
   if (action === "issue") {
     const ensure = NativeHistoryRootStore.prototype.ensure;
     NativeHistoryRootStore.prototype.ensure = function (owner) { return ensure.call(this, { ...owner, onPhase: async (current) => {
-      if (current === phase) { process.send?.({ phase: current }); await new Promise(() => {}); }
+      if (current === phase) { process.send?.({ phase: current }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
     } }); };
   }
   const store = createDurableHistoryStore({ root, retireProviderSession: async () => { throw new Error("Unexpected native retirement"); } });

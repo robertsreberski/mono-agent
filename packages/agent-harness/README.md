@@ -886,7 +886,16 @@ or router telemetry. Persistent subagents remain excluded: they have no host
 canonical replay loader, and detached answers still lose session continuity.
 Direct router callers without a loader retain their existing behaviour; private
 memory completion-only runtimes ignore the loader. Prepared native dispatch
-remains primary-only, with no routed retry or backup.
+uses its already-captured canonical floor for backups only after a retryable
+provider failure or provider-auth failure, strictly before output/tool/live input,
+and successful durable detachment. A backup may have independent credentials;
+unarmed auth failures cannot certify this boundary.
+It never retries the consumed primary lease. Missing progress evidence fails
+closed; handoff producers and manual compaction remain primary-only. An accepted
+backup resets the current native stretch, keeps predecessor journals and the
+switch receipt, and streams/returns `degraded_native_context` after settlement.
+When a cold model change and backup coincide, that warning kind is reported once.
+The next turn reseeds all canonical history, not a stale switch artifact.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next

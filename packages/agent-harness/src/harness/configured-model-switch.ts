@@ -198,7 +198,10 @@ export async function prepareConfiguredModelSwitch(input: {
     }
     const warning = { warning_kind: "degraded_native_context", source: "harness",
       message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." } as const;
-    if (!ready && !cold && snapshot.native?.projection && snapshot.lastSwitch?.artifact) ready = {
+    // A detached C resets the epoch but retains the accepted switch receipt.
+    // Its older projection cannot replace canonical turns since that switch.
+    if (!ready && !cold && snapshot.native?.projection && snapshot.lastSwitch?.artifact
+      && snapshot.lastSwitch.toEpoch === snapshot.native.chain.at(-1)?.epoch) ready = {
       status: "ready", switchId: snapshot.lastSwitch.switchId, artifact: snapshot.native.projection, modelKey: host.routing.modelKey };
     snapshot.native?.chain.forEach((row) => protectedHandles.add(row.handleId));
     const prepared = incoming;

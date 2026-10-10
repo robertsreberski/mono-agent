@@ -13,7 +13,7 @@ if (process.argv[3] === "reopen") {
   const session = await repo.create({ id: "effect-fixture" });
   const sync = session.io.sync; session.io.sync = async () => {
     await sync(); const call = [...session.validator.calls.values()].at(-1);
-    if (call?.result && !call.placed) { process.send({ phase: "returned-outcome-synced" }); await new Promise(() => {}); }
+    if (call?.result && !call.placed) { process.send({ phase: "returned-outcome-synced" }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
   };
   const faux = fauxProvider({ provider: "faux", models: [{ id: "effect-fixture" }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);

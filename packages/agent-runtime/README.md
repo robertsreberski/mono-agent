@@ -323,6 +323,9 @@ The administrative cold-epoch plan can use host-pinned `targetProvenance` for
 an explicitly coordinated cold model change. Only the settled current epoch is
 retired; frozen predecessor bytes remain unchanged. This is bounded canonical
 replay, not a native handoff, and the host exposes `degraded_native_context`.
+Prepared leases can continue to configured backups only after certified
+pre-output/tool/live-input failure and durable host detachment. They never retry
+the consumed primary lease; producers and manual compaction stay primary-only.
 Default unguarded, stateless and subagent behavior is unchanged. Their cleanup
 cannot target guarded host-chain predecessors: destructive APIs require owned
 C/D disposition, and a guarded refusal is not successful physical cleanup.
@@ -375,7 +378,7 @@ only after replay seeding: assistant output, tool admission and yielded live
 input are distinct flags. Ordinary retries/backups stop after tool or live-input
 progress, with normalized-event evidence retained for other backends. Missing,
 malformed or unarmed evidence never certifies an untouched prepared attempt;
-prepared native dispatch remains primary-only.
+prepared continuation requires that certification and durable detachment.
 
 The provider bridge imports the model-run loop, native journal/storage and
 compaction kit from `@mono-agent/harness`. The separate `agent-harness` host

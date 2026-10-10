@@ -71,12 +71,12 @@ async function open(root, options = {}) {
         || phase === "acknowledge" && options.certificateBoundary === "certificate-after-ack";
       if (pauseBefore) {
         certificate = publication;
-        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+        await new Promise(() => { setInterval(() => {}, 1_000); }); // Only the proof parent may SIGKILL this owner.
       }
       await instances.publishOwned(phase, publication);
       if (pauseAfter) {
         certificate = publication;
-        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+        await new Promise(() => { setInterval(() => {}, 1_000); }); // Only the proof parent may SIGKILL this owner.
       }
     },
   });
@@ -113,7 +113,7 @@ async function owner(root, scenario) {
     const mutate = f.store.mutate.bind(f.store);
     f.store.mutate = async (...args) => {
       const result = await mutate(...args);
-      if ((await f.store.list()).some((record) => record.subagentOwnership?.command?.state === phase)) await new Promise(() => {});
+      if ((await f.store.list()).some((record) => record.subagentOwnership?.command?.state === phase)) await new Promise(() => { setInterval(() => {}, 1_000); });
       return result;
     };
   }
@@ -194,7 +194,7 @@ async function owner(root, scenario) {
   await writeFile(resolve(root, "proof.json"), JSON.stringify(evidence));
   process.send({ ready: true });
   // Kept alive only until the foreground proof parent sends physical SIGKILL.
-  await new Promise(() => {});
+  await new Promise(() => { setInterval(() => {}, 1_000); });
 }
 async function recover(root, expectedWakes, attempt) {
   const proof = JSON.parse(await readFile(resolve(root, "proof.json"), "utf8"));

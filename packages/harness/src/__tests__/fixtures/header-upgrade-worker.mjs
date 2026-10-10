@@ -2,7 +2,7 @@ import { JsonlSessionRepo } from "../../session-store.js";
 const [root, phase] = process.argv.slice(2);
 const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const repo = new JsonlSessionRepo({ sessionsRoot: root, onHeaderUpgradePhase: async (current) => {
-  if (current === phase) { process.send?.({ phase: current }); await new Promise(() => {}); }
+  if (current === phase) { process.send?.({ phase: current }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
 } });
 try {
   const [metadata] = await repo.list();

@@ -11,10 +11,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
-export type Scenario = "structured" | "return" | "cold" | "reset" | "retention";
-export interface Call { readonly model: string; readonly kind: "summary" | "turn"; readonly armed: boolean }
+export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal" | "fallback-cold";
+export interface Call { readonly model: string; readonly kind: "summary" | "turn" | "tool"; readonly armed: boolean }
 export interface Report {
-  readonly results: readonly { readonly text?: string; readonly failure?: string; readonly warnings: readonly string[] }[];
+  readonly preparedRuns?: readonly { readonly model: string; readonly armed: boolean }[];
+  readonly results: readonly { readonly text?: string; readonly failure?: string; readonly warnings: readonly string[]; readonly runtimeWarnings?: readonly { readonly warning_kind: string; readonly message: string }[] }[];
   readonly calls: readonly Call[];
   readonly contexts: readonly string[];
   readonly canonical: any; readonly successor: any;
@@ -39,7 +40,7 @@ export async function cleanupRoots(): Promise<void> {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 }
 
-function start(root: string, scenario: Scenario, mode: "produce" | "recover", deadline: number, phase?: string): { child: ChildProcess; reply: Promise<any>; exited: Promise<unknown[]> } {
+function start(root: string, scenario: Scenario, mode: "produce" | "recover" | "check", deadline: number, phase?: string): { child: ChildProcess; reply: Promise<any>; exited: Promise<unknown[]> } {
   const child = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: ["--require", preload],
     env: { ...process.env, MONO_AGENT_FIXTURE_SCENARIO: scenario === "return" ? "native" : scenario, MONO_AGENT_FIXTURE_CRASH_PHASE: phase ?? "" } });
   live.add(child);
@@ -86,3 +87,11 @@ export function expectSettled(report: Report): void {
   expect(report.toolRecords).toBe(0);
 }
 export const count = (calls: readonly Call[], kind: Call["kind"], model?: string) => calls.filter((call) => call.kind === kind && (model === undefined || call.model === model)).length;
+
+/** Three-turn configured prepared-path check using the same real faux transport. */
+export async function checkFallback(scenario: Scenario): Promise<Report & { detached: Report; receiptBefore: unknown }> {
+  const root = await mkdtemp(join(tmpdir(), "configured-fallback-check-")); roots.push(root);
+  const run = start(root, scenario, "check", Date.now() + 25_000);
+  try { const value = await run.reply; const [code] = await run.exited; expect(code).toBe(0); return value; }
+  finally { await stopped(run.child); }
+}

@@ -5,7 +5,7 @@ import { bucket, modelKey, timestamp, conversationKey, evidence } from "./canoni
 const [root, action, phase] = process.argv.slice(2);
 let canonicalPublished = false, inspections = 0;
 const pause = async (current) => {
-  if (action === "commit" && current === phase) { process.send?.({ phase: current }); await new Promise(() => {}); }
+  if (action === "commit" && current === phase) { process.send?.({ phase: current }); await new Promise(() => { setInterval(() => {}, 1_000); }); }
 };
 const rename = fs.promises.rename, open = fs.promises.open;
 fs.promises.rename = async (...args) => {

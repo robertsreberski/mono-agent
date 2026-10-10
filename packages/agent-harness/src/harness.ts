@@ -1330,7 +1330,11 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       if (sessionRecord !== undefined && !confirmedWarmSession) {
-        if (
+        if (preparedNativeTurn !== undefined) {
+          // P2 admission is deferred: the held preparation owner, not this
+          // advisory mapping, decides physical retirement of the current epoch.
+          this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
+        } else if (
           providerHistoryTurn !== undefined
           && sessionRecord.providerSessionId === providerHistoryTurn.providerSessionId
         ) {
@@ -1828,6 +1832,15 @@ export class MonoAgentHarness implements AgentHarness {
           }
           throw error;
         }
+      }
+      // Emit only after canonical commit and the current-epoch C have finished.
+      // A crash before this event leaves the canonical receipt as sole evidence.
+      if (preparedNativeTurn && Array.isArray(runtimeResult.failoverHistory) && runtimeResult.failoverHistory.length && !runtimeResult.providerSessionId
+        && !(Array.isArray(runtimeResult.runtimeWarnings) && runtimeResult.runtimeWarnings.some((warning) => warning?.warning_kind === "degraded_native_context"))) {
+        const warning = { warning_kind: "degraded_native_context", source: "harness",
+          message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." };
+        runtimeResult = { ...runtimeResult, runtimeWarnings: [...(Array.isArray(runtimeResult.runtimeWarnings) ? runtimeResult.runtimeWarnings : []), warning] };
+        emit({ type: "runtime_warning", ...warning });
       }
       if (!isolated && (!providerHistoryOwnershipTransferred || providerSessionSynced)) {
         this.saveSession(

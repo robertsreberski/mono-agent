@@ -23,7 +23,7 @@ const owner = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, 
   onPhase: async (current) => {
     if (current === "artifact_directory_synced") artifactPublished = true;
     if (action === "accept" && !artifactPublished && ["obsolete_state_removed", "obsolete_states_directory_synced", "reservation_adjusted"].includes(current)) return;
-    if (armed && current === phase) { process.send?.({ phase }); await new Promise(() => {}); } } };
+    if (armed && current === phase) { process.send?.({ phase }); await new Promise(() => { setInterval(() => {}, 1_000); }); } } };
 try {
   if (action === "begin") await store.begin(state, owner);
   if (action === "accept") {
