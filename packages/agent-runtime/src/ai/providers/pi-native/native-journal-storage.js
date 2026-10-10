@@ -426,6 +426,46 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         } finally { for (const writer of writers) writer.release(); }
       }, { wait: false }); } catch (error) { if (error?.code === "ERR_HARNESS_WRITER_BUSY") return true; throw error; }
     },
+    /** Read-only presence probe under the held host claim. Never opens for
+     * writing, repairs, imports, creates or deletes. `missing` requires a
+     * definitive absence: no published/staged file for an exact journal ID, or
+     * no catalogue entry (owned or legacy) for the handle. Any other doubt is
+     * `unreadable`, never cold authority. A torn final line is left to the
+     * existing open/repair path; every complete line must parse and validate.
+     * @param {{handleId:string, journalId?:string}} coordinates */
+    async inspectCurrentJournal(coordinates) {
+      const { handleId, journalId } = coordinates ?? {};
+      if (!hex64(handleId) || journalId !== undefined && (typeof journalId !== "string" || !/^[A-Za-z0-9_-]+$/.test(journalId))) fail();
+      const unreadable = (reason) => ({ status: /** @type {const} */ ("unreadable"), reason });
+      let meta;
+      try {
+        if (journalId !== undefined) {
+          const present = [];
+          for (const suffix of ["", ".creating", ".importing", ".upgrading"]) {
+            try { await lstat(path(journalId) + suffix); present.push(suffix); } catch (error) { if (!missing(error)) throw error; }
+          }
+          if (!present.length) return { status: "missing" };
+          if (!present.includes("")) return unreadable("staged_only");
+          meta = { id: handleId, journalId, path: path(journalId) };
+        } else {
+          const matches = (await repo.list()).filter((item) => item.id === handleId);
+          if (!matches.length) return { status: "missing" };
+          if (matches.length !== 1) return unreadable("ambiguous");
+          meta = matches[0];
+          // Legacy sources are imported by the ordinary open path; presence suffices.
+          if (meta.legacy) return { status: "present" };
+        }
+        const reader = await JournalReader.open(meta.path, root);
+        try {
+          /** @type {any} */ let header; const validator = new JournalValidator();
+          await reader.scan((record) => { if (!header) { validateJournalHeader(record); header = record; } else validator.apply(record); });
+          if (!header || header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
+        } finally { await reader.close(); }
+        return { status: "present" };
+      } catch (error) {
+        return unreadable(error?.code === "ENOENT" ? "changed" : error instanceof SyntaxError ? "malformed" : "invalid");
+      }
+    },
     /** Reference-checked C or full-set D. Missing members are idempotent success,
      * not creation eligibility. Host retains membership until every barrier wins.
      * @param {any[]} chain @param {any} context */

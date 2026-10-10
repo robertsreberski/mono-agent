@@ -1,5 +1,5 @@
 import { createManagedNativeJournalStorage as nativeStorage } from "@mono-agent/agent-runtime";
-import type { RuntimeNativePreparationStorage } from "./types.js";
+import type { RuntimeNativeJournalPresence, RuntimeNativePreparationStorage } from "./types.js";
 /** Administrative storage capability; configured APP opt-in owns policy/authority,
  * never inferred from this factory or runtime capability presence. */
 export function createManagedNativeJournalStorage(options: {
@@ -22,5 +22,7 @@ export function createManagedNativeJournalStorage(options: {
     verifySwitchSources: (chain, sources, context) => storage.verifySwitchSources([...chain], [...sources], context),
     verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),
     publishSwitch: (sources, context) => storage.publishSwitch([...sources], context),
+    inspectCurrentJournal: async (coordinates) => await storage.inspectCurrentJournal({ handleId: coordinates.handleId,
+      ...(coordinates.journalId === undefined ? {} : { journalId: coordinates.journalId }) }) as RuntimeNativeJournalPresence,
     inventory: (ids, owners) => storage.inventory(ids === undefined ? undefined : [...ids], owners === undefined ? undefined : { ...owners, conversationKeys: [...owners.conversationKeys] }) };
 }

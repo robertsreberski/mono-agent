@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
-export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal" | "fallback-cold";
+export type Scenario = "structured" | "return" | "cold" | "reset" | "retention" | "fallback" | "fallback-wake" | "fallback-switch" | "fallback-refusal" | "fallback-cold" | "missing" | "missing-v3" | "missing-switch";
 export interface Call { readonly model: string; readonly kind: "summary" | "turn" | "tool"; readonly armed: boolean }
 export interface Report {
   readonly preparedRuns?: readonly { readonly model: string; readonly armed: boolean }[];
@@ -40,7 +40,7 @@ export async function cleanupRoots(): Promise<void> {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 }
 
-function start(root: string, scenario: Scenario, mode: "produce" | "recover" | "check", deadline: number, phase?: string): { child: ChildProcess; reply: Promise<any>; exited: Promise<unknown[]> } {
+function start(root: string, scenario: Scenario, mode: "produce" | "recover" | "check" | "resume", deadline: number, phase?: string): { child: ChildProcess; reply: Promise<any>; exited: Promise<unknown[]> } {
   const child = fork(worker, [root], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: ["--require", preload],
     env: { ...process.env, MONO_AGENT_FIXTURE_SCENARIO: scenario === "return" ? "native" : scenario, MONO_AGENT_FIXTURE_CRASH_PHASE: phase ?? "" } });
   live.add(child);
@@ -77,6 +77,13 @@ export async function killAndRecover(scenario: Scenario, phase: string) {
   const armed = [...killed.calls.filter((call) => call.armed), ...first.calls, ...second.calls];
   const journal = async (name: string) => (await readFile(join(root, "native", "mono-v2", "journals", name))).toString("base64");
   return { root, before, killed, first, second, armed, journal };
+}
+
+/** One later explicit message on a fresh process after the recoveries. */
+export async function resumeAfter(root: string, scenario: Scenario): Promise<Report> {
+  const run = start(root, scenario, "resume", Date.now() + 20_000);
+  try { const value = await run.reply; const [code] = await run.exited; expect(code).toBe(0); return value; }
+  finally { await stopped(run.child); }
 }
 
 /** No leaked reservation, switch fence, lifecycle intent, P2 fence/payload or tool record. */

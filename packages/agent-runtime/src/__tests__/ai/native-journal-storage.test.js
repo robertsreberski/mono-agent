@@ -387,3 +387,25 @@ it.each([
   const frozen = await bridge.freeze({ epoch: "9".repeat(64), ordinal: 0, handleId: metadata.id, predecessorJournalId: null, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
   expect(frozen.provenance).toEqual({ ...from, account: expected });
 });
+// Missing-vs-corrupt classification for owner-approved cold recovery (P4 PR D).
+it("classifies the current journal as present, definitively missing or unreadable without mutation", async () => {
+  const f = await fixture(), exact = { handleId: f.metadata.id, journalId: f.metadata.journalId };
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: "a".repeat(64) })).toEqual({ status: "missing" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: "a".repeat(64), journalId: "fictional-absent" })).toEqual({ status: "missing" });
+  // A torn final line belongs to the existing open/repair path, never to "missing".
+  await appendFile(f.metadata.path, "{\"torn\":");
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "present" });
+  const lines = f.before.toString().split("\n");
+  for (const [kind, bytes] of [["record", [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n")], ["header", ["{not json", ...lines.slice(1)].join("\n")]]) {
+    await writeFile(f.metadata.path, bytes);
+    expect(await f.bridge.inspectCurrentJournal(exact), kind).toMatchObject({ status: "unreadable" });
+    expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id }), kind).toMatchObject({ status: "unreadable" });
+    expect(await readFile(f.metadata.path, "utf8")).toBe(bytes);
+  }
+  // Staged-only bytes are uncertainty, not absence.
+  await writeFile(`${f.metadata.path}.upgrading`, f.before, { mode: 0o600 }); await rm(f.metadata.path);
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "unreadable", reason: "staged_only" });
+  await expect(f.bridge.inspectCurrentJournal({ handleId: "../escape" })).rejects.toThrow();
+});

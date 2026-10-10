@@ -802,7 +802,13 @@ export interface RuntimeNativeJournalStorage {
   verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
   publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
   inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
+  /** Read-only presence probe for the canonical current journal, called under the
+   * held host claim. `missing` only when no published or staged bytes exist for
+   * the exact coordinate; any doubt (unreadable header/record, staged-only bytes,
+   * catalogue failure) is `unreadable` and never authorizes a cold boundary. */
+  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string }): Promise<RuntimeNativeJournalPresence>;
 }
+export type RuntimeNativeJournalPresence = { readonly status: "present" | "missing" } | { readonly status: "unreadable"; readonly reason: string };
 
 /** Complete immutable evidence, validated against exact native bytes. Cloning
  * loses validation identity; pass the original view to preparation helpers. */

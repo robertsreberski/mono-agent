@@ -158,6 +158,29 @@ the canonical receipt. Once output, tool admission or yielded live input occurs,
 the prepared path cannot retry or fail over. A cancellation before admission is
 reported and not appended to history.
 
+If the current native journal is gone for an outside reason (deleted, the agent
+moved to another machine, a partial restore), the prepared turn no longer fails
+with `session_not_found`. Before admission, while it holds the conversation, the
+host checks that journal. It counts as **missing** only when no published or
+staged file exists for the recorded journal (or, before the first switch, no
+catalogued journal for the current handle). The turn then replaces only the
+current stretch through the same durable cold boundary that ordinary cold turns
+use: the unguarded first epoch is rotated, and a switched chain takes current-only
+C with predecessors and the switch receipt untouched. The model answers from the
+canonical conversation history, seeded once into the fresh epoch, and the turn
+streams and returns `degraded_native_context` once. Following turns are warm on
+the new epoch. A persisted-ID request for a different model with a missing current
+journal takes the owned cold model change instead of a handoff. No lease, tool or
+summary call is repeated, and a crash at any step recovers from storage alone.
+
+Damage is never treated as loss. An unreadable header, a malformed or invalid
+complete record, staged-only bytes or a catalogue that cannot be read refuse the
+message with `native_journal_unreadable` and leave every file unchanged. An
+incomplete final line still goes to the existing open/repair path. A lost
+predecessor journal does not affect same-model turns; if the current journal and
+a predecessor are both lost, the message is refused the same way, because C cannot
+prove the predecessors are unchanged.
+
 To enable:
 
 1. Stop **every** writer for the agent root: the app service, CLI runs, managed
@@ -194,14 +217,17 @@ mid-turn, that turn ends failed or interrupted and you send a new message.
 Warnings and refusals:
 
 - `degraded_native_context` is the only user-facing warning. It appears once,
-  on the turn that applied an owned cold change. If the process dies after
-  that change became durable but before that turn streamed the warning,
-  recovery finishes the change without it. The warning is then never shown,
-  and the canonical `lastSwitch.kind: "cold"` receipt is the only record.
+  on the turn that applied an owned cold change or recovered a missing current
+  journal. If the process dies after that change became durable but before
+  that turn streamed the warning, recovery finishes the change without it.
+  The warning is then never shown. The only record is the canonical
+  `lastSwitch.kind: "cold"` receipt for a model change, or the rotated current
+  epoch for a recovered journal.
 - Structured handoffs and native reuse produce no warning.
 - `handoff_pending`, `handoff_budget_exceeded`,
-  `native_cold_model_change_unavailable` and retryable `native_switch_busy`
-  are refusals. The message was not admitted; send another message when ready.
+  `native_cold_model_change_unavailable`, `native_journal_unreadable` and
+  retryable `native_switch_busy` are refusals. The message was not admitted;
+  send another message when ready.
 
 Limits:
 

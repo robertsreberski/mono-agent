@@ -83,6 +83,7 @@ fs.rename = async (...args) => {
   if (dirname(destination) === history && name.startsWith(".native-history-op.")) await stop("lifecycle-intent");
   if (basename(dirname(destination)) === ".locks" && name.endsWith(".dirty.json")) await stop("turn-fence");
   if (destination.endsWith(".jsonl") && String(args[0]).includes("stage")) await stop("epoch-published");
+  if (destination.endsWith(".jsonl") && String(args[0]).endsWith(".jsonl.creating")) await stop("guarded-epoch-renamed");
 };
 async function removed(path) {
   const name = basename(path);
