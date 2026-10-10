@@ -26,3 +26,14 @@ it.each(["provider_unavailable", "provider_auth"])("returns an untouched %s prep
   await expect(lease.run(binding)).rejects.toThrow("no longer available");
   await lease.close(); expect(cleanup).toHaveBeenCalledOnce();
 });
+
+it("still releases route resources when a consumed prepared lease's close rejects", async () => {
+  const cleanup = vi.fn(), close = vi.fn(async () => { throw new Error("Fictional close failure"); });
+  const run = vi.fn(async () => ({ text: "Fictional prepared answer", events: [] }));
+  const router = createRouterRuntime({ chain: [{ model: primary }, { model: backup }], sessionTurnReconciliation: "v1",
+    resolveAttempt: vi.fn(() => ({ cleanup, runtime: { configureTools() {}, run: vi.fn(), nativePreparedDispatch: "v1", prepareNativeDispatch: async () => ({ snapshot: {}, run, close }) } })) });
+  const lease = await router.prepareNativeDispatch("Fictional instructions", { model: primary, messages: [{ role: "user", content: "Fictional input" }] });
+  await expect(lease.run(binding)).rejects.toThrow("Fictional close failure");
+  expect(run).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce();
+  await expect(lease.run(binding)).rejects.toThrow("no longer available");
+});

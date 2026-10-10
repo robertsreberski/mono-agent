@@ -682,7 +682,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               return { ...result, failoverHistory: result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
                 failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
                 requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [] };
-            } finally { await lease.close(); await release(); }
+            } finally { try { await lease.close(); } finally { await release(); } }
           },
           close: async () => { available = false; try { await lease.close(); } finally { await release(); } } };
       } catch (error) { await release(); throw error; }

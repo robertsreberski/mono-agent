@@ -51,7 +51,9 @@
 - With Web model switching on, record the pinned dispatch account on every Web
   turn with a persisted message ID, from a new conversation's first message on.
   These Web turns now use the primary model only, with no configured fallback
-  backup. Non-Web turns and turns without an ID keep fallbacks.
+  backup. Non-Web turns and no-ID turns on conversations without native
+  switching state keep fallbacks; no-ID wakes on native-bound conversations are
+  primary-only too.
 
 - Add an operator guide for Web durable model switching: enable and
   restore-backup rollback steps, A1–A4 acceptance mapped to observable

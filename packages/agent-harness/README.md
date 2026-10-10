@@ -280,17 +280,10 @@ summary, then `handoff_pending`. Native envelopes are never reused across
 models, and accepted artifacts are always neutral structured handoffs. Ordinary
 same-model reopening of an accepted handoff remains provider/API/account-ungated.
 
-Native envelopes are retained in one immutable host artifact (not copied into
-the new journal), using the free checkpoint acceptance/recovery slot. Summary
-billing, frozen budgets and inherited-prefix growth checks still apply. Native
-selection measures the exact accepted envelope against both the artifact-byte
-reservation and the serialized file limit, not just a token allowance. Byte
-refusal takes the approved handoff chain. The configured host intentionally
-still preflights the worst-case structured-summary inherited prefix even for a
-native candidate: byte refusal can select that fallback, and intent must not
-start paid work whose accepted projection cannot later be compacted. This may
-conservatively refuse otherwise fitting native history; it is not clipping or
-successful fallback. This substrate does not expose config or activate APP;
+Summary billing, frozen budgets and inherited-prefix growth checks apply. The
+configured host preflights the worst-case structured-summary inherited prefix
+before intent, so it never starts paid work whose accepted projection cannot
+later be compacted. This substrate does not expose config or activate APP;
 persisted delivery forwarding
 and root drain/serialization remain prerequisites for a supported opt-in.
 
