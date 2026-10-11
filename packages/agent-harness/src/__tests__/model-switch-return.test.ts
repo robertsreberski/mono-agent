@@ -1,6 +1,7 @@
 // A -> B -> A returns are ordinary structured transfers: outgoing summary, then
-// exact checkpoint plus suffix, then incoming, then handoff pending. Native
-// envelopes are never reused across a model change, even with matching provenance.
+// the exact prior validated structured summary plus the complete current suffix,
+// then incoming, then handoff pending. Native envelopes are never reused across
+// a model change, even with matching provenance. One current journal remains.
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,13 +19,14 @@ const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const provenance = { provider: "faux", api: "faux-api", model: "A", account: "fictional-account" };
 const summary = { intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
+const firstSummary = { intent: ["Fictional source fact summarized at A -> B"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
 async function setup(api = provenance.api) {
   const dispatchProvenance = { ...provenance, api };
   const root = await mkdtemp(join(tmpdir(), "model-switch-return-")); roots.push(root);
   const f = await fixture(root, bucket, dispatchProvenance);
   // Bootstrap the A -> B boundary, then one intervening B turn. No real
   // credentials/provider calls: later evidence uses exact journals.
-  await ready(f); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true });
+  await ready(f, { summary: firstSummary }); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true });
   const store = createDurableHistoryStore({ root: join(root, "history"), nativeJournalStorage: f.native,
     reconcileProviderSessionTurn: async () => ({ status: "absent" }),
     retireProviderSession: async () => { throw new Error("Predecessors must not be deleted"); } });
@@ -47,8 +49,8 @@ async function setup(api = provenance.api) {
   const incoming = { snapshot: { expiresAt: Date.now() + 300000, model: { provider: "faux", api, id: "A", contextWindow: 100000, maxTokens: 8000 },
     provenance: dispatchProvenance, authSource: "fixture", systemPrompt: "Fictional current instructions", tools: [], messages: [{ role: "user", content: "Fictional return request" }] },
     checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })), produceHandoffSummary: vi.fn(async () => ({ status: "ready" as const, summary })), close: vi.fn(async () => {}) };
-  const state = createPreparedModelSwitchState({ source, sources: captured.sources, incoming: incoming.snapshot, native, targetEpoch: "6".repeat(64),
-    reservation: { canonicalBytes: 65536, artifactBytes: 131072, retainedNativeBytes: 131072, headerCopyBytes: 131072, pendingBytes: 131072 },
+  const state = createPreparedModelSwitchState({ source, historyBucket: bucket, journal: captured.source, incoming: incoming.snapshot, native, targetEpoch: "6".repeat(64),
+    reservation: { canonicalBytes: 65536, artifactBytes: 131072, nativeBytes: 8192, pendingBytes: 131072 },
     timestamp: 17, messageId: "persisted-return-delivery", outputReserve: 2000 });
   const outgoing = { ...incoming, snapshot: { ...incoming.snapshot, model: { ...incoming.snapshot.model, id: "B" }, provenance: { ...dispatchProvenance, model: "B" } },
     produceHandoffSummary: vi.fn(async () => ({ status: "ready" as const, summary })) };
@@ -69,9 +71,13 @@ it("B -> A takes the outgoing structured summary with intervening B work, never 
   const cached = await f.prep.readHandoff(result.switchId, result.artifact);
   expect(cached.artifact).toMatchObject({ producer: "outgoing", summary });
   expect(cached.artifact).not.toHaveProperty("nativeProjection");
-  expect(JSON.stringify(cached.artifact)).toContain("Intervening fictional B fact"); expect(JSON.stringify(cached.artifact)).toContain("Fictional source fact");
+  expect(JSON.stringify(cached.artifact)).toContain("Intervening fictional B fact");
   expect(JSON.stringify(cached.artifact)).not.toContain("fixture-signature"); // opaque reasoning is referenced by digest only
-  const record = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(record.native.chain).toHaveLength(3);
+  // The producer saw the inherited prior handoff; the new artifact does not nest it.
+  expect(JSON.stringify((f.outgoing.produceHandoffSummary.mock.calls as unknown[][])[0]![0])).toContain("Fictional source fact summarized at A -> B");
+  expect(JSON.stringify(cached.artifact)).not.toContain("Fictional source fact summarized");
+  const record = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(record.version).toBe(5);
+  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(1);
   expect(record.providerSession.modelKey).toBe("faux:A"); expect(record.lastSwitch.artifact).toEqual(result.artifact);
   expect(await recoverPreparedModelSwitch(f.prep, { exclusiveWriters: true })).toEqual(result);
   let binding: HarnessPreparedBinding | undefined;
@@ -93,12 +99,13 @@ it("an outcome-unknown outgoing attempt stays charged; the same delivery continu
   const pending = (await f.prep.read()).pending;
   expect(pending?.phase).toBe("outgoing"); expect(pending?.attempts).toEqual([expect.objectContaining({ producer: "outgoing", outcome: "started", generation: 0 })]);
   // Redelivery of the same persisted message: the unknown attempt finishes
-  // storage-only, then the free exact fallback (whole short history) is accepted.
+  // storage-only, then the free route (exact prior validated summary + complete
+  // current suffix) is accepted without another billed call.
   const result = await f.advance(); expect(result.status).toBe("ready"); if (result.status !== "ready") throw new Error("Expected ready");
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce(); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
   const cached = await f.prep.readHandoff(result.switchId, result.artifact);
-  expect(cached.artifact).toMatchObject({ producer: "checkpoint", summary: null });
-  expect(JSON.stringify(cached.artifact)).toContain("Intervening fictional B fact");
+  expect(cached.artifact).toMatchObject({ producer: "checkpoint", summary: null, checkpoint: { summary: firstSummary } });
+  expect(JSON.stringify((cached.artifact.checkpoint as { suffix: unknown[] }).suffix)).toContain("Intervening fictional B fact");
   expect((await switchStates(f.base, result.switchId)).map((state) => state.attempts)).toEqual([[expect.objectContaining({ producer: "outgoing", outcome: "started" })]]);
   expect(await f.advance()).toEqual(result); expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
   await f.prep.abort();
@@ -149,7 +156,7 @@ it("actually dispatches and reconciles the inherited structured handoff on same-
       onAdmitted: (value) => { turn = value; } });
     expect(result.error).toBeFalsy(); expect(result.text).toBe("Fictional reopened reply"); expect(transport).toHaveBeenCalledOnce();
     const dispatched = JSON.stringify(transport.mock.calls[0]); expect(dispatched).toContain("Historical handoff");
-    expect(dispatched).toContain("Fictional source fact"); expect(dispatched).toContain("Intervening fictional B fact"); expect(dispatched).not.toContain("fixture-signature");
+    expect(dispatched).toContain("Intervening fictional B fact"); expect(dispatched).not.toContain("fixture-signature");
     await (await turn!.prepareCommit([{ role: "user", content: input, runId: "actual-reopen", timestamp: "2000-01-01T00:00:00.000Z" },
       { role: "assistant", content: result.text!, runId: "actual-reopen", timestamp: "2000-01-01T00:00:01.000Z" }], { providerSessionSynced: true })).commit();
     await expect(inspect.mock.results.at(-1)?.value).resolves.toMatchObject({ status: "matched", outcome: "completed" });

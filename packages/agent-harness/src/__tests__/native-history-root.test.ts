@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP } from "../native-history-root.js";
-import { bucket, canonicalRecord, conversationKey, modelKey } from "./fixtures/canonical-v4-fixture.mjs";
+import { bucket, canonicalRecord, conversationKey, modelKey } from "./fixtures/canonical-v5-fixture.mjs";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const legacy = (id = bucket) => { const value = canonicalRecord(id); return { version: 3, conversationId: id, messages: value.messages, providerSession: value.providerSession, lastCommit: value.lastCommit }; };

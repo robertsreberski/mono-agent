@@ -51,7 +51,7 @@ export function inspectCurrentLifecycle(store) {
 export function projectInheritedContext(entries, inherited, options = {}) {
   if (!inherited || !Array.isArray(inherited.messages) || !inherited.messages.length
     || inherited.coverage?.version !== 1 || !Array.isArray(inherited.coverage.sources)
-    || !inherited.coverage.sources.length || inherited.messages.some((message) => !message
+    || inherited.messages.some((message) => !message
       || !["user", "assistant", "toolResult", "compactionSummary", "branchSummary"].includes(message.role))) throw new TypeError("Invalid inherited projection");
   const sources = inherited.coverage.sources;
   if (sources.some((source) => typeof source.journalId !== "string" || !source.journalId

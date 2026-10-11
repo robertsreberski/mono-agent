@@ -50,15 +50,6 @@ fs.open = async (...args) => {
       else if (text.includes("\"conversationId\"")) await stop("canonical-staged");
     };
   }
-  if (path.endsWith(".jsonl")) {
-    const sync = handle.sync.bind(handle);
-    handle.sync = async () => {
-      await sync();
-      if (globalThis.__fixtureArmed && readFileSync(path, "utf8").includes("\"kind\":\"model_change\"") && !seen.has(`model-change:${path}`)) {
-        seen.set(`model-change:${path}`, 1); await stop("model-change");
-      }
-    };
-  }
   return handle;
 };
 fs.rename = async (...args) => {
@@ -68,6 +59,7 @@ fs.rename = async (...args) => {
     if (name.endsWith(".fence.json")) await stop(switchLabel(destination));
     if (name.endsWith(".handoff.json")) await stop("artifact");
   }
+  if (dirname(destination) === history && name === ".native-history-root.json") await stop("root-marker");
   if (dirname(destination) === history && name.endsWith(".history.json")) await stop("canonical");
   if (dirname(destination) === history && name.startsWith(".native-history-op.")) await stop("lifecycle-intent");
   if (basename(dirname(destination)) === ".locks" && name.endsWith(".dirty.json")) await stop("turn-fence");

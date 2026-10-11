@@ -5,22 +5,27 @@ import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { HistoryMessage } from "./context/index.js";
 import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-agent/runtime-adapter";
 
-/** Private additive storage contracts. No host dispatch/admission opts in yet. */
+/** Pre-release v4 chains and their intents are refused, never migrated or mutated. */
+export class UnsupportedPreReleaseSwitchFormatError extends TypeError {
+  readonly code = "ERR_UNSUPPORTED_PRE_RELEASE_SWITCH_FORMAT";
+  constructor() { super("unsupported pre-release switch format; reset"); this.name = "UnsupportedPreReleaseSwitchFormatError"; }
+}
+export function refusePreReleaseSwitchFormat(): never { throw new UnsupportedPreReleaseSwitchFormatError(); }
 export class ModelSwitchCapacityError extends Error {
   readonly code = "ERR_MODEL_SWITCH_CAPACITY";
 }
 export const MODEL_SWITCH_DIRECTORY = ".model-switches";
 export const MAX_MODEL_SWITCH_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SWITCH_FENCE_BYTES = 1024;
-export const MAX_JOURNAL_CHAIN = 32;
+/** Upper bound of one deterministic guarded epoch initializer. */
+export const MAX_NATIVE_EPOCH_BYTES = 8192;
 export const MODEL_SWITCH_BILLING_POLICY = "mono-switch-two-producers-v1";
 export interface JournalProvenance { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null }
+/** Frozen outgoing journal of one switch intent. */
 export interface CanonicalJournalDescriptor {
   readonly journalId: string;
   readonly epoch: string;
-  readonly ordinal: number;
   readonly handleId: string;
-  readonly predecessorJournalId: string | null;
   readonly ownerKey: string;
   readonly historyBucket: string;
   readonly sourceTipId: string | null;
@@ -30,27 +35,26 @@ export interface CanonicalJournalDescriptor {
 }
 export interface HandoffReference { readonly id: string; readonly hash: string }
 export interface ModelSwitchReceipt {
-  /** Cold transitions have no accepted handoff or native model_change event. */
-  readonly kind?: "cold";
-  readonly messageDigest?: string;
   readonly version: 1;
   readonly switchId: string;
   readonly intentDigest: string;
   readonly fromEpoch: string;
   readonly toEpoch: string;
-  readonly artifact: HandoffReference | null;
+  readonly artifact: HandoffReference;
 }
-export interface TurnHistoryV4 extends Omit<TurnHistoryV3, "version" | "providerSession"> {
-  readonly version: 4;
+/** One current guarded journal (derived from the epoch), one durable handoff
+ * and the latest switch receipt. No epoch ancestry is retained. */
+export interface TurnHistoryV5 extends Omit<TurnHistoryV3, "version" | "providerSession"> {
+  readonly version: 5;
   readonly providerSession: { readonly epoch: string; readonly revision: number; readonly modelKey: string };
-  readonly native: { readonly authority: RuntimeNativeJournalAuthority; readonly chain: readonly CanonicalJournalDescriptor[]; readonly projection: HandoffReference | null };
+  readonly native: { readonly authority: RuntimeNativeJournalAuthority; readonly projection: HandoffReference | null };
   readonly lastSwitch?: ModelSwitchReceipt;
 }
 export interface ModelSwitchReservation {
   readonly canonicalBytes: number;
   readonly artifactBytes: number;
-  readonly retainedNativeBytes: number;
-  readonly headerCopyBytes: number;
+  /** The target epoch initializer; the outgoing journal is already charged. */
+  readonly nativeBytes: number;
   readonly pendingBytes: number;
 }
 export interface ModelSwitchIdentity {
@@ -59,7 +63,9 @@ export interface ModelSwitchIdentity {
   readonly switchId: string;
   readonly sourceCanonicalDigest: string;
   readonly sourceRevision: number;
-  readonly sources: readonly CanonicalJournalDescriptor[];
+  readonly sourceEpoch: string;
+  /** Null when the outgoing journal is definitively missing: canonical history is the evidence. */
+  readonly source: CanonicalJournalDescriptor | null;
   readonly fromModelKey: string;
   readonly toModelKey: string;
   readonly targetProvenance: JournalProvenance;
@@ -77,7 +83,7 @@ export interface SummaryAttempt {
 }
 export interface SummaryAuthorization { readonly generation: number; readonly messageDigest: string }
 export interface ModelSwitchState {
-  readonly version: 1;
+  readonly version: 2;
   readonly identity: ModelSwitchIdentity;
   readonly reservation: ModelSwitchReservation;
   readonly billingPolicy: typeof MODEL_SWITCH_BILLING_POLICY;
@@ -126,56 +132,46 @@ function provenance(value: unknown): void {
   switchObject(value); switchKeys(value, ["provider", "api", "model", "account"]);
   for (const key of ["provider", "api", "model"]) text(value[key]); if (value.account !== null) text(value.account);
 }
-export function validateJournalChain(value: unknown, ownerKey: string, historyBucket: string): asserts value is readonly CanonicalJournalDescriptor[] {
-  if (!Array.isArray(value) || !value.length || value.length > MAX_JOURNAL_CHAIN) switchInvalid();
-  const journals = new Set<string>(), epochs = new Set<string>(), handles = new Set<string>();
-  let predecessor: string | null = null;
-  for (let index = 0; index < value.length; index++) {
-    const segment: unknown = value[index]; switchObject(segment);
-    switchKeys(segment, ["journalId", "epoch", "ordinal", "handleId", "predecessorJournalId", "ownerKey", "historyBucket", "sourceTipId", "sourceSeq", "sourceDigest", "provenance"]);
-    text(segment.journalId); switchHash(segment.epoch); switchHash(segment.handleId); switchHash(segment.sourceDigest); switchNumber(segment.sourceSeq);
-    if (segment.ownerKey !== ownerKey || segment.historyBucket !== historyBucket || segment.predecessorJournalId !== predecessor || segment.ordinal !== index
-      || journals.has(segment.journalId) || epochs.has(segment.epoch) || handles.has(segment.handleId)) switchInvalid();
-    if (segment.sourceTipId !== null) text(segment.sourceTipId);
-    provenance(segment.provenance); journals.add(segment.journalId); epochs.add(segment.epoch); handles.add(segment.handleId); predecessor = segment.journalId;
-  }
+function validateJournalDescriptor(value: unknown, ownerKey: string, historyBucket: string, epoch: string): asserts value is CanonicalJournalDescriptor {
+  switchObject(value); switchKeys(value, ["journalId", "epoch", "handleId", "ownerKey", "historyBucket", "sourceTipId", "sourceSeq", "sourceDigest", "provenance"]);
+  text(value.journalId); switchHash(value.handleId); switchHash(value.sourceDigest); switchNumber(value.sourceSeq);
+  if (value.ownerKey !== ownerKey || value.historyBucket !== historyBucket || value.epoch !== epoch) switchInvalid();
+  if (value.sourceTipId !== null) text(value.sourceTipId);
+  provenance(value.provenance);
 }
 export function validateSwitchAuthority(value: unknown): asserts value is RuntimeNativeJournalAuthority {
   switchObject(value); switchKeys(value, ["version", "canonicalVersion", "rootId", "authorityId", "ownerKey", "historyBucket"]);
   if (value.version !== 1 || value.canonicalVersion !== 4) switchInvalid(); switchHash(value.rootId); switchHash(value.authorityId); text(value.ownerKey); text(value.historyBucket);
 }
-export function validateTurnHistoryV4(value: unknown, validateMessage: (message: unknown) => HistoryMessage): asserts value is TurnHistoryV4 {
+export function validateTurnHistoryV5(value: unknown, validateMessage: (message: unknown) => HistoryMessage): asserts value is TurnHistoryV5 {
   switchObject(value); switchKeys(value, ["version", "conversationId", "messages", "providerSession", "native"], ["lastCommit", "lastSwitch"]);
-  if (value.version !== 4) switchInvalid();
+  if (value.version !== 5) switchInvalid();
   validateTurnHistoryV3({ version: 3, conversationId: value.conversationId, messages: value.messages, providerSession: value.providerSession,
     ...(value.lastCommit === undefined ? {} : { lastCommit: value.lastCommit }) }, validateMessage);
   switchObject(value.providerSession); assertSessionModelKey(value.providerSession.modelKey);
-  const native = value.native; switchObject(native); switchKeys(native, ["authority", "chain", "projection"]); validateSwitchAuthority(native.authority);
+  const native = value.native; switchObject(native); switchKeys(native, ["authority", "projection"]); validateSwitchAuthority(native.authority);
   if (native.authority.historyBucket !== value.conversationId) switchInvalid();
-  validateJournalChain(native.chain, native.authority.ownerKey, native.authority.historyBucket);
-  if (native.chain.at(-1)!.epoch !== value.providerSession.epoch) switchInvalid();
   if (native.projection !== null) validateSwitchReference(native.projection);
   if (value.lastSwitch !== undefined) {
-    const receipt = value.lastSwitch; switchObject(receipt); switchKeys(receipt, ["version", "switchId", "intentDigest", "fromEpoch", "toEpoch", "artifact", ...(receipt.kind === "cold" ? ["kind", "messageDigest"] : [])]);
-    if (receipt.kind === "cold") { switchHash(receipt.messageDigest); if (receipt.artifact !== null) switchInvalid(); }
+    const receipt = value.lastSwitch; switchObject(receipt); switchKeys(receipt, ["version", "switchId", "intentDigest", "fromEpoch", "toEpoch", "artifact"]);
     if (receipt.version !== 1) switchInvalid(); for (const key of ["switchId", "intentDigest", "fromEpoch", "toEpoch"]) switchHash(receipt[key]);
     // Like the P2 last-commit receipt, this records its own transition. Later
-    // cold rotations/context publication must not erase or rebind that receipt.
+    // cold rotations must not erase or rebind that receipt.
     if (receipt.fromEpoch === receipt.toEpoch) switchInvalid();
-    if (receipt.artifact !== null) validateSwitchReference(receipt.artifact);
+    validateSwitchReference(receipt.artifact);
   }
 }
 /** Binding recognition is NOT proof that projection is ready for dispatch. */
-export function recognizesModelSwitchBinding(record: Pick<TurnHistoryV4, "conversationId" | "lastSwitch">, identity: ModelSwitchIdentity): boolean {
+export function recognizesModelSwitchBinding(record: Pick<TurnHistoryV5, "conversationId" | "lastSwitch">, identity: ModelSwitchIdentity): boolean {
   const receipt = record.lastSwitch;
   if (!receipt || record.conversationId !== identity.historyBucket || receipt.switchId !== identity.switchId) return false;
-  if (receipt.intentDigest !== switchDigest(identity) || receipt.fromEpoch !== identity.sources.at(-1)?.epoch || receipt.toEpoch !== identity.targetEpoch) {
+  if (receipt.intentDigest !== switchDigest(identity) || receipt.fromEpoch !== identity.sourceEpoch || receipt.toEpoch !== identity.targetEpoch) {
     throw new Error("Canonical model-switch receipt conflicts with durable intent");
   }
   return true;
 }
 export function reservationBytes(value: ModelSwitchReservation): number {
-  switchObject(value); switchKeys(value, ["canonicalBytes", "artifactBytes", "retainedNativeBytes", "headerCopyBytes", "pendingBytes"]);
+  switchObject(value); switchKeys(value, ["canonicalBytes", "artifactBytes", "nativeBytes", "pendingBytes"]);
   let sum = 0; for (const amount of Object.values(value)) { switchNumber(amount); sum += amount; if (!Number.isSafeInteger(sum)) switchInvalid(); } return sum;
 }
 /** Exact persisted budget, not an inferred/recomputed preparation allowance. */
@@ -189,19 +185,21 @@ export function validateFrozenHandoffBudget(value: unknown): asserts value is Ru
 }
 
 export function validateModelSwitchState(value: unknown): asserts value is ModelSwitchState {
-  switchObject(value); switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"], ["frozenBudget", "initialMessageDigest"]);
-  if (value.version !== 1 || value.billingPolicy !== MODEL_SWITCH_BILLING_POLICY || !["outgoing", "checkpoint", "incoming", "pending", "ready"].includes(value.phase as string)) switchInvalid();
+  switchObject(value); if (value.version === 1) refusePreReleaseSwitchFormat();
+  switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"], ["frozenBudget", "initialMessageDigest"]);
+  if (value.version !== 2 || value.billingPolicy !== MODEL_SWITCH_BILLING_POLICY || !["outgoing", "checkpoint", "incoming", "pending", "ready"].includes(value.phase as string)) switchInvalid();
   if (value.initialMessageDigest !== undefined) switchHash(value.initialMessageDigest);
   if (value.frozenBudget !== undefined) { validateFrozenHandoffBudget(value.frozenBudget); if (switchDigest(value.frozenBudget) !== (value.identity as ModelSwitchIdentity).frozenBudgetDigest) switchInvalid(); }
   const identity = value.identity; switchObject(identity);
-  switchKeys(identity, ["ownerKey", "historyBucket", "switchId", "sourceCanonicalDigest", "sourceRevision", "sources", "fromModelKey", "toModelKey", "targetProvenance", "targetEpoch", "projectionPolicy", "timestamp", "frozenBudgetDigest"]);
+  switchKeys(identity, ["ownerKey", "historyBucket", "switchId", "sourceCanonicalDigest", "sourceRevision", "sourceEpoch", "source", "fromModelKey", "toModelKey", "targetProvenance", "targetEpoch", "projectionPolicy", "timestamp", "frozenBudgetDigest"]);
   text(identity.ownerKey); text(identity.historyBucket); text(identity.projectionPolicy); switchNumber(identity.timestamp);
-  for (const key of ["switchId", "sourceCanonicalDigest", "targetEpoch", "frozenBudgetDigest"]) switchHash(identity[key]); switchNumber(identity.sourceRevision);
+  for (const key of ["switchId", "sourceCanonicalDigest", "sourceEpoch", "targetEpoch", "frozenBudgetDigest"]) switchHash(identity[key]); switchNumber(identity.sourceRevision);
   assertSessionModelKey(identity.fromModelKey); assertSessionModelKey(identity.toModelKey); if (identity.fromModelKey === identity.toModelKey) switchInvalid();
   provenance(identity.targetProvenance);
   const { switchId, ...coordinates } = identity; switchHash(switchId);
   if (switchId !== switchDigest(coordinates)) switchInvalid();
-  validateJournalChain(identity.sources, identity.ownerKey, identity.historyBucket); if (identity.sources.some((source) => source.epoch === identity.targetEpoch)) switchInvalid();
+  if (identity.source !== null) validateJournalDescriptor(identity.source, identity.ownerKey, identity.historyBucket, identity.sourceEpoch as string);
+  if (identity.sourceEpoch === identity.targetEpoch) switchInvalid();
   reservationBytes(value.reservation as unknown as ModelSwitchReservation); switchNumber(value.authorizationGeneration);
   if (!Array.isArray(value.authorizations) || value.authorizations.length > 32 || !Array.isArray(value.attempts) || value.attempts.length > 66) switchInvalid();
   const messages = new Set<string>(value.initialMessageDigest === undefined ? [] : [value.initialMessageDigest as string]);

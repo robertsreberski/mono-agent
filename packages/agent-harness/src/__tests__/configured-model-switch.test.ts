@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { createManagedNativeJournalStorage, createMonoRuntime, type MonoRuntimeLike, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createManagedNativeJournalStorage, createMonoRuntime, NativeEvidenceCapacityError, type MonoRuntimeLike, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { MonoAgentHarness } from "../harness.js";
 import { createDurableHistoryStore, NativeHistoryAuthorityBusyError } from "../durable-history.js";
 import { switchConversationKey } from "../durable-model-switch-contract.js";
@@ -48,7 +48,8 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   const canonicalBytes = async (id = "fictional") => await readFile(join(historyRoot, `${switchConversationKey(id)}.history.json`));
   const canonical = async (id = "fictional") => JSON.parse(await readFile(join(historyRoot, `${switchConversationKey(id)}.history.json`), "utf8"));
   const journals = async () => await readdir(nativeRoot, { recursive: true }).then((entries) => entries.filter((entry) => entry.endsWith(".jsonl")));
-  const changes = async () => (await Promise.all((await journals()).map(async (entry) => (await readFile(join(nativeRoot, entry), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat().filter((record) => record.kind === "model_change");
+  // Completed switches are recorded only by the canonical receipt (no native model_change frames).
+  const changes = async () => { try { const record = await canonical(); return record.version === 5 && record.lastSwitch ? [record.lastSwitch] : []; } catch { return []; } };
   const seed = async (message = "Fictional source fact", delivery = "seed") => { const h = makeHarness(); faux.setResponses([text("Fictional A reply")]); const response = await h.run(request(delivery, message)); expect(response.failure).toBeUndefined(); await h.dispose(); return response; };
   return { base, identityPath, nativeRoot, historyRoot, faux, models, native, transport, store, makeStore, makeHarness, request, canonical, changes, journals, seed, inspect, retire, runtimes, runtimeFor, canonicalBytes, prepareCalls };
 }
@@ -81,8 +82,8 @@ it("private configured override prepares extensions once, emits one switch, and 
   const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }).run(f.request("delivery-001", "Fictional override", { metadata: { web: { model: "faux:B" } } }));
   expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional B reply"); expect(f.transport).toHaveBeenCalledTimes(3);
   expect(extension).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce(); expect(settleCleanup).toHaveBeenCalledOnce();
-  const record = await f.canonical(); expect(record.version).toBe(4); expect(record.providerSession).toMatchObject({ modelKey: "faux:B", revision: 1 });
-  expect(record.native.chain).toHaveLength(2); expect(record.lastCommit.turnId).toBe(result.metadata.runId); expect(record.native.projection).toEqual(record.lastSwitch.artifact);
+  const record = await f.canonical(); expect(record.version).toBe(5); expect(record.providerSession).toMatchObject({ modelKey: "faux:B", revision: 1 });
+  expect(await f.journals()).toHaveLength(1); expect(record.lastCommit.turnId).toBe(result.metadata.runId); expect(record.native.projection).toEqual(record.lastSwitch.artifact);
   const rows = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
   const operation = rows.find((row) => row.kind === "operation_start" && row.payload.config?.model?.id === "B");
   // Actual prepared credential is unsupported for the fictional transport, so
@@ -126,13 +127,12 @@ it("pending explicit message is neither appended nor admitted/queued; same deliv
   expect(f.transport).toHaveBeenCalledTimes(10); expect(await f.changes()).toHaveLength(1); expect((await f.store.load("fictional"))).toHaveLength(before.messages.length + 2);
 });
 
-it("pre-intent aggregate reservation refusal falls back without a paid summary", async () => {
-  const f = await fixture({ maxStoreBytes: 200000, maxStagedBytes: 200000 }); await f.seed();
-  f.faux.setResponses([text("Fictional capacity fallback")]); const result = await f.makeHarness("B", true).run(f.request("capacity"));
-  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional capacity fallback"); expect(f.transport).toHaveBeenCalledTimes(2);
-  expect(await f.changes()).toHaveLength(0); expect((await f.canonical()).version).toBe(3);
+it("pre-intent aggregate reservation refusal is a typed refusal, never a summary-less model change", async () => {
+  const f = await fixture({ maxStoreBytes: 200000, maxStagedBytes: 200000 }); await f.seed(); const before = await f.canonicalBytes();
+  f.faux.setResponses([text("Must not execute")]); const result = await f.makeHarness("B", true).run(f.request("capacity"));
+  expect(result.failure).toMatchObject({ kind: "handoff_budget_exceeded", message: expect.stringContaining("capacity") }); expect(f.transport).toHaveBeenCalledTimes(1);
+  expect(await f.changes()).toHaveLength(0); expect(await f.canonicalBytes()).toEqual(before);
 });
-
 it("owned native evidence corruption surfaces; it is never disguised as cold replay", async () => {
   const f = await fixture(); await f.seed();
   const path = join(f.nativeRoot, (await f.journals())[0]!); await writeFile(path, "{fictional-corrupt-record}\n");
@@ -179,7 +179,7 @@ it("post-P2 refresh refusal accounts admitted failure, never dispatches or retri
 it.each(["reset", "retention"])("upgraded private-switch fixture %s destroys the owned whole chain, not merely a guarded-denial success", async (kind) => {
   const f = await fixture(kind === "retention" ? { maxConversations: 1 } : {}); await f.seed();
   const h = f.makeHarness("B", true); f.faux.setResponses([text(summary), text("Fictional guarded reply")]);
-  expect((await h.run(f.request("upgraded"))).failure).toBeUndefined(); expect((await f.journals())).toHaveLength(2); await h.dispose();
+  expect((await h.run(f.request("upgraded"))).failure).toBeUndefined(); expect((await f.journals())).toHaveLength(1); await h.dispose();
   if (kind === "reset") { await f.store.reset("fictional"); expect(await f.journals()).toHaveLength(0); }
   else {
     f.faux.setResponses([text("Fictional retention successor")]); const successor = f.makeHarness("B");
@@ -205,20 +205,17 @@ it("flag-on unbound claim-wait cancellation reclaims ordinary continuity just li
 });
 
 it.each(["typed", "spoofed", "old-spoofed"])("%s capture-capacity errors cannot be confused with generic custom failures", async (kind) => {
-  const f = await fixture(); await f.seed();
-  const capture = f.native.captureEvidence.bind(f.native);
-  vi.spyOn(f.native, "captureEvidence").mockImplementationOnce(async (sources, context) => {
+  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+  vi.spyOn(f.native, "captureEvidence").mockImplementationOnce(async () => {
     if (kind !== "typed") throw Object.assign(new Error("Fictional custom failure"), { code: kind === "old-spoofed" ? "ERR_NATIVE_EVIDENCE_CAPACITY" : "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
-    // The actual native capture, not a mocked exception, enforces its chain cap.
-    return await capture(Array.from({ length: 33 }, () => sources[0]!), context);
+    throw new NativeEvidenceCapacityError();
   });
-  f.faux.setResponses([text("Fictional capacity cold reply")]);
+  f.faux.setResponses([text("Must not execute")]);
   const result = await f.makeHarness("B", true).run(f.request("capture-limit"));
-  if (kind === "typed") { expect(result.failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(2); }
-  else { expect(result.failure?.kind).toBe("Error"); expect(f.transport).toHaveBeenCalledTimes(1); }
-  expect((await f.canonical()).version).toBe(3); expect(await f.changes()).toHaveLength(0);
+  // Typed capacity is a handoff refusal; never a cold model change or a disguised success.
+  expect(result.failure?.kind).toBe(kind === "typed" ? "handoff_budget_exceeded" : "Error"); expect(f.transport).toHaveBeenCalledTimes(1);
+  expect(await f.canonicalBytes()).toEqual(before); expect(await f.changes()).toHaveLength(0);
 });
-
 it("real oversized inherited completed prefix is refused on the host path before intent or paid work", async () => {
   const f = await fixture({}, 32000); await f.seed("Fictional oversized inherited detail ".repeat(1600));
   const before = await f.canonicalBytes();
@@ -228,13 +225,13 @@ it("real oversized inherited completed prefix is refused on the host path before
   const owner = await f.store.beginProviderSessionPreparation("fictional", "prefix-read"); expect((await owner.read()).pending).toBeUndefined(); await owner.abort();
 });
 
-it.each(["checkpoint", "incoming", "pending"])("unavailable outgoing auth advances unbilled to %s", async (step) => {
+it.each(["incoming", "pending"])("unavailable outgoing auth advances unbilled to %s", async (step) => {
   const f = await fixture();
-  if (step !== "checkpoint") for (let i = 0; i < (step === "pending" ? 6 : 4); i++) await f.seed("Fictional older detail ".repeat(2600), `older-${i}`);
+  if (step === "pending") for (let i = 0; i < 6; i++) await f.seed("Fictional older detail ".repeat(2600), `older-${i}`);
   await f.seed("Fictional recent completed turn", "recent");
   const beforeCalls = f.transport.mock.calls.length, old = f.runtimeFor("A");
   const unavailable = vi.fn(async () => { throw new Error("Fictional unavailable old provider/auth"); }); old.prepareNativeDispatch = unavailable;
-  f.faux.setResponses(step === "incoming" ? [text(summary), text("Fictional incoming fallback reply")] : [text("Fictional checkpoint fallback reply")]);
+  f.faux.setResponses([text(summary), text("Fictional incoming fallback reply")]);
   const result = await f.makeHarness("B", true, { runtimeForModel: () => old }).run(f.request(`unavailable-${step}`));
   expect(unavailable).toHaveBeenCalledOnce();
   if (step === "pending") {
@@ -242,13 +239,13 @@ it.each(["checkpoint", "incoming", "pending"])("unavailable outgoing auth advanc
     const owner = await f.store.beginProviderSessionPreparation("fictional", "unavailable-read"); const state = (await owner.read()).pending!;
     expect(state.phase).toBe("pending"); expect(state.attempts).toHaveLength(0); await owner.abort();
   } else {
-    expect(result.failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(beforeCalls + (step === "incoming" ? 2 : 1));
+    // No prior structured summary: the free route is refused and incoming summarizes.
+    expect(result.failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(beforeCalls + 2);
     const owner = await f.store.beginProviderSessionPreparation("fictional", "producer-read"), record = await owner.read();
-    const cached = await owner.readHandoff(record.lastSwitch!.switchId, record.native!.projection!); expect(cached.artifact.producer).toBe(step); await owner.abort();
+    const cached = await owner.readHandoff(record.lastSwitch!.switchId, record.native!.projection!); expect(cached.artifact.producer).toBe("incoming"); await owner.abort();
     expect(await f.changes()).toHaveLength(1);
   }
 });
-
 it("root authority contention is typed/retryable, preserves evidence and publishes no intent; explicit retry after drain succeeds", async () => {
   const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
   const other = await f.store.beginProviderSessionPreparation("other-fictional", "other-owner");

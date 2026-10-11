@@ -1,4 +1,4 @@
-import type { TurnHistoryV4 } from "../../durable-model-switch-contract.js";
+import type { TurnHistoryV5 } from "../../durable-model-switch-contract.js";
 import type { ConversationHistoryTurnInspection } from "../../types.js";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
 type Mutable<T> = { -readonly [K in keyof T]: T[K] extends readonly (infer V)[] ? Mutable<V>[] : T[K] extends object ? Mutable<T[K]> : T[K] };
@@ -7,5 +7,7 @@ export const modelKey: string;
 export const timestamp: string;
 export function conversationKey(id: string): string;
 export function handleId(id: string, epoch: string): string;
-export function canonicalRecord(id?: string): Mutable<TurnHistoryV4>;
+export function journalId(id: string, epoch: string): string;
+export function canonicalRecord(id?: string): Mutable<TurnHistoryV5>;
+export function preReleaseV4Record(id?: string): Record<string, unknown>;
 export function evidence(request: ConversationHistoryTurnInspection): RuntimeSessionTurnReconciliationResult;

@@ -82,6 +82,7 @@ async function fixture(enabled = true) {
   return { faux, transport, leaseRuns, make, send, reply, record, journals, contexts, summaryCalls: () => transport.mock.calls.filter(([, context]) => isSummary(context)).length };
 }
 const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+const ownJournals = async (directory: string) => (await readdir(directory)).filter((name) => name.endsWith(".jsonl") && !(name in foreign));
 const summary = JSON.stringify({ intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] });
 
 it("v3: a deleted current journal recovers on canonical replay with one dispatch and one warning; the next turn is warm on the new epoch", async () => {
@@ -112,13 +113,13 @@ it("v3: a deleted current journal recovers on canonical replay with one dispatch
   expect(next.messages).toHaveLength(6);
 }, 20_000);
 
-it("v4: a deleted current journal after a switch takes current-only C; predecessors and the switch receipt are untouched", async () => {
+it("v5: a deleted current journal after a switch recovers same-model on canonical replay; the switch receipt is untouched", async () => {
   const f = await fixture(), first = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional recovered B answer"), f.reply("Fictional warm B answer")]);
   await f.send(first, "fictional-seed", "A"); await f.send(first, "fictional-switch", "B");
-  const before = await f.record(); expect(before.version).toBe(4); expect(before.native.chain).toHaveLength(2);
-  const predecessor = join(f.journals, `${before.native.chain[0].journalId}.jsonl`), predecessorBytes = await readFile(predecessor);
-  await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
+  const before = await f.record(); expect(before.version).toBe(5);
+  const [current] = await ownJournals(f.journals); expect(await ownJournals(f.journals)).toHaveLength(1);
+  await unlink(join(f.journals, current!));
   await first.dispose();
   const reopened = await f.make(), recovered = await f.send(reopened, "fictional-after-loss", "B");
   expect(recovered.text).toBe("Fictional recovered B answer");
@@ -128,15 +129,12 @@ it("v4: a deleted current journal after a switch takes current-only C; predecess
   expect(occurrences(replay, "Fictional input fictional-seed")).toBe(1); expect(occurrences(replay, "Fictional B answer")).toBe(1);
   expect(replay).not.toContain("Historical handoff");
   const after = await f.record();
-  expect(after.native.chain).toHaveLength(2); expect(after.native.chain[0]).toEqual(before.native.chain[0]);
-  expect(after.native.chain[1].journalId).not.toBe(before.native.chain[1].journalId);
   expect(after.lastSwitch).toEqual(before.lastSwitch); expect(after.providerSession.modelKey).toBe("openai-codex:B");
-  expect(await readFile(predecessor)).toEqual(predecessorBytes);
+  expect(after.providerSession.epoch).not.toBe(before.providerSession.epoch); expect(await ownJournals(f.journals)).toHaveLength(1);
   const warm = await f.send(reopened, "fictional-warm", "B");
   expect(warm).toMatchObject({ text: "Fictional warm B answer", streamed: [], returned: [] });
   expect((await f.record()).providerSession).toMatchObject({ epoch: after.providerSession.epoch, revision: 2 });
   expect(occurrences(f.contexts()[4]!, "Fictional input fictional-seed")).toBe(1);
-  expect(await readFile(predecessor)).toEqual(predecessorBytes);
 }, 20_000);
 
 it("a native-bound no-ID wake whose current journal is missing recovers through the same owned boundary", async () => {
@@ -144,115 +142,62 @@ it("a native-bound no-ID wake whose current journal is missing recovers through 
   f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional wake answer")]);
   await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
   const before = await f.record();
-  await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
+  for (const name of await ownJournals(f.journals)) await unlink(join(f.journals, name));
   const woke = await f.send(h, undefined, "B");
   expect(woke.text).toBe("Fictional wake answer"); expect(woke.streamed).toEqual(["degraded_native_context"]);
   const after = await f.record();
-  expect(after.native.chain[0]).toEqual(before.native.chain[0]); expect(after.lastSwitch).toEqual(before.lastSwitch);
+  expect(after.lastSwitch).toEqual(before.lastSwitch);
   expect(after.providerSession.modelKey).toBe("openai-codex:B"); expect(after.messages).toHaveLength(6);
   expect(f.leaseRuns.at(-1)).toBe("B"); expect(occurrences(f.contexts()[3]!, "Fictional input fictional-seed")).toBe(1);
 }, 20_000);
 
-it("a switch request whose current journal is missing takes the owned cold model change instead of capturing absent evidence", async () => {
+it("a switch request whose current journal is missing summarizes canonical history through the same handoff order", async () => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional return answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply(summary), f.reply("Fictional return answer")]);
   await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
-  const before = await f.record(), predecessor = join(f.journals, `${before.native.chain[0].journalId}.jsonl`), predecessorBytes = await readFile(predecessor);
-  await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
+  const before = await f.record();
+  for (const name of await ownJournals(f.journals)) await unlink(join(f.journals, name));
   const returned = await f.send(h, "fictional-return", "A");
   expect(returned.text).toBe("Fictional return answer");
-  expect(returned.streamed).toEqual(["degraded_native_context"]); expect(returned.returned).toHaveLength(1);
   const after = await f.record();
-  expect(after.lastSwitch).toMatchObject({ kind: "cold" }); expect(after.providerSession.modelKey).toBe("openai-codex:A");
-  expect(after.native.chain).toHaveLength(2); expect(await readFile(predecessor)).toEqual(predecessorBytes);
-  expect(f.summaryCalls()).toBe(1); expect(f.transport).toHaveBeenCalledTimes(4); // no summary for the cold change
-  expect(occurrences(f.contexts()[3]!, "Fictional B answer")).toBe(1);
+  expect(after.lastSwitch.switchId).not.toBe(before.lastSwitch.switchId); expect(after.lastSwitch.artifact).toEqual(after.native.projection);
+  expect(after.providerSession.modelKey).toBe("openai-codex:A"); expect(await ownJournals(f.journals)).toHaveLength(1);
+  // Outgoing B summarizes the canonical evidence; never a summary-less change.
+  expect(f.summaryCalls()).toBe(2); expect(f.transport).toHaveBeenCalledTimes(5);
+  expect(f.contexts()[3]).toContain("Fictional B answer"); expect(f.leaseRuns.at(-1)).toBe("A");
 }, 20_000);
 
-it("a first switch from a v3 conversation whose current journal is missing rotates cold with canonical replay", async () => {
+it("a first switch from a v3 conversation whose current journal is missing takes the summary handoff, never a cold replay", async () => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer")]);
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer")]);
   await f.send(h, "fictional-seed", "A");
   for (const name of await readdir(f.journals)) await unlink(join(f.journals, name));
   const switched = await f.send(h, "fictional-switch", "B");
-  expect(switched.text).toBe("Fictional B answer"); expect(switched.streamed).toEqual(["degraded_native_context"]);
-  expect(occurrences(f.contexts()[1]!, "Fictional A answer")).toBe(1); expect(f.summaryCalls()).toBe(0);
-  expect((await f.record()).providerSession.modelKey).toBe("openai-codex:B");
+  expect(switched.text).toBe("Fictional B answer"); expect(f.summaryCalls()).toBe(1);
+  expect(f.contexts()[1]).toContain("Fictional A answer");
+  const after = await f.record(); expect(after.version).toBe(5); expect(after.providerSession.modelKey).toBe("openai-codex:B");
+  expect(await ownJournals(f.journals)).toHaveLength(1);
 }, 20_000);
 
 it.each([
   ["v3 header", 3, (lines: string[]) => ["{not json", ...lines.slice(1)]],
   ["v3 record", 3, (lines: string[]) => [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)]],
-  ["v4 record", 4, (lines: string[]) => [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)]],
-] as const)("an unreadable %s current journal fails closed with a typed refusal, never as missing", async (_kind, version, corrupt) => {
+  ["v5 record", 5, (lines: string[]) => [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)]],
+  ["v5 record on a switch", 5, (lines: string[]) => [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)]],
+] as const)("an unreadable %s current journal fails closed with a typed refusal, never as missing", async (kind, version, corrupt) => {
   const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional never answer")]);
-  await f.send(h, "fictional-seed", "A"); if (version === 4) await f.send(h, "fictional-switch", "B");
-  const before = await f.record(), current = version === 4 ? `${before.native.chain.at(-1).journalId}.jsonl` : (await readdir(f.journals))[0]!;
+  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional never answer")]);
+  await f.send(h, "fictional-seed", "A"); if (version === 5) await f.send(h, "fictional-switch", "B");
+  const before = await f.record(), current = (await ownJournals(f.journals))[0]!;
   const bytes = corrupt((await readFile(join(f.journals, current), "utf8")).split("\n")).join("\n");
   await writeFile(join(f.journals, current), bytes);
   const calls = f.transport.mock.calls.length;
-  const refused = await f.send(h, "fictional-after-corruption", version === 4 ? "B" : "A");
+  const refused = await f.send(h, "fictional-after-corruption", version === 5 && !kind.endsWith("switch") ? "B" : "A");
   expect(refused).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
   expect(f.transport).toHaveBeenCalledTimes(calls);
+  expect((await readdir(join(f.journals, "..", "..", "..", "history"))).some((name) => name.startsWith(".native-history-op"))).toBe(false);
   expect(await readFile(join(f.journals, current), "utf8")).toBe(bytes);
   expect(await f.record()).toEqual(before);
-}, 20_000);
-
-it("a lost predecessor never affects same-model turns; a return into it takes the owned cold change, never a handoff from lost bytes", async () => {
-  const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional same answer"), f.reply("Fictional return answer")]);
-  await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
-  const before = await f.record();
-  await unlink(join(f.journals, `${before.native.chain[0].journalId}.jsonl`));
-  expect(await f.send(h, "fictional-same", "B")).toMatchObject({ text: "Fictional same answer", streamed: [] });
-  const kept = await f.record(); expect(kept.native.chain).toEqual(before.native.chain);
-  const switches = await readdir(join(f.journals, "..", "..", "..", "history", ".model-switches")).catch(() => [] as string[]);
-  const returned = await f.send(h, "fictional-return", "A");
-  expect(returned.text).toBe("Fictional return answer");
-  expect(returned.streamed).toEqual(["degraded_native_context"]); expect(returned.returned).toHaveLength(1);
-  const after = await f.record();
-  expect(after.lastSwitch).toMatchObject({ kind: "cold", artifact: null }); expect(after.providerSession.modelKey).toBe("openai-codex:A");
-  expect(after.native.chain).toHaveLength(2); expect(after.native.chain[0]).toEqual(before.native.chain[0]);
-  // The return makes no summary or switch intent; canonical replay instead of a handoff.
-  expect(f.summaryCalls()).toBe(1); expect(f.transport).toHaveBeenCalledTimes(5);
-  expect(await readdir(join(f.journals, "..", "..", "..", "history", ".model-switches")).catch(() => [] as string[])).toEqual(switches);
-  const replay = f.contexts()[4]!;
-  expect(replay).not.toContain("Historical handoff"); expect(occurrences(replay, "Fictional same answer")).toBe(1);
-  expect(occurrences(replay, "Fictional input fictional-seed")).toBe(1);
-}, 20_000);
-
-// Whole-chain loss in place; a deleted/moved native ROOT is the fresh-process
-// kill-worker case (an in-process directory replacement fails closed by design).
-it("whole-chain loss (current and every predecessor) recovers on the next message without a reset", async () => {
-  const f = await fixture(), first = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional recovered answer"), f.reply("Fictional warm answer")]);
-  await f.send(first, "fictional-seed", "A"); await f.send(first, "fictional-switch", "B");
-  const before = await f.record();
-  await first.dispose(); for (const name of await readdir(f.journals)) await unlink(join(f.journals, name));
-  const reopened = await f.make(), recovered = await f.send(reopened, "fictional-after-loss", "B");
-  expect(recovered.text).toBe("Fictional recovered answer"); expect(recovered.streamed).toEqual(["degraded_native_context"]);
-  expect(occurrences(f.contexts()[3]!, "Fictional input fictional-seed")).toBe(1); expect(occurrences(f.contexts()[3]!, "Fictional B answer")).toBe(1);
-  const after = await f.record();
-  expect(after.native.chain).toHaveLength(2); expect(after.native.chain[0]).toEqual(before.native.chain[0]);
-  expect(after.lastSwitch).toEqual(before.lastSwitch);
-  expect(await f.send(reopened, "fictional-warm", "B")).toMatchObject({ text: "Fictional warm answer", streamed: [] });
-  expect((await f.record()).providerSession).toMatchObject({ epoch: after.providerSession.epoch, revision: 2 });
-}, 20_000);
-
-it.each(["switch", "lost current"] as const)("a corrupt predecessor refuses typed before any intent (%s)", async (variant) => {
-  const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional never answer")]);
-  await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
-  const before = await f.record(), path = join(f.journals, `${before.native.chain[0].journalId}.jsonl`);
-  const lines = (await readFile(path, "utf8")).split("\n"), bytes = [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n");
-  await writeFile(path, bytes);
-  if (variant === "lost current") await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
-  const calls = f.transport.mock.calls.length;
-  expect(await f.send(h, "fictional-refused", variant === "switch" ? "A" : "B")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
-  expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
-  expect(await readFile(path, "utf8")).toBe(bytes);
-  expect((await readdir(join(f.journals, "..", "..", "..", "history"))).some((name) => name.startsWith(".native-history-op"))).toBe(false);
 }, 20_000);
 
 it("v3: a staged-only restore of the current journal refuses typed and is never rotated or reclaimed", async () => {
@@ -289,23 +234,6 @@ it("v3: an unattributable damaged journal blocks only the missing verdict; once 
   expect((await readdir(f.journals)).filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
 }, 20_000);
 
-it("v4: a valid but older restored predecessor refuses typed before any C intent when the current is lost", async () => {
-  const f = await fixture(), h = await f.make();
-  f.faux.setResponses([f.reply("Fictional A answer"), f.reply("Fictional B answer"), f.reply("Fictional never answer")]);
-  await f.send(h, "fictional-seed", "A"); await f.send(h, "fictional-switch", "B");
-  const before = await f.record(), predecessor = join(f.journals, `${before.native.chain[0].journalId}.jsonl`);
-  // Partial restore: the predecessor's own valid prefix, before its model-change frames.
-  const restored = (await readFile(predecessor, "utf8")).trim().split("\n").slice(0, -3).join("\n") + "\n";
-  await writeFile(predecessor, restored); await unlink(join(f.journals, `${before.native.chain[1].journalId}.jsonl`));
-  const calls = f.transport.mock.calls.length;
-  for (const attempt of ["fictional-after-restore", "fictional-again"]) {
-    expect(await f.send(h, attempt, "B")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
-  }
-  expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
-  expect(await readFile(predecessor, "utf8")).toBe(restored);
-  expect((await readdir(join(f.journals, "..", "..", "..", "history"))).some((entry) => entry.startsWith(".native-history-op"))).toBe(false);
-}, 20_000);
-
 it("OFF keeps the ordinary session-resume replay for a missing journal, without the prepared probe or degradation warning", async () => {
   const f = await fixture(false), first = await f.make();
   f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional replayed answer")]);
@@ -328,7 +256,6 @@ async function plant(directory: string, entries: Record<string, string>) {
 async function untouched(directory: string, entries: Record<string, string>) {
   for (const [name, text] of Object.entries(entries)) expect(await readFile(join(directory, name), "utf8")).toBe(text);
 }
-const ownJournals = async (directory: string) => (await readdir(directory)).filter((name) => name.endsWith(".jsonl") && !(name in foreign));
 
 it.each([true, false])("stray entries never block present or missing journals, and reset leaves them (opt-in=%s)", async (enabled) => {
   const f = await fixture(enabled), first = await f.make();

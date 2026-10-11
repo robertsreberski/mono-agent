@@ -1,5 +1,4 @@
-import { dirname } from "node:path";
-import { copyFile, truncate, writeFile } from "node:fs/promises";
+import { truncate, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,7 +15,7 @@ async function root() { const path = await mkdtemp(join(tmpdir(), "mono-prepared
 async function markers(path: string) { return (await readdir(join(path, ".locks"))).filter((name) => name.endsWith(".active")); }
 function artifact(f: Awaited<ReturnType<typeof fixture>>) {
   return { version: 1, policy: "mono-handoff-v1",
-    coverage: f.state.identity.sources.map(({ ordinal, epoch: _epoch, ...entry }) => ({ ...entry, epoch: ordinal })),
+    coverage: f.state.identity.source ? [(({ epoch: _epoch, ...entry }) => entry)(f.state.identity.source)] : [],
     summary: null, checkpoint: null, recent: [], ledger: [], retainedIds: [], producer: "checkpoint", timestamp: f.state.identity.timestamp,
     target: f.state.identity.targetProvenance, budget: f.budget };
 }
@@ -85,13 +84,13 @@ it("publishes a ready switch and admits B under the original owner without execu
   const lease = await prep.beginModelSwitchStorage(f.state); if (lease.status !== "owned") throw new Error("Expected switch lease");
   await lease.advanceUnfit(); const reference = await lease.accept(artifact(f));
   expect(await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
-  const snapshot = await prep.read(); expect(snapshot.native?.chain).toHaveLength(2); expect(snapshot.lastSwitch?.artifact).toEqual(reference);
+  const snapshot = await prep.read(); expect(snapshot.native?.projection).toEqual(reference); expect(snapshot.lastSwitch?.artifact).toEqual(reference);
   const turn = await prep.admit({ modelKey: "faux:B" }); expect(turn.modelKey).toBe("faux:B"); expect(turn.providerSessionRevision).toBe(0);
   expect(await markers(join(f.base, "history"))).toEqual(original); await prep.abort(); await turn.assertOwned();
   await expect(lease.read()).rejects.toThrow("no longer owned");
   if (authority.status === "owned") await expect(authority.assertOwned()).rejects.toThrow("no longer owned");
   await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
-  const canonical = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(canonical.native.projection).toEqual(reference); expect(canonical.native.chain).toHaveLength(2);
+  const canonical = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(canonical.native.projection).toEqual(reference); expect(canonical.version).toBe(5);
   expect(await markers(join(f.base, "history"))).toEqual([]);
 });
 
@@ -110,7 +109,7 @@ it("requires canonical ready publication before admission and refuses rotation b
 it("keeps native publication outside the root lock while retaining the prepared conversation claim", async () => {
   const f = await fixture(await root()), other = createDurableHistoryStore({ root: join(f.base, "history") }); let observed = false;
   const { store } = openStore(f.base, async (phase) => {
-    if (phase !== "header_stage_created") return;
+    if (phase !== "epoch_stage_created") return;
     await prep.assertOwned();
     const append = other.append("unrelated", [{ role: "user", content: "Independent owner" }]);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -257,85 +256,82 @@ it("rejects changed frozen budget before intent publication and captures complet
   await expect(prep.beginModelSwitchStorage({ ...f.state, frozenBudget: { ...frozenBudget(f), inputTokens: 999 } })).rejects.toThrow();
   expect((await prep.read()).pending).toBeUndefined();
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: "not-legacy-proof" });
-  expect(captured.sources[0]!.provenance.account).toBeNull(); expect(captured.view.segments[0]!.entries.length).toBeGreaterThan(0);
-  expect(captured.view.segments[0]!.records.length).toBe(captured.sources[0]!.sourceSeq);
+  expect(captured.source!.provenance.account).toBeNull(); expect(captured.view.segments[0]!.entries.length).toBeGreaterThan(0);
+  expect(captured.view.segments[0]!.records.length).toBe(captured.source!.sourceSeq);
   expect(Object.isFrozen(captured.view.segments[0]!.records)).toBe(true); expect(await readFile(f.nativePath)).toEqual(f.original);
   await prep.abort();
 });
-it("captures the whole switched chain read-only and exposes typed pure handoff preparation", async () => {
-  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "whole-chain"), lease = await prep.beginModelSwitchStorage(f.state);
+it("captures only the current journal plus the inherited prior handoff, read-only, and exposes typed pure handoff preparation", async () => {
+  const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "current-only"), lease = await prep.beginModelSwitchStorage(f.state);
   if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
   await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "B", api: "faux-api", account: "unproven" });
-  expect(captured.sources).toHaveLength(2); expect(captured.view.segments).toHaveLength(2);
+  expect(captured.view.segments).toHaveLength(1); expect(captured.source!.epoch).toBe(f.state.identity.targetEpoch);
+  expect(captured.view.prior).toEqual(JSON.parse(JSON.stringify(artifact(f))));
   const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] } };
-  expect(f.native.prepareHandoff(captured.view, options).status).toBe("prepared");
-  const proposal = f.native.buildHandoff(captured.view, options); expect(proposal.status).toBe("ready"); expect(JSON.stringify(proposal)).toContain("Fictional source fact");
+  const prepared = f.native.prepareHandoff(captured.view, options);
+  expect(prepared.status).toBe("prepared"); expect(JSON.stringify(prepared)).toContain("prior");
+  // The prior artifact has no validated structured summary: no free route.
+  expect(f.native.buildHandoff(captured.view, options)).toMatchObject({ status: "summary_required" });
   expect("projectChain" in f.native).toBe(false); // no native-envelope projection across a model change
   expect(() => f.native.prepareHandoff(structuredClone(captured.view), options)).toThrow("unvalidated view");
   const tiny = f.native.createBudget({ contextWindow: 20000, inputTokens: 100, outputReserve: 4096, hostContext: options.hostContext });
   expect(f.native.prepareHandoff(captured.view, { ...options, budget: tiny })).toMatchObject({ status: "budget_failure" });
   await prep.abort();
 });
-it("captures and hands off composed checkpoints whose exact inherited prefix predates the switch reference frame", async () => {
+it("captures and hands off composed checkpoints covering exactly the inherited prior handoff", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "composed"), lease = await prep.beginModelSwitchStorage(f.state);
   if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
   await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
-  const snapshot = await prep.read();
+  const snapshot = await prep.read(), { createHash } = await import("node:crypto");
+  const handleId = createHash("sha256").update("mono-agent-provider-session-v2\0").update(bucket).update("\0").update(f.state.identity.targetEpoch).digest("hex");
   const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
-  const metadata = (await repo.list()).find((entry) => entry.id === snapshot.native!.chain.at(-1)!.handleId)!;
+  const metadata = (await repo.list()).find((entry) => entry.id === handleId)!;
   const current = await repo.open(metadata); current.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: snapshot.native!.authority });
   await current.appendCompaction({ summary: "Fictional inherited checkpoint", tokensBefore: 10, retainedTail: [] }, { version: 1,
-    sources: f.state.identity.sources.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }, { sourceTipId: current.tip, sourceSeq: current.seq });
+    sources: [f.state.identity.source!].map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }, { sourceTipId: current.tip, sourceSeq: current.seq });
   await current.sync(); await current.close(); await repo.close();
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "B", api: "faux-api", account: null });
-  expect(captured.view.segments[1]!.entries.at(-1)?.type).toBe("compaction");
-  const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] } };
+  expect(captured.view.segments[0]!.entries.at(-1)?.type).toBe("compaction");
+  const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] }, summary: {
+    intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] } };
   expect(f.native.buildHandoff(captured.view, options).status).toBe("ready");
   const { createEvidenceView, evidenceDigest } = await import("@mono-agent/harness");
   const forged = JSON.parse(JSON.stringify(captured.view));
-  forged.segments[1].records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
-  forged.segments[1].descriptor.sourceDigest = evidenceDigest(forged.segments[1].records);
+  forged.segments[0].records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
+  forged.segments[0].descriptor.sourceDigest = evidenceDigest(forged.segments[0].records);
   expect(() => createEvidenceView(forged)).toThrow("composed coverage");
   await prep.abort();
 });
-
-
-it("capture rejects excess chain count and aggregate/single journal bytes before allocating or scanning records", async () => {
+it("capture rejects oversized journal bytes before allocating or scanning records", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "bounded-capture");
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
-  const source = captured.sources[0]!;
+  const source = captured.source!;
   const context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
   const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"); const scan = vi.spyOn(JournalReader.prototype, "scan");
-  await expect(f.native.captureEvidence(Array.from({ length: 33 }, () => source), context)).rejects.toThrow("journal/chain limit");
   await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
-  await expect(f.native.captureEvidence([source], context)).rejects.toThrow("journal/chain limit");
-  await truncate(f.nativePath, 8 * 1024 * 1024 + 1);
-  const extra = join(dirname(f.nativePath), "fictional-extra.jsonl"); await copyFile(f.nativePath, extra);
-  await expect(f.native.captureEvidence([source, { ...source, ordinal: 1, predecessorJournalId: source.journalId, journalId: "fictional-extra" }], context)).rejects.toThrow("journal/chain limit");
+  await expect(f.native.captureEvidence(source, context)).rejects.toThrow("byte limit");
   expect(scan).not.toHaveBeenCalled(); scan.mockRestore();
   await writeFile(f.nativePath, f.original);
   const original = JournalReader.prototype.scan;
   const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit, options) {
     await truncate(f.nativePath, 16 * 1024 * 1024 + 1); return original.call(this, visit, options);
   });
-  await expect(f.native.captureEvidence([source], context)).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
+  await expect(f.native.captureEvidence(source, context)).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
   expect(growing).toHaveBeenCalledOnce(); growing.mockRestore(); await prep.abort();
 });
-
-
 it("capture maps missing and other filesystem errors to generic unavailable without target paths or causes", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "generic-capture");
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
-  const source = captured.sources[0]!, context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
-  const check = async (sources: typeof captured.sources): Promise<void> => {
-    const error = await f.native.captureEvidence(sources, context).catch((value: unknown) => value);
+  const source = captured.source!, context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
+  const check = async (candidate: typeof source): Promise<void> => {
+    const error = await f.native.captureEvidence(candidate, context).catch((value: unknown) => value);
     expect(error).toBeInstanceOf(Error); expect((error as Error).message).toBe("Managed native journal evidence changed or is unavailable");
     expect((error as Error).message).not.toContain(f.nativePath); expect(error).not.toHaveProperty("path"); expect(error).not.toHaveProperty("cause");
   };
-  await check([{ ...source, journalId: "fictional-missing" }]); // lstat ENOENT
-  await check([{ ...source, journalId: "j".repeat(4096) }]); // other preflight filesystem failure
+  await check({ ...source, journalId: "fictional-missing" }); // lstat ENOENT
+  await check({ ...source, journalId: "j".repeat(4096) }); // other preflight filesystem failure
   const { JournalReader } = await import("@mono-agent/harness/journal-reader.js");
   const scan = vi.spyOn(JournalReader.prototype, "scan").mockRejectedValueOnce(Object.assign(new Error(`EACCES: ${f.nativePath}`), { code: "EACCES", path: f.nativePath }));
-  await check([source]); scan.mockRestore(); await prep.abort();
+  await check(source); scan.mockRestore(); await prep.abort();
 });

@@ -126,14 +126,15 @@ export class ModelSwitchPayloadStore {
     }
     await this.assertDirectory(directory); return bytes;
   }
-  /** Whole-owner D cleanup only. The durable host intent retains membership;
-   * fences are removed first so interrupted collection cannot leave dangling
-   * pointers that poison unrelated inventory. Exact-coordinate orphan temps
-   * are authorized like pending-turn reset generations, never guessed owners. */
-  async removeConversation(bucket: string, ownerKey: string, assertOwned: () => Promise<void>, onPhase: (phase: string) => Promise<void>): Promise<void> {
+  /** Whole-owner D cleanup, or (with `keep`) removal of earlier switches once a
+   * newer canonical receipt supersedes them. The durable host intent retains
+   * membership; fences are removed first so interrupted collection cannot leave
+   * dangling pointers that poison unrelated inventory. Exact-coordinate orphan
+   * temps are authorized like pending-turn reset generations, never guessed owners. */
+  async removeConversation(bucket: string, ownerKey: string, assertOwned: () => Promise<void>, onPhase: (phase: string) => Promise<void>, keep?: string): Promise<void> {
     const directory = await this.ensureDirectory(false); if (!directory) return;
     const prefix = `${switchConversationKey(bucket)}.`;
-    const names = (await readdir(this.directory)).filter((name) => name.startsWith(prefix));
+    const names = (await readdir(this.directory)).filter((name) => name.startsWith(prefix) && (keep === undefined || !name.startsWith(`${prefix}${keep}.`)));
     const inspected: { name: string; identity: Stats }[] = [];
     for (const name of names) {
       if (!filePattern.test(name)) unavailable();
@@ -384,7 +385,7 @@ export class ModelSwitchPayloadStore {
   }
   private validateProposal(state: ModelSwitchState, artifact: Record<string, unknown>): void {
     switchObject(artifact); switchKeys(artifact, ["version", "policy", "coverage", "summary", "checkpoint", "recent", "ledger", "retainedIds", "producer", "timestamp", "target", "budget"]);
-    const sources = state.identity.sources.map(({ ordinal, epoch: _epoch, ...source }) => ({ ...source, epoch: ordinal }));
+    const sources = state.identity.source ? [(({ epoch: _epoch, ...source }) => source)(state.identity.source)] : [];
     if (artifact.version !== 1 || artifact.policy !== state.identity.projectionPolicy || !Array.isArray(artifact.recent) || !Array.isArray(artifact.ledger)
       || !Array.isArray(artifact.retainedIds) || artifact.timestamp !== state.identity.timestamp || !["outgoing", "checkpoint", "incoming"].includes(artifact.producer as string)
       || switchDigest(artifact.coverage) !== switchDigest(sources) || switchDigest(artifact.budget) !== state.identity.frozenBudgetDigest
@@ -424,7 +425,7 @@ export class ModelSwitchPayloadStore {
     const directory = await this.ensureDirectory(false); if (directory) await this.syncDirectory(this.directory, directory);
   }
   /** Canonical/native publication precedes fence release. Retain the winning
-   * ready attempt/content for reference lifetime and whole-chain D deletion. */
+   * ready attempt/content for reference lifetime and D deletion. */
   async complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
     await owner.withRootTransaction(async () => {
       await this.owner(owner); const current = await this.read(bucket, switchId);

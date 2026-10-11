@@ -98,7 +98,8 @@ it("fresh opt-in Web conversation records lease provenance from its first epoch;
   await h.respond(f.request("fictional-return-a", "A"), { append: async () => {} });
   const canonical = await f.record(), artifacts = await f.artifacts();
   // Matching provider, API and account no longer reuse native envelopes.
-  expect(canonical.native.chain).toHaveLength(3); expect(canonical.providerSession.modelKey).toBe(`${provider}:A`);
+  expect(canonical.version).toBe(5); expect(canonical.providerSession.modelKey).toBe(`${provider}:A`);
+  expect(artifacts).toHaveLength(1); // exactly one durable handoff remains
   expect(artifactOf(artifacts, canonical.lastSwitch.switchId)).toMatchObject({ producer: "outgoing", summary: expect.any(Object) });
   expect(artifacts.every((entry) => !Object.hasOwn(entry.artifact, "nativeProjection"))).toBe(true);
   expect(f.summaryCalls()).toBe(2); expect(f.transport).toHaveBeenCalledTimes(5);
@@ -132,7 +133,7 @@ it("caller provenance and flags are ignored; a mixed-provenance first epoch stay
   f.faux.setResponses([f.reply(summary), f.reply("Fictional B answer")]);
   await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
   const canonical = await f.record();
-  expect(canonical.native.chain[0].provenance.account).toBeNull(); // mixed epoch: unknown, never inferred
+  expect(JSON.stringify(await f.artifacts())).not.toContain("forged");
   expect(artifactOf(await f.artifacts(), canonical.lastSwitch.switchId)).toMatchObject({ producer: "outgoing" }); expect(f.summaryCalls()).toBe(1);
   expect(JSON.stringify(canonical)).not.toContain("forged");
 });
@@ -194,20 +195,19 @@ it("fresh responder reopens the retained opt-in journal for the next persisted W
   expect(retire.mock.calls.filter(([id]) => id === header.id)).toEqual([]); expect(remove.mock.calls.filter(([metadata]) => metadata.id === header.id)).toEqual([]);
   expect((await f.record()).messages).toHaveLength(4);
 }, 20_000);
-it("a second same-model persisted Web turn after a v4 switch retains every predecessor and the current journal", async () => {
+it("a second same-model persisted Web turn after a v5 switch keeps the single current journal", async () => {
   const f = await fixture(), h = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional second B answer")]);
   await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
   await h.respond(f.request("fictional-switch", "B"), { append: async () => {} });
-  const before = await f.record(); expect(before.version).toBe(4);
-  const journals = join(f.root, "native", "mono-v2", "journals"), predecessor = before.native.chain[0], current = before.native.chain.at(-1);
-  const previousBytes = await readFile(join(journals, `${predecessor.journalId}.jsonl`)), currentBytes = await readFile(join(journals, `${current.journalId}.jsonl`));
+  const before = await f.record(); expect(before.version).toBe(5);
+  const journals = join(f.root, "native", "mono-v2", "journals"), [current] = (await readdir(journals)).filter((name) => name.endsWith(".jsonl"));
+  const currentBytes = await readFile(join(journals, current!));
   const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete");
   expect((await h.respond(f.request("fictional-second-b", "B"), { append: async () => {} })).text).toBe("Fictional second B answer");
-  expect(await readFile(join(journals, `${predecessor.journalId}.jsonl`))).toEqual(previousBytes);
-  expect((await readFile(join(journals, `${current.journalId}.jsonl`))).subarray(0, currentBytes.length)).toEqual(currentBytes);
-  expect(retire.mock.calls.filter(([id]) => [predecessor.handleId, current.handleId].includes(id))).toEqual([]);
-  expect(remove.mock.calls.filter(([metadata]) => [predecessor.handleId, current.handleId].includes(metadata.id))).toEqual([]);
+  expect((await readdir(journals)).filter((name) => name.endsWith(".jsonl"))).toEqual([current]);
+  expect((await readFile(join(journals, current!))).subarray(0, currentBytes.length)).toEqual(currentBytes);
+  expect(retire).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
   const after = await f.record(); expect(after.messages).toHaveLength(6); expect(after.lastSwitch).toEqual(before.lastSwitch);
   expect(f.transport).toHaveBeenCalledTimes(4); expect(f.summaryCalls()).toBe(1); // only the A -> B handoff
 }, 20_000);

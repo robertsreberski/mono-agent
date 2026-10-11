@@ -139,22 +139,6 @@ it("refuses a composed cut retaining predecessor envelopes rather than copying t
   await driver.close();
 });
 
-it("rejects a stale uncoordinated warm mapping before repairing a newly guarded torn tail", async () => {
-  const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("legacy first turn")]));
-  f.faux.setResponses([provider, provider]);
-  const opts = f.options(); delete opts.nativeSessionAuthority; delete opts.nativeSessionProjection;
-  expect((await generatePiNativeResponse("Rules", opts)).error).toBeNull();
-  const repo = new JsonlSessionRepo({ sessionsRoot: f.root });
-  const meta = (await repo.list())[0];
-  await repo.upgradeHeader(meta, { hostAuthority, assertOwned: async () => {} });
-  await appendFile(meta.path, '{"schemaVersion":3');
-  const before = await readFile(meta.path);
-  const result = await generatePiNativeResponse("Rules", { ...opts, sessionTurn: { ...opts.sessionTurn, turnId: "turn-2", baseRevision: 1,
-    reconciliation: { ...opts.sessionTurn.reconciliation, initialInputId: "input-2" } } });
-  expect(result.failureKind).toBe("safety_native_session_authority"); expect(provider).toHaveBeenCalledOnce();
-  expect(await readFile(meta.path)).toEqual(before);
-});
-
 it("denies current-handle creation before publishing a guarded header", async () => {
   const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
   f.assertCurrent.mockImplementation(async ({ action }) => { if (action === "create") throw new Error("Creation is not authorized"); });
@@ -244,19 +228,6 @@ it("pins the native root in authority and passes the actual root to the held own
   opts.nativeSessionAuthority.sessionsRoot = f.root + "-other";
   expect((await generatePiNativeResponse("Rules", opts)).failureKind).toBe("safety_native_session_authority");
   expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(before);
-});
-
-it("legacy terminal recovery refuses a newly guarded journal before torn-tail repair", async () => {
-  const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("legacy reply")])]);
-  const opts = f.options(); delete opts.nativeSessionAuthority; delete opts.nativeSessionProjection; delete opts.sessionTurn;
-  opts.sessionRecovery = { runId: "legacy-run", revision: 1 };
-  const result = await generatePiNativeResponse("Rules", opts); expect(result.providerSessionRecovery).toBeDefined();
-  const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), meta = (await repo.list())[0];
-  await repo.upgradeHeader(meta, { hostAuthority, assertOwned: async () => {} });
-  await appendFile(meta.path, '{"schemaVersion":3'); const before = await readFile(meta.path);
-  expect(await recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).toBe(false);
-  expect(await recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).toBe(false);
-  expect(await readFile(meta.path)).toEqual(before);
 });
 
 it("refuses an inherited envelope in a guarded retained tail before any paid summary", async () => {

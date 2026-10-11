@@ -7,7 +7,7 @@ store, locks, legacy importer, interruption code and their native helpers.
 Per-file SHA-256 digests accompany the unchanged source text. There are no
 external package imports, credentials or consumer data.
 
-`native-header-upgrade.test.js` checks every digest, extracts the modules into
+`native-guarded-journal.test.js` checks every digest, extracts the modules into
 an owned temporary directory, imports the actual old code and removes the
 source directory. It invokes old open (repairing and nonrepairing), streaming
 scan with old header validation, catalogue listing, direct removal, deletion

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -48,7 +48,8 @@ async function fixture(publicConfig = false) {
   let preparation = vi.fn(), draining = vi.fn(), bindingRead = vi.fn();
   const make = async (enabled: boolean, unsupported?: "non-native" | "routed", baseModel = config.runtime.model) => {
     let resolved = { ...config, runtime: { ...config.runtime, model: baseModel } };
-    if (publicConfig) {
+    // Switching is enabled only through the validated public config; no private hook exists.
+    if (publicConfig || enabled) {
       const configPath = join(root, "mono-agent.config.json");
       await writeFile(configPath, JSON.stringify({ ...config, runtime: { ...config.runtime, model: "pi:openai-codex:gpt-5.5", session: {
         ...config.runtime.session, modelSwitch: { enabled, ...(enabled ? { olderWritersStopped: true } : {}) },
@@ -68,8 +69,7 @@ async function fixture(publicConfig = false) {
     };
     const posted = createSlackPostedReplyHistory({ maxMessages: 64 });
     const responder = await createConfiguredAgentResponderForApp({ config: resolved, cwd: root, runtime: incoming(baseModel.model), runtimeForModel: (ref) => incoming(ref.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } }, {
-      sessionRollover: "none", wrapHistoryStore: (base) => { store = base; bindingRead = vi.fn(base.readProviderSessionBinding!.bind(base)); base.readProviderSessionBinding = bindingRead; if (publicConfig && enabled) activeNative = (base as unknown as { nativeJournalStorage: typeof native }).nativeJournalStorage; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
-      ...(enabled && !publicConfig ? { nativeModelSwitch: { exclusiveWriters: true as const, native } } : {}),
+      sessionRollover: "none", wrapHistoryStore: (base) => { store = base; bindingRead = vi.fn(base.readProviderSessionBinding!.bind(base)); base.readProviderSessionBinding = bindingRead; if (enabled) activeNative = (base as unknown as { nativeJournalStorage: typeof native }).nativeJournalStorage; draining = vi.fn(base.drainPendingProviderSessionTurns!.bind(base)); base.drainPendingProviderSessionTurns = draining; preparation = vi.fn(base.beginProviderSessionPreparation!.bind(base)); base.beginProviderSessionPreparation = preparation; return posted.wrapHistoryStore(base); },
     });
     const wrapped = posted.wrapResponder(responder); cleanup.push(() => (wrapped as AgentResponder & { dispose(): Promise<void> }).dispose()); return wrapped;
   };
@@ -98,12 +98,12 @@ async function fixture(publicConfig = false) {
   return { root, config, runtimes, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
 }
 
-it.each([false, true])("same-model no-ID wakes inherit the chain; explicit no-ID changes refuse (public=%s)", async (publicConfig) => {
-  const f = await fixture(publicConfig); await f.seed(); const h = await f.make(true);
+it("same-model no-ID wakes inherit the current journal; explicit no-ID changes refuse", async () => {
+  const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
   await h.respond(f.request("fictional-web-message", "faux:B"), { append: async () => {} });
-  const before = await f.record(); expect(before.version).toBe(4); expect(before.native.chain).toHaveLength(2);
-  const measure = vi.spyOn(f.native, "measureSwitch"), handoff = vi.spyOn(f.native, "prepareHandoff");
+  const before = await f.record(); expect(before.version).toBe(5); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
+  const measure = vi.spyOn(f.native, "createEpoch"), handoff = vi.spyOn(f.native, "prepareHandoff");
   const calls = f.transport.mock.calls.length;
   for (const wake of [{ source: "web", web: { trigger: "job" } }, { cron: { jobId: "fictional-scheduled", model: "faux:B" } }]) {
     f.faux.setResponses([reply("Fictional ordinary wake reply")]);
@@ -112,7 +112,7 @@ it.each([false, true])("same-model no-ID wakes inherit the chain; explicit no-ID
   }
   const after = await f.record(); expect(after.providerSession.modelKey).toBe("faux:B");
   expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.providerSession.revision).toBe(before.providerSession.revision + 2);
-  expect(after.native.chain).toHaveLength(2); expect(after.lastSwitch).toEqual(before.lastSwitch);
+  expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
   expect(f.transport).toHaveBeenCalledTimes(calls + 2); expect(measure).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled();
   const inspect = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-wake-inspection");
   try { expect((await inspect.read()).pending).toBeUndefined(); } finally { await inspect.abort(); }
@@ -124,7 +124,7 @@ it.each([false, true])("same-model no-ID wakes inherit the chain; explicit no-ID
   expect(await f.record()).toEqual(after); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
 });
 
-it.each(["non-native", "routed"] as const)("ID-carrying %s fallback cannot cold-rotate a v4 native source", async (unsupported) => {
+it.each(["non-native", "routed"] as const)("ID-carrying %s fallback cannot serve a native-bound conversation", async (unsupported) => {
   const f = await fixture(); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
   await h.respond(f.request("fictional-first-web-message", "faux:B"), { append: async () => {} }); await f.dispose(h);
@@ -137,7 +137,7 @@ it.each(["non-native", "routed"] as const)("ID-carrying %s fallback cannot cold-
 
 it("operator per-attempt UUIDs select the original cold path before native preparation, authority or intent", async () => {
   const f = await fixture(); await f.seed(); const h = await f.make(true);
-  const prepare = f.getPreparation(), authority = vi.spyOn(f.native, "measureSwitch");
+  const prepare = f.getPreparation(), authority = vi.spyOn(f.native, "createEpoch");
   f.faux.setResponses([reply("Fictional ordinary B reply"), reply("Fictional ordinary B follow-up")]);
   for (let i = 0; i < 2; i++) {
     const request = f.request(undefined, "faux:B");
@@ -148,8 +148,8 @@ it("operator per-attempt UUIDs select the original cold path before native prepa
   expect(f.transport).toHaveBeenCalledTimes(3);
 });
 
-it.each([false, true])("Web retry/reopen never authorize a new billed generation (public=%s)", async (publicConfig) => {
-  const f = await fixture(publicConfig); await f.seed();
+it("Web retry/reopen never authorize a new billed generation", async () => {
+  const f = await fixture(true); await f.seed();
   // Force the paid producer boundary without an expensive large-history setup.
   // Real evidence capture, producer dispatch, billing and durable state remain real.
   const h = await f.make(true);
@@ -164,9 +164,9 @@ it.each([false, true])("Web retry/reopen never authorize a new billed generation
   await f.dispose(h); const restarted = await f.make(true);
   await expect(restarted.respond(f.request("fictional-persisted-user-message", "faux:B"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
   const redelivered = await inspect(); expect(redelivered.authorizationGeneration).toBe(0); expect(redelivered.authorizations).toEqual(first.authorizations); expect(redelivered.attempts).toEqual(first.attempts); expect(f.transport).toHaveBeenCalledTimes(calls);
-  if (publicConfig) {
-    // A pending legacy-source switch is still non-v4: no-ID input takes the
-    // original admission path, whose pending-storage guard refuses without replay.
+  {
+    // A pending switch from a v3 source: no-ID input takes the original
+    // admission path, whose pending-storage guard refuses without replay.
     const preparationCalls = f.getPreparation().mock.calls.length;
     await expect(restarted.respond({ ...request, metadata: { source: "web", web: { trigger: "job" } } }, { append: async () => {} }))
       .rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
@@ -178,7 +178,7 @@ it.each([false, true])("Web retry/reopen never authorize a new billed generation
     f.faux.setResponses([reply(summary), reply("Fictional newly authorized answer")]);
     await restarted.respond({ ...f.request("fictional-next-persisted-id", "faux:B"), text: "Fictional next explicit input" }, { append: async () => {} });
     expect(f.transport).toHaveBeenCalledTimes(calls + 2); // One paid producer + ordinary incoming turn.
-    expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+    expect((await f.record()).version).toBe(5); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
     const messages = await f.getStore().load(request.conversationId);
     expect(messages.some((message) => message.content === request.text)).toBe(false);
     expect(messages.at(-2)?.content).toBe("Fictional next explicit input");
@@ -311,10 +311,11 @@ async function nativeFiles(root: string): Promise<string[]> {
   }
   return files;
 }
+// A concurrent append may leave a torn final line; only complete lines are records.
+const records = (text: string) => text.split("\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
 async function modelChanges(root: string) {
-  return (await Promise.all((await nativeFiles(root)).map((file) => readFile(file, "utf8"))))
-    .flatMap((text) => text.trim().split("\n").map((line) => JSON.parse(line)))
-    .filter((record) => record.kind === "model_change");
+  return (await Promise.all((await nativeFiles(root)).map((file) => readFile(file, "utf8").catch(() => ""))))
+    .flatMap(records).filter((record) => record.kind === "model_change");
 }
 it.each([false, true])("public config switches once before incoming dispatch, including different-model reopen (fresh=%s)", async (fresh) => {
   const f = await fixture(true);
@@ -344,31 +345,30 @@ it.each([false, true])("public config switches once before incoming dispatch, in
     if (args[0].id === "B") {
       incomingDispatches++;
       const record = JSON.parse(readFileSync(canonicalPath, "utf8"));
-      expect(record.version).toBe(4); expect(record.providerSession.modelKey).toBe("faux:B");
-      expect(readFileSync(sourcePath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.kind === "model_change")).toHaveLength(1);
+      // Binding, handoff and receipt are durable and the outgoing journal is retired before dispatch.
+      expect(record.version).toBe(5); expect(record.providerSession.modelKey).toBe("faux:B"); expect(existsSync(sourcePath)).toBe(false);
     }
     return f.originalTransport(...args);
   });
   f.faux.setResponses([reply(summary), reply("Fictional incoming B answer")]);
   const seen: unknown[] = [];
   await h.respond(f.request(persistedId, "faux:B"), { append: async () => {
-    seen.push(await f.record()); expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+    seen.push(await f.record()); expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
   } });
-  const switched = await f.record(); expect(switched.version).toBe(4); expect(switched.native.chain).toHaveLength(2);
+  const switched = await f.record(); expect(switched.version).toBe(5); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
   expect(switched.providerSession.modelKey).toBe("faux:B"); expect(seen.length).toBeGreaterThan(0); expect(incomingDispatches).toBe(1);
-  expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
   const calls = f.transport.mock.calls.length;
   await f.dispose(h); const reopened = await f.makePublic();
   f.faux.setResponses([reply("Fictional retry B answer")]);
   await reopened.respond(f.request(persistedId, "faux:B"), { append: async () => {} });
   expect(f.transport).toHaveBeenCalledTimes(calls + 1); // Ordinary dispatch, no summary.
   expect((await f.record()).lastSwitch).toEqual(switched.lastSwitch);
-  expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+  expect(await nativeFiles(f.nativeRoot)).toHaveLength(1); expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
 });
 it.each([false, true])("Slack no-ID other-model turn keeps the original cold replay on never-upgraded history (enabled=%s)", async (enabled) => {
   const f = await fixture(true); await f.seed(); const before = await f.record(), h = await f.make(enabled);
   const binding = f.getBindingRead();
-  const measure = vi.spyOn(f.native, "measureSwitch");
+  const measure = vi.spyOn(f.native, "createEpoch");
   f.faux.setResponses([reply("Fictional cold B answer")]);
   const request = { ...f.request(undefined), metadata: { source: "slack", slack: { channelId: "fictional-channel", threadTs: "fictional-thread", model: "faux:B" } } };
   expect((await h.respond(request, { append: async () => {} })).text).toBe("Fictional cold B answer");
@@ -392,13 +392,13 @@ it("Slack no-ID other-model turn refuses only after native upgrade; keyword pros
   const wake = { ...f.request(undefined), text: "please think hard, ultra think, ultrathink", metadata: { source: "web", web: { trigger: "job" } } };
   expect((await h.respond(wake, { append: async () => {} })).text).toBe("Fictional inherited B answer");
   expect(binding).toHaveBeenCalledTimes(1); expect((await f.record()).providerSession.modelKey).toBe("faux:B");
-  expect((await f.record()).lastSwitch).toEqual(before.lastSwitch); expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+  expect((await f.record()).lastSwitch).toEqual(before.lastSwitch); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
 });
-it.each(["reset", "retention"])("public activation %s deletes the whole upgraded native chain", async (kind) => {
+it.each(["reset", "retention"])("public activation %s deletes the switched conversation's current native journal", async (kind) => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B answer")]);
   await h.respond(f.request("fictional-upgrade-id", "faux:B"), { append: async () => {} });
-  expect(await nativeFiles(f.nativeRoot)).toHaveLength(2); await f.dispose(h);
+  expect(await nativeFiles(f.nativeRoot)).toHaveLength(1); await f.dispose(h);
   if (kind === "reset") await f.getStore().reset!("web:fictional-thread");
   else {
     // Retention uses file age; age only this fictional canonical fixture.
@@ -409,7 +409,6 @@ it.each(["reset", "retention"])("public activation %s deletes the whole upgraded
     await f.dispose(successor);
   }
   expect(await f.getStore().load("web:fictional-thread")).toEqual([]);
-  expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
   expect(await nativeFiles(f.nativeRoot)).toHaveLength(kind === "reset" ? 0 : 1);
 });
 
@@ -422,7 +421,7 @@ it("public constructor rejects missing acknowledgement before acquiring or upgra
   await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it("public upgrade reconciles a legacy pending turn, refusing missing evidence without replay", async () => {
+it("public upgrade settles a legacy pending turn storage-only, then switches from canonical history through the handoff", async () => {
   const f = await fixture(true); await f.seed();
   const abandoned = await f.getStore().beginProviderSessionTurn!("web:fictional-thread", "fictional-abandoned-run", {
     modelKey: "faux:A", reconciliation: { purpose: "execution", ownerKey: "web:fictional-thread",
@@ -432,25 +431,17 @@ it("public upgrade reconciles a legacy pending turn, refusing missing evidence w
   // drill. No provider/tool call belongs to this abandoned turn.
   await abandoned.abort();
   const calls = f.transport.mock.calls.length, h = await f.makePublic();
-  await expect(h.respond(f.request("fictional-post-interruption-id", "faux:B"), { append: async () => {} }))
-    .rejects.toThrow("native journal evidence");
-  expect(f.transport).toHaveBeenCalledTimes(calls); // Storage-only settlement.
-  const settled = await f.record(); expect(settled.version).toBe(3);
-  expect(settled.messages.some((message: { content: string }) => message.content.includes("interrupted"))).toBe(true);
-  // Absent native evidence cannot be invented. A new explicit current-model
-  // turn seeds its fresh epoch; a later explicit switch can then upgrade it.
-  f.faux.setResponses([reply("Fictional new A answer")]);
-  await h.respond(f.request("fictional-new-current-id"), { append: async () => {} });
+  // Settlement rotates the epoch without inventing native evidence; the switch
+  // then feeds canonical history through the same summary order (never a replay).
   f.faux.setResponses([reply(summary), reply("Fictional new explicit B answer")]);
-  await h.respond({ ...f.request("fictional-later-switch-id", "faux:B"), text: "Fictional new explicit input" }, { append: async () => {} });
-  const record = await f.record(); expect(record.version).toBe(4); expect(record.native.chain).toHaveLength(2);
+  const response = await h.respond({ ...f.request("fictional-post-interruption-id", "faux:B"), text: "Fictional new explicit input" }, { append: async () => {} });
+  expect(response.text).toBe("Fictional new explicit B answer"); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
+  const record = await f.record(); expect(record.version).toBe(5); expect(record.providerSession.modelKey).toBe("faux:B");
   expect(record.messages.some((message: { content: string }) => message.content.includes("Fictional abandoned input"))).toBe(true);
   expect(record.messages.some((message: { content: string }) => message.content.includes("interrupted"))).toBe(true);
   expect(record.messages.at(-2).content).toBe("Fictional new explicit input");
-  expect(f.transport.mock.calls.length - calls).toBeLessThanOrEqual(3); // Current turn + summary + new turn, never replay.
-  expect(await modelChanges(f.nativeRoot)).toHaveLength(1);
+  expect(await nativeFiles(f.nativeRoot)).toHaveLength(1); expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
 });
-
 it.each(["acknowledgement", "continuous", "piSessionsRoot"])("programmatic switch validation names the missing %s condition", async (missing) => {
   const f = await fixture();
   const config = { ...f.config, runtime: { ...f.config.runtime, session: { ...f.config.runtime.session,
@@ -466,7 +457,7 @@ it.each([false, true].flatMap((enabled) => [false, true].map((padded) => ({ enab
   const f = await fixture(true), h = await f.make(enabled);
   const conversationId = "web:" + "x".repeat(padded ? 508 : 513) + (padded ? " " : "");
   const request = { ...f.request("fictional-persisted-long-id", "faux:B"), conversationId };
-  const measure = vi.spyOn(f.native, "measureSwitch"), begin = vi.spyOn(f.getStore(), "beginProviderSessionPreparation");
+  const measure = vi.spyOn(f.native, "createEpoch"), begin = vi.spyOn(f.getStore(), "beginProviderSessionPreparation");
   f.faux.setResponses([reply("Fictional cold answer")]);
   await expect(h.respond(request, { append: async () => {} })).rejects.toThrow("Invalid protected sessionTurn host contract");
   expect(begin).not.toHaveBeenCalled(); // Entry seam exits before claiming/reading.
@@ -474,12 +465,11 @@ it.each([false, true].flatMap((enabled) => [false, true].map((padded) => ({ enab
   expect((await readdir(join(f.root, "history"))).some((name) => name.includes("native-history-root") || name.includes("model-switch"))).toBe(false);
 });
 
-it("post-switch host publication failure preserves predecessor bytes and never delegates native deletion through a stale model runtime", async () => {
+it("post-switch host publication failure keeps the current journal and never delegates native deletion through a stale model runtime", async () => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional switched answer")]);
   await h.respond(f.request("fictional-switch-publication", "faux:B"), { append: async () => {} });
-  const before = await f.record(), predecessor = join(f.nativeRoot, "mono-v2", "journals", `${before.native.chain[0].journalId}.jsonl`);
-  const bytes = await readFile(predecessor), calls = f.transport.mock.calls.length;
+  const current = await nativeFiles(f.nativeRoot), calls = f.transport.mock.calls.length; expect(current).toHaveLength(1);
   const destructive = f.runtimes.flatMap((runtime) => [vi.spyOn(runtime, "invalidateSession"), vi.spyOn(runtime, "retireDurableSession")]);
   const original = f.getPreparation().getMockImplementation() as NonNullable<ConversationHistoryStore["beginProviderSessionPreparation"]>;
   f.getPreparation().mockImplementation(async (...args: Parameters<typeof original>) => {
@@ -498,7 +488,7 @@ it("post-switch host publication failure preserves predecessor bytes and never d
   await expect(h.respond(f.request("fictional-publication-failure", "faux:B"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
   expect(f.transport).toHaveBeenCalledTimes(calls + 1);
   for (const callback of destructive) expect(callback).not.toHaveBeenCalled();
-  expect(await readFile(predecessor)).toEqual(bytes);
+  expect(await nativeFiles(f.nativeRoot)).toEqual(current);
 });
 
 it("a 512-character Web conversation remains eligible for the bounded native switch contract", async () => {
@@ -506,132 +496,72 @@ it("a 512-character Web conversation remains eligible for the bounded native swi
   const request = (id: string, model: string) => ({ ...f.request(id, model), conversationId });
   f.faux.setResponses([reply("Fictional boundary A answer")]);
   await h.respond(request("fictional-boundary-A", "faux:A"), { append: async () => {} });
-  const measure = vi.spyOn(f.native, "measureSwitch"); f.faux.setResponses([reply(summary), reply("Fictional boundary B answer")]);
+  const measure = vi.spyOn(f.native, "createEpoch"); f.faux.setResponses([reply(summary), reply("Fictional boundary B answer")]);
   expect((await h.respond(request("fictional-boundary-B", "faux:B"), { append: async () => {} })).text).toBe("Fictional boundary B answer");
   expect(measure).toHaveBeenCalled(); expect(f.transport).toHaveBeenCalledTimes(3);
 });
 
-async function persistedColdDelivery(root: string, keepOpen = false) {
-  const web = await WebStore.open({ stateDir: join(await realpath(root), "cold-web-state"), clock: () => new Date("2000-01-01T00:00:00Z") });
-  if (keepOpen) cleanup.push(async () => { web.close(); });
+async function persistedId(root: string) {
+  const web = await WebStore.open({ stateDir: join(await realpath(root), "switch-web-state"), clock: () => new Date("2000-01-01T00:00:00Z") });
   try {
     web.replaceAgents([{ sourceId: "fictional-agent", label: "Fictional Agent", status: "online", health: "running", supportsAttachments: false,
       models: [], efforts: [], modelOptions: {}, runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
       updatedAt: "2000-01-01T00:00:00Z" }]);
-    const thread = web.createThread("fictional-agent"), started = web.beginTurn({ threadId: thread.id, text: "Fictional cold input", attachmentIds: [] });
-    expect(web.getMessage(started.userMessageId)?.id).toBe(started.userMessageId); return { ...started, web };
-  } finally { if (!keepOpen) web.close(); }
+    const thread = web.createThread("fictional-agent"), started = web.beginTurn({ threadId: thread.id, text: "Fictional switch input", attachmentIds: [] });
+    expect(web.getMessage(started.userMessageId)?.id).toBe(started.userMessageId); return started.userMessageId;
+  } finally { web.close(); }
 }
-async function persistedColdId(root: string) { return (await persistedColdDelivery(root)).userMessageId; }
-async function seedGuardedCold(full: boolean) {
+async function switchedToB() {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional retained B answer")]);
-  await h.respond(f.request("fictional-before-cold", "faux:B"), { append: async () => {} });
-  if (full) {
-    // A real 32-member owned chain with guarded files; no 30-provider-call
-    // setup or mocked chain-length/cold coordinator. Empty retained epochs are
-    // valid evidence and keep this individual regression short on slow CI.
-    const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), { createHash } = await import("node:crypto");
-    const record = await f.record(), prep = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-pad-owner");
-    const repo = new JsonlSessionRepo({ sessionsRoot: f.nativeRoot }), chain = [record.native.chain[0]];
-    try {
-      for (let ordinal = 1; ordinal < 31; ordinal++) {
-        const epoch = ordinal.toString(16).padStart(64, "0"), handleId = createHash("sha256").update("mono-agent-provider-session-v2\0web:fictional-thread\0" + epoch).digest("hex");
-        await repo.createGuardedEpoch({ id: handleId, timestamp: 0, hostAuthority: record.native.authority, assertOwned: prep.assertOwned });
-        chain.push(await f.native.freeze({ epoch, ordinal, handleId, predecessorJournalId: chain.at(-1).journalId,
-          ownerKey: record.native.authority.ownerKey, historyBucket: record.conversationId, provenance: record.native.chain[1].provenance }));
-      }
-      record.native.chain = [...chain, { ...record.native.chain[1], ordinal: 31, predecessorJournalId: chain.at(-1).journalId }];
-      const path = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
-      await writeFile(path, JSON.stringify(record) + "\n", { mode: 0o600 });
-    } finally { await repo.close(); await prep.abort(); }
-  }
+  await h.respond(f.request("fictional-before-return", "faux:B"), { append: async () => {} });
   return { f, h };
 }
-it.each([false, true])("persisted Web cold change preserves predecessors, replays canonical context and warns without handoff billing (full=%s)", async (full) => {
-  const { f, h } = await seedGuardedCold(full), before = await f.record(), delivery = await persistedColdDelivery(f.root, true), id = delivery.userMessageId;
-  const { acquireToolHistoryWriter } = await import("@mono-agent/agent-harness");
-  const tools = await acquireToolHistoryWriter({ root: join(f.root, "history"), artifactRoot: join(f.config.artifacts.dir, "tool-output") });
-  const binding = { conversationId: "web:fictional-thread", logicalConversationId: "web:fictional-thread", runId: "fictional-retained-tool-run", isolated: false };
-  try {
-    expect(await tools.writer.persist(binding, { phase: "invocation", toolCallId: "fictional-call", toolName: "FictionalLookup", arguments: { query: "Fictional retained query" } })).toMatchObject({ persistence: "persisted" });
-    expect(await tools.writer.persist(binding, { phase: "result", toolCallId: "fictional-call", state: "success", content: "Fictional retained tool result" })).toMatchObject({ persistence: "persisted" });
-    await tools.writer.finishRun(binding, "completed");
-  } finally { await tools.release(); }
-  const predecessors = await Promise.all(before.native.chain.slice(0, -1).map(async (entry: { journalId: string }) => {
-    const path = join(f.nativeRoot, "mono-v2", "journals", `${entry.journalId}.jsonl`); return { path, bytes: await readFile(path) };
-  }));
-  if (!full) {
-    const { NativeEvidenceCapacityError } = await import("@mono-agent/runtime-adapter");
-    vi.spyOn(f.native, "captureEvidence").mockRejectedValueOnce(new NativeEvidenceCapacityError());
-  }
+it("A->B->A with a malformed outgoing summary returns through the validated checkpoint; no-ID or unpersisted changes refuse unchanged", async () => {
+  const { f, h } = await switchedToB(), before = await f.record(); expect(before.version).toBe(5);
   const canonicalPath = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
-  const untouched = await readFile(canonicalPath), callsBeforeRefusal = f.transport.mock.calls.length;
+  const untouched = await readFile(canonicalPath), callsBeforeRefusal = f.transport.mock.calls.length, id = await persistedId(f.root);
   for (const refused of [f.request(undefined, "faux:A"), { ...f.request(id, "faux:A"), metadata: { ...f.request(id, "faux:A").metadata, source: "tui" } }]) {
     await expect(h.respond(refused, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
   }
   expect(await readFile(canonicalPath)).toEqual(untouched); expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal);
-  const measure = vi.spyOn(f.native, "measureSwitch"), calls = f.transport.mock.calls.length, events: AgentStreamEvent[] = [];
-  f.faux.setResponses([(context) => {
+  // The outgoing B summary is malformed (rejected, still billed once); the free
+  // route is the exact previously validated A->B summary plus the B suffix.
+  f.faux.setResponses([reply("Fictional malformed summary"), (context) => {
     const text = JSON.stringify(context.messages);
-    expect(text).toContain("Fictional retained B answer"); expect(text).toContain("Fictional A reply");
-    expect(text).toContain("Fictional retained tool result"); expect(text.toLowerCase()).toContain("untrusted");
-    const current = JSON.parse(readFileSync(canonicalPath, "utf8"));
-    expect(current.providerSession.modelKey).toBe("faux:A"); expect(current.lastSwitch.kind).toBe("cold");
-    return reply("Fictional bounded cold answer");
+    expect(text).toContain("Fictional retained B answer"); expect(text).toContain("Fictional objective");
+    return reply("Fictional returned A answer");
   }]);
+  const events: AgentStreamEvent[] = [];
   const response = await h.respond(f.request(id, "faux:A"), { append: async () => {}, event: async (event) => { events.push(event); } });
-  const after = await f.record(); expect(response.text).toBe("Fictional bounded cold answer");
-  expect(response.metadata?.runtime).toMatchObject({ runtimeWarnings: [expect.objectContaining({
-    warning_kind: "degraded_native_context", source: "harness", message: expect.stringContaining("may need key details repeated") })] });
-  expect(events.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(true);
-  const timeline = delivery.web;
-  try {
-    timeline.applyStreamFrames(delivery.turnId, events.map((event) => ({ kind: "event" as const, event })));
-    const detail = timeline.completeTurn(delivery.turnId, response.text, response.metadata);
-    expect(detail.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ type: "telemetry", event: "runtime_warning",
-      data: expect.objectContaining({ warningKind: "degraded_native_context", message: expect.stringContaining("may need key details repeated") }) }));
-  } finally { timeline.close(); }
-  expect(f.transport).toHaveBeenCalledTimes(calls + 1); expect(measure).not.toHaveBeenCalled();
+  expect(response.text).toBe("Fictional returned A answer"); expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal + 2); // No incoming summary.
+  expect(JSON.stringify(response.metadata)).not.toContain("degraded_native_context");
   expect(events.some((event) => (event as { type?: string }).type?.startsWith("tool_"))).toBe(false);
-  expect(after.native.chain).toHaveLength(before.native.chain.length); expect(after.native.projection).toBeNull();
-  expect(after.lastSwitch.kind).toBe("cold"); expect(after.lastSwitch.switchId).not.toBe(before.lastSwitch.switchId);
-  expect(after.native.chain.slice(0, -1)).toEqual(before.native.chain.slice(0, -1));
-  for (const predecessor of predecessors) expect(await readFile(predecessor.path)).toEqual(predecessor.bytes);
-  await expect(readFile(join(f.nativeRoot, "mono-v2", "journals", `${before.native.chain.at(-1).journalId}.jsonl`))).rejects.toMatchObject({ code: "ENOENT" });
+  const after = await f.record(); expect(after.providerSession.modelKey).toBe("faux:A"); expect(after.lastSwitch.switchId).not.toBe(before.lastSwitch.switchId);
+  expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
+  const owner = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-return-read");
+  try { expect((await owner.readHandoff(after.lastSwitch.switchId, after.native.projection)).artifact.producer).toBe("checkpoint"); } finally { await owner.abort(); }
   await f.dispose(h); const reopened = await f.make(true); f.faux.setResponses([reply("Fictional ordinary same-model answer")]);
-  const laterEvents: unknown[] = [], laterStream = { append: async () => {}, event: async (event: unknown) => { laterEvents.push(event); } };
-  const later = await reopened.respond(f.request(id, "faux:A"), laterStream);
-  expect(JSON.stringify(later.metadata)).not.toContain("degraded_native_context");
-  expect(laterEvents.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(false);
-  expect((await f.record()).lastSwitch).toEqual(after.lastSwitch); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
-  const refused = f.request(undefined, "faux:B");
-  await expect(reopened.respond(refused, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
-  await f.dispose(reopened);
-  const changedDefault = await f.make(true, undefined, { provider: "faux", model: "B", reference: "faux:B" }); f.faux.setResponses([reply("Fictional inherited wake")]);
-  laterEvents.length = 0;
-  const wake = await changedDefault.respond({ ...f.request(undefined), metadata: { source: "web", web: { trigger: "job" } } }, laterStream);
-  expect(wake.text).toBe("Fictional inherited wake"); expect(JSON.stringify(wake.metadata)).not.toContain("degraded_native_context");
-  expect(laterEvents.some((event) => (event as { warningKind?: string }).warningKind === "degraded_native_context")).toBe(false);
-  expect((await f.record()).lastSwitch).toEqual(after.lastSwitch); expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("A");
-}, 40000);
+  expect((await reopened.respond(f.request(id, "faux:A"), { append: async () => {} })).text).toBe("Fictional ordinary same-model answer");
+  expect((await f.record()).lastSwitch).toEqual(after.lastSwitch); expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal + 3);
+});
 
-it("guarded pending unknown billing cannot use typed capture capacity as a cold shortcut", async () => {
-  const { f, h } = await seedGuardedCold(false), before = await f.record();
+it("guarded pending unknown billing is never bypassed by typed capture capacity", async () => {
+  const { f, h } = await switchedToB(), before = await f.record();
   const prep = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-billing-owner");
   const source = await prep.read(); if (source.source.status !== "supported") throw new Error("Expected source");
-  const { sources } = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../agent-harness/dist/model-switch-billing.js");
+  const captured = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../agent-harness/dist/model-switch-billing.js");
   const state = createModelSwitchState({ ownerKey: source.source.ownerKey, historyBucket: "web:fictional-thread",
-    sourceCanonicalDigest: source.source.sourceCanonicalDigest, sourceRevision: source.source.sourceRevision, sources,
+    sourceCanonicalDigest: source.source.sourceCanonicalDigest, sourceRevision: source.source.sourceRevision, sourceEpoch: source.source.sourceEpoch, source: captured.source,
     fromModelKey: "faux:B", toModelKey: "faux:A", targetProvenance: { provider: "faux", api: f.faux.getModel("A")!.api, model: "A", account: null },
     targetEpoch: "8".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 0, frozenBudgetDigest: "9".repeat(64) },
-  { canonicalBytes: 32768, artifactBytes: 32768, retainedNativeBytes: 1048576, headerCopyBytes: 1048576, pendingBytes: 65536 });
+  { canonicalBytes: 32768, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
   const lease = await prep.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned intent");
   await lease.admit("outgoing"); await lease.release(); await prep.abort();
   const { NativeEvidenceCapacityError } = await import("@mono-agent/runtime-adapter");
   vi.spyOn(f.native, "captureEvidence").mockRejectedValueOnce(new NativeEvidenceCapacityError());
   const deletion = vi.spyOn(f.native, "deleteJournals"), calls = f.transport.mock.calls.length;
-  await expect(h.respond(f.request(await persistedColdId(f.root), "faux:A"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(deletion).not.toHaveBeenCalled(); expect(await f.record()).toEqual(before);
   const inspection = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-inspection");
   try { const pending = (await inspection.read()).pending!; expect(pending.attempts).toHaveLength(1); expect(pending.attempts[0]?.outcome).toBe("started"); }
@@ -643,16 +573,25 @@ it("guarded pending unknown billing cannot use typed capture capacity as a cold 
 it.each([
   ["acquireNativeHistoryAuthority", "id_limit"], ["acquireNativeHistoryAuthority", "unbound"],
   ["beginModelSwitchStorage", "id_limit"], ["beginModelSwitchStorage", "unbound"],
-] as const)("unsupported %s/%s cannot authorize a guarded cold change as capacity", async (method, reason) => {
-  const { f, h } = await seedGuardedCold(false), before = await f.record(), calls = f.transport.mock.calls.length;
-  const prepare = f.getPreparation(), begin = prepare.getMockImplementation()! as NonNullable<ConversationHistoryStore["beginProviderSessionPreparation"]>, cold = vi.fn();
-  prepare.mockImplementation(async (...args: Parameters<typeof begin>) => {
-    const owned = await begin(...args), change = owned.coldModelChange!.bind(owned);
-    return { ...owned, [method]: async () => ({ status: "unsupported" as const, reason }),
-      coldModelChange: async (input: Parameters<NonNullable<typeof owned.coldModelChange>>[0]) => { cold(input); return await change(input); } };
-  });
-  const deletion = vi.spyOn(f.native, "deleteJournals");
-  await expect(h.respond(f.request(await persistedColdId(f.root), "faux:A"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
-  expect(cold).not.toHaveBeenCalled(); expect(deletion).not.toHaveBeenCalled();
+] as const)("unsupported %s/%s refuses typed without deleting or mutating native evidence", async (method, reason) => {
+  const { f, h } = await switchedToB(), before = await f.record(), calls = f.transport.mock.calls.length;
+  const prepare = f.getPreparation(), begin = prepare.getMockImplementation()! as NonNullable<ConversationHistoryStore["beginProviderSessionPreparation"]>;
+  prepare.mockImplementation(async (...args: Parameters<typeof begin>) => ({ ...await begin(...args), [method]: async () => ({ status: "unsupported" as const, reason }) }));
+  const deletion = vi.spyOn(f.native, "deleteJournals"), files = await nativeFiles(f.nativeRoot);
+  await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_switch_authority_unavailable" } });
+  expect(deletion).not.toHaveBeenCalled(); expect(await nativeFiles(f.nativeRoot)).toEqual(files);
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
+});
+
+it("a pre-release v4 conversation is refused typed through the configured host, unchanged and never migrated", async () => {
+  const { f, h } = await switchedToB(), current = await f.record();
+  const canonicalPath = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
+  // Fictional old chain shape: an epoch array instead of the single current journal.
+  await writeFile(canonicalPath, JSON.stringify({ ...current, version: 4, native: { ...current.native, chain: [] } }) + "\n", { mode: 0o600 });
+  const bytes = await readFile(canonicalPath), files = await nativeFiles(f.nativeRoot), calls = f.transport.mock.calls.length;
+  for (const model of ["faux:B", "faux:A"]) {
+    await expect(h.respond(f.request(await persistedId(f.root), model), { append: async () => {} }))
+      .rejects.toMatchObject({ failure: { kind: "native_switch_format_unsupported", message: "unsupported pre-release switch format; reset" } });
+  }
+  expect(await readFile(canonicalPath)).toEqual(bytes); expect(await nativeFiles(f.nativeRoot)).toEqual(files); expect(f.transport).toHaveBeenCalledTimes(calls);
 });

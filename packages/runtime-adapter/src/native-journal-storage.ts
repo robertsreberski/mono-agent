@@ -6,23 +6,15 @@ export function createManagedNativeJournalStorage(options: {
   readonly sessionsRoot: string; readonly onPhase?: (phase: string) => Promise<void>;
 }): RuntimeNativePreparationStorage & { readonly checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]> } {
   const storage = nativeStorage(options);
-  return { nativeEvidence: "v1", captureEvidence: (sources, context) => storage.captureEvidence([...sources], context),
+  return { nativeEvidence: "v1", captureEvidence: (source, context) => storage.captureEvidence(source, context),
     createBudget: (input) => storage.createBudget(input), prepareHandoff: (view, options) => storage.prepareHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["prepareHandoff"]>,
     checkInheritedPrefix: async (messages, model, compaction, prefixTokenCap) => await storage.checkInheritedPrefix([...messages], model, compaction, prefixTokenCap) as Awaited<ReturnType<NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]>>>,
     buildHandoff: (view, options) => storage.buildHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["buildHandoff"]>,
-    planColdEpoch: (chain, context) => storage.planColdEpoch([...chain], context),
-    verifyColdEpoch: (chain, context) => storage.verifyColdEpoch([...chain], context),
-    publishColdEpoch: (chain, context) => storage.publishColdEpoch([...chain], context),
-    deletionBlocked: (chain, authority) => storage.deletionBlocked([...chain], authority),
-    deleteJournals: (chain, context) => storage.deleteJournals([...chain], context),
+    createEpoch: (context) => storage.createEpoch(context),
+    deletionBlocked: (journals, authority) => storage.deletionBlocked([...journals], authority),
+    deleteJournals: (journals, context) => storage.deleteJournals([...journals], context),
     freeze: (source) => storage.freeze(source),
-    hasSwitchReference: (sources, context) => storage.hasSwitchReference([...sources], context),
-    measureSwitch: (sources, context) => storage.measureSwitch([...sources], context),
-    verifySwitchSources: (chain, sources, context) => storage.verifySwitchSources([...chain], [...sources], context),
-    verifySwitch: (chain, sources, context) => storage.verifySwitch([...chain], [...sources], context),
-    publishSwitch: (sources, context) => storage.publishSwitch([...sources], context),
     inspectCurrentJournal: async (coordinates) => await storage.inspectCurrentJournal({ handleId: coordinates.handleId,
-      ...(coordinates.journalId === undefined ? {} : { journalId: coordinates.journalId }),
-      ...(coordinates.frozen === undefined ? {} : { frozen: structuredClone(coordinates.frozen), hostAuthority: structuredClone(coordinates.hostAuthority) }) }) as RuntimeNativeJournalPresence,
+      ...(coordinates.journalId === undefined ? {} : { journalId: coordinates.journalId }) }) as RuntimeNativeJournalPresence,
     inventory: (ids, owners) => storage.inventory(ids === undefined ? undefined : [...ids], owners === undefined ? undefined : { ...owners, conversationKeys: [...owners.conversationKeys] }) };
 }
