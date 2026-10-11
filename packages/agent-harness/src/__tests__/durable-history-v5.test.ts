@@ -205,7 +205,7 @@ for (const phase of ["canonical_stage_synced", "canonical_renamed", "canonical_d
   }, 30000);
 }
 
-// Robert 2026-10-11: unsupported pre-release v4 chains and intents are refused
+// Unsupported pre-release v4 chains and intents are refused
 // before any recovery, cleanup or mutation. Never migrated, deleted or rewritten.
 it("refuses a pre-release v4 root and its outstanding intents with a typed error and no mutation", async () => {
   const f = await fixture(preReleaseV4Record(), { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) });
