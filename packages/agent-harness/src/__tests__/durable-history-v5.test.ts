@@ -226,3 +226,58 @@ it("refuses a pre-release v4 root and its outstanding intents with a typed error
   await expect(low.append("fictional-third", [{ role: "user", content: "Fictional third." }])).rejects.toThrow("quota");
   expect(await snapshot()).toEqual(before);
 });
+
+// Fictional pre-release switch state (version 1), optionally behind a valid fence.
+async function plantPreReleaseState(root: string, id: string, fenced: boolean): Promise<number> {
+  const { createHash } = await import("node:crypto"), { mkdir } = await import("node:fs/promises");
+  const directory = join(root, ".model-switches"); await mkdir(directory, { recursive: true, mode: 0o700 });
+  const switchId = "e".repeat(64), generation = "f".repeat(32), key = conversationKey(id);
+  const bytes = Buffer.from(`${JSON.stringify({ version: 1, identity: { historyBucket: id, switchId } })}\n`);
+  await writeFile(join(directory, `${key}.${switchId}.${generation}.state.json`), bytes, { mode: 0o600 });
+  if (!fenced) return bytes.byteLength;
+  const fence = Buffer.from(JSON.stringify({ version: 6, kind: "model-switch", conversationKey: key, switchId, targetEpoch: "a".repeat(64),
+    payload: { generation, sha256: createHash("sha256").update(bytes).digest("hex") } }));
+  await writeFile(join(directory, `${key}.${switchId}.fence.json`), fence, { mode: 0o600 });
+  return bytes.byteLength + fence.byteLength;
+}
+const refusal = { code: "ERR_UNSUPPORTED_PRE_RELEASE_SWITCH_FORMAT", message: "unsupported pre-release switch format; reset" };
+const tree = async (root: string) => Object.fromEntries(await Promise.all([".model-switches", ""].map(async (dir) =>
+  [dir, Object.fromEntries(await Promise.all((await readdir(join(root, dir))).filter((name) => name.endsWith(".json") && !name.startsWith(conversationKey("fictional-unrelated")))
+    .map(async (name) => [name, await readFile(join(root, dir, name), "utf8")])))])));
+
+it.each([false, true])("a leftover pre-release switch owner refuses only its own operations; unrelated v3 conversations append and admit (native=%s)", async (native) => {
+  const f = await fixture(undefined, native ? { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) } : {});
+  const planted = await plantPreReleaseState(f.root, bucket, true), before = await tree(f.root);
+  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]);
+  const turn = await f.store.beginProviderSessionTurn("fictional-unrelated", "fictional-unrelated-run", { modelKey });
+  await (await turn.prepareCommit([{ role: "assistant", content: "Fictional unrelated answer." }], { providerSessionSynced: true })).commit();
+  expect(await f.store.load("fictional-unrelated")).toHaveLength(2);
+  for (const action of [() => f.store.append(bucket, []), () => f.begin(), () => f.store.modelSwitchStorageSource(bucket)]) await expect(action()).rejects.toMatchObject(refusal);
+  expect(await tree(f.root)).toEqual(before); // owner A's bytes preserved
+  expect((await f.store.stats()).bytes).toBeGreaterThanOrEqual(planted); // and still charged
+  // Retention never selects the refused owner as a victim.
+  const low = createDurableHistoryStore({ root: f.root, maxConversations: 1, retireProviderSession: f.retire });
+  await expect(low.append("fictional-third", [{ role: "user", content: "Fictional third." }])).rejects.toThrow("quota");
+  expect(await tree(f.root)).toEqual(before);
+});
+
+it("an unfenced orphan pre-release state refuses its owner before authority, preparation or native mutation", async () => {
+  const f = await fixture(undefined, { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) });
+  const id = "fictional-orphan-owner", turn = await f.store.beginProviderSessionTurn(id, "fictional-orphan-seed", { modelKey });
+  await (await turn.prepareCommit([{ role: "assistant", content: "Fictional orphan answer." }], { providerSessionSynced: true })).commit();
+  await plantPreReleaseState(f.root, id, false);
+  const switches = async () => (await readdir(join(f.root, ".model-switches"))).sort(), files = await switches();
+  const canonical = await readFile(join(f.root, `${conversationKey(id)}.history.json`));
+  for (const action of [() => f.store.modelSwitchStorageSource(id), () => f.store.acquireNativeHistoryAuthority(id, { exclusiveWriters: true }),
+    () => f.store.beginProviderSessionPreparation(id, "fictional-orphan-preparation")]) await expect(action()).rejects.toMatchObject(refusal);
+  expect(await switches()).toEqual(files); expect(await readFile(join(f.root, `${conversationKey(id)}.history.json`))).toEqual(canonical);
+  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]); // others continue
+});
+
+it("preparation of a refused pre-release conversation does not retire an unrelated inactive dirty fence first", async () => {
+  const f = await fixture(preReleaseV4Record(), { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) });
+  const crashed = await f.store.beginProviderSessionTurn("fictional-crashed", "fictional-crashed-run"); await crashed.abort();
+  const fence = join(f.root, ".locks", `${conversationKey("fictional-crashed")}.dirty.json`), bytes = await readFile(fence);
+  await expect(f.store.beginProviderSessionPreparation(bucket, "fictional-preparation")).rejects.toMatchObject(refusal);
+  expect(await readFile(fence)).toEqual(bytes); expect(f.retire).not.toHaveBeenCalled();
+});

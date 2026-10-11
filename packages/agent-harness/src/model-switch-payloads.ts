@@ -164,11 +164,20 @@ export class ModelSwitchPayloadStore {
   }
   /** Read-only managed-root accounting. Hash-only fence coordinates are resolved
    * exclusively through their validated payload, never guessed from filenames. */
-  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[] }> {
-    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [] };
+  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[];
+    readonly refused: readonly string[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], refused: [] };
     const bytes = await this.retainedBytes(), pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
-    for (const name of await readdir(this.directory)) {
-      if (!name.endsWith(".fence.json")) continue;
+    // Pre-release (version 1) states, fenced or orphaned, mark only their owner as
+    // refused. Their bytes stay charged; unrelated owners keep accounting/admission.
+    const names = await readdir(this.directory), refused = new Set<string>();
+    for (const name of names) {
+      if (!name.endsWith(".state.json")) continue;
+      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)));
+      if ((raw as { version?: unknown } | null)?.version === 1) refused.add(name.split(".")[0]!);
+    }
+    for (const name of names) {
+      if (!name.endsWith(".fence.json") || refused.has(name.split(".")[0]!)) continue;
       const fenceBytes = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
       const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fenceBytes));
       validateModelSwitchFence(raw);
@@ -183,7 +192,7 @@ export class ModelSwitchPayloadStore {
       const remaining = this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached);
       pending.push({ state: current.state, ...remaining });
     }
-    await this.assertDirectory(directory); return { bytes, pending };
+    await this.assertDirectory(directory); return { bytes, pending, refused: [...refused] };
   }
   private remainingReservation(state: ModelSwitchState, publicationBytes: number, cached: boolean) {
     const remainingPendingBytes = Math.max(0, state.reservation.pendingBytes - publicationBytes);

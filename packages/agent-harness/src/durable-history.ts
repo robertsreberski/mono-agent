@@ -549,7 +549,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private epochContext(id: string, epoch: string, authority: RuntimeNativeJournalAuthority, assertOwned: () => Promise<void>, timestamp = 0): RuntimeNativeEpochContext {
     return { hostAuthority: authority, assertOwned, targetHandleId: deriveProviderSessionId(id, epoch), timestamp };
   }
+  /** Owner-scoped, read-only: refuse only a conversation that has pre-release switch data. */
+  private async refusePreReleaseOwner(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    if ((await this.switchInventory(rootIdentity)).refused.includes(historyKey(conversationId))) refusePreReleaseSwitchFormat();
+  }
   private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    await this.refusePreReleaseOwner(conversationId, rootIdentity);
     if ((await this.switchInventory(rootIdentity)).pending.some((entry) => entry.state.identity.historyBucket === conversationId)) {
       throw new ModelSwitchPendingError();
     }
@@ -563,6 +568,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
     const rootIdentity = await this.ensureRoot(), record = await this.readRecord(id, rootIdentity);
+    await this.refusePreReleaseOwner(id, rootIdentity);
     if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || (record.sourceVersion !== STORE_VERSION && record.sourceVersion !== 5)) return { status: "unsupported", reason: "unbound" };
     return { status: "supported", sourceCanonicalDigest: switchDigest({ version: record.sourceVersion, conversationId: id, messages: record.messages,
       providerSession: record.providerSession, ...lastCommitBinding(record), ...v5Extension(record) }), sourceRevision: record.providerSession.revision,
@@ -1163,7 +1169,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
-      this.requireNativeCapability(await this.readRecord(normalizedId, rootIdentity), "native epoch transition", "host-only append");
+      const current = await this.readRecord(normalizedId, rootIdentity); await this.refusePreReleaseOwner(normalizedId, rootIdentity);
+      this.requireNativeCapability(current, "native epoch transition", "host-only append");
       await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity);
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
@@ -1352,6 +1359,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
    * incoming execution. Default callers still use beginProviderSessionTurn. */
   async beginProviderSessionPreparation(conversationId: string, runId: string): Promise<ManagedProviderSessionPreparation> {
     const id = normalizeConversationId(conversationId), normalizedRunId = normalizeRunId(runId);
+    // Read-only preflight before acquisition-time cleanup of unrelated fences;
+    // settleHeldTurn rechecks under ownership.
+    const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.refusePreReleaseOwner(id, preflightRoot);
     const held = await this.acquireConversation(id);
     let state: "prepared" | "transferred" | "closed" = "prepared";
     let queue = Promise.resolve();
@@ -1956,6 +1966,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await held.assertOwned();
     // A pre-release record or intent is refused before any recovery or mutation.
     const canonical = await this.readRecord(conversationId, held.rootIdentity);
+    await this.refusePreReleaseOwner(conversationId, held.rootIdentity);
     // Ready alone is not runtime switch authority. Once its canonical receipt is
     // published, however, ordinary admission must finish retiring the outgoing
     // journal and the intent rather than strand them.
@@ -2550,6 +2561,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const native = this.nativeJournalStorage ? await this.managedNativeInventory(rootIdentity, records) : undefined;
     const switches = await this.modelSwitchFootprint(rootIdentity, records, native);
     for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
+    for (const key of switches.refused) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     const operations = await this.nativeOperationFootprint(rootIdentity, native);
     for (const key of operations.keys) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     for (const [name, record] of records) if (record?.sourceVersion === 5 && !this.nativeJournalStorage) protectedNames.add(name);
@@ -3107,7 +3119,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const activeKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     const fences = await this.scanDirtyFences(locksIdentity, true);
     if (fences.length === 0) return;
-    const switchingKeys = new Set((await this.switchInventory(rootIdentity)).pending.map((entry) => historyKey(entry.state.identity.historyBucket)));
+    const inventory = await this.switchInventory(rootIdentity);
+    const switchingKeys = new Set([...inventory.pending.map((entry) => historyKey(entry.state.identity.historyBucket)), ...inventory.refused]);
     for (const name of await readdir(this.root)) { const match = NATIVE_OPERATION_PATTERN.exec(name); if (match) switchingKeys.add(match[1]!); }
     const committedByName = new Map(
       (await this.scanCommittedEntries(rootIdentity, true)).map((entry) => [entry.name, entry]),
