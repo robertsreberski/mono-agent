@@ -211,7 +211,6 @@ export async function prepareConfiguredModelSwitch(input: {
           // Opt-in only: unguarded (pre-first-switch) epochs record the pinned lease provenance too.
           return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
             sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor,
-            nativeProvenanceRecording: true as const,
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         }));

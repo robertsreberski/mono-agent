@@ -29,10 +29,6 @@ const hex64 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(valu
 const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error) => error?.code === "ENOENT";
 const STAGES = ["", ".creating", ".importing"];
-/** Positive pinned dispatch provenance: provider/API/model/account all known. @param {any} value */
-const positiveLeaseProvenance = (value) => !!value && typeof value === "object"
-  && ["provider", "api", "model", "account"].every((key) => typeof value[key] === "string" && value[key].trim().length > 0 && value[key].length <= 512)
-  && value.account.trim().toLowerCase() !== "unknown";
 /** @param {{sessionsRoot:string, onPhase?:(phase:string)=>Promise<void>}} options */
 export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = async () => {} }) {
   if (typeof sessionsRoot !== "string" || !isAbsolute(sessionsRoot.trim())) throw new TypeError("Managed native root must be absolute");
@@ -54,26 +50,11 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const validator = new JournalValidator(), full = createHash("sha256").update("[");
       let first = true;
       const records = [];
-      // Lease provenance proof for unguarded epochs: every content-bearing
-      // record's operation must carry the identical positive pinned provenance.
-      const operationProvenance = new Map();
-      /** @type {any} */ let leaseProvenance; /** @type {string|undefined} */ let leaseKey;
-      let leaseUnproven = false, contentRecords = 0;
       const evidence = await reader.scan((record) => {
         if (!header) { validateJournalHeader(record); header = record; return; }
         if (capture) records.push(record);
         if (!first) full.update(","); full.update(JSON.stringify(record)); first = false;
         validator.apply(record);
-        if (record.kind === "operation_start") operationProvenance.set(record.operationId, record.payload?.config?.nativeProvenance);
-        if (record.kind === "message" || record.kind === "compaction") {
-          const actual = operationProvenance.get(record.operationId);
-          const key = positiveLeaseProvenance(actual) ? JSON.stringify([actual.provider, actual.api, actual.model, actual.account]) : undefined;
-          const messageProvenance = record.kind === "message" ? record.payload?.provenance : undefined;
-          contentRecords += 1;
-          if (key === undefined || (leaseKey !== undefined && key !== leaseKey)
-            || (messageProvenance && ["provider", "api"].some((name) => messageProvenance[name] !== actual[name]))) leaseUnproven = true;
-          else if (leaseKey === undefined) { leaseKey = key; leaseProvenance = { provider: actual.provider, api: actual.api, model: actual.model, account: actual.account }; }
-        }
         if (record.kind === "handle_binding") handleBinding = record.payload;
         const binding = record.kind === "owner_binding" ? record.payload : record.payload.binding;
         if (binding && binding.kind !== "unbound" && (binding.ownerKey !== coordinate.ownerKey || binding.historyBucket !== coordinate.historyBucket)) fail();
@@ -84,7 +65,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const current = await reader.assertIdentity();
       if (current.nlink !== 1 || current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
       return { metadata: meta, header, records, handleBinding,
-        leaseProvenance: !leaseUnproven && contentRecords > 0 ? leaseProvenance : undefined, owner: validator.owner, bytes: current.size,
+        owner: validator.owner, bytes: current.size,
         descriptor: { ...coordinate, journalId: meta.journalId, sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: full.update("]").digest("hex") } };
     } catch (error) { if (capture && error?.code === "ERR_JOURNAL_READ_LIMIT") captureLimit(); throw error; } finally { await reader.close(); }
   };
@@ -212,12 +193,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const binding = frozen.handleBinding, model = binding?.model;
       if (frozen.owner.kind !== "host" || frozen.owner.ownerKey !== coordinates.ownerKey || frozen.owner.historyBucket !== coordinates.historyBucket
         || binding?.handleId !== coordinates.handleId || !model || [model.provider, model.api, model.id].some((value) => typeof value !== "string" || !value.length)) fail();
-      // An unguarded opt-in epoch is positive only when EVERY content-bearing
-      // operation recorded the identical pinned lease provenance for this exact
-      // bound model. Never inferred from credentials, paths or caller options.
-      const lease = frozen.leaseProvenance;
-      const account = lease && lease.provider === model.provider && lease.api === model.api && lease.model === model.id ? lease.account : null;
-      return { ...frozen.descriptor, provenance: { provider: model.provider, api: model.api, model: model.id, account } };
+      return { ...frozen.descriptor, provenance: { provider: model.provider, api: model.api, model: model.id, account: null } };
     },
     /** Deterministic guarded epoch for a switch target or cold rotation. Idempotent
      * across crashes; an existing exact initializer is the only acceptable state.

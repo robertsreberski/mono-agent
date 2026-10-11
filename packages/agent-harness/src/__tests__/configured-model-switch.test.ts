@@ -88,8 +88,7 @@ it("private configured override prepares extensions once, emits one switch, and 
   const operation = rows.find((row) => row.kind === "operation_start" && row.payload.config?.model?.id === "B");
   // Actual prepared credential is unsupported for the fictional transport, so
   // pin explicit unknown rather than trusting switch-time metadata or options.
-  expect(operation.payload.config.nativeProvenance).toMatchObject({ provider: "faux", model: "B", account: null });
-  expect(operation.payload.config.nativeProvenance.api).toBe(operation.payload.config.model.api);
+  expect(Object.hasOwn(operation.payload.config, "nativeProvenance")).toBe(false);
   expect(await f.changes()).toHaveLength(1); expect(f.retire).not.toHaveBeenCalled(); expect(f.inspect).toHaveBeenCalled();
   expect(await f.store.recoverProviderSessionTurn("fictional")).toEqual({ status: "clean" });
   expect((await f.store.load("fictional")).at(-2)?.content).toBe("Fictional override");

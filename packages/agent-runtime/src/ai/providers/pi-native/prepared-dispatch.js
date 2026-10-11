@@ -1,9 +1,8 @@
 // @ts-check
-import { createModels, ModelsError } from "@earendil-works/pi-ai";
+import { ModelsError } from "@earendil-works/pi-ai";
 
 export { copy as copyDispatchData };
 export const PREPARED_DISPATCH_MAX_AGE_MS = 5 * 60_000;
-const OAUTH_REQUEST_RESERVE_MS = 5 * 60_000;
 
 /** Validate and copy before consuming either a direct or routed lease.
  * @param {any} [input] @returns {any} */
@@ -13,13 +12,12 @@ export function prepareNativeDispatchBinding(input = {}) {
   }
   return snapshotNativeDispatchOptions(input);
 }
-import { probeNativeAccountProvenance } from "./account-provenance.js";
 
 /** @typedef {import('../../types.js').NativeDispatchBinding} NativeDispatchBinding */
 /** @typedef {import('../../types.js').NativePreparedDispatch} NativePreparedDispatch */
 
 const bindingKeys = new Set(["sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive",
-  "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "nativeProvenanceRecording"]);
+  "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"]);
 const dataKeys = ["model", "messages", "outputSchema", "mcpServers", "skills", "allowedTools", "disallowedTools",
   "toolLimits", "compaction", "sandboxPolicy", "toolEnvironment", "hostCapabilities", "toolExposure", "piResolvedModel",
   "context1MModels", "customProvider", "additionalReadRoots", "additionalWriteRoots", "toolRiskTiers", "approvalAlwaysAllowTools", "processJobsAvailability",
@@ -52,102 +50,23 @@ export function freezeDispatchData(value) {
   return value;
 }
 
-/** Resolve the actual Pi provider auth once, observing the credential selected
- * by that resolution (including refresh), then use a private pinned collection.
- * Secrets stay in closures, never in the returned host snapshot. No completion.
+/** Check ordinary provider availability without retaining credentials. Every
+ * actual summary/turn request resolves auth through the original Models collection.
  * @param {any} models @param {any} model @param {AbortSignal|undefined} signal */
 export async function prepareDispatchAuth(models, model, signal) {
   model = freezeDispatchData(copy(model));
-  const provider = models.getProvider(model.provider);
-  if (!provider) throw new Error("Prepared dispatch provider is unavailable");
+  if (!models.getProvider(model.provider)) throw new Error("Prepared dispatch provider is unavailable");
   const selected = models.getModel(model.provider, model.id);
   if (!selected || selected.provider !== model.provider || selected.id !== model.id || selected.api !== model.api) throw new Error("Prepared dispatch model disagrees with provider collection");
-  /** @type {any} */ let credential;
-  const store = models.credentials;
-  // A custom Models collection without a visible credential store can resolve
-  // auth, but cannot establish an account. Never infer it from host credentials.
-  const resolving = store ? createModels({ credentials: {
-    read: async (...args) => { const value = await store.read(...args); credential = copy(value); return value; },
-    modify: async (...args) => { const value = await store.modify(...args); credential = copy(value); return value; },
-    delete: (...args) => store.delete(...args),
-    list: (...args) => store.list(...args),
-  }, authContext: models.authContext }) : models;
-  if (store) resolving.setProvider(provider);
-  const resolution = await resolving.getAuth(model, { signal, minOAuthValidityMs: PREPARED_DISPATCH_MAX_AGE_MS + OAUTH_REQUEST_RESERVE_MS });
-  if (!resolution) throw new Error("Prepared dispatch provider authentication is unavailable");
+  if (!await models.getAuth(model, { signal })) throw new Error("Prepared dispatch provider authentication is unavailable");
   signal?.throwIfAborted();
-  let auth = copy(resolution);
-  const probe = probeNativeAccountProvenance({ provider: model.provider, api: model.api, credential,
-    dispatchApiKey: auth.auth.apiKey });
-  const preparedAt = Date.now();
-  const expiresAt = preparedAt + PREPARED_DISPATCH_MAX_AGE_MS;
+  const expiresAt = Date.now() + PREPARED_DISPATCH_MAX_AGE_MS;
   const assertValid = (starting = false, remainingStartMs = 0) => {
     if (!Number.isSafeInteger(remainingStartMs) || remainingStartMs < 0) throw new RangeError("Invalid prepared start allowance");
     if (starting && (Date.now() >= expiresAt || expiresAt - Date.now() < remainingStartMs)) throw new ModelsError("auth", "Prepared dispatch lease expired or has insufficient start allowance; prepare again before dispatch");
   };
-  // Do not rely on an optional SDK override: enforce the entire idle age plus
-  // one request reserve here even if a custom resolver ignores it.
-  if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires)
-    || credential.expires - Date.now() < PREPARED_DISPATCH_MAX_AGE_MS + OAUTH_REQUEST_RESERVE_MS)) {
-    throw new ModelsError("oauth", "Prepared OAuth authentication expires too soon; prepare again before dispatch");
-  }
-  const oauth = provider.auth?.oauth;
-  const refused = () => new ModelsError("oauth", "Prepared credential refresh refused: original account or validity could not be retained");
-  const sameAccount = (value, derived) => {
-    const currentModel = models.getModel(model.provider, model.id);
-    const next = probeNativeAccountProvenance({ provider: provider.id, api: currentModel?.api, credential: value, dispatchApiKey: derived?.apiKey });
-    return probe.supported && next.supported && next.provenance.account === probe.provenance.account
-      && next.provenance.provider === probe.provenance.provider && next.provenance.api === probe.provenance.api;
-  };
-  const requestAuth = async () => {
-    if (resolution.source === "OAuth" && (!Number.isFinite(credential?.expires) || credential.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS)) {
-      if (!store?.modify || !oauth || !probe.supported
-        || typeof store.supportsPersistentOAuthModify === "function" && !store.supportsPersistentOAuthModify(model.provider)) throw refused();
-      try {
-        // Use the original store's serialization (host enqueueAuthFile is
-        // in-process only, not coordination across processes). Recheck there, using the current rotating refresh token, not
-        // our stale pin. A refreshed credential is persisted even if its account
-        // changed: the old token may already be revoked; this lease then refuses.
-        const post = await store.modify(model.provider, async (current) => {
-          if (current?.type !== "oauth" || !sameAccount(current, await oauth.toAuth(current))) throw refused();
-          if (Number.isFinite(current.expires) && current.expires - Date.now() >= OAUTH_REQUEST_RESERVE_MS) return undefined;
-          return await oauth.refresh(current, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30_000)]));
-        }, { signal });
-        // A CredentialStore must expose committed modifications to its readers.
-        // Verify read-after-write; use a newer committed same-account peer token
-        // rather than a returned but unpersisted rotation. Never repair a liar by
-        // copying into another store or writing the obsolete credential back.
-        if (post?.type !== "oauth" || !sameAccount(post, await oauth.toAuth(post))) throw refused();
-        const committed = await store.read(model.provider, { signal });
-        if (post?.type !== "oauth" || committed?.type !== "oauth") throw refused();
-        const derived = await oauth.toAuth(committed);
-        if (!sameAccount(committed, derived) || !Number.isFinite(committed?.expires) || committed.expires - Date.now() < OAUTH_REQUEST_RESERVE_MS) throw refused();
-        credential = copy(committed); auth = { auth: copy(derived), source: "OAuth" };
-      } catch { throw refused(); }
-    }
-    return copy(auth);
-  };
-  assertValid(true);
-  const pinned = createModels();
-  // Forward methods/getters with the original receiver, including prototype or
-  // private-field implementations. Do not flatten a provider by object spread.
-  const overrides = { getModels: () => [model], getAllModels: () => [model], auth: { apiKey: { resolve: requestAuth } },
-    stream: provider.stream?.bind(provider), streamSimple: provider.streamSimple?.bind(provider) };
-  pinned.setProvider(/** @type {any} */ (new Proxy(overrides, { get: (target, key) => {
-    if (Object.hasOwn(target, key)) return Reflect.get(target, key);
-    const value = Reflect.get(provider, key, provider);
-    return typeof value === "function" ? value.bind(provider) : value;
-  } })));
-  const getAuth = pinned.getAuth.bind(pinned);
-  pinned.getAuth = async (requested, options) => {
-    if (typeof requested === "string" ? requested !== model.provider
-      : requested.provider !== model.provider || requested.id !== model.id || requested.api !== model.api) {
-      throw new ModelsError("provider", "Prepared dispatch cannot select another model");
-    }
-    return getAuth(requested, options);
-  };
-  return { models: pinned, assertValid, expiresAt, model: freezeDispatchData(copy(model)), authSource: credential?.type === "oauth" && resolution.source === "OAuth" ? "oauth" : credential?.type === "api_key" ? "api_key" : "provider",
-    provenance: { provider: model.provider, api: model.api, model: model.id, account: probe.supported ? probe.provenance.account : null } };
+  return { models, assertValid, expiresAt, model,
+    provenance: { provider: model.provider, api: model.api, model: model.id, account: null } };
 }
 
 /** Suspend the real orchestrator after native preparation but before ANY session

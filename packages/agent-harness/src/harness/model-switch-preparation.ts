@@ -45,6 +45,13 @@ function checkPreparedFit(snapshot: RuntimeNativeDispatchSnapshot, budget: Runti
   return undefined;
 }
 
+// Account metadata in earlier v5 roots remains readable, but never selects auth
+// or gates a structured transfer. Only the resolved model must match.
+function sameTarget(a: RuntimeNativeDispatchSnapshot["provenance"], b: unknown): boolean {
+  return !!b && typeof b === "object" && "provider" in b && "api" in b && "model" in b
+    && a.provider === b.provider && a.api === b.api && a.model === b.model;
+}
+
 /** Create a measured plan from actual resolved declarations and decorated input.
  * Reservation/epoch policy remains the caller's responsibility. No writes. */
 export function createPreparedModelSwitchState(input: {
@@ -136,7 +143,7 @@ export async function advancePreparedModelSwitch(input: {
   /** Durable host delivery identity, never run ID or text hash; see explicitSwitchMessageDigest. */
   readonly messageId: string;
   readonly exclusiveWriters: true;
-  /** Resolve the outgoing owner with its own pinned auth, no tools or router. */
+  /** Resolve the outgoing owner with ordinary provider auth, no tools or router. */
   readonly outgoing?: (() => Promise<PreparedSwitchProducer | undefined>) | undefined;
   /** Diagnostic only. Cleanup rejection (including from this callback) never
    * replaces a committed result or the original producer/storage failure. */
@@ -165,7 +172,7 @@ export async function advancePreparedModelSwitch(input: {
   validateModelSwitchState(state);
   if (state.identity.switchId !== supplied.identity.switchId) throw new Error("Recorded switch must finish before another transition");
   validateFrozenHandoffBudget(state.frozenBudget);
-  if (switchDigest(input.incoming.snapshot.provenance) !== switchDigest(state.identity.targetProvenance)
+  if (!sameTarget(input.incoming.snapshot.provenance, state.identity.targetProvenance)
     || input.incoming.snapshot.model.contextWindow < state.frozenBudget.contextWindow
     || input.incoming.snapshot.model.maxTokens < state.frozenBudget.outputReserve) throw new Error("Prepared incoming model disagrees with recorded target/budget");
   const fit = checkPreparedFit(input.incoming.snapshot, state.frozenBudget);
@@ -274,7 +281,7 @@ export async function runPreparedModelSwitch(input: {
     const cached = await input.preparation.readHandoff(readiness.switchId, reference);
     const budget: RuntimeHandoffBudget = cached.budget;
     const artifact = cached.artifact;
-    if (input.switching !== false && (switchDigest(input.incoming.snapshot.provenance) !== switchDigest(artifact.target)
+    if (input.switching !== false && (!sameTarget(input.incoming.snapshot.provenance, artifact.target)
       || input.incoming.snapshot.model.contextWindow < budget.contextWindow || input.incoming.snapshot.model.maxTokens < budget.outputReserve)) {
       throw new Error("Incoming prepared dispatch disagrees with accepted target/budget");
     }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let prepared native requests use ordinary provider authentication on each call,
+  including OAuth refresh and credential persistence, without pinning accounts
+  or recording account provenance.
+
 - After an agent restart, the Web wake for an interrupted turn no longer
   offers `AskUser`. It now includes the turn's interrupted-question and
   unapplied-message notes, so the agent does not re-ask the question.

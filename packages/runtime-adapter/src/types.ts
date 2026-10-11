@@ -591,10 +591,6 @@ export interface RuntimeRunOptions {
   readonly sessionTurn?: RuntimeSessionTurnDescriptor | undefined;
   readonly nativeSessionAuthority?: RuntimeNativeSessionAuthority;
   readonly nativeSessionProjection?: RuntimeNativeSessionProjection;
-  /** @internal Host opt-in binding flag for prepared dispatch only: record the
-   * lease's pinned provider/API/account provenance on unguarded operations.
-   * Honoured only from the run-time binding; carries no provenance values. */
-  readonly nativeProvenanceRecording?: true;
   /** Protected, lazy host replay prefix for stateless attempts; never telemetry. */
   readonly detachedContext?: () => Promise<readonly RuntimeMessage[]>;
   readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
@@ -844,7 +840,6 @@ export interface RuntimeNativeDispatchSnapshot {
   readonly expiresAt: number;
   readonly model: { readonly provider: string; readonly id: string; readonly api: string; readonly contextWindow: number; readonly maxTokens: number };
   readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
-  readonly authSource: string;
   readonly systemPrompt: string;
   readonly tools: readonly { readonly name: string; readonly description: string; readonly parameters: Readonly<Record<string, unknown>> }[];
   readonly messages: readonly RuntimeMessage[];
@@ -852,7 +847,7 @@ export interface RuntimeNativeDispatchSnapshot {
 /** Only session binding is supplied after preparation. Instructions, input,
  * root, model, policy and resolved tools cannot be replaced at run time. */
 export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sessionId" | "providerSessionId" | "providerAttributionSessionId"
-  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection" | "nativeProvenanceRecording">>;
+  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
 export interface RuntimeNativePreparedDispatch {
   readonly snapshot: RuntimeNativeDispatchSnapshot;
   assertReady?(remainingStartMs?: number): void;
