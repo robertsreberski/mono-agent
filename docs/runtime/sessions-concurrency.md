@@ -87,6 +87,11 @@ summary, then `handoff_pending`. A later-turn suffix without a validated prior
 summary is text-only replay and never counts as a handoff, and no model change
 happens without a summary. Native session state (raw envelopes, signed
 reasoning) is never reused across models, even with matching provenance.
+Prepared requests resolve ordinary provider authentication on each actual call,
+including OAuth refresh and credential persistence. Credentials are not pinned to
+leases, and account metadata is neither recorded nor used to match transfers.
+Earlier v5 account fields remain readable.
+
 
 Each switch permits at most two billed summary calls per explicit-message generation.
 An outcome-unknown call never auto-repeats. Retries/reopening with the same persisted

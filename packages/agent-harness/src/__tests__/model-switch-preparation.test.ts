@@ -21,7 +21,7 @@ afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)
 const summary: RuntimeHandoffSummary = { intent: ["Retain fictional source facts"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
 function producer(model = "B", outcome: "ready" | "unknown" | "rejected" = "ready") {
   const snapshot = { expiresAt: Date.now() + 300000, model: { provider: "faux", id: model, api: "faux-api", contextWindow: 100000, maxTokens: 8000 },
-    provenance: { provider: "faux", api: "faux-api", model, account: null }, authSource: "provider", systemPrompt: "Fictional host instructions",
+    provenance: { provider: "faux", api: "faux-api", model, account: null }, systemPrompt: "Fictional host instructions",
     tools: [{ name: "FictionalLookup", description: "Read fictional data", parameters: { type: "object", properties: { query: { type: "string" } } } }],
     messages: [{ role: "user", content: "Decorated fictional current input" }] };
   return { snapshot, checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })),
@@ -187,8 +187,12 @@ it("storage-only recovery rolls forward an artifact lost after acceptance, with 
   await prep.abort();
 });
 
-it("ready incoming admission transfers the owner once and forwards the sole immutable artifact, budget and narrow current authority", async () => {
-  const f = await setup(), ready = await f.advance({ outgoing: undefined }); if (ready.status !== "ready") throw new Error("Expected ready");
+it.each([false, true])("ready incoming admission transfers ownership and immutable artifact/budget/authority (earlier account metadata=%s)", async (legacyAccount) => {
+  const f = await setup();
+  const { switchId: _switchId, ...identity } = f.state.identity;
+  const state = legacyAccount ? createModelSwitchState({ ...identity, targetProvenance: { ...identity.targetProvenance, account: "fictional-legacy-account" } },
+    f.state.reservation, f.state.frozenBudget!, f.state.initialMessageDigest) : f.state;
+  const ready = await f.advance({ state, outgoing: undefined }); if (ready.status !== "ready") throw new Error("Expected ready");
   // This fixture tests the real durable transfer. The native prepared execution
   // boundary and normalized-budget checks have their own real-runtime suites.
   const store = openStore(f.base).store as any; store.inspectProviderTurn = async () => ({ status: "absent" });
@@ -296,4 +300,46 @@ it("redelivery of an older generation cannot spend a newer generation's unused p
   expect(f.outgoing.produceHandoffSummary).not.toHaveBeenCalled(); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
   await expect(recoverPreparedModelSwitch(f.prep, { exclusiveWriters: false } as never)).rejects.toThrow("acknowledged");
   await f.prep.abort();
+});
+
+
+it("earlier v5 target account metadata remains readable without gating ordinary auth", async () => {
+  const f = await setup();
+  const { switchId: _switchId, ...identity } = f.state.identity;
+  const state = createModelSwitchState({ ...identity, targetProvenance: { ...identity.targetProvenance, account: "fictional-legacy-account" } },
+    f.state.reservation, f.state.frozenBudget!, f.state.initialMessageDigest);
+  const lease = await f.prep.beginModelSwitchStorage(state);
+  if (!("release" in lease)) throw new Error("Expected owner-held switch lease");
+  await lease.release();
+  expect((await f.prep.read()).pending!.identity.targetProvenance.account).toBe("fictional-legacy-account");
+  expect((await f.advance({ state })).status).toBe("ready");
+  expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
+});
+
+
+it("advances a pending switch with a legacy source account after upgrade to unknown account capture", async () => {
+  const f = await setup();
+  const { switchId: _switchId, ...identity } = f.state.identity;
+  const source = { ...identity.source!, provenance: { ...identity.source!.provenance, account: "fictional-legacy-source" } };
+  const state = createModelSwitchState({ ...identity, source }, f.state.reservation, f.state.frozenBudget!, f.state.initialMessageDigest);
+  const lease = await f.prep.beginModelSwitchStorage(state);
+  if (!("release" in lease)) throw new Error("Expected owner-held switch lease");
+  await lease.release();
+  const captured = await f.prep.captureNativeEvidence({ provider: "faux", api: "faux-api", model: "A", account: null });
+  expect((await f.prep.read()).pending!.identity.source!.provenance.account).toBe("fictional-legacy-source");
+  expect(captured.source!.provenance.account).toBeNull();
+  const changed = { ...captured.view, segments: captured.view.segments.map((segment) => ({ ...segment,
+    descriptor: { ...segment.descriptor, sourceDigest: "f".repeat(64) } })) };
+  await expect(f.advance({ state, view: changed })).rejects.toThrow("changed frozen coverage");
+  for (const field of ["provider", "api", "model"] as const) {
+    const changedModel = { ...captured.view, segments: captured.view.segments.map((segment) => ({ ...segment,
+      descriptor: { ...segment.descriptor, provenance: { ...segment.descriptor.provenance, [field]: "fictional-other" } } })) };
+    await expect(f.advance({ state, view: changedModel })).rejects.toThrow("changed frozen coverage");
+  }
+  expect(f.outgoing.produceHandoffSummary).not.toHaveBeenCalled();
+  const ready = await f.advance({ state, view: captured.view });
+  if (ready.status !== "ready") throw new Error("Expected ready");
+  const stored = await f.prep.readHandoff(ready.switchId, ready.artifact);
+  expect(stored.artifact).toMatchObject({ coverage: [{ provenance: { provider: "faux", api: "faux-api", model: "A", account: null } }] });
+  expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
 });

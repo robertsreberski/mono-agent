@@ -80,9 +80,8 @@ export async function prepareConfiguredModelSwitch(input: {
     }
     if (!supportedRuntime || !checkInheritedPrefix || !runtime.prepareNativeDispatch) { await owner.abort(); return undefined; }
     // A brand-new conversation (no binding, no history) takes the same prepared,
-    // non-switching, unguarded route as a same-model Web turn on v3, so its first
-    // epoch records the pinned lease provenance. Other unbound/unsupported
-    // records (legacy unbound history, long IDs) keep the original path.
+    // non-switching, unguarded route as a same-model Web turn on v3. Other
+    // unbound/unsupported records (legacy unbound history, long IDs) keep the original path.
     const fresh = snapshot.source.status === "unsupported" && snapshot.source.reason === "unbound" && snapshot.history.length === 0 && !snapshot.native && !snapshot.pending;
     // A cancellation that arrived while waiting for the claim keeps the original
     // path's ordinary cancelled-turn continuity, exactly as before this route.
@@ -208,10 +207,8 @@ export async function prepareConfiguredModelSwitch(input: {
           await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
-          // Opt-in only: unguarded (pre-first-switch) epochs record the pinned lease provenance too.
           return { reconciliation: turn.reconciliation, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
             sessionId: id, providerSessionId: id, providerAttributionSessionId: id, sessionKeepAlive: true, sessionTurn: turn.reconciliation.descriptor,
-            nativeProvenanceRecording: true as const,
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         }));

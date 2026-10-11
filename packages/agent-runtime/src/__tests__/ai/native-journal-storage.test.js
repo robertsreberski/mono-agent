@@ -23,7 +23,7 @@ async function fixture(extra = {}) {
     await store.writeRecord("owner_binding", { kind: "host", ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
     await store.writeRecord("handle_binding", { handleId: store.metadata.id, baseRevision: 0, authoritative: true, model: { provider: from.provider, id: from.model, api: from.api } });
   }, "bind");
-  await store.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, "source-message"); await store.sync();
+  await store.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, /** @type {any} */ ("source-message")); await store.sync();
   const metadata = { ...store.metadata }; await store.close();
   const bridge = createManagedNativeJournalStorage({ sessionsRoot: root, ...extra });
   const source = await bridge.freeze({ epoch: "9".repeat(64), handleId: metadata.id,
@@ -91,12 +91,12 @@ it("freezes legacy model/API from owned binding bytes without auth, never invent
   await expect(f.bridge.freeze({ ...coordinate, ownerKey: "fictional-wrong-owner" })).rejects.toThrow();
 });
 it.each([
-  ["identical positive lease provenance on every content operation", ["fictional-account", "fictional-account"], "fictional-account"],
+  ["legacy identical account metadata", ["fictional-account", "fictional-account"], null],
   ["different accounts across operations", ["fictional-account", "fictional-other"], null],
   ["one operation without recorded provenance", ["fictional-account", undefined], null],
   ["explicit unknown account", [null, null], null],
   ["no content-bearing operation", [], null],
-])("freezes an unguarded opt-in epoch account only from %s", async (_name, accounts, expected) => {
+])("ignores legacy unguarded account metadata: %s", async (_name, accounts, expected) => {
   const root = await mkdtemp(join(tmpdir(), "mono-native-lease-")); roots.push(root);
   const repo = new JsonlSessionRepo({ sessionsRoot: root }); repos.push(repo);
   const store = await repo.create({ id: "3".repeat(64), cwd: "/fictional" });
@@ -105,7 +105,7 @@ it.each([
     await store.writeRecord("handle_binding", { handleId: store.metadata.id, baseRevision: 0, authoritative: true, model: { provider: from.provider, id: from.model, api: from.api } });
   }, "bind");
   for (const [index, account] of accounts.entries()) {
-    await store.beginTurn(`fictional-turn-${index}`);
+    await store.beginTurn(`fictional-turn-${index}`, undefined, undefined, undefined);
     await store.openOperation(`fictional-op-${index}`, { model: { provider: from.provider, api: from.api, id: from.model },
       ...(account === undefined ? {} : { nativeProvenance: { ...from, account } }) });
     await store.appendMessage({ role: "user", content: `Fictional fact ${index}`, timestamp: 17 });

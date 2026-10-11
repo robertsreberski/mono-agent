@@ -1,6 +1,6 @@
 import { it, expect, vi, beforeEach } from "vitest";
 const prepared = vi.hoisted(() => ({ snapshot: Object.freeze({ model: { provider: "faux", id: "fixture", api: "faux", contextWindow: 100000, maxTokens: 4096 },
-  provenance: { provider: "faux", api: "faux", model: "fixture", account: null }, authSource: "provider", systemPrompt: "Resolved rules", tools: [], messages: [] }),
+  provenance: { provider: "faux", api: "faux", model: "fixture", account: null }, systemPrompt: "Resolved rules", tools: [], messages: [] }),
   assertReady: vi.fn(), checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })),
   produceHandoffSummary: vi.fn(async (_input: unknown) => ({ status: "summary_rejected" as const, reason: "fictional-refusal" })),
   run: vi.fn(async (_binding?: unknown) => ({ text: "Prepared fictional answer" })), close: vi.fn(async () => {}) }));

@@ -230,10 +230,10 @@ An unavailable outgoing provider/auth skips its unbilled slot and advances to
 the exact previously validated checkpoint (only when one exists), incoming
 producer, then pending. Legacy API/model provenance
 comes from validated owned native binding bytes without resolving credentials;
-legacy account identity remains unknown. With the opt-in, unguarded Web turns
-ask the prepared lease (binding flag only) to record its pinned provenance; an
-unguarded epoch freezes with that account only when every content-bearing
-operation recorded the identical positive provenance, otherwise unknown. Capture overflow throws the exported
+account identity remains unknown. Prepared requests use ordinary provider
+authentication on each actual call; no account provenance is recorded or matched.
+Earlier v5 account fields remain readable but do not gate a structured transfer.
+Capture overflow throws the exported
 `NativeEvidenceCapacityError`; matching an error-code string is insufficient to
 classify it as capacity.
 
@@ -457,7 +457,7 @@ The internal `prepareHarnessRuntime` substrate now runs context/memory/skills
 preparation and request extension/policy/MCP/decorations once under the existing
 provider permit and outgoing claim, then resolves native tools/auth before P2.
 It returns frozen context and native metadata, a non-consuming lifetime check,
-an auth-pinned no-tools producer, and one late-bound run accepting the transferred
+an ordinary-auth no-tools producer, and one late-bound run accepting the transferred
 P2 owner. Extension cleanup, capability release, native close and permit release
 settle once, including close/abort during production. Metadata identity carrying
 out-of-band capability bindings is preserved, not serialized/cloned. No configured

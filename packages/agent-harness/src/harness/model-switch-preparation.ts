@@ -5,7 +5,7 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import type { ManagedProviderSessionPreparation, ManagedModelSwitchStorageLease } from "../durable-history.js";
 import type { ModelSwitchState, ModelSwitchReservation, CanonicalJournalDescriptor, HandoffReference } from "../durable-model-switch-contract.js";
-import { switchDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
+import { switchDigest, switchCoverageDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
 import { createModelSwitchState } from "../model-switch-billing.js";
 import type { PreparedHarnessRuntime, HarnessPreparedBinding } from "./runtime-execution.js";
 import type { ProviderSessionTurnBinding } from "../types.js";
@@ -43,6 +43,13 @@ function checkPreparedFit(snapshot: RuntimeNativeDispatchSnapshot, budget: Runti
   if (estimate(hostContext(snapshot)) > budget.hostCap) return { status: "budget_failure", reason: "host_cap" };
   if (estimate(snapshot.messages.at(-1)) + 4096 > budget.inputTokens) return { status: "budget_failure", reason: "input_allowance" };
   return undefined;
+}
+
+// Account metadata in earlier v5 roots remains readable, but never selects auth
+// or gates a structured transfer. Only the resolved model must match.
+function sameTarget(a: RuntimeNativeDispatchSnapshot["provenance"], b: unknown): boolean {
+  return !!b && typeof b === "object" && "provider" in b && "api" in b && "model" in b
+    && a.provider === b.provider && a.api === b.api && a.model === b.model;
 }
 
 /** Create a measured plan from actual resolved declarations and decorated input.
@@ -136,7 +143,7 @@ export async function advancePreparedModelSwitch(input: {
   /** Durable host delivery identity, never run ID or text hash; see explicitSwitchMessageDigest. */
   readonly messageId: string;
   readonly exclusiveWriters: true;
-  /** Resolve the outgoing owner with its own pinned auth, no tools or router. */
+  /** Resolve the outgoing owner with ordinary provider auth, no tools or router. */
   readonly outgoing?: (() => Promise<PreparedSwitchProducer | undefined>) | undefined;
   /** Diagnostic only. Cleanup rejection (including from this callback) never
    * replaces a committed result or the original producer/storage failure. */
@@ -165,7 +172,7 @@ export async function advancePreparedModelSwitch(input: {
   validateModelSwitchState(state);
   if (state.identity.switchId !== supplied.identity.switchId) throw new Error("Recorded switch must finish before another transition");
   validateFrozenHandoffBudget(state.frozenBudget);
-  if (switchDigest(input.incoming.snapshot.provenance) !== switchDigest(state.identity.targetProvenance)
+  if (!sameTarget(input.incoming.snapshot.provenance, state.identity.targetProvenance)
     || input.incoming.snapshot.model.contextWindow < state.frozenBudget.contextWindow
     || input.incoming.snapshot.model.maxTokens < state.frozenBudget.outputReserve) throw new Error("Prepared incoming model disagrees with recorded target/budget");
   const fit = checkPreparedFit(input.incoming.snapshot, state.frozenBudget);
@@ -173,7 +180,7 @@ export async function advancePreparedModelSwitch(input: {
   // The view is validated by the native helper, and must be this intent's exact
   // frozen outgoing journal, not a caller-selected or later native tail.
   const expected = state.identity.source ? [(({ epoch: _epoch, ...source }) => source)(state.identity.source)] : [];
-  if (switchDigest(input.view.segments.map((segment) => segment.descriptor)) !== switchDigest(expected)) throw new Error("Prepared switch evidence changed frozen coverage");
+  if (switchCoverageDigest(input.view.segments.map((segment) => segment.descriptor)) !== switchCoverageDigest(expected)) throw new Error("Prepared switch evidence changed frozen coverage");
   const handoffOptions = options(state), prepared = input.native.prepareHandoff(input.view, handoffOptions);
   if (!snapshot.pending && prepared.status !== "prepared") return prepared;
   if (!snapshot.pending && state.initialMessageDigest !== messageDigest) throw new Error("Switch intent must record its initiating explicit message");
@@ -274,7 +281,7 @@ export async function runPreparedModelSwitch(input: {
     const cached = await input.preparation.readHandoff(readiness.switchId, reference);
     const budget: RuntimeHandoffBudget = cached.budget;
     const artifact = cached.artifact;
-    if (input.switching !== false && (switchDigest(input.incoming.snapshot.provenance) !== switchDigest(artifact.target)
+    if (input.switching !== false && (!sameTarget(input.incoming.snapshot.provenance, artifact.target)
       || input.incoming.snapshot.model.contextWindow < budget.contextWindow || input.incoming.snapshot.model.maxTokens < budget.outputReserve)) {
       throw new Error("Incoming prepared dispatch disagrees with accepted target/budget");
     }

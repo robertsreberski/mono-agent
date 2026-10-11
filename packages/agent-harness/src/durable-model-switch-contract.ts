@@ -237,6 +237,16 @@ export function canonicalSwitchJSON(value: unknown): string {
   return JSON.stringify(ordered(value));
 }
 export function switchDigest(value: unknown): string { return createHash("sha256").update(canonicalSwitchJSON(value)).digest("hex"); }
+/** Compare frozen coverage without obsolete account identity, preserving every
+ * other descriptor field. Durable switch/artifact hashes remain unchanged. */
+export function switchCoverageDigest(value: unknown): string {
+  if (!Array.isArray(value)) return switchDigest(value);
+  return switchDigest(value.map((source: unknown) => {
+    switchObject(source); switchObject(source.provenance);
+    const { account: _account, ...provenance } = source.provenance;
+    return { ...source, provenance };
+  }));
+}
 export function summaryAttemptId(switchId: string, generation: number, producer: SummaryAttempt["producer"]): string { return switchDigest({ switchId, generation, producer, policy: MODEL_SWITCH_BILLING_POLICY }); }
 export function switchConversationKey(bucket: string): string { return createHash("sha256").update("mono-agent-history-v1\0").update(bucket).digest("hex"); }
 export function serializeModelSwitchState(value: ModelSwitchState): Buffer {

@@ -1,5 +1,4 @@
-// Opt-in pinned-lease provenance for epochs written before any switch. Matching
-// provenance never selects native reuse: every model change takes a handoff.
+// Ordinary authentication on prepared turns; every model change takes a handoff.
 // Real public config path, Web-shaped persisted IDs, Codex-shaped faux provider
 // with fictional in-memory OAuth credentials. No network, tools or real roots.
 import { randomUUID } from "node:crypto";
@@ -35,6 +34,12 @@ async function fixture(options: { enabled?: boolean; fallback?: boolean; runtime
   const transport = vi.spyOn(faux.provider, "streamSimple");
   const models = createModels({ credentials: { read: async () => ({ ...credential }), list: async () => [provider], delete: async () => {}, modify: async () => ({ ...credential }) } as never });
   models.setProvider({ ...faux.provider, auth: { oauth: { refresh: async () => ({ ...credential }), toAuth: (value: { access: string }) => ({ apiKey: value.access }) } } } as never);
+  let authFailure = false;
+  const ordinaryAuth = models.getAuth.bind(models);
+  models.getAuth = (selected, options) => {
+    if (authFailure) throw new Error("Fictional provider auth unavailable after admission");
+    return typeof selected === "string" ? ordinaryAuth(selected, options) : ordinaryAuth(selected, options);
+  };
   const configPath = join(root, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
@@ -79,19 +84,19 @@ async function fixture(options: { enabled?: boolean; fallback?: boolean; runtime
   const artifacts = async () => Promise.all((await readdir(join(root, "history", ".model-switches")).catch(() => [] as string[])).filter((name) => name.endsWith(".handoff.json"))
     .map(async (name) => JSON.parse(await readFile(join(root, "history", ".model-switches", name), "utf8"))));
   const summaryCalls = () => transport.mock.calls.filter(([, context]) => isSummary(context)).length;
-  return { root, faux, transport, make, request, reply, record, journalRecords, artifacts, summaryCalls, getStore: () => store!,
+  return { root, faux, transport, make, request, reply, record, journalRecords, artifacts, summaryCalls, getStore: () => store!, setAuthFailure: (value: boolean) => { authFailure = value; },
     setAccount: (account: string) => { credential = { ...credential, accountId: account, access: token(account) }; } };
 }
 const summary = JSON.stringify({ intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] });
 const artifactOf = (artifacts: { switchId: string; artifact: Record<string, unknown> }[], switchId: string) => artifacts.find((entry) => entry.switchId === switchId)!.artifact;
 
-it("fresh opt-in Web conversation records lease provenance from its first epoch; A->B->A still takes a structured handoff each way", async () => {
+it("fresh opt-in Web conversation stops recording account metadata; A->B->A still takes a structured handoff each way", async () => {
   const f = await fixture(), h = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer")]); await h.respond(f.request("fictional-first", "A"), { append: async () => {} });
   const first = await f.journalRecords();
   expect(first.filter((row) => row.kind === "operation_start").map((row) => row.payload.config.nativeProvenance))
-    .toEqual([{ provider, api, model: "A", account: expect.stringMatching(/^codex-account-v1:/u) }]);
-  expect((await f.record()).version).toBe(3); // Recording grants no authority and does not upgrade the conversation.
+    .toEqual([undefined]);
+  expect((await f.record()).version).toBe(3); // Ordinary first turns do not upgrade the conversation.
   f.faux.setResponses([f.reply(summary), f.reply("Fictional B answer")]); await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
   let returned = "";
   f.faux.setResponses([f.reply(summary), (context) => { returned = JSON.stringify(context.messages); return f.reply("Fictional return answer"); }]);
@@ -122,13 +127,11 @@ it("caller provenance and flags are ignored; a mixed-provenance first epoch stay
   const forged = { provider, api, model: "A", account: "codex-account-v1:forged" };
   const f = await fixture({ runtimeOptions: { nativeProvenance: forged, nativeProvenanceRecording: true } }), h = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer")]); await h.respond(f.request("fictional-first", "A"), { append: async () => {} });
-  // A no-ID wake keeps the original unprepared path: no lease, so no provenance,
-  // even though caller options carry a forged value and the recording flag.
+  // Both prepared turns and no-ID wakes stop recording account metadata.
   f.faux.setResponses([f.reply("Fictional wake answer")]); await h.respond(f.request(undefined, "A"), { append: async () => {} });
   const starts = (await f.journalRecords()).filter((row) => row.kind === "operation_start");
   expect(starts).toHaveLength(2);
-  expect(starts[0].payload.config.nativeProvenance.account).toMatch(/^codex-account-v1:/u);
-  expect(starts[0].payload.config.nativeProvenance.account).not.toBe(forged.account);
+  expect(Object.hasOwn(starts[0].payload.config, "nativeProvenance")).toBe(false);
   expect(Object.hasOwn(starts[1].payload.config, "nativeProvenance")).toBe(false);
   f.faux.setResponses([f.reply(summary), f.reply("Fictional B answer")]);
   await h.respond(f.request("fictional-switch-b", "B"), { append: async () => {} });
@@ -211,3 +214,32 @@ it("a second same-model persisted Web turn after a v5 switch keeps the single cu
   const after = await f.record(); expect(after.messages).toHaveLength(6); expect(after.lastSwitch).toEqual(before.lastSwitch);
   expect(f.transport).toHaveBeenCalledTimes(4); expect(f.summaryCalls()).toBe(1); // only the A -> B handoff
 }, 20_000);
+
+
+it("auth failure after paid admission stays charged and redelivery never re-bills", async () => {
+  const f = await fixture();
+  let paidCalls = 0;
+  const h = await f.make((runtime) => {
+    const prepare = runtime.prepareNativeDispatch!.bind(runtime);
+    runtime.prepareNativeDispatch = async (...args) => {
+      const lease = await prepare(...args);
+      return { ...lease, produceHandoffSummary: async (input) => {
+        paidCalls += 1; f.setAuthFailure(true);
+        try { return await lease.produceHandoffSummary!(input); } finally { f.setAuthFailure(false); }
+      } };
+    };
+    return runtime;
+  });
+  f.faux.setResponses([f.reply("Fictional A answer")]);
+  await h.respond(f.request("fictional-first", "A"), { append: async () => {} });
+  const request = f.request("fictional-switch-b", "B");
+  await expect(h.respond(request, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
+  const states = async () => Promise.all((await readdir(join(f.root, "history", ".model-switches"))).filter((name) => name.endsWith(".state.json"))
+    .map(async (name) => JSON.parse(await readFile(join(f.root, "history", ".model-switches", name), "utf8"))));
+  expect(paidCalls).toBe(2); expect(f.summaryCalls()).toBe(0);
+  const before = await states(); expect(before).toHaveLength(1);
+  expect(before[0].attempts).toHaveLength(2);
+  expect(before[0].attempts.every((attempt: { outcome: string }) => attempt.outcome === "rejected")).toBe(true);
+  await expect(h.respond(request, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "handoff_pending" } });
+  expect(paidCalls).toBe(2); expect(f.summaryCalls()).toBe(0); expect(await states()).toEqual(before);
+});

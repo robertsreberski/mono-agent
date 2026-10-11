@@ -134,7 +134,7 @@ export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Pr
       expiryTimer.unref();
       const start = (value: HarnessPreparedBinding, allowance: number): Promise<RuntimeResult> => {
         if (state !== "prepared" || producing || admitting) return Promise.reject(new Error("Host preparation is no longer available"));
-        if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "nativeProvenanceRecording"].includes(key as string))
+        if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"].includes(key as string))
           || typeof value.assertOwned !== "function" || value.reconciliation?.descriptor.reconciliation?.purpose !== "execution"
           || value.turnRevision !== value.reconciliation.descriptor.baseRevision) return Promise.reject(new TypeError("Host preparation accepts only owned P2/session binding"));
         let captured; try { assertStart(allowance); captured = copyPreparationData(value); } catch (error) { return Promise.reject(error); }
@@ -324,7 +324,6 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       delete merged.providerSessionId;
       delete merged.nativeSessionAuthority;
       delete merged.nativeSessionProjection;
-      delete merged.nativeProvenanceRecording;
       delete merged.sessionTurn;
       delete merged.onSessionTurnDetached;
       delete merged.detachedContext;
@@ -632,8 +631,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
           ...(runtimeOptions.providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId: runtimeOptions.providerAttributionSessionId }), sessionKeepAlive: runtimeOptions.sessionKeepAlive,
           sessionIdleTimeoutMs: runtimeOptions.sessionIdleTimeoutMs, sessionTurn: runtimeOptions.sessionTurn, sessionRecovery: runtimeOptions.sessionRecovery,
           ...(runtimeOptions.nativeSessionAuthority ? { nativeSessionAuthority: runtimeOptions.nativeSessionAuthority } : {}),
-          ...(runtimeOptions.nativeSessionProjection ? { nativeSessionProjection: runtimeOptions.nativeSessionProjection } : {}),
-          ...(runtimeOptions.nativeProvenanceRecording === true ? { nativeProvenanceRecording: true as const } : {}) })
+          ...(runtimeOptions.nativeSessionProjection ? { nativeSessionProjection: runtimeOptions.nativeSessionProjection } : {}) })
           : await runtime.run(context.systemPrompt, runtimeOptions);
         contextOwned = false;
         if (reconciliation !== undefined) {

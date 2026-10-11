@@ -174,8 +174,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
   return /** @type {any} */ ({
     read,
     // The callback-only fallback below can derive auth but cannot persist an
-    // OAuth rotation. Prepared leases must refuse before burning that token.
-    supportsPersistentOAuthModify: (providerId) => !apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function",
+    // OAuth rotation. Ordinary refresh requires a persisting resolver.
     async modify(providerId, fn) {
       if (!apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function") {
         return resolvePiApiKey.modifyCredential(providerId, fn);
@@ -206,7 +205,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
 // resolved model. `piResolvedModels` is an advanced/test seam mirroring
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
-function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId) {
+function buildRunModels(runtime, options, runtimeWarnings) {
   let models;
   if (options.piResolvedModels) {
     models = options.piResolvedModels;
@@ -232,10 +231,7 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
       });
     }
   }
-  return withProviderCheckOutputCap(
-    withOpenCodeSessionHeaders(withContext1MModels(models, options.customProvider ? undefined : options.context1MModels), providerAttributionSessionId),
-    options.providerCheckMaxTokens,
-  );
+  return withContext1MModels(models, options.customProvider ? undefined : options.context1MModels);
 }
 
 const PROVIDER_CHECK_REQUEST_METHODS = new Set([
@@ -644,10 +640,11 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     // independent from piToolExecutionMode; the adapter gates invoked calls.
     const toolSteeringMode = "one-at-a-time";
 
-    const piModels = buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId);
+    const basePiModels = buildRunModels(runtime, options, runtimeWarnings);
+    const piModels = withProviderCheckOutputCap(withOpenCodeSessionHeaders(basePiModels, providerAttributionSessionId), options.providerCheckMaxTokens);
 
     return { runtime, capabilities, effectiveThinkingLevel, reference, toolLimits, effectiveToolExecutionMode,
-      tools, structuredTool, maxRetries, maxRetryDelayMs, toolSteeringMode, piModels };
+      tools, structuredTool, maxRetries, maxRetryDelayMs, toolSteeringMode, basePiModels, piModels };
   };
 
   try {
@@ -656,10 +653,9 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
       if (runtimeWarnings.some((warning) => ["mcp_init_failed", "mcp_list_tools_failed"].includes(warning.warning_kind))) {
         throw new Error("Native dispatch preparation requires complete MCP declarations");
       }
-      const auth = await prepareDispatchAuth(prepared.piModels, prepared.runtime.model, options.abortSignal);
+      const auth = await prepareDispatchAuth(prepared.basePiModels, prepared.runtime.model, options.abortSignal);
       if (auth.model.provider !== resolved.provider || auth.model.id !== resolved.model) throw new Error("Prepared dispatch does not match its canonical requested model");
       prepared.runtime = { ...prepared.runtime, model: auth.model };
-      prepared.nativeProvenance = auth.provenance;
       // Pin actual declarations, not names/config guesses; execute closures stay
       // attached to this exact runState and are never initialized a second time.
       for (const tool of prepared.tools) tool.parameters = freezeDispatchData(copyDispatchData(tool.parameters));
@@ -669,17 +665,14 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
         compactionSummaryMaxTokens: resolveAgentCompactionPolicy(options, auth.model).summaryMaxTokens,
-        provenance: auth.provenance, authSource: auth.authSource, expiresAt: auth.expiresAt }, {
+        provenance: auth.provenance, expiresAt: auth.expiresAt }, {
         assertReady: (remainingStartMs = 0) => auth.assertValid(true, remainingStartMs),
         check: (input) => { auth.assertValid(true); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
           return result.status === "ready" ? { status: "ready" } : result; },
-        run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: auth.models.completeSimple.bind(auth.models),
+        run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: prepared.piModels.completeSimple.bind(prepared.piModels),
           signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
       });
       auth.assertValid(true); // Before any native lookup/open or incoming mutation.
-      // Only the host's run-time binding (never prepare-time/caller options) can
-      // ask an unguarded opt-in turn to record this lease's pinned provenance.
-      prepared.recordProvenance = binding?.nativeProvenanceRecording === true;
       options = { ...options, ...binding };
       providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;
       providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
@@ -730,9 +723,6 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     // surface as output from this run.
     harness = await buildTurnHarness(runState, {
       session: runState.session,
-      // Lease provenance only: guarded authority, or the host's opt-in binding flag.
-      // A caller-supplied options.nativeProvenance is never read.
-      nativeProvenance: options.nativeSessionAuthority || prepared?.recordProvenance ? prepared?.nativeProvenance : undefined,
       piModels,
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,

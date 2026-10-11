@@ -12,12 +12,6 @@ import { validateSessionTurn } from "./journal-schema.js";
 import { createTurnBinding, digestTurnInput } from "./turn-evidence.js";
 import { BACKOFF_ABORT, createRetryStream } from "./retry-stream.js";
 
-/**
- * options.nativeProvenance is @internal: only the guarded prepared provider
- * bridge supplies dispatch-lease provenance. Not a public caller attestation or
- * authentication option. Hosts supplying low-level store/driver options already
- * own native storage; this metadata alone grants no canonical authority.
- */
 export function createRunDriver(store, options) {
   // Snapshot accepted content: a request extension cannot mutate a cached handoff
   // while a provider/tool await is in flight.
@@ -39,10 +33,7 @@ export function createRunDriver(store, options) {
   let turnBeginning = false, turnEnding = false;
   const inputAdmissions = new Set();
   let turnId = null, turnBinding, ownsTurn = false, promptCount = 0, initialInputKey, currentInputId, initialMessageId;
-  /** @internal Dispatch-lease metadata only; not caller-issued account authority. */
-  const nativeProvenance = options.nativeProvenance === undefined ? undefined : structuredClone(options.nativeProvenance);
-  const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api },
-    ...(nativeProvenance ? { nativeProvenance: structuredClone(nativeProvenance) } : {}) });
+  const modelConfig = () => ({ model: { provider: options.model.provider, id: options.model.id, api: options.model.api } });
   async function beginTurn(id = `synthetic:runtime:${randomUUID()}`, source = "synthetic", descriptor) {
     if (turnId || turnBeginning || turnEnding) throw new Error("Pi logical turn is already open");
     turnBeginning = true;

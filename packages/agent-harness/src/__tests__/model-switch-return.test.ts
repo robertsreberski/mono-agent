@@ -47,7 +47,7 @@ async function setup(api = provenance.api) {
   const native = f.native as RuntimeNativePreparationStorage, captured = await prep.captureNativeEvidence();
   const source = (await prep.read()).source; if (source.status !== "supported") throw new Error("Expected source");
   const incoming = { snapshot: { expiresAt: Date.now() + 300000, model: { provider: "faux", api, id: "A", contextWindow: 100000, maxTokens: 8000 },
-    provenance: dispatchProvenance, authSource: "fixture", systemPrompt: "Fictional current instructions", tools: [], messages: [{ role: "user", content: "Fictional return request" }] },
+    provenance: dispatchProvenance, systemPrompt: "Fictional current instructions", tools: [], messages: [{ role: "user", content: "Fictional return request" }] },
     checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })), produceHandoffSummary: vi.fn(async () => ({ status: "ready" as const, summary })), close: vi.fn(async () => {}) };
   const state = createPreparedModelSwitchState({ source, historyBucket: bucket, journal: captured.source, incoming: incoming.snapshot, native, targetEpoch: "6".repeat(64),
     reservation: { canonicalBytes: 65536, artifactBytes: 131072, nativeBytes: 8192, pendingBytes: 131072 },

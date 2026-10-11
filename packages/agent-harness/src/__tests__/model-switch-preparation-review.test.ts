@@ -24,7 +24,7 @@ const summary = { intent: ["Fictional objective"], constraints: [], decisions: [
 function producer(model = "B") {
   const snapshot: RuntimeNativeDispatchSnapshot = { expiresAt: Date.now() + 300000,
     model: { provider: "faux", id: model, api: "faux-api", contextWindow: 100000, maxTokens: 8000 },
-    provenance: { provider: "faux", api: "faux-api", model, account: null }, authSource: "provider",
+    provenance: { provider: "faux", api: "faux-api", model, account: null },
     systemPrompt: "Fictional stable instructions", tools: [], messages: [{ role: "user", content: "Fictional current input" }] };
   return { snapshot, checkHandoffSummary: vi.fn(() => ({ status: "ready" as const })),
     produceHandoffSummary: vi.fn(async (): Promise<RuntimeHandoffProducerResult> => ({ status: "ready", summary })), close: vi.fn(async () => {}) };

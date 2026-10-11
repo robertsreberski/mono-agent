@@ -106,16 +106,16 @@ alone is not support. The facade applies the same sandbox/process-controller
 protection as ordinary runs and forwards the exact single-use lease.
 `RuntimeNativeDispatchSnapshot` carries frozen actual tool/MCP/StructuredOutput
 declarations, augmented instructions, input, model limits and nonsecret selected
-auth provenance. `RuntimeNativeDispatchBinding` allows only late session and
+provider/API/model metadata (account unknown). `RuntimeNativeDispatchBinding` allows only late session and
 protected native-authority/projection decisions, not a root/model/input rewrite.
-Its internal `nativeProvenanceRecording` flag asks an unguarded run to record the
-lease's own pinned provenance; it carries no values and is ignored at prepare time.
+Authentication uses ordinary provider resolution on each actual request,
+including OAuth refresh; no credentials are retained in the prepared lease.
 No native session opens during preparation. Always close the lease, and retain
 the host concurrency permit through its settlement; abort via the original
 signal. Prepared routed execution is one primary attempt with no automatic
 router-level replay or backup (native transport retry policy is unchanged).
 `assertReady()` checks lifetime without consuming the lease before incoming P2.
-The typed lease optionally forwards pure `checkHandoffSummary` and one pinned
+The typed lease optionally forwards pure `checkHandoffSummary` and one ordinary-auth
 `produceHandoffSummary` request/result; producers have no tools, router retry,
 provider/auth override or native persistence. Host durable admission owns billing.
 `createManagedNativeJournalStorage` additionally returns typed complete read-only

@@ -162,43 +162,26 @@ Native runtimes additionally expose `nativePreparedDispatch: "v1"` and
 actual built-in, MCP and StructuredOutput declarations plus provider
 model/authentication **before any session lookup, open, repair or creation**.
 Its deeply frozen `snapshot` includes the augmented system prompt, input,
-declarations, model limits and nonsecret provider/API/account provenance; it
-never contains credentials or auth headers. Only positively established Codex
-OAuth account metadata is an account proof; API-key, ambient and unsupported
-accounts remain null. Authentication can perform the selected store's normal
-OAuth refresh during preparation. The accepted auth is pinned to this dispatch.
-Preparation requires locally measured validity of at least the five-minute maximum
-idle lease age plus a five-minute request reserve. Pi-ai 1.0.1 honours the requested
-`minOAuthValidityMs`, including after refresh; the lease also checks it locally.
+declarations, model limits and nonsecret provider/API/model metadata; account
+identity is unknown, and credentials or auth headers never enter the snapshot.
+Preparation checks provider availability using ordinary authentication. Each
+actual summary, turn, retry or compaction request resolves authentication again
+through the same Models/provider path, including normal OAuth refresh and
+credential persistence. Credentials are not pinned to the lease; changing accounts
+is not a dispatch refusal. Authentication failures use ordinary provider failures.
+
 Start within five minutes; the host requires at least 30 seconds remaining before
 P2 admission. An unref'd max-age timer closes forgotten idle leases automatically,
 releasing MCP/runState resources; active production settles first. Timers do not
-abort already-running dispatches.
+abort already-running dispatches. In-flight streams are authorized at request
+start, not renewed mid-stream. No auto-replay of a turn that may already have tool
+effects. The no-tools producer uses configured `piTransport` (default `sse`) and
+remains one attempt without provider fallback.
 
-A later request with less than five minutes of OAuth validity may refresh **only**
-through the original shared store's persisting `modify` and same credential id,
-using its current rotating token. The host auth-file resolver provides in-process
-serialization (`enqueueAuthFile`); multi-process sharing of `auth.json` is not
-coordinated, same as ordinary refresh. Custom stores must honour their persistence
-contract. Callback-only dynamic stores without `modifyCredential` refuse before
-refresh; read-after-write verifies the committed credential. Re-probe it and require the
-same non-null account, provider and API plus sufficient validity. A foreign or
-unknown account, changed provider/API, short-lived refresh or refresh failure
-refuses the next request as `safety_prepared_credentials`, not `provider_auth`.
-Keep the newly rotated credential in that original store even if this lease
-refuses it; never overwrite it with the old token. No implicit refresh for
-unknown-account OAuth, other stores, or API-key/ambient auth. No auto-replay of a
-turn that may already have tool effects. In-flight streams are authorized at
-request start, not renewed mid-stream. The no-tools producer uses the configured
-`piTransport` (default `sse`) and remains one attempt without provider fallback.
-
-The pinned collection exposes only its selected model and refuses another
-model's authentication, including a same-provider/API model selected by a
-resumed/compaction path. Provider methods retain their original receiver, so
-prototype/private-field providers are not flattened. Runtime schema copies
-retain TypeBox metadata/symbols before freezing; host snapshots contain only
-serializable declaration data. Real Codex conversion of frozen TypeBox and
-StructuredOutput declarations is covered by an intercepted-transport test.
+Provider methods retain their original receiver. Runtime schema copies retain
+TypeBox metadata/symbols before freezing; host snapshots contain only serializable
+declaration data. Real Codex conversion of frozen TypeBox and StructuredOutput
+declarations is covered by an intercepted-transport test.
 
 The single-use lease's `run(binding)` accepts only late host-owned session keys,
 turn/recovery descriptors and native authority/projection. It cannot replace the
@@ -354,14 +337,6 @@ caller owns the exact canonical fence/descriptor, matching native evidence befor
 storage-only repair; it neither creates a session nor dispatches a model/tool.
 No existing
 configuration enables this path; configured switching remains separate work.
-
-`probeNativeAccountProvenance` reads only caller-supplied selected credential
-metadata, with no file access, refresh, writes or paid requests. Pi 1.0.1 Codex
-OAuth login and refresh expose `accountId` from the access-token auth claim.
-The probe requires that claim to match the credential metadata **and** the exact
-dispatch token, returning an opaque nonsecret account reference. Other credentials
-remain explicitly unknown; token hashes and credential paths are not proof.
-Account provenance is recorded only; no switch reuses native evidence on it.
 
 ## Architecture
 
@@ -594,7 +569,6 @@ normalizeRuntimeModelReference
 parseRuntimeModelReference
 parseStoredAllowlist
 piNativeRuntimeBridge
-probeNativeAccountProvenance
 produceNativeHandoffSummary
 reasoningLevelsForPiModel
 refreshProviderSession
