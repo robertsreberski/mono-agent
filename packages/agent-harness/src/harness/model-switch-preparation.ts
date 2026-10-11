@@ -5,7 +5,7 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import type { ManagedProviderSessionPreparation, ManagedModelSwitchStorageLease } from "../durable-history.js";
 import type { ModelSwitchState, ModelSwitchReservation, CanonicalJournalDescriptor, HandoffReference } from "../durable-model-switch-contract.js";
-import { switchDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
+import { switchDigest, switchCoverageDigest, validateModelSwitchState, validateFrozenHandoffBudget } from "../durable-model-switch-contract.js";
 import { createModelSwitchState } from "../model-switch-billing.js";
 import type { PreparedHarnessRuntime, HarnessPreparedBinding } from "./runtime-execution.js";
 import type { ProviderSessionTurnBinding } from "../types.js";
@@ -180,7 +180,7 @@ export async function advancePreparedModelSwitch(input: {
   // The view is validated by the native helper, and must be this intent's exact
   // frozen outgoing journal, not a caller-selected or later native tail.
   const expected = state.identity.source ? [(({ epoch: _epoch, ...source }) => source)(state.identity.source)] : [];
-  if (switchDigest(input.view.segments.map((segment) => segment.descriptor)) !== switchDigest(expected)) throw new Error("Prepared switch evidence changed frozen coverage");
+  if (switchCoverageDigest(input.view.segments.map((segment) => segment.descriptor)) !== switchCoverageDigest(expected)) throw new Error("Prepared switch evidence changed frozen coverage");
   const handoffOptions = options(state), prepared = input.native.prepareHandoff(input.view, handoffOptions);
   if (!snapshot.pending && prepared.status !== "prepared") return prepared;
   if (!snapshot.pending && state.initialMessageDigest !== messageDigest) throw new Error("Switch intent must record its initiating explicit message");

@@ -419,3 +419,15 @@ it.each([false, true])("recovers one empty reply on the prepared path without to
   expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "empty_reply_retry", outcome: "text" }));
   if (routed) expect(result.failoverHistory).toEqual([]);
 });
+
+
+it("prepared OpenCode requests attribute the bound id rather than the preparation id", async () => {
+  const f = await fixture("opencode-go"), headers = [];
+  f.models.setProvider({ ...f.faux.provider, streamSimple(model, context, options) {
+    headers.push(options.headers); return f.faux.provider.streamSimple(model, context, options);
+  } });
+  const lease = await prepare(f, { providerAttributionSessionId: "fictional-preparation-id" });
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Fictional bound reply")])]);
+  expect((await lease.run({ providerAttributionSessionId: "fictional-bound-id" })).text).toBe("Fictional bound reply");
+  expect(headers).toEqual([{ "x-opencode-session": "fictional-bound-id", "x-opencode-client": "mono-agent" }]);
+});

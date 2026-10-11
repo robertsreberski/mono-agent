@@ -4,7 +4,7 @@ import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { MODEL_SWITCH_DIRECTORY, MAX_MODEL_SWITCH_BYTES, MAX_MODEL_SWITCH_FENCE_BYTES, boundedSwitchBytes, canonicalSwitchJSON,
-  reservationBytes, serializeModelSwitchState, switchConversationKey, switchDigest, switchHash, switchKeys, switchObject,
+  reservationBytes, serializeModelSwitchState, switchConversationKey, switchDigest, switchCoverageDigest, switchHash, switchKeys, switchObject,
   validateModelSwitchFence, validateModelSwitchState, validateSwitchReference } from "./durable-model-switch-contract.js";
 import type { HandoffReference, ModelSwitchFence, ModelSwitchPointer, ModelSwitchState } from "./durable-model-switch-contract.js";
 import { acceptHandoffReference, admitSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage, finishSummaryAttempt } from "./model-switch-billing.js";
@@ -397,7 +397,7 @@ export class ModelSwitchPayloadStore {
     const sources = state.identity.source ? [(({ epoch: _epoch, ...source }) => source)(state.identity.source)] : [];
     if (artifact.version !== 1 || artifact.policy !== state.identity.projectionPolicy || !Array.isArray(artifact.recent) || !Array.isArray(artifact.ledger)
       || !Array.isArray(artifact.retainedIds) || artifact.timestamp !== state.identity.timestamp || !["outgoing", "checkpoint", "incoming"].includes(artifact.producer as string)
-      || switchDigest(artifact.coverage) !== switchDigest(sources) || switchDigest(artifact.budget) !== state.identity.frozenBudgetDigest
+      || switchCoverageDigest(artifact.coverage) !== switchCoverageDigest(sources) || switchDigest(artifact.budget) !== state.identity.frozenBudgetDigest
       || switchDigest(artifact.target) !== switchDigest(state.identity.targetProvenance)) throw new Error("Handoff proposal changed frozen source/target/budget or protocol");
   }
   private async cachedArtifact(state: ModelSwitchState): Promise<HandoffReference | undefined> {

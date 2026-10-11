@@ -315,3 +315,31 @@ it("earlier v5 target account metadata remains readable without gating ordinary 
   expect((await f.advance({ state })).status).toBe("ready");
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
 });
+
+
+it("advances a pending switch with a legacy source account after upgrade to unknown account capture", async () => {
+  const f = await setup();
+  const { switchId: _switchId, ...identity } = f.state.identity;
+  const source = { ...identity.source!, provenance: { ...identity.source!.provenance, account: "fictional-legacy-source" } };
+  const state = createModelSwitchState({ ...identity, source }, f.state.reservation, f.state.frozenBudget!, f.state.initialMessageDigest);
+  const lease = await f.prep.beginModelSwitchStorage(state);
+  if (!("release" in lease)) throw new Error("Expected owner-held switch lease");
+  await lease.release();
+  const captured = await f.prep.captureNativeEvidence({ provider: "faux", api: "faux-api", model: "A", account: null });
+  expect((await f.prep.read()).pending!.identity.source!.provenance.account).toBe("fictional-legacy-source");
+  expect(captured.source!.provenance.account).toBeNull();
+  const changed = { ...captured.view, segments: captured.view.segments.map((segment) => ({ ...segment,
+    descriptor: { ...segment.descriptor, sourceDigest: "f".repeat(64) } })) };
+  await expect(f.advance({ state, view: changed })).rejects.toThrow("changed frozen coverage");
+  for (const field of ["provider", "api", "model"] as const) {
+    const changedModel = { ...captured.view, segments: captured.view.segments.map((segment) => ({ ...segment,
+      descriptor: { ...segment.descriptor, provenance: { ...segment.descriptor.provenance, [field]: "fictional-other" } } })) };
+    await expect(f.advance({ state, view: changedModel })).rejects.toThrow("changed frozen coverage");
+  }
+  expect(f.outgoing.produceHandoffSummary).not.toHaveBeenCalled();
+  const ready = await f.advance({ state, view: captured.view });
+  if (ready.status !== "ready") throw new Error("Expected ready");
+  const stored = await f.prep.readHandoff(ready.switchId, ready.artifact);
+  expect(stored.artifact).toMatchObject({ coverage: [{ provenance: { provider: "faux", api: "faux-api", model: "A", account: null } }] });
+  expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
+});
