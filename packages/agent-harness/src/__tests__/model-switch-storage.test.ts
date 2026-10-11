@@ -305,7 +305,7 @@ it("keeps the referenced generation on pre-fence failures and preserves unrecogn
 it("returns absent inventory before root validation and follows win32 permission exemptions", async () => {
   const { root, store, state, owner } = await fixture();
   const rootCheck = vi.spyOn(store as any, "assertRoot").mockRejectedValue(new Error("Root check must not run for absent storage"));
-  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
+  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [], refused: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
   finally { rootCheck.mockRestore(); }
   await store.begin(state, owner);
   const directory = join(root, MODEL_SWITCH_DIRECTORY), before = await store.inventory();

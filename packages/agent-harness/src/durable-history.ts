@@ -553,6 +553,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async refusePreReleaseOwner(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
     if ((await this.switchInventory(rootIdentity)).refused.includes(historyKey(conversationId))) refusePreReleaseSwitchFormat();
   }
+  private async refusePreReleaseOwnerLocked(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    const unlock = await this.acquireRootTransaction(rootIdentity);
+    try { await this.refusePreReleaseOwner(conversationId, rootIdentity); } finally { await unlock(); }
+  }
   private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
     await this.refusePreReleaseOwner(conversationId, rootIdentity);
     if ((await this.switchInventory(rootIdentity)).pending.some((entry) => entry.state.identity.historyBucket === conversationId)) {
@@ -1169,7 +1173,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
-      const current = await this.readRecord(normalizedId, rootIdentity); await this.refusePreReleaseOwner(normalizedId, rootIdentity);
+      const current = await this.readRecord(normalizedId, rootIdentity); await this.refusePreReleaseOwnerLocked(normalizedId, rootIdentity);
       this.requireNativeCapability(current, "native epoch transition", "host-only append");
       await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity);
@@ -1361,7 +1365,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const id = normalizeConversationId(conversationId), normalizedRunId = normalizeRunId(runId);
     // Read-only preflight before acquisition-time cleanup of unrelated fences;
     // settleHeldTurn rechecks under ownership.
-    const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.refusePreReleaseOwner(id, preflightRoot);
+    const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.refusePreReleaseOwnerLocked(id, preflightRoot);
     const held = await this.acquireConversation(id);
     let state: "prepared" | "transferred" | "closed" = "prepared";
     let queue = Promise.resolve();
@@ -1966,7 +1970,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await held.assertOwned();
     // A pre-release record or intent is refused before any recovery or mutation.
     const canonical = await this.readRecord(conversationId, held.rootIdentity);
-    await this.refusePreReleaseOwner(conversationId, held.rootIdentity);
+    await this.refusePreReleaseOwnerLocked(conversationId, held.rootIdentity);
     // Ready alone is not runtime switch authority. Once its canonical receipt is
     // published, however, ordinary admission must finish retiring the outgoing
     // journal and the intent rather than strand them.
