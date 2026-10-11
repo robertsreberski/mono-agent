@@ -52,7 +52,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   Retries/restarts reuse that ID without authorizing another billed generation.
   No-ID turns on never-upgraded conversations keep the original path, including
   cold-replay model changes on cron, webhook, Slack, Telegram, TUI, ACP and Web
-  wakes, without switch preparation or authority bootstrap. On already-native/v4
+  wakes, without switch preparation or authority bootstrap. On already-native
   conversations, undeclared no-ID requests inherit the durable current model;
   declared other-model no-ID requests refuse. Changing `runtime.model` does not
   move these native conversations until a persisted Web message selects it.
@@ -60,7 +60,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   native authority or intent. Their existing native host-contract rejection is
   unchanged with the option ON or OFF; the bound is not relaxed.
   Same-model requests without that ID may dispatch the current owned native
-  chain without authorizing switch work; guarded model changes and unsupported
+  journal without authorizing switch work; guarded model changes and unsupported
   dispatch fallbacks refuse before rotation or dispatch. The opt-in gate
   can reject detached same-conversation work started during a turn with retryable
   `native_switch_busy`; it never waits on its own claim. Retryable
@@ -70,7 +70,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
   existing roots acquire native authority lazily under ownership; method presence
   is not acknowledgement. Back up host/native stores and stop every older writer
-  first. Older binaries refuse upgraded v4 conversations and root scans, but this
+  first. Older binaries refuse native conversations and root scans, but this
   is not a universal old-writer admission barrier: mixed writers are prohibited.
   Rollback means stopping writers and restoring the consistent backup, not
   disabling the option or stripping format markers. Defaults and explicit OFF
@@ -79,17 +79,17 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   billed summary calls per switch per generation, never an automatic repeat of
   an outcome-unknown call. Pending messages are not queued or replayed. Every
   model change, including a return to an earlier model, requires a fitting
-  structured handoff; native session state is never reused across models. Stale native manual-compaction mappings
+  structured handoff (there is no summary-less model change); native session
+  state is never reused across models. A native conversation keeps one current
+  journal, one durable handoff and the latest switch receipt. Pre-release
+  development roots with the old chain format refuse with
+  `unsupported pre-release switch format; reset` and are never migrated; reset
+  them with `restart --clear-sessions`. Stale native manual-compaction mappings
   select preserving disposal as defence-in-depth; owned header/membership checks
-  remain the physical backstop; current-only cleanup and whole-chain reset/retention
-  require owned membership, not a cached model label. Subagent/stateless cleanup
-  cannot delete guarded host-chain evidence; a guarded denial is not successful
-  physical cleanup. Persisted-ID Web requests may take an owned
-  current-only cold change on a full/capacity-refused chain: settle and retire only
-  the current, retain frozen predecessors, and keep chain length fixed. The
-  `degraded_native_context` warning reports bounded canonical/tool-history replay,
-  not a complete native handoff. Pending billed work and insufficient safe
-  publication space still refuse; no summaries or tools automatically replay.
+  remain the physical backstop; cold cleanup and reset/retention require owned
+  membership, not a cached model label. Subagent/stateless cleanup cannot delete
+  guarded host evidence; a guarded denial is not successful physical cleanup.
+  No summaries or tools automatically replay.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
@@ -863,8 +863,8 @@ bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
 tool history while reporting message/tool counts and bytes separately. This is
 an explicit stopped-writer operator wipe of the complete attested roots, not
-per-conversation retirement: it removes v4 canonical chain membership, root
-markers, switch payloads/artifacts/crash evidence, and every native epoch journal.
+per-conversation retirement: it removes native canonical records, root
+markers, switch payloads/artifacts/crash evidence, and every native journal.
 The existing quarantine manifests keep whole-root deletion restartable. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
 unresolved fail-soft incidents. Repeating the same failed lifecycle retry does

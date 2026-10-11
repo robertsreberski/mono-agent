@@ -34,7 +34,7 @@ async function fixture() {
     assertOwned: () => owner.assertOwned(), prepareContext: context };
   return { root, nativeRoot, f, runtime, store, owner, input, limiter, controller, context, extension, extensionClose, settleClose };
 }
-const producer = { prepared: { status: "prepared", checkpoints: [], recent: [], older: [], ledger: [], coverage: [] } as RuntimePreparedHandoff, outputReserve: 256 };
+const producer = { prepared: { status: "prepared", checkpoints: [], recent: [], older: [], ledger: [], prior: null, coverage: [] } as RuntimePreparedHandoff, outputReserve: 256 };
 const summary = JSON.stringify({ intent: ["Fictional goal"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] });
 
 it("prepares context/extensions once under the permit and claim, without incoming P2; then transfers and runs the frozen input once", async () => {

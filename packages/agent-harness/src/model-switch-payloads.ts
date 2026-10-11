@@ -126,14 +126,15 @@ export class ModelSwitchPayloadStore {
     }
     await this.assertDirectory(directory); return bytes;
   }
-  /** Whole-owner D cleanup only. The durable host intent retains membership;
-   * fences are removed first so interrupted collection cannot leave dangling
-   * pointers that poison unrelated inventory. Exact-coordinate orphan temps
-   * are authorized like pending-turn reset generations, never guessed owners. */
-  async removeConversation(bucket: string, ownerKey: string, assertOwned: () => Promise<void>, onPhase: (phase: string) => Promise<void>): Promise<void> {
+  /** Whole-owner D cleanup, or (with `keep`) removal of earlier switches once a
+   * newer canonical receipt supersedes them. The durable host intent retains
+   * membership; fences are removed first so interrupted collection cannot leave
+   * dangling pointers that poison unrelated inventory. Exact-coordinate orphan
+   * temps are authorized like pending-turn reset generations, never guessed owners. */
+  async removeConversation(bucket: string, ownerKey: string, assertOwned: () => Promise<void>, onPhase: (phase: string) => Promise<void>, keep?: string): Promise<void> {
     const directory = await this.ensureDirectory(false); if (!directory) return;
     const prefix = `${switchConversationKey(bucket)}.`;
-    const names = (await readdir(this.directory)).filter((name) => name.startsWith(prefix));
+    const names = (await readdir(this.directory)).filter((name) => name.startsWith(prefix) && (keep === undefined || !name.startsWith(`${prefix}${keep}.`)));
     const inspected: { name: string; identity: Stats }[] = [];
     for (const name of names) {
       if (!filePattern.test(name)) unavailable();
@@ -163,11 +164,20 @@ export class ModelSwitchPayloadStore {
   }
   /** Read-only managed-root accounting. Hash-only fence coordinates are resolved
    * exclusively through their validated payload, never guessed from filenames. */
-  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[] }> {
-    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [] };
+  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[];
+    readonly refused: readonly string[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], refused: [] };
     const bytes = await this.retainedBytes(), pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
-    for (const name of await readdir(this.directory)) {
-      if (!name.endsWith(".fence.json")) continue;
+    // Pre-release (version 1) states, fenced or orphaned, mark only their owner as
+    // refused. Their bytes stay charged; unrelated owners keep accounting/admission.
+    const names = await readdir(this.directory), refused = new Set<string>();
+    for (const name of names) {
+      if (!name.endsWith(".state.json")) continue;
+      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)));
+      if ((raw as { version?: unknown } | null)?.version === 1) refused.add(name.split(".")[0]!);
+    }
+    for (const name of names) {
+      if (!name.endsWith(".fence.json") || refused.has(name.split(".")[0]!)) continue;
       const fenceBytes = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
       const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fenceBytes));
       validateModelSwitchFence(raw);
@@ -182,7 +192,7 @@ export class ModelSwitchPayloadStore {
       const remaining = this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached);
       pending.push({ state: current.state, ...remaining });
     }
-    await this.assertDirectory(directory); return { bytes, pending };
+    await this.assertDirectory(directory); return { bytes, pending, refused: [...refused] };
   }
   private remainingReservation(state: ModelSwitchState, publicationBytes: number, cached: boolean) {
     const remainingPendingBytes = Math.max(0, state.reservation.pendingBytes - publicationBytes);
@@ -384,7 +394,7 @@ export class ModelSwitchPayloadStore {
   }
   private validateProposal(state: ModelSwitchState, artifact: Record<string, unknown>): void {
     switchObject(artifact); switchKeys(artifact, ["version", "policy", "coverage", "summary", "checkpoint", "recent", "ledger", "retainedIds", "producer", "timestamp", "target", "budget"]);
-    const sources = state.identity.sources.map(({ ordinal, epoch: _epoch, ...source }) => ({ ...source, epoch: ordinal }));
+    const sources = state.identity.source ? [(({ epoch: _epoch, ...source }) => source)(state.identity.source)] : [];
     if (artifact.version !== 1 || artifact.policy !== state.identity.projectionPolicy || !Array.isArray(artifact.recent) || !Array.isArray(artifact.ledger)
       || !Array.isArray(artifact.retainedIds) || artifact.timestamp !== state.identity.timestamp || !["outgoing", "checkpoint", "incoming"].includes(artifact.producer as string)
       || switchDigest(artifact.coverage) !== switchDigest(sources) || switchDigest(artifact.budget) !== state.identity.frozenBudgetDigest
@@ -424,7 +434,7 @@ export class ModelSwitchPayloadStore {
     const directory = await this.ensureDirectory(false); if (directory) await this.syncDirectory(this.directory, directory);
   }
   /** Canonical/native publication precedes fence release. Retain the winning
-   * ready attempt/content for reference lifetime and whole-chain D deletion. */
+   * ready attempt/content for reference lifetime and D deletion. */
   async complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
     await owner.withRootTransaction(async () => {
       await this.owner(owner); const current = await this.read(bucket, switchId);

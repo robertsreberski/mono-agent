@@ -8,20 +8,20 @@ import { once } from "node:events";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "../model-switch-payloads.js";
 import { createModelSwitchState, admitSummaryAttempt, finishSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage } from "../model-switch-billing.js";
-import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateTurnHistoryV4 } from "../durable-model-switch-contract.js";
-import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, TurnHistoryV4 } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateTurnHistoryV5 } from "../durable-model-switch-contract.js";
+import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, TurnHistoryV5 } from "../durable-model-switch-contract.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-const source: CanonicalJournalDescriptor = { journalId: "fictional-journal", epoch: "1".repeat(64), ordinal: 0, handleId: "2".repeat(64), predecessorJournalId: null,
+const source: CanonicalJournalDescriptor = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
   ownerKey: "fictional-owner", historyBucket: "fictional-conversation", sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64),
   provenance: { provider: "faux", api: "faux-api", model: "A", account: null } };
 const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
 const coordinates: Omit<ModelSwitchIdentity, "switchId"> = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, sourceCanonicalDigest: "4".repeat(64), sourceRevision: 2,
-  sources: [source], fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },
+  sourceEpoch: source.epoch, source, fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },
   targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) };
-function initial(): ModelSwitchState { return createModelSwitchState(coordinates, { canonicalBytes: 8192, artifactBytes: 32768, retainedNativeBytes: 16384, headerCopyBytes: 16384, pendingBytes: 65536 }); }
+function initial(): ModelSwitchState { return createModelSwitchState(coordinates, { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }); }
 function proposal(state: ModelSwitchState, producer = "outgoing"): Record<string, unknown> {
-  return { version: 1, policy: "mono-handoff-v1", coverage: state.identity.sources.map(({ ordinal, epoch: _epoch, ...entry }) => ({ ...entry, epoch: ordinal })),
+  return { version: 1, policy: "mono-handoff-v1", coverage: state.identity.source ? [(({ epoch: _epoch, ...entry }) => entry)(state.identity.source)] : [],
     summary: { intent: ["Fictional work"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] },
     checkpoint: null, recent: [{ turnId: "fictional-turn", messages: [{ text: "Latest fictional fact" }] }], ledger: [{ outcome: "unknown", callId: "fictional-call" }], retainedIds: ["fictional-message"],
     producer, timestamp: state.identity.timestamp, target: state.identity.targetProvenance, budget };
@@ -38,18 +38,18 @@ async function fixture() {
   return { root, store, state, owner, reservations, adjustments, phases, rootHeld: () => rootHeld };
 }
 
-it("validates canonical v4 chains/binding/provenance/receipts without changing v3", () => {
-  const value: TurnHistoryV4 = { version: 4, conversationId: source.historyBucket, messages: [], providerSession: { epoch: source.epoch, revision: 2, modelKey: "faux:A" },
-    native: { authority: { version: 1, canonicalVersion: 4, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, chain: [source], projection: null } };
-  expect(() => validateTurnHistoryV4(value, (message) => message as never)).not.toThrow();
+it("validates canonical v5 single-journal binding and receipts, and refuses pre-release v4/v1 shapes", () => {
+  const value: TurnHistoryV5 = { version: 5, conversationId: source.historyBucket, messages: [], providerSession: { epoch: source.epoch, revision: 2, modelKey: "faux:A" },
+    native: { authority: { version: 1, canonicalVersion: 4, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, projection: null } };
+  expect(() => validateTurnHistoryV5(value, (message) => message as never)).not.toThrow();
   for (const mutation of [
-    (copy: any) => { copy.native.chain.push(copy.native.chain[0]); },
-    (copy: any) => { copy.native.chain[0].ownerKey = "foreign"; },
-    (copy: any) => { copy.native.chain[0].predecessorJournalId = copy.native.chain[0].journalId; },
-    (copy: any) => { copy.providerSession.epoch = "9".repeat(64); },
-    (copy: any) => { delete copy.native.chain[0].provenance.account; },
+    (copy: any) => { copy.native.chain = [source]; },
+    (copy: any) => { copy.native.authority.historyBucket = "foreign"; },
+    (copy: any) => { copy.version = 4; },
+    (copy: any) => { copy.lastSwitch = { version: 1, kind: "cold", switchId: "1".repeat(64), intentDigest: "1".repeat(64), fromEpoch: "1".repeat(64), toEpoch: "2".repeat(64), artifact: null, messageDigest: "3".repeat(64) }; },
     (copy: any) => { copy.deliveryKey = "private transport stand-in"; },
-  ]) { const copy = structuredClone(value); mutation(copy); expect(() => validateTurnHistoryV4(copy, (message) => message as never)).toThrow(); }
+  ]) { const copy = structuredClone(value); mutation(copy); expect(() => validateTurnHistoryV5(copy, (message) => message as never)).toThrow(); }
+  expect(() => validateModelSwitchState({ ...initial(), version: 1 })).toThrow("unsupported pre-release switch format; reset");
 });
 
 it("binds switch identity to source revision/tips/target provenance and frozen budget", () => {
@@ -206,16 +206,18 @@ it("stores an actual P3a checkpoint proposal, including optional ledger fields, 
   await native.appendMessage({ role: "user", content: "Fictional interrupted request", timestamp: 17 }, "00000000-0000-4000-8000-000000000007");
   await native.write("input_queued", { inputId: "fictional-queued-input", state: "queued", placement: "live" });
   const frozen = { ...source, journalId: native.metadata.journalId, sourceDigest: createHash("sha256").update(JSON.stringify(native.records)).digest("hex"), sourceSeq: native.seq, sourceTipId: native.tip };
-  const { ordinal, epoch: _epoch, ...sourceData } = frozen;
-  const descriptor = { ...sourceData, epoch: ordinal };
+  const { epoch: _epoch, ...descriptor } = frozen;
   const header = { format: "mono-harness", version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id: source.handleId }, ...native.metadata };
-  const view = createEvidenceView({ ownerKey: source.ownerKey, historyBucket: source.historyBucket, segments: [{ descriptor, header, records: native.records }] });
+  const summary = { intent: ["Fictional prior"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
+  // The free checkpoint route needs the inherited prior handoff's validated summary.
+  const prior = { version: 1, coverage: [], summary, checkpoint: null, recent: [], ledger: [] };
+  const view = createEvidenceView({ ownerKey: source.ownerKey, historyBucket: source.historyBucket, segments: [{ descriptor, header, records: native.records }], prior });
   const hostContext = { systemPrompt: "Fictional rules" }, actualBudget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext });
   const built = buildHandoff(view, { hostContext, budget: actualBudget, target: coordinates.targetProvenance, timestamp: 17, producer: "checkpoint" });
   expect(built.status).toBe("ready");
   if (!("artifact" in built) || !built.artifact) throw new Error("Expected a ready P3a artifact");
   const { store, owner } = await fixture();
-  const state = createModelSwitchState({ ...coordinates, sources: [frozen], frozenBudgetDigest: switchDigest(actualBudget) }, initial().reservation);
+  const state = createModelSwitchState({ ...coordinates, source: frozen, frozenBudgetDigest: switchDigest(actualBudget) }, initial().reservation);
   await store.begin(state, owner); await store.advanceUnfit(source.historyBucket, state.identity.switchId, owner);
   const reference = await store.accept(source.historyBucket, state.identity.switchId, built.artifact, owner);
   expect((await store.readArtifact(source.historyBucket, state.identity.switchId, reference)).artifact).toEqual(JSON.parse(JSON.stringify(built.artifact)));
@@ -225,11 +227,11 @@ it("stores an actual P3a checkpoint proposal, including optional ledger fields, 
 
 
 it("recognizes a switch binding independently of later cold epochs and projection references", () => {
-  const state = initial(), current = { ...source, journalId: "fictional-cold-current", ordinal: 1, epoch: "9".repeat(64), handleId: "6".repeat(64), predecessorJournalId: source.journalId, provenance: { ...source.provenance, model: "B" } };
-  const record: TurnHistoryV4 = { version: 4, conversationId: source.historyBucket, messages: [], providerSession: { epoch: current.epoch, revision: 0, modelKey: "faux:B" },
-    native: { authority: { version: 1, canonicalVersion: 4, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, chain: [source, current], projection: null },
+  const state = initial();
+  const record: TurnHistoryV5 = { version: 5, conversationId: source.historyBucket, messages: [], providerSession: { epoch: "9".repeat(64), revision: 0, modelKey: "faux:B" },
+    native: { authority: { version: 1, canonicalVersion: 4, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, projection: null },
     lastSwitch: { version: 1, switchId: state.identity.switchId, intentDigest: switchDigest(state.identity), fromEpoch: source.epoch, toEpoch: state.identity.targetEpoch, artifact: { id: "a".repeat(64), hash: "a".repeat(64) } } };
-  expect(() => validateTurnHistoryV4(record, (message) => message as never)).not.toThrow();
+  expect(() => validateTurnHistoryV5(record, (message) => message as never)).not.toThrow();
   expect(recognizesModelSwitchBinding(record, state.identity)).toBe(true);
   expect(() => recognizesModelSwitchBinding({ ...record, lastSwitch: { ...record.lastSwitch!, intentDigest: "b".repeat(64) } }, state.identity)).toThrow("conflicts");
 });
@@ -303,7 +305,7 @@ it("keeps the referenced generation on pre-fence failures and preserves unrecogn
 it("returns absent inventory before root validation and follows win32 permission exemptions", async () => {
   const { root, store, state, owner } = await fixture();
   const rootCheck = vi.spyOn(store as any, "assertRoot").mockRejectedValue(new Error("Root check must not run for absent storage"));
-  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
+  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [], refused: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
   finally { rootCheck.mockRestore(); }
   await store.begin(state, owner);
   const directory = join(root, MODEL_SWITCH_DIRECTORY), before = await store.inventory();

@@ -1190,7 +1190,7 @@ export class MonoAgentHarness implements AgentHarness {
         const reconcileTurn = historyStore?.providerSessionReconciliation === "v1"
           && sessionOwner.sessionTurnReconciliation === "v1" && sessionOwner.reconcileSessionTurn !== undefined;
         const beginMutation = (async () => {
-          // The read-only native hint selects owned CURRENT-chain dispatch for
+          // The read-only native hint selects owned current-journal dispatch for
           // no-ID wakes. It grants no authority; preparation rechecks under claim.
           if (this.nativeModelSwitch && reconcileTurn && (this.nativeModelSwitch.deliveryId(activeRequest) !== undefined || nativeCurrent)) {
             nativePreparationActive = true;

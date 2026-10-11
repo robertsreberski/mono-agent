@@ -12,8 +12,12 @@ import { fixture, ready, openStore, bucket } from "./fixtures/managed-native-swi
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import { retireRunResultSession } from "../harness/session-retirement.js";
 import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
-import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey } from "../durable-model-switch-contract.js";
+import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey, MAX_NATIVE_EPOCH_BYTES } from "../durable-model-switch-contract.js";
+import { createHash } from "node:crypto";
 const roots: string[] = [];
+const managedHandle = (epoch: string, id = bucket) => createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
+const journalOf = (epoch: string, id = bucket) => createHash("sha256").update(`mono-host-journal-v1\0${managedHandle(epoch, id)}`).digest("hex");
+const journalNames = (f: { base: string }) => readdir(join(f.base, "native", "mono-v2", "journals"));
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function setup(id = bucket) {
   const root = await mkdtemp(join(tmpdir(), "mono-native-lifecycle-")); roots.push(root);
@@ -23,18 +27,13 @@ async function setup(id = bucket) {
   return { ...f, before };
 }
 it("cold host append publishes an exact current replacement and reference-checks cleanup", async () => {
-  const f = await setup(), predecessor = await readFile(f.nativePath);
+  const f = await setup();
   await f.store.append(bucket, [{ role: "assistant", content: "Fictional host-only update" }]);
   const after = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-  expect(after.version).toBe(4); expect(after.native.chain).toHaveLength(2);
-  expect(after.native.chain[0]).toEqual(f.before.native.chain[0]);
-  expect(after.native.chain[1].predecessorJournalId).toBe(after.native.chain[0].journalId);
-  expect(after.native.chain[1].epoch).not.toBe(f.before.providerSession.epoch);
-  expect(after.native.chain[1].epoch).toBe(after.providerSession.epoch);
+  expect(after.version).toBe(5); expect(after.providerSession.epoch).not.toBe(f.before.providerSession.epoch);
+  expect(after.native).toEqual({ authority: f.before.native.authority, projection: null }); // a cold epoch replays canonical history
   expect(after.lastSwitch).toEqual(f.before.lastSwitch);
-  expect(await readFile(f.nativePath)).toEqual(predecessor);
-  const names = await readdir(join(f.base, "native", "mono-v2", "journals"));
-  expect(names).toHaveLength(2); expect(names).not.toContain(`${f.before.native.chain[1].journalId}.jsonl`);
+  expect(await journalNames(f)).toEqual([`${journalOf(after.providerSession.epoch)}.jsonl`]);
   expect((await f.store.stats()).reservedBytes).toBe(0);
 });
 it("aborted prepared cold append does not create or delete native epochs", async () => {
@@ -57,28 +56,29 @@ it("retention deletes a whole inactive v4 victim without violating count quota",
   expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]);
   expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual([]);
 });
-it("stale current admission cold-rotates only its own epoch, preserving predecessor evidence", async () => {
+it("stale current admission cold-rotates only its own epoch", async () => {
   const f = await setup(); const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-aborted", { modelKey: "faux:B" }); await turn.abort();
   const next = await f.store.beginProviderSessionTurn(bucket, "fictional-next", { modelKey: "faux:B" }); await next.abort();
   const after = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-  expect(after.native.chain[0]).toEqual(f.before.native.chain[0]); expect(after.native.chain[1].epoch).not.toBe(f.before.providerSession.epoch);
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+  expect(after.providerSession.epoch).not.toBe(f.before.providerSession.epoch); expect(after.lastSwitch).toEqual(f.before.lastSwitch);
+  expect(await journalNames(f)).toEqual([`${journalOf(after.providerSession.epoch)}.jsonl`]);
 });
-it("unsynced provider commit uses current-only C rather than deleting a predecessor", async () => {
+it("unsynced provider commit uses current-only C", async () => {
   const f = await setup(); const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-unsynced", { modelKey: "faux:B" });
   await (await turn.prepareCommit([{ role: "assistant", content: "Fictional canonical-only result" }], { providerSessionSynced: false })).commit();
   const after = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-  expect(after.native.chain[0]).toEqual(f.before.native.chain[0]); expect(after.providerSession.revision).toBe(0);
-  expect(after.providerSession.epoch).not.toBe(f.before.providerSession.epoch); expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+  expect(after.providerSession.revision).toBe(0); expect(after.providerSession.epoch).not.toBe(f.before.providerSession.epoch);
+  expect(await journalNames(f)).toEqual([`${journalOf(after.providerSession.epoch)}.jsonl`]);
 });
-it("exclusive host mutation and empty-owner context import preserve predecessors", async () => {
+it("exclusive host mutation and empty-owner context import keep the native authority", async () => {
   const f = await setup(); const exclusive = await f.store.contextImport!.beginExclusiveTurn(bucket);
   await (await exclusive.prepareCommit([{ role: "assistant", content: "Fictional exclusive update" }])).append.commit();
-  let current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.native.chain[0]).toEqual(f.before.native.chain[0]);
+  let current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.native.authority).toEqual(f.before.native.authority);
   current.messages = []; await writeFile(f.canonicalPath, JSON.stringify(current) + "\n", { mode: 0o600 });
   const imported = await f.store.contextImport!.prepareImport(bucket, { text: "Fictional import", idempotencyKey: "fictional-import", timestamp: "2030-01-01T00:00:00.000Z" });
   expect(imported.result.status).toBe("appended"); await imported.append!.commit();
-  current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.native.chain[0]).toEqual(f.before.native.chain[0]); expect(current.native.chain).toHaveLength(2);
+  current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.version).toBe(5); expect(current.native.authority).toEqual(f.before.native.authority);
+  expect(await journalNames(f)).toHaveLength(1);
 });
 it("cleans a resurrected completed switch fence after cold rotation without restoring obsolete B", async () => {
   const f = await setup(), directory = join(f.base, "history", ".model-switches"), names = await readdir(directory);
@@ -90,15 +90,15 @@ it("cleans a resurrected completed switch fence after cold rotation without rest
   validateModelSwitchFence(fence);
   await writeFile(join(directory, `${switchConversationKey(bucket)}.${f.state.identity.switchId}.fence.json`), boundedSwitchBytes(fence, 1024), { mode: 0o600 });
   expect(await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
-  expect(await readFile(f.canonicalPath)).toEqual(before); expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+  expect(await readFile(f.canonicalPath)).toEqual(before); expect(await journalNames(f)).toHaveLength(1);
 });
-it("logical reset deletes the v4 chain and leaves another logical owner untouched", async () => {
+it("logical reset deletes the v5 journal and leaves another logical owner untouched", async () => {
   const f = await setup(); await f.store.append("fictional-sibling-owner", [{ role: "assistant", content: "Fictional sibling" }]);
   await f.store.resetLogicalConversation(bucket); expect(await f.store.load("fictional-sibling-owner")).toHaveLength(1);
   expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]);
   expect(await readdir(join(f.base, "history"))).toContain(".native-history-root.json");
 });
-it("settles a v4 absent native turn once into a cold epoch without replay", async () => {
+it("settles a v5 absent native turn once into a cold epoch without replay", async () => {
   const f = await setup(); let inspections = 0;
   const { store } = openStore(f.base, undefined, { reconcileProviderSessionTurn: async () => { inspections++; return { status: "absent" }; } });
   const turn = await store.beginProviderSessionTurn(bucket, "fictional-interrupted-native", { modelKey: "faux:B", reconciliation: {
@@ -106,7 +106,7 @@ it("settles a v4 absent native turn once into a cold epoch without replay", asyn
   await turn.abort(); await store.recoverProviderSessionTurn(bucket); await store.recoverProviderSessionTurn(bucket);
   const current = JSON.parse(await readFile(f.canonicalPath, "utf8"));
   expect(inspections).toBe(1); expect(current.lastCommit.outcome).toBe("interrupted");
-  expect(current.native.chain[0]).toEqual(f.before.native.chain[0]); expect(current.providerSession.epoch).not.toBe(f.before.providerSession.epoch);
+  expect(current.providerSession.epoch).not.toBe(f.before.providerSession.epoch); expect(await journalNames(f)).toEqual([`${journalOf(current.providerSession.epoch)}.jsonl`]);
   expect(current.messages.filter((message: { content: string }) => message.content === "Fictional unanswered input")).toHaveLength(1);
 });
 it("refuses cold publication capacity before changing native or canonical bytes", async () => {
@@ -115,49 +115,50 @@ it("refuses cold publication capacity before changing native or canonical bytes"
   await expect(store.append(bucket, [{ role: "assistant", content: "Fictional quota update" }])).rejects.toThrow(/quota|capacity/);
   expect(await f.native.inventory()).toEqual(physical); expect(await readFile(f.canonicalPath)).toEqual(before);
 });
-it("never recreates missing cold evidence behind a published canonical receipt", async () => {
+it("never recreates a cold epoch lost behind a published canonical receipt; recovery only finishes cleanup", async () => {
   const f = await setup();
   const { store } = openStore(f.base, undefined, { onNativeHistoryPhase: async (phase) => { if (phase === "lifecycle_canonical_directory_synced") throw new Error("Interrupted cold cleanup"); } });
   await store.append(bucket, [{ role: "assistant", content: "Fictional committed update" }]);
-  const current = JSON.parse(await readFile(f.canonicalPath, "utf8")), path = join(f.base, "native", "mono-v2", "journals", `${current.native.chain[1].journalId}.jsonl`);
-  await rm(path); const fresh = openStore(f.base).store;
-  await expect(fresh.beginProviderSessionTurn(bucket, "fictional-refusal", { modelKey: "faux:B" })).rejects.toThrow("native journal evidence");
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).not.toContain(`${current.native.chain[1].journalId}.jsonl`);
-  expect((await readdir(join(f.base, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(true);
+  const current = JSON.parse(await readFile(f.canonicalPath, "utf8")), name = `${journalOf(current.providerSession.epoch)}.jsonl`;
+  await rm(join(f.base, "native", "mono-v2", "journals", name)); const fresh = openStore(f.base).store;
+  const lease = await fresh.contextImport!.beginExclusiveTurn(bucket); await lease.abort();
+  expect(await journalNames(f)).toEqual([]);
+  expect((await readdir(join(f.base, "history"))).some((entry) => entry.startsWith(".native-history-op."))).toBe(false);
 });
-it("preserves all predecessors across two switches and cold rotations, then D clears both artifact generations", async () => {
-  const f = await setup(); await f.store.append(bucket, [{ role: "assistant", content: "Fictional cold boundary" }]);
-  const current = JSON.parse(await readFile(f.canonicalPath, "utf8"));
+it("two switches keep exactly one current journal and one durable handoff; D clears them", async () => {
+  const f = await setup();
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-B-turn", { modelKey: "faux:B" });
   const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js");
   const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
   const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === turn.providerSessionId)!;
   const native = await repo.open(metadata, { repair: false, wait: false });
-  await native.scopedWrite(async () => {
-    await native.writeRecord("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
-    await native.writeRecord("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "B", api: "faux-api" } });
-  }, "fictional-bind");
-  await native.appendMessage({ role: "user", content: "Fictional intervening B fact", timestamp: 23 }); await native.sync(); await native.close(); await repo.close();
+  native.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: f.before.native.authority });
+  await native.beginTurn("fictional-B-native", {}, "synthetic", undefined); await native.write("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
+  await native.write("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "B", api: "faux-api" } });
+  await native.appendMessage({ role: "user", content: "Fictional intervening B fact", timestamp: 23 }); await native.endTurn("fictional-B-native", "completed");
+  await native.sync(); await native.close(); await repo.close();
   await (await turn.prepareCommit([{ role: "user", content: "Fictional intervening B fact" }], { providerSessionSynced: true })).commit();
-  const descriptor = await f.native.freeze({ epoch: current.providerSession.epoch, ordinal: 1, handleId: turn.providerSessionId,
-    predecessorJournalId: current.native.chain[0].journalId, ownerKey: bucket, historyBucket: bucket, provenance: current.native.chain[1].provenance });
   const source = await f.store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
+  const descriptor = await f.native.freeze({ epoch: source.sourceEpoch, handleId: turn.providerSessionId, ownerKey: bucket, historyBucket: bucket,
+    provenance: { provider: "faux", api: "faux-api", model: "B", account: null } });
   const { createModelSwitchState } = await import("../model-switch-billing.js");
   const { switchId: _id, ...identity } = f.state.identity;
   const state = createModelSwitchState({ ...identity, sourceCanonicalDigest: source.sourceCanonicalDigest, sourceRevision: source.sourceRevision,
-    sources: [current.native.chain[0], descriptor], fromModelKey: "faux:B", toModelKey: "faux:A", targetEpoch: "d".repeat(64),
-    targetProvenance: { provider: "faux", api: "faux-api", model: "A", account: null }, timestamp: 23 }, { ...f.state.reservation, retainedNativeBytes: 32768 });
-  await ready({ ...f, state }); await f.store.rollForwardModelSwitch(bucket, state.identity.switchId, { exclusiveWriters: true });
-  const switched = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(switched.native.chain).toHaveLength(3);
-  const predecessorBytes = await Promise.all(switched.native.chain.slice(0, -1).map((entry: { journalId: string }) => readFile(join(f.base, "native", "mono-v2", "journals", `${entry.journalId}.jsonl`))));
-  await f.store.append(bucket, [{ role: "assistant", content: "Fictional later A boundary" }]);
-  expect(await Promise.all(switched.native.chain.slice(0, -1).map((entry: { journalId: string }) => readFile(join(f.base, "native", "mono-v2", "journals", `${entry.journalId}.jsonl`))))).toEqual(predecessorBytes);
-  await f.store.reset(bucket); expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toEqual([]); expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual([]);
+    sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:B", toModelKey: "faux:A", targetEpoch: "d".repeat(64),
+    targetProvenance: { provider: "faux", api: "faux-api", model: "A", account: null }, timestamp: 23 }, f.state.reservation);
+  const reference = await ready({ ...f, state }); await f.store.rollForwardModelSwitch(bucket, state.identity.switchId, { exclusiveWriters: true });
+  const switched = JSON.parse(await readFile(f.canonicalPath, "utf8"));
+  expect(switched).toMatchObject({ version: 5, providerSession: { epoch: "d".repeat(64), modelKey: "faux:A" }, native: { projection: reference } });
+  expect(await journalNames(f)).toEqual([`${journalOf("d".repeat(64))}.jsonl`]);
+  const switches = await readdir(join(f.base, "history", ".model-switches"));
+  expect(switches.every((name) => name.includes(state.identity.switchId))).toBe(true); // the first switch's handoff was retired
+  expect(switches.filter((name) => name.endsWith(".handoff.json"))).toHaveLength(1);
+  await f.store.reset(bucket); expect(await journalNames(f)).toEqual([]); expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual([]);
 });
-it("protects a busy v4 native victim at reservation instead of allowing unbounded quota growth", async () => {
+it("protects a busy v5 native victim at reservation instead of allowing unbounded quota growth", async () => {
   const f = await setup(); const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js");
   const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
-  const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === f.before.native.chain[1].handleId)!;
+  const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === managedHandle(f.before.providerSession.epoch))!;
   const writer = await repo.open(metadata, { repair: false, wait: false });
   const { store } = openStore(f.base, undefined, { maxConversations: 1 });
   try {
@@ -192,7 +193,7 @@ it.skipIf(process.platform === "win32").each([
   const first = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 30000 })).stdout);
   const second = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 30000 })).stdout);
   expect(second).toEqual(first); expect(first.stats.reservedBytes).toBe(0); expect(first.operations).toEqual([]);
-  if (operation === "cold") { expect(first.canonical.native.chain).toHaveLength(2); expect(first.journals).toHaveLength(2); expect(first.canonical.messages.at(-1).content).toBe("Fictional cold update"); }
+  if (operation === "cold") { expect(first.canonical.version).toBe(5); expect(first.journals).toEqual([`${journalOf(first.canonical.providerSession.epoch)}.jsonl`]); expect(first.canonical.messages.at(-1).content).toBe("Fictional cold update"); }
   else { if (operation === "retention") { expect(first.canonical).toBeNull(); expect(first.stats.conversations).toBe(1); }
     else expect(first.canonical.version).toBe(3); expect(first.journals).toEqual([]); expect(first.switches).toEqual([]); }
 }, 60000);
@@ -206,7 +207,7 @@ it.each(["count", "bytes"])("protects busy exact sibling claims before reserving
   try { for (let retry = 0; retry < 2; retry++) {
     await expect(store.append(`${bucket}#2000-01-02`, [{ role: "assistant", content: "Same-owner sibling update" }])).rejects.toThrow("quota");
     expect(await readFile(f.canonicalPath)).toEqual(before); expect((await store.stats()).conversations).toBe(1);
-    expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+    expect(await journalNames(f)).toHaveLength(1);
   } } finally { await busy.release(); }
 });
 it("recomputes retention after native deletion lets another owner publish and acquire a turn", async () => {
@@ -230,14 +231,12 @@ it("retries the same cold commit near quota without charging its published inten
   const estimate = await f.store.prepareAppend(bucket, input), history = join(f.base, "history");
   const stageName = (await readdir(history)).find((name) => name.endsWith(".tmp")); if (!stageName) throw new Error("Expected stage");
   const stageBytes = await readFile(join(history, stageName)), next = JSON.parse(stageBytes.toString());
-  const plan = f.native.planColdEpoch(f.before.native.chain, { hostAuthority: f.before.native.authority, assertOwned: async () => {},
-    targetEpoch: next.providerSession.epoch, targetHandleId: next.native.chain.at(-1).handleId, timestamp: 0 });
-  const operationBytes = Buffer.byteLength(JSON.stringify({ version: 1, disposition: "C", source: f.before, next, timestamp: 0 }) + "\n");
+  const operationBytes = Buffer.byteLength(JSON.stringify({ version: 3, disposition: "C", source: f.before, next, timestamp: 0 }) + "\n");
   await estimate.abort(); const base = (await f.store.stats()).bytes, canonicalBytes = (await readFile(f.canonicalPath)).length;
   let interrupted = false;
   const { store } = openStore(f.base, undefined, {
     onNativeHistoryPhase: async (phase: string) => { if (!interrupted && phase === "lifecycle_intent_directory_synced") { interrupted = true; throw new Error("Interrupted exact cold intent"); } },
-    maxStoreBytes: base + stageBytes.length - canonicalBytes + operationBytes + plan.bytes + 32 });
+    maxStoreBytes: base + stageBytes.length - canonicalBytes + operationBytes + MAX_NATIVE_EPOCH_BYTES + 32 });
   const prepared = await store.prepareAppend(bucket, input);
   await expect(prepared.commit()).rejects.toThrow("Interrupted exact cold intent");
   await prepared.commit(); expect((await store.load(bucket)).at(-1)?.content).toBe(input[0]!.content);
@@ -256,7 +255,7 @@ it("payload read remains absent after fence removal and after its old target is 
   expect(await payloads.read(bucket, f.state.identity.switchId)).toBeUndefined();
   await f.store.append(bucket, [{ role: "assistant", content: "Cold replacement after completed receipt" }]);
   expect(await payloads.read(bucket, f.state.identity.switchId)).toBeUndefined();
-  const oldTarget = f.before.native.chain.at(-1).journalId;
+  const oldTarget = journalOf(f.before.providerSession.epoch);
   expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).not.toContain(`${oldTarget}.jsonl`);
 });
 
@@ -269,11 +268,11 @@ it("preserves native quota charges when a managed canonical becomes unreadable",
   const { store } = openStore(f.base, undefined, { maxStoreBytes: protectedBytes + 1024 });
   await expect(store.append("fictional-capacity-owner", [{ role: "assistant", content: "x".repeat(2048) }])).rejects.toThrow("quota");
   expect(await readFile(f.canonicalPath, "utf8")).toBe("{");
-  expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(2);
+  expect(await journalNames(f)).toHaveLength(1);
 });
 
 
-it("rolls over at the count limit by deleting an older v4 day under its held logical claim", async () => {
+it("rolls over at the count limit by deleting an older v5 day under its held logical claim", async () => {
   const older = `${bucket}#2000-01-01`, newer = `${bucket}#2000-01-02`, f = await setup(older);
   const { store } = openStore(f.base, undefined, { maxConversations: 1, retireProviderSession: async () => {} });
   await store.append(newer, [{ role: "assistant", content: "Next fictional day" }]);
@@ -320,28 +319,23 @@ it("shares footprint snapshots until canonical publication invalidates the trans
   expect(observed).toBeGreaterThanOrEqual(2); expect(refreshed).toBe(1);
   expect(invalidation).toHaveBeenCalledWith(`${switchConversationKey("fictional-cached-accounting")}.history.json`);
 });
-it.each(["model_change_started", "model_change_appended", "model_change_synced"])("always rolls an accepted still-current model-change frame forward before C after %s", async (boundary) => {
+it.each(["switch_canonical_directory_synced", "switch_source_retired"])("ordinary mutation finishes a switch whose canonical receipt is published before C (after %s)", async (boundary) => {
   const root = await mkdtemp(join(tmpdir(), "mono-current-reference-")); roots.push(root);
   const f = await fixture(root); await ready(f);
   let stopped = false;
-  const { store } = openStore(root, async (phase) => {
-    if (!stopped && phase === boundary) { stopped = true; throw new Error("Interrupted current reference"); }
-  });
-  await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).rejects.toThrow("Interrupted current reference");
-  const current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.providerSession.epoch).toBe(f.state.identity.sources.at(-1)!.epoch);
-  const referenceRows = (await readFile(f.nativePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  expect(referenceRows.filter((row) => row.kind === "turn_start" && row.payload.config?.cause === "model-change")).toHaveLength(1);
-  const references = referenceRows.filter((row) => row.kind === "model_change");
-  expect(references).toHaveLength(boundary === "model_change_started" ? 0 : 1);
-  // No administrative rollForwardModelSwitch call: ordinary admission must
-  // complete the accepted current reference before its requested C mutation.
+  const { store } = openStore(root);
+  await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true,
+    onPhase: async (phase) => { if (!stopped && phase === boundary) { stopped = true; throw new Error("Interrupted current reference"); } } })).rejects.toThrow("Interrupted current reference");
+  const current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.providerSession.epoch).toBe(f.state.identity.targetEpoch);
+  // No administrative rollForwardModelSwitch call: ordinary admission completes
+  // the published switch (retire outgoing, clear intent) before its own C.
   const recovering = openStore(root).store;
-  await recovering.append(bucket, [{ role: "assistant", content: "Cold update after unconditional roll-forward" }]);
-  expect((await recovering.load(bucket)).at(-1)?.content).toBe("Cold update after unconditional roll-forward");
+  await recovering.append(bucket, [{ role: "assistant", content: "Cold update after roll-forward" }]);
+  expect((await recovering.load(bucket)).at(-1)?.content).toBe("Cold update after roll-forward");
   expect((await readdir(join(root, "history"))).some((name) => name.startsWith(".native-history-op."))).toBe(false);
+  expect((await readdir(join(root, "history", ".model-switches"))).filter((name) => name.endsWith(".fence.json"))).toEqual([]);
+  expect(await readdir(join(root, "native", "mono-v2", "journals"))).toHaveLength(1);
 });
-
-
 it("does not probe sibling exact claims or native deletion while within limits", async () => {
   const f = await setup(`${bucket}#2000-01-01`), { store, native } = openStore(f.base, undefined, { maxConversations: 3 });
   const exact = vi.spyOn(store as unknown as { acquireExactConversationClaim: (id: string, tryOnly: boolean) => Promise<unknown> }, "acquireExactConversationClaim");
@@ -352,7 +346,7 @@ it("does not probe sibling exact claims or native deletion while within limits",
 it("resumes a thrown same-owner D before the next daily reservation", async () => {
   const older = `${bucket}#2000-01-01`, f = await setup(older); let stopped = false;
   const { store } = openStore(f.base, undefined, { maxConversations: 1, retireProviderSession: async (handle: string) => {
-    expect(f.before.native.chain.some((row: { handleId: string }) => row.handleId === handle)).toBe(false);
+    expect(handle).not.toBe(managedHandle(f.before.providerSession.epoch, older));
   }, onNativeHistoryPhase: async (phase: string) => {
     if (!stopped && phase === "lifecycle_native_deleted") { stopped = true; throw new Error("Interrupted daily delete"); }
   } });
@@ -367,7 +361,7 @@ it("resumes a thrown same-owner D before the next daily reservation", async () =
 it.skipIf(process.platform === "win32")("recovers crashed same-owner D at native deletion before next-day count-limit admission", async () => {
   const older = `${bucket}#2000-01-01`, f = await setup(older);
   await writeFile(join(f.base, "lifecycle-proof.json"), JSON.stringify({ operation: "retention", bucket: older,
-    winner: `${bucket}#2000-01-02`, nativeHandles: f.before.native.chain.map((row: { handleId: string }) => row.handleId), recoveryBuckets: [`${bucket}#2000-01-03`, `${bucket}#2000-01-04`] }), { mode: 0o600 });
+    winner: `${bucket}#2000-01-02`, nativeHandles: [managedHandle(f.before.providerSession.epoch, older)], recoveryBuckets: [`${bucket}#2000-01-03`, `${bucket}#2000-01-04`] }), { mode: 0o600 });
   const child = fork(worker, [f.base, "lifecycle_native_deleted"], { silent: true }); let error = "";
   child.stderr!.on("data", (bytes) => { error += bytes; }); const exited = once(child, "exit"); let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -477,23 +471,22 @@ it("keeps a fresh failed D for recovery and prunes the next free victim in the s
   expect((await store.stats()).conversations).toBe(1);
 });
 
-it("manual/stale-map P disposal preserves a switched predecessor under the current host claim", async () => {
-  const f = await setup(), predecessor = await readFile(f.nativePath);
+it("manual/stale-map P disposal preserves the guarded current journal under the current host claim", async () => {
+  const f = await setup(), current = managedHandle(f.before.providerSession.epoch), path = join(f.base, "native", "mono-v2", "journals", `${journalOf(f.before.providerSession.epoch)}.jsonl`);
+  const bytes = await readFile(path);
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-manual-owner", { modelKey: "faux:B" });
   const { createMonoRuntime } = await import("@mono-agent/runtime-adapter");
   const runtime = createMonoRuntime({ workspace: f.base });
   const invalidation = vi.spyOn(runtime, "invalidateSession"), retirement = vi.spyOn(runtime, "retireDurableSession");
   try {
-    // This stale B mapping names A's retained journal. Host disposition, not the
-    // stale model label, prevents destructive runtime callbacks.
-    await retireRunResultSession({ model: { provider: "faux", model: "B", reference: "faux:B" }, runtime,
+    // Host disposition, not a stale model label, prevents destructive runtime callbacks.
+    await retireRunResultSession({ model: { provider: "faux", model: "A", reference: "faux:A" }, runtime,
       identityPath: "/unused", piSessionsRoot: join(f.base, "native") }, () => runtime, undefined, true, bucket, undefined, "preserve",
-      { providerSessionId: f.before.native.chain[0].handleId, modelKey: "faux:B" });
+      { providerSessionId: current, modelKey: "faux:A" });
     expect(invalidation).not.toHaveBeenCalled(); expect(retirement).not.toHaveBeenCalled();
-    expect(await readFile(f.nativePath)).toEqual(predecessor);
+    expect(await readFile(path)).toEqual(bytes);
     // U has no host C/D authority: this is honest guarded denial, not cleanup.
-    await expect(runtime.retireDurableSession!(f.before.native.chain[0].handleId, join(f.base, "native")))
-      .rejects.toThrow("Invalid host journal upgrade authority");
-    expect(await readFile(f.nativePath)).toEqual(predecessor);
+    await expect(runtime.retireDurableSession!(current, join(f.base, "native"))).rejects.toThrow("Invalid host journal upgrade authority");
+    expect(await readFile(path)).toEqual(bytes);
   } finally { await turn.abort(); await runtime.disposeAllSessions?.(); }
 });

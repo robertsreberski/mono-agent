@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP } from "../../../dist/native-history-root.js";
 import { createDurableHistoryStore } from "../../../dist/durable-history.js";
-import { bucket } from "./canonical-v4-fixture.mjs";
+import { bucket } from "./canonical-v5-fixture.mjs";
 const [root, action, phase] = process.argv.slice(2);
 try {
   if (action === "issue") {

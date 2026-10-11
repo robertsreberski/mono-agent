@@ -204,7 +204,7 @@ export interface ConversationHistoryStore {
   /**
    * Optional read-only view of the provider-session model binding, without
    * taking the turn lock or marking the session dirty. `native` is a routing
-   * hint only; dispatch still requires an owned current-chain proof. Manual compaction uses
+   * hint only; dispatch still requires an owned current-journal proof. Manual compaction uses
    * it to decline a conversation bound to another model instead of rotating it.
    */
   readProviderSessionBinding?(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number; readonly native?: true } | undefined>;

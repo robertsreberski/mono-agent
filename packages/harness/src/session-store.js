@@ -15,8 +15,7 @@ import { assertEvidenceView } from "./evidence-view.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 import { canonicalHostJournalAuthority, validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
-import { modelChangeRecords, guardedEpochPlan } from "./managed-journal.js";
-import { publishGuardedHeader, assertGuardedHeaderCopy } from "./header-upgrade.js";
+import { guardedEpochPlan } from "./managed-journal.js";
 const sessionAuthorities = new WeakMap();
 const enabledVersion3Sessions = new WeakSet();
 function acceptHeader(session, header) {
@@ -42,7 +41,7 @@ async function authorizeGuardedDeletion(header, options) {
     throw new TypeError("Guarded native deletion requires an authorized C/D disposition");
   }
   // Host assertion must also prove reference eligibility (C), or membership in
-  // its restartable whole-chain reset/retention transaction (D).
+  // its restartable reset/retention transaction (D).
   await options.assertOwned();
 }
 function checkRecordAuthority(session, record) {
@@ -67,7 +66,6 @@ export class SessionStore {
     this.retired = false;
     /** @type {string|undefined} */ this.continuity = undefined;
     this.entries = new Map();
-    this.modelChanges = new Map();
     this.outcomes = new Map();
     this.interruptions = new Map();
     this.interruptedOperations = new Set(); this.repairCache = null;
@@ -83,7 +81,6 @@ export class SessionStore {
   }
   validateRecord(record) {
     checkRecordAuthority(this, record);
-    if (record.kind === "model_change" && record.schemaVersion === 3 && this.modelChanges.has(record.payload?.switchId)) corruptBinding();
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.validate(record);
   }
@@ -91,10 +88,6 @@ export class SessionStore {
     checkRecordAuthority(this, record);
     if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== this.metadata.id) corruptBinding();
     this.validator.apply(record);
-    if (record.kind === "model_change" && record.schemaVersion === 3) {
-      if (this.modelChanges.has(record.payload.switchId)) corruptBinding();
-      this.modelChanges.set(record.payload.switchId, clone(record));
-    }
     this.io?.remember?.(address, record);
     if (record.kind === "rewind") this.io?.invalidate?.();
     const p = record.payload;
@@ -197,19 +190,6 @@ export class SessionStore {
   assertVersion3WritesEnabled() {
     if (!enabledVersion3Sessions.has(this) || !sessionAuthorities.has(this)) throw new TypeError("Version-3 writes require enableVersion3Writes with exclusive upgraded writers and an upgraded native header authority");
   }
-  async appendComposedCompaction(data, view) {
-    this.assertVersion3WritesEnabled();
-    assertEvidenceView(view);
-    const inheritedMessages = new Set(view.segments.slice(0, -1).flatMap((s) => s.entries.filter((e) => e.type === "message").map((e) => JSON.stringify(e.message))));
-    if ((data.retainedTail ?? []).some((message) => inheritedMessages.has(JSON.stringify(message)))) throw new TypeError("Inherited native tail must remain in predecessor evidence");
-    const current = view.segments.at(-1).descriptor;
-    if (current.journalId !== this.metadata.journalId || current.handleId !== this.metadata.id
-      || current.sourceTipId !== this.tip || current.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
-    return this.appendCompaction(data, { version: 1, sources: view.segments.slice(0, -1).map((s) => ({
-      journalId: s.descriptor.journalId, sourceTipId: s.descriptor.sourceTipId,
-      sourceSeq: s.descriptor.sourceSeq, sourceDigest: s.descriptor.sourceDigest,
-    })) }, current);
-  }
   async appendCompaction(data, inheritedCoverage = undefined, source = undefined) {
     if (inheritedCoverage) this.assertVersion3WritesEnabled();
     // Prepare outside the admitted write queue; getEntries itself drains it.
@@ -231,47 +211,11 @@ export class SessionStore {
       if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
     } : undefined);
   }
-  static modelChangeRecords(options, source) { return modelChangeRecords(options, source); }
-  /** Ready-only host reference. Deterministic synthetic framing can resume after
-   * any partial append; a foreign/open operation is never repaired or closed.
-   * @param {any} options */
-  async appendModelChangeReference(options) {
-    this.assertVersion3WritesEnabled();
-    return this.enqueue(async () => {
-      const prior = this.modelChanges.get(options.switchId);
-      const expectedTurn = `synthetic:model-change:${createHash("sha256").update(options.switchId).digest("hex")}`;
-      const start = this.validator.turns.get(prior?.turnId ?? expectedTurn)?.start;
-      const source = start ? { seq: start.seq - 1, parentId: start.parentId, tip: start.payload.baselineTipId }
-        : { seq: this.seq, parentId: this.validator.parentId, tip: this.tip };
-      const records = modelChangeRecords({ ...options, timestamp: start?.timestamp ?? options.timestamp ?? Date.now() }, source);
-      if (prior && JSON.stringify(ordered(prior.payload)) !== JSON.stringify(ordered(records[1].payload))) throw new Error("Native model-change identity conflicts with existing evidence");
-      if (prior && !this.validator.openTurns.has(prior.turnId)) { await this.io?.sync(); this.durableSeq = this.seq; return clone(prior); }
-      if (this.validator.openOperations.size || this.validator.openTurns.size && (!start
-        || this.validator.openTurns.size !== 1 || !this.validator.openTurns.has(expectedTurn)
-        || JSON.stringify(start) !== JSON.stringify(records[0])
-        || this.seq !== source.seq + (prior ? 2 : 1)
-        || this.validator.parentId !== records[prior ? 1 : 0].id)) throw new Error("Native model-change has foreign or changed open evidence");
-      const remaining = records.slice(start ? prior ? 2 : 1 : 0);
-      const validator = Object.assign(new JournalValidator(), structuredClone(this.validator));
-      for (const record of remaining) validator.apply(record);
-      // Recheck this exact remaining frame while holding the native writer;
-      // the earlier bridge snapshot cannot authorize truncating changed bytes.
-      const expectedTail = Buffer.from(remaining.map((record) => JSON.stringify(record)).join("\n") + "\n");
-      await this.io?.prepareReconciliation(expectedTail);
-      for (const record of remaining) {
-        await this.writeRecord(record.kind, record.payload, { id: record.id, turnId: record.turnId,
-          schemaVersion: record.schemaVersion, timestamp: record.timestamp });
-        await options.onPhase?.(({ turn_start: "model_change_started", model_change: "model_change_appended", turn_end: "model_change_ended" })[record.kind]);
-      }
-      await this.io?.sync(); this.durableSeq = this.seq; await options.onPhase?.("model_change_synced");
-      return clone(this.modelChanges.get(options.switchId));
-    });
-  }
   async moveTo(tipId) { await this.scopedWrite(() => this.writeRecord("rewind", { tipId }), "rollback"); return tipId; }
   async verifyRead() { try { await this.io?.verify?.(); } catch (error) { throw this.poison(error); } }
   snapshot() {
     return clone({ validator: this.validator, entries: this.entries, outcomes: this.outcomes,
-      interruptions: this.interruptions, interruptedOperations: this.interruptedOperations, modelChanges: this.modelChanges,
+      interruptions: this.interruptions, interruptedOperations: this.interruptedOperations,
       tip: this.tip, seq: this.seq, durableSeq: this.durableSeq });
   }
   restore(snapshot) {
@@ -510,7 +454,6 @@ export class JsonlSessionRepo {
     }
   }
   static guardedEpochPlan(options) { return guardedEpochPlan(options); }
-  static assertGuardedHeaderCopy(source, copy, authority) { return assertGuardedHeaderCopy(source, copy, authority); }
   /** Atomic, idempotent host epoch initialization; ordinary create stays unchanged.
    * @param {any} options */
   async createGuardedEpoch(options) {
@@ -582,28 +525,6 @@ export class JsonlSessionRepo {
       try { if (!session?.closed) await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }
       throw error;
     }
-  }
-  /** Upgrade a closed, idle, host-authorized journal. No accounting/repair or
-   * provider execution occurs here. The host holds its conversation claim until
-   * this promise settles; native writer/catalogue ownership is acquired here.
-   * @param {any} metadata
-   * @param {{hostAuthority:import('./header-authority.js').HostJournalAuthority, assertOwned:()=>Promise<void>, onPhase?:(phase:string)=>Promise<void>}} options
-   */
-  async upgradeHeader(metadata, options) {
-    validateHeaderUpgradeOptions(options); this.checkMetadata(metadata);
-    if (metadata.path !== join(this.directory, `${metadata.journalId}.jsonl`)) fail();
-    if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
-    if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session must be detached before upgrade"), { code: "ERR_HARNESS_WRITER_BUSY" });
-    await options.assertOwned();
-    const locks = await this.ensureDirectory();
-    const writer = await locks.acquireWriter(metadata.journalId, { wait: false });
-    try {
-      return await locks.withCatalog(async () => {
-        if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session must be detached before upgrade"), { code: "ERR_HARNESS_WRITER_BUSY" });
-        this.clearWarm(metadata.id);
-        return await publishGuardedHeader(this, metadata, options);
-      });
-    } finally { writer.release(); }
   }
   async syncDirectories() {
     await this.assertDirectory();
@@ -714,7 +635,7 @@ export class JsonlSessionRepo {
         }
       }
       // Recover a guarded publication's directory barrier even when a prior
-      // upgrader crashed after rename. No v3 writer can escape before this sync.
+      // creator crashed after rename. No v3 writer can escape before this sync.
       // Ordinary schema-1 opens keep their exact original fsync path/counts.
       if (storeMetadata.ownershipSchemaVersion === 2) { await handle.sync(); await this.syncDirectories(); }
       if (repair && (!warm || session.durableSeq !== session.seq)) { await handle.sync(); session.durableSeq = session.seq; }
@@ -1013,7 +934,7 @@ export class JsonlSessionRepo {
   async removeOwned(metadata, options = undefined) {
     validateDeletionDisposition(options);
     await this.assertDirectory();
-    const paths = [...this.journalPaths(metadata), join(this.directory, `${metadata.journalId}.jsonl.upgrading`)];
+    const paths = this.journalPaths(metadata);
     const files = await readdir(this.directory);
     if (files.some((name) => name.startsWith(`${metadata.journalId}.`) && !paths.some((path) => path.endsWith(`/${name}`)))) fail();
     const aliases = join(this.root, "mono-v2", "aliases");
@@ -1024,7 +945,6 @@ export class JsonlSessionRepo {
       for (const path of paths) {
         if (await absent(path)) continue;
         const reader = await JournalReader.open(path, this.root); readers.push(reader);
-        if (path.endsWith(".upgrading")) continue;
         const header = await reader.readHeader(); validateJournalHeader(header);
         if (header.journalId !== metadata.journalId || header.id !== metadata.id) fail();
         if (header.import) {
@@ -1032,16 +952,7 @@ export class JsonlSessionRepo {
           archives.push({ ...source, path: `${source.path}.migrated` });
         }
       }
-      const source = readers.find((reader) => reader.path === metadata.path);
-      for (const reader of readers) {
-        const header = reader.path.endsWith(".upgrading")
-          ? await assertGuardedHeaderCopy(source, reader, options?.hostAuthority) : await reader.readHeader();
-        await authorizeGuardedDeletion(header, options);
-        if (options?.disposition === "C") {
-          await reader.scan((record) => { if (record.kind === "model_change") throw new Error("C cannot delete switched-away native evidence"); });
-        }
-      }
-      readers.sort((a, b) => Number(b.path.endsWith(".upgrading")) - Number(a.path.endsWith(".upgrading")));
+      for (const reader of readers) await authorizeGuardedDeletion(await reader.readHeader(), options);
       for (const archive of archives) await this.removeLegacy(archive);
       for (const reader of readers) { await options?.assertOwned?.(); await reader.assertIdentity(); await unlink(reader.path); await options?.onPhase?.("native_file_removed"); }
     } finally { for (const reader of readers) await reader.close(); }

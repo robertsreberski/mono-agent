@@ -48,14 +48,15 @@ function checkPreparedFit(snapshot: RuntimeNativeDispatchSnapshot, budget: Runti
 /** Create a measured plan from actual resolved declarations and decorated input.
  * Reservation/epoch policy remains the caller's responsibility. No writes. */
 export function createPreparedModelSwitchState(input: {
-  readonly source: { readonly ownerKey: string; readonly sourceCanonicalDigest: string; readonly sourceRevision: number; readonly fromModelKey: string };
-  readonly sources: readonly CanonicalJournalDescriptor[];
+  readonly source: { readonly ownerKey: string; readonly sourceCanonicalDigest: string; readonly sourceRevision: number; readonly fromModelKey: string; readonly sourceEpoch: string };
+  readonly historyBucket: string;
+  /** Frozen outgoing journal, or null when it is definitively missing. */
+  readonly journal: CanonicalJournalDescriptor | null;
   readonly incoming: RuntimeNativeDispatchSnapshot;
   readonly native: RuntimeNativePreparationStorage;
   readonly targetEpoch: string; readonly reservation: ModelSwitchReservation;
   readonly timestamp: number; readonly messageId: string; readonly outputReserve: number;
 }): ModelSwitchState {
-  if (!input.sources.length) throw new Error("Switch preparation requires a complete source chain");
   if (input.incoming.provenance.provider !== input.incoming.model.provider || input.incoming.provenance.model !== input.incoming.model.id
     || input.incoming.provenance.api !== input.incoming.model.api) throw new Error("Prepared target metadata disagrees with selected model");
   if (input.incoming.messages.at(-1)?.role !== "user") throw new Error("Switch preparation requires a trailing decorated current input");
@@ -66,7 +67,8 @@ export function createPreparedModelSwitchState(input: {
     inputTokens: estimate(input.incoming.messages.at(-1)) + 4096, hostContext: hostContext(input.incoming) });
   const target = input.incoming.provenance;
   return createModelSwitchState({ ownerKey: input.source.ownerKey, sourceCanonicalDigest: input.source.sourceCanonicalDigest,
-    sourceRevision: input.source.sourceRevision, fromModelKey: input.source.fromModelKey, historyBucket: input.sources.at(-1)!.historyBucket, sources: input.sources,
+    sourceRevision: input.source.sourceRevision, fromModelKey: input.source.fromModelKey, historyBucket: input.historyBucket,
+    sourceEpoch: input.source.sourceEpoch, source: input.journal,
     toModelKey: `${target.provider}:${target.model}`, targetProvenance: target, targetEpoch: input.targetEpoch,
     timestamp: input.timestamp, frozenBudgetDigest: switchDigest(budget), projectionPolicy: budget.policy }, input.reservation, budget,
   explicitSwitchMessageDigest(input.messageId));
@@ -168,9 +170,9 @@ export async function advancePreparedModelSwitch(input: {
     || input.incoming.snapshot.model.maxTokens < state.frozenBudget.outputReserve) throw new Error("Prepared incoming model disagrees with recorded target/budget");
   const fit = checkPreparedFit(input.incoming.snapshot, state.frozenBudget);
   if (fit) return fit;
-  // The view is validated by the native helper, and must be this intent's entire
-  // frozen source chain, not a caller-selected subset or a later native tail.
-  const expected = state.identity.sources.map(({ ordinal, epoch: _epoch, ...source }) => ({ ...source, epoch: ordinal }));
+  // The view is validated by the native helper, and must be this intent's exact
+  // frozen outgoing journal, not a caller-selected or later native tail.
+  const expected = state.identity.source ? [(({ epoch: _epoch, ...source }) => source)(state.identity.source)] : [];
   if (switchDigest(input.view.segments.map((segment) => segment.descriptor)) !== switchDigest(expected)) throw new Error("Prepared switch evidence changed frozen coverage");
   const handoffOptions = options(state), prepared = input.native.prepareHandoff(input.view, handoffOptions);
   if (!snapshot.pending && prepared.status !== "prepared") return prepared;
@@ -287,7 +289,7 @@ export async function runPreparedModelSwitch(input: {
     const turn = await input.preparation.admit(binding);
     input.onAdmitted(turn);
     await input.beforeDispatch?.(turn);
-    if (turn.providerSessionId !== snapshot.native.chain.at(-1)!.handleId || turn.modelKey !== readiness.modelKey) throw new Error("Incoming admission changed the ready native handle");
+    if (turn.modelKey !== readiness.modelKey) throw new Error("Incoming admission changed the ready native model");
     if (!turn.reconciliation) throw new Error("Incoming switch admission requires native execution reconciliation");
     return { assertOwned: () => turn.assertOwned(), reconciliation: turn.reconciliation, turnRevision: turn.providerSessionRevision,
       providerSessionId: turn.providerSessionId, sessionId: turn.providerSessionId, providerAttributionSessionId: turn.providerSessionId,

@@ -112,7 +112,7 @@ export class JournalValidator {
         requireValue(keys(projection, ["version", "artifact", "coverage", "messageDigest"]) && projection.version === 1 && digest(projection.messageDigest)
           && keys(projection.artifact, ["id", "hash"]) && digest(projection.artifact.id) && digest(projection.artifact.hash)
           && keys(projection.coverage, ["version", "sources"]) && projection.coverage.version === 1
-          && Array.isArray(projection.coverage.sources) && projection.coverage.sources.length > 0
+          && Array.isArray(projection.coverage.sources)
           && projection.coverage.sources.every((s) => keys(s, ["journalId", "sourceTipId", "sourceSeq", "sourceDigest"])
             && id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
           && new Set(projection.coverage.sources.map((s) => s.journalId)).size === projection.coverage.sources.length

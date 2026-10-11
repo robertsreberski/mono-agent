@@ -22,9 +22,10 @@ const faux = fauxProvider({ provider, api, models: ["A", "B"].map((id) => ({ id,
 const models = createModels();
 
 // Every provider request is appended BEFORE the response, so a killed process
-// still accounts the (possibly billed) call. Outgoing A summaries are rejected
-// as malformed so both approved producers are exercised; outgoing B summaries
-// are valid, so a B -> A return is accepted from the paid outgoing slot.
+// still accounts the (possibly billed) call. A summaries are rejected as
+// malformed, so a first A -> B switch exercises outgoing -> (no prior
+// checkpoint) -> incoming; B summaries are valid, so a B -> A return is
+// accepted from the paid outgoing slot, or from the prior validated checkpoint.
 const contexts = [];
 const original = faux.provider.streamSimple.bind(faux.provider);
 faux.provider.streamSimple = (model, context, options) => {
@@ -124,47 +125,24 @@ function calls() {
 }
 globalThis.__fixtureCalls = calls;
 
-// A real 32-member owned chain (empty retained epochs are valid evidence), the
-// guarded-chain limit that selects the owned current-only cold change.
-async function padChain(store) {
-  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js");
-  const record = await canonical(), prep = await store.beginProviderSessionPreparation(conversationId, "fictional-pad-owner");
-  const repo = new JsonlSessionRepo({ sessionsRoot: nativeRoot }), chain = [record.native.chain[0]];
-  try {
-    for (let ordinal = 1; ordinal < 31; ordinal++) {
-      const epoch = ordinal.toString(16).padStart(64, "0"), handleId = createHash("sha256").update(`mono-agent-provider-session-v2\0${conversationId}\0${epoch}`).digest("hex");
-      await repo.createGuardedEpoch({ id: handleId, timestamp: 0, hostAuthority: record.native.authority, assertOwned: prep.assertOwned });
-      chain.push(await store.nativeJournalStorage.freeze({ epoch, ordinal, handleId, predecessorJournalId: chain.at(-1).journalId,
-        ownerKey: record.native.authority.ownerKey, historyBucket: record.conversationId, provenance: record.native.chain[1].provenance }));
-    }
-    record.native.chain = [...chain, { ...record.native.chain[1], ordinal: 31, predecessorJournalId: chain.at(-1).journalId }];
-    const path = join(historyRoot, (await readdir(historyRoot)).find((name) => name.endsWith(".history.json")));
-    await writeFile(path, JSON.stringify(record) + "\n", { mode: 0o600 });
-  } finally { await repo.close(); await prep.abort(); }
-}
-
 // External loss of the current journal (P4 PR D): the producer deletes it, then
 // the killed turn establishes the owner-approved cold boundary. Recovery is
 // storage-only; "resume" is one later explicit message on a fresh process.
 async function missingJob(scenario, mode) {
-  // missing: current lost; missing-chain: current and predecessor lost;
-  // missing-predecessor: predecessor lost, then a switch back into it;
+  // missing: the switched current journal lost; missing-v3: never switched;
   // missing-root: the whole native root is gone before a fresh process.
-  const opened = await open(), results = [], model = ["missing-v3", "missing-switch", "missing-predecessor"].includes(scenario) ? "A" : "B";
+  const opened = await open(), results = [], model = scenario === "missing-v3" ? "A" : "B";
   try {
     if (mode === "produce") {
       results.push(await respond(opened.responder, "fictional-seed", "A"));
       if (scenario !== "missing-v3") results.push(await respond(opened.responder, "fictional-switch", "B"));
-      const record = await canonical(), journals = join(nativeRoot, "mono-v2", "journals");
+      const journals = join(nativeRoot, "mono-v2", "journals");
       if (scenario === "missing-root") {
         const report = { results, calls: calls(), contexts, ...await snapshot(opened.store) };
         await opened.responder.dispose(); await rm(nativeRoot, { recursive: true, force: true });
         process.send(report, () => process.exit(0)); return;
       }
-      const lost = !record.native ? (await readdir(journals)).filter((name) => name.endsWith(".jsonl"))
-        : (scenario === "missing-chain" ? record.native.chain : scenario === "missing-predecessor" ? record.native.chain.slice(0, -1) : [record.native.chain.at(-1)])
-          .map((row) => `${row.journalId}.jsonl`);
-      for (const name of lost) await unlink(join(journals, name));
+      for (const name of (await readdir(journals)).filter((name) => name.endsWith(".jsonl"))) await unlink(join(journals, name));
       const bytes = Object.fromEntries(await Promise.all((await files(journals)).filter((path) => path.endsWith(".jsonl")).map(async (path) => [path.split("/").at(-1), (await readFile(path)).toString("base64")])));
       await writeFile(join(root, "before.json"), JSON.stringify({ ...await snapshot(opened.store), bytes }));
       globalThis.__fixtureArmed = true;
@@ -181,14 +159,18 @@ process.once("message", async ({ scenario, mode }) => {
   let opened;
   try {
     await mkdir(root, { recursive: true });
-    if (scenario.startsWith("missing")) { await missingJob(scenario, mode); return; }
+    if (scenario.startsWith("missing") && scenario !== "missing-switch") { await missingJob(scenario, mode); return; }
     const results = [];
     if (mode === "produce") {
       opened = await open();
       results.push(await respond(opened.responder, "fictional-seed", "A"));
       if (scenario !== "structured") results.push(await respond(opened.responder, "fictional-switch-b", "B"));
-      if (scenario === "return") results.push(await respond(opened.responder, "fictional-b-turn", "B"));
-      if (scenario === "cold") await padChain(opened.store);
+      if (scenario === "return" || scenario === "missing-switch") results.push(await respond(opened.responder, "fictional-b-turn", "B"));
+      if (scenario === "missing-switch") {
+        // External loss before an explicit switch: canonical history is the outgoing evidence.
+        const journals = join(nativeRoot, "mono-v2", "journals");
+        for (const name of (await readdir(journals)).filter((name) => name.endsWith(".jsonl"))) await unlink(join(journals, name));
+      }
       if (scenario === "retention") {
         const old = new Date("2000-01-01T00:00:00Z");
         for (const name of (await readdir(historyRoot)).filter((name) => name.endsWith(".history.json"))) await utimes(join(historyRoot, name), old, old);
@@ -198,8 +180,9 @@ process.once("message", async ({ scenario, mode }) => {
       await writeFile(join(root, "before.json"), JSON.stringify({ ...await snapshot(opened.store), bytes }));
       globalThis.__fixtureArmed = true;
     } else opened = await open();
-    if (scenario === "structured") results.push(await respond(opened.responder, "fictional-switch", "B"));
-    else if (scenario === "return" || scenario === "cold") results.push(await respond(opened.responder, "fictional-return", "A"));
+    // "recover" redelivers the killed persisted message; "resume" is a new explicit delivery.
+    if (scenario === "structured") results.push(await respond(opened.responder, mode === "resume" ? "fictional-next" : "fictional-switch", "B"));
+    else if (scenario === "return" || scenario === "missing-switch") results.push(await respond(opened.responder, mode === "resume" ? "fictional-next" : "fictional-return", "A"));
     else if (scenario === "reset") { await opened.responder.startNewSession(conversationId); results.push({ text: "reset" }); }
     else results.push(await respond(opened.responder, "fictional-successor-message", "A", successorId));
     globalThis.__fixtureArmed = false;

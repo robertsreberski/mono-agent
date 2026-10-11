@@ -6,9 +6,20 @@
   offers `AskUser`. It now includes the turn's interrupted-question and
   unapplied-message notes, so the agent does not re-ask the question.
 
+- Store opt-in Web model-switch conversations in a single-journal format:
+  one current native journal, one durable handoff and the latest switch
+  receipt, with no epoch chain. A switch creates the target journal, publishes
+  the binding, handoff and receipt, then retires the outgoing journal. Every
+  model change, including capacity or lost-journal cases, needs a structured
+  summary; there is no summary-less model change. Development roots from
+  earlier pre-release builds refuse with `unsupported pre-release switch
+  format; reset` and are never migrated; reset them with
+  `mono-agent restart --clear-sessions`.
+
 - Use the structured handoff for every opt-in Web model change, including a
-  return to an earlier model: outgoing summary, then the exact checkpoint plus
-  later history, then incoming summary. Native session state is no longer
+  return to an earlier model: outgoing summary, then the previously validated
+  summary plus later history, then incoming summary. Later history without a
+  validated summary is not a handoff. Native session state is no longer
   reused across models. Keep opt-in prepared turns on the primary model only;
   a failure there waits for the next message instead of starting a backup.
   Ordinary fallback, billing caps and recovery are unchanged.
@@ -28,9 +39,9 @@
   was deleted, moved or lost in a partial restore. The turn rotates only that
   current stretch through the durable cold path, answers once from the
   conversation history, warns `degraded_native_context` once and continues warm
-  afterwards. A lost earlier journal no longer blocks switching: the switch
-  takes the cold model change with conversation history, and losing the whole
-  session folder recovers on the next message. Unreadable journals refuse with
+  afterwards. A switch with a lost journal summarizes the conversation history
+  through the usual handoff, and losing the whole session folder recovers on
+  the next message. Unreadable journals refuse with
   `native_journal_unreadable` and are preserved, never treated as missing.
 
 - Keep the current native journal when starting consecutive opt-in Web turns;
@@ -59,18 +70,11 @@
   restore-backup rollback steps, A1–A4 acceptance mapped to observable
   evidence, warning and refusal semantics, and limits.
 
-- Show plain-language cold-model context warnings in Web activity, using
-  structured harness warnings only on the turn that applied the change. Keep
-  unsupported storage/authority results from authorizing a cold model change.
+- Show plain-language `degraded_native_context` warnings in Web activity, using
+  structured harness warnings only on the turn that recovered a missing journal.
 
-- Add owned current-only cold model changes for full or capacity-refused native
-  chains on persisted-ID Web requests. Preserve frozen predecessors, keep chain
-  length fixed and warn about bounded canonical/tool-history replay instead of
-  a complete native handoff. Pending billed work and unsafe publication space
-  still refuse; recovery never replays tools or summaries.
-
-- Keep native predecessor evidence during manual-compaction stale-map cleanup;
-  reserve physical deletion for owned current-epoch or whole-chain operations.
+- Keep native evidence during manual-compaction stale-map cleanup; reserve
+  physical deletion for owned current-epoch or reset/retention operations.
   Bypass switch preparation for conversation IDs over 512 characters without
   changing the existing native host-contract rejection, including with opt-in OFF.
 
@@ -89,7 +93,7 @@
   The opt-in conversation gate
   can return retryable `native_switch_busy` for detached same-conversation work.
 
-- Keep same-model wakes on the current native chain without switch billing;
+- Keep same-model wakes on the current native journal without switch billing;
   refuse unsupported native dispatch fallbacks, require the Web source for
   delivery identities, and cancel conversation-gate waiters without root-wide
   blocking or nested self-waits.
@@ -178,12 +182,11 @@
   journals, preserve switched-away references and unknown header copies, verify
   torn bytes under writer ownership, and normalize runtime/bridge sessions roots.
 
-- Add owner-held canonical v4 journal chains, strict managed-root authority and
+- Add owner-held canonical native history, strict managed-root authority and
   ready-only native model-switch publication with measured retained-evidence
   quotas. Keep pending switches host-only. Publish exact cold replacement epochs
-  without freezing rejected tails, preserve referenced predecessors, and make
-  whole-chain reset/retention cleanup restartable through native journals,
-  handoffs and crash storage. Keep unrelated owners progressing and reserve
+  without freezing rejected tails, and make reset/retention cleanup restartable
+  through native journals, handoffs and crash storage. Keep unrelated owners progressing and reserve
   capacity before mutation, including when native victims are busy. Keep
   configured switching behind the acknowledged Web-only opt-in; older writers
   must stay stopped and rollback requires restoring consistent backups.
@@ -206,25 +209,19 @@
   artifacts and durable summary-attempt admission without enabling host switching
   or migrating managed histories.
 - Keep cancellation context separate from host authority in native deletion
-  overloads, forward explicit guarded retirement options, and record one
-  immutable native model-change reference per switch identity. Keep default
+  overloads and forward explicit guarded retirement options. Keep default
   session payloads and host switching policy unchanged.
 
-- Require a durably published, host-authorized native header before opt-in v3
-  writes. Reject old native readers and deletion before torn-tail repair on
-  upgraded journals; preserve record bytes, paths and standalone defaults.
-  Clean up identity-matched failed upgrade stages and canonicalize authority
-  bytes. Validate explicit C/D deletion dispositions on all journals and prevent
+- Require a host-authorized guarded native header before opt-in v3 writes.
+  Reject old native readers and deletion before torn-tail repair on guarded
+  journals; preserve record bytes, paths and standalone defaults. Canonicalize
+  authority bytes. Validate explicit C/D deletion dispositions on all journals and prevent
   memory metadata from forging or demoting header authority. Fail older catalogue
-  listing and legacy import closed for roots containing an upgraded journal.
+  listing and legacy import closed for roots containing a guarded journal.
   Require explicit host C/D authority for guarded deletion. Keep host switching
   disabled and require stopped older binaries and backup restoration for rollback.
 
-- Fix exact-checkpoint handoffs refusing when optional recent turns duplicate
-  the complete suffix or retained evidence. Shed only whole, fully represented
-  groups without summary production; preserve the latest turn and work ledger.
-
-- Add opt-in native evidence-chain projection, structured handoff proposals,
+- Add opt-in native evidence projection, structured handoff proposals,
   explicit context budgets, no-tools summary production and preserving session
   detachment. Keep default session payloads and host switching policy unchanged;
   native switch reuse requires positive provider/API/account provenance. Require

@@ -2,7 +2,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
-import { MAX_JOURNAL_CHAIN, MAX_MODEL_SWITCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError, UnsupportedPreReleaseSwitchFormatError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./runtime-execution.js";
@@ -33,6 +33,9 @@ export interface ConfiguredPreparedTurn {
 const pending = () => new AgentHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit message to authorize further summary work.");
 const budgetFailure = (reason: string) => new AgentHarnessError("handoff_budget_exceeded", `Model handoff cannot fit: ${reason}. No incoming turn was admitted or queued.`);
 const capacity = (error: unknown) => error instanceof ModelSwitchCapacityError || error instanceof NativeEvidenceCapacityError;
+/** Old pre-release chain data is refused unchanged; the operator resets it manually. */
+const preRelease = (error: unknown) => error instanceof UnsupportedPreReleaseSwitchFormatError
+  ? new AgentHarnessError("native_switch_format_unsupported", "unsupported pre-release switch format; reset") : error;
 
 /** Host path behind the private capability. Unsupported custom stores/runtimes
  * retain the original path without preparing resources or issuing authority. */
@@ -52,27 +55,28 @@ export async function prepareConfiguredModelSwitch(input: {
     && runtime.nativePreparedDispatch === "v1" && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
   if (!supportedRuntime) return undefined;
   if (policy.exclusiveWriters !== true || resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "Explicit upgraded-writer acknowledgement and the configured native root are required.");
-  const owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId);
+  let owner: ManagedProviderSessionPreparation;
+  try { owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId); }
+  catch (error) { throw preRelease(error); }
   let assertOwned = () => owner.assertOwned();
   let incoming: Awaited<ReturnType<typeof prepareHarnessRuntime>> | undefined;
   let outgoing: PreparedSwitchProducer | undefined;
   const protectedHandles = new Set<string>();
   let ready: Extract<Awaited<ReturnType<typeof advancePreparedModelSwitch>>, { status: "ready" }> | undefined;
-  let switched = false, cold = false, appliedCold = false;
-  // Legacy unsupported fallback is not authority for an owned cold transition.
-  let coldReason: "chain_limit" | "capacity" | "journal_missing" | "predecessor_missing" | undefined;
+  let switched = false;
   // Canonical epoch whose current journal is definitively absent (deleted, moved
-  // machine, partial restore). Admission rotates exactly that epoch cold.
-  let missingEpoch: string | undefined, lostPredecessor = false;
+  // machine, partial restore). Same-model admission rotates exactly that epoch;
+  // a model change feeds canonical history through the approved handoff order.
+  let missingEpoch: string | undefined;
   try {
     let snapshot = await owner.read();
     if (messageId === undefined) {
-      // Ordinary same-model dispatch can borrow the accepted current chain,
+      // Ordinary same-model dispatch can borrow the accepted current journal,
       // but may not recover/open a model change or authorize a producer slot.
       if (snapshot.pending) throw pending();
       if (!snapshot.native) { await owner.abort(); return undefined; }
       if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== host.routing.modelKey) throw new AgentHarnessError(
-        "native_cold_model_change_unavailable", "A guarded model change requires a persisted explicit delivery identity; native evidence was preserved.");
+        "native_cold_model_change_unavailable", "A model change requires a persisted explicit delivery identity; native evidence was preserved.");
     }
     if (!supportedRuntime || !checkInheritedPrefix || !runtime.prepareNativeDispatch) { await owner.abort(); return undefined; }
     // A brand-new conversation (no binding, no history) takes the same prepared,
@@ -93,153 +97,114 @@ export async function prepareConfiguredModelSwitch(input: {
     }
     // Probe under the held owner before capture, producers, P2 admission or the
     // lease. Corruption or any doubt fails closed with evidence preserved; only a
-    // definitive absence selects the owner-approved cold boundary (canonical replay).
+    // definitive absence counts as missing.
     if (!snapshot.pending && owner.inspectCurrentJournal) {
-      // A switch capture needs every predecessor; same-model turns never read them.
-      const switching = messageId !== undefined && !ready && snapshot.source.status === "supported" && snapshot.source.fromModelKey !== host.routing.modelKey;
-      const presence = await owner.inspectCurrentJournal(switching ? { predecessors: true } : undefined);
+      const presence = await owner.inspectCurrentJournal();
       if (presence.status === "unreadable") throw new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason: presence.reason });
       if (presence.status === "missing") { missingEpoch = presence.epoch; ready = undefined; switched = false; }
-      lostPredecessor = presence.lostPredecessor;
     }
     incoming = await prepareHarnessRuntime({ ...host, assertOwned: () => assertOwned(), prepareContext: input.prepareContext });
     const compaction = incoming.snapshot.compactionSummaryMaxTokens === undefined ? {} : { summaryMaxTokens: incoming.snapshot.compactionSummaryMaxTokens };
     if (!ready && (snapshot.source.status === "supported" && snapshot.source.fromModelKey !== host.routing.modelKey || snapshot.pending)) {
-      const messageId = policy.deliveryId(host.request);
-      if (messageId === undefined) { if (snapshot.pending) throw pending(); cold = true; }
-      else {
-        try {
-          // No evidence remains to capture: the new model gets canonical replay.
-          if (missingEpoch !== undefined) { cold = true; coldReason = "journal_missing"; }
-          // A handoff would need the lost bytes; the owned cold change replays canonical history.
-          else if (lostPredecessor) { cold = true; coldReason = "predecessor_missing"; }
-          else if (snapshot.native && snapshot.native.chain.length >= MAX_JOURNAL_CHAIN && !snapshot.pending) { cold = true; coldReason = "chain_limit"; }
-          else {
-            const from = snapshot.pending?.identity.fromModelKey ?? (snapshot.source.status === "supported" ? snapshot.source.fromModelKey : undefined);
-            if (!from) throw new Error("Pending switch has no source owner");
-            // Capture owned bytes without old auth/provider availability. Resolve
-            // the outgoing no-tools lease lazily at its unbilled producer slot.
-            const captured = await owner.captureNativeEvidence();
-            const prepareOutgoing = async (): Promise<PreparedSwitchProducer | undefined> => {
-              try {
-                const outgoingRuntime = host.routing.runtimeForSession(from);
-                if (outgoingRuntime.nativePreparedDispatch !== "v1" || !outgoingRuntime.prepareNativeDispatch) return undefined;
-                const outgoingOptions: RuntimeRunOptions = { ...options.runtimeOptions, model: parseMonoRuntimeModelReference(from), messages: [],
-                  abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], piSessionsRoot: host.durablePiSessionsRoot };
-                for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
-                const lease = await outgoingRuntime.prepareNativeDispatch("Produce only the requested structured conversation handoff.", outgoingOptions);
-                if (!lease.checkHandoffSummary || !lease.produceHandoffSummary) { await lease.close(); return undefined; }
-                outgoing = { snapshot: lease.snapshot, checkHandoffSummary: (request) => {
-                  try { return lease.checkHandoffSummary!(request); } catch { return { status: "budget_failure", reason: "outgoing_unavailable" }; }
-                }, produceHandoffSummary: (request) => lease.produceHandoffSummary!(request), close: () => lease.close() };
-                return outgoing;
-              } catch (error) {
-                // No paid attempt exists yet. Unavailable old auth/provider skips
-                // its slot; abort/lost ownership still stop the entire operation.
-                if (host.request.abortSignal.aborted) throw error;
-                await owner.assertOwned(); return undefined;
-              }
-            };
-            let state = snapshot.pending;
-            if (!state) {
-              if (snapshot.source.status !== "supported") throw new Error("Switch source is unavailable");
-              const targetEpoch = randomBytes(32).toString("hex");
-              state = createPreparedModelSwitchState({ source: snapshot.source, sources: captured.sources, incoming: incoming.snapshot, native: policy.native,
-                targetEpoch, timestamp: Date.now(), messageId, outputReserve: incoming.snapshot.model.maxTokens,
-                reservation: { canonicalBytes: 0, artifactBytes: 0, retainedNativeBytes: 0, headerCopyBytes: 0, pendingBytes: 0 } });
-              const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget!, timestamp: state.identity.timestamp, hostContext: {} };
-              const prepared = policy.native.prepareHandoff(captured.view, handoffOptions);
-              if (prepared.status !== "prepared") throw budgetFailure(prepared.reason);
-              // Bound ANY subsequently accepted structured artifact, including a
-              // not-yet-produced summary: its serialized projection is capped by
-              // historyAllowance. Add that cap to the real empty summary envelope.
-              // Do not publish intent/authorize paid producers without proving
-              // its worst-case inherited prefix is compactable.
-              const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget!.historyAllowance);
-              if (capacityFit.status !== "ready") throw budgetFailure(capacityFit.reason);
-              const proposal = policy.native.buildHandoff(captured.view, handoffOptions);
-              // Prove the exact free projection's future compaction viability before
-              // intent/paid work. Paid proposals are checked again before acceptance.
-              if (proposal.status === "ready") {
-                const fit = await checkInheritedPrefix(proposal.messages, incoming.snapshot.model, compaction);
-                if (fit.status !== "ready") throw budgetFailure(fit.reason);
-              }
-              const authority = await owner.acquireNativeHistoryAuthority({ exclusiveWriters: policy.exclusiveWriters });
-              if (authority.status !== "owned") cold = true;
-              else {
-                const targetHandleId = switchProviderSessionId(host.request.conversationId, targetEpoch);
-                const measured = await policy.native.measureSwitch(captured.sources, { hostAuthority: authority.authority, assertOwned: () => owner.assertOwned(),
-                  targetHandleId, targetEpoch, timestamp: state.identity.timestamp, sourceRevision: state.identity.sourceRevision, fromModelKey: state.identity.fromModelKey,
-                  targetProvenance: state.identity.targetProvenance, event: { switchId: state.identity.switchId, timestamp: state.identity.timestamp,
-                    from: captured.sources.at(-1)!.provenance, to: state.identity.targetProvenance, artifactRef: { id: "0".repeat(64), hash: "0".repeat(64) } } });
-                const canonicalBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Buffer.byteLength(JSON.stringify(snapshot)) + 16384 + captured.sources.length * 4096);
-                const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget!.historyAllowance * 3 + 4096));
-                state = { ...state, reservation: { canonicalBytes, artifactBytes, ...measured, pendingBytes: Buffer.byteLength(JSON.stringify(state)) * 3 + 65536 } };
-              }
-            }
-            if (!cold) {
-              const result = await advancePreparedModelSwitch({ preparation: owner, native: policy.native, incoming, state, view: captured.view, messageId,
-                exclusiveWriters: policy.exclusiveWriters, outgoing: prepareOutgoing,
-                checkInheritedPrefix: (messages) => checkInheritedPrefix(messages, incoming!.snapshot.model, compaction) });
-              if (result.status === "pending") throw pending();
-              if (result.status === "budget_failure") throw budgetFailure(result.reason);
-              if (result.status === "unsupported") cold = true;
-              else { ready = result; switched = true; snapshot = await owner.read(); }
-            }
-          }
-        } catch (error) {
-          // Only typed PRE-INTENT capacity/size refusal is cold fallback. Never
-          // disguise corruption, lost ownership, unknown paid work or pending.
-          if (!snapshot.pending && capacity(error) && !(await owner.read()).pending) { cold = true; coldReason = "capacity"; }
-          else throw error;
-        }
-      }
-    }
-    if (snapshot.source.status === "unsupported" && !fresh) cold = true;
-    if (cold && snapshot.native) {
-      if (!coldReason || !messageId || snapshot.pending || !owner.coldModelChange || !incoming || snapshot.source.status !== "supported") throw new AgentHarnessError("native_cold_model_change_unavailable", "Owned explicit cold model transition unavailable; native evidence was preserved.");
-      incoming.assertReady();
+      if (messageId === undefined) throw pending();
       try {
-        const receipt = await owner.coldModelChange({ messageId, modelKey: host.routing.modelKey, sourceCanonicalDigest: snapshot.source.sourceCanonicalDigest, targetProvenance: incoming.snapshot.provenance,
-          reason: coldReason });
-        appliedCold = receipt.switchId !== snapshot.lastSwitch?.switchId;
+        const from = snapshot.pending?.identity.fromModelKey ?? (snapshot.source.status === "supported" ? snapshot.source.fromModelKey : undefined);
+        if (!from) throw new Error("Pending switch has no source owner");
+        // Capture owned bytes (or canonical history for a missing journal) without
+        // old auth/provider availability. Resolve the outgoing no-tools lease
+        // lazily at its unbilled producer slot.
+        const captured = await owner.captureNativeEvidence();
+        const prepareOutgoing = async (): Promise<PreparedSwitchProducer | undefined> => {
+          try {
+            const outgoingRuntime = host.routing.runtimeForSession(from);
+            if (outgoingRuntime.nativePreparedDispatch !== "v1" || !outgoingRuntime.prepareNativeDispatch) return undefined;
+            const outgoingOptions: RuntimeRunOptions = { ...options.runtimeOptions, model: parseMonoRuntimeModelReference(from), messages: [],
+              abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], piSessionsRoot: host.durablePiSessionsRoot };
+            for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
+            const lease = await outgoingRuntime.prepareNativeDispatch("Produce only the requested structured conversation handoff.", outgoingOptions);
+            if (!lease.checkHandoffSummary || !lease.produceHandoffSummary) { await lease.close(); return undefined; }
+            outgoing = { snapshot: lease.snapshot, checkHandoffSummary: (request) => {
+              try { return lease.checkHandoffSummary!(request); } catch { return { status: "budget_failure", reason: "outgoing_unavailable" }; }
+            }, produceHandoffSummary: (request) => lease.produceHandoffSummary!(request), close: () => lease.close() };
+            return outgoing;
+          } catch (error) {
+            // No paid attempt exists yet. Unavailable old auth/provider skips
+            // its slot; abort/lost ownership still stop the entire operation.
+            if (host.request.abortSignal.aborted) throw error;
+            await owner.assertOwned(); return undefined;
+          }
+        };
+        let state = snapshot.pending;
+        if (!state) {
+          if (snapshot.source.status !== "supported") throw new Error("Switch source is unavailable");
+          const targetEpoch = randomBytes(32).toString("hex");
+          state = createPreparedModelSwitchState({ source: snapshot.source, historyBucket: host.request.conversationId, journal: captured.source,
+            incoming: incoming.snapshot, native: policy.native, targetEpoch, timestamp: Date.now(), messageId, outputReserve: incoming.snapshot.model.maxTokens,
+            reservation: { canonicalBytes: 0, artifactBytes: 0, nativeBytes: 0, pendingBytes: 0 } });
+          const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget!, timestamp: state.identity.timestamp, hostContext: {} };
+          const prepared = policy.native.prepareHandoff(captured.view, handoffOptions);
+          if (prepared.status !== "prepared") throw budgetFailure(prepared.reason);
+          // Bound ANY subsequently accepted structured artifact, including a
+          // not-yet-produced summary: its serialized projection is capped by
+          // historyAllowance. Add that cap to the real empty summary envelope.
+          // Do not publish intent/authorize paid producers without proving
+          // its worst-case inherited prefix is compactable.
+          const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget!.historyAllowance);
+          if (capacityFit.status !== "ready") throw budgetFailure(capacityFit.reason);
+          const proposal = policy.native.buildHandoff(captured.view, handoffOptions);
+          // Prove the exact free projection's future compaction viability before
+          // intent/paid work. Paid proposals are checked again before acceptance.
+          if (proposal.status === "ready") {
+            const fit = await checkInheritedPrefix(proposal.messages, incoming.snapshot.model, compaction);
+            if (fit.status !== "ready") throw budgetFailure(fit.reason);
+          }
+          const authority = await owner.acquireNativeHistoryAuthority({ exclusiveWriters: policy.exclusiveWriters });
+          if (authority.status !== "owned") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
+          const canonicalBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Buffer.byteLength(JSON.stringify(snapshot)) + 16384);
+          const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget!.historyAllowance * 3 + 4096));
+          state = { ...state, reservation: { canonicalBytes, artifactBytes, nativeBytes: MAX_NATIVE_EPOCH_BYTES, pendingBytes: Buffer.byteLength(JSON.stringify(state)) * 3 + 65536 } };
+        }
+        const result = await advancePreparedModelSwitch({ preparation: owner, native: policy.native, incoming, state, view: captured.view, messageId,
+          exclusiveWriters: policy.exclusiveWriters, outgoing: prepareOutgoing,
+          checkInheritedPrefix: (messages) => checkInheritedPrefix(messages, incoming!.snapshot.model, compaction) });
+        if (result.status === "pending") throw pending();
+        if (result.status === "budget_failure") throw budgetFailure(result.reason);
+        if (result.status === "unsupported") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
+        ready = result; switched = true; snapshot = await owner.read();
       } catch (error) {
-        if (error instanceof ModelSwitchCapacityError) throw new AgentHarnessError("native_cold_model_change_unavailable", "Safe cold publication capacity unavailable; no incoming turn was admitted and native evidence was preserved.");
+        // Typed PRE-INTENT capacity/size refusal is a refusal, never a cold model
+        // change. Never disguise corruption, lost ownership, unknown paid work or pending.
+        if (!snapshot.pending && capacity(error) && !(await owner.read()).pending) throw budgetFailure("capacity");
         throw error;
       }
-      snapshot = await owner.read(); cold = false; missingEpoch = undefined;
     }
-    // One degradation warning per turn, by kind: a cold model change already
-    // reports the lost working context, including a missing current journal.
-    const warning = appliedCold ? { warning_kind: "degraded_native_context", source: "harness",
-      message: "Switched models without the previous model's full working context. The new model has the available conversation history, but not the earlier model's internal session state, so it may need key details repeated." } as const
-      : { warning_kind: "degraded_native_context", source: "harness",
-        message: "This conversation's saved model session was missing, so the model continued from the available conversation history without its earlier internal session state. It may need key details repeated." } as const;
+    const warning = { warning_kind: "degraded_native_context", source: "harness",
+      message: "This conversation's saved model session was missing, so the model continued from the available conversation history without its earlier internal session state. It may need key details repeated." } as const;
     const recoversMissing = missingEpoch !== undefined, emitWarning = () => {
       const event = { type: "runtime_warning", ...warning };
       host.recorder.onEvent(event); host.request.onEvent?.(event);
     };
-    // A detached C resets the epoch but retains the accepted switch receipt.
-    // Its older projection cannot replace canonical turns since that switch.
-    if (!ready && !cold && missingEpoch === undefined && snapshot.native?.projection && snapshot.lastSwitch?.artifact
-      && snapshot.lastSwitch.toEpoch === snapshot.native.chain.at(-1)?.epoch) ready = {
+    // A cold rotation resets the epoch and drops the projection; only the
+    // epoch that accepted the switch inherits its handoff.
+    if (!ready && missingEpoch === undefined && snapshot.native?.projection && snapshot.lastSwitch?.artifact && snapshot.source.status === "supported"
+      && snapshot.lastSwitch.toEpoch === snapshot.source.sourceEpoch) ready = {
       status: "ready", switchId: snapshot.lastSwitch.switchId, artifact: snapshot.native.projection, modelKey: host.routing.modelKey };
-    snapshot.native?.chain.forEach((row) => protectedHandles.add(row.handleId));
+    if (snapshot.native && snapshot.source.status === "supported") protectedHandles.add(switchProviderSessionId(host.request.conversationId, snapshot.source.sourceEpoch));
     const prepared = incoming;
     const onTurn = (turn: Awaited<ReturnType<typeof owner.admit>>, notify: Parameters<ConfiguredPreparedTurn["run"]>[1]) => {
-      assertOwned = () => turn.assertOwned(); turn.native?.chain.forEach((row) => protectedHandles.add(row.handleId)); notify(turn);
+      assertOwned = () => turn.assertOwned(); if (turn.native) protectedHandles.add(turn.providerSessionId); notify(turn);
+      // The boundary is durable once admission returns; report it before dispatch.
+      if (recoversMissing) emitWarning();
     };
+    const warned = (result: RuntimeResult): RuntimeResult => recoversMissing
+      ? { ...result, runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning] } : result;
     return { context: prepared.context, protectedHandles,
       run: async (binding, notify) => {
-        if (appliedCold) emitWarning();
         const refresh = async (turn: Awaited<ReturnType<typeof owner.admit>>) => { if (!runtime.refreshSession) throw new Error("Strict native refresh unavailable"); await runtime.refreshSession(turn.providerSessionId); };
-        if (ready) return await runPreparedModelSwitch({ preparation: owner, incoming: prepared, ready, binding, sessionsRoot: host.durablePiSessionsRoot,
-          switching: switched, onAdmitted: (turn) => onTurn(turn, notify), beforeDispatch: refresh });
-        const result = await prepared.run(async () => {
-          const turn = await owner.admit(binding, cold || recoversMissing ? { ...(cold ? { coldModelChange: true as const } : {}),
-            ...(recoversMissing ? { missingCurrentEpoch: missingEpoch! } : {}) } : undefined); onTurn(turn, notify);
-          // The cold boundary is durable once admission returns; report it before dispatch.
-          if (recoversMissing && !appliedCold) emitWarning();
+        if (ready) return warned(await runPreparedModelSwitch({ preparation: owner, incoming: prepared, ready, binding, sessionsRoot: host.durablePiSessionsRoot,
+          switching: switched, onAdmitted: (turn) => onTurn(turn, notify), beforeDispatch: refresh }));
+        return warned(await prepared.run(async () => {
+          const turn = await owner.admit(binding, recoversMissing ? { missingCurrentEpoch: missingEpoch! } : undefined); onTurn(turn, notify);
           await refresh(turn);
           if (!turn.reconciliation) throw new Error("Prepared host requires owned native execution reconciliation");
           const id = turn.providerSessionId;
@@ -249,10 +214,9 @@ export async function prepareConfiguredModelSwitch(input: {
             nativeProvenanceRecording: true as const,
             ...(turn.native ? { nativeSessionAuthority: { version: 1 as const, currentHandleId: id, sessionsRoot: host.durablePiSessionsRoot, hostAuthority: turn.native.authority,
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
-        });
-        return appliedCold || recoversMissing ? { ...result, runtimeWarnings: [...(Array.isArray(result.runtimeWarnings) ? result.runtimeWarnings : []), warning] } : result;
+        }));
       }, close: async () => { try { await prepared.close(); } finally { await owner.abort(); } } };
-  } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw error; }
+  } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw preRelease(error); }
   finally { await outgoing?.close().catch(() => {}); }
 }
 // Same epoch/handle identity as durable history; never a process/run identifier.

@@ -17,62 +17,69 @@ const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000,
 const options = { target, budget, hostContext, timestamp: 17, producer: "outgoing" };
 const text = (value) => ({ role: "user", content: value, timestamp: 1 });
 const summary = { intent: ["Fictional goal"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] };
-async function segment(id, epoch, predecessorJournalId = null, messages = [text(id)], guarded = false) {
+async function segment(id, messages = [text(id)], guarded = false) {
   const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional", ...(guarded ? { hostAuthority, assertOwned: async () => {} } : {}) });
   await store.beginTurn(`turn-${id}`);
   await store.openOperation(`op-${id}`, { model: { provider: provenance.provider, api: provenance.api, id }, nativeProvenance: provenance });
   for (let i = 0; i < messages.length; i++) await store.appendMessage(messages[i], `${id}-message-${i}`);
   await store.closeOperation(`op-${id}`, "completed");
   await store.endTurn(`turn-${id}`, "completed");
-  const descriptor = { ownerKey: "fictional-owner", historyBucket: "fictional-bucket", epoch, journalId: store.metadata.journalId,
-    handleId: id, predecessorJournalId, sourceDigest: evidenceDigest(store.records), sourceSeq: store.seq, sourceTipId: store.tip, provenance };
+  const descriptor = { ownerKey: "fictional-owner", historyBucket: "fictional-bucket", journalId: store.metadata.journalId,
+    handleId: id, sourceDigest: evidenceDigest(store.records), sourceSeq: store.seq, sourceTipId: store.tip, provenance };
   return { descriptor, header: { format: "mono-harness", version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id }, ...store.metadata }, records: store.records, store };
 }
-function view(segments) { return createEvidenceView({ ownerKey: "fictional-owner", historyBucket: "fictional-bucket", segments }); }
+function view(segments, extra = {}) { return createEvidenceView({ ownerKey: "fictional-owner", historyBucket: "fictional-bucket", segments, ...extra }); }
+/** An accepted prior handoff the current journal inherits, as the host reads it back. */
+async function priorHandoff(content, withSummary = true) {
+  const b = await segment("B", [text(content)]);
+  const built = buildHandoff(view([b]), { ...options, summary });
+  if (built.status !== "ready") throw new Error("Expected prior handoff");
+  return withSummary ? built.artifact : { ...built.artifact, summary: null };
+}
 function refreshed(segment) { return { ...segment, records: segment.store.records, descriptor: { ...segment.descriptor,
   sourceDigest: evidenceDigest(segment.store.records), sourceSeq: segment.store.seq, sourceTipId: segment.store.tip } }; }
 
-it("A -> B -> A returns through a neutral handoff with intervening B, referencing opaque reasoning instead of copying it", async () => {
-  const a = await segment("A", 1, null, [text("A fact"), { role: "assistant", provider: "fictional", api: "fictional-api", model: "A", stopReason: "stop", timestamp: 1,
+it("A -> B -> A returns through a neutral handoff with the inherited prior as producer evidence only, referencing opaque reasoning", async () => {
+  const prior = await priorHandoff("B fact");
+  const back = await segment("A-return", [text("A fact"), { role: "assistant", provider: "fictional", api: "fictional-api", model: "A", stopReason: "stop", timestamp: 1,
     content: [{ type: "thinking", thinking: "Fictional reasoning", thinkingSignature: "opaque-fixture-signature" }, { type: "text", text: "A reply" }] }]);
-  const b = await segment("B", 2, a.header.journalId, [text("B fact")]); const c = await segment("A-return", 3, b.header.journalId);
-  const evidence = view([a, b, c]);
+  const evidence = view([back], { prior });
   // Native envelopes are never projected across a model change, even with matching provenance.
   expect(() => projectContext(evidence, { ...options, switching: true })).toThrow("native journal entries");
+  const prepared = prepareHandoff(evidence, options);
+  expect(JSON.stringify(prepared.prior)).toContain("B fact"); expect(prepared.prior).not.toHaveProperty("prior");
   const result = buildHandoff(evidence, { ...options, summary }); expect(result.status).toBe("ready");
-  expect(JSON.stringify(result.artifact)).toContain("B fact"); expect(JSON.stringify(result.artifact)).toContain("A reply");
+  expect(JSON.stringify(result.artifact)).toContain("A reply"); expect(JSON.stringify(result.artifact)).not.toContain("B fact"); // the new summary subsumes the prior
   expect(JSON.stringify(result.artifact)).not.toContain("opaque-fixture-signature"); expect(JSON.stringify(result.artifact)).toContain("opaque_native_reference");
   expect(result.messages).toEqual([expect.objectContaining({ role: "user", content: [expect.objectContaining({ text: expect.stringContaining("Historical handoff") })] })]);
 });
-it("rejects fabricated views, cycles, foreign owners, changed frozen tips/digests and nonmonotonic epochs", async () => {
-  const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId);
-  for (const change of [{ predecessorJournalId: "cycle" }, { ownerKey: "foreign" }, { sourceTipId: "missing" }, { sourceDigest: "bad" }, { epoch: 0 }]) {
-    expect(() => view([a, { ...b, descriptor: { ...b.descriptor, ...change } }])).toThrow("Invalid");
+it("rejects fabricated views, foreign owners, changed frozen tips/digests and anything but one current journal", async () => {
+  const a = await segment("A"); const b = await segment("B");
+  for (const change of [{ ownerKey: "foreign" }, { sourceTipId: "missing" }, { sourceDigest: "bad" }, { handleId: "other" }]) {
+    expect(() => view([{ ...b, descriptor: { ...b.descriptor, ...change } }])).toThrow("Invalid");
   }
   expect(() => buildHandoff({ segments: [a], gaps: [] }, options)).toThrow("unvalidated");
-  expect(() => view([a, a])).toThrow("Invalid");
+  expect(() => view([a, b])).toThrow("Invalid"); expect(() => view([])).toThrow("Invalid");
 });
-it("persists opt-in composed coverage and replays inherited material exactly once", async () => {
-  const a = await segment("A", 1); const b = await segment("B", 2, a.header.journalId, [text("B")], true);
-  b.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
-  const frozen = view([a, b]);
-  await b.store.beginTurn("composed-turn");
-  await b.store.openOperation("composed-op", { model: { provider: provenance.provider, api: provenance.api, id: "B" }, nativeProvenance: provenance }, "compaction");
-  await b.store.appendComposedCompaction({ summary: "A and B checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, view([a, refreshed(b)]));
-  await b.store.closeOperation("composed-op", "completed"); await b.store.endTurn("composed-turn", "completed");
-  expect(b.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
-  const c = await segment("C", 3, b.header.journalId); const result = buildHandoff(view([a, refreshed(b), c]), options);
-  // The composed checkpoint already covers A: the exact fallback never repeats A's prefix.
-  expect(result.status).toBe("ready"); expect(result.artifact.checkpoint.prefix).toEqual([]);
-  expect(JSON.stringify(result.artifact.checkpoint.envelope)).toContain("A and B checkpoint");
-  const bad = refreshed(b); bad.records = structuredClone(bad.records); bad.records.find((r) => r.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
-  bad.descriptor.sourceDigest = evidenceDigest(bad.records);
-  expect(() => view([a, bad, c])).toThrow("coverage");
-  await expect(b.store.appendComposedCompaction({}, frozen)).rejects.toThrow("changed");
+it("persists opt-in composed coverage of the inherited prior handoff and never repeats it", async () => {
+  const prior = await priorHandoff("Inherited B fact");
+  const inheritedCoverage = { version: 1, sources: prior.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) };
+  const c = await segment("C", [text("C")], true);
+  c.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
+  await c.store.beginTurn("composed-turn");
+  await c.store.openOperation("composed-op", { model: { provider: provenance.provider, api: provenance.api, id: "C" }, nativeProvenance: provenance }, "compaction");
+  await c.store.appendCompaction({ summary: "Prior and C checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, inheritedCoverage, { sourceTipId: c.store.tip, sourceSeq: c.store.seq });
+  await c.store.closeOperation("composed-op", "completed"); await c.store.endTurn("composed-turn", "completed");
+  expect(c.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
+  const result = buildHandoff(view([refreshed(c)], { prior }), options);
+  expect(result.status).toBe("ready"); expect(JSON.stringify(result.artifact.checkpoint.suffix)).toContain("Prior and C checkpoint");
+  expect(() => view([refreshed(c)])).toThrow("composed coverage");
+  expect(() => view([refreshed(c)], { prior: { ...prior, coverage: [] } })).toThrow("composed coverage");
 });
 it("keeps whole latest turns, visible text verbatim and historical calls as neutral data", async () => {
-  const segments = []; for (let i = 0; i < 5; i++) segments.push(await segment(`turn${i}`, i, segments.at(-1)?.header.journalId ?? null, [text(`verbatim-${i}`)]));
-  const evidence = view(segments); const prepared = prepareHandoff(evidence, options);
+  const a = await segment("turn0", [text("verbatim-0")]);
+  for (let i = 1; i < 5; i++) { await a.store.beginTurn(`turn${i}`); await a.store.appendMessage(text(`verbatim-${i}`)); await a.store.endTurn(`turn${i}`, "completed"); }
+  const evidence = view([refreshed(a)]); const prepared = prepareHandoff(evidence, options);
   expect(prepared.recent).toHaveLength(3); expect(prepared.older).toHaveLength(2);
   const result = buildHandoff(evidence, { ...options, summary }); expect(result.status).toBe("ready");
   expect(JSON.stringify(result.messages)).toContain("verbatim-4"); expect(JSON.stringify(result.messages)).not.toContain('"role":"toolResult"');
@@ -81,7 +88,7 @@ it("keeps whole latest turns, visible text verbatim and historical calls as neut
   expect(buildHandoff(evidence, { ...options, summary })).toEqual(result);
 });
 it("accounts for started unknown effects, returned-but-unplaced results, interruption and unconsumed input without replay", async () => {
-  const s = await segment("ledger", 0); const store = s.store;
+  const s = await segment("ledger"); const store = s.store;
   await store.beginTurn("pending"); await store.openOperation("op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
   await store.appendMessage({ role: "assistant", provider: "fictional", api: "fictional-api", model: "A", content: [{ type: "toolCall", id: "unknown", name: "Write", arguments: { file_path: "/fictional/unknown" } }, { type: "toolCall", id: "returned", name: "Read", arguments: { file_path: "/fictional/result" } }], stopReason: "toolUse", timestamp: 1 }, "calls");
   for (const [callId, name] of [["unknown", "Write"], ["returned", "Read"]]) for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId, name, messageId: "calls", admission }, { operationId: "op" });
@@ -92,54 +99,59 @@ it("accounts for started unknown effects, returned-but-unplaced results, interru
   expect(ledger.find((r) => r.callId === "unknown")).toMatchObject({ outcome: "unknown", admission: "started", placed: false, cause: "crashed" });
   expect(ledger.find((r) => r.callId === "returned")).toMatchObject({ outcome: "success", returned: true, placed: false });
   expect(ledger.find((r) => r.kind === "input")).toMatchObject({ id: "later", outcome: "not_consumed" });
-  expect(buildHandoff(view([refreshed(s)]), options).status).toBe("ready");
+  expect(buildHandoff(view([refreshed(s)]), { ...options, summary }).status).toBe("ready");
 });
-it("checkpoint fallback retains exact envelope plus COMPLETE suffix and all uncovered predecessors", async () => {
-  const a = await segment("A", 0); const b = await segment("B", 1, a.header.journalId);
-  await b.store.appendCompaction({ summary: "exact fixture checkpoint", tokensBefore: 50, retainedTail: [] });
+it("checkpoint route = exact prior validated structured summary + COMPLETE current suffix; a suffix alone is text-only replay", async () => {
+  const b = await segment("B");
+  await b.store.appendCompaction({ summary: "exact fixture compaction", tokensBefore: 50, retainedTail: [] });
   for (let i = 0; i < 4; i++) { await b.store.beginTurn(`suffix${i}`); await b.store.appendMessage(text(`suffix-${i}`), `suffix-message-${i}`); await b.store.endTurn(`suffix${i}`, "completed"); }
-  const evidence = view([a, refreshed(b)]); const result = buildHandoff(evidence, options);
-  expect(result.status).toBe("ready"); expect(result.artifact.checkpoint.suffix).toHaveLength(4); expect(result.artifact.checkpoint.prefix).toHaveLength(1);
-  expect(result.artifact.checkpoint.envelope).toEqual((await b.store.getEntries()).find((e) => e.type === "compaction").checkpoint);
+  // No prior structured summary: a compaction checkpoint or the whole suffix is not a handoff.
+  expect(buildHandoff(view([refreshed(b)]), options)).toMatchObject({ status: "summary_required" });
+  expect(buildHandoff(view([refreshed(b)], { prior: await priorHandoff("text-only prior", false) }), options)).toMatchObject({ status: "summary_required" });
+  const prior = await priorHandoff("validated prior fact"), result = buildHandoff(view([refreshed(b)], { prior }), options);
+  expect(result.status).toBe("ready"); expect(result.artifact.summary).toBeNull();
+  expect(result.artifact.checkpoint).toEqual({ summary: prior.summary, ledger: prior.ledger, suffix: expect.any(Array) });
+  expect(result.artifact.checkpoint.suffix.map((message) => message.id)).toEqual(["B-message-0", expect.any(String), "suffix-message-0", "suffix-message-1", "suffix-message-2", "suffix-message-3"]);
+  expect(result.artifact.checkpoint.suffix[1].data[0].text).toBe("exact fixture compaction");
+  expect(result.artifact.recent).toHaveLength(1); expect(result.artifact.recent[0].messages[0].id).toBe("suffix-message-3");
+  // A malformed prior summary is never accepted as a checkpoint.
+  expect(() => buildHandoff(view([refreshed(b)], { prior: { ...prior, summary: { intent: "not-array" } } }), options)).toThrow("structured handoff summary");
 });
 it("refuses mandatory latest/ledger overflow, host-cap extensions and oversized current input; never clips", async () => {
-  const a = await segment("huge", 0, null, [text("x".repeat(300000))]);
+  const a = await segment("huge", [text("x".repeat(300000))]);
   expect(buildHandoff(view([a]), options)).toMatchObject({ status: "budget_failure", reason: "mandatory_history" });
   expect(checkHandoffDispatch({ messages: [], systemPrompt: "x".repeat(100000) }, budget)).toMatchObject({ status: "budget_failure", reason: "host_cap" });
   expect(checkHandoffDispatch({ messages: [], currentInput: "x".repeat(1000) }, budget).reason).toBe("input_allowance");
   expect(createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext: { tools: [{ parameters: "x".repeat(60000) }] } }).hostCap).toBeGreaterThan(20000);
   for (const malformed of [null, {}, { ...summary, intent: "not-array" }, { ...summary, extra: [] }, Object.fromEntries(Object.keys(summary).map((key) => [key, []]))]) expect(() => validateHandoffSummary(malformed)).toThrow();
-  expect(buildHandoff(view([await segment("A", 0)]), { ...options, summary: {} }).status).toBe("summary_rejected");
+  expect(buildHandoff(view([await segment("A")]), { ...options, summary: {} })).toEqual({ status: "summary_rejected", reason: "malformed_summary" });
 });
 it("enforces one context-builder seam in production source (definition and compatibility export remain)", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   expect(await findContextBuilderBypasses(root)).toEqual([]);
 });
 
-it("opt-in model-change records carry only an artifact reference; canonical gaps cannot masquerade as native evidence", async () => {
-  const a = await segment("A", 0, null, [text("A")], true);
-  a.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
-  await a.store.appendModelChangeReference({ switchId: "fictional-switch", from: provenance, to: target, artifactRef: { id: "fictional-artifact", hash: "0".repeat(64) } });
-  const event = a.store.records.find((r) => r.kind === "model_change");
-  expect(event.schemaVersion).toBe(3); expect(event.payload.artifactRef).toEqual({ id: "fictional-artifact", hash: "0".repeat(64) });
-  await expect(a.store.appendModelChangeReference({ switchId: "invalid", from: provenance, to: target, artifactRef: { id: "bad", hash: "bad", summary: "not authoritative" } })).rejects.toThrow("Invalid");
-  const evidence = createEvidenceView({ ownerKey: "fictional-owner", historyBucket: "fictional-bucket", segments: [refreshed(a)], gaps: [
-    { afterJournalId: a.header.journalId, reference: "canonical-fixture-reference", reason: "missing-native-history", messages: [text("Canonical-only fictional fact")] },
-  ] });
-  expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Canonical-only fictional fact");
+it("a missing current journal hands off canonical history as a gap; gaps never masquerade as native evidence", async () => {
+  const gap = { afterJournalId: null, reference: "canonical-fixture-reference", reason: "journal_missing", messages: [text("Canonical-only fictional fact")] };
+  const missing = view([], { gaps: [gap] });
+  expect(prepareHandoff(missing, options).coverage).toEqual([]);
+  expect(buildHandoff(missing, options)).toMatchObject({ status: "summary_required" });
+  expect(JSON.stringify(buildHandoff(missing, { ...options, summary }))).toContain("Canonical-only fictional fact");
+  const a = await segment("A", [text("A")]);
+  expect(JSON.stringify(buildHandoff(view([refreshed(a)], { gaps: [gap] }), { ...options, summary }))).toContain("Canonical-only fictional fact");
 });
 
 it("retains imported summary-only envelopes and checkpoint evidence even without older raw turns", async () => {
-  const a = await segment("summary-only", 0, null, [{ role: "compactionSummary", summary: "Fictional retained older fact", tokensBefore: 10, timestamp: 1 }]);
-  expect(JSON.stringify(buildHandoff(view([a]), options))).toContain("Fictional retained older fact");
+  const a = await segment("summary-only", [{ role: "compactionSummary", summary: "Fictional retained older fact", tokensBefore: 10, timestamp: 1 }]);
+  expect(JSON.stringify(buildHandoff(view([a]), { ...options, summary }))).toContain("Fictional retained older fact");
   await a.store.appendCompaction({ summary: "Fictional checkpoint-only fact", tokensBefore: 10, retainedTail: [] });
   const evidence = view([refreshed(a)]);
   expect(JSON.stringify(prepareHandoff(evidence, options).checkpoints)).toContain("Fictional checkpoint-only fact");
-  expect(JSON.stringify(buildHandoff(evidence, options))).toContain("Fictional checkpoint-only fact");
+  expect(JSON.stringify(buildHandoff(view([refreshed(a)], { prior: await priorHandoff("prior") }), options))).toContain("Fictional checkpoint-only fact");
 });
 
 it("evidence inspection never hides rewound current-journal contradictions", async () => {
-  const a = await segment("raw-evidence", 0);
+  const a = await segment("raw-evidence");
   await a.store.appendMessage(text("Rewound native evidence"), "rewound-message");
   await a.store.moveTo("raw-evidence-message-0");
   const evidence = view([refreshed(a)]).segments[0];
@@ -147,21 +159,8 @@ it("evidence inspection never hides rewound current-journal contradictions", asy
   expect(evidence.entries.some((r) => r.id === "rewound-message")).toBe(false);
 });
 
-it("checkpoint fallback carries nonempty preserved tail content as neutral history", async () => {
-  const call = { role: "assistant", content: [{ type: "toolCall", id: "retained-call", name: "Read", arguments: { file_path: "/fictional/retained" } }], stopReason: "toolUse", timestamp: 1 };
-  const result = { role: "toolResult", toolCallId: "retained-call", toolName: "Read", isError: false, content: [{ type: "text", text: "Retained fixture fact outside summary" }], timestamp: 2 };
-  const a = await segment("nonempty-tail", 0, null, [text("Older fixture intent"), call, result]);
-  await a.store.appendCompaction({ summary: "Older intent only", tokensBefore: 100, retainedTail: [call, result] });
-  for (let i = 0; i < 4; i++) { await a.store.beginTurn(`after-${i}`); await a.store.appendMessage(text(`later-${i}`)); await a.store.endTurn(`after-${i}`, "completed"); }
-  const built = buildHandoff(view([refreshed(a)]), options);
-  expect(built.status).toBe("ready"); expect(built.artifact.recent).toHaveLength(3);
-  expect(built.artifact.checkpoint.retained).toEqual([renderHandoffMessage(call), renderHandoffMessage(result)]);
-  expect(built.artifact.checkpoint.retained[0].data[0].label).toBe("historical_tool_call_data");
-  expect(JSON.stringify(built.artifact.recent)).not.toContain("Retained fixture fact outside summary");
-  expect(JSON.stringify(built.messages)).toContain("Retained fixture fact outside summary");
-});
 it("groups cold-boundary seeded user/call/result/reply scopes as whole logical turns", async () => {
-  const a = await segment("seeded", 0);
+  const a = await segment("seeded");
   const messages = [text("seed user one"), { role: "assistant", stopReason: "toolUse", timestamp: 1, content: [{ type: "toolCall", id: "seed-call", name: "Read", arguments: { file_path: "/fictional" } }] },
     { role: "toolResult", toolCallId: "seed-call", toolName: "Read", isError: false, timestamp: 1, content: [{ type: "text", text: "seed result" }] },
     { role: "assistant", stopReason: "stop", timestamp: 1, content: [{ type: "text", text: "seed final one" }] }, text("seed user two"),
@@ -174,7 +173,7 @@ it("groups cold-boundary seeded user/call/result/reply scopes as whole logical t
   expect(buildHandoff(view([refreshed(a)]), { ...options, summary }).artifact.recent).toEqual(prepared.recent);
 });
 it("keeps a seeded tool result with its call even when a user boundary intervenes", async () => {
-  const a = await segment("seed-pair", 0);
+  const a = await segment("seed-pair");
   await a.store.appendMessage(text("first seed user"), "first-seed");
   await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "seed-cross", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1 }, "seed-call-message");
   await a.store.appendMessage(text("intervening seed user"), "intervening-seed");
@@ -183,7 +182,7 @@ it("keeps a seeded tool result with its call even when a user boundary intervene
   expect(prepared.recent.find((t) => t.messages.some((m) => m.id === "seed-call-message")).messages.map((m) => m.id)).toEqual(["first-seed", "seed-call-message", "seed-result-message"]);
 });
 it("never drops authoritative recent turns after summary production to force a fit", async () => {
-  const a = await segment("frozen-recent", 0, null, [text("earlier".repeat(600))]);
+  const a = await segment("frozen-recent", [text("earlier".repeat(600))]);
   for (let i = 0; i < 3; i++) { await a.store.beginTurn(`retained-${i}`); await a.store.appendMessage(text(`${i}`.repeat(4000))); await a.store.endTurn(`retained-${i}`, "completed"); }
   const local = { ...options, budget: createHandoffBudget({ contextWindow: 30000, outputReserve: 1000, inputTokens: 0, hostContext }) };
   const evidence = view([refreshed(a)]); const prepared = prepareHandoff(evidence, local);
@@ -192,7 +191,7 @@ it("never drops authoritative recent turns after summary production to force a f
   expect(prepareHandoff(evidence, local).recent).toEqual(prepared.recent);
 });
 it("retains started rewound effects and their arguments in the unknown ledger", async () => {
-  const a = await segment("rewound-effect", 0); const baseline = a.store.tip;
+  const a = await segment("rewound-effect"); const baseline = a.store.tip;
   await a.store.beginTurn("rewound-turn"); await a.store.openOperation("rewound-op", {});
   await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rewound-write", name: "Write", arguments: { file_path: "/fictional/effect", content: "fictional" } }], stopReason: "toolUse", timestamp: 1 }, "rewound-call-message");
   for (const admission of ["observed", "admitted", "started"]) await a.store.write("tool_call", { callId: "rewound-write", name: "Write", messageId: "rewound-call-message", admission }, { operationId: "rewound-op" });
@@ -204,7 +203,7 @@ it("retains started rewound effects and their arguments in the unknown ledger", 
 it("view and store share exact repair projection timestamps and last-account selection", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
   try {
-    const a = await segment("repair-differential", 0); const store = a.store;
+    const a = await segment("repair-differential"); const store = a.store;
     await store.beginTurn("repair-turn"); await store.openOperation("repair-op", { model: { provider: provenance.provider, api: provenance.api, id: "A" }, nativeProvenance: provenance });
     clock.mockReturnValue(1700000000010);
     await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "repair-call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 10 }, "repair-call-message");
@@ -236,19 +235,16 @@ it("source enforcement catches JS/TS imports and re-exports in other packages an
 });
 
 it("gates every opt-in v3 writer on upgraded header authority AND the exclusive-writers acknowledgement", async () => {
-  const a = await segment("v3-gate", 0, null, [text("v3-gate")], true); const before = structuredClone(a.store.records);
-  const change = { switchId: "fictional-switch", from: provenance, to: target, artifactRef: { id: "fixture", hash: "0".repeat(64) } };
-  await expect(a.store.appendModelChangeReference(change)).rejects.toThrow("exclusive upgraded writers");
-  await expect(a.store.appendComposedCompaction({ summary: "fixture", retainedTail: [] }, view([a]))).rejects.toThrow("exclusive upgraded writers");
+  const a = await segment("v3-gate", [text("v3-gate")], true); const before = structuredClone(a.store.records);
+  const coverage = { version: 1, sources: [] };
+  await expect(a.store.appendCompaction({ summary: "fixture", retainedTail: [] }, coverage, { sourceTipId: a.store.tip, sourceSeq: a.store.seq })).rejects.toThrow("exclusive upgraded writers");
   await expect(a.store.write("model_change", {}, { schemaVersion: 3 })).rejects.toThrow("exclusive upgraded writers");
   expect(() => a.store.enableVersion3Writes({ exclusiveWriters: false })).toThrow("exclusive upgraded writers");
   expect(a.store.records).toEqual(before);
-  a.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority }); await a.store.appendModelChangeReference(change);
-  expect(a.store.records.some((r) => r.kind === "model_change" && r.schemaVersion === 3)).toBe(true);
 });
 
 it("keeps observed successful outcomes from rewound calls as ledger evidence, not active receipts", async () => {
-  const a = await segment("rewound-return", 0); const baseline = a.store.tip;
+  const a = await segment("rewound-return"); const baseline = a.store.tip;
   await a.store.beginTurn("returned-turn"); await a.store.openOperation("returned-op", {});
   await a.store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "known-return", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 1 }, "known-call-message");
   for (const admission of ["observed", "admitted", "started"]) await a.store.write("tool_call", { callId: "known-return", name: "Read", messageId: "known-call-message", admission }, { operationId: "returned-op" });
@@ -260,92 +256,31 @@ it("keeps observed successful outcomes from rewound calls as ledger evidence, no
   expect(buildOpenWorkLedger(view([refreshed(a)])).find((r) => r.callId === "known-return")).toMatchObject({ rewound: true, outcome: "success", returned: true, placed: true, result: renderHandoffMessage(returned) });
 });
 
-it("sheds only optional complete groups duplicated in an exact checkpoint suffix, without a producer", async () => {
-  const a = await segment("checkpoint-shedding", 0);
-  await a.store.appendCompaction({ summary: "Exact fictional older context", tokensBefore: 100, retainedTail: [] });
-  for (let i = 0; i < 4; i++) {
-    await a.store.beginTurn(`suffix-turn-${i}`);
-    await a.store.appendMessage(text(`${i}:` + "f".repeat(6000)), `suffix-id-${i}`);
-    await a.store.endTurn(`suffix-turn-${i}`, "completed");
-  }
-  const evidence = view([refreshed(a)]);
-  const local = { ...options, producer: "checkpoint", budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
-  const prepared = prepareHandoff(evidence, local);
-  expect(prepared.recent).toHaveLength(3);
-  const built = buildHandoff(evidence, local);
-  expect(built.status).toBe("ready");
-  expect(built.artifact.summary).toBeNull();
-  expect(built.artifact.recent.length).toBeLessThan(3);
-  expect(built.artifact.recent.at(-1)).toEqual(prepared.recent.at(-1));
-  expect(built.artifact.ledger).toEqual(prepared.ledger);
-  expect(built.artifact.checkpoint.suffix.map((message) => message.id)).toEqual(["suffix-id-0", "suffix-id-1", "suffix-id-2", "suffix-id-3"]);
-  expect(built.artifact.retainedIds).toEqual(built.artifact.recent.flatMap((group) => group.messages.map((message) => message.id)));
-  expect(prepareHandoff(evidence, local)).toEqual(prepared);
-  expect(buildHandoff(evidence, local)).toEqual(built);
-});
-
-it("does not shed a group only partly retained by the checkpoint", async () => {
-  const a = await segment("partial-checkpoint-shedding", 0, null, [text("mandatory original fact " + "p".repeat(600)), text("retained portion " + "r".repeat(6000))]);
-  const retained = (await a.store.getEntries())[1].message;
-  await a.store.appendCompaction({ summary: "Exact fictional checkpoint " + "c".repeat(12000), tokensBefore: 100, retainedTail: [retained] });
-  await a.store.beginTurn("complete-suffix-turn");
-  await a.store.appendMessage(text("optional suffix " + "s".repeat(4000)), "optional-suffix-id");
-  await a.store.endTurn("complete-suffix-turn", "completed");
-  await a.store.beginTurn("latest-suffix-turn");
-  await a.store.appendMessage(text("required latest " + "l".repeat(4000)), "required-latest-id");
-  await a.store.endTurn("latest-suffix-turn", "completed");
-  const evidence = view([refreshed(a)]);
-  const local = { ...options, budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
-  const prepared = prepareHandoff(evidence, local);
-  expect(prepared.recent).toHaveLength(3);
-  // The optional suffix may disappear, but the partially retained group cannot:
-  // the original fact must remain verbatim, not be inferred from summary prose.
-  expect(buildHandoff(evidence, local)).toMatchObject({ status: "budget_failure" });
-});
-
-it("allows shedding a whole group exactly represented by checkpoint retained IDs and content", async () => {
-  const a = await segment("retained-checkpoint-shedding", 0, null, [text("exact retained fact " + "r".repeat(6000))]);
-  const retained = (await a.store.getEntries())[0].message;
-  await a.store.appendCompaction({ summary: "Exact checkpoint " + "c".repeat(8000), tokensBefore: 100, retainedTail: [retained] });
-  for (let i = 0; i < 2; i++) {
-    await a.store.beginTurn(`retained-suffix-${i}`);
-    await a.store.appendMessage(text(`${i}:` + "s".repeat(4000)), `retained-suffix-message-${i}`);
-    await a.store.endTurn(`retained-suffix-${i}`, "completed");
-  }
-  const evidence = view([refreshed(a)]);
-  const local = { ...options, budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
-  expect(prepareHandoff(evidence, local).recent).toHaveLength(3);
-  const built = buildHandoff(evidence, local);
-  expect(built.status).toBe("ready");
-  expect(built.artifact.recent.some((group) => group.messages.some((message) => message.id === "retained-checkpoint-shedding-message-0"))).toBe(false);
-  expect(built.artifact.checkpoint.retained).toEqual([renderHandoffMessage(retained)]);
-  expect(built.artifact.recent.at(-1).messages[0].id).toBe("retained-suffix-message-1");
-});
-
-it("qualifies suffix message identities by journal and never sheds a prefix-only group", async () => {
-  const a = await segment("prefix-checkpoint-shedding", 0, null, [text("prefix-only fact " + "p".repeat(6000))]);
-  const b = await segment("middle-checkpoint-shedding", 1, a.header.journalId, []);
-  await b.store.appendCompaction({ summary: "Exact checkpoint " + "c".repeat(8000), tokensBefore: 100, retainedTail: [] });
-  await b.store.beginTurn("middle-suffix");
-  await b.store.appendMessage(text("middle suffix " + "s".repeat(4000)), "middle-suffix-message");
-  await b.store.endTurn("middle-suffix", "completed");
-  const c = await segment("last-checkpoint-shedding", 2, b.header.journalId, []);
-  await c.store.beginTurn("last-suffix");
-  await c.store.appendMessage(text("last suffix " + "l".repeat(4000)), "prefix-checkpoint-shedding-message-0");
-  await c.store.endTurn("last-suffix", "completed");
-  const evidence = view([a, refreshed(b), refreshed(c)]);
-  const local = { ...options, budget: createHandoffBudget({ contextWindow: 34000, outputReserve: 1000, inputTokens: 0, hostContext }) };
-  expect(prepareHandoff(evidence, local).recent).toHaveLength(3);
-  const built = buildHandoff(evidence, local);
-  expect(built.status).toBe("ready");
-  expect(built.artifact.recent.map((group) => group.journalId)).toEqual([a.header.journalId, c.header.journalId]);
-  expect(built.artifact.recent.at(-1).messages[0].data[0].text).toContain("last suffix");
-});
-
 it("does not project a guarded journal under a contradictory host owner", async () => {
-  const a = await segment("guarded-view", 0, null, [text("guarded fictional fact")], true);
+  const a = await segment("guarded-view", [text("guarded fictional fact")], true);
   const foreign = { ...a, header: { ...a.header, hostAuthority: { ...hostAuthority, ownerKey: "foreign" } } };
   expect(() => view([foreign])).toThrow("upgraded header owner");
   expect(() => view([a])).not.toThrow();
 });
 
+
+it("A -> B -> C keeps A's outcome-unknown Write in the deterministic ledger on paid-summary routes, once, and refuses rather than dropping it", async () => {
+  const a = await segment("A-unknown"); const store = a.store;
+  await store.beginTurn("unknown-turn"); await store.openOperation("unknown-op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
+  await store.appendMessage({ role: "assistant", provider: "fictional", api: "fictional-api", model: "A", content: [{ type: "toolCall", id: "write-call", name: "Write", arguments: { file_path: "/fictional/unknown" } }], stopReason: "toolUse", timestamp: 1 }, "write-message");
+  for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "write-call", name: "Write", messageId: "write-message", admission }, { operationId: "unknown-op" });
+  await store.write("interruption", { cause: "crashed", operationIds: ["unknown-op"], tipId: store.tip, calls: [] });
+  const ab = buildHandoff(view([refreshed(a)]), { ...options, summary });
+  if (ab.status !== "ready") throw new Error("Expected A -> B handoff");
+  const unknown = (artifact) => artifact.ledger.filter((entry) => entry.callId === "write-call");
+  expect(unknown(ab.artifact)).toEqual([expect.objectContaining({ name: "Write", outcome: "unknown", admission: "started" })]);
+  // B completes an ordinary turn, then B -> C summarizes again: A's entry is carried verbatim, not left to prose.
+  const bc = buildHandoff(view([await segment("B-ordinary")], { prior: ab.artifact }), { ...options, summary });
+  if (bc.status !== "ready") throw new Error("Expected B -> C handoff");
+  expect(unknown(bc.artifact)).toEqual(unknown(ab.artifact));
+  const cd = buildHandoff(view([await segment("C-ordinary")], { prior: bc.artifact }), { ...options, summary });
+  if (cd.status !== "ready") throw new Error("Expected C -> D handoff");
+  expect(unknown(cd.artifact)).toHaveLength(1); // deduplicated by stable identity
+  const oversized = { ...ab.artifact, ledger: [...ab.artifact.ledger, { kind: "tool", journalId: "fictional-old", operationId: "big-op", callId: "big-call", arguments: { text: "x".repeat(300000) } }] };
+  expect(buildHandoff(view([await segment("B-tight")], { prior: oversized }), { ...options, summary })).toMatchObject({ status: "budget_failure", reason: "mandatory_history" });
+});

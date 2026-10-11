@@ -34,22 +34,22 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
   const authority = await store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true });
   if (authority.status !== "owned") throw new Error("Expected owned root authority"); await authority.release();
   const source = await store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
-  const descriptor = await native.freeze({ epoch: source.sourceEpoch, ordinal: 0, handleId: turn.providerSessionId, predecessorJournalId: null,
+  const descriptor = await native.freeze({ epoch: source.sourceEpoch, handleId: turn.providerSessionId,
     ownerKey, historyBucket: bucket, provenance: sourceProvenance ?? { provider: "faux", api: "faux-api", model: "A", account: null } });
   const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey, historyBucket: bucket, sourceCanonicalDigest: source.sourceCanonicalDigest,
-    sourceRevision: source.sourceRevision, sources: [descriptor], fromModelKey: "faux:A", toModelKey: "faux:B",
+    sourceRevision: source.sourceRevision, sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:A", toModelKey: "faux:B",
     targetProvenance: { provider: "faux", api: sourceProvenance?.api ?? "faux-api", model: "B", account: sourceProvenance?.account ?? null }, targetEpoch: "5".repeat(64),
     projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
-    { canonicalBytes: 8192, artifactBytes: 32768, retainedNativeBytes: 16384, headerCopyBytes: 16384, pendingBytes: 65536 });
+    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
   const canonicalPath = join(base, "history", `${switchConversationKey(bucket)}.history.json`);
   return { base, store, native, state, budget, canonicalPath, nativePath: metadata.path, original: await readFile(metadata.path) };
 }
-export async function ready(f) {
+export async function ready(f, extra = {}) {
   const lease = await f.store.beginModelSwitchStorage(f.state); if (lease.status !== "owned") throw new Error("Expected owned switch");
   await lease.advanceUnfit(); const reference = await lease.accept({ version: 1, policy: "mono-handoff-v1",
-    coverage: f.state.identity.sources.map(({ ordinal, epoch: _epoch, ...entry }) => ({ ...entry, epoch: ordinal })),
+    coverage: f.state.identity.source ? [(({ epoch: _epoch, ...entry }) => entry)(f.state.identity.source)] : [],
     summary: null, checkpoint: null, recent: [], ledger: [], retainedIds: [], producer: "checkpoint", timestamp: f.state.identity.timestamp,
-    target: f.state.identity.targetProvenance, budget: f.budget });
+    target: f.state.identity.targetProvenance, budget: f.budget, ...extra });
   await lease.release(); return reference;
 }

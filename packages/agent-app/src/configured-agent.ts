@@ -259,12 +259,6 @@ interface ConfiguredAgentInternalHooks {
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
   /** App-only read decoration around the configured canonical history store. */
   readonly wrapHistoryStore?: (store: ConversationHistoryStore) => ConversationHistoryStore;
-  /** @internal Test/staging injection only; public config derives its own policy.
-   * Explicit acknowledgement cannot be inferred from wrappers/methods. */
-  readonly nativeModelSwitch?: {
-    readonly exclusiveWriters: true;
-    readonly native: import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage;
-  };
   /**
    * Overrides `runtime.session.rollover` for THIS channel's responder. The app
    * builds one responder per channel, and a channel whose conversations already
@@ -1173,7 +1167,7 @@ async function createConfiguredAgentHarnessInternal(
   // runtime methods/capabilities. Storage authority remains lazy and owner-held.
   const nativeModelSwitch = switchConfig?.enabled === true
     ? { exclusiveWriters: true as const, native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
-    : internalHooks.nativeModelSwitch;
+    : undefined;
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;

@@ -102,23 +102,22 @@ LLM or embedding provider should likewise pass `{ cwd: agentRoot }`.
 
 A custom `historyStore` keeps provider sessions process-local unless it implements the crash-safe `beginProviderSessionTurn` transaction and advertises `providerSessionRetirement: "fail-closed"`. That marker is a promise that epoch rotation, dirty-fence recovery, and retention can durably retire every exact provider id before canonical history makes it unreachable. The harness withholds `piSessionsRoot` when either half is missing.
 
-For native/v4 conversations, the managed history coordinator additionally owns
-chain membership and reference-checked lifecycle disposition: P preserves/detaches
-predecessors and unresolved turns, C replaces only the current epoch (same-model normally; the persisted-ID Web
-cold-change coordinator may change model), and D resets/retires the authorized whole chain. The ordinary two-argument
-retirement callback is not authority to delete a guarded predecessor, regardless
-of its model key. Uncoordinated/stateless/subagent cleanup stays isolated; guarded
-denial is not successful cleanup. `runtime.session.modelSwitch` remains Web-only
-and OFF-default. IDs over 512 characters bypass switch preparation without
-claiming native authority or writing an intent; the original native host-contract
-rejection is unchanged even with the option OFF. Guarded-chain over-limit/typed pre-intent capacity may select an owned cold
-model change for persisted-ID Web input only. The coordinator retains frozen
-predecessors and records an exactly-once cold receipt, then admits bounded
-canonical/tool-history replay with `degraded_native_context`, not a complete
-native handoff. Pending/unknown billed work and insufficient safe publication
-space still refuse. The generic helper's advisory modes carry no native C/D
-authority; manual stale-map preservation is defence-in-depth, with owned
-membership/header checks as the physical backstop.
+For native conversations, the managed history coordinator additionally owns the
+current journal and reference-checked lifecycle disposition: P preserves/detaches
+it and unresolved turns, C replaces only the current epoch with the same model
+(or retires a switch's outgoing journal after its receipt is durable), and D
+resets/retires the conversation. The ordinary two-argument retirement callback is
+not authority to delete a guarded journal, regardless of its model key.
+Uncoordinated/stateless/subagent cleanup stays isolated; guarded denial is not
+successful cleanup. `runtime.session.modelSwitch` remains Web-only and
+OFF-default. IDs over 512 characters bypass switch preparation without claiming
+native authority or writing an intent; the original native host-contract
+rejection is unchanged even with the option OFF. Every model change takes the
+structured handoff; typed pre-intent capacity refuses with
+`handoff_budget_exceeded`. Pending/unknown billed work and insufficient safe
+publication space still refuse. The generic helper's advisory modes carry no
+native C/D authority; manual stale-map preservation is defence-in-depth, with
+owned membership/header checks as the physical backstop.
 
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 

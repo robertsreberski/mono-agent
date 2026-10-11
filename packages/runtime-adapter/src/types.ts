@@ -534,7 +534,7 @@ export type RuntimeSessionTurnReconciliationResult =
     };
 
 /** Positive current-handle authority, borrowed from the held canonical owner.
- * assertCurrent must validate ready binding/artifact and reject predecessors,
+ * assertCurrent must validate ready binding/artifact and reject retired epochs,
  * stale mappings, lost claims and capacity-refused creation. No default opts in. */
 export interface RuntimeNativeSessionAuthority {
   readonly version: 1;
@@ -546,7 +546,7 @@ export interface RuntimeNativeSessionAuthority {
   readonly assertCurrent: (request: { readonly handleId: string; readonly action: "open" | "create"; readonly sessionsRoot: string }) => Promise<void>;
 }
 /** Host-accepted immutable projection. Historical tools remain data; native
- * envelopes may be supplied only after whole-chain compatibility validation. */
+ * envelopes are never reused across a model change. */
 export interface RuntimeNativeSessionProjection {
   readonly version: 1;
   readonly artifact: { readonly id: string; readonly hash: string };
@@ -759,55 +759,33 @@ export interface RuntimeNativeJournalDeletion {
 
 /** Private administrative journal coordinates, never model-facing run options. */
 export interface RuntimeNativeJournalDescriptor {
-  readonly journalId: string; readonly epoch: string; readonly ordinal: number; readonly handleId: string;
-  readonly predecessorJournalId: string | null; readonly ownerKey: string; readonly historyBucket: string;
+  readonly journalId: string; readonly epoch: string; readonly handleId: string;
+  readonly ownerKey: string; readonly historyBucket: string;
   readonly sourceTipId: string | null; readonly sourceSeq: number; readonly sourceDigest: string;
   readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
 }
-export interface RuntimeNativeSwitchContext {
+/** One exact native journal; deletion never infers membership from a catalogue. */
+export interface RuntimeNativeJournalRef { readonly handleId: string; readonly journalId: string }
+/** Deterministic host-owned guarded epoch for a switch target or a cold rotation. */
+export interface RuntimeNativeEpochContext {
   readonly hostAuthority: RuntimeNativeJournalAuthority;
   readonly assertOwned: () => Promise<void>;
-  readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
-  readonly sourceRevision: number; readonly fromModelKey: string;
-  readonly targetProvenance: RuntimeNativeJournalDescriptor["provenance"];
-  readonly event: { readonly switchId: string; readonly timestamp: number;
-    readonly from: RuntimeNativeJournalDescriptor["provenance"]; readonly to: RuntimeNativeJournalDescriptor["provenance"];
-    readonly artifactRef: { readonly id: string; readonly hash: string } };
+  readonly targetHandleId: string; readonly timestamp: number;
 }
-export interface RuntimeNativeColdEpochContext {
-  /** Administrative host-owned cold model transition; absent preserves the current provenance. */
-  readonly targetProvenance?: RuntimeNativeJournalDescriptor["provenance"];
-  readonly hostAuthority: RuntimeNativeJournalAuthority;
-  readonly assertOwned: () => Promise<void>;
-  readonly targetHandleId: string; readonly targetEpoch: string; readonly timestamp: number;
-}
-export type RuntimeNativeChainDeletion = RuntimeNativeJournalDeletion & (
-  | { readonly disposition: "C"; readonly eligibleJournalId: string }
-  | { readonly disposition: "D" }
-);
 export interface RuntimeNativeJournalStorage {
-  /** Persist this exact plan in the host cold intent before native publication. */
-  planColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): { readonly descriptor: RuntimeNativeJournalDescriptor; readonly bytes: number };
-  verifyColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<void>;
-  publishColdEpoch(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeColdEpochContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
-  /** Caller retains canonical membership and deletion intent through completion. */
-  deletionBlocked(chain: readonly RuntimeNativeJournalDescriptor[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
-  deleteJournals(chain: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeChainDeletion): Promise<void>;
+  /** Idempotent: an exact initializer prefix is accepted, anything else refuses. */
+  createEpoch(context: RuntimeNativeEpochContext): Promise<void>;
+  /** Read-only retention eligibility probe, not deletion authority. */
+  deletionBlocked(journals: readonly RuntimeNativeJournalRef[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
+  /** Exact listed journals only; definitively absent members are idempotent success. */
+  deleteJournals(journals: readonly RuntimeNativeJournalRef[], context: RuntimeNativeJournalDeletion): Promise<void>;
   freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest" | "provenance"> & { readonly provenance?: RuntimeNativeJournalDescriptor["provenance"] }): Promise<RuntimeNativeJournalDescriptor>;
-  measureSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<{ readonly retainedNativeBytes: number; readonly headerCopyBytes: number }>;
-  /** Prove an exact full/partial ready reference already exists; never publish one. */
-  hasSwitchReference(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<boolean>;
-  verifySwitchSources(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
-  verifySwitch(chain: readonly RuntimeNativeJournalDescriptor[], sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<void>;
-  publishSwitch(sources: readonly RuntimeNativeJournalDescriptor[], context: RuntimeNativeSwitchContext): Promise<readonly RuntimeNativeJournalDescriptor[]>;
-  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly headerCopyBytes: number; readonly stagedBytes: number }>> }>;
+  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly stagedBytes: number }>> }>;
   /** Read-only presence probe for the canonical current journal, called under the
    * held host claim. `missing` only when no published or staged bytes exist for
    * the exact coordinate; any doubt (unreadable header/record, staged-only bytes,
    * catalogue failure) is `unreadable` and never authorizes a cold boundary. */
-  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string;
-    /** Predecessor check: present bytes must equal this frozen descriptor under this authority. */
-    readonly frozen?: RuntimeNativeJournalDescriptor; readonly hostAuthority?: RuntimeNativeJournalAuthority }): Promise<RuntimeNativeJournalPresence>;
+  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string }): Promise<RuntimeNativeJournalPresence>;
 }
 export type RuntimeNativeJournalPresence = { readonly status: "present" | "missing" } | { readonly status: "unreadable"; readonly reason: string };
 
@@ -816,7 +794,9 @@ export type RuntimeNativeJournalPresence = { readonly status: "present" | "missi
 export interface RuntimeNativeEvidenceView {
   readonly version: 1; readonly ownerKey: string; readonly historyBucket: string;
   readonly gaps: readonly Record<string, unknown>[];
-  readonly segments: readonly { readonly descriptor: Omit<RuntimeNativeJournalDescriptor, "epoch" | "ordinal"> & { readonly epoch: number };
+  /** The prior accepted handoff this journal inherits, or null. */
+  readonly prior: Readonly<Record<string, unknown>> | null;
+  readonly segments: readonly { readonly descriptor: Omit<RuntimeNativeJournalDescriptor, "epoch">;
     readonly header: Readonly<Record<string, unknown>>; readonly records: readonly Readonly<Record<string, unknown>>[];
     readonly entries: readonly Readonly<Record<string, unknown>>[]; readonly repairs: readonly Readonly<Record<string, unknown>>[];
     readonly turns: readonly Readonly<Record<string, unknown>>[]; readonly allCalls: readonly Readonly<Record<string, unknown>>[];
@@ -827,6 +807,7 @@ export interface RuntimePreparedHandoff {
   readonly status: "prepared"; readonly checkpoints: readonly Readonly<Record<string, unknown>>[];
   readonly ledger: readonly Readonly<Record<string, unknown>>[]; readonly recent: readonly Readonly<Record<string, unknown>>[];
   readonly older: readonly Readonly<Record<string, unknown>>[];
+  readonly prior: Readonly<Record<string, unknown>> | null;
   readonly coverage: readonly RuntimeNativeEvidenceView["segments"][number]["descriptor"][];
 }
 export type RuntimeHandoffSummary = Readonly<Record<"intent" | "constraints" | "decisions" | "completedWork" | "failures" | "openWork" | "nextActions" | "references", readonly string[]>>;
@@ -846,8 +827,10 @@ export type RuntimeHandoffProposal = { readonly status: "ready"; readonly artifa
   | { readonly status: "summary_required"; readonly prepared: RuntimePreparedHandoff };
 export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalStorage {
   readonly nativeEvidence: "v1";
-  captureEvidence(sources: readonly RuntimeNativeJournalDescriptor[], context: { readonly ownerKey: string; readonly historyBucket: string;
-    readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void> }): Promise<RuntimeNativeEvidenceView>;
+  /** Null source: the current journal is definitively missing; canonical gaps carry the history. */
+  captureEvidence(source: RuntimeNativeJournalDescriptor | null, context: { readonly ownerKey: string; readonly historyBucket: string;
+    readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void>;
+    readonly gaps?: readonly Record<string, unknown>[]; readonly prior?: Readonly<Record<string, unknown>> | null }): Promise<RuntimeNativeEvidenceView>;
   createBudget(input: { readonly contextWindow: number; readonly outputReserve: number; readonly inputTokens: number; readonly hostContext: Readonly<Record<string, unknown>> }): RuntimeHandoffBudget;
   /** Pure real-compaction input/output preflight; no provider or native writes. */
   checkInheritedPrefix?(messages: readonly Readonly<Record<string, unknown>>[], model: RuntimeNativeDispatchSnapshot["model"], compaction?: RuntimeRunOptions["compaction"], prefixTokenCap?: number): Promise<RuntimeHandoffFit>;

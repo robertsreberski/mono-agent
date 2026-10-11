@@ -35,7 +35,7 @@ it.each([false, true])("forwards typed native preparation and its exact lease wi
   expect(forwarded).toMatchObject({ model, piSessionsRoot: "/fictional/native" }); expect(forwarded.abortSignal).toBe(signal);
   expect(forwarded).not.toHaveProperty("sandbox"); expect(kernel.run).not.toHaveBeenCalled();
   lease.assertReady!(); expect(prepared.assertReady).toHaveBeenCalledOnce();
-  const producer = { prepared: { status: "prepared" as const, checkpoints: [], ledger: [], recent: [], older: [], coverage: [] }, outputReserve: 256 };
+  const producer = { prepared: { status: "prepared" as const, checkpoints: [], ledger: [], recent: [], older: [], prior: null, coverage: [] }, outputReserve: 256 };
   expect(lease.checkHandoffSummary!(producer)).toEqual({ status: "ready" });
   expect(await lease.produceHandoffSummary!(producer)).toMatchObject({ status: "summary_rejected" }); expect(prepared.produceHandoffSummary).toHaveBeenCalledWith(producer);
   const binding = { sessionId: "fictional-handle", sessionKeepAlive: true };

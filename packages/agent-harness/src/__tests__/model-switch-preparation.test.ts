@@ -37,7 +37,7 @@ async function setup(long = false, checkpoint = false) {
     retireProviderSession: async () => { throw new Error("Switch must preserve native evidence"); } });
   if (long) {
     const repo = new JsonlSessionRepo({ sessionsRoot: join(base, "native") });
-    const session = await repo.open((await repo.listOwned()).find((row: { id: string }) => row.id === f.state.identity.sources[0]!.handleId)!);
+    const session = await repo.open((await repo.listOwned()).find((row: { id: string }) => row.id === f.state.identity.source!.handleId)!);
     try {
       if (checkpoint) await session.appendCompaction({ summary: "Exact fictional checkpoint", tokensBefore: 100, retainedTail: [] });
       for (let i = 0; i < 4; i++) {
@@ -51,22 +51,20 @@ async function setup(long = false, checkpoint = false) {
   const native = f.native as RuntimeNativePreparationStorage;
   const captured = await prep.captureNativeEvidence({ provider: "faux", api: "faux-api", model: "A", account: null });
   const source = (await prep.read()).source; if (source.status !== "supported") throw new Error("Expected bound source");
-  const incoming = producer(), outgoing = producer("A"), state = createPreparedModelSwitchState({ source, sources: captured.sources, incoming: incoming.snapshot,
-    native, targetEpoch: "5".repeat(64), reservation: { ...f.state.reservation, retainedNativeBytes: 131072, headerCopyBytes: 131072 }, timestamp: 17, messageId: "initial-message", outputReserve: 2000 });
+  const incoming = producer(), outgoing = producer("A"), state = createPreparedModelSwitchState({ source, historyBucket: bucket, journal: captured.source, incoming: incoming.snapshot,
+    native, targetEpoch: "5".repeat(64), reservation: f.state.reservation, timestamp: 17, messageId: "initial-message", outputReserve: 2000 });
   const advance = (extra: Partial<Parameters<typeof advancePreparedModelSwitch>[0]> = {}) => advancePreparedModelSwitch({ preparation: prep, native,
     incoming, state, view: captured.view, messageId: "initial-message", exclusiveWriters: true, outgoing: async () => outgoing, ...extra });
   return { ...f, prep, native, captured, source, incoming, outgoing, state, advance };
 }
-async function nativeRecords(f: Awaited<ReturnType<typeof setup>>) {
-  return (await readFile(f.nativePath, "utf8")).trim().split("\n").map((line: string) => JSON.parse(line));
-}
+const sourceRetained = (f: Awaited<ReturnType<typeof setup>>) => readFile(f.nativePath).then(() => true, () => false);
 
 it("measures the actual frozen host/declarations/input and records generation-zero delivery identity", async () => {
   const f = await setup();
   expect(f.state.frozenBudget?.hostContextDigest).toBe(createHash("sha256").update(JSON.stringify({ systemPrompt: f.incoming.snapshot.systemPrompt, tools: f.incoming.snapshot.tools })).digest("hex"));
   expect(f.state.initialMessageDigest).toBe(explicitSwitchMessageDigest("initial-message"));
   expect(f.state.frozenBudget?.inputTokens).toBeGreaterThan(4096);
-  const create = (snapshot = f.incoming.snapshot, outputReserve = 2000) => createPreparedModelSwitchState({ source: f.source, sources: f.captured.sources,
+  const create = (snapshot = f.incoming.snapshot, outputReserve = 2000) => createPreparedModelSwitchState({ source: f.source, historyBucket: bucket, journal: f.captured.source,
     incoming: snapshot, native: f.native, targetEpoch: "5".repeat(64), reservation: f.state.reservation, timestamp: 17, messageId: "initial-message", outputReserve });
   expect(() => create({ ...f.incoming.snapshot, messages: [] })).toThrow("decorated current input");
   expect(() => create(undefined, 9000)).toThrow("model limit");
@@ -91,19 +89,18 @@ it("persists admission before the outgoing call, runs outside root transactions,
   const result = await f.advance(); expect(result.status).toBe("ready");
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(f.outgoing.close).toHaveBeenCalledTimes(1);
   expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled(); expect(f.incoming.close).not.toHaveBeenCalled();
-  const snapshot = await f.prep.read(); expect(snapshot.pending).toBeUndefined(); expect(snapshot.native?.chain).toHaveLength(2);
-  expect(snapshot.source).toMatchObject({ fromModelKey: "faux:B" });
-  expect((await nativeRecords(f)).filter((record: any) => record.kind === "model_change")).toHaveLength(1);
+  const snapshot = await f.prep.read(); expect(snapshot.pending).toBeUndefined(); expect(snapshot.native?.projection).toEqual(result.status === "ready" ? result.artifact : null);
+  expect(snapshot.source).toMatchObject({ fromModelKey: "faux:B" }); expect(await sourceRetained(f)).toBe(false);
   await f.prep.abort();
 });
 
-it("uses the free exact checkpoint/no-older-history fallback before incoming billing", async () => {
+it("refuses text-only replay as the free route without a prior structured summary; incoming summarizes", async () => {
   const f = await setup();
   const result = await f.advance({ outgoing: undefined }); expect(result.status).toBe("ready");
-  expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
+  expect(f.incoming.produceHandoffSummary).toHaveBeenCalledTimes(1);
   if (result.status !== "ready") throw new Error("Expected ready");
   const stored = await f.prep.readHandoff(result.switchId, result.artifact);
-  expect(stored.artifact.producer).toBe("checkpoint"); expect(stored.artifact.recent).toHaveLength(1);
+  expect(stored.artifact).toMatchObject({ producer: "incoming", summary, checkpoint: null });
   await f.prep.abort();
 });
 
@@ -121,7 +118,7 @@ it("reports pending after two calls, restart never rebills, and a new explicit d
   expect(await f.advance({ outgoing: async () => outgoing, incoming })).toEqual({ status: "pending", switchId: f.state.identity.switchId });
   const state0 = (await f.prep.read()).pending!; expect(state0.attempts).toHaveLength(2); expect(state0.authorizationGeneration).toBe(0);
   expect(state0.attempts.map((attempt) => attempt.outcome)).toEqual(["started", "rejected"]);
-  expect((await nativeRecords(f)).some((record: any) => record.kind === "model_change")).toBe(false);
+  expect(await readFile(f.nativePath)).toBeDefined(); // pending never touches the outgoing journal
   expect((await f.prep.read()).source).toMatchObject({ fromModelKey: "faux:A" });
   await f.prep.abort();
   const reopened = openStore(f.base).store, prep = await reopened.beginProviderSessionPreparation(bucket, "restarted-message");
@@ -185,7 +182,7 @@ it("storage-only recovery rolls forward an artifact lost after acceptance, with 
   const result = await recoverPreparedModelSwitch(prep, { exclusiveWriters: true }); expect(result.status).toBe("ready");
   expect((await prep.read()).source).toMatchObject({ fromModelKey: "faux:B" });
   expect(await recoverPreparedModelSwitch(prep, { exclusiveWriters: true })).toEqual(result);
-  expect((await nativeRecords(f)).filter((record: any) => record.kind === "model_change")).toHaveLength(1);
+  expect(await sourceRetained(f)).toBe(false);
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
   await prep.abort();
 });
@@ -204,11 +201,11 @@ it("ready incoming admission transfers the owner once and forwards the sole immu
   const result = await runPreparedModelSwitch(input); expect(result.success).toBe(true); await admitted.assertOwned();
   expect(bound.nativeSessionProjection?.artifact).toEqual(ready.artifact); expect(bound.nativeSessionProjection?.inherited.coverage.sources).toHaveLength(1);
   expect(bound.nativeSessionProjection?.dispatchBudget).toEqual(f.state.frozenBudget);
-  expect(bound.nativeSessionProjection?.inherited.coverage.sources[0]?.sourceDigest).toBe(f.state.identity.sources[0]!.sourceDigest);
+  expect(bound.nativeSessionProjection?.inherited.coverage.sources[0]?.sourceDigest).toBe(f.state.identity.source!.sourceDigest);
   expect(bound.nativeSessionProjection?.inherited.messages[0]?.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Fictional source fact") })]));
   const access = bound.nativeSessionAuthority!;
   await access.assertCurrent({ handleId: admitted.providerSessionId, action: "open", sessionsRoot: join(f.base, "native") });
-  await expect(access.assertCurrent({ handleId: f.state.identity.sources[0]!.handleId, action: "create", sessionsRoot: join(f.base, "native") })).rejects.toThrow("current handle");
+  await expect(access.assertCurrent({ handleId: f.state.identity.source!.handleId, action: "create", sessionsRoot: join(f.base, "native") })).rejects.toThrow("current handle");
   await expect(access.assertCurrent({ handleId: admitted.providerSessionId, action: "open", sessionsRoot: join(f.base, "other") })).rejects.toThrow("current handle");
   await expect(runPreparedModelSwitch(input)).rejects.toThrow("no longer owned");
   await prep.abort(); await admitted.assertOwned(); await admitted.abort();
@@ -227,15 +224,13 @@ it("post-P2 refusal surfaces as an admitted failure, preserving the owned fence 
 });
 
 
-it("free checkpoint fallback preserves the exact envelope and complete suffix before incoming reduction", async () => {
+it("a compaction checkpoint is prose, not a validated structured summary: a malformed outgoing summary falls to incoming", async () => {
   const f = await setup(true, true), outgoing = producer("A", "rejected");
   const result = await f.advance({ outgoing: async () => outgoing }); if (result.status !== "ready") throw new Error("Expected ready");
   const cached = await f.prep.readHandoff(result.switchId, result.artifact);
-  const checkpoint = cached.artifact.checkpoint as { envelope: unknown; suffix: unknown[] };
-  expect(checkpoint.suffix).toHaveLength(8);
-  expect(checkpoint.envelope).toEqual(f.captured.view.segments[0]!.entries.find((entry) => entry.type === "compaction")!.checkpoint);
-  expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
-  expect(cached.artifact.producer).toBe("checkpoint"); await f.prep.abort();
+  expect(cached.artifact).toMatchObject({ producer: "incoming", summary, checkpoint: null });
+  expect(outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(f.incoming.produceHandoffSummary).toHaveBeenCalledTimes(1);
+  expect((await f.prep.read()).lastSwitch).toBeDefined(); await f.prep.abort();
 });
 
 it("recovers exact accepted content when artifact fsync preceded a lost ready-state publication", async () => {

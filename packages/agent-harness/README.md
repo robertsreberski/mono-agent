@@ -210,9 +210,9 @@ older-writers acknowledgement and activation-critical lifecycle forwarding.
 
 The internal constructor path prepares the complete host context,
 request extensions and permit before P2 under the same conversation claim. It
-sizes aggregate reservations before paid work, falls back to the existing cold
-path for unsupported capabilities or legacy-source typed pre-intent capacity refusal, and
-surfaces corruption/ownership/pending failures. It preflights the real future
+sizes aggregate reservations before paid work, falls back to the existing path
+for unsupported capabilities, refuses typed pre-intent capacity with
+`handoff_budget_exceeded`, and surfaces corruption/ownership/pending failures. It preflights the real future
 compaction-summary envelope and derived output cap against the maximum accepted
 inherited prefix before intent or billing, then checks the exact projection before
 acceptance. Pending messages are reported without appending, admission or queuing;
@@ -227,18 +227,19 @@ already-native conversations inherit their durable model unless a persisted Web
 message moves them. Declared different-model no-ID turns refuse only there.
 
 An unavailable outgoing provider/auth skips its unbilled slot and advances to
-exact checkpoint, incoming producer, then pending. Legacy API/model provenance
+the exact previously validated checkpoint (only when one exists), incoming
+producer, then pending. Legacy API/model provenance
 comes from validated owned native binding bytes without resolving credentials;
 legacy account identity remains unknown. With the opt-in, unguarded Web turns
 ask the prepared lease (binding flag only) to record its pinned provenance; an
 unguarded epoch freezes with that account only when every content-bearing
 operation recorded the identical positive provenance, otherwise unknown. Capture overflow throws the exported
 `NativeEvidenceCapacityError`; matching an error-code string is insufficient to
-authorize cold fallback.
+classify it as capacity.
 
 `NativeHistoryAuthorityBusyError` is a typed retryable pre-intent root contention
 outcome. The host surfaces `native_switch_busy` with `retryable: true` and releases
-its claim/resources. It never cold-falls back or waits holding a claim: concurrent
+its claim/resources. It never falls back or waits holding a claim: concurrent
 contenders could otherwise keep each other from draining. The caller must drain
 or serialize host owners and explicitly retry; no message is queued or billed.
 
@@ -246,37 +247,26 @@ Conversation IDs longer than 512 characters bypass switch preparation before
 any authority claim or switch intent. This preserves the original path, not a
 new dispatch guarantee: the existing native host-turn contract rejects these
 ownership IDs with the option OFF too. The 512-character bound is unchanged.
-Persisted-ID Web requests may select an owned cold model change when the chain
-is full or typed pre-intent capacity refuses switching. The coordinator replaces
-only the settled current epoch (C), preserves every frozen predecessor (P), and
-keeps chain length constant. The incoming model receives ordinary bounded
-canonical/tool-history replay, not a complete native handoff; the
-`degraded_native_context` warning exposes this loss of current native-only
-context only on the turn that applies the change, as a structured harness warning.
-Later same-model turns and no-ID wakes do not repeat it; unsupported storage or
-authority results do not authorize this cold transition. No handoff producer is billed. A v2 lifecycle intent and a host
-`lastSwitch.kind: "cold"` receipt make publication/cleanup reconcilable and
-exactly once; cold receipts do not emit a native `model_change` with null content
-references. Physical cleanup must complete before P2 admission. Pending/unknown
-billed work never takes this shortcut, and insufficient safe publication space
-still refuses without deletion or admission.
+There is no summary-less model change: capacity, a lost journal or a missing
+prior summary never select canonical replay on a different model.
 
 Lifecycle cleanup separates preserve/detach (P), reference-checked current-only
-cold cleanup (C), authorized whole-chain reset/retention (D), and uncoordinated
-stateless/subagent cleanup (U). The execution helper excludes every owned native
-chain member and protected pending turn from generic deletion. Manual compaction
+cold cleanup (C), authorized reset/retention (D), and uncoordinated
+stateless/subagent cleanup (U). The execution helper excludes the owned current
+journal and protected pending turns from generic deletion. Manual compaction
 uses advisory P for native-bound stale mappings as defence-in-depth, based on a
 pre-claim read-only hint; owned membership/header checks remain the physical
 backstop. The helper's `preserve`, `legacy-current` and `isolated` modes carry no
 native C/D deletion authority. Ordinary mappings retain best-effort legacy cleanup. Guarded denial of an uncoordinated deletion is not
 successful physical cleanup. Storage-only recovery retains unresolved evidence
 and charges its bytes until settlement; reset/retention use the managed
-whole-chain transaction. These guarantees do not imply live operator acceptance.
+deletion transaction. These guarantees do not imply live operator acceptance.
 
 Every model change behind the internal constructor capability, including a
 return to an earlier model, takes the approved structured handoff order:
-outgoing summary, exact accepted checkpoint plus complete suffix, incoming
-summary, then `handoff_pending`. Native envelopes are never reused across
+outgoing summary, the exact previously validated structured summary plus the
+complete later suffix, incoming summary, then `handoff_pending`. A suffix alone,
+without a validated prior summary, is text-only replay and is not a handoff. Native envelopes are never reused across
 models, and accepted artifacts are always neutral structured handoffs. Ordinary
 same-model reopening of an accepted handoff remains provider/API/account-ungated.
 
@@ -387,8 +377,8 @@ caller is enabled here; runtime dispatch/switch policy integration is separate.
 
 Managed root enumeration recognizes only secure owned `.model-switches`
 contents. Aggregate/staged quotas include physical artifacts, generations and
-crash leftovers plus remaining durable reservations (including retained-native
-and header-copy estimates). Published current state/fence bytes consume the
+crash leftovers plus remaining durable reservations (including the native-epoch
+estimate). Published current state/fence bytes consume the
 pending publication plan rather than being charged twice; orphan generations
 and crash temps remain fully charged. `stats().bytes` reports physical canonical
 and switch-storage bytes; `stats().reservedBytes` reports remaining provisional
@@ -405,12 +395,29 @@ enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
 The ordinary canonical v3/v5 paths and configured host switching policy remain
 unchanged. Do not use these private modules to upgrade a real root manually.
 
-Canonical v4 records on validated managed-marker roots are strictly readable. Same-epoch synced
-writes and owner-held v5 execution/compaction recovery retain the native chain,
-authority, projection and last-switch receipt, including when messages are
-evicted; turn receipts still settle exactly once. Native reconciliation must
-match the authoritative current journal. Optimistic versions and switch-source
-digests include the v4 metadata, not just messages and the provider binding.
+Canonical version 5 records on validated managed-marker roots are strictly
+readable. They hold one current native journal (derived from the epoch), the
+native authority, the accepted handoff projection and the latest switch receipt,
+with no epoch ancestry. Same-epoch synced writes and owner-held execution/compaction
+recovery retain that metadata, including when messages are evicted; turn receipts
+still settle exactly once. Native reconciliation must match the authoritative
+current journal. Optimistic versions and switch-source digests include the
+native metadata, not just messages and the provider binding. Pre-release version
+4 chain records, version 1 switch states and version 1/2 lifecycle intents refuse
+with `UnsupportedPreReleaseSwitchFormatError` (`unsupported pre-release switch
+format; reset`) before any recovery, cleanup or mutation; they are never migrated.
+The refusal is owner-scoped: a version 1 state, fenced or orphaned, refuses only
+its own conversation, stays charged and is never a retention victim, while
+unrelated conversations keep appending and admitting. Switch preparation
+preflights the refusal before acquisition-time cleanup; other entry points may
+first retire an unrelated eligible dirty fence, which is ordinary cleanup of
+that other conversation, not a mutation of the refused one. A lone old handoff
+artifact without a state is inert: it is charged, never read as handoff content
+(only a v5 receipt references an artifact), and removed by that owner's next
+switch completion or reset. Unresolved inherited ledger entries, such as an
+outcome-unknown tool effect from an earlier model, are carried into every new
+handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
+refuses rather than leaving them to prose.
 
 `beginProviderSessionPreparation(conversationId, runId)` is an additive,
 claim-only storage substrate used by the configured app's acknowledged Web-only
@@ -440,8 +447,9 @@ it unchanged. `readHandoff(switchId, reference)` reads only the hash-validated
 accepted pending/current artifact and its actual budget under this same claim.
 
 `captureNativeEvidence(legacyProvenance)` freezes the settled current coordinate,
-then reads the **complete** validated chain without native writer opens, repair,
-header upgrades or publication. Legacy account ownership stays null regardless
+then reads the current journal (or nothing, when it is definitively missing, so
+canonical history is the evidence) plus the prior accepted handoff, without
+native writer opens, repair or publication. Legacy account ownership stays null regardless
 of caller credential metadata. The evidence view retains validation identity;
 cloning it cannot turn raw data into a validated projection.
 
@@ -465,19 +473,19 @@ remaining manual/native fresh/stateless, reset/retention/purge and subagent P/C/
 regressions remain separate inventory work; guarded refusal is not successful
 cleanup. Existing configurations and default paths remain unchanged.
 
-With explicit `nativeJournalStorage`, v4 host-only append/exclusive/import,
+With explicit `nativeJournalStorage`, host-only append/exclusive/import,
 unsynced/cancelled/interrupted provider settlement and stale-current admission
 use a durable `.native-history-op.<owner-hash>.json` C intent. The exact target
 handle/epoch and initializer plan are persisted before native creation. Canonical
-publication replaces only the current descriptor, retaining its predecessor link;
-reference-checked cleanup never deletes a chain predecessor or promotes a rejected
-current tail. Aborting preparation does not create/delete native epochs. Recovery
-holds the actual owner claim and performs native I/O outside root transactions.
-A historical completed-switch fence validates retained source frames/current
-membership without restoring an obsolete target or recreating missing evidence.
+publication replaces only the current epoch; reference-checked cleanup deletes
+only the retired journal and never promotes a rejected current tail. Aborting
+preparation does not create/delete native epochs. Recovery holds the actual owner
+claim and performs native I/O outside root transactions. A completed-switch
+receipt is validated without restoring an obsolete target or recreating missing
+evidence.
 
-D reset/retention intents retain canonical authority and complete membership until
-all native members/copies, switch artifacts/generations, pending payloads and
+D reset/retention intents retain canonical authority until the native journal,
+switch artifacts/generations, pending payloads and
 publication barriers complete. Reset then writes a clean v3 record; retention
 removes the canonical owner only afterward. Interrupted deletion resumes under
 owner claims, including when only its intent remains. The shared immutable root
@@ -497,26 +505,18 @@ not unrelated v1-v3 provider journals. If a canonical is unreadable, independent
 validated schema-2 headers for its exact bucket and pinned root remain charged;
 other roots/buckets and legacy provider files do not justify credits. A retry
 reuses its published cold reservation.
-C cleanup also rejects switched-away `model_change` evidence independently of
-caller membership; header copies are removed before their sources only after an
-exact byte-prefix proof. Unknown copies remain pinned. With an unreadable
-canonical, a header-incomplete `.upgrading` copy cannot be attributed by the
-root/bucket header fallback and remains uncharged unless a durable intent names
-its exact journal ID; it never supplies a reservation credit. This conservative
-attribution limit is accepted rather than guessing ownership. A reference frame
-on the still-current source is accepted ready evidence: it must roll forward,
-not be abandoned for C. Owner-held ordinary admission uses the native
-`hasSwitchReference` read-only proof to finish already-started exact reference
-frames before C. Ready artifacts with no native reference remain fenced and do
-not initiate a configured switch. Same-owner interrupted D intents are resumed
-before new daily capacity reservations, under the held logical claim; pruning
-probes exact sibling claims only for needed LRU victims. Canonical rename/removal
-invalidates capacity footprints even within an otherwise-held root transaction.
+A published receipt on a still-fenced switch is accepted ready evidence: it must
+roll forward, not be abandoned for C. Ready artifacts whose receipt is not yet
+published remain fenced and do not initiate a configured switch. Same-owner
+interrupted D intents are resumed before new daily capacity reservations, under
+the held logical claim; pruning probes exact sibling claims only for needed LRU
+victims. Canonical rename/removal invalidates capacity footprints even within an
+otherwise-held root transaction.
 
-Without the administrative native capability, v4 cold/deletion mutation refuses
-before side effects. Unresolved v4 fences never block unrelated owners; managed
+Without the administrative native capability, native cold/deletion mutation
+refuses before side effects. Unresolved native fences never block unrelated owners; managed
 roots preserve unreadable evidence rather than overwrite it as v3. V1/v2/v3
-behavior stays unchanged. A v4 model change must use accepted switch storage;
+behavior stays unchanged. A model change must use accepted switch storage;
 ordinary cold replacement retains the bound model and makes no compatibility or
 account claim. Incoming dispatch, switch policy and configured runtime wiring
 are not enabled by these storage APIs.
@@ -535,35 +535,35 @@ admission path checks it. Rollback requires consistent host/native backups, not
 stripping the marker. Persisted `frozenBudget` is an additive switch-state field
 that older strict validators reject. Downgrade requires restoring the consistent
 pre-upgrade host/native backup, not deleting that field, rewriting pending state,
-or stripping the marker. The lease itself does not upgrade a header or enable dispatch.
+or stripping the marker. The lease itself does not create a journal or enable dispatch.
 An explicit administrative `nativeJournalStorage` capability couples measured
 native inventory/reservations to `rollForwardModelSwitch(id, switchId,
-{ exclusiveWriters: true })`. Initial admission checks actual frozen sources,
-header-copy/new-journal/reference peaks and canonical publication capacity before
-publishing an intent. Ready-only recovery holds logical/conversation ownership
-across native I/O, outside short host root transactions. It publishes guarded
-native evidence, exact initialized target membership and canonical binding/receipt,
-then proves both canonical and real native publication before releasing the
-intent fence. Recovered receipt cleanup never repairs or creates missing native
-evidence. Artifact and winning attempt storage remain retained for later D deletion.
+{ exclusiveWriters: true })`. Initial admission checks the actual frozen source,
+new-journal/reference peaks and canonical publication capacity before publishing
+an intent. Ready-only recovery holds logical/conversation ownership across native
+I/O, outside short host root transactions. It creates the deterministic target
+journal, publishes the canonical binding, handoff and receipt, proves the
+receipt, retires the outgoing journal and only then releases the intent fence,
+keeping exactly one durable handoff. Recovered receipt cleanup never repairs or
+creates missing native evidence.
 Physical native bytes replace provisional native credits without process-local
 refund counters; committed native bytes do not consume the unpublished-stage
 quota. The configured app supplies incoming dispatch and model-switch policy
 through its acknowledged Web-only opt-in. These storage APIs alone are not a
 standalone real-root rollout.
 
-Pending switching stays entirely in host intent/attempt storage: no native
-`model_change` or incoming binding is published before accepted handoff content
-exists, and no native artifact-reference wire change is introduced.
+Pending switching stays entirely in host intent/attempt storage: no incoming
+binding is published before accepted handoff content exists. Native journals
+carry no `model_change` frames; the canonical receipt is the only switch record.
 
-Its v4 wire validators bind journal-chain ownership/provenance and stable switch
+Its v5 wire validators bind single-journal ownership/provenance and stable switch
 coordinates. Binding receipts describe their own transitions independently of
 later cold epochs/projection references; receipt recognition alone is not
 projection readiness or dispatch authority. Bounded v6 fences carry only
 references/hashes, never current user text, routing metadata, controllers,
 credentials or host instructions. Payloads/artifacts are limited to 16 MiB;
-fences to 1 KiB; chains to 32 journals. Reservations include canonical, artifact,
-retained-native, pending-generation and transient native-header-copy space.
+fences to 1 KiB. Reservations include canonical, artifact, native-epoch and
+pending-generation space.
 Retained-byte inspection charges the current immutable generation and crash
 leftovers. After the new fence is durable, validated superseded states are
 reclaimed only if their complete admission/authorization journals remain in the
@@ -577,14 +577,14 @@ artifact capacity covers publication without a second artifact reservation;
 after durable acceptance its physical bytes replace the provisional artifact
 cap. Every durable mutation/recovery resets remaining provisional accounting,
 so transient state/fence publication reservations cannot accumulate. Fixed
-canonical/native/header-copy estimates remain conservative, as do
+canonical/native estimates remain conservative, as do
 unrecognized crash leftovers; managed-root integration must reconcile those
 other estimates at their corresponding publication/cleanup boundaries.
 
 Summary admission must be durably published before any paid call, which occurs
 outside the root transaction. The final policy allows at most two billed calls per switchId without new
-user action: one outgoing producer,
-free exact-checkpoint attempt, then one incoming producer. Each later explicit user message authorizes one
+user action: one outgoing producer, a free exact-checkpoint attempt (only from
+a previously validated structured summary), then one incoming producer. Each later explicit user message authorizes one
 new attempt per producer, with a new two-call cap for that message generation. An unknown outcome remains admitted/charged:
 reopen, maintenance, duplicate authorization and cached-output recovery never
 silently permit another request. Authorizations and attempt identities remain
@@ -596,8 +596,8 @@ immutable artifact before publishing ready state. Storage validates frozen
 coverage/target/budget coordinates; it does not replace P3a fit, mandatory
 latest-turn or complete-ledger validation. Cached accepted output rolls forward
 without another producer or new text. An existing intent cannot be replaced by
-a newly requested target; canonical commit/whole-chain cleanup integration is
-still required before admitting a later separate switch. No PID, age or file
+a newly requested target; a later separate switch starts only after the receipt
+is published and the intent cleared. No PID, age or file
 name is deletion authority. SIGKILL tests cover intent publication, summary
 start/returned-before-cache, artifact publication and ready-fence replacement,
 with two fresh-process recoveries per interruption.
@@ -644,10 +644,10 @@ provider is still running. This prevents reuse/destruction of producer resources
 under an unresolved turn. Callers must await settlement and reconcile P2; a
 cancellation signal or `close()` is not proof of provider termination. Default
 execution retains ordinary R10; configured preparation is limited to persisted
-Web deliveries and already-native current-chain turns under the explicit opt-in.
+Web deliveries and already-native current-journal turns under the explicit opt-in.
 
-Read-only materialized native evidence is limited to 32 journals and 16 MiB of
-aggregate raw journal bytes (also the single-journal bound). Capacity refusal is
+Read-only materialized native evidence is limited to the single current journal
+of at most 16 MiB raw bytes. Capacity refusal is
 explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. Preflight and
 secure-reader scan-start checks bound parsing even if a journal grows between
 checks; validation/cloning may use bounded multiples of those raw bytes. Streaming
@@ -880,13 +880,11 @@ Before admission, the preparation owner probes the current native journal
 (`inspectCurrentJournal`). A definitively absent journal (no published/staged
 file, or no catalogued handle before the first switch) is passed to admission as
 `missingCurrentEpoch`: only that exact canonical epoch takes the existing
-same-model cold path (v3 retire/new epoch, v4 durable C intent), the turn
+same-model cold path (v3 retire/new epoch, v5 durable C intent), the turn
 dispatches once on canonical replay and reports `degraded_native_context` once.
-A switch request with a lost current takes the owned cold model change
-(`journal_missing`); one whose chain has a definitively absent predecessor takes
-it with `predecessor_missing` (never a handoff from lost bytes).
-C leaves absent predecessors absent and still verifies present ones exactly.
-Unreadable bytes, staged-only bytes or catalogue failure (current or predecessor)
+A switch request with a lost journal records a canonical `journal_missing` gap
+and summarizes canonical history through the same handoff order; it is never a
+summary-less change. Unreadable bytes, staged-only bytes or catalogue failure
 refuse with `native_journal_unreadable` and preserve evidence.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
@@ -1105,6 +1103,6 @@ bytes or promotes them into accepted reference evidence.
 Maintenance can continue after an owner-local native failure only if it regained
 the root transaction. A fresh victim's failed published D remains charged and
 recoverable, while another free LRU victim can be pruned in the same commit.
-Accepted limits: a v4 victim's logical owner may be busy in another process after
+Accepted limits: a native victim's logical owner may be busy in another process after
 admission credits it, leaving maintenance pending; the replan budget is fixed
 from the entry count at maintenance start, not extended by concurrent arrivals.
