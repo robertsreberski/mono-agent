@@ -263,3 +263,24 @@ it("does not project a guarded journal under a contradictory host owner", async 
   expect(() => view([a])).not.toThrow();
 });
 
+
+it("A -> B -> C keeps A's outcome-unknown Write in the deterministic ledger on paid-summary routes, once, and refuses rather than dropping it", async () => {
+  const a = await segment("A-unknown"); const store = a.store;
+  await store.beginTurn("unknown-turn"); await store.openOperation("unknown-op", { model: { provider: "fictional", api: "fictional-api", id: "A" } });
+  await store.appendMessage({ role: "assistant", provider: "fictional", api: "fictional-api", model: "A", content: [{ type: "toolCall", id: "write-call", name: "Write", arguments: { file_path: "/fictional/unknown" } }], stopReason: "toolUse", timestamp: 1 }, "write-message");
+  for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "write-call", name: "Write", messageId: "write-message", admission }, { operationId: "unknown-op" });
+  await store.write("interruption", { cause: "crashed", operationIds: ["unknown-op"], tipId: store.tip, calls: [] });
+  const ab = buildHandoff(view([refreshed(a)]), { ...options, summary });
+  if (ab.status !== "ready") throw new Error("Expected A -> B handoff");
+  const unknown = (artifact) => artifact.ledger.filter((entry) => entry.callId === "write-call");
+  expect(unknown(ab.artifact)).toEqual([expect.objectContaining({ name: "Write", outcome: "unknown", admission: "started" })]);
+  // B completes an ordinary turn, then B -> C summarizes again: A's entry is carried verbatim, not left to prose.
+  const bc = buildHandoff(view([await segment("B-ordinary")], { prior: ab.artifact }), { ...options, summary });
+  if (bc.status !== "ready") throw new Error("Expected B -> C handoff");
+  expect(unknown(bc.artifact)).toEqual(unknown(ab.artifact));
+  const cd = buildHandoff(view([await segment("C-ordinary")], { prior: bc.artifact }), { ...options, summary });
+  if (cd.status !== "ready") throw new Error("Expected C -> D handoff");
+  expect(unknown(cd.artifact)).toHaveLength(1); // deduplicated by stable identity
+  const oversized = { ...ab.artifact, ledger: [...ab.artifact.ledger, { kind: "tool", journalId: "fictional-old", operationId: "big-op", callId: "big-call", arguments: { text: "x".repeat(300000) } }] };
+  expect(buildHandoff(view([await segment("B-tight")], { prior: oversized }), { ...options, summary })).toMatchObject({ status: "budget_failure", reason: "mandatory_history" });
+});
