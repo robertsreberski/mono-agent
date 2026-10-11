@@ -62,6 +62,21 @@ it("settles an accepted B publication before permitting dispatch after interrupt
   } finally { await turn.abort(); }
   expect(await openStore(f.base).store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
 });
+it("recovering a renamed but not directory-synced canonical re-syncs it before deleting the outgoing journal or artifacts", async () => {
+  const f = await setup(); await ready(f);
+  await expect(f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true,
+    onPhase: async (phase) => { if (phase === "switch_canonical_renamed") throw new Error("Interrupted before directory fsync"); } })).rejects.toThrow("directory fsync");
+  const reopened = openStore(f.base), events: string[] = [], remove = reopened.native.deleteJournals.bind(reopened.native);
+  reopened.native.deleteJournals = async (...args) => { events.push("delete_outgoing"); return await remove(...args); };
+  expect(await reopened.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true,
+    onPhase: async (phase) => { events.push(phase); } })).toEqual({ status: "committed" });
+  expect(events).not.toContain("switch_target_created"); // receipt recognized: no re-publication
+  const synced = events.indexOf("switch_canonical_synced");
+  expect(synced).toBeGreaterThanOrEqual(0); expect(synced).toBeLessThan(events.indexOf("delete_outgoing"));
+  expect(events.slice(0, synced).some((phase) => phase.includes("removed"))).toBe(false);
+  expect(await exists(f.nativePath)).toBe(false);
+});
+
 it("never retires the outgoing journal against a canonical receipt that conflicts with the intent", async () => {
   const f = await setup(); await ready(f);
   await expect(f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true,
@@ -86,7 +101,7 @@ it("never recreates a target journal lost after the canonical receipt; recovery 
 const worker = fileURLToPath(new URL("./fixtures/managed-native-switch-worker.mjs", import.meta.url));
 it.skipIf(process.platform === "win32").each([
   "epoch_stage_created", "epoch_stage_synced", "epoch_renamed", "epoch_directory_synced", "switch_target_created",
-  "switch_canonical_stage_synced", "switch_canonical_renamed", "switch_canonical_directory_synced",
+  "switch_canonical_stage_synced", "switch_canonical_renamed", "switch_canonical_directory_synced", "switch_canonical_synced",
   "native_file_removed", "native_members_directory_synced", "switch_source_retired", "switch_fence_removed", "switch_fence_directory_synced",
 ])("reconciles actual host/native state twice in fresh processes after SIGKILL at %s", async (phase) => {
   const f = await setup(), reference = await ready(f);

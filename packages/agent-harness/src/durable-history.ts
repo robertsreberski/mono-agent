@@ -704,7 +704,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         || canonical.providerSession?.epoch === state.identity.targetEpoch && (canonical.providerSession.modelKey !== state.identity.toModelKey
           || switchDigest(canonical.native?.projection) !== switchDigest(state.artifact))) throw new Error("Canonical ready binding conflicts with accepted intent");
     };
-    await proveReceipt();
+    // Durable receipt before any deletion, on fresh AND recognized-receipt recovery:
+    // a recovered rename may not have had its directory fsync yet.
+    await withRootTransaction(async () => { await proveReceipt(); await this.syncManagedCanonical(id, rootIdentity); });
+    await phase("switch_canonical_synced");
     const outgoing = state.identity.source;
     if (outgoing) await native.deleteJournals([{ handleId: outgoing.handleId, journalId: outgoing.journalId }], { disposition: "C", hostAuthority: authority, assertOwned: proveReceipt });
     await phase("switch_source_retired");
