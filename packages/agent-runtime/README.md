@@ -226,11 +226,11 @@ persist attempt admission before invoking it; this API does not authorize billin
 Producer input is captured synchronously. Run refuses while production is active
 without consuming dispatch; close/abort retain resources until it settles.
 
-Managed storage exposes typed read-only complete evidence capture plus pure budget
-and handoff/checkpoint preparation. It never projects native envelopes across a
-model change. Composed checkpoint coverage
-can precede a later switch reference frame only when its exact hashed prefix and
-sole following model-change triplet are proved; changed/missing coverage fails.
+Managed storage exposes typed read-only evidence capture of the single current
+journal plus the prior accepted handoff, and pure budget and handoff/checkpoint
+preparation. It never projects native envelopes across a model change. Composed
+compaction coverage must equal the inherited prior handoff exactly;
+changed/missing coverage fails.
 
 No configured host invokes this capability yet. Frozen host preparation,
 durable producer admission/summary billing, ready model-switch publication and
@@ -266,75 +266,62 @@ responses, and returns usage accounting. It never invokes manual compaction or w
 session. Hosts own durable attempt admission, fallback ordering (outgoing,
 checkpoint plus complete suffix, incoming), accepted-output caching and billing
 limits. A lost completion is explicitly outcome-unknown, not permission to retry.
+The checkpoint route needs a previously validated structured summary; a suffix
+alone is text-only replay and returns `summary_required`.
 
 `createManagedNativeJournalStorage({ sessionsRoot })` is an administrative
-storage-only bridge, not a runtime run option. It freezes and validates native
-source coordinates, measures actual source/header-copy/new-epoch/reference bytes,
-and under supplied owner-held authority upgrades closed sources, appends an
-immutable non-null handoff reference and atomically publishes a fully initialized
-empty epoch. Deterministic frame/epoch bytes permit exact-prefix crash recovery;
-unknown tails/stages are preserved, never generically repaired. Native inventory
-charges all journal, copy and stage bytes in the explicitly dedicated native root.
-`planColdEpoch` supplies the exact bytes/descriptor for a durable host cold intent;
-`publishColdEpoch` replaces only the current same-model descriptor, retaining its
-predecessor link and validating frozen predecessors without repairing the rejected
-current tail. The host must persist the target epoch/handle/time first.
-`deleteJournals` accepts C only for the chain's unreferenced current member, or D
-for every supplied member. It preflights matching headers/copies, preserves
-unknown evidence, and repeats absent-member cleanup without recreating journals.
-The host must retain canonical membership and its deletion intent through every
-unlink/directory barrier. The opt-in durable-history host coordinates those
-transactions; this runtime factory does not persist host lifecycle intents.
-Read-only cold/switch verification refuses missing evidence behind canonical
-receipts. Retention eligibility probes protect busy/contradictory native owners;
-probes do not grant deletion authority.
-This factory does not prove host artifact acceptance or canonical publication;
-the host coordinator must supply those authorities and keep pending switches
-fenced. No configured host opts in. Do not use it for real-root switching until
-canonical roll-forward and whole-chain deletion are coupled to it.
+storage-only bridge, not a runtime run option. Under supplied owner-held
+authority, `createEpoch` atomically publishes the deterministic, fully
+initialized guarded journal for a switch target or same-model cold rotation;
+an existing exact journal is accepted idempotently and unknown stages are
+preserved, never generically repaired. Native inventory charges all journal and
+stage bytes in the explicitly dedicated native root. `deleteJournals` accepts C
+for a retired journal or D for reset/retention, preflights matching headers,
+preserves unknown evidence, and repeats absent-member cleanup without
+recreating journals. Unguarded journals are deletable by exact header; guarded
+ones need matching host authority. The host must retain canonical state and its
+deletion intent or receipt through every unlink/directory barrier; this factory
+does not persist host lifecycle intents. Retention eligibility probes protect
+busy/contradictory native owners; probes do not grant deletion authority. This
+factory does not prove host artifact acceptance or canonical publication: the
+host coordinator supplies those authorities and keeps pending switches fenced.
 
 `detachDurableNativeSession` drops an idle local handle without deleting native
 bytes. Busy/recovery-pending handles, cold opens and create reservations must be
 settled first. It is deliberately separate from destructive retirement/invalidation and does not establish
 cross-process canonical authority. Host switching/retention policy is unchanged.
-Coordinated opt-in v3 writers now also require the harness's durably published
+Coordinated opt-in v3 writers now also require the harness's guarded
 ownership-schema-2 native header and matching host authority reference; a caller
 acknowledgement alone cannot enable them. Older native readers/deleters reject
-that header before torn-tail repair or deletion. After any journal is upgraded,
+that header before torn-tail repair or deletion. Once any guarded journal exists,
 older catalogue listing and legacy import fail closed for the entire root;
-this is intentional and does not make direct access to untouched journals safe.
+this is intentional and does not make direct access to other journals safe.
 Guarded deletion needs the
 host's explicit C/D disposition and ownership assertion. The optional third
 `retireDurableSession` argument forwards that authority to exact-handle native
 retirement; the ordinary two-argument call keeps its existing behavior.
 No default runtime
-upgrades journals or enables switching; see the
-[harness header upgrade contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).
+creates guarded journals or enables switching; see the
+[harness guarded journal contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).
 
 Opt-in `nativeSessionAuthority` requires a protected reconciled host turn,
 kept-alive durable root, matching guarded header and exact current handle. Its
 pinned `sessionsRoot` cannot be redirected by a route resolver. The awaited
 `assertCurrent({ handleId, action: "open" | "create", sessionsRoot })` receives the
 actual normalized native root and borrows the held host owner: the host must
-prove the ready canonical binding/artifact and current creation eligibility. A predecessor or stale mapping is not executable. Guarded
+prove the ready canonical binding/artifact and current creation eligibility. A retired epoch or stale mapping is not executable. Guarded
 runtime opens without authority fail before native repair, including stale warm
 metadata. The runtime pin checks normalized path equality, not a host-owned
 filesystem inode identity; `assertCurrent` must prove any stronger root identity.
-The administrative cold-epoch plan can use host-pinned `targetProvenance` for
-an explicitly coordinated cold model change. Only the settled current epoch is
-retired; frozen predecessor bytes remain unchanged. This is bounded canonical
-replay, not a native handoff, and the host exposes `degraded_native_context`.
 `inspectCurrentJournal` is a read-only presence probe for the host-held current
 journal: `missing` only for definitive absence (handle-only lookups are
 read-only and stage-aware), `unreadable` for any damaged complete line,
-staged-only bytes, catalogue failure or a predecessor that differs from its
-supplied frozen descriptor; a torn final line is left
-to the ordinary open/repair path. Cold-epoch publication/verification leaves a
-definitively absent predecessor absent; present predecessor bytes must match.
+staged-only bytes or catalogue failure; a torn final line is left to the
+ordinary open/repair path.
 Prepared leases are primary-only: no routed retry or backup, and producers and
 manual compaction stay primary-only too.
 Default unguarded, stateless and subagent behavior is unchanged. Their cleanup
-cannot target guarded host-chain predecessors: destructive APIs require owned
+cannot target guarded host journals: destructive APIs require owned
 C/D disposition, and a guarded refusal is not successful physical cleanup.
 Protected unresolved turn cleanup closes/detaches without rewind or deletion,
 including persistence failures and late cancellation. Ordinary durable TTL and

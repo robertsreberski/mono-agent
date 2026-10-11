@@ -149,27 +149,28 @@ coordination remain separate work. Host model-change retirement is still
 
 ### Opt-in evidence projection and handoffs
 
-`createEvidenceView` validates host-supplied ordered epoch descriptors, journal
-headers, frozen record digests/tips, ownership bindings and composed coverage.
-It does not authorize ancestry: the host must obtain descriptors from its
-canonical state. Missing evidence is an error or an explicit canonical-only gap,
-never an empty successful native resume. Predecessors are read-only evidence.
+`createEvidenceView` validates at most one host-supplied current-journal
+descriptor (header, frozen record digest/tip, ownership binding), explicit
+canonical-only gaps and the prior accepted handoff. Composed compaction coverage
+must equal the prior handoff's coverage exactly. It does not authorize ancestry:
+the host must obtain the descriptor from its canonical state. Missing evidence is
+an error or an explicit canonical-only gap, never an empty successful native
+resume.
 `projectContext` retains its original array contract unchanged and accepts only
 native journal entries. A validated view feeds handoffs only: native envelopes
 are never projected across a model change, including a return to an earlier model.
 
 `prepareHandoff` selects up to three whole recent logical turns and a complete
 mechanical open-work/outcome-unknown ledger (including started rewound effects). `buildHandoff` accepts a strict
-structured summary or the latest exact checkpoint plus its complete suffix and
-uncovered predecessors. Historical tool calls are labelled data, never executable
+structured summary, or the prior handoff's previously validated structured
+summary plus the complete current suffix. A suffix without a validated prior
+summary is text-only replay and returns `summary_required`; a compaction
+checkpoint alone is not a handoff. Historical tool calls are labelled data, never executable
 calls or recovery receipts. Visible text is preserved; opaque reasoning is
 referenced rather than invented. The latest turn and ledger are mandatory.
 Recent selection is frozen before summary production; an oversized artifact
-never drops authoritative recent turns after receiving prose. Without summary
-production, an exact-checkpoint fallback may shed optional whole groups only
-when every message is also present in its complete suffix or exact retained
-content, with identities qualified by journal. It preserves the latest group
-and complete ledger, never a partially covered group. Malformed
+never drops authoritative recent turns after receiving prose. The checkpoint route keeps only the latest group as recent, with the complete
+ledger and suffix. Malformed
 summaries and unfit mandatory history fail explicitly; there is no
 chunked summarization or clipping. Returned artifacts are proposals: the host
 publishes the sole immutable content authority and caches its exact bytes/hash.
@@ -188,7 +189,7 @@ and records v3 `inheritedCoverage`; reopening validates that coverage and does
 not replay the prefix twice. The default guarded compaction hook clamps its cut
 and split-turn start beyond the entire inherited prefix before any summary call,
 even with a small current delta. A non-reducible inherited tail is refused before
-billing; the final publication guard also rejects copied predecessor envelopes.
+billing; the final publication guard also rejects copied inherited envelopes.
 The first projected turn durably records a v3 `projectionBinding` with artifact
 id/hash, coverage and inherited-message digest, not another content copy. Until
 a composed checkpoint subsumes it, a runtime reopen cannot omit or change that
@@ -216,26 +217,17 @@ ancestry or switch authority.
 Before invoking a version-3 writer, stop/prohibit **all older binaries** for the
 root. A caller acknowledgement alone cannot enable it. Coordinated journals must
 first publish an ownership-schema-2 header carrying a nonsecret `hostAuthority`
-reference (`version: 1`, `canonicalVersion: 4`, opaque SHA-256 `rootId` and
+reference (`version: 1`, `canonicalVersion: 4` (the authority-reference format,
+not the canonical record version), opaque SHA-256 `rootId` and
 `authorityId`, `ownerKey`, `historyBucket`). The host, not native storage, owns
 and validates the root/canonical authority and holds the drained conversation
 claim throughout the awaited operation; its `assertOwned` callback must reject
 lost ownership or contradictory authority.
 
-For an existing closed, settled journal, use
-`JsonlSessionRepo.upgradeHeader(metadata, { hostAuthority, assertOwned })`.
-It acquires the native writer and catalogue locks, copies only the upgraded
-header plus byte-identical native records to private staging, fsyncs, renames
-at the **same** journal path, and syncs publication directories. It refuses
-unsettled lifecycle, torn source bytes, contradictory ownership and unknown
-staging evidence instead of repairing or deleting them. An in-process failure
-before publication removes its own stage only after a dev/inode identity match
-under the held locks, then syncs the directory. Authority fields use canonical
-key order, so equal references produce identical staged/publication bytes even
-when callers reorder their keys. Restart validates any
-abandoned stage as an exact prefix of the pinned source copy before rebuilding;
-an already-published matching header is synced idempotently. New coordinated
-journals use `create({ hostAuthority, assertOwned, ... })` and start guarded.
+Guarded journals are only ever created guarded: `createGuardedEpoch({ id,
+hostAuthority, assertOwned, timestamp })` (or `create({ hostAuthority,
+assertOwned, ... })`) publishes a fully initialized journal through a
+`.creating` stage. Existing unguarded journals are never rewritten in place.
 Default callers, paths, record bytes and legacy imports remain unchanged.
 
 Each reopened guarded writer starts disabled. Explicitly call
@@ -246,16 +238,16 @@ returning a writer, including after a prior rename-only crash. The guarded
 header also rejects contradictory host/instance binding. Evidence views require
 its owner to match their host owner.
 
-Old native binaries reject the upgraded header **before** record scan/torn-tail
+Old native binaries reject the guarded header **before** record scan/torn-tail
 repair and direct deletion, even with an unterminated first v3 record. That
-direct-open/delete protection is per upgraded journal. Once **any** journal
-under a root is upgraded, an older binary's catalogue `list()` and legacy import
+direct-open/delete protection is per guarded journal. Once **any** journal
+under a root is guarded, an older binary's catalogue `list()` and legacy import
 reject the **whole root** when they encounter that header. This root-wide
 catalogue failure is intentional, not a partial listing or permission to discard
 unknown evidence. It is not universal root admission: a direct open using cached
 metadata for an untouched legacy journal is not technically excluded, and
 arbitrary direct filesystem access is not fenced. Draining/stopping old binaries
-before upgrade, refusing
+before opting in, refusing
 mixed writers and keeping the host claim remain operational prerequisites.
 Rollback means stopping writers and restoring consistent host/native backups;
 there is no downgrade/strip tool or permission to migrate real roots.
@@ -263,32 +255,24 @@ there is no downgrade/strip tool or permission to migrate real roots.
 Guarded native deletion requires matching `hostAuthority`, `assertOwned` and
 `disposition: "C" | "D"` options on `delete`, `retire` or `retireByHandle`.
 For C, the host assertion proves an eligible unreferenced current/retirement
-target; for D, it proves membership in the host's restartable whole-chain
-reset/retention transaction. P uses preserving detach, never deletion; U cannot
-target guarded host evidence. These primitives do not discover chain membership
-or authorize reset themselves. Any explicitly supplied deletion disposition is
+target; for D, it proves membership in the host's restartable reset/retention
+transaction. P uses preserving detach, never deletion; U cannot target guarded
+host evidence. These primitives do not discover membership or authorize reset
+themselves. Any explicitly supplied deletion disposition is
 validated even for an unguarded journal: only C/D may delete, while P/U/unknown
 values reject. Unguarded/stateless/subagent callers passing no disposition keep
 their existing behavior. Guarded deletion refuses a foreign live writer instead
-of waiting under host ownership, validates header-copy storage alongside journal
-publication/stages, and reasserts the host claim before each unlink. Optional
+of waiting under host ownership, validates journal publication/stages, and reasserts the host claim before each unlink. Optional
 `onPhase` hooks expose file removal and member directory-sync boundaries for
 process-kill verification; hooks are not an alternative durability barrier.
 Memory repositories clone caller metadata and retain a
 private validated header so metadata mutation cannot forge or demote authority.
 
-`SessionStore.appendComposedCompaction` explicitly writes schemaVersion-3
-composed coverage, rejecting changed sources and predecessor-native tail copies.
-Its summary must cover the entire inherited prefix; its retained native tail is
-current-journal evidence only. `appendModelChangeReference` explicitly writes a
-schemaVersion-3 artifact reference, not another summary copy. Its stable
-switch identity is idempotent across concurrent calls and cold/warm reopen;
-conflicting content under that identity rejects rather than appending another
-event. Native deletion accepts either authority as the second argument or
+Native deletion accepts either authority as the second argument or
 `(metadata, cancellationContext, authority)`; cancellation context alone never
-supplies authority, and ambiguous mixed arguments reject. Neither API nor the
-header guard enables host switching, supplies canonical history/retention
-transactions, or grants replay permission. No default host enables v3 writes.
+supplies authority, and ambiguous mixed arguments reject. The header guard does
+not enable host switching, supply canonical history/retention transactions, or
+grant replay permission. No default host enables v3 writes.
 
 ## Public API
 

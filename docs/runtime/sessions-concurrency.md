@@ -69,38 +69,34 @@ TUI/ACP IDs and background wakes do not. No-ID turns on never-upgraded conversat
 keep the original path, including cold-replay model changes for cron, webhook,
 Slack, Telegram, TUI, ACP and Web wakes. They make only one cheap binding read to
 select that path, with no switch preparation, switch claim or authority bootstrap.
-On already-native/v4 conversations, a no-ID undeclared wake inherits the current
+On already-native conversations, a no-ID undeclared wake inherits the current
 durable model; an explicit other-model no-ID request refuses without rotation.
 Changing `runtime.model` changes the default for ordinary conversations but does
 not move existing native conversations: they retain their durable model until a
 persisted Web message selects the new model. Prose keywords do not escalate models
 or effort; they are ordinary message text.
-Switches retain predecessor journals and admit the incoming turn only after one
-durable switch and a complete fitting structured handoff. Every model change,
-including a return to an earlier model, takes the same approved order: outgoing
-summary, then the exact accepted checkpoint plus its complete later history, then
-incoming summary, then `handoff_pending`. Native session state (raw envelopes,
-signed reasoning) is never reused across models, even with matching provenance.
+
+A native conversation keeps **one current native journal**, one durable handoff
+and the latest switch receipt; it keeps no epoch ancestry. A switch creates the
+target journal, durably publishes the binding, handoff and receipt, then retires
+the outgoing journal and clears the intent. The incoming turn is admitted only
+after that. Every model change, including a return to an earlier model, takes
+the same approved order: outgoing summary, then the exact previously validated
+structured summary from the last switch plus every later turn, then incoming
+summary, then `handoff_pending`. A later-turn suffix without a validated prior
+summary is text-only replay and never counts as a handoff, and no model change
+happens without a summary. Native session state (raw envelopes, signed
+reasoning) is never reused across models, even with matching provenance.
 
 Each switch permits at most two billed summary calls per explicit-message generation.
 An outcome-unknown call never auto-repeats. Retries/reopening with the same persisted
 ID grant no new generation; the next explicit message permits one attempt per
 producer. Pending messages are **not queued or replayed**. Interrupted turns are
 reported; tools never rerun. Detached same-conversation work may receive retryable
-`native_switch_busy` rather than waiting on its own claim. Whole-chain reset and
-retention delete the conversation's retained native evidence and handoff artifacts.
-For a full chain or typed pre-intent capacity refusal, a persisted-ID Web request
-may select an owned cold model change: settle outgoing work, retire only the
-eligible current epoch with C, preserve every frozen predecessor with P, and
-keep chain length constant. The new model receives ordinary bounded canonical
-and tool-history replay, **not a complete native handoff**. The streamed
-`degraded_native_context` warning and response runtime warnings make that
-context downgrade explicit. Native-only data in the retired current is lost;
-frozen predecessors and their artifacts remain retained/charged. No paid
-handoff summary runs. A restartable v2 lifecycle intent and a host cold-switch
-receipt survive crashes; incoming P2 waits for physical cleanup completion.
-Pending/unknown billed work cannot take this shortcut. Insufficient safe
-publication space still refuses. No-ID inheritance/refusal rules are unchanged.
+`native_switch_busy` rather than waiting on its own claim. Reset and retention
+delete the conversation's native journal and handoff artifacts. A capacity or
+size refusal before the switch intent exists returns `handoff_budget_exceeded`;
+it never falls back to a summary-less model change.
 Conversation IDs longer than 512 characters bypass switch preparation before
 native authority or intent. This preserves the original path, not a successful
 cold-dispatch guarantee: the existing native host-turn contract rejects those
@@ -110,10 +106,10 @@ ownership IDs with the option OFF too. Its 512-character bound is unchanged.
 
 | Disposition | Allowed effect | Ownership boundary |
 | --- | --- | --- |
-| P — preserve/detach | Drop stale liveness/mappings without deleting or rewinding retained evidence | Native chain members and unresolved protected turns remain preserved, even with a stale model key or persistence failure |
-| C — ordinary cold cleanup | Replace only the current epoch (same-model by default; explicit Web cold change may change model); delete eligible unreferenced retirement targets | Held host claim, exact authority, reference check and durable lifecycle intent; predecessors remain unchanged |
-| D — whole-chain deletion | Reset/retention delete the authorized chain and switch artifacts; operator purge removes attested owned roots | Whole membership remains recoverable until deletion and directory barriers finish |
-| U — uncoordinated cleanup | Existing stateless/subagent behavior within its own isolated storage | No authority to delete a guarded host-chain predecessor |
+| P — preserve/detach | Drop stale liveness/mappings without deleting or rewinding retained evidence | The current journal and unresolved protected turns remain preserved, even with a stale model key or persistence failure |
+| C — ordinary cold cleanup | Replace only the current epoch with a fresh one of the same model; a switch retires its outgoing journal only after the receipt is durable | Held host claim, exact authority, reference check and durable lifecycle intent or receipt |
+| D — conversation deletion | Reset/retention delete the current journal and switch artifacts; operator purge removes attested owned roots | Recoverable until deletion and directory barriers finish |
+| U — uncoordinated cleanup | Existing stateless/subagent behavior within its own isolated storage | No authority to delete a guarded host journal |
 
 Manual compaction's advisory P for native-bound stale mappings is defence-in-depth
 from a pre-claim read-only hint, not ownership proof. The generic helper modes
@@ -123,12 +119,25 @@ infer physical deletion permission from a cached runtime/model owner. Guarded
 rejection means preserved evidence, **not successful cleanup**. Unsettled P2
 turns stay protected/charged and reconcile storage-only, without provider or tool
 replay. Ordinary durable registry disposal/TTL removes metadata, not journal bytes.
-Cold model changes do not authorize whole-chain D deletion or drop predecessors.
 
-Older binaries refuse upgraded v4 conversations and scans, but this is **not** a
-universal old-writer admission barrier. Mixed binaries must not run on upgraded
+Older binaries refuse native conversations and scans, but this is **not** a
+universal old-writer admission barrier. Mixed binaries must not run on opted-in
 roots. Rollback means stop writers and restore consistent host/native backups;
 disabling the option, stripping markers or downgrading records is not rollback.
+
+### Unsupported pre-release switch data
+
+Development roots written by earlier pre-release builds (canonical version 4
+records with an epoch chain, or their outstanding switch/lifecycle intents) are
+not migrated. Every operation on such a conversation refuses with
+`native_switch_format_unsupported` and the message
+`unsupported pre-release switch format; reset`, before any recovery, cleanup or
+mutation; other conversations continue. Retention never deletes a refused
+conversation. Reset the agent's conversation state with
+`mono-agent restart --clear-sessions`: it removes the canonical history root
+(including `.model-switches/` and lifecycle intents) and `piSessionsRoot`, while
+durable memory and run artifacts stay. Back up the agent root first if you want
+to keep a copy.
 
 ### Enable, verify and roll back
 
@@ -150,15 +159,15 @@ with `session_not_found`. Before admission, while it holds the conversation, the
 host checks that journal. It counts as **missing** only when no published or
 staged file exists for the recorded journal (or, before the first switch, no
 published, staged or archived journal for the current handle; the check never
-reclaims a stage). The turn then replaces only the
-current stretch through the same durable cold boundary that ordinary cold turns
-use: the unguarded first epoch is rotated, and a switched chain takes current-only
-C with predecessors and the switch receipt untouched. The model answers from the
-canonical conversation history, seeded once into the fresh epoch, and the turn
-streams and returns `degraded_native_context` once. Following turns are warm on
-the new epoch. A persisted-ID request for a different model with a missing current
-journal takes the owned cold model change instead of a handoff. No lease, tool or
-summary call is repeated, and a crash at any step recovers from storage alone.
+reclaims a stage). A same-model turn then replaces only the current epoch through
+the same durable cold boundary that ordinary cold turns use, with the switch
+receipt untouched. The model answers from the canonical conversation history,
+seeded once into the fresh epoch, and the turn streams and returns
+`degraded_native_context` once. Following turns are warm on the new epoch. A
+persisted-ID request for a different model with a missing journal feeds the
+canonical history through the same summary order as any switch; it is never a
+summary-less change. No lease, tool or summary call is repeated, and a crash at
+any step recovers from storage or redelivery without rebilling.
 
 Damage is never treated as loss. An unreadable header, a malformed or invalid
 complete record, staged-only bytes or a catalogue that cannot be read refuse the
@@ -171,17 +180,8 @@ damaged journal-named file whose owner cannot be read is skipped and kept: it
 never blocks another conversation's journal, and retention never charges or
 deletes it. It refuses only a conversation whose own journal cannot be found, with
 `native_journal_unreadable`, because it might be that conversation's damaged
-journal.
-
-Predecessor journals use the same split. A lost predecessor does not affect
-same-model turns and stays absent; C never recreates it, while any predecessor
-bytes that remain must still match exactly. A persisted-ID switch whose chain has
-a lost predecessor never attempts a handoff from the missing bytes: it takes the owned cold model change (`predecessor_missing`) with canonical
-replay, one `degraded_native_context` warning and no summary call or billed
-generation. Losing the whole native root, for example after moving to another
-machine, recovers on the next message without a reset. A damaged predecessor, or
-a valid one that no longer matches its recorded state (for example an older
-restored copy), is refused with `native_journal_unreadable` before any intent.
+journal. Losing the whole native root, for example after moving to another
+machine, recovers on the next message without a reset.
 
 To enable:
 
@@ -195,19 +195,20 @@ To enable:
    and a durable `piSessionsRoot`, then start only upgraded binaries.
 
 Rollback: stop all writers, then restore **both** backups from step 2.
-Setting `enabled: false` afterwards does not convert upgraded conversations back.
+Setting `enabled: false` afterwards does not convert native conversations back.
 
 | Acceptance | Behavior | Observable evidence | Verified by |
 | --- | --- | --- | --- |
-| A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical `lastSwitch` receipt and one `model_change` record in the outgoing native journal | `configured-switch-kill-matrix.test.ts` (12 SIGKILL boundaries, two fresh-process recoveries each), `managed-native-switch.test.ts` |
-| A2 complete fitting context | The incoming model receives a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | Immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `model-switch-return.test.ts`, kill-matrix incoming-context assertions |
-| A3 return to an earlier model | Returning to an earlier model is an ordinary structured transfer that includes the intervening work. It never reuses the earlier model's native session state. | Chain length grows by one per switch; predecessor journals stay byte-stable; the return's artifact comes from the approved producer order | `configured-native-provenance.test.ts`, kill-matrix structured return boundaries, `model-switch-return.test.ts` |
-| A4 crash, upgrade, reset, retention | Crashes recover from storage alone: no provider, summary or tool replay, and no leaked reservation or fence. Reset and retention delete the whole chain and its artifacts. Upgrade settles old pending turns first. | Empty `.pending-turns`/dirty fences, no `.native-history-op.*` intent, zero reserved bytes | `configured-switch-kill-lifecycle.test.ts`, `managed-native-lifecycle.test.ts`, `managed-native-cold-change.test.ts`, `host-turn-reconciliation.test.ts` |
+| A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical version 5 `lastSwitch` receipt; exactly one current native journal | `configured-switch-kill-matrix.test.ts` (SIGKILL boundaries, two fresh-process redeliveries and one new delivery each), `managed-native-switch.test.ts` |
+| A2 complete fitting context | The incoming model receives a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | One immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `model-switch-return.test.ts`, kill-matrix incoming-context assertions |
+| A3 return to an earlier model | Returning to an earlier model is an ordinary structured transfer that includes the intervening work. It never reuses the earlier model's native session state. | The outgoing journal is retired; the return's artifact comes from the approved producer order | `configured-native-switch.test.ts`, `configured-native-provenance.test.ts`, kill-matrix return boundaries, `model-switch-return.test.ts` |
+| A4 crash, reset, retention | Crashes recover without provider, summary or tool replay beyond the redelivered message, and without leaked reservation or fence. Reset and retention delete the journal and its artifacts. Enabling settles old pending turns first. | Empty `.pending-turns`/dirty fences, no `.native-history-op.*` intent, zero reserved bytes | `configured-switch-kill-lifecycle.test.ts`, `configured-missing-journal-kill.test.ts`, `managed-native-lifecycle.test.ts`, `host-turn-reconciliation.test.ts` |
 
 Billing during recovery: an admitted summary call interrupted by a crash stays
-charged as outcome-unknown and is never repeated. The free checkpoint and then
-the incoming producer follow. Each switch generation allows at most two billed
-summary calls (outgoing, then incoming producer), plus the incoming turn itself.
+charged as outcome-unknown and is never repeated. The checkpoint (when a
+validated prior summary exists) and then the incoming producer follow. Each
+switch generation allows at most two billed summary calls (outgoing, then
+incoming producer), plus the incoming turn itself.
 
 Retrying the same persisted Web message after a crash finishes the recorded
 switch in its original generation and never opens a new billed one. The message
@@ -219,17 +220,16 @@ mid-turn, that turn ends failed or interrupted and you send a new message.
 Warnings and refusals:
 
 - `degraded_native_context` is the only user-facing warning. It appears once,
-  on the turn that applied an owned cold change or recovered a missing current
-  journal. If the process dies after that change became durable but before
-  that turn streamed the warning, recovery finishes the change without it.
-  The warning is then never shown. The only record is the canonical
-  `lastSwitch.kind: "cold"` receipt for a model change, or the rotated current
-  epoch for a recovered journal.
+  on the turn that recovered a missing current journal. If the process dies
+  after that recovery became durable but before that turn streamed the warning,
+  recovery finishes it without the warning; the rotated current epoch is the
+  only record.
 - Structured handoffs produce no warning.
 - `handoff_pending`, `handoff_budget_exceeded`,
-  `native_cold_model_change_unavailable`, `native_journal_unreadable` and
-  retryable `native_switch_busy` are refusals. The message was not admitted;
-  send another message when ready.
+  `native_cold_model_change_unavailable` (a native conversation cannot be
+  served by an unprepared or no-ID model change), `native_journal_unreadable`,
+  `native_switch_format_unsupported` and retryable `native_switch_busy` are
+  refusals. The message was not admitted; send another message when ready.
 
 Limits:
 
@@ -240,9 +240,8 @@ Limits:
   waits for the next message.
 - Handoff summaries are model-written prose. The deterministic ledger and the
   verbatim recent turns remain the authoritative evidence.
-- Older binaries are not technically blocked from an upgraded root.
-- No downgrade tool exists. Native-only data in a cold-retired current epoch is
-  lost, as described above.
+- Older binaries are not technically blocked from an opted-in root.
+- No downgrade tool exists. Native-only data in a retired epoch is lost.
 
 ## Provider sessions
 
@@ -605,7 +604,7 @@ ambiguous throws, extra attempts, late contradictory evidence, failed tool-histo
 finalization or uncertain persistence selects cold reseed. The budget and one-shot
 boundary marker live only in the in-memory session record and clear on rotation;
 reconstructing the harness can allow one additional failed-turn recovery.
-Legacy receipt recovery itself does not widen its v4 fence. The v3/P2 storage
+Legacy receipt recovery itself does not widen its fence. The v3/P2 storage
 upgrade has the downgrade consequences described above.
 
 Recovery is opt-in through the built-in coordinator's `providerSessionRecovery:
@@ -653,22 +652,22 @@ before the next Send when a reset/import advanced it.
 
 For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.
 
-## Administrative native history chains
+## Administrative native history
 
-The durable-history storage API can explicitly opt into canonical v4 epoch-journal
-chains through `nativeJournalStorage`. This is not configured model switching or
-incoming dispatch. Root authority requires drained owner claims and stopped older
-writers; managed roots strictly preserve unreadable canonical evidence.
+The durable-history storage API can explicitly opt into canonical version 5
+single-journal records through `nativeJournalStorage`. This is not configured
+model switching or incoming dispatch. Root authority requires drained owner
+claims and stopped older writers; managed roots strictly preserve unreadable
+canonical evidence.
 
 Accepted switch content permits ready-only native/canonical roll-forward. Pending
 switch production stays host-only and blocks ordinary admission. Cold boundaries
-persist the exact replacement epoch before creating it, preserve predecessor
-journals, and delete only a reference-checked current retirement target. Reset and
-retention retain complete membership through restartable whole-chain native,
+persist the exact replacement epoch before creating it and delete only a
+reference-checked retirement target. Reset and retention run restartable native,
 handoff and crash-storage cleanup. Recovery does not call a model, tool or summary.
 Whole-root operator purge retains its existing stopped-writer quarantine protocol.
 
-Do not run older binaries against an upgraded root. The marker is not a universal
+Do not run older binaries against an opted-in root. The marker is not a universal
 old-binary admission barrier. Rollback means stopping writers and restoring
 consistent host/native backups; there is no downgrade or strip tool, and these
 APIs grant no authority to migrate a real root.

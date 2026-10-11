@@ -211,7 +211,7 @@ protected host-only opt-ins forwarded unchanged by the facade. The authority's
 Detached retry/backup resolvers may choose their own roots. `assertCurrent`
 receives the actual normalized path (not an inode attestation) and must prove
 the held owner's ready binding/artifact and creation eligibility; an artifact reference alone grants no execution. Projection
-content stays in host artifacts/predecessors, not the current native journal.
+content stays in host artifacts, not the current native journal.
 Hosts must preserve accepted message/coverage object key order on reconstruction:
 the binding's digest is JSON-byte based, not semantic canonicalization.
 Its optional frozen dispatch budget refuses overruns without cached-handoff
@@ -226,16 +226,14 @@ validate accepted content and coordinate canonical publication/deletion. It
 forwards only journal storage operations. The configured app creates it only
 with the OFF-default Web model-switch opt-in and explicit stopped-writer
 acknowledgement; runtime capability presence alone does not enable switching.
-Cold planning/publication retains predecessors and replaces only the current
-epoch. By default provenance is unchanged; administrative `targetProvenance`
-permits the host's persisted-ID Web cold model transition. It grants no authority
-by itself: the host must settle the outgoing turn and persist/validate the exact
-C plan before publication, with a cold-context downgrade warning. Reference-checked C and complete-set D native deletion are
-restartable storage primitives, not host reset/retention transactions. Callers
-must durably retain the exact cold plan or deletion membership until all physical
-files and publication barriers have completed. Preserving disposal (P) does
-not grant deletion authority. Generic retirement without C/D host authority
-cannot remove a guarded host-chain member; rejection is not cleanup success.
+`createEpoch` publishes the deterministic guarded journal for a switch target or
+same-model cold rotation; it never changes a conversation's model by itself.
+Reference-checked C and D native deletion are restartable storage primitives,
+not host reset/retention transactions. Callers must durably retain the exact
+epoch plan, receipt or deletion intent until all physical files and publication
+barriers have completed. Preserving disposal (P) does not grant deletion
+authority. Generic retirement without C/D host authority cannot remove a guarded
+host journal; rejection is not cleanup success.
 Stateless and subagent cleanup retain their isolated ownership boundaries.
 Native ownership IDs remain bounded to 512 characters; bypassing host switch
 preparation for longer IDs does not make the original native dispatch eligible.
@@ -396,20 +394,19 @@ RuntimeMcpAppHost
 RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
-RuntimeNativeChainDeletion
-RuntimeNativeColdEpochContext
 RuntimeNativeDispatchBinding
 RuntimeNativeDispatchSnapshot
+RuntimeNativeEpochContext
 RuntimeNativeEvidenceView
 RuntimeNativeJournalAuthority
 RuntimeNativeJournalDeletion
 RuntimeNativeJournalDescriptor
+RuntimeNativeJournalRef
 RuntimeNativeJournalStorage
 RuntimeNativePreparationStorage
 RuntimeNativePreparedDispatch
 RuntimeNativeSessionAuthority
 RuntimeNativeSessionProjection
-RuntimeNativeSwitchContext
 RuntimePreparedHandoff
 RuntimePromptOverrides
 RuntimeResult

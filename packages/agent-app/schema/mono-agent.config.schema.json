@@ -433,7 +433,7 @@
               "additionalProperties": false,
               "properties": {
                 "enabled": {
-                  "description": "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot and explicit olderWritersStopped acknowledgement. Every model change, including a return to an earlier model, uses a structured handoff (outgoing summary, then the exact checkpoint plus later history, then incoming summary); native session state is never reused across models. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); No-ID turns on non-native conversations keep the original cold-replay path; declared no-ID model changes refuse only on native conversations. Changing runtime.model does not move existing native conversations until a persisted Web message selects the new model. Pending messages are not queued or replayed. With this on, Web turns with a persisted message ID (including a new conversation's first message) and no-ID wakes on native conversations use the primary model only: no configured fallback-chain backup or router re-attempt. Other turns keep fallbacks.",
+                  "description": "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot and explicit olderWritersStopped acknowledgement. Every model change, including a return to an earlier model, uses a structured handoff (outgoing summary, then the previously validated summary plus later history, then incoming summary); there is no summary-less model change and native session state is never reused across models. Old pre-release switch data is refused (reset), not migrated. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); No-ID turns on non-native conversations keep the original cold-replay path; declared no-ID model changes refuse only on native conversations. Changing runtime.model does not move existing native conversations until a persisted Web message selects the new model. Pending messages are not queued or replayed. With this on, Web turns with a persisted message ID (including a new conversation's first message) and no-ID wakes on native conversations use the primary model only: no configured fallback-chain backup or router re-attempt. Other turns keep fallbacks.",
                   "examples": [
                     true
                   ],
@@ -441,7 +441,7 @@
                   "default": false
                 },
                 "olderWritersStopped": {
-                  "description": "Explicit operator acknowledgement: stop all older writers and back up host/native roots before enabling model switching. Must be true when supplied and required when enabled. Older binaries refuse upgraded conversations; mixed writers are prohibited. Rollback requires restoring a consistent backup, not disabling this flag.",
+                  "description": "Explicit operator acknowledgement: stop all older writers and back up host/native roots before enabling model switching. Must be true when supplied and required when enabled. Older binaries refuse native conversations; mixed writers are prohibited. Rollback requires restoring a consistent backup, not disabling this flag.",
                   "examples": [
                     true
                   ],
