@@ -406,6 +406,18 @@ native metadata, not just messages and the provider binding. Pre-release version
 4 chain records, version 1 switch states and version 1/2 lifecycle intents refuse
 with `UnsupportedPreReleaseSwitchFormatError` (`unsupported pre-release switch
 format; reset`) before any recovery, cleanup or mutation; they are never migrated.
+The refusal is owner-scoped: a version 1 state, fenced or orphaned, refuses only
+its own conversation, stays charged and is never a retention victim, while
+unrelated conversations keep appending and admitting. Switch preparation
+preflights the refusal before acquisition-time cleanup; other entry points may
+first retire an unrelated eligible dirty fence, which is ordinary cleanup of
+that other conversation, not a mutation of the refused one. A lone old handoff
+artifact without a state is inert: it is charged, never read as handoff content
+(only a v5 receipt references an artifact), and removed by that owner's next
+switch completion or reset. Unresolved inherited ledger entries, such as an
+outcome-unknown tool effect from an earlier model, are carried into every new
+handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
+refuses rather than leaving them to prose.
 
 `beginProviderSessionPreparation(conversationId, runId)` is an additive,
 claim-only storage substrate used by the configured app's acknowledged Web-only

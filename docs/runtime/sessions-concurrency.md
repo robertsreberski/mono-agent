@@ -132,8 +132,8 @@ records with an epoch chain, or their outstanding switch/lifecycle intents) are
 not migrated. Every operation on such a conversation refuses with
 `native_switch_format_unsupported` and the message
 `unsupported pre-release switch format; reset`, before any recovery, cleanup or
-mutation; other conversations continue. Retention never deletes a refused
-conversation. Reset the agent's conversation state with
+mutation; other conversations continue normally, with the option on or off.
+Retention never deletes a refused conversation. Reset the agent's conversation state with
 `mono-agent restart --clear-sessions`: it removes the canonical history root
 (including `.model-switches/` and lifecycle intents) and `piSessionsRoot`, while
 durable memory and run artifacts stay. Back up the agent root first if you want
