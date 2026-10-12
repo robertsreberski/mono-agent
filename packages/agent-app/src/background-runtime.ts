@@ -1131,10 +1131,8 @@ async function captureExecutionClosure(
   }
 
   const closure = nodes as readonly ExecutionClosureNode[];
-  await revalidateExecutionClosureProofs(closure, proofs, [
-    ...dependencyProofPaths,
-    ...additionalProofPaths,
-  ]);
+  const reuseLinks = deduplicateSourceReuseProofLinks([...dependencyProofPaths, ...additionalProofPaths]);
+  await revalidateExecutionClosureProofs(closure, proofs, reuseLinks);
   const resolutionPaths = await resolutionPathProof?.finalize() ?? [];
   const stable = {
     schema: "mono-agent.source-execution-closure.v1",
@@ -1187,9 +1185,31 @@ async function captureExecutionClosure(
         sourceRoot: node.sourceRoot,
         entries: requiredMapValue(proofs, node.id, "source package proof"),
       })),
-      links: [...dependencyProofPaths, ...additionalProofPaths],
+      links: reuseLinks,
     },
   };
+}
+
+/** Internal capture helper; per-owner dependency proofs used by identity hashes stay unchanged. */
+export function deduplicateSourceReuseProofLinks(
+  links: SourceClosureReuseProof["links"],
+): SourceClosureReuseProof["links"] {
+  const byPath = new Map<string, SourceClosureReuseProof["links"][number]>();
+  for (const link of links) {
+    const existing = byPath.get(link.path);
+    if (existing === undefined) {
+      byPath.set(link.path, link);
+    } else if (
+      existing.logicalPath !== link.logicalPath
+      || !sameSourceProofEntry(existing.proof, link.proof)
+    ) {
+      throw new Error(
+        `Conflicting managed runtime source link proofs for ${link.path}. ` +
+        "The installed dependency layout changed or resolves one path under different names; reinstall before starting.",
+      );
+    }
+  }
+  return [...byPath.values()];
 }
 
 /**
@@ -1978,14 +1998,6 @@ async function publishRuntimeReuseProof(
   if (bytes.length > MAX_RUNTIME_REUSE_PROOF_BYTES) {
     throw new Error("The managed runtime warm-reuse proof exceeds its safe size limit.");
   }
-  await ensurePrivateReuseProofDirectory(layout.reuseProofDir);
-  await writeFile(layout.reuseProofPath, contents, { encoding: "utf8", mode: 0o600 });
-  await chmod(layout.reuseProofPath, 0o600);
-  const stored = await readPrivateRuntimeReuseProofBytes(layout.reuseProofPath);
-  if (stored === undefined || !stored.equals(bytes)) {
-    throw new Error("The managed runtime warm-reuse proof changed while it was published.");
-  }
-
   const nextMarker: RuntimeMarkerV5 = {
     schema: "mono-agent.managed-runtime.v5",
     packageName: PACKAGE_NAME,
@@ -2000,6 +2012,26 @@ async function publishRuntimeReuseProof(
     reuseProofSha256: sha256(bytes),
     installedAt: marker.installedAt,
   };
+  if (runtimeReuseProofFromJson(
+    parseJson(bytes, "managed runtime reuse proof"),
+    identity,
+    packageSource,
+    additionalPackages,
+    nextMarker,
+  ) === undefined) {
+    throw new Error(
+      "The generated managed runtime warm-reuse proof was rejected by its validator. " +
+      "No proof was published; reinstall the CLI and report this producer/validator mismatch if it persists.",
+    );
+  }
+  await ensurePrivateReuseProofDirectory(layout.reuseProofDir);
+  await writeFile(layout.reuseProofPath, contents, { encoding: "utf8", mode: 0o600 });
+  await chmod(layout.reuseProofPath, 0o600);
+  const stored = await readPrivateRuntimeReuseProofBytes(layout.reuseProofPath);
+  if (stored === undefined || !stored.equals(bytes)) {
+    throw new Error("The managed runtime warm-reuse proof changed while it was published.");
+  }
+
   if (finalizeLaunchBoundary) {
     await writeFinalizedRuntimeMarker(layout.markerPath, nextMarker, deps);
   } else {
