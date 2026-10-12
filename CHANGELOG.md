@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix newly initialized BuJo memory to start without a manual rebuild by
+  publishing its replay authority before the managed index. Keep incomplete
+  initialization and missing historical authority fail-closed.
+
 - Fix fallback retries and backup models to run under a fresh provider
   attribution id instead of the primary's session (including the OpenCode
   `x-opencode-session` header), and withhold the provider session id and
