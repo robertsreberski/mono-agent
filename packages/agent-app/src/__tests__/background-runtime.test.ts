@@ -16,7 +16,7 @@ import {
   sanitizeManagedBackgroundWorkerEnvironment,
   verifyManagedRuntimeLaunch,
 } from "../background-runtime.js";
-import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput } from "../background-runtime.js";
+import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../background-runtime.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 
 const io = vi.hoisted(() => ({
@@ -336,6 +336,42 @@ describe("ensureManagedBackgroundRuntime", () => {
     await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
       homeDir })).rejects.toThrow("fixture copy failure");
     expect(finished).toBe(true);
+    expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
+  it("reports path-free phases, throttled real work, and prompt warm reuse", async () => {
+    const source = await fixturePackage();
+    await Promise.all(Array.from({ length: 160 }, (_, index) =>
+      writeFile(join(source.root, "dist", `asset-${index}.txt`), "progress fixture")));
+    const homeDir = await homeFixture();
+    const progress: ManagedRuntimeProgress[] = [];
+    let now = 1_000_000;
+    const deps = { ...defaultManagedBackgroundRuntimeDeps(), now: () => now += 1,
+      sleep: async (ms: number) => { now += ms; } };
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event: ManagedRuntimeProgress) => progress.push(event) };
+    await ensureManagedBackgroundRuntime(input, deps);
+    expect(progress.map((event) => event.phase)).toEqual(expect.arrayContaining([
+      "reuse", "source", "copy", "staged-verification", "promotion", "proof-publication", "final-verification", "ready",
+    ]));
+    for (let index = 1; index < progress.length; index += 1) {
+      const current = progress[index]!;
+      const prior = progress[index - 1]!;
+      if (current.phase === prior.phase) expect(current.elapsedMs - prior.elapsedMs).toBeGreaterThanOrEqual(2_000);
+    }
+    expect(JSON.stringify(progress)).not.toContain(source.root);
+    expect(JSON.stringify(progress)).not.toContain(homeDir);
+    progress.length = 0;
+    await expect(ensureManagedBackgroundRuntime(input, deps)).resolves.toMatchObject({ verificationMode: "fast-reuse" });
+    expect([...new Set(progress.map((event) => event.phase))]).toEqual(["reuse", "ready"]);
+  });
+
+  it("settles work and removes staging when the progress consumer aborts copying", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event) => { if (event.phase === "staged-verification") throw new Error("fixture progress abort"); },
+    })).rejects.toThrow("fixture progress abort");
     expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
   });
 
@@ -1242,7 +1278,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     ), "utf8")).toBe("tampered");
   });
 
-  it("does not steal an active install lock even after the stale-age threshold", async () => {
+  it("does not steal a live installer and reports the overall 30-minute wait cap", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     let unblock!: () => void;
@@ -1267,14 +1303,14 @@ describe("ensureManagedBackgroundRuntime", () => {
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
-    }, secondDeps)).rejects.toThrow("Timed out waiting for the managed runtime installation lock");
+    }, secondDeps )).rejects.toThrow("after 30 minutes. The live owner was not interrupted");
     expect(secondInstalls).toBe(0);
 
     unblock();
     await expect(first).resolves.toMatchObject({ packageVersion: "9.8.7" });
   });
 
-  it("coalesces behind a shared installation that takes longer than the former 30 second wait", async () => {
+  it("coalesces behind a live installation taking longer than five minutes with visible waiter progress", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     let unblock!: () => void;
@@ -1312,6 +1348,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     });
     await installStarted;
 
+    const progress: ManagedRuntimeProgress[] = [];
     let elapsed = 0;
     let now = 1_000_000;
     let secondInstalls = 0;
@@ -1321,13 +1358,14 @@ describe("ensureManagedBackgroundRuntime", () => {
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
+      onProgress: (event) => progress.push(event),
     }, {
       ...secondBase,
       now: () => now,
       sleep: async (ms) => {
         elapsed += ms;
         now += ms;
-        if (elapsed < 90_000) {
+        if (elapsed < 390_000) {
           await Promise.resolve();
           return;
         }
@@ -1342,7 +1380,10 @@ describe("ensureManagedBackgroundRuntime", () => {
 
     await expect(first).resolves.toMatchObject({ verificationMode: "installed" });
     await expect(second).resolves.toMatchObject({ verificationMode: "fast-reuse" });
-    expect(elapsed).toBeGreaterThanOrEqual(90_000);
+    expect(elapsed).toBeGreaterThanOrEqual(390_000);
+    expect(progress.some((event) => event.phase === "waiting" && event.ownerPid === process.pid
+      && event.elapsedMs > 300_000)).toBe(true);
+    expect(progress.at(-1)?.phase).toBe("ready");
     expect(secondInstalls).toBe(0);
   });
 

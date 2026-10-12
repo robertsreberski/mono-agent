@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats } from "node:fs";
 import {
@@ -39,7 +40,9 @@ import {
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
 
 const PACKAGE_NAME = "@mono-agent/agent-app";
-const LOCK_WAIT_TIMEOUT_MS = 5 * 60_000;
+const LOCK_WAIT_TIMEOUT_MS = 30 * 60_000;
+const LOCK_WAIT_SLICE_MS = 10_000;
+const RUNTIME_PROGRESS_INTERVAL_MS = 2_000;
 const LOCK_STALE_AFTER_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 200;
 const PROVISIONAL_RUNTIME_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
@@ -54,7 +57,11 @@ const RUNTIME_PACKAGE_COPY_CONCURRENCY = 4;
 const limitRuntimeRead = createWorkLimiter(RUNTIME_FILE_READ_CONCURRENCY);
 const limitRuntimeStat = createWorkLimiter(RUNTIME_REUSE_STAT_CONCURRENCY);
 const lstat: typeof filesystemLstat = ((...args: Parameters<typeof filesystemLstat>) =>
-  limitRuntimeStat(() => filesystemLstat(...args))) as typeof filesystemLstat;
+  limitRuntimeStat(async () => {
+    const result = await filesystemLstat(...args);
+    reportRuntimeWork();
+    return result;
+  })) as typeof filesystemLstat;
 
 export type ManagedRuntimeVerificationMode = "fast-reuse" | "full-reuse" | "installed" | "repaired";
 
@@ -122,7 +129,65 @@ export interface ManagedRuntimeAdditionalPackage {
   readonly packageSource: string;
 }
 
+export type ManagedRuntimePreparationPhase = "reuse" | "source" | "source-verification" | "copy"
+  | "staged-verification" | "promotion" | "proof-publication" | "final-verification" | "waiting" | "cleanup" | "ready";
+
+/** Path-free preparation observations; never authority to launch or accept bytes. */
+export interface ManagedRuntimeProgress {
+  readonly phase: ManagedRuntimePreparationPhase;
+  readonly elapsedMs: number;
+  readonly completed: number;
+  readonly total?: number;
+  readonly ownerPid?: number;
+}
+
+interface RuntimePreparationProgress {
+  phase(phase: ManagedRuntimePreparationPhase, total?: number): void;
+  work(packageCopied?: boolean): void;
+  waiting(ownerPid?: number): void;
+}
+const runtimePreparationProgress = new AsyncLocalStorage<RuntimePreparationProgress>();
+
+function preparationProgress(input: ManagedBackgroundRuntimeInput, deps: ManagedBackgroundRuntimeDeps): RuntimePreparationProgress {
+  if (input.onProgress === undefined) return { phase() {}, work() {}, waiting() {} };
+  const startedAt = deps.now();
+  let phase: ManagedRuntimePreparationPhase = "reuse";
+  let completed = 0;
+  let total: number | undefined;
+  let ownerPid: number | undefined;
+  let lastReportedAt = Number.NEGATIVE_INFINITY;
+  const emit = (force: boolean): void => {
+    const now = deps.now();
+    if (!force && now - lastReportedAt < RUNTIME_PROGRESS_INTERVAL_MS) return;
+    lastReportedAt = now;
+    input.onProgress?.({ phase, elapsedMs: Math.max(0, now - startedAt), completed,
+      ...(total === undefined ? {} : { total }), ...(ownerPid === undefined ? {} : { ownerPid }) });
+  };
+  return {
+    phase(next, count) { phase = next; completed = 0; total = count; ownerPid = undefined; emit(true); },
+    work(packageCopied = false) {
+      if (phase === "waiting" || phase === "ready" || (phase === "copy" && !packageCopied)) return;
+      completed += 1;
+      emit(false);
+    },
+    waiting(pid) {
+      const changed = phase !== "waiting" || ownerPid !== pid;
+      phase = "waiting"; ownerPid = pid; total = undefined; completed = 0;
+      emit(changed);
+    },
+  };
+}
+
+function reportRuntimePhase(phase: ManagedRuntimePreparationPhase, total?: number): void {
+  runtimePreparationProgress.getStore()?.phase(phase, total);
+}
+function reportRuntimeWork(packageCopied = false): void {
+  runtimePreparationProgress.getStore()?.work(packageCopied);
+}
+
 export interface ManagedBackgroundRuntimeInput {
+  /** Optional, throttled, path-free phase/work observations. Throwing aborts preparation. */
+  readonly onProgress?: (progress: ManagedRuntimeProgress) => void;
   /** The CLI currently executing. Its exact bytes are the trust anchor. */
   readonly currentCliPath: string;
   readonly nodePath: string;
@@ -394,6 +459,18 @@ export async function ensureManagedBackgroundRuntime(
   input: ManagedBackgroundRuntimeInput,
   deps: ManagedBackgroundRuntimeDeps = defaultManagedBackgroundRuntimeDeps(),
 ): Promise<ManagedBackgroundRuntime> {
+  return await runtimePreparationProgress.run(preparationProgress(input, deps), async () => {
+    const result = await ensureManagedBackgroundRuntimeInternal(input, deps);
+    reportRuntimePhase("ready");
+    return result;
+  });
+}
+
+async function ensureManagedBackgroundRuntimeInternal(
+  input: ManagedBackgroundRuntimeInput,
+  deps: ManagedBackgroundRuntimeDeps,
+): Promise<ManagedBackgroundRuntime> {
+  reportRuntimePhase("reuse");
   const currentCliPath = resolve(input.currentCliPath);
   await assertRegularFile(currentCliPath, "current mono-agent CLI");
   await assertRegularFile(resolve(input.nodePath), "managed runtime Node executable");
@@ -433,6 +510,7 @@ export async function ensureManagedBackgroundRuntime(
     return await runtimeResult(fastRuntime.layout, fastRuntime.identity, input.nodePath, "fast-reuse");
   }
 
+  reportRuntimePhase("source");
   const sourceCaptures: SourceCaptureCache = new Map();
   const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages, undefined, { sourceCaptures });
   const identity: RuntimeIdentity = {
@@ -471,6 +549,7 @@ export async function ensureManagedBackgroundRuntime(
     if (await verifyRuntime(layout, identity, additionalPackages)) {
       const marker = await readRuntimeMarker(layout.markerPath, identity);
       if (marker === undefined) throw new Error("The managed runtime marker changed before warm-proof publication.");
+      reportRuntimePhase("proof-publication");
       const sourceReuseProof = await currentSourceReuseProof(
         packageSource,
         additionalPackages,
@@ -491,6 +570,7 @@ export async function ensureManagedBackgroundRuntime(
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
       return await runtimeResult(layout, identity, input.nodePath, "full-reuse");
     }
+    reportRuntimePhase("source-verification");
     await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "before staging", sourceCaptures);
     await rm(layout.stagingDir, { recursive: true, force: true });
     await mkdir(layout.stagingDir, { recursive: false, mode: 0o700 });
@@ -516,7 +596,9 @@ export async function ensureManagedBackgroundRuntime(
       } else {
         await deps.installPackage(installInput);
       }
+      reportRuntimePhase("source-verification");
       await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "while staging", sourceCaptures);
+      reportRuntimePhase("staged-verification");
       const staged = runtimeLayoutForRoot(layout, layout.stagingDir);
       if (!(await verifyInstalledPackage(staged, identity))) {
         throw new Error(
@@ -553,6 +635,7 @@ export async function ensureManagedBackgroundRuntime(
       // runtime aside. This is essential when the executing CLI (and therefore
       // packageSource) lives inside that invalid runtime: quarantine must never
       // make the only repair source disappear halfway through installation.
+      reportRuntimePhase("promotion");
       await quarantineInvalidRuntime(layout, identity, additionalPackages, deps);
       const promoted = await promoteStaging(layout, staged, identity, additionalPackages);
       if (promoted) {
@@ -572,6 +655,7 @@ export async function ensureManagedBackgroundRuntime(
         if (promotedClosure.sourceClosureSha256 !== identity.sourceClosureSha256) {
           throw new Error("The promoted managed runtime execution closure does not match its source identity.");
         }
+        reportRuntimePhase("proof-publication");
         const sourceReuseProof = await currentSourceReuseProof(
           packageSource,
           additionalPackages,
@@ -587,6 +671,7 @@ export async function ensureManagedBackgroundRuntime(
       throw error;
     }
 
+    reportRuntimePhase("final-verification");
     if (!(await verifyRuntime(layout, identity, additionalPackages))) {
       throw new Error("The managed runtime failed verification after atomic promotion.");
     }
@@ -955,6 +1040,7 @@ async function materializeExactExecutionClosure(
   }
 
   const destinations = new Map<number, string>();
+  reportRuntimePhase("copy", closure.length);
   await mapWithConcurrency(closure, RUNTIME_PACKAGE_COPY_CONCURRENCY, async (node) => {
     const destination = executionClosureDestination(input.stagingDir, node);
     destinations.set(node.id, destination);
@@ -967,7 +1053,9 @@ async function materializeExactExecutionClosure(
       verbatimSymlinks: true,
       filter: (source) => shouldCopyPackagePath(node.sourceRoot, source),
     });
+    reportRuntimeWork(true);
   });
+  reportRuntimePhase("staged-verification");
 
   // `cp` is not a transaction: source paths can be replaced while it walks.
   // Compare every copied package against the exact pre-copy package manifest
@@ -2582,39 +2670,65 @@ async function acquireRuntimeLock(
   isSatisfied: () => Promise<boolean> = () => verifyRuntime(layout, identity, additionalPackages),
 ): Promise<OwnerPrivateLock | undefined> {
   const incarnation = await (deps.currentProcessIncarnation ?? currentProcessIncarnation)();
-  return acquireOwnerPrivateLock({
-    path: layout.lockDir,
-    label: "Managed runtime lock",
-    schemaTag: "mono-agent.managed-runtime-lock.v1",
-    ownerlessGraceMs: LOCK_STALE_AFTER_MS,
-    waitTimeoutMs: LOCK_WAIT_TIMEOUT_MS,
-    pollIntervalMs: LOCK_POLL_INTERVAL_MS,
-    now: deps.now,
-    processIncarnation: incarnation,
-    ...(deps.isSameProcessIncarnation === undefined
-      ? {}
-      : { isSameProcessIncarnation: deps.isSameProcessIncarnation }),
-    ownerFields: () => ({ ...identity }),
-    validateOwnerFields: (record) => Object.entries(identity)
-      .every(([key, value]) => record[key] === value),
-    parseLegacyOwner: (record) => {
-      const legacyIncarnation = processIncarnationFromJson(record.incarnation);
-      return typeof record.pid === "number"
-        && Number.isSafeInteger(record.pid)
-        && record.pid > 0
-        && legacyIncarnation !== undefined
-        ? { pid: record.pid, incarnation: legacyIncarnation }
-        : undefined;
-    },
-    invalidOwner: "ownerless",
-    isSatisfied,
-    sleep: deps.sleep,
-    staleRace: "return",
-    beforeStaleRename: async () => {
-      await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
-    },
-    stalePath: () => `${layout.quarantineDir}-stale-lock`,
-  });
+  const sameProcess = deps.isSameProcessIncarnation ?? matchesProcessIncarnation;
+  const startedAt = deps.now();
+  const deadline = startedAt + LOCK_WAIT_TIMEOUT_MS;
+  // Only a proven live incarnation receives the longer wait. Ownerless/invalid
+  // publication keeps the old grace and wait bound, and never counts as liveness.
+  const ownerlessDeadline = startedAt + LOCK_STALE_AFTER_MS;
+  let lastOwnerPid: number | undefined;
+  for (;;) {
+    let satisfied = false;
+    let provenLive = false;
+    const held = await acquireOwnerPrivateLock({
+      path: layout.lockDir,
+      label: "Managed runtime lock",
+      schemaTag: "mono-agent.managed-runtime-lock.v1",
+      ownerlessGraceMs: LOCK_STALE_AFTER_MS,
+      waitTimeoutMs: Math.max(1, Math.min(LOCK_WAIT_SLICE_MS, deadline - deps.now())),
+      pollIntervalMs: LOCK_POLL_INTERVAL_MS,
+      now: deps.now,
+      processIncarnation: incarnation,
+      isSameProcessIncarnation: async (pid, expected) => {
+        const live = await sameProcess(pid, expected);
+        provenLive = live;
+        if (live) {
+          lastOwnerPid = pid;
+          runtimePreparationProgress.getStore()?.waiting(pid);
+        }
+        return live;
+      },
+      ownerFields: () => ({ ...identity }),
+      validateOwnerFields: (record) => Object.entries(identity)
+        .every(([key, value]) => record[key] === value),
+      parseLegacyOwner: (record) => {
+        const legacyIncarnation = processIncarnationFromJson(record.incarnation);
+        return typeof record.pid === "number"
+          && Number.isSafeInteger(record.pid)
+          && record.pid > 0
+          && legacyIncarnation !== undefined
+          ? { pid: record.pid, incarnation: legacyIncarnation }
+          : undefined;
+      },
+      invalidOwner: "ownerless",
+      isSatisfied: async () => { satisfied = await isSatisfied(); return satisfied; },
+      sleep: deps.sleep,
+      staleRace: "return",
+      beforeStaleRename: async () => {
+        await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
+      },
+      stalePath: () => `${layout.quarantineDir}-stale-lock`,
+    });
+    if (held !== undefined || satisfied) return held;
+    if (deps.now() >= deadline) {
+      throw new Error("Managed runtime preparation is still owned by another mono-agent process"
+        + (lastOwnerPid === undefined ? "" : ` (pid ${lastOwnerPid})`)
+        + " after 30 minutes. The live owner was not interrupted; check that process, then retry start.");
+    }
+    if (!provenLive && deps.now() >= ownerlessDeadline) return undefined;
+    // A dead owner may have just been quarantined. Retry acquisition, rather
+    // than mistaking that safe recovery for an installation-lock timeout.
+  }
 }
 
 async function quarantineInvalidRuntime(

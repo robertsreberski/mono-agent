@@ -1,3 +1,4 @@
+import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
 import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import {
   clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
@@ -851,6 +852,7 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       currentCliPath: target.cliPath,
       nodePath: target.nodePath,
       additionalPackages,
+      onProgress: (progress) => deps.stdout(ui.hint(formatManagedRuntimeProgress(progress))),
     });
     launchTarget = {
       ...target,
