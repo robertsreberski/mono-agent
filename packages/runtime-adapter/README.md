@@ -100,9 +100,9 @@ changes endpoint options and preserves the native owner may explicitly set
 sets this assertion for its native options-only router. A different custom
 session owner must implement both the capability and the matching method.
 
-`MonoRuntimeLike.nativePreparedDispatch: "v1"` positively certifies the
-optional `prepareNativeDispatch(systemPrompt, options)` API. Method presence
-alone is not support. The facade applies the same sandbox/process-controller
+The optional `prepareNativeDispatch(systemPrompt, options)` method exposes
+native preparation without an extra capability marker. Unsupported backends
+refuse the request. The facade applies the same sandbox/process-controller
 protection as ordinary runs and forwards the exact single-use lease.
 `RuntimeNativeDispatchSnapshot` carries frozen actual tool/MCP/StructuredOutput
 declarations, augmented instructions, input, model limits and nonsecret selected

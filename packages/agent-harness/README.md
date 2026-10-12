@@ -292,7 +292,7 @@ provider receipts intact. Continuation synthesis does not load memory. A failing
 
 Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.
 
-The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
+The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must provide `readProviderSessionBinding` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
 Durable provider turns hold exact-key logical/session claims rather than lifetime
 physical shard transactions, so an unrelated shard collision cannot block turn
@@ -392,29 +392,19 @@ ownership only, never the fence or evidence. Do not begin such a lease on a real
 root without stopped older writers and explicit migration authority.
 It does not issue root authority, settle turns, run a producer, bind a model,
 enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
-The ordinary canonical v3/v5 paths and configured host switching policy remain
+The ordinary canonical version-3 paths and configured host switching policy remain
 unchanged. Do not use these private modules to upgrade a real root manually.
 
-Canonical version 5 records on validated managed-marker roots are strictly
+Canonical version 3 records with native metadata on validated managed-marker roots are strictly
 readable. They hold one current native journal (derived from the epoch), the
 native authority, the accepted handoff projection and the latest switch receipt,
 with no epoch ancestry. Same-epoch synced writes and owner-held execution/compaction
 recovery retain that metadata, including when messages are evicted; turn receipts
 still settle exactly once. Native reconciliation must match the authoritative
 current journal. Optimistic versions and switch-source digests include the
-native metadata, not just messages and the provider binding. Pre-release version
-4 chain records, version 1 switch states and version 1/2 lifecycle intents refuse
-with `UnsupportedPreReleaseSwitchFormatError` (`unsupported pre-release switch
-format; reset`) before any recovery, cleanup or mutation; they are never migrated.
-The refusal is owner-scoped: a version 1 state, fenced or orphaned, refuses only
-its own conversation, stays charged and is never a retention victim, while
-unrelated conversations keep appending and admitting. Switch preparation
-preflights the refusal before acquisition-time cleanup; other entry points may
-first retire an unrelated eligible dirty fence, which is ordinary cleanup of
-that other conversation, not a mutation of the refused one. A lone old handoff
-artifact without a state is inert: it is charged, never read as handoff content
-(only a v5 receipt references an artifact), and removed by that owner's next
-switch completion or reset. Unresolved inherited ledger entries, such as an
+native metadata, not just messages and the provider binding. Unknown versions are ordinary parse or owner-scoped damage failures, not
+special pre-release refusal states. Damaged owner evidence stays charged and
+preserved while unrelated conversations continue. Unresolved inherited ledger entries, such as an
 outcome-unknown tool effect from an earlier model, are carried into every new
 handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
 refuses rather than leaving them to prose.
@@ -521,24 +511,20 @@ ordinary cold replacement retains the bound model and makes no compatibility or
 account claim. Incoming dispatch, switch policy and configured runtime wiring
 are not enabled by these storage APIs.
 
-The administrative `acquireNativeHistoryAuthority(id, { exclusiveWriters: true })`
-requires an explicit stopped-older-writer acknowledgement, a bound source and
+The administrative `acquireNativeHistoryAuthority(id)`
+requires a bound source and
 drained host ownership. It issues a bounded, immutable private root marker and
 an owner-held authority lease; lease release releases ownership only. Marker
 proposals and the winner remain charged and crash recovery never erases unknown
 proposals. Managed-marker roots use strict canonical reads: torn files cannot
-lose native authority by being overwritten as v3. Unmarked legacy roots retain
+lose native authority by being overwritten without native metadata. Unmarked legacy roots retain
 their existing torn-file policy. This API is not used by configured hosts and
 does not grant permission to migrate real roots.
 Older binaries must stay stopped; the marker is not proof that every older
 admission path checks it. Rollback requires consistent host/native backups, not
-stripping the marker. Persisted `frozenBudget` is an additive switch-state field
-that older strict validators reject. Downgrade requires restoring the consistent
-pre-upgrade host/native backup, not deleting that field, rewriting pending state,
-or stripping the marker. The lease itself does not create a journal or enable dispatch.
+stripping the marker. The lease itself does not create a journal or enable dispatch.
 An explicit administrative `nativeJournalStorage` capability couples measured
-native inventory/reservations to `rollForwardModelSwitch(id, switchId,
-{ exclusiveWriters: true })`. Initial admission checks the actual frozen source,
+native inventory/reservations to `rollForwardModelSwitch(id, switchId)`. Initial admission checks the actual frozen source,
 new-journal/reference peaks and canonical publication capacity before publishing
 an intent. Ready-only recovery holds logical/conversation ownership across native
 I/O, outside short host root transactions. It creates the deterministic target
@@ -925,7 +911,7 @@ the next retry to proceed. Hosts may override the provider-settlement window thr
 smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
 cancellation does not spend it, success does not reset it, and reconstruction may
-allow one extra attempt. Custom stores opt in with `providerSessionRecovery: "v1"`.
+allow one extra attempt. Custom stores expose the model-bound store contract through `readProviderSessionBinding`.
 A declined recovery reports a `terminal_recovery_skipped` runtime warning with
 `source: "harness"`, the terminal `outcome`, and the first failing gate in `reason`.
 The next cold turn reports `cancelled_turn_reseed` or `failed_turn_reseed` unless

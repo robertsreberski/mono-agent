@@ -214,43 +214,27 @@ synchronous `validateHeader` assertion, called on the actual validated header
 (including warm opens) before repair or accounting. It does not grant host
 ancestry or switch authority.
 
-Before invoking a version-3 writer, stop/prohibit **all older binaries** for the
-root. A caller acknowledgement alone cannot enable it. Coordinated journals must
-first publish an ownership-schema-2 header carrying a nonsecret `hostAuthority`
-reference (`version: 1`, `canonicalVersion: 4` (the authority-reference format,
-not the canonical record version), opaque SHA-256 `rootId` and
-`authorityId`, `ownerKey`, `historyBucket`). The host, not native storage, owns
-and validates the root/canonical authority and holds the drained conversation
-claim throughout the awaited operation; its `assertOwned` callback must reject
-lost ownership or contradictory authority.
+Native filenames are authoritative: misnamed files remain unattributed,
+preserved and charged, never treated as another handle's journal.
 
-Guarded journals are only ever created guarded: `createGuardedEpoch({ id,
-hostAuthority, assertOwned, timestamp })` (or `create({ hostAuthority,
-assertOwned, ... })`) publishes a fully initialized journal through a
-`.creating` stage. Existing unguarded journals are never rewritten in place.
-Default callers, paths, record bytes and legacy imports remain unchanged.
+Every new journal uses `managedJournalId(handleId)`, record schema 2 and
+ownership schema 1. Create, existing-journal reopen and freeze use direct native
+paths, not catalogue walks. Legacy filenames contain an independent timestamp
+and directory, so create-on-miss/import may discover **legacy files only** to
+preserve damaged-handle refusal; existing native reopen/freeze never does.
+`hostAuthority` presence, not a schema number, distinguishes
+a guarded journal. The host owns its immutable version-1 authority reference
+(`rootId`, `authorityId`, `ownerKey`, `historyBucket`) and holds drained
+conversation ownership across native I/O; `assertOwned` must reject lost ownership.
 
-Each reopened guarded writer starts disabled. Explicitly call
-`SessionStore.enableVersion3Writes({ exclusiveWriters: true, hostAuthority })`;
-it requires the validated native header's matching reference, not caller-mutated
-metadata. Guarded opens re-establish file/directory publication barriers before
-returning a writer, including after a prior rename-only crash. The guarded
-header also rejects contradictory host/instance binding. Evidence views require
-its owner to match their host owner.
+Guarded journals are created guarded through `createGuardedEpoch({ id,
+hostAuthority, assertOwned, timestamp })` or `create({ hostAuthority,
+assertOwned, ... })`, without a writer-version gate or in-place header upgrade.
+Guarded opens re-establish publication barriers before repair and reject
+contradictory host/instance binding. Memory stores retain private validated headers.
 
-Old native binaries reject the guarded header **before** record scan/torn-tail
-repair and direct deletion, even with an unterminated first v3 record. That
-direct-open/delete protection is per guarded journal. Once **any** journal
-under a root is guarded, an older binary's catalogue `list()` and legacy import
-reject the **whole root** when they encounter that header. This root-wide
-catalogue failure is intentional, not a partial listing or permission to discard
-unknown evidence. It is not universal root admission: a direct open using cached
-metadata for an untouched legacy journal is not technically excluded, and
-arbitrary direct filesystem access is not fenced. Draining/stopping old binaries
-before opting in, refusing
-mixed writers and keeping the host claim remain operational prerequisites.
-Rollback means stopping writers and restoring consistent host/native backups;
-there is no downgrade/strip tool or permission to migrate real roots.
+Older binaries must stay stopped once the root is upgraded. Rollback requires
+restoring consistent host/native backups, never stripping authority metadata.
 
 Guarded native deletion requires matching `hostAuthority`, `assertOwned` and
 `disposition: "C" | "D"` options on `delete`, `retire` or `retireByHandle`.
@@ -272,7 +256,7 @@ Native deletion accepts either authority as the second argument or
 `(metadata, cancellationContext, authority)`; cancellation context alone never
 supplies authority, and ambiguous mixed arguments reject. The header guard does
 not enable host switching, supply canonical history/retention transactions, or
-grant replay permission. No default host enables v3 writes.
+grant replay permission.
 
 ## Public API
 
@@ -322,6 +306,7 @@ evidenceDigest
 inspectCurrentEvidence
 inspectCurrentLifecycle
 isJournalStorageError
+managedJournalId
 matchTurnEvidence
 prepareHandoff
 projectContext

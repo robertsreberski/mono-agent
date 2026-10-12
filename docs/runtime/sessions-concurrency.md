@@ -125,24 +125,8 @@ rejection means preserved evidence, **not successful cleanup**. Unsettled P2
 turns stay protected/charged and reconcile storage-only, without provider or tool
 replay. Ordinary durable registry disposal/TTL removes metadata, not journal bytes.
 
-Older binaries refuse native conversations and scans, but this is **not** a
-universal old-writer admission barrier. Mixed binaries must not run on opted-in
-roots. Rollback means stop writers and restore consistent host/native backups;
+Older binaries must not run against upgraded roots. Rollback means stop writers and restore consistent host/native backups;
 disabling the option, stripping markers or downgrading records is not rollback.
-
-### Unsupported pre-release switch data
-
-Development roots written by earlier pre-release builds (canonical version 4
-records with an epoch chain, or their outstanding switch/lifecycle intents) are
-not migrated. Every operation on such a conversation refuses with
-`native_switch_format_unsupported` and the message
-`unsupported pre-release switch format; reset`, before any recovery, cleanup or
-mutation; other conversations continue normally, with the option on or off.
-Retention never deletes a refused conversation. Reset the agent's conversation state with
-`mono-agent restart --clear-sessions`: it removes the canonical history root
-(including `.model-switches/` and lifecycle intents) and `piSessionsRoot`, while
-durable memory and run artifacts stay. Back up the agent root first if you want
-to keep a copy.
 
 ### Enable, verify and roll back
 
