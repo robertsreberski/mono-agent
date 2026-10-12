@@ -86,7 +86,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   // evidence (ignored here, never unlinked). Any other matching file whose
   // header cannot be read, parsed or validated is unattributed: it could be
   // this handle's damaged journal, so it blocks only a "missing" verdict, never
-  // a found published journal. repo.list() rejects the whole catalogue for it.
+  // a found published journal. repo.list() skips unattributed entries.
   const handleCatalogue = async (handleId) => {
     const found = { published: /** @type {any[]} */ ([]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
     let present = false;
