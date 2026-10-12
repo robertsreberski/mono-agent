@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { compact, prepareCompaction } from "../compaction-kit/compaction.js";
+import { compact, compactWithRequest, prepareCompaction } from "../compaction-kit/compaction.js";
 import { HARNESS_CONTEXT } from "../context.js";
 
 // Captured before the pin bump using the published 0.99.2 helpers, not generated
@@ -24,3 +24,25 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
   });
 });
 
+
+it("retains the previous checkpoint when splitting its first retained turn", async () => {
+  const user = { role: "user", content: "Fictional large request ".repeat(500), timestamp: 1 };
+  const reply = { role: "assistant", content: [{ type: "text", text: "Recent work ".repeat(100) }], timestamp: 2 };
+  const prepared = prepareCompaction([
+    { type: "compaction", id: "checkpoint", seq: 1, summary: "Keep the fictional constraint.", retainedTail: [user], timestamp: 1 },
+    { type: "message", id: "reply", message: reply },
+  ], { keepRecentTokens: 100, reserveTokens: 4000 });
+  expect(prepared.value.isSplitTurn).toBe(true);
+  expect(prepared.value.messagesToSummarize).toEqual([]);
+  expect(prepared.value.turnPrefixMessages).toEqual([user]);
+  let requests = 0;
+  const result = await compactWithRequest(prepared.value,
+    { model: { maxTokens: 4096, reasoning: false } }, async () => {
+      requests++;
+      return { stopReason: "stop", content: [{ type: "text", text: "Prefix summary" }], usage: {} };
+    }, HARNESS_CONTEXT);
+  expect(requests).toBe(1);
+  expect(result.value.summary).toContain("Keep the fictional constraint.");
+  expect(result.value.summary).toContain("Prefix summary");
+  expect(result.value.summary).not.toContain("No prior history.");
+});

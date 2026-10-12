@@ -513,7 +513,7 @@ export async function compactWithRequest(preparation, options, request, context)
     let summary;
     let summaryUsage;
     if (isSplitTurn && turnPrefixMessages.length > 0) {
-        let historyText = "No prior history.";
+        let historyText = previousSummary ?? "No prior history.";
         let historyUsage;
         if (messagesToSummarize.length > 0) {
             const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, customInstructions, previousSummary, thinkingLevel }, request, context);
