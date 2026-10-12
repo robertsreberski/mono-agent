@@ -13,7 +13,8 @@
   and invocation-local source verification reuse. Show preparation progress
   in `mono-agent start` and `mono-agent web start`, wait up to 30 minutes for
   a proven live installer without interrupting it, and safely reclaim up to
-  two abandoned staging trees per preparation.
+  two abandoned staging trees per preparation. Keep ownership handoffs waiting,
+  preserve changed cleanup containers across retries, and throttle long waits.
 
 - Fix fallback retries and backup models to run under a fresh provider
   attribution id instead of the primary's session (including the OpenCode

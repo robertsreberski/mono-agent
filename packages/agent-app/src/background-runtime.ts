@@ -42,7 +42,8 @@ import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-co
 const PACKAGE_NAME = "@mono-agent/agent-app";
 const LOCK_WAIT_TIMEOUT_MS = 30 * 60_000;
 const LOCK_WAIT_SLICE_MS = 10_000;
-const RUNTIME_PROGRESS_INTERVAL_MS = 2_000;
+const RUNTIME_PROGRESS_INTERVAL_MS = 5_000;
+const RUNTIME_WAIT_PROGRESS_INTERVAL_MS = 30_000;
 const LOCK_STALE_AFTER_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 200;
 const PROVISIONAL_RUNTIME_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
@@ -53,6 +54,7 @@ const RUNTIME_REUSE_STAT_CONCURRENCY = 64;
 const RUNTIME_FILE_READ_CONCURRENCY = 16;
 const RUNTIME_PACKAGE_COPY_CONCURRENCY = 4;
 const MAX_ABANDONED_STAGING_SWEEP = 2;
+const MAX_ABANDONED_STAGING_INSPECTIONS = 64;
 
 // Shared across nested traversals (and concurrent callers), not one pool per directory.
 const limitRuntimeRead = createWorkLimiter(RUNTIME_FILE_READ_CONCURRENCY);
@@ -148,43 +150,57 @@ export interface ManagedRuntimeProgress {
 interface RuntimePreparationProgress {
   phase(phase: ManagedRuntimePreparationPhase, total?: number): void;
   work(packageCopied?: boolean): void;
-  waiting(ownerPid?: number): void;
+  waiting(ownerPid?: number, incarnation?: ProcessIncarnation): void;
   warning(reason: ManagedRuntimeStagingWarning): void;
+  removed(): void;
+  checkFailure(): void;
 }
 const runtimePreparationProgress = new AsyncLocalStorage<RuntimePreparationProgress>();
 
 function preparationProgress(input: ManagedBackgroundRuntimeInput, deps: ManagedBackgroundRuntimeDeps): RuntimePreparationProgress {
-  if (input.onProgress === undefined) return { phase() {}, work() {}, waiting() {}, warning() {} };
+  if (input.onProgress === undefined) return { phase() {}, work() {}, waiting() {}, warning() {}, removed() {}, checkFailure() {} };
   const startedAt = deps.now();
   let phase: ManagedRuntimePreparationPhase = "reuse";
   let completed = 0;
   let total: number | undefined;
   let ownerPid: number | undefined;
+  let waitingOwner: string | undefined;
   let warning: ManagedRuntimeStagingWarning | undefined;
   let lastReportedAt = Number.NEGATIVE_INFINITY;
   let aborted = false;
   let failure: unknown;
   const emit = (force: boolean): void => {
-    if (aborted) throw failure;
+    if (aborted) return;
     const now = deps.now();
-    if (!force && now - lastReportedAt < RUNTIME_PROGRESS_INTERVAL_MS) return;
+    if (!force && now - lastReportedAt < (phase === "waiting"
+      ? RUNTIME_WAIT_PROGRESS_INTERVAL_MS : RUNTIME_PROGRESS_INTERVAL_MS)) return;
     lastReportedAt = now;
     try {
       input.onProgress?.({ phase, elapsedMs: Math.max(0, now - startedAt), completed,
         ...(total === undefined ? {} : { total }), ...(ownerPid === undefined ? {} : { ownerPid }),
         ...(warning === undefined ? {} : { warning }) });
-    } catch (error) { aborted = true; failure = error; throw error; }
+    } catch (error) { aborted = true; failure = error; }
   };
   return {
-    phase(next, count) { phase = next; completed = 0; total = count; ownerPid = undefined; emit(true); },
+    // Surface observer errors only outside verifiers which intentionally catch filesystem errors.
+    checkFailure() { if (aborted) throw failure; },
+    phase(next, count) {
+      this.checkFailure();
+      phase = next; completed = 0; total = count; ownerPid = undefined; emit(true);
+      this.checkFailure();
+    },
     work(packageCopied = false) {
-      if (phase === "waiting" || phase === "ready" || (phase === "copy" && !packageCopied)) return;
+      if (phase === "waiting" || phase === "ready" || phase === "cleanup"
+        || (phase === "copy" && !packageCopied)) return;
       completed += 1;
       emit(false);
     },
+    removed() { completed += 1; emit(true); },
     warning(reason) { warning = reason; try { emit(true); } finally { warning = undefined; } },
-    waiting(pid) {
-      const changed = phase !== "waiting" || ownerPid !== pid;
+    waiting(pid, incarnation) {
+      const identity = JSON.stringify([pid, incarnation]);
+      const changed = phase !== "waiting" || waitingOwner !== identity;
+      waitingOwner = identity;
       phase = "waiting"; ownerPid = pid; total = undefined; completed = 0;
       emit(changed);
     },
@@ -199,7 +215,7 @@ function reportRuntimeWork(packageCopied = false): void {
 }
 
 export interface ManagedBackgroundRuntimeInput {
-  /** Optional, throttled, path-free phase/work observations. Throwing aborts preparation. */
+  /** Optional, throttled, path-free phase/work observations. Throwing aborts at the next safe phase boundary. */
   readonly onProgress?: (progress: ManagedRuntimeProgress) => void;
   /** The CLI currently executing. Its exact bytes are the trust anchor. */
   readonly currentCliPath: string;
@@ -2690,13 +2706,15 @@ async function acquireRuntimeLock(
   const sameProcess = deps.isSameProcessIncarnation ?? matchesProcessIncarnation;
   const startedAt = deps.now();
   const deadline = startedAt + LOCK_WAIT_TIMEOUT_MS;
-  // Only a proven live incarnation receives the longer wait. Ownerless/invalid
-  // publication keeps the old grace and wait bound, and never counts as liveness.
+  // Initially ownerless/invalid publication keeps the old wait bound. Once an
+  // owner was observed, a quarantine/publication handoff is not an ownerless
+  // timeout: keep retrying until the overall cap without stealing a live owner.
   const ownerlessDeadline = startedAt + LOCK_STALE_AFTER_MS;
   let lastOwnerPid: number | undefined;
+  let observedOwner = false;
   for (;;) {
     let satisfied = false;
-    let provenLive = false;
+    runtimePreparationProgress.getStore()?.checkFailure();
     const held = await acquireOwnerPrivateLock({
       path: layout.lockDir,
       label: "Managed runtime lock",
@@ -2706,12 +2724,12 @@ async function acquireRuntimeLock(
       pollIntervalMs: LOCK_POLL_INTERVAL_MS,
       now: deps.now,
       processIncarnation: incarnation,
+      afterInspected: (observed) => { if (observed.kind === "owned") observedOwner = true; },
       isSameProcessIncarnation: async (pid, expected) => {
         const live = await sameProcess(pid, expected);
-        provenLive = live;
         if (live) {
           lastOwnerPid = pid;
-          runtimePreparationProgress.getStore()?.waiting(pid);
+          runtimePreparationProgress.getStore()?.waiting(pid, expected);
         }
         return live;
       },
@@ -2730,7 +2748,7 @@ async function acquireRuntimeLock(
       invalidOwner: "ownerless",
       isSatisfied: async () => { satisfied = await isSatisfied(); return satisfied; },
       sleep: deps.sleep,
-      staleRace: "return",
+      staleRace: "retry",
       beforeStaleRename: async () => {
         await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
       },
@@ -2742,7 +2760,7 @@ async function acquireRuntimeLock(
         + (lastOwnerPid === undefined ? "" : ` (pid ${lastOwnerPid})`)
         + " after 30 minutes. The live owner was not interrupted; check that process, then retry start.");
     }
-    if (!provenLive && deps.now() >= ownerlessDeadline) return undefined;
+    if (!observedOwner && deps.now() >= ownerlessDeadline) return undefined;
     // A dead owner may have just been quarantined. Retry acquisition, rather
     // than mistaking that safe recovery for an installation-lock timeout.
   }
@@ -2763,7 +2781,9 @@ async function cleanupAbandonedRuntimeStaging(layout: RuntimeLayout, sourceRoots
     warnings.add(reason);
     runtimePreparationProgress.getStore()?.warning(reason);
   };
-  for (const [index, name] of names.slice(0, MAX_ABANDONED_STAGING_SWEEP).entries()) {
+  let attempts = 0;
+  for (const [index, name] of names.slice(0, MAX_ABANDONED_STAGING_INSPECTIONS).entries()) {
+    if (attempts >= MAX_ABANDONED_STAGING_SWEEP) break;
     const candidate = join(layout.versionAbiDir, name);
     let details: BigIntStats;
     try { details = await lstat(candidate, { bigint: true }); } catch { warn("staging-cleanup-failed"); continue; }
@@ -2775,7 +2795,7 @@ async function cleanupAbandonedRuntimeStaging(layout: RuntimeLayout, sourceRoots
       return inside === "" || (inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside));
     })) continue; // Canonicalize aliases such as /tmp before protecting a repair source.
     const container = join(layout.versionAbiDir,
-      `${basename(layout.stagingDir).replace(`.${closureId}.staging-`, `.${closureId}.cleanup-`)}-${index}`);
+      `${basename(layout.stagingDir).replace(`.${closureId}.staging-`, `.${closureId}.retained-`)}-${index}`);
     const moved = join(container, "abandoned");
     let changed = false;
     try {
@@ -2785,9 +2805,12 @@ async function cleanupAbandonedRuntimeStaging(layout: RuntimeLayout, sourceRoots
         || !privateRuntimeDirectory(before) || !sameSourceStats(details, before)) {
         warn("staging-changed"); continue;
       }
+      // Non-swept until deletion: a crash or identity change must not turn an
+      // unknown replacement into an abandoned tree eligible on the next run.
       // Exclusive private container: rename cannot overwrite another artifact.
       await mkdir(container, { mode: 0o700 });
       const containerBefore = await lstat(container, { bigint: true });
+      attempts += 1;
       await rename(candidate, moved);
       const [after, parentAfter, containerAfter] = await Promise.all([
         lstat(moved, { bigint: true }), lstat(layout.versionAbiDir, { bigint: true }), lstat(container, { bigint: true }),
@@ -2799,7 +2822,7 @@ async function cleanupAbandonedRuntimeStaging(layout: RuntimeLayout, sourceRoots
     } catch { warn("staging-cleanup-failed"); continue; }
     // Replacement across rename is retained in the cleanup container, never deleted.
     if (changed) warn("staging-changed");
-    else reportRuntimeWork();
+    else runtimePreparationProgress.getStore()?.removed();
   }
 }
 

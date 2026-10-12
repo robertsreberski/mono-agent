@@ -21,6 +21,7 @@ import type { ProcessIncarnation } from "../process-incarnation.js";
 
 const io = vi.hoisted(() => ({
   beforeCopy: undefined as undefined | ((source: string) => Promise<void>),
+  beforeLstat: undefined as undefined | ((path: string) => Promise<void>),
   beforeRename: undefined as undefined | ((source: string, destination: string) => Promise<void>),
   opened: [] as string[],
   reads: 0,
@@ -37,7 +38,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     io.stats += 1; io.peakStats = Math.max(io.peakStats, io.stats);
     try { return await work(); } finally { io.stats -= 1; }
   };
-  const trackedLstat = ((...args: Parameters<typeof fs.lstat>) => trackStat(() => fs.lstat(...args))) as typeof fs.lstat;
+  const trackedLstat = ((...args: Parameters<typeof fs.lstat>) => trackStat(async () => {
+    await io.beforeLstat?.(String(args[0]));
+    return await fs.lstat(...args);
+  })) as typeof fs.lstat;
   return {
     ...fs,
     lstat: trackedLstat,
@@ -94,6 +98,7 @@ function incarnation(bootSessionId: string, processStartId: string): ProcessInca
 
 afterEach(async () => {
   io.beforeCopy = undefined;
+  io.beforeLstat = undefined;
   io.beforeRename = undefined;
   io.opened = [];
   io.peakReads = 0;
@@ -377,7 +382,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     for (let index = 1; index < progress.length; index += 1) {
       const current = progress[index]!;
       const prior = progress[index - 1]!;
-      if (current.phase === prior.phase) expect(current.elapsedMs - prior.elapsedMs).toBeGreaterThanOrEqual(2_000);
+      if (current.phase === prior.phase) expect(current.elapsedMs - prior.elapsedMs).toBeGreaterThanOrEqual(5_000);
     }
     expect(JSON.stringify(progress)).not.toContain(source.root);
     expect(JSON.stringify(progress)).not.toContain(homeDir);
@@ -386,13 +391,37 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect([...new Set(progress.map((event) => event.phase))]).toEqual(["reuse", "ready"]);
   });
 
-  it("settles work and removes staging when the progress consumer aborts copying", async () => {
+  it("settles work and removes staging when the progress consumer aborts staged verification", async () => {
     const source = await workspaceFixture();
     const homeDir = await homeFixture();
     await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
       onProgress: (event) => { if (event.phase === "staged-verification") throw new Error("fixture progress abort"); },
     })).rejects.toThrow("fixture progress abort");
     expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
+  it("surfaces a progress observer failure without poisoning warm verification", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const runtime = await ensureManagedBackgroundRuntime(input);
+    const markerPath = join(runtime.installRoot, ".mono-agent-runtime.json");
+    const marker = await readFile(markerPath, "utf8");
+    io.opened = [];
+    let now = Date.now();
+    let failures = 0;
+    await expect(ensureManagedBackgroundRuntime({ ...input, onProgress: (event) => {
+      if (event.phase === "reuse" && event.completed > 0) {
+        failures += 1;
+        throw new Error("fixture observer failure");
+      }
+    } }, { ...defaultManagedBackgroundRuntimeDeps(), now: () => now += 1_000 }))
+      .rejects.toThrow("fixture observer failure");
+    expect(failures).toBe(1);
+    expect(io.opened).not.toContain(await realpath(source.cliPath));
+    expect(await readFile(markerPath, "utf8")).toBe(marker);
+    expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+    await expect(ensureManagedBackgroundRuntime(input)).resolves.toMatchObject({ verificationMode: "fast-reuse" });
   });
 
   it("sweeps at most two same-closure private staging trees while retaining other closures and quarantine", async () => {
@@ -435,12 +464,26 @@ describe("ensureManagedBackgroundRuntime", () => {
     await symlink(outside, prefix + "a");
     await mkdir(prefix + "b", { mode: 0o700 });
     await chmod(prefix + "b", 0o777);
+    const failed = prefix + "0-failed";
+    await mkdir(failed, { mode: 0o700 });
+    io.beforeLstat = async (path) => { if (path === failed) throw new Error("fixture inaccessible candidate"); };
+    const removable = ["c", "d", "e"].map((suffix) => prefix + suffix);
+    await Promise.all(removable.map((path) => mkdir(path, { mode: 0o700 })));
     await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
     await ensureManagedBackgroundRuntime(input);
     expect((await lstat(prefix + "a")).isSymbolicLink()).toBe(true);
     expect((await lstat(prefix + "b")).isDirectory()).toBe(true);
     expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep");
     expect(progress.filter((event) => event.warning === "unsafe-staging")).toHaveLength(1);
+    expect(progress.filter((event) => event.warning === "staging-cleanup-failed")).toHaveLength(1);
+    io.beforeLstat = undefined;
+    expect((await lstat(failed)).isDirectory()).toBe(true);
+    await expect(lstat(removable[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(removable[1]!)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(removable[2]!)).isDirectory()).toBe(true);
+    const cleanup = progress.filter((event) => event.phase === "cleanup");
+    expect(Math.max(...cleanup.map((event) => event.completed))).toBe(2);
+    for (const event of cleanup) expect(event.completed).toBeLessThanOrEqual(event.total!);
   });
 
   it("retains an unknown replacement across staging cleanup rename", async () => {
@@ -455,7 +498,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     await writeFile(join(stage, "original.txt"), "original");
     await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
     io.beforeRename = async (from, to) => {
-      if (!to.includes(".cleanup-") || basename(to) !== "abandoned") return;
+      if (!to.includes(".retained-") || basename(to) !== "abandoned") return;
       io.beforeRename = undefined;
       await rename(from, from + "-retained");
       await mkdir(from, { mode: 0o700 });
@@ -463,11 +506,16 @@ describe("ensureManagedBackgroundRuntime", () => {
     };
     await ensureManagedBackgroundRuntime(input);
     expect(await readFile(join(stage + "-retained", "original.txt"), "utf8")).toBe("original");
-    const container = (await readdir(dirname(first.installRoot))).find((name) => name.includes(".cleanup-"));
+    const container = (await readdir(dirname(first.installRoot))).find((name) => name.includes(".retained-"));
     expect(container).toBeDefined();
     expect(await readFile(join(dirname(first.installRoot), container!, "abandoned", "replacement.txt"), "utf8"))
       .toBe("unknown replacement");
     expect(progress.some((event) => event.warning === "staging-changed")).toBe(true);
+    // Force another locked preparation, not the early fast-reuse return.
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    await ensureManagedBackgroundRuntime(input);
+    expect(await readFile(join(dirname(first.installRoot), container!, "abandoned", "replacement.txt"), "utf8"))
+      .toBe("unknown replacement");
   });
 
   it("preserves abandoned staging that contains the executing repair source", async () => {
@@ -478,11 +526,15 @@ describe("ensureManagedBackgroundRuntime", () => {
     await mkdir(stage, { mode: 0o700 });
     const packageSource = join(stage, "package");
     await rename(source.root, packageSource);
+    const eligible = ["zz-a", "zz-b"].map((suffix) =>
+      join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-${suffix}`));
+    await Promise.all(eligible.map((path) => mkdir(path, { mode: 0o700 })));
     await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
     const repaired = await ensureManagedBackgroundRuntime({ currentCliPath: join(packageSource, "dist", "cli.js"),
       nodePath: process.execPath, homeDir });
     expect(repaired.verificationMode).toBe("repaired");
     expect(await readFile(join(packageSource, "dist", "cli.js"), "utf8")).toBe(source.bytes);
+    for (const path of eligible) await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("copies an exact local package into a private immutable runtime that survives source deletion", async () => {
@@ -1408,13 +1460,19 @@ describe("ensureManagedBackgroundRuntime", () => {
     await installStarted;
     let secondInstalls = 0;
     const secondDeps = fakeInstallerDeps(async () => { secondInstalls += 1; });
+    const progress: ManagedRuntimeProgress[] = [];
 
     await expect(ensureManagedBackgroundRuntime({
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
+      onProgress: (event) => progress.push(event),
     }, secondDeps )).rejects.toThrow("after 30 minutes. The live owner was not interrupted");
     expect(secondInstalls).toBe(0);
+    const waiting = progress.filter((event) => event.phase === "waiting");
+    expect(waiting.length).toBeLessThanOrEqual(61);
+    for (let index = 1; index < waiting.length; index += 1)
+      expect(waiting[index]!.elapsedMs - waiting[index - 1]!.elapsedMs).toBeGreaterThanOrEqual(30_000);
 
     unblock();
     await expect(first).resolves.toMatchObject({ packageVersion: "9.8.7" });
@@ -1496,6 +1554,82 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect(progress.at(-1)?.phase).toBe("ready");
     expect(secondInstalls).toBe(0);
   });
+
+  it("keeps the stale-quarantine race loser waiting for the winner after five minutes", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const seed = await ensureManagedBackgroundRuntime(input);
+    await writeFile(join(seed.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    const lockDir = join(dirname(seed.installRoot), `.${basename(seed.installRoot)}.lock`);
+    const ownerA = incarnation("boot-current", "owner-a");
+    const ownerB = incarnation("boot-current", "owner-b");
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.json"), JSON.stringify({ pid: 424242, incarnation: ownerA }), { mode: 0o600 });
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    const loserObservedDead = deferred(), winnerStarted = deferred(), releaseWinner = deferred(), published = deferred();
+    let alive = true, elapsed = 0, now = 1_000_000, releaseRequested = false, installed = false;
+    let winnerInstalls = 0, loserInstalls = 0;
+    const progress: ManagedRuntimeProgress[] = [];
+    let loserSettled: Promise<unknown> = Promise.resolve();
+    const loser = ensureManagedBackgroundRuntime({ ...input, onProgress: (event) => progress.push(event) }, {
+      ...fakeInstallerDeps(async () => { loserInstalls += 1; }),
+      now: () => now,
+      randomId: () => "loser",
+      isSameProcessIncarnation: async (_pid, expected) => {
+        if (expected.processStartId === ownerA.processStartId) {
+          if (alive) return true;
+          // The primitive has pinned A. B acquires before C compares that observation.
+          loserObservedDead.resolve();
+          await winnerStarted.promise;
+          return false;
+        }
+        return expected.processStartId === ownerB.processStartId;
+      },
+      sleep: async (ms) => {
+        elapsed += ms; now += ms;
+        if (elapsed >= 390_000) alive = false;
+        if (!alive && winnerInstalls > 0) {
+          if (!releaseRequested) { releaseRequested = true; releaseWinner.resolve(); }
+          await published.promise;
+        }
+      },
+    });
+    loserSettled = loser.then(() => undefined, () => undefined);
+    await loserObservedDead.promise;
+    const winner = ensureManagedBackgroundRuntime(input, {
+      ...fakeInstallerDeps(async (installInput) => {
+        winnerInstalls += 1; winnerStarted.resolve();
+        await releaseWinner.promise;
+        await materializeInstalledPackage(installInput, await readFile(source.cliPath));
+        installed = true;
+      }),
+      now: () => now,
+      randomId: () => "winner",
+      currentProcessIncarnation: async () => ownerB,
+      isSameProcessIncarnation: (_pid, expected) => expected.processStartId !== ownerA.processStartId,
+      sleep: async () => { if (installed) { published.resolve(); await loserSettled; } },
+    });
+    const [winningRuntime, reusedRuntime] = await Promise.all([winner, loser]);
+    expect(winningRuntime.verificationMode).toBe("repaired");
+    expect(reusedRuntime.verificationMode).toBe("fast-reuse");
+    expect(reusedRuntime.installRoot).toBe(winningRuntime.installRoot);
+    expect(winnerInstalls).toBe(1);
+    expect(loserInstalls).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(390_000);
+    const waiting = progress.filter((event) => event.phase === "waiting");
+    expect(waiting.some((event) => event.ownerPid === 424242)).toBe(true);
+    expect(waiting.some((event) => event.ownerPid === process.pid)).toBe(true);
+    for (let index = 1; index < waiting.length; index += 1) {
+      if (waiting[index]!.ownerPid === waiting[index - 1]!.ownerPid)
+        expect(waiting[index]!.elapsedMs - waiting[index - 1]!.elapsedMs).toBeGreaterThanOrEqual(30_000);
+    }
+    expect(waiting.length).toBeLessThanOrEqual(16);
+  }, 15_000);
 
   it("repairs an install lock whose PID was reused by a different process incarnation", async () => {
     await expectRepairFromStaleRuntimeLock(incarnation("boot-current", "start-old"));
