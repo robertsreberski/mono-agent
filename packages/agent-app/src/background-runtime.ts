@@ -16,7 +16,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
 import { accountHomeDirectory } from "./account-home.js";
@@ -52,6 +52,7 @@ const RUNTIME_REUSE_PROOF_SCHEMA = "mono-agent.managed-runtime-reuse-proof.v1";
 const RUNTIME_REUSE_STAT_CONCURRENCY = 64;
 const RUNTIME_FILE_READ_CONCURRENCY = 16;
 const RUNTIME_PACKAGE_COPY_CONCURRENCY = 4;
+const MAX_ABANDONED_STAGING_SWEEP = 2;
 
 // Shared across nested traversals (and concurrent callers), not one pool per directory.
 const limitRuntimeRead = createWorkLimiter(RUNTIME_FILE_READ_CONCURRENCY);
@@ -132,6 +133,8 @@ export interface ManagedRuntimeAdditionalPackage {
 export type ManagedRuntimePreparationPhase = "reuse" | "source" | "source-verification" | "copy"
   | "staged-verification" | "promotion" | "proof-publication" | "final-verification" | "waiting" | "cleanup" | "ready";
 
+export type ManagedRuntimeStagingWarning = "unsafe-staging" | "staging-changed" | "staging-cleanup-failed";
+
 /** Path-free preparation observations; never authority to launch or accept bytes. */
 export interface ManagedRuntimeProgress {
   readonly phase: ManagedRuntimePreparationPhase;
@@ -139,29 +142,38 @@ export interface ManagedRuntimeProgress {
   readonly completed: number;
   readonly total?: number;
   readonly ownerPid?: number;
+  readonly warning?: ManagedRuntimeStagingWarning;
 }
 
 interface RuntimePreparationProgress {
   phase(phase: ManagedRuntimePreparationPhase, total?: number): void;
   work(packageCopied?: boolean): void;
   waiting(ownerPid?: number): void;
+  warning(reason: ManagedRuntimeStagingWarning): void;
 }
 const runtimePreparationProgress = new AsyncLocalStorage<RuntimePreparationProgress>();
 
 function preparationProgress(input: ManagedBackgroundRuntimeInput, deps: ManagedBackgroundRuntimeDeps): RuntimePreparationProgress {
-  if (input.onProgress === undefined) return { phase() {}, work() {}, waiting() {} };
+  if (input.onProgress === undefined) return { phase() {}, work() {}, waiting() {}, warning() {} };
   const startedAt = deps.now();
   let phase: ManagedRuntimePreparationPhase = "reuse";
   let completed = 0;
   let total: number | undefined;
   let ownerPid: number | undefined;
+  let warning: ManagedRuntimeStagingWarning | undefined;
   let lastReportedAt = Number.NEGATIVE_INFINITY;
+  let aborted = false;
+  let failure: unknown;
   const emit = (force: boolean): void => {
+    if (aborted) throw failure;
     const now = deps.now();
     if (!force && now - lastReportedAt < RUNTIME_PROGRESS_INTERVAL_MS) return;
     lastReportedAt = now;
-    input.onProgress?.({ phase, elapsedMs: Math.max(0, now - startedAt), completed,
-      ...(total === undefined ? {} : { total }), ...(ownerPid === undefined ? {} : { ownerPid }) });
+    try {
+      input.onProgress?.({ phase, elapsedMs: Math.max(0, now - startedAt), completed,
+        ...(total === undefined ? {} : { total }), ...(ownerPid === undefined ? {} : { ownerPid }),
+        ...(warning === undefined ? {} : { warning }) });
+    } catch (error) { aborted = true; failure = error; throw error; }
   };
   return {
     phase(next, count) { phase = next; completed = 0; total = count; ownerPid = undefined; emit(true); },
@@ -170,6 +182,7 @@ function preparationProgress(input: ManagedBackgroundRuntimeInput, deps: Managed
       completed += 1;
       emit(false);
     },
+    warning(reason) { warning = reason; try { emit(true); } finally { warning = undefined; } },
     waiting(pid) {
       const changed = phase !== "waiting" || ownerPid !== pid;
       phase = "waiting"; ownerPid = pid; total = undefined; completed = 0;
@@ -511,8 +524,10 @@ async function ensureManagedBackgroundRuntimeInternal(
   }
 
   reportRuntimePhase("source");
-  const sourceCaptures: SourceCaptureCache = new Map();
-  const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages, undefined, { sourceCaptures });
+  const sourceCaptures: SourceCaptureCache | undefined = deps.installPackage === materializeExactExecutionClosure
+    ? new Map() : undefined;
+  const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages, undefined,
+    sourceCaptures === undefined ? {} : { sourceCaptures });
   const identity: RuntimeIdentity = {
     packageVersion,
     cliSha256,
@@ -546,6 +561,8 @@ async function ensureManagedBackgroundRuntimeInternal(
   }
 
   try {
+    await cleanupAbandonedRuntimeStaging(layout, [packageSource, ...additionalPackages.map((entry) => entry.packageSource)]);
+    reportRuntimePhase("reuse");
     if (await verifyRuntime(layout, identity, additionalPackages)) {
       const marker = await readRuntimeMarker(layout.markerPath, identity);
       if (marker === undefined) throw new Error("The managed runtime marker changed before warm-proof publication.");
@@ -1527,11 +1544,11 @@ async function captureSourceFileUnbounded(
     throw error;
   }
   try {
-    const before = await handle.stat({ bigint: true });
+    const before = await limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true }));
     if (!before.isFile()) throw new Error(`Managed runtime source entry ${pathRelative} is not a regular file.`);
     const bytes = await handle.readFile();
     const [after, pathAfter] = await Promise.all([
-      handle.stat({ bigint: true }),
+      limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true })),
       lstat(path, { bigint: true }),
     ]);
     if (!after.isFile() || !pathAfter.isFile() || pathAfter.isSymbolicLink()
@@ -2306,11 +2323,11 @@ async function readPrivateRuntimeReuseProofBytes(path: string): Promise<Buffer |
   let handle;
   try {
     handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-    const before = await handle.stat({ bigint: true });
+    const before = await limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true }));
     if (!privateRuntimeReuseProofFile(before)) return undefined;
     const bytes = await handle.readFile();
     const [after, named] = await Promise.all([
-      handle.stat({ bigint: true }),
+      limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true })),
       lstat(path, { bigint: true }),
     ]);
     if (
@@ -2731,6 +2748,61 @@ async function acquireRuntimeLock(
   }
 }
 
+/** Reclaim only this locked closure's abandoned private staging, never retained runtimes. */
+async function cleanupAbandonedRuntimeStaging(layout: RuntimeLayout, sourceRoots: readonly string[]): Promise<void> {
+  const closureId = basename(layout.installRoot);
+  const prefixes = [`.${closureId}.staging-`, `.${closureId}.cleanup-`];
+  const names = (await readdir(layout.versionAbiDir)).filter((name) => prefixes.some((prefix) => name.startsWith(prefix))
+    && join(layout.versionAbiDir, name) !== layout.stagingDir).sort(compareCodeUnits);
+  if (names.length === 0) return;
+  reportRuntimePhase("cleanup", Math.min(MAX_ABANDONED_STAGING_SWEEP, names.length));
+  const parent = await lstat(layout.versionAbiDir, { bigint: true });
+  const warnings = new Set<ManagedRuntimeStagingWarning>();
+  const warn = (reason: ManagedRuntimeStagingWarning): void => {
+    if (warnings.has(reason)) return;
+    warnings.add(reason);
+    runtimePreparationProgress.getStore()?.warning(reason);
+  };
+  for (const [index, name] of names.slice(0, MAX_ABANDONED_STAGING_SWEEP).entries()) {
+    const candidate = join(layout.versionAbiDir, name);
+    let details: BigIntStats;
+    try { details = await lstat(candidate, { bigint: true }); } catch { warn("staging-cleanup-failed"); continue; }
+    if (!privateRuntimeDirectory(parent) || !privateRuntimeDirectory(details)) { warn("unsafe-staging"); continue; }
+    let canonicalCandidate: string;
+    try { canonicalCandidate = await realpath(candidate); } catch { warn("staging-cleanup-failed"); continue; }
+    if (sourceRoots.some((source) => {
+      const inside = relative(canonicalCandidate, source);
+      return inside === "" || (inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside));
+    })) continue; // Canonicalize aliases such as /tmp before protecting a repair source.
+    const container = join(layout.versionAbiDir,
+      `${basename(layout.stagingDir).replace(`.${closureId}.staging-`, `.${closureId}.cleanup-`)}-${index}`);
+    const moved = join(container, "abandoned");
+    let changed = false;
+    try {
+      const parentBefore = await lstat(layout.versionAbiDir, { bigint: true });
+      const before = await lstat(candidate, { bigint: true });
+      if (!privateRuntimeDirectory(parentBefore) || !sameSourceIdentity(parent, parentBefore)
+        || !privateRuntimeDirectory(before) || !sameSourceStats(details, before)) {
+        warn("staging-changed"); continue;
+      }
+      // Exclusive private container: rename cannot overwrite another artifact.
+      await mkdir(container, { mode: 0o700 });
+      const containerBefore = await lstat(container, { bigint: true });
+      await rename(candidate, moved);
+      const [after, parentAfter, containerAfter] = await Promise.all([
+        lstat(moved, { bigint: true }), lstat(layout.versionAbiDir, { bigint: true }), lstat(container, { bigint: true }),
+      ]);
+      changed = !privateRuntimeDirectory(after) || !sameSourceIdentity(before, after)
+        || !privateRuntimeDirectory(parentAfter) || !sameSourceIdentity(parent, parentAfter)
+        || !privateRuntimeDirectory(containerAfter) || !sameSourceIdentity(containerBefore, containerAfter);
+      if (!changed) await rm(container, { recursive: true, force: true });
+    } catch { warn("staging-cleanup-failed"); continue; }
+    // Replacement across rename is retained in the cleanup container, never deleted.
+    if (changed) warn("staging-changed");
+    else reportRuntimeWork();
+  }
+}
+
 async function quarantineInvalidRuntime(
   layout: RuntimeLayout,
   identity: RuntimeIdentity,
@@ -2912,11 +2984,11 @@ async function readPrivateRuntimeMarkerBytes(path: string): Promise<Buffer | und
   let handle;
   try {
     handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-    const before = await handle.stat({ bigint: true });
+    const before = await limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true }));
     if (!privateRuntimeMarkerFile(before)) return undefined;
     const bytes = await handle.readFile();
     const [after, named] = await Promise.all([
-      handle.stat({ bigint: true }),
+      limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true })),
       lstat(path, { bigint: true }),
     ]);
     if (
@@ -3251,14 +3323,14 @@ async function fingerprintClosureFileUnbounded(
     throw error;
   }
   try {
-    const before = await handle.stat({ bigint: true });
+    const before = await limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true }));
     if (!before.isFile()) throw new Error(`Managed runtime entry ${pathRelative} is not a regular file.`);
     if (before.nlink !== 1n) {
       throw new Error(`Managed runtime file ${pathRelative} must not have additional hard links.`);
     }
     const bytes = await handle.readFile();
     const [after, pathAfter] = await Promise.all([
-      handle.stat({ bigint: true }),
+      limitRuntimeStat<BigIntStats>(() => handle!.stat({ bigint: true })),
       lstat(path, { bigint: true }),
     ]);
     if (

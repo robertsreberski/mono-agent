@@ -1,4 +1,4 @@
-import { chmod, link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { chmod, cp, link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
@@ -21,17 +21,30 @@ import type { ProcessIncarnation } from "../process-incarnation.js";
 
 const io = vi.hoisted(() => ({
   beforeCopy: undefined as undefined | ((source: string) => Promise<void>),
+  beforeRename: undefined as undefined | ((source: string, destination: string) => Promise<void>),
   opened: [] as string[],
   reads: 0,
   peakReads: 0,
   copies: 0,
   peakCopies: 0,
+  stats: 0,
+  peakStats: 0,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
+  const trackStat = async <T>(work: () => Promise<T>): Promise<T> => {
+    io.stats += 1; io.peakStats = Math.max(io.peakStats, io.stats);
+    try { return await work(); } finally { io.stats -= 1; }
+  };
+  const trackedLstat = ((...args: Parameters<typeof fs.lstat>) => trackStat(() => fs.lstat(...args))) as typeof fs.lstat;
   return {
     ...fs,
+    lstat: trackedLstat,
+    rename: async (...args: Parameters<typeof fs.rename>) => {
+      await io.beforeRename?.(String(args[0]), String(args[1]));
+      return await fs.rename(...args);
+    },
     cp: async (...args: Parameters<typeof fs.cp>) => {
       io.copies += 1;
       io.peakCopies = Math.max(io.peakCopies, io.copies);
@@ -45,6 +58,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       io.opened.push(String(args[0]));
       io.reads += 1;
       io.peakReads = Math.max(io.peakReads, io.reads);
+      const stat = handle.stat.bind(handle);
+      handle.stat = ((...args: Parameters<typeof handle.stat>) => trackStat(() => stat(...args))) as typeof handle.stat;
       const close = handle.close.bind(handle);
       handle.close = async () => { try { await close(); } finally { io.reads -= 1; } };
       return handle;
@@ -79,9 +94,12 @@ function incarnation(bootSessionId: string, processStartId: string): ProcessInca
 
 afterEach(async () => {
   io.beforeCopy = undefined;
+  io.beforeRename = undefined;
   io.opened = [];
   io.peakReads = 0;
   io.peakCopies = 0;
+  io.peakStats = 0;
+  expect(io.stats).toBe(0);
   expect(io.reads).toBe(0);
   expect(io.copies).toBe(0);
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -251,7 +269,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     const custom = fakeInstallerDeps((input) => defaults.installPackage(input));
     await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
       homeDir: await homeFixture() }, custom);
-    expect(io.opened.filter((path) => path === canonicalAsset).length).toBeGreaterThan(1);
+    expect(io.opened.filter((path) => path === canonicalAsset)).toHaveLength(5);
     io.opened = [];
     await attestManagedBackgroundRuntime({ currentCliPath: source.cliPath,
       runtimeCliPath: first.cliPath, homeDir });
@@ -271,6 +289,8 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect(io.peakReads).toBeGreaterThan(1);
     expect(io.peakReads).toBeLessThanOrEqual(16);
     expect(io.peakCopies).toBe(2);
+    expect(io.peakStats).toBeGreaterThan(1);
+    expect(io.peakStats).toBeLessThanOrEqual(64);
     const manifest = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-closure.json"), "utf8"));
     const paths = manifest.entries.map((entry: { path: string }) => entry.path);
     expect(paths).toEqual([...paths].sort());
@@ -373,6 +393,96 @@ describe("ensureManagedBackgroundRuntime", () => {
       onProgress: (event) => { if (event.phase === "staged-verification") throw new Error("fixture progress abort"); },
     })).rejects.toThrow("fixture progress abort");
     expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
+  it("sweeps at most two same-closure private staging trees while retaining other closures and quarantine", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const parent = dirname(first.installRoot);
+    const prefix = `.${basename(first.installRoot)}.staging-`;
+    const stages = ["a", "b", "c"].map((name) => join(parent, prefix + name));
+    await cp(first.installRoot, stages[0]!, { recursive: true });
+    await mkdir(stages[1]!, { mode: 0o700 });
+    await mkdir(stages[2]!, { mode: 0o700 });
+    const other = join(parent, ".other-closure.staging-a");
+    await mkdir(other, { mode: 0o700 });
+    const history = join(parent, "quarantine", "retained-history");
+    await mkdir(history, { recursive: true, mode: 0o700 });
+    await writeFile(join(history, "retained.txt"), "retained");
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    const runtime = await ensureManagedBackgroundRuntime(input);
+    expect(runtime.verificationMode).toBe("repaired");
+    await expect(lstat(stages[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(stages[1]!)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(stages[2]!)).isDirectory()).toBe(true);
+    expect((await lstat(other)).isDirectory()).toBe(true);
+    expect(await readFile(join(history, "retained.txt"), "utf8")).toBe("retained");
+    expect(await readFile(runtime.cliPath, "utf8")).toBe(source.bytes);
+  });
+
+  it("leaves unsafe staging roots and symlink targets untouched with a bounded warning", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const progress: ManagedRuntimeProgress[] = [];
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event: ManagedRuntimeProgress) => progress.push(event) };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const prefix = join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-`);
+    const outside = await homeFixture();
+    await writeFile(join(outside, "keep.txt"), "keep");
+    await symlink(outside, prefix + "a");
+    await mkdir(prefix + "b", { mode: 0o700 });
+    await chmod(prefix + "b", 0o777);
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    await ensureManagedBackgroundRuntime(input);
+    expect((await lstat(prefix + "a")).isSymbolicLink()).toBe(true);
+    expect((await lstat(prefix + "b")).isDirectory()).toBe(true);
+    expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep");
+    expect(progress.filter((event) => event.warning === "unsafe-staging")).toHaveLength(1);
+  });
+
+  it("retains an unknown replacement across staging cleanup rename", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const progress: ManagedRuntimeProgress[] = [];
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event: ManagedRuntimeProgress) => progress.push(event) };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const stage = join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-abandoned`);
+    await mkdir(stage, { mode: 0o700 });
+    await writeFile(join(stage, "original.txt"), "original");
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    io.beforeRename = async (from, to) => {
+      if (!to.includes(".cleanup-") || basename(to) !== "abandoned") return;
+      io.beforeRename = undefined;
+      await rename(from, from + "-retained");
+      await mkdir(from, { mode: 0o700 });
+      await writeFile(join(from, "replacement.txt"), "unknown replacement");
+    };
+    await ensureManagedBackgroundRuntime(input);
+    expect(await readFile(join(stage + "-retained", "original.txt"), "utf8")).toBe("original");
+    const container = (await readdir(dirname(first.installRoot))).find((name) => name.includes(".cleanup-"));
+    expect(container).toBeDefined();
+    expect(await readFile(join(dirname(first.installRoot), container!, "abandoned", "replacement.txt"), "utf8"))
+      .toBe("unknown replacement");
+    expect(progress.some((event) => event.warning === "staging-changed")).toBe(true);
+  });
+
+  it("preserves abandoned staging that contains the executing repair source", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir });
+    const stage = join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-source`);
+    await mkdir(stage, { mode: 0o700 });
+    const packageSource = join(stage, "package");
+    await rename(source.root, packageSource);
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    const repaired = await ensureManagedBackgroundRuntime({ currentCliPath: join(packageSource, "dist", "cli.js"),
+      nodePath: process.execPath, homeDir });
+    expect(repaired.verificationMode).toBe("repaired");
+    expect(await readFile(join(packageSource, "dist", "cli.js"), "utf8")).toBe(source.bytes);
   });
 
   it("copies an exact local package into a private immutable runtime that survives source deletion", async () => {

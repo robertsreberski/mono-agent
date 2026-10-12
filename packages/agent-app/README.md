@@ -412,8 +412,19 @@ digest are bound into the runtime marker and verified on every reuse. The Launch
 retained because another agent may still reference them. A loaded job is fully
 booted out and bootstrapped again so rewritten arguments and environment are
 adopted. During a slow install, the existing healthy worker remains loaded. An
-active shared installation may take up to five minutes; concurrent consumers
-wait behind its PID/incarnation-aware lock and reuse the resulting closure. An
+active shared installation reports its preparation phases and elapsed time in
+both `mono-agent start` and `mono-agent web start`. Hashing, metadata checks, and
+package copying use bounded concurrency without skipping the independent staged,
+promoted, and final integrity checks. Within one invocation, freshly hashed source
+bytes can be reused only after complete filesystem identity validation and fresh
+dependency resolution. Finalized runtimes retain the fast stat-proof reuse path.
+Concurrent consumers visibly wait behind a proven live PID/incarnation-aware
+installer for up to 30 minutes, then fail with retry guidance without interrupting
+it. Dead or PID-reused owners remain recoverable; invalid/ownerless publication
+retains its five-minute bound. Under the exact closure's lock, preparation examines
+up to two abandoned private staging/cleanup trees; unsafe or changed trees and any
+executing repair source are preserved. Verified snapshots and quarantine history
+are never swept. Worker readiness deadlines begin after runtime preparation. An
 owner-private per-instance publication barrier makes any KeepAlive respawn wait
 until the replacement closure and plist are committed; dead or PID-reused
 controller ownership is recovered by process incarnation. The replacement

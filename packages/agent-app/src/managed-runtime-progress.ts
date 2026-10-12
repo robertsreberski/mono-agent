@@ -15,6 +15,14 @@ const PHASE_LABELS = {
 
 /** Shared terminal prose for agent and web lifecycle preparation. No filesystem paths. */
 export function formatManagedRuntimeProgress(progress: ManagedRuntimeProgress): string {
+  if (progress.warning !== undefined) {
+    const reasons = {
+      "unsafe-staging": "unsafe abandoned staging was left untouched",
+      "staging-changed": "abandoned staging changed during cleanup and was retained",
+      "staging-cleanup-failed": "abandoned staging cleanup could not finish; retained artifacts can be retried",
+    };
+    return `Managed runtime: ${reasons[progress.warning]}.`;
+  }
   const duration = `${(Math.max(0, progress.elapsedMs) / 1_000).toFixed(1)}s elapsed`;
   if (progress.phase === "waiting") {
     return "Waiting for another mono-agent process preparing the runtime"
