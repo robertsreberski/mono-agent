@@ -300,7 +300,7 @@ it("unknown aliases pin ownership and make retirement fail closed", async () => 
 it("does not sweep corrupt legacy exact-name files or paths outside the root", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
   await mkdir(join(r, "legacy")); const path = join(r, "legacy", "fictional_corrupt.jsonl"); await writeFile(path, "{bad}\n");
-  await expect(repo.retireByHandle("corrupt")).rejects.toThrow("Invalid");
+  await expect(repo.retireByHandle("corrupt")).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
   expect(await readFile(path, "utf8")).toBe("{bad}\n");
   const outside = await root(); const other = await fixture(outside, 4);
   await expect(repo.delete({ id: "fixture-session", path: other, legacy: true })).rejects.toThrow("Invalid");
@@ -378,7 +378,7 @@ it.each(["stage_created", "stage_synced"].flatMap((phase) => ["native", "legacy"
   else expect(JSON.parse(bytes)).toMatchObject({ id: "fixture-session", journalId });
   const repo = new JsonlSessionRepo({ sessionsRoot: r }); let resumed;
   if (next === "native") resumed = await repo.create({ id: "fixture-session" });
-  else { await fixture(r, 4); resumed = await repo.open((await listLegacySessions(r))[0]); expect(await resumed.getEntries()).toHaveLength(2); }
+  else { await fixture(r, 4); resumed = await repo.open((await listLegacySessions(r)).sessions[0]); expect(await resumed.getEntries()).toHaveLength(2); }
   await resumed.close(); await expect(stat(join(directory, abandoned))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
   expect((await repo.list()).map((metadata) => metadata.id)).toEqual(["fixture-session"]);

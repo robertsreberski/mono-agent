@@ -6,13 +6,15 @@ import { lstat, mkdir, open, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
+import { assertIdentity, isOwned, sameIdentity as same, syncDir } from "./owned-fs.js";
 
+/** @returns {never} */
 const fail = () => { throw new Error("Harness journal ownership unavailable"); };
-const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
-function secure(stat, directory = false) {
-  if (!(directory ? stat.isDirectory() : stat.isFile()) || (stat.mode & 0o077) !== 0
-    || (typeof process.getuid === "function" && stat.uid !== process.getuid())) fail();
-}
+/** @param {import("node:fs").Stats} stat */
+const secure = (stat, directory = false) => { if (!isOwned(stat, directory)) fail(); };
+/** Abortable poll; a cancelled waiter rejects with its signal's reason.
+ * @param {AbortSignal|undefined} signal */
+const pause = (signal) => delay(10, undefined, signal && { signal }).catch(() => signal?.throwIfAborted());
 const busy = (error) => error?.code === "ERR_SQLITE_ERROR"
   && (error.errcode === 5 || error.errcode === 6);
 
@@ -53,16 +55,10 @@ export class JournalLocks {
     return locks;
   }
   async assertRoot() {
-    for (const [path, identity] of this.identities) {
-      const current = await lstat(path); secure(current, true);
-      if (!same(current, identity)) fail();
-    }
+    for (const [path, identity] of this.identities) await assertIdentity(path, identity, fail);
   }
   async syncDirectory() {
-    await this.assertRoot();
-    const handle = await open(this.directory, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { await handle.sync(); } finally { await handle.close(); }
-    await this.assertRoot();
+    await this.assertRoot(); await syncDir(this.directory, undefined, fail); await this.assertRoot();
   }
   async ensureFile(path) {
     await this.assertRoot();
@@ -98,24 +94,31 @@ export class JournalLocks {
       throw error;
     }
   }
-  async withCatalog(callback, { wait = true } = {}) {
+  /** `signal` cancels only the wait: an acquisition that races cancellation is
+   * released before the callback runs, and the callback itself is never cancelled.
+   * @template T @param {() => Promise<T>} callback @param {{wait?:boolean, signal?:AbortSignal}} [options] */
+  async withCatalog(callback, { wait = true, signal } = {}) {
     for (;;) {
+      signal?.throwIfAborted();
       const lock = await this.tryLock(this.catalogPath);
       if (!lock) {
         if (!wait) throw Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
-        await delay(10); continue;
+        await pause(signal); continue;
       }
+      if (signal?.aborted) { lock.release(); signal.throwIfAborted(); }
       try { return await callback(); } finally { lock.release(); }
     }
   }
-  /** @param {string} journalId */
-  async acquireWriter(journalId, { wait = true } = {}) {
+  /** @param {string} journalId @param {{wait?:boolean, signal?:AbortSignal}} [options] */
+  async acquireWriter(journalId, { wait = true, signal } = {}) {
     if (!/^[A-Za-z0-9_-]+$/.test(journalId)) throw new TypeError("Unsafe harness journal ID");
     const path = join(this.directory, `${journalId}.sqlite`);
     for (;;) {
       let lock;
-      if (wait) lock = await this.withCatalog(async () => { await this.ensureFile(path); return this.tryLock(path); });
-      else {
+      if (wait) {
+        lock = await this.withCatalog(async () => { await this.ensureFile(path); return this.tryLock(path); }, { signal });
+        if (lock && signal?.aborted) { lock.release(); signal.throwIfAborted(); }
+      } else {
         const catalog = await this.tryLock(this.catalogPath);
         if (!catalog) throw Object.assign(new Error("Native journal catalogue ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
         try { await this.ensureFile(path); lock = await this.tryLock(path); } finally { catalog.release(); }
@@ -123,7 +126,7 @@ export class JournalLocks {
       if (lock) return lock;
       if (!wait) throw Object.assign(new Error("Native journal writer ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
       // Release catalogue before waiting for a provider-owned writer.
-      await delay(10);
+      await pause(signal);
     }
   }
   /**

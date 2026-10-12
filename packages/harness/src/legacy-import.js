@@ -1,35 +1,46 @@
 // One-way idle MAIN branch import only. Never schedule or replay old operations.
-import { constants } from "node:fs";
-import { lstat, readdir, rename, open } from "node:fs/promises";
+import { lstat, readdir, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { JournalReader } from "./journal-reader.js";
 import { projectContext } from "./request-projection.js";
+import { syncDir } from "./owned-fs.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
+/** @returns {never} */
 const fail = () => { throw new Error("Invalid legacy Pi session"); };
+/** Valid legacy sources plus damaged legacy-named entries (unreadable,
+ * malformed or of unknown format). Damage is never imported, archived or
+ * deleted. Pi names sources `<time>_<id>.jsonl`, which attributes damage to that
+ * handle; an entry without that shape (or an unreadable directory) has no owner.
+ * @param {string} root @param {{includeArchives?:boolean}} [options]
+ * @returns {Promise<{sessions:any[], unattributed:{name:string, id?:string}[]}>} */
 export async function listLegacySessions(root, { includeArchives = false } = {}) {
-  const result = [];
+  const sessions = [], unattributed = [];
   let dirs;
   try { dirs = await readdir(root, { withFileTypes: true }); }
-  catch (error) { if (error.code === "ENOENT") return []; throw error; }
+  catch (error) { if (error.code === "ENOENT") return { sessions, unattributed }; throw error; }
   for (const dir of dirs) {
     if (!dir.isDirectory() || dir.name === "mono-v2") continue;
-    for (const file of await readdir(join(root, dir.name), { withFileTypes: true })) {
-      if (!file.isFile() || !(file.name.endsWith(".jsonl") || (includeArchives && file.name.endsWith(".jsonl.migrated")))) continue;
-      const path = join(root, dir.name, file.name);
+    let files;
+    try { files = await readdir(join(root, dir.name), { withFileTypes: true }); }
+    catch { unattributed.push({ name: dir.name }); continue; }
+    for (const file of files) {
+      if (!(includeArchives ? /\.jsonl(?:\.migrated)?$/ : /\.jsonl$/).test(file.name)) continue;
+      const path = join(root, dir.name, file.name), id = /^[^_]*_(.+)\.jsonl(?:\.migrated)?$/.exec(file.name)?.[1];
+      let h;
       try {
         const reader = await JournalReader.open(path, root, { ownerOnly: false });
-        let h; try { h = await reader.readHeader(); } finally { await reader.close(); }
-        if (h?.v === 4 && h.kind === "header" && h.storageVersion === 1) {
-          result.push({ id: h.id, cwd: h.cwd, createdAt: h.createdAt, path, legacy: true });
-        } else if (h?.type === "session" && h.version === 3) {
-          result.push({ id: h.id, cwd: h.cwd, createdAt: Date.parse(h.timestamp), path, legacy: true });
-        }
-      } catch { fail(); }
+        try { h = await reader.readHeader(); } finally { await reader.close(); }
+      } catch (error) { if (error?.code === "ENOENT") continue; }
+      if (h?.v === 4 && h.kind === "header" && h.storageVersion === 1) {
+        sessions.push({ id: h.id, cwd: h.cwd, createdAt: h.createdAt, path, legacy: true });
+      } else if (h?.type === "session" && h.version === 3) {
+        sessions.push({ id: h.id, cwd: h.cwd, createdAt: Date.parse(h.timestamp), path, legacy: true });
+      } else unattributed.push({ name: join(dir.name, file.name), ...(id ? { id } : {}) });
     }
   }
-  return result;
+  return { sessions, unattributed };
 }
 
 export async function readLegacySession(metadata, root) {
@@ -146,10 +157,7 @@ export async function archiveLegacySession(metadata, root, evidence, phase = asy
     await assertLegacyIdentity(archive, root, evidence.identity);
     await phase("archive_renamed");
   } else await assertLegacyIdentity(archive, root, evidence.identity);
-  for (const path of new Set([dirname(metadata.path), resolve(root)])) {
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { await handle.sync(); } finally { await handle.close(); }
-  }
+  for (const path of new Set([dirname(metadata.path), resolve(root)])) await syncDir(path, undefined, fail);
   await assertLegacyIdentity(archive, root, evidence.identity);
   await phase("archive_synced");
 }

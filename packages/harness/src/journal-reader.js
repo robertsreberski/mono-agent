@@ -4,13 +4,12 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { isOwned, sameIdentity as same } from "./owned-fs.js";
+/** @returns {never} */
 const fail = () => { throw new Error("Harness journal read unavailable"); };
-const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const secure = (stat, directory, ownerOnly = true) => {
-  if (!(directory ? stat.isDirectory() : stat.isFile()) || (ownerOnly && (stat.mode & 0o077) !== 0)
-    || (typeof process.getuid === "function" && stat.uid !== process.getuid())) fail();
-};
+/** @param {import("node:fs").Stats} stat @param {boolean} directory */
+const secure = (stat, directory, ownerOnly = true) => { if (!isOwned(stat, directory, !ownerOnly)) fail(); };
 function parse(bytes) {
   if (!bytes.length) fail();
   // Invalid UTF-8, JSON, memory/size limits remain explicit errors, never omissions.
