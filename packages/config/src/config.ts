@@ -2455,7 +2455,8 @@ function readPiNativeProviderConfig(
   const cacheRetention = jsonChoice<"short" | "long">(
     piNative.cacheRetention, "providers.piNative.cacheRetention", ["short", "long"], "long",
   );
-  const piMaxRetries = jsonOptionalInteger(piNative.piMaxRetries, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
+  const piMaxRetriesValue = normalizeOptionalString(jsonString(piNative.piMaxRetries, "providers.piNative.piMaxRetries"));
+  const piMaxRetries = jsonOptionalInteger(piMaxRetriesValue, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
   const maxRetryDelayMs = jsonOptionalInteger(piNative.maxRetryDelayMs, "providers.piNative.maxRetryDelayMs", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(jsonString(piNative.piSessionsRoot, "providers.piNative.piSessionsRoot"), cwd);
   return {

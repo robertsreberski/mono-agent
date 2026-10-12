@@ -939,6 +939,20 @@ describe("resolveJsonMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_json" }));
   });
 
+  it("leaves empty Pi retry budgets unset and rejects invalid non-numeric JSON values", () => {
+    const resolveBudget = (piMaxRetries: unknown) => resolveJsonMonoAgentConfig({
+      cwd: "/repo", json: { runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        // @ts-expect-error Exercise malformed scalars at the JSON validation boundary.
+        providers: { piNative: { piMaxRetries } } },
+    });
+    for (const empty of ["", "   "]) expect(resolveBudget(empty).providers?.piNative?.piMaxRetries).toBeUndefined();
+    for (const invalid of [null, "not-a-number", Infinity]) {
+      expect(() => resolveBudget(invalid)).toThrowError(expect.objectContaining({ code: "invalid_json" }));
+    }
+    expect(resolveBudget(0).providers?.piNative?.piMaxRetries).toBe(0);
+  });
+
   it("rejects an invalid pi transport", () => {
     expect(() =>
       resolveJsonMonoAgentConfig({

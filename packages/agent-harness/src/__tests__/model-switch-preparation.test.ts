@@ -20,7 +20,7 @@ const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const summary: RuntimeHandoffSummary = { intent: ["Retain fictional source facts"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
 function producer(model = "B", outcome: "ready" | "unknown" | "rejected" = "ready") {
-  const snapshot = { expiresAt: Date.now() + 300000, model: { provider: "faux", id: model, api: "faux-api", contextWindow: 100000, maxTokens: 8000 },
+  const snapshot = {  model: { provider: "faux", id: model, api: "faux-api", contextWindow: 100000, maxTokens: 8000 },
     provenance: { provider: "faux", api: "faux-api", model, account: null }, systemPrompt: "Fictional host instructions",
     tools: [{ name: "FictionalLookup", description: "Read fictional data", parameters: { type: "object", properties: { query: { type: "string" } } } }],
     messages: [{ role: "user", content: "Decorated fictional current input" }] };

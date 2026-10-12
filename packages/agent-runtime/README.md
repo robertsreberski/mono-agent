@@ -170,11 +170,10 @@ through the same Models/provider path, including normal OAuth refresh and
 credential persistence. Credentials are not pinned to the lease; changing accounts
 is not a dispatch refusal. Authentication failures use ordinary provider failures.
 
-Start within five minutes; the host requires at least 30 seconds remaining before
-P2 admission. An unref'd max-age timer closes forgotten idle leases automatically,
-releasing MCP/runState resources; active production settles first. Timers do not
-abort already-running dispatches. In-flight streams are authorized at request
-start, not renewed mid-stream. No auto-replay of a turn that may already have tool
+Prepared leases have no age limit: the abort signal and host ownership claim
+control admission. Hosts must call `close()` on unused leases to release
+MCP/runState resources and the concurrency permit. In-flight streams are
+authorized at request start, not renewed mid-stream. No auto-replay of a turn that may already have tool
 effects. The no-tools producer uses configured `piTransport` (default `sse`) and
 remains one attempt without provider fallback.
 

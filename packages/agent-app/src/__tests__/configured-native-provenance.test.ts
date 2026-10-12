@@ -144,10 +144,10 @@ it("caller provenance and flags are ignored; a mixed-provenance first epoch stay
 it.each([false, true])("first persisted Web turn with a fallback chain: opt-in is primary-only, OFF fails over (enabled=%s)", async (enabled) => {
   const f = await fixture({ enabled, fallback: true }), h = await f.make();
   const overloaded = () => fauxAssistantMessage([], { stopReason: "error", errorMessage: "503 Service Unavailable: overloaded" });
-  f.faux.setResponses([overloaded(), overloaded(), overloaded(), overloaded(), (context) => f.reply(`Fictional backup answer ${context.messages.length}`)]);
+  f.faux.setResponses([overloaded(), (context) => f.reply(`Fictional backup answer ${context.messages.length}`)]);
   const result = h.respond(f.request("fictional-first", "A"), { append: async () => {} });
-  // Same-model transport retries inside the attempt are unchanged; only the
-  // configured backup model (router failover) is absent on the prepared route.
+  // piMaxRetries: 0 disables both request-retry layers; only ordinary routes
+  // may advance to the configured backup after the single primary request.
   if (enabled) {
     await expect(result).rejects.toMatchObject({ message: expect.stringContaining("overloaded") });
     expect(f.transport.mock.calls.every(([model]) => model.id === "A")).toBe(true);
@@ -155,7 +155,7 @@ it.each([false, true])("first persisted Web turn with a fallback chain: opt-in i
     expect((await result).text).toContain("Fictional backup answer");
     expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("B");
   }
-}, 60_000); // Real in-attempt transport backoff dominates; ~8-10s locally.
+});
 
 it("a cancel during first-turn preparation is reported and never appended", async () => {
   const f = await fixture(), controller = new AbortController();

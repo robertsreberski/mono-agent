@@ -62,6 +62,7 @@ it.each(["memory", "custom", "durable", "exclusive"] as const)("carries canonica
   expect(replay.map((message) => message.content).join("\n")).toContain("Fictional earlier answer");
   expect(replay[3]!.content).toContain("Fictional warm-up answer");
   expect(replay[4]!.content).toContain("Fictional current question");
+  expect(replay.filter((message) => String(message.content).includes("Fictional current question"))).toHaveLength(1);
   expect(replay[0]!.content).not.toContain("<host_turn_context>");
   expect(Object.isFrozen(replay[0])).toBe(true);
   expect(f.calls[2]).not.toHaveProperty("detachedContext");

@@ -208,8 +208,8 @@ async function reopenDurableNativeSession(repo, sessionId) {
     const { unattributed } = await repo.catalogue();
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId) };
   } catch {
-    // Unchanged: a catalogue failure stays a resume miss (as before).
-    return { entry: null, uncertain: false };
+    // A failed catalogue cannot establish absence or authorize cold replay.
+    return { entry: null, uncertain: true };
   }
 }
 
@@ -310,7 +310,7 @@ export async function resolveSession(runState, {
         // A possibly-own damaged journal is not "missing": refuse without the
         // session-resume replay, never replacing it (unchanged recovery limit).
         if (uncertain) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
-          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} may be an unreadable journal; it was preserved`,
+          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
           failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) };
         return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
           sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is not live`,
