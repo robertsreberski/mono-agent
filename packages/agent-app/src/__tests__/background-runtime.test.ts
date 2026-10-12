@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   attestManagedBackgroundRuntime,
   defaultManagedBackgroundRuntimeDeps,
+  deduplicateSourceReuseProofLinks,
   ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
   inspectManagedRuntimeSourceIdentity,
   MANAGED_BACKGROUND_WORKER_ENV,
@@ -52,6 +53,31 @@ it("inspects source version and CLI digest without executing source bytes", asyn
   await expect(inspectManagedRuntimeSourceIdentity(source.cliPath)).resolves.toEqual({
     packageVersion: "1.2.3",
     cliSha256: createHash("sha256").update(source.bytes).digest("hex"),
+  });
+});
+
+describe("deduplicateSourceReuseProofLinks", () => {
+  const link = {
+    path: "/fictional/node_modules/fixture-shared",
+    logicalPath: "fixture-shared",
+    proof: {
+      path: "fixture-shared", type: "directory" as const,
+      dev: "1", ino: "2", nlink: "1", mode: "16877", size: "64", mtimeNs: "3", ctimeNs: "4",
+    },
+  };
+
+  it("collapses identical records without changing their order", () => {
+    const other = { ...link, path: "/fictional/node_modules/fixture-other" };
+    expect(deduplicateSourceReuseProofLinks([link, other, { ...link, proof: { ...link.proof } }]))
+      .toEqual([link, other]);
+  });
+
+  it.each([
+    { ...link, logicalPath: "fixture-other" },
+    { ...link, proof: { ...link.proof, ino: "9" } },
+  ])("throws rather than choosing a conflicting record: %j", (conflict) => {
+    expect(() => deduplicateSourceReuseProofLinks([link, conflict]))
+      .toThrow(/Conflicting managed runtime source link proofs.*reinstall before starting/u);
   });
 });
 
@@ -115,6 +141,35 @@ async function workspaceFixture(): Promise<{
   await mkdir(dirname(dependencyLink), { recursive: true });
   await symlink(dependencyRoot, dependencyLink, "dir");
   return { root, cliPath, dependencyPath, dependencyContents };
+}
+
+async function hoistedPackageFixture(): Promise<{ cliPath: string; sharedPath: string }> {
+  const source = await fixturePackage();
+  const modules = join(source.root, "node_modules");
+  await writeFile(join(source.root, "package.json"), JSON.stringify({
+    name: "@mono-agent/agent-app",
+    version: "9.8.7",
+    type: "module",
+    dependencies: { "fixture-left": "1.0.0", "fixture-right": "1.0.0" },
+  }));
+  for (const name of ["fixture-left", "fixture-right", "fixture-shared"]) {
+    const packageRoot = join(modules, name);
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(join(packageRoot, "package.json"), JSON.stringify({
+      name,
+      version: "1.0.0",
+      type: "module",
+      exports: "./index.js",
+      ...(name === "fixture-shared" ? {} : { dependencies: { "fixture-shared": "1.0.0" } }),
+    }));
+    await writeFile(join(packageRoot, "index.js"), name === "fixture-shared"
+      ? "export const shared = 'hoisted';\n"
+      : "export { shared } from 'fixture-shared';\n");
+  }
+  await writeFile(source.cliPath,
+    "import { shared as left } from 'fixture-left';\n" +
+    "import { shared as right } from 'fixture-right';\nconsole.log(left, right);\n");
+  return { cliPath: source.cliPath, sharedPath: await realpath(join(modules, "fixture-shared")) };
 }
 
 async function additionalPackageFixture(packageName = "@fixture/configured-plugin"): Promise<{
@@ -888,6 +943,51 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect(first.verificationMode).toBe("installed");
     expect(second).toEqual({ ...first, verificationMode: "fast-reuse" });
     expect(installs).toBe(1);
+  });
+
+  it("publishes unique link paths for a flat hoisted closure and fast-reuses it", async () => {
+    const source = await hoistedPackageFixture();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const proofPath = join(dirname(first.installRoot), ".reuse-proofs", `${basename(first.installRoot)}.json`);
+    const proof = JSON.parse(await readFile(proofPath, "utf8")) as {
+      source: { links: { path: string }[] };
+    };
+
+    expect(first.verificationMode).toBe("installed");
+    expect(proof.source.links.filter((link) => link.path === source.sharedPath)).toHaveLength(1);
+    expect(new Set(proof.source.links.map((link) => link.path)).size).toBe(proof.source.links.length);
+    const second = await ensureManagedBackgroundRuntime(input);
+    expect(second).toEqual({ ...first, verificationMode: "fast-reuse" });
+  });
+
+  it.each([false, true])("rejects a stored duplicate link (conflicting: %s) and self-heals it", async (conflicting) => {
+    const source = await hoistedPackageFixture();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const proofPath = join(dirname(first.installRoot), ".reuse-proofs", `${basename(first.installRoot)}.json`);
+    const markerPath = join(first.installRoot, ".mono-agent-runtime.json");
+    const proof = JSON.parse(await readFile(proofPath, "utf8")) as {
+      source: { links: { path: string; logicalPath: string; proof: { path: string } }[] };
+    };
+    const original = proof.source.links.find((link) => link.path === source.sharedPath)!;
+    proof.source.links.push(conflicting
+      ? { ...original, logicalPath: "fixture-other", proof: { ...original.proof, path: "fixture-other" } }
+      : original);
+    const contents = `${JSON.stringify(proof)}\n`;
+    await writeFile(proofPath, contents, { mode: 0o600 });
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+    marker.reuseProofSha256 = createHash("sha256").update(contents).digest("hex");
+    await writeFile(markerPath, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+
+    const recovered = await ensureManagedBackgroundRuntime(input);
+    expect(recovered.installRoot).toBe(first.installRoot);
+    expect(recovered.verificationMode).toBe("full-reuse");
+    const refreshed = JSON.parse(await readFile(proofPath, "utf8")) as typeof proof;
+    expect(new Set(refreshed.source.links.map((link) => link.path)).size).toBe(refreshed.source.links.length);
+    expect((await ensureManagedBackgroundRuntime(input)).verificationMode).toBe("fast-reuse");
   });
 
   it("upgrades a verified v4 marker once and then uses the warm stat proof", async () => {

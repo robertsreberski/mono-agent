@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix managed runtime reuse for flat npm installs with shared hoisted
+  dependencies, so subsequent starts use the warm verification path.
+
 - Fix newly initialized BuJo memory to start without a manual rebuild by
   publishing its replay authority before the managed index. Keep incomplete
   initialization and missing historical authority fail-closed.
