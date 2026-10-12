@@ -417,15 +417,16 @@ export class JsonlSessionRepo {
       || dirname(resolve(metadata.path)) !== this.directory
       || ![`${metadata.journalId}.jsonl`, `${metadata.journalId}.jsonl.importing`, `${metadata.journalId}.jsonl.creating`].includes(metadata.path.split(/[\\/]/).at(-1))) fail();
   }
-  /** @param {{id?: string, cwd?: string, staging?: boolean, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] */
-  async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned } = {}) {
+  /** @param {{id?: string, cwd?: string, staging?: boolean, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] @param {{abortSignal?:AbortSignal}} [context] cancels only the lock waits */
+  async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned } = {}, context = undefined) {
+    const signal = contextSignal(context);
     if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned(); }
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
     const locks = await this.ensureDirectory();
     const metadata = { id, cwd, createdAt: Date.now(), journalId: randomUUID(), path: "" };
     metadata.path = join(this.directory, `${metadata.journalId}.jsonl${staging ? ".importing" : ""}`);
-    const writer = await locks.acquireWriter(metadata.journalId);
+    const writer = await locks.acquireWriter(metadata.journalId, { signal });
     let published = false;
     try {
       await locks.withCatalog(async () => {
@@ -439,7 +440,7 @@ export class JsonlSessionRepo {
           ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, ...(hostAuthority ? { hostAuthority: canonicalHostJournalAuthority(hostAuthority) } : {}) }, true);
         if (hostAuthority !== undefined) await assertOwned();
         published = true;
-      });
+      }, { signal });
       const session = await this.openLocked(metadata, writer);
       await initializeSession(session);
       return session;
@@ -504,17 +505,18 @@ export class JsonlSessionRepo {
       await options.assertOwned(); await this.assertDirectory(); return metadata;
     }); } finally { writer.release(); }
   }
-  async open(metadata, { repair = true, wait = repair, validateHeader = undefined } = {}) {
+  /** `signal` cancels only the writer wait, never a started open/repair. */
+  async open(metadata, { repair = true, wait = repair, validateHeader = undefined, signal = undefined } = {}) {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
-      return this.importLegacy(metadata);
+      return this.importLegacy(metadata, signal);
     }
     this.checkMetadata(metadata);
     if (metadata.path !== join(this.directory, `${metadata.journalId}.jsonl`)) fail();
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
     if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
     const locks = await this.ensureDirectory();
-    const writer = await locks.acquireWriter(metadata.journalId, { wait });
+    const writer = await locks.acquireWriter(metadata.journalId, { wait, signal });
     let session;
     try {
       if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
@@ -717,7 +719,7 @@ export class JsonlSessionRepo {
       await session.endTurn(completionId, "completed"); await session.sync();
     }
   }
-  async importLegacy(metadata) {
+  async importLegacy(metadata, signal = undefined) {
     const projected = await readLegacySession(metadata, this.root);
     const info = importDescriptor(metadata, this.root, projected);
     const locks = await this.ensureDirectory();
@@ -728,7 +730,7 @@ export class JsonlSessionRepo {
     validateJournalHeader(stage);
     const publishedPath = join(this.directory, `${journalId}.jsonl`);
     const creatingPath = join(this.directory, `${journalId}.jsonl.creating`);
-    const writer = await locks.acquireWriter(journalId);
+    const writer = await locks.acquireWriter(journalId, { signal });
     let session;
     try {
       await locks.withCatalog(async () => {
@@ -744,7 +746,7 @@ export class JsonlSessionRepo {
           if (sources.length !== 1) fail();
           await assertLegacyIdentity(metadata.path, this.root, info.source.identity);
         }
-      });
+      }, { signal }); // validation only: no mutation has started
       if (!await absent(publishedPath)) {
         session = await this.openLocked({ ...stage, path: publishedPath }, writer);
         if (session.metadata.import?.importId !== info.importId) fail();
@@ -819,17 +821,17 @@ export class JsonlSessionRepo {
       } else if (session.closed) writer.release();
     }
   }
-  async listOwned({ wait = true } = {}) {
+  async listOwned({ wait = true, signal = undefined } = {}) {
     if (await absent(this.directory)) return [];
     const locks = await this.ensureDirectory();
-    return (await locks.withCatalog(() => this.catalogueUnlocked(), { wait })).owned;
+    return (await locks.withCatalog(() => this.catalogueUnlocked(), { wait, signal })).owned;
   }
   /** Locked native catalogue whose `unattributed` also carries damaged legacy
    * entries, so a handle's own damaged source is never reported missing. */
-  async catalogue({ wait = true } = {}) {
+  async catalogue({ wait = true, signal = undefined } = {}) {
     const legacy = await listLegacySessions(this.root);
     const native = await absent(this.directory) ? { owned: [], unattributed: [] }
-      : await (await this.ensureDirectory()).withCatalog(() => this.catalogueUnlocked(), { wait });
+      : await (await this.ensureDirectory()).withCatalog(() => this.catalogueUnlocked(), { wait, signal });
     return { owned: native.owned, unattributed: [...native.unattributed, ...legacy.unattributed] };
   }
   async listOwnedUnlocked(includeStaging = false) { return (await this.catalogueUnlocked(includeStaging)).owned; }
@@ -906,8 +908,9 @@ export class JsonlSessionRepo {
       writer.release(); await unlink(writer.path); await locks.syncDirectory();
     } finally { writer.release(); }
   }
-  async list() {
-    const owned = await this.listOwned();
+  /** @param {unknown} [_filter] @param {{abortSignal?:AbortSignal}} [context] */
+  async list(_filter = undefined, context = undefined) {
+    const owned = await this.listOwned({ signal: contextSignal(context) });
     const { sessions } = await listLegacySessions(this.root);
     return [...owned, ...sessions.filter((m) => !owned.some((n) => n.id === m.id))];
   }

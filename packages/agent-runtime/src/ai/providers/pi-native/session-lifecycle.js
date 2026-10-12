@@ -200,12 +200,12 @@ function isSafeSessionId(id) {
 /** Reopen by handle. Unrelated or unattributed journal-named entries never
  * block another handle's valid journal. `uncertain` reports that no journal was
  * found while an unreadable entry could be this handle's own damaged journal. */
-async function reopenDurableNativeSession(repo, sessionId) {
+async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
   try {
-    const metadata = (await repo.list(undefined, HARNESS_CONTEXT)).find((entry) => entry?.id === sessionId);
+    const metadata = (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
     if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
     if (typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
-    const { unattributed } = await repo.catalogue();
+    const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId) };
   } catch {
     // Unchanged: a catalogue failure stays a resume miss (as before).
@@ -273,6 +273,9 @@ export async function resolveSession(runState, {
 }) {
   validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
   const access = options.nativeSessionAuthority;
+  // The run's signal cancels only lock waits before a session is opened or
+  // created; cleanup and durability barriers keep the never-aborted context.
+  const waitContext = options.abortSignal ? { abortSignal: options.abortSignal } : HARNESS_CONTEXT;
   if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
@@ -281,7 +284,8 @@ export async function resolveSession(runState, {
     if (!entry && durableRepo) {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
-        ({ entry, uncertain } = await reopenDurableNativeSession(durableRepo, requestedSessionId));
+        ({ entry, uncertain } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
+        options.abortSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
           // cold resume could have reopened+inserted its own entry in this
@@ -366,7 +370,7 @@ export async function resolveSession(runState, {
             { id: providerSessionId, cwd: cwd || process.cwd(), ...(access ? {
               hostAuthority: access.hostAuthority, assertOwned: () => assertNativeSessionAccess(access, "create", durableRepo.root),
             } : {}) },
-            HARNESS_CONTEXT,
+            waitContext,
           ));
           runState.createdOnMiss = true;
         }
@@ -433,7 +437,7 @@ export async function resolveSession(runState, {
           await assertNativeSessionAccess(access, "open", durableRepo.root);
         }
         const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
-          ...(access ? { repair: false, wait: false } : {}),
+          ...(access ? { repair: false, wait: false } : {}), signal: options.abortSignal,
           validateHeader: (header) => assertNativeSessionHeader(access, header),
         });
         try {
@@ -463,7 +467,7 @@ export async function resolveSession(runState, {
     // that primary's transcript. Only keep-alive calls use a shared repository.
     if (options.sessionKeepAlive !== true) runState.ephemeralSessionRepo = new MemorySessionRepo();
     runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
-      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, HARNESS_CONTEXT));
+      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, waitContext));
   }
   return { done: false };
 }

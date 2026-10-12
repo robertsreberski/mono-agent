@@ -113,3 +113,21 @@ it("isolates stray and damaged legacy entries to their own handle", async () => 
     finally { await chmod(join(r, "unreadable"), 0o700); }
   }
 });
+
+it("cancels open, create and list lock waits from the caller's signal without leaking locks", async () => {
+  const r = await root(), owner = new JsonlSessionRepo({ sessionsRoot: r }), session = await owner.create({ id: "fictional-held" });
+  const other = new JsonlSessionRepo({ sessionsRoot: r }), locks = await other.ensureDirectory();
+  const opening = new AbortController(), open = other.open(session.metadata, { signal: opening.signal });
+  setTimeout(() => opening.abort(), 30); await expect(open).rejects.toMatchObject(aborted);
+  const held = await locks.tryLock(locks.catalogPath);
+  try {
+    for (const run of [(signal) => other.create({ id: "fictional-new" }, { abortSignal: signal }), (signal) => other.list(undefined, { abortSignal: signal })]) {
+      const controller = new AbortController(), waiting = run(controller.signal);
+      setTimeout(() => controller.abort(), 30); await expect(waiting).rejects.toMatchObject(aborted);
+    }
+  } finally { held.release(); }
+  await session.close();
+  expect((await other.list()).map((m) => m.id)).toEqual(["fictional-held"]);
+  expect((await readdir(join(r, "mono-v2", "locks"))).sort()).toEqual(["catalog.sqlite", `${session.metadata.journalId}.sqlite`].sort());
+  const reopened = await other.open(session.metadata, { signal: new AbortController().signal }); await reopened.close();
+});
