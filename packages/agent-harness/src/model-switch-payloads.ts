@@ -150,8 +150,19 @@ export class ModelSwitchPayloadStore {
       if (damaged.has(key(name)) || refused.has(key(name))) return;
       try { await action(); } catch { await this.assertDirectory(directory); damaged.add(key(name)); }
     };
-    for (const { name } of entries) if (name.endsWith(".state.json")) await isolate(name, async () => {
-      if ((decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)) as { version?: unknown } | null)?.version === 1) refused.add(key(name));
+    // Every final state and artifact (fenced, retained or orphan) must parse and
+    // match its filename coordinates; otherwise it is its owner's damage.
+    for (const { name } of entries) if (name.endsWith(".state.json") || name.endsWith(".handoff.json")) await isolate(name, async () => {
+      const [, switchId, id] = name.split("."), raw = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES));
+      if (name.endsWith(".state.json")) {
+        if ((raw as { version?: unknown } | null)?.version === 1) { refused.add(key(name)); return; }
+        validateModelSwitchState(raw);
+        if (raw.identity.switchId !== switchId || switchConversationKey(raw.identity.historyBucket) !== key(name)) unavailable();
+      } else {
+        const bucket = (raw as { historyBucket?: unknown } | null)?.historyBucket;
+        if (typeof bucket !== "string" || switchConversationKey(bucket) !== key(name)) unavailable();
+        await this.readArtifact(bucket, switchId!, { id: id!, hash: id! });
+      }
     });
     for (const { name } of entries) if (name.endsWith(".fence.json")) await isolate(name, async () => {
       const fenceBytes = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES), raw = decode(fenceBytes);

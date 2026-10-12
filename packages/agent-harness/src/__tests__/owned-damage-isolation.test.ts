@@ -1,7 +1,7 @@
 // One stray, partial or damaged owned file never stops unrelated conversations.
 // Damage refuses only its owner (typed), stays charged and is never deleted.
 import { createHash } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -116,9 +116,50 @@ it.each(kinds)("canonical history root: a stray and a %s foreign record never st
   await f.store.resetLogicalConversation(healthy); expect(await f.store.load(healthy)).toEqual([]);
   expect(await snapshot(preserved.map((entry) => entry.path))).toEqual(preserved);
   // Owner-only outcome: an insecure record refuses its owner. A truncated record
-  // keeps its existing owner policy (cold, replaced by the owner's next append).
+  // is set aside unchanged under a non-artifact name and the owner continues empty.
   if (kind === "wrong mode" || kind === "hard link") {
     await expect(f.store.append(damagedBucket, [{ role: "user", content: "Fictional refused append." }])).rejects.toThrow(kind === "wrong mode" ? "0600" : "hard link");
     expect(await snapshot([path])).toEqual(preserved.slice(0, 1));
+  } else {
+    const turn = await f.begin(damagedBucket, "fictional-owner-turn"); expect(turn.historySetAside).toBe(true);
+    expect((await readFile(`${path}.damaged-1`)).toString("base64")).toBe(preserved[0]!.bytes);
+    await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+    expect((await f.begin(damagedBucket, "fictional-owner-next")).historySetAside).toBeUndefined();
   }
+});
+
+it.each(["invalid JSON", "wrong mode"] as const)("dirty fences: a %s foreign fence refuses only its owner and protects it from retention", async (kind) => {
+  const f = await fixture(); await canonical(f, damagedBucket, 2); await canonical(f, older, 1);
+  const path = join(f.root, ".locks", `${key(damagedBucket)}.dirty.json`);
+  await writeFile(path, kind === "invalid JSON" ? "{not json" : "{}", { mode: kind === "wrong mode" ? 0o644 : 0o600 });
+  if (kind === "wrong mode") await chmod(path, 0o644);
+  const preserved = await snapshot([path]);
+  await unrelatedStillWorks(f);
+  await expect(lstat(join(f.root, `${key(older)}.history.json`))).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await lstat(join(f.root, `${key(damagedBucket)}.history.json`))).isFile()).toBe(true);
+  await expect(f.store.recoverProviderSessionTurn(damagedBucket)).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" });
+  await expect(f.store.append(damagedBucket, [{ role: "user", content: "Fictional refused append." }])).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" });
+  expect(await snapshot([path])).toEqual(preserved);
+});
+
+it("model switches: an unfenced malformed state or handoff is owner damage", async () => {
+  for (const suffix of [`${"1".repeat(32)}.state.json`, `${"2".repeat(64)}.handoff.json`]) {
+    const f = await fixture(); await canonical(f, damagedBucket, 2);
+    const directory = join(f.root, MODEL_SWITCH_DIRECTORY); await mkdir(directory, { mode: 0o700 });
+    const path = join(directory, `${key(damagedBucket)}.${"e".repeat(64)}.${suffix}`); await writeFile(path, "{}", { mode: 0o600 });
+    await unrelatedStillWorks(f);
+    await expect(f.store.recoverProviderSessionTurn(damagedBucket)).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" });
+    expect(await readFile(path, "utf8")).toBe("{}");
+  }
+});
+
+it("canonical stages: an oversized stale stage is charged and kept while an ordinary one is reclaimed", async () => {
+  const root = await temporary("owned-damage-stage-");
+  const store = createDurableHistoryStore({ root, maxStagedBytes: Number.MAX_SAFE_INTEGER });
+  await store.append(older, [{ role: "user", content: "Fictional earlier history." }]);
+  const oversized = join(root, `.${key(damagedBucket)}.1.${"a".repeat(24)}.tmp`), stale = join(root, `.${key(older)}.1.${"b".repeat(24)}.tmp`);
+  await writeFile(oversized, "", { mode: 0o600 }); await truncate(oversized, 2 ** 34); await writeFile(stale, "{}", { mode: 0o600 });
+  await store.append(healthy, [{ role: "user", content: "Fictional unrelated append." }]);
+  expect((await lstat(oversized)).size).toBe(2 ** 34);
+  await expect(lstat(stale)).rejects.toMatchObject({ code: "ENOENT" });
 });

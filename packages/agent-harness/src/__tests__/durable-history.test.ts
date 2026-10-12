@@ -605,7 +605,7 @@ describe("DurableConversationHistoryStore", () => {
     expect((await readdir(root)).some((name) => name.endsWith(".tmp"))).toBe(false);
   }, 30_000);
 
-  it("recovers cold from a stable truncated record and replaces it on the next append", async () => {
+  it("recovers cold from a stable truncated record, setting its bytes aside instead of overwriting them", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
     const store = createDurableHistoryStore({ root });
@@ -614,12 +614,16 @@ describe("DurableConversationHistoryStore", () => {
     const original = await readHistoryRecord(root, "conversation");
     const originalEpoch = original.providerSession?.epoch as string;
 
-    await writeFile(recordPath, '{"version":2,"conversationId":"conversation","messages":[');
+    const truncated = '{"version":2,"conversationId":"conversation","messages":[';
+    await writeFile(recordPath, truncated);
 
     const restarted = createDurableHistoryStore({ root });
     await expect(restarted.load("conversation")).resolves.toEqual([]);
+    expect(await readFile(recordPath, "utf8")).toBe(truncated); // load stays read-only
     const coldTurn = await restarted.beginProviderSessionTurn("conversation", "run-after-truncation");
     expect(coldTurn.providerSessionId).not.toBe(originalEpoch);
+    expect(coldTurn.historySetAside).toBe(true);
+    expect(await readFile(`${recordPath}.damaged-1`, "utf8")).toBe(truncated);
     const prepared = await coldTurn.prepareCommit(
       [{ role: "user", content: "fresh after truncation" }],
       { providerSessionSynced: true },
@@ -635,6 +639,16 @@ describe("DurableConversationHistoryStore", () => {
       providerSession: { revision: 1 },
     });
     expect(recoveredRecord.providerSession?.epoch).not.toBe(originalEpoch);
+    const later = await restarted.beginProviderSessionTurn("conversation", "run-later");
+    expect(later.historySetAside).toBeUndefined(); await (await later.prepareCommit([], { providerSessionSynced: true })).commit();
+    // A plain append also sets a newly truncated record aside, never replacing it.
+    await writeFile(recordPath, truncated);
+    const plain = createDurableHistoryStore({ root });
+    await plain.append("conversation", [{ role: "user", content: "after second truncation" }]);
+    expect(await readFile(`${recordPath}.damaged-1`, "utf8")).toBe(truncated);
+    expect(await readFile(`${recordPath}.damaged-2`, "utf8")).toBe(truncated);
+    await expect(plain.load("conversation")).resolves.toEqual([{ role: "user", content: "after second truncation" }]);
+    expect((await plain.stats()).conversations).toBe(1);
   });
 
   it("rotates missing, legacy V1, and dirty provider epochs before use", async () => {
