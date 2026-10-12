@@ -208,8 +208,8 @@ async function reopenDurableNativeSession(repo, sessionId) {
     const { unattributed } = await repo.catalogue();
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId) };
   } catch {
-    // Unchanged: a catalogue failure stays a resume miss (as before).
-    return { entry: null, uncertain: false };
+    // A failed catalogue cannot establish absence or authorize cold replay.
+    return { entry: null, uncertain: true };
   }
 }
 

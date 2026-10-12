@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refuse unreadable native catalogues without retiring or cold-replaying a turn.
+
 - Keep the previous compaction summary when splitting the first retained turn.
 
 - Fix prepared OpenCode session attribution after late binding and keep pending

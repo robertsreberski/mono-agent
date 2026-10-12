@@ -2303,3 +2303,27 @@ it("refuses reconciliation of a legacy recovery-pending handle without evicting 
     expect(await recoverDurableNativeSession(failed.providerSessionRecovery, { appliedInputIds: [] })).toBe(true); expect(faux.state.callCount).toBe(2);
   } finally { await disposeProviderSession(id); rmSync(root, { recursive: true, force: true }); }
 });
+
+it.each(["list", "catalogue"])("refuses cold reopen when the native %s throws", async (method) => {
+  const model = setup();
+  const root = mkdtempSync(join(tmpdir(), "catalogue-failure-"));
+  const repo = resolveDurableNativeSessionRepo(root);
+  const failure = vi.spyOn(repo, method).mockRejectedValue(new Error("Fictional catalogue read failure"));
+  const create = vi.spyOn(repo, "create");
+  try {
+    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+      sessionId: "catalogue-failure", piSessionsRoot: root, sessionKeepAlive: true,
+      sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket",
+        turnId: "catalogue-turn", handleId: "catalogue-failure", baseRevision: 1,
+        reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } },
+      messages: [{ role: "user", content: "Fictional request" }],
+    }));
+    expect(result.failureKind, result.error).toBe("native_journal_unreadable");
+    expect(faux.state.callCount).toBe(0);
+    expect(create).not.toHaveBeenCalled();
+  } finally {
+    failure.mockRestore(); create.mockRestore();
+    await disposeProviderSession("catalogue-failure").catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
