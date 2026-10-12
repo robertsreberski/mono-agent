@@ -102,3 +102,23 @@ it.each(kinds)("model switches: a %s foreign switch file refuses only its owner 
   expect(await snapshot(preserved.map((entry) => entry.path))).toEqual(preserved);
   expect((await readdir(directory)).sort()).toEqual([".DS_Store", `${key(damagedBucket)}.${"e".repeat(64)}.fence.json`, "scratch"]);
 });
+
+it.each(kinds)("canonical history root: a stray and a %s foreign record never stop unrelated conversations", async (kind) => {
+  const f = await fixture(); await canonical(f, damagedBucket, 2); await canonical(f, older, 1);
+  const path = join(f.root, `${key(damagedBucket)}.history.json`); await damage(path, kind, join(f.outside, "alias"));
+  await writeFile(join(f.root, ".DS_Store"), "Fictional stray", { mode: 0o644 }); await mkdir(join(f.root, "scratch"), { mode: 0o755 });
+  await writeFile(join(f.root, ".locks", ".DS_Store"), "Fictional stray", { mode: 0o644 });
+  const preserved = await snapshot([path, join(f.root, ".DS_Store"), join(f.root, "scratch"), join(f.root, ".locks", ".DS_Store")]);
+
+  await unrelatedStillWorks(f);
+  // Retention evicted the healthy older history; the unreadable record is protected.
+  await expect(lstat(join(f.root, `${key(older)}.history.json`))).rejects.toMatchObject({ code: "ENOENT" });
+  await f.store.resetLogicalConversation(healthy); expect(await f.store.load(healthy)).toEqual([]);
+  expect(await snapshot(preserved.map((entry) => entry.path))).toEqual(preserved);
+  // Owner-only outcome: an insecure record refuses its owner. A truncated record
+  // keeps its existing owner policy (cold, replaced by the owner's next append).
+  if (kind === "wrong mode" || kind === "hard link") {
+    await expect(f.store.append(damagedBucket, [{ role: "user", content: "Fictional refused append." }])).rejects.toThrow(kind === "wrong mode" ? "0600" : "hard link");
+    expect(await snapshot([path])).toEqual(preserved.slice(0, 1));
+  }
+});

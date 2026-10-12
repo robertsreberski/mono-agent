@@ -10,7 +10,7 @@ import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { DurableTurnReceipt, PendingTurnPointer, PendingTurnPayload, PendingTurnInput, PendingTurnCandidate, DurableTurnFence } from "./durable-turn-contract.js";
 import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
 import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
-import { OwnedFileDamagedError } from "@mono-agent/harness/owned-fs.js";
+import { OwnedFileDamagedError, isOwned } from "@mono-agent/harness/owned-fs.js";
 import { PENDING_TURN_DIRECTORY, DurableTurnAlreadyCommittedError, validateDurableTurnFence, serializeDurableTurnFence, createPendingTurnPayload, createPendingInitialInput, durableTurnFenceDigest, pendingPayloadName, serializePendingTurnPayload } from "./durable-turn-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
@@ -1021,7 +1021,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       try {
         const entries = await this.scanCommittedEntries(rootIdentity, true);
         for (const entry of entries) {
-          const record = await this.readCommittedEntryRecord(entry, rootIdentity);
+          let record;
+          try { record = await this.readCommittedEntryRecord(entry, rootIdentity); }
+          catch (error) {
+            // A damaged foreign record is preserved, never a reason to block this
+            // reset; the logical owner's own damaged record still refuses it.
+            if (!(error instanceof CanonicalParseFailure) || entry.name === `${historyKey(logicalId)}${HISTORY_FILE_SUFFIX}`) throw error;
+            continue;
+          }
           if (belongsToLogicalConversation(record.conversationId, logicalId)) {
             this.requireNativeCapability(record, "whole-conversation deletion", "logical reset");
             conversationIds.add(record.conversationId);
@@ -2650,10 +2657,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (match === null) continue;
       const path = join(this.root, name);
       const info = await lstat(path);
-      assertSecureHistoryFile(info, path);
-      if (info.size > MAX_STORE_FILE_BYTES) {
-        throw new Error(`History temporary ${path} exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
-      }
+      // A damaged stage is charged and kept, never removed or root-fatal.
+      if (!isOwned(info) || info.size > MAX_STORE_FILE_BYTES) { bytes += info.size; continue; }
       // Every legitimate stage is created only after its active marker and
       // both are mutated under the root transaction. A stage without a marker
       // is therefore abandoned even when its filename PID is still live or
@@ -2710,20 +2715,17 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         continue;
       }
       if (HISTORY_FILE_PATTERN.test(name)) {
+        // A damaged record stays listed and charged; reading it fails (as a
+        // CanonicalParseFailure) only for its own conversation and protects it.
         const info = await lstat(path);
-        assertSecureHistoryFile(info, path);
-        if (info.size > MAX_STORE_FILE_BYTES) {
-          throw new Error(`History file ${path} exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
-        }
         entries.push({ name, path, size: info.size, mtimeMs: info.mtimeMs });
         continue;
       }
       const temporaryMatch = TEMP_FILE_PATTERN.exec(name);
       if (temporaryMatch !== null) {
         const info = await lstat(path);
-        assertSecureHistoryFile(info, path);
         if (
-          cleanStaleTemps
+          cleanStaleTemps && isOwned(info)
           && !activeConversationKeys.has(temporaryMatch[1] as string)
         ) {
           await rm(path);
@@ -2731,7 +2733,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         }
         continue;
       }
-      throw new Error(`History root ${this.root} contains unsupported entry ${name}.`);
+      // Unrelated names (`.DS_Store`, editor temps) are never read, charged or deleted.
     }
     if (removedTemp) await fsyncDirectory(this.root, rootIdentity);
     await assertDirectoryIdentity(this.root, rootIdentity);
@@ -3046,7 +3048,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         continue;
       }
       const match = ACTIVE_MARKER_PATTERN.exec(name);
-      if (match === null) throw new Error(`History lock root ${locksRoot} contains unsupported entry ${name}.`);
+      if (match === null) continue; // unrelated names are never read or deleted
       const path = join(locksRoot, name);
       const info = await lstat(path);
       assertSecureHistoryFile(info, path);
@@ -3126,7 +3128,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         }
         continue;
       }
-      throw new Error(`History lock root ${locksRoot} contains unsupported entry ${name}.`);
+      // Unrelated names are never read, charged or deleted.
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
     return fences;
@@ -3382,10 +3384,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     rootIdentity: DirectoryIdentity,
   ): Promise<LoadedHistoryRecord> {
     await assertDirectoryIdentity(this.root, rootIdentity);
-    const before = await lstat(entry.path);
-    assertSecureHistoryFile(before, entry.path);
     let handle;
     try {
+      const before = await lstat(entry.path);
+      assertSecureHistoryFile(before, entry.path);
       handle = await open(entry.path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
       const opened = await handle.stat();
       assertSecureHistoryFile(opened, entry.path);
@@ -3402,6 +3404,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (`${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}` !== entry.name) throw new Error(`History file ${entry.path} does not match its conversation id.`);
       } catch (error) { throw error instanceof UnsupportedPreReleaseSwitchFormatError ? error : new CanonicalParseFailure(error); }
       return record;
+    } catch (error) {
+      // Damage of this one record (mode, links, size, identity) is owner-scoped;
+      // absence and root identity failures keep their meaning.
+      if (error instanceof UnsupportedPreReleaseSwitchFormatError || error instanceof CanonicalParseFailure || isErrno(error, "ENOENT")) throw error;
+      await assertDirectoryIdentity(this.root, rootIdentity);
+      throw new CanonicalParseFailure(error);
     } finally {
       await handle?.close().catch(() => undefined);
     }
