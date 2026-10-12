@@ -741,7 +741,6 @@ export interface DurableSessionSalvage {
 /** Host-only storage authority; never a model-facing runtime option. */
 export interface RuntimeNativeJournalAuthority {
   readonly version: 1;
-  readonly canonicalVersion: 4;
   readonly rootId: string;
   readonly authorityId: string;
   readonly ownerKey: string;
@@ -822,7 +821,6 @@ export type RuntimeHandoffProposal = { readonly status: "ready"; readonly artifa
   | { readonly status: "budget_failure" | "summary_rejected"; readonly reason: string }
   | { readonly status: "summary_required"; readonly prepared: RuntimePreparedHandoff };
 export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalStorage {
-  readonly nativeEvidence: "v1";
   /** Null source: the current journal is definitively missing; canonical gaps carry the history. */
   captureEvidence(source: RuntimeNativeJournalDescriptor | null, context: { readonly ownerKey: string; readonly historyBucket: string;
     readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void>;
@@ -860,7 +858,6 @@ export interface RuntimeNativePreparedDispatch {
 }
 
 export interface MonoRuntimeLike {
-  readonly nativePreparedDispatch?: "v1" | undefined;
   prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeNativePreparedDispatch>;
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;

@@ -39,7 +39,7 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
     const primary = runtimeFor(model);
     const harness = new MonoAgentHarness({ runtime: primary, identityPath, cwd: base, piSessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
       model: { provider: "faux", model, reference: `faux:${model}` }, runtimeForModel: (ref) => runtimeFor(ref.model), runtimeOptionsForRequest: async ({ request }) => ({ runtimeOptions: typeof (request.metadata?.web as {model?: string})?.model === "string" ? { model: parseMonoRuntimeModelReference((request.metadata!.web as {model: string}).model) } : {} }), runtimeOptions: { piResolvedModels: models, allowedTools: [], compaction: { enabled: false } }, ...options },
-    { ...(enabled ? { nativeModelSwitch: { exclusiveWriters: true as const, native, sessionsRoot: nativeRoot,
+    { ...(enabled ? { nativeModelSwitch: { native, sessionsRoot: nativeRoot,
         deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined } } : {}) });
     closes.push(() => harness.dispose()); return harness;
   };
@@ -49,7 +49,7 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   const canonical = async (id = "fictional") => JSON.parse(await readFile(join(historyRoot, `${switchConversationKey(id)}.history.json`), "utf8"));
   const journals = async () => await readdir(nativeRoot, { recursive: true }).then((entries) => entries.filter((entry) => entry.endsWith(".jsonl")));
   // Completed switches are recorded only by the canonical receipt (no native model_change frames).
-  const changes = async () => { try { const record = await canonical(); return record.version === 5 && record.lastSwitch ? [record.lastSwitch] : []; } catch { return []; } };
+  const changes = async () => { try { const record = await canonical(); return record.native !== undefined && record.lastSwitch ? [record.lastSwitch] : []; } catch { return []; } };
   const seed = async (message = "Fictional source fact", delivery = "seed") => { const h = makeHarness(); faux.setResponses([text("Fictional A reply")]); const response = await h.run(request(delivery, message)); expect(response.failure).toBeUndefined(); await h.dispose(); return response; };
   return { base, identityPath, nativeRoot, historyRoot, faux, models, native, transport, store, makeStore, makeHarness, request, canonical, changes, journals, seed, inspect, retire, runtimes, runtimeFor, canonicalBytes, prepareCalls };
 }
@@ -82,7 +82,7 @@ it("private configured override prepares extensions once, emits one switch, and 
   const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }).run(f.request("delivery-001", "Fictional override", { metadata: { web: { model: "faux:B" } } }));
   expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional B reply"); expect(f.transport).toHaveBeenCalledTimes(3);
   expect(extension).toHaveBeenCalledOnce(); expect(cleanup).toHaveBeenCalledOnce(); expect(settleCleanup).toHaveBeenCalledOnce();
-  const record = await f.canonical(); expect(record.version).toBe(5); expect(record.providerSession).toMatchObject({ modelKey: "faux:B", revision: 1 });
+  const record = await f.canonical(); expect(record.version).toBe(3); expect(record.providerSession).toMatchObject({ modelKey: "faux:B", revision: 1 });
   expect(await f.journals()).toHaveLength(1); expect(record.lastCommit.turnId).toBe(result.metadata.runId); expect(record.native.projection).toEqual(record.lastSwitch.artifact);
   const rows = (await Promise.all((await f.journals()).map(async (path) => (await readFile(join(f.nativeRoot, path), "utf8")).trim().split("\n").map((line) => JSON.parse(line))))).flat();
   const operation = rows.find((row) => row.kind === "operation_start" && row.payload.config?.model?.id === "B");
@@ -249,8 +249,8 @@ it("root authority contention is typed/retryable, preserves evidence and publish
   const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
   const other = await f.store.beginProviderSessionPreparation("other-fictional", "other-owner");
   const owner = await f.store.beginProviderSessionPreparation("fictional", "authority-check");
-  await expect(owner.acquireNativeHistoryAuthority({ exclusiveWriters: true })).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
-  await expect(owner.acquireNativeHistoryAuthority({ exclusiveWriters: true })).rejects.toBeInstanceOf(NativeHistoryAuthorityBusyError); await owner.abort();
+  await expect(owner.acquireNativeHistoryAuthority()).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
+  await expect(owner.acquireNativeHistoryAuthority()).rejects.toBeInstanceOf(NativeHistoryAuthorityBusyError); await owner.abort();
   const result = await f.makeHarness("B", true).run(f.request("busy-delivery"));
   expect(result.failure).toMatchObject({ kind: "native_switch_busy", details: { retryable: true } });
   expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); expect(await f.changes()).toHaveLength(0);

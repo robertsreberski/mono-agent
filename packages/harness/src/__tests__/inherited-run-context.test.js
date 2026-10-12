@@ -5,15 +5,15 @@ import { prepareCompaction } from "../compaction-kit/compaction.js";
 import { createHandoffBudget } from "../handoff.js";
 import { projectInheritedContext } from "../request-projection.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-const authority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+/** @type {import("../header-authority.js").HostJournalAuthority} */
+const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const coverage = { version: 1, sources: [{ journalId: "frozen", sourceTipId: "tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] };
 const inherited = { messages: [{ role: "user", content: "Fictional latest turn and outcome-unknown ledger", timestamp: 1 }], coverage };
 async function fixture() {
   const raw = await new MemorySessionRepo().create({ id: "current", hostAuthority: authority, assertOwned: async () => {} });
-  raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: authority });
   const faux = fauxProvider({ provider: "faux", models: [{ id: "context", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
-  const provider = vi.fn(() => fauxAssistantMessage([fauxText("Fixture reply")])); faux.setResponses([provider]);
+  const provider = vi.fn((_context) => fauxAssistantMessage([fauxText("Fixture reply")])); faux.setResponses([provider]);
   const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext: { systemPrompt: "Rules", tools: [] } });
   return { raw, provider, options: { model: faux.getModel(), models, systemPrompt: "Rules", inheritedProjection: inherited, handoffDispatchBudget: budget, tools: [] } };
 }
@@ -58,13 +58,11 @@ it("preserves the non-retainable prefix when a current-only checkpoint precedes 
   expect(result.value.retainedTail).toEqual([retained, delta]); expect(result.value.previousSummary).toBe("Current-only checkpoint");
 });
 
-it("validates a single durable v3 projection binding and rejects repeated, malformed or v2 bindings before append", async () => {
+it("validates a single durable projection binding and rejects repeated or malformed bindings before append", async () => {
   const f = await fixture();
   const binding = { version: 1, artifact: { id: "4".repeat(64), hash: "5".repeat(64) }, coverage, messageDigest: "6".repeat(64) };
   const baseline = f.raw.records.length;
   await expect(f.raw.beginTurn("invalid", {}, "synthetic", undefined, { ...binding, artifact: { ...binding.artifact, hash: "bad" } })).rejects.toThrow("Invalid mono-agent harness journal");
-  expect(f.raw.records).toHaveLength(baseline);
-  await expect(f.raw.write("turn_start", { config: {}, identitySource: "synthetic", baselineTipId: f.raw.tip, projectionBinding: binding }, { turnId: "v2-invalid" })).rejects.toThrow("Invalid mono-agent harness journal");
   expect(f.raw.records).toHaveLength(baseline);
   await f.raw.beginTurn("bound", {}, "synthetic", undefined, binding); await f.raw.endTurn("bound", "completed");
   expect(f.raw.validator.projectionBinding).toEqual(binding);

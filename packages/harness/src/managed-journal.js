@@ -12,7 +12,7 @@ export function managedJournalId(handleId) { return digest(`mono-host-journal-v1
 export function guardedEpochPlan(options) {
   if (!/^[a-f0-9]{64}$/.test(options.id)) throw new TypeError("Invalid managed epoch handle");
   const time = timestamp(options.timestamp), hash = digest(`initialize:${options.id}`), turnId = `synthetic:initialize:${hash}`;
-  const header = { format: JOURNAL_FORMAT, version: 2, ownershipSchemaVersion: 2, ownership: { kind: "unbound" },
+  const header = { format: JOURNAL_FORMAT, version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" },
     initialHandle: { id: options.id }, id: options.id, cwd: ".", createdAt: time,
     journalId: managedJournalId(options.id), hostAuthority: canonicalHostJournalAuthority(options.hostAuthority) };
   validateJournalHeader(header);

@@ -561,7 +561,7 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
         };
       }
       if (preparation) {
-        if (runtime.nativePreparedDispatch !== "v1" || !runtime.prepareNativeDispatch) throw new Error("Native prepared dispatch capability unavailable");
+        if (!runtime.prepareNativeDispatch) throw new Error("Native prepared dispatch capability unavailable");
         nativeLease = await runtime.prepareNativeDispatch(context.systemPrompt, runtimeOptions);
         await preparation.assertOwned();
         const bound = await preparation.ready(nativeLease, preparedContext!);

@@ -146,7 +146,7 @@ describe("purgeConversationState session accounting", () => {
     const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } }, artifacts: { dir: "./.mono-agent/artifacts" } });
     const nativeRoot = join(dir, ".mono-agent", "sessions"), historyRoot = join(dir, ".mono-agent", "history");
     const id = "fictional-purge-owner", rootId = "1".repeat(64);
-    const coordinates = { canonicalVersion: 4 as const, historyBucket: id, ownerKey: id, rootId, version: 1 as const };
+    const coordinates = { historyBucket: id, ownerKey: id, rootId, version: 1 as const };
     const authority = { ...coordinates, authorityId: createHash("sha256").update(JSON.stringify(coordinates)).digest("hex") };
     const repo = new JsonlSessionRepo({ sessionsRoot: nativeRoot }), chain = [];
     let predecessorJournalId: string | null = null;
@@ -162,7 +162,7 @@ describe("purgeConversationState session accounting", () => {
     const key = createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
     await writeFile(join(historyRoot, `${key}.history.json`), JSON.stringify({ version: 4, conversationId: id, messages: [],
       providerSession: { epoch: chain[1]!.epoch, revision: 0, modelKey: "faux:B" }, native: { authority, chain, projection: null } }), { mode: 0o600 });
-    await writeFile(join(historyRoot, ".native-history-root.json"), JSON.stringify({ version: 1, kind: "native-history", canonicalVersion: 4, rootId }), { mode: 0o600 });
+    await writeFile(join(historyRoot, ".native-history-root.json"), JSON.stringify({ version: 1, kind: "native-history", rootId }), { mode: 0o600 });
     // Whole-root deletion covers immutable artifacts and uncommitted/crash state,
     // without attempting to authorize a per-owner roll-forward or repair first.
     await writeFile(join(historyRoot, ".model-switches", `${key}.${"4".repeat(64)}.${"5".repeat(64)}.handoff.json`), "Fictional retained handoff bytes.", { mode: 0o600 });

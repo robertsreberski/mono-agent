@@ -117,7 +117,7 @@ it("v5: a deleted current journal after a switch recovers same-model on canonica
   const f = await fixture(), first = await f.make();
   f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional recovered B answer"), f.reply("Fictional warm B answer")]);
   await f.send(first, "fictional-seed", "A"); await f.send(first, "fictional-switch", "B");
-  const before = await f.record(); expect(before.version).toBe(5);
+  const before = await f.record(); expect(before.version).toBe(3);
   const [current] = await ownJournals(f.journals); expect(await ownJournals(f.journals)).toHaveLength(1);
   await unlink(join(f.journals, current!));
   await first.dispose();
@@ -175,7 +175,7 @@ it("a first switch from a v3 conversation whose current journal is missing takes
   const switched = await f.send(h, "fictional-switch", "B");
   expect(switched.text).toBe("Fictional B answer"); expect(f.summaryCalls()).toBe(1);
   expect(f.contexts()[1]).toContain("Fictional A answer");
-  const after = await f.record(); expect(after.version).toBe(5); expect(after.providerSession.modelKey).toBe("openai-codex:B");
+  const after = await f.record(); expect(after.version).toBe(3); expect(after.providerSession.modelKey).toBe("openai-codex:B");
   expect(await ownJournals(f.journals)).toHaveLength(1);
 }, 20_000);
 
@@ -216,22 +216,16 @@ it("v3: a staged-only restore of the current journal refuses typed and is never 
 // Stray non-journal entries are covered at probe level (native-journal-storage
 // test): the probe skips them, but the pre-existing native inventory used by
 // retention accounting still rejects them for every opt-in turn (recorded limit).
-it("v3: an unattributable damaged journal blocks only the missing verdict; once removed, recovery proceeds", async () => {
-  const f = await fixture(), first = await f.make();
+it("deterministic missing-journal recovery ignores and preserves misnamed foreign damage", async () => {
+  const f = await fixture(true), first = await f.make();
   f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional recovered answer")]);
   await f.send(first, "fictional-seed", "A");
-  for (const name of await readdir(f.journals)) await unlink(join(f.journals, name));
-  // Headerless, so it cannot be proved foreign: it may be this conversation's journal.
+  for (const name of await ownJournals(f.journals)) await unlink(join(f.journals, name));
   const damaged = join(f.journals, "11111111-1111-4111-8111-111111111111.jsonl");
-  await writeFile(damaged, "", { mode: 0o600 });
-  await first.dispose();
-  const reopened = await f.make(), before = await f.record();
-  expect(await f.send(reopened, "fictional-refused", "A")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
-  expect(await f.record()).toEqual(before); expect(await readFile(damaged, "utf8")).toBe("");
-  await unlink(damaged);
-  const recovered = await f.send(reopened, "fictional-after-loss", "A");
-  expect(recovered.text).toBe("Fictional recovered answer"); expect(recovered.streamed).toEqual(["degraded_native_context"]);
-  expect((await readdir(f.journals)).filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
+  await writeFile(damaged, "", { mode: 0o600 }); await first.dispose();
+  const reopened = await f.make();
+  expect(await f.send(reopened, "fictional-known-missing", "A")).toMatchObject({ text: "Fictional recovered answer", streamed: ["degraded_native_context"] });
+  expect(await readFile(damaged, "utf8")).toBe("");
 }, 20_000);
 
 it("OFF keeps the ordinary session-resume replay for a missing journal, without the prepared probe or degradation warning", async () => {
@@ -273,7 +267,7 @@ it.each([true, false])("stray entries never block present or missing journals, a
   await untouched(f.journals, strays); expect((await readdir(join(f.journals, "scratch")))).toEqual([]);
 }, 20_000);
 
-it.each([true, false])("a foreign damaged journal never blocks a present journal; a missing one refuses typed and it is never deleted (opt-in=%s)", async (enabled) => {
+it.each([true, false])("misnamed foreign damage blocks neither present nor deterministically missing journals and is never deleted (opt-in=%s)", async (enabled) => {
   const f = await fixture(enabled), first = await f.make();
   f.faux.setResponses([f.reply("Fictional seed answer"), f.reply("Fictional present answer"), f.reply("Fictional later answer")]);
   await f.send(first, "fictional-seed", "A"); await plant(f.journals, foreign);
@@ -281,15 +275,9 @@ it.each([true, false])("a foreign damaged journal never blocks a present journal
   const reopened = await f.make();
   expect(await f.send(reopened, "fictional-present", "A")).toMatchObject({ text: "Fictional present answer", streamed: [] });
   for (const name of await ownJournals(f.journals)) await unlink(join(f.journals, name));
-  // Possibly this conversation's own damaged journal: never replayed past.
   const calls = f.transport.mock.calls.length;
-  expect(await f.send(reopened, "fictional-after-loss", "A")).toMatchObject({ failure: "native_journal_unreadable", streamed: [] });
-  expect(f.transport).toHaveBeenCalledTimes(calls);
-  if (!enabled) {
-    // Ordinary path, unchanged: the failed turn settles cold, so the next message
-    // starts a fresh epoch (canonical replay); the file stays untouched.
-    expect(await f.send(reopened, "fictional-later", "A")).toMatchObject({ text: "Fictional later answer" });
-  }
+  expect(await f.send(reopened, "fictional-after-loss", "A")).toMatchObject({ text: "Fictional later answer", streamed: [enabled ? "degraded_native_context" : "session_resume_retry"] });
+  expect(f.transport).toHaveBeenCalledTimes(calls + 1);
   await (reopened as unknown as { startNewSession(id: string): Promise<void> }).startNewSession("web:fictional-thread");
   await untouched(f.journals, foreign);
 }, 20_000);

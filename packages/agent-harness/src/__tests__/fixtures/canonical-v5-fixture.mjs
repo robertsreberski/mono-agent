@@ -5,16 +5,16 @@ export const timestamp = "2000-01-01T00:00:00.000Z";
 export const conversationKey = (id) => createHash("sha256").update("mono-agent-history-v1\0").update(id).digest("hex");
 export const handleId = (id, epoch) => createHash("sha256").update("mono-agent-provider-session-v2\0").update(id).update("\0").update(epoch).digest("hex");
 export const journalId = (id, epoch) => createHash("sha256").update(`mono-host-journal-v1\0${handleId(id, epoch)}`).digest("hex");
-const authorityFor = (id, canonicalVersion = 4) => {
+const authorityFor = (id) => {
   const ownerKey = id.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
-  const coordinates = { canonicalVersion, historyBucket: id, ownerKey, rootId: "1".repeat(64), version: 1 };
+  const coordinates = { historyBucket: id, ownerKey, rootId: "1".repeat(64), version: 1 };
   return { ...coordinates, authorityId: createHash("sha256").update(JSON.stringify(coordinates)).digest("hex") };
 };
 // Fictional canonical fixtures only: no production authority issuance.
 export function canonicalRecord(id = bucket) {
   const epoch = "a".repeat(64), predecessorEpoch = "b".repeat(64);
   const artifact = { id: "e".repeat(64), hash: "e".repeat(64) };
-  return { version: 5, conversationId: id, messages: [{ role: "assistant", content: "Fictional retained answer.", timestamp }],
+  return { version: 3, conversationId: id, messages: [{ role: "assistant", content: "Fictional retained answer.", timestamp }],
     providerSession: { epoch, revision: 7, modelKey },
     native: { authority: authorityFor(id), projection: artifact },
     lastSwitch: { version: 1, switchId: "d".repeat(64), intentDigest: "f".repeat(64), fromEpoch: predecessorEpoch, toEpoch: epoch, artifact },
@@ -22,16 +22,7 @@ export function canonicalRecord(id = bucket) {
       journalId: journalId(id, epoch), tipId: "fictional-prior-tip", baseRevision: 6, committedRevision: 7, outcome: "completed" } };
 }
 /** The unsupported pre-release v4 chain shape, refused and never migrated. */
-export function preReleaseV4Record(id = bucket) {
-  const epoch = "a".repeat(64), predecessorEpoch = "b".repeat(64), ownerKey = id.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
-  const segment = (journal, sourceEpoch, ordinal, predecessorJournalId) => ({ journalId: journal, epoch: sourceEpoch, ordinal,
-    handleId: handleId(id, sourceEpoch), predecessorJournalId, ownerKey, historyBucket: id,
-    sourceTipId: "fictional-source-tip", sourceSeq: 4, sourceDigest: "c".repeat(64),
-    provenance: { provider: "openai", api: "openai-responses", model: "fictional-model", account: null } });
-  const value = canonicalRecord(id);
-  return { ...value, version: 4, native: { ...value.native,
-    chain: [segment("fictional-predecessor", predecessorEpoch, 0, null), segment("fictional-journal", epoch, 1, "fictional-predecessor")] } };
-}
+
 export function evidence(request) {
   const { descriptor } = request;
   const initial = request.expectedInputs.find((input) => input.placement === "initial");

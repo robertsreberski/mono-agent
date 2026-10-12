@@ -2040,7 +2040,7 @@ it("commits recovered continuity at the same epoch and next revision without rec
   const root = await tempDir();
   const retired: string[] = [];
   const store = createDurableHistoryStore({ root, retireProviderSession: async (id) => { retired.push(id); } });
-  expect(store.providerSessionRecovery).toBe("v1");
+  expect(store.readProviderSessionBinding).toBeTypeOf("function");
   const first = await store.beginProviderSessionTurn("recovered", "run-one", { modelKey: "faux:fixture" });
   await (await first.prepareCommit([{ role: "user", content: "cancelled ask" }, { role: "assistant", content: "continuity account" }], { providerSessionSynced: true })).commit();
   const next = await store.beginProviderSessionTurn("recovered", "run-two", { modelKey: "faux:fixture" });

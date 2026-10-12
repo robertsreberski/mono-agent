@@ -1,3 +1,4 @@
+import { ok as assertPresent } from "node:assert";
 import { mkdtemp, mkdir, copyFile, readFile, writeFile, rm, stat, chmod, readdir, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,7 +80,7 @@ it("cancels a repository delete waiting behind a foreign writer without touching
 it("keeps a stale native stage whose writer lock is insecure, unattributed, without failing the catalogue", async () => {
   const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r });
   await (await repo.create({ id: "fictional-healthy" })).close();
-  const journalId = "55555555-5555-4555-8555-555555555555", stage = join(r, "mono-v2", "journals", `${journalId}.jsonl.creating`);
+  const journalId = (await import("../managed-journal.js")).managedJournalId("fictional-insecure-stage"), stage = join(r, "mono-v2", "journals", `${journalId}.jsonl.creating`);
   const lock = join(r, "mono-v2", "locks", `${journalId}.sqlite`);
   await writeFile(stage, "", { mode: 0o600 }); await writeFile(lock, "", { mode: 0o644 });
   expect((await repo.list()).map((m) => m.id)).toEqual(["fictional-healthy"]);
@@ -151,7 +152,8 @@ it("settles a create cancelled behind the catalogue promptly, releasing its writ
   const settled = await Promise.race([creating.then(() => "created", (error) => error.name), new Promise((resolve) => setTimeout(() => resolve("stuck"), 2_000))]);
   try {
     expect(settled).toBe("AbortError"); // settled while the catalogue is still held
-  } finally { held.release(); vi.restoreAllMocks(); }
+  assertPresent(held);
+  } finally { /** @type {any} */ (held)?.release(); vi.restoreAllMocks(); }
   for (let i = 0; i < 50 && (await readdir(locks.directory)).length > 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
   expect(await readdir(locks.directory)).toEqual(["catalog.sqlite"]);
   expect(await repo.list()).toEqual([]);

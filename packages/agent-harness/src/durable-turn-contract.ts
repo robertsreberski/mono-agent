@@ -50,7 +50,7 @@ export interface PendingTurnPayload {
 }
 export interface PendingTurnPointer { readonly generation: string; readonly sha256: string }
 export interface DurableTurnFence {
-  readonly version: 5;
+  readonly version: 6;
   readonly kind: "execution" | "compaction" | "retirement";
   readonly conversationKey: string;
   readonly logicalConversationKey: string;
@@ -188,7 +188,7 @@ export function validateTurnPointer(value: unknown): asserts value is PendingTur
 }
 export function validateDurableTurnFence(value: unknown): asserts value is DurableTurnFence {
   object(value); keys(value, ["version", "kind", "conversationKey", "logicalConversationKey", "epoch", "providerSessionId", "modelKey", "revision", "runIdDigest"], ["payload"]);
-  if (value.version !== 5 || !["execution", "compaction", "retirement"].includes(value.kind as string)) invalid();
+  if (value.version !== 6 || !["execution", "compaction", "retirement"].includes(value.kind as string)) invalid();
   for (const key of ["conversationKey", "logicalConversationKey", "epoch", "providerSessionId", "runIdDigest"]) hash(value[key]);
   text(value.modelKey); assertSessionModelKey(value.modelKey); revision(value.revision);
   if (value.kind === "retirement" ? value.payload !== undefined : value.payload === undefined) invalid();

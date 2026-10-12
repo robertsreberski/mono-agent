@@ -2,8 +2,8 @@ import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, Runtim
 import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
 import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
-import { MODEL_SWITCH_DIRECTORY, ModelSwitchCapacityError, switchDigest, validateModelSwitchState, validateTurnHistoryV5, recognizesModelSwitchBinding, MAX_NATIVE_EPOCH_BYTES, validateFrozenHandoffBudget, switchHash, validateSwitchReference, refusePreReleaseSwitchFormat, UnsupportedPreReleaseSwitchFormatError } from "./durable-model-switch-contract.js";
-import type { ModelSwitchState, HandoffReference, SummaryAttempt, TurnHistoryV5, CanonicalJournalDescriptor } from "./durable-model-switch-contract.js";
+import { MODEL_SWITCH_DIRECTORY, ModelSwitchCapacityError, switchDigest, validateModelSwitchState, validateNativeTurnHistory, recognizesModelSwitchBinding, MAX_NATIVE_EPOCH_BYTES, validateFrozenHandoffBudget, switchHash, validateSwitchReference } from "./durable-model-switch-contract.js";
+import type { ModelSwitchState, HandoffReference, SummaryAttempt, NativeTurnHistory, CanonicalJournalDescriptor } from "./durable-model-switch-contract.js";
 import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
 import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
@@ -73,7 +73,7 @@ type NativeHistoryIo = {
 /** C replaces the current guarded journal (same model); D deletes the conversation. */
 interface NativeHistoryOperation {
   readonly version: 3; readonly disposition: "C" | "D";
-  readonly source: TurnHistoryV5; readonly next: CanonicalHistoryFile | null;
+  readonly source: NativeTurnHistory; readonly next: CanonicalHistoryFile | null;
   readonly timestamp: number;
 }
 const CONVERSATION_LOCK_SHARDS = 16;
@@ -199,14 +199,14 @@ export interface ManagedProviderSessionPreparation {
   readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
     readonly budget: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget }>;
   assertOwned(): Promise<void>;
-  acquireNativeHistoryAuthority(options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
+  acquireNativeHistoryAuthority(): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
   beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
-  rollForwardModelSwitch(switchId: string, options: { readonly exclusiveWriters: true; readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
+  rollForwardModelSwitch(switchId: string, options?: { readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
   /** missingCurrentEpoch is owner-approved recovery of an externally missing current
    * journal: when that exact epoch is still canonical, admission first rotates it
    * through the existing same-model cold path (v3 retire/new epoch, v5 durable C).
    * Every model change goes through the structured switch; there is no cold one. */
-  admit(binding: ProviderSessionTurnBinding, options?: { readonly missingCurrentEpoch?: string }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: TurnHistoryV5["native"]; assertOwned(): Promise<void> }>;
+  admit(binding: ProviderSessionTurnBinding, options?: { readonly missingCurrentEpoch?: string }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: NativeTurnHistory["native"]; assertOwned(): Promise<void> }>;
   /** @internal Read-only probe of the canonical current journal under this owner.
    * `absent` means no current journal is expected yet (or no probe capability). */
   inspectCurrentJournal?(): Promise<CurrentJournalPresence>;
@@ -218,8 +218,8 @@ export type CurrentJournalPresence = { readonly status: "absent" | "present" }
 export interface ProviderSessionPreparationSnapshot {
   readonly history: readonly HistoryMessage[];
   readonly source: Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>;
-  readonly native?: TurnHistoryV5["native"];
-  readonly lastSwitch?: TurnHistoryV5["lastSwitch"];
+  readonly native?: NativeTurnHistory["native"];
+  readonly lastSwitch?: NativeTurnHistory["lastSwitch"];
   readonly pending?: ModelSwitchState;
 }
 export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
@@ -248,13 +248,13 @@ interface ProviderSessionState {
   readonly dirtyRunId?: string;
 }
 
-type CanonicalHistoryFile = TurnHistoryV3 | TurnHistoryV5;
+type CanonicalHistoryFile = TurnHistoryV3 | NativeTurnHistory;
 
 interface LoadedHistoryRecord {
   readonly lastCommit?: DurableTurnReceipt;
-  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION | 5;
-  readonly native?: TurnHistoryV5["native"];
-  readonly lastSwitch?: NonNullable<TurnHistoryV5["lastSwitch"]>;
+  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION;
+  readonly native?: NativeTurnHistory["native"];
+  readonly lastSwitch?: NonNullable<NativeTurnHistory["lastSwitch"]>;
   readonly conversationId: string;
   readonly messages: readonly HistoryMessage[];
   readonly providerSession?: ProviderSessionState;
@@ -349,9 +349,6 @@ interface CommittedEntry {
 export class DurableConversationHistoryStore implements ConversationHistoryStore {
   readonly providerSessionReconciliation: "v1" | undefined;
   private readonly inspectProviderTurn: ConversationHistoryTurnInspector | undefined;
-  readonly providerSessionPreparation = "v1" as const;
-  readonly providerSessionModelBinding = "v1" as const;
-  readonly providerSessionRecovery = "v1" as const;
   readonly providerSessionRetirement: "fail-closed" | undefined;
   readonly contextImport: ConversationHistoryContextImport | undefined;
   private readonly root: string;
@@ -436,9 +433,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private nativeHistoryRoot(rootIdentity: DirectoryIdentity): NativeHistoryRootStore {
     return this.nativeHistoryRootStore ??= new NativeHistoryRootStore(this.root, rootIdentity);
   }
-  /** Explicit stopped-older-writer acknowledgement; no production caller opts in. */
-  async acquireNativeHistoryAuthority(conversationId: string, options: { readonly exclusiveWriters: true }): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease> {
-    if (options?.exclusiveWriters !== true) throw new TypeError("Native root authority requires exclusive upgraded writers");
+  /** Borrow host-owned native-root authority while holding the conversation claim. */
+  async acquireNativeHistoryAuthority(conversationId: string): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease> {
     const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
     const held = await this.acquireConversation(id);
@@ -466,7 +462,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const rootStore = this.nativeHistoryRoot(rootIdentity);
         if (!await rootStore.read()) {
           for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {
-            if ((await this.readCommittedEntryRecord(entry, rootIdentity)).sourceVersion === 5) throw new Error("Canonical v5 root authority marker is missing; restore consistent backup");
+            if ((await this.readCommittedEntryRecord(entry, rootIdentity)).native !== undefined) throw new Error("Native canonical root authority marker is missing; restore consistent backup");
           }
         }
         marker = await rootStore.ensure({ assertOwned, reserve: async (bytes) => {
@@ -503,7 +499,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const cached = this.rootAccounting?.records ?? new Map<string, LoadedHistoryRecord | undefined>();
     for (const entry of entries) if (!cached.has(entry.name)) {
       try { cached.set(entry.name, await this.readCommittedEntryRecord(entry, rootIdentity)); }
-      catch (error) { if (!(error instanceof CanonicalParseFailure || error instanceof UnsupportedPreReleaseSwitchFormatError)) throw error; cached.set(entry.name, undefined); }
+      catch (error) { if (!(error instanceof CanonicalParseFailure)) throw error; cached.set(entry.name, undefined); }
     }
     return new Map(entries.map((entry) => [entry.name, cached.get(entry.name)]));
   }
@@ -513,10 +509,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (records === undefined && await this.nativeHistoryRoot(rootIdentity).read()) {
         records = await this.accountingRecords(rootIdentity, await this.scanCommittedEntries(rootIdentity, false));
       }
-      for (const record of records?.values() ?? []) if (record?.sourceVersion === 5) ids.add(currentJournal(record.conversationId, record.providerSession!.epoch).journalId);
+      for (const record of records?.values() ?? []) if (record?.native !== undefined) ids.add(currentJournal(record.conversationId, record.providerSession!.epoch).journalId);
       for (const operation of await this.nativeOperationOwners(rootIdentity)) {
         ids.add(currentJournal(operation.source.conversationId, operation.source.providerSession.epoch).journalId);
-        if (operation.next?.version === 5) ids.add(currentJournal(operation.next.conversationId, operation.next.providerSession.epoch).journalId);
+        if (operation.next?.native !== undefined) ids.add(currentJournal(operation.next.conversationId, operation.next.providerSession.epoch).journalId);
       }
       for (const { state } of (await this.switchInventory(rootIdentity)).pending) {
         if (state.identity.source) ids.add(state.identity.source.journalId);
@@ -539,7 +535,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const pending = [];
       for (const entry of footprint.pending) {
         const state = entry.state, record = records === undefined ? await this.readRecord(state.identity.historyBucket, rootIdentity) : records.get(`${historyKey(state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
-        const committed = record?.sourceVersion === 5 && recognizesModelSwitchBinding(record, state.identity);
+        const committed = record?.native !== undefined && recognizesModelSwitchBinding(record, state.identity);
         const target = physical.journals[currentJournal(state.identity.historyBucket, state.identity.targetEpoch).journalId];
         if (!committed) nativeStagedBytes += Math.max(0, (target?.retainedBytes ?? 0) - (target?.stagedBytes ?? 0));
         const canonicalCredit = committed ? (await lstat(join(this.root, `${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}`))).size : 0;
@@ -554,21 +550,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private epochContext(id: string, epoch: string, authority: RuntimeNativeJournalAuthority, assertOwned: () => Promise<void>, timestamp = 0): RuntimeNativeEpochContext {
     return { hostAuthority: authority, assertOwned, targetHandleId: deriveProviderSessionId(id, epoch), timestamp };
   }
-  /** Owner-scoped, read-only: refuse only a conversation that has pre-release or damaged switch data. */
-  private async refusePreReleaseOwner(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
-    const inventory = await this.switchInventory(rootIdentity), key = historyKey(conversationId);
-    if (inventory.refused.includes(key)) refusePreReleaseSwitchFormat();
+  /** Owner-scoped, read-only: refuse only a conversation that has damaged switch data. */
+  private async assertSwitchOwnerReadable(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    const inventory = await this.modelSwitchPayloads(rootIdentity).inventory(conversationId), key = historyKey(conversationId);
     if (inventory.damaged.includes(key)) throw new OwnedFileDamagedError(`${MODEL_SWITCH_DIRECTORY}/${key}`);
   }
-  private async refusePreReleaseOwnerLocked(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
-    const unlock = await this.acquireRootTransaction(rootIdentity);
-    try { await this.refusePreReleaseOwner(conversationId, rootIdentity); } finally { await unlock(); }
-  }
   private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
-    await this.refusePreReleaseOwner(conversationId, rootIdentity);
-    if ((await this.switchInventory(rootIdentity)).pending.some((entry) => entry.state.identity.historyBucket === conversationId)) {
-      throw new ModelSwitchPendingError();
-    }
+    const inventory = await this.modelSwitchPayloads(rootIdentity).inventory(conversationId);
+    if (inventory.damaged.includes(historyKey(conversationId))) throw new OwnedFileDamagedError(`${MODEL_SWITCH_DIRECTORY}/${historyKey(conversationId)}`);
+    if (inventory.pending.length) throw new ModelSwitchPendingError();
   }
   /** Read-only support probe. Long IDs continue today's ordinary cold replay:
    * unsupported storage is a result, not a switch-time contract error. */
@@ -579,10 +569,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
     if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
     const rootIdentity = await this.ensureRoot(), record = await this.readRecord(id, rootIdentity);
-    await this.refusePreReleaseOwner(id, rootIdentity);
-    if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || (record.sourceVersion !== STORE_VERSION && record.sourceVersion !== 5)) return { status: "unsupported", reason: "unbound" };
+    await this.assertSwitchOwnerReadable(id, rootIdentity);
+    if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || record.sourceVersion !== STORE_VERSION) return { status: "unsupported", reason: "unbound" };
     return { status: "supported", sourceCanonicalDigest: switchDigest({ version: record.sourceVersion, conversationId: id, messages: record.messages,
-      providerSession: record.providerSession, ...lastCommitBinding(record), ...v5Extension(record) }), sourceRevision: record.providerSession.revision,
+      providerSession: record.providerSession, ...lastCommitBinding(record), ...nativeExtension(record) }), sourceRevision: record.providerSession.revision,
       fromModelKey: record.providerSession.modelKey, sourceEpoch: record.providerSession.epoch, ownerKey };
   }
   /** Host-only storage lease. Holds the real logical/physical claim while each
@@ -662,11 +652,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   /** Restartable ready-only storage transaction; never runs a producer or provider.
    * Pending stays fenced with its source binding. No configured host calls this. */
   async rollForwardModelSwitch(conversationId: string, switchId: string, options: {
-    readonly exclusiveWriters: true; readonly onPhase?: (phase: string) => Promise<void>;
-  }): Promise<{ readonly status: "pending" | "committed" | "absent" }> {
-    if (options?.exclusiveWriters !== true || !this.nativeJournalStorage) throw new Error("Managed native switch capability and exclusive writers required");
+     readonly onPhase?: (phase: string) => Promise<void>;
+  } = {}): Promise<{ readonly status: "pending" | "committed" | "absent" }> {
+    if (!this.nativeJournalStorage) throw new Error("Managed native switch capability required");
     const id = normalizeConversationId(conversationId), held = await this.acquireConversation(id);
-    try { return await this.rollForwardHeldModelSwitch(id, switchId, held, options.onPhase); }
+    try { return await this.rollForwardHeldModelSwitch(id, switchId, held, options?.onPhase); }
     finally { await this.releaseConversation(held, held.rootIdentity); }
   }
   private async rollForwardHeldModelSwitch(id: string, switchId: string, held: HeldConversation,
@@ -688,7 +678,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (state.identity.ownerKey !== logicalConversationIdForFence(id)) throw new Error("Switch does not belong to the managed owner");
     const marker = (await this.nativeHistoryRoot(rootIdentity).read())!;
     const authority = this.nativeHistoryRoot(rootIdentity).authority(marker, state.identity.ownerKey, id);
-    if (!(existing.sourceVersion === 5 && recognizesModelSwitchBinding(existing, state.identity))) {
+    if (!(existing.native !== undefined && recognizesModelSwitchBinding(existing, state.identity))) {
       requireSettledFence(await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot()));
       const source = await this.modelSwitchStorageSource(id);
       if (source.status !== "supported" || source.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest
@@ -716,7 +706,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const canonical = await this.readRecord(id, rootIdentity);
       // A later same-model cold rotation may have replaced the target epoch; the
       // receipt still proves the outgoing journal is superseded.
-      if (canonical.sourceVersion !== 5 || !recognizesModelSwitchBinding(canonical, state.identity)
+      if (canonical.native === undefined || !recognizesModelSwitchBinding(canonical, state.identity)
         || switchDigest(canonical.lastSwitch?.artifact) !== switchDigest(state.artifact)
         || canonical.providerSession?.epoch === state.identity.targetEpoch && (canonical.providerSession.modelKey !== state.identity.toModelKey
           || switchDigest(canonical.native?.projection) !== switchDigest(state.artifact))) throw new Error("Canonical ready binding conflicts with accepted intent");
@@ -745,39 +735,38 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private requireNativeCapability(record: LoadedHistoryRecord | CanonicalHistoryFile, capability: "native epoch transition" | "whole-conversation deletion", operation: string): void {
-    if (("sourceVersion" in record ? record.sourceVersion : record.version) === 5 && !this.nativeJournalStorage) {
-      throw new Error(`Canonical v5 ${operation} requires managed ${capability} capability`);
+    if (record.native !== undefined && !this.nativeJournalStorage) {
+      throw new Error(`Native canonical ${operation} requires managed ${capability} capability`);
     }
   }
-  private nativeCanonical(record: LoadedHistoryRecord): TurnHistoryV5 {
-    if (record.sourceVersion !== 5 || !record.native || !record.providerSession?.modelKey || record.providerSession.revision === undefined) throw new Error("Native canonical membership unavailable");
-    const value = { version: 5 as const, conversationId: record.conversationId, messages: record.messages,
+  private nativeCanonical(record: LoadedHistoryRecord): NativeTurnHistory {
+    if (record.native === undefined || !record.providerSession?.modelKey || record.providerSession.revision === undefined) throw new Error("Native canonical membership unavailable");
+    const value = { version: 3 as const, conversationId: record.conversationId, messages: record.messages,
       providerSession: { epoch: record.providerSession.epoch, revision: record.providerSession.revision, modelKey: record.providerSession.modelKey },
-      ...lastCommitBinding(record), ...v5Extension(record) };
-    validateTurnHistoryV5(value, (message) => validateAndCloneMessage(message as HistoryMessage)); return value;
+      ...lastCommitBinding(record), ...nativeExtension(record) };
+    validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage)); return value;
   }
   /** Same-model cold rotation: a fresh guarded epoch replays canonical history, so
    * the old inherited handoff no longer applies. The switch receipt is retained. */
-  private coldRecord(source: TurnHistoryV5, next: CanonicalHistoryFile): TurnHistoryV5 {
+  private coldRecord(source: NativeTurnHistory, next: CanonicalHistoryFile): NativeTurnHistory {
     if (next.providerSession.modelKey !== source.providerSession.modelKey) throw new ProviderSessionModelChangedError();
-    const value = { ...next, version: 5 as const, native: { authority: source.native.authority, projection: null },
+    const value = { ...next, version: 3 as const, native: { authority: source.native.authority, projection: null },
       ...(source.lastSwitch ? { lastSwitch: structuredClone(source.lastSwitch) } : {}) };
-    validateTurnHistoryV5(value, (message) => validateAndCloneMessage(message as HistoryMessage)); return value;
+    validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage)); return value;
   }
   private nativeOperationPath(id: string): string { return join(this.root, `.native-history-op.${historyKey(id)}.json`); }
   private validateNativeOperation(value: unknown): asserts value is NativeHistoryOperation {
-    if (isRecord(value) && (value.version === 1 || value.version === 2)) refusePreReleaseSwitchFormat();
     if (!isRecord(value) || Object.keys(value).sort().join(",") !== "disposition,next,source,timestamp,version"
       || value.version !== 3 || !["C", "D"].includes(value.disposition as string) || value.timestamp !== 0) throw new TypeError("Invalid native history lifecycle intent");
-    validateTurnHistoryV5(value.source, (message) => validateAndCloneMessage(message as HistoryMessage));
+    validateNativeTurnHistory(value.source, (message) => validateAndCloneMessage(message as HistoryMessage));
     if (value.next !== null) {
-      if (isRecord(value.next) && value.next.version === 5) validateTurnHistoryV5(value.next, (message) => validateAndCloneMessage(message as HistoryMessage));
+      if (isRecord(value.next) && value.next.native !== undefined) validateNativeTurnHistory(value.next, (message) => validateAndCloneMessage(message as HistoryMessage));
       else validateTurnHistoryV3(value.next, (message) => validateAndCloneMessage(message as HistoryMessage));
       if (value.next.conversationId !== value.source.conversationId) throw new TypeError("Native lifecycle owner changed");
     }
     if (value.disposition === "C") {
-      if (!value.next || value.next.version !== 5 || value.next.providerSession.modelKey !== value.source.providerSession.modelKey || switchDigest(this.coldRecord(value.source, value.next)) !== switchDigest(value.next)) throw new TypeError("Native cold plan changed");
-    } else if (value.next && (value.next.version !== 3 || value.next.messages.length || value.next.lastCommit)) throw new TypeError("Invalid native deletion replacement");
+      if (!value.next || value.next.native === undefined || value.next.providerSession.modelKey !== value.source.providerSession.modelKey || switchDigest(this.coldRecord(value.source, value.next)) !== switchDigest(value.next)) throw new TypeError("Native cold plan changed");
+    } else if (value.next && (value.next.version !== 3 || value.next.native !== undefined || value.next.messages.length || value.next.lastCommit)) throw new TypeError("Invalid native deletion replacement");
   }
   private async readNativeOperationBytes(name: string, rootIdentity: DirectoryIdentity): Promise<Buffer> {
     if (!NATIVE_OPERATION_PATTERN.test(name)) throw new TypeError("Invalid native lifecycle filename");
@@ -799,7 +788,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     catch (error) { if (isErrno(error, "ENOENT")) return undefined; throw error; }
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); this.validateNativeOperation(value);
     if (value.source.conversationId !== id) throw new TypeError("Native lifecycle filename/owner mismatch");
-    await this.assertNativeRecordAuthority({ ...value.source, sourceVersion: 5 }, rootIdentity); return value;
+    await this.assertNativeRecordAuthority({ ...value.source, sourceVersion: STORE_VERSION }, rootIdentity); return value;
   }
   private async nativeOperationFootprint(rootIdentity: DirectoryIdentity, native?: Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>): Promise<{ bytes: number; reserved: number; keys: Set<string> }> {
     const compute = async () => {
@@ -854,12 +843,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (!this.nativeJournalStorage) throw new Error("Managed native lifecycle capability required");
     const id = operation.source.conversationId;
     const owned = async () => {
-      await assertOwned(); await this.assertNativeRecordAuthority({ ...operation.source, sourceVersion: 5 }, rootIdentity);
+      await assertOwned(); await this.assertNativeRecordAuthority({ ...operation.source, sourceVersion: STORE_VERSION }, rootIdentity);
       const latest = await this.readRecord(id, rootIdentity, true);
-      const sourceMatches = latest.sourceVersion === 5 && switchDigest(this.nativeCanonical(latest)) === switchDigest(operation.source);
+      const sourceMatches = latest.native !== undefined && switchDigest(this.nativeCanonical(latest)) === switchDigest(operation.source);
       const nextMatches = operation.next === null ? latest.sourceVersion === 0 : latest.sourceVersion === operation.next.version
         && switchDigest({ version: latest.sourceVersion, conversationId: id, messages: latest.messages, providerSession: latest.providerSession,
-          ...lastCommitBinding(latest), ...v5Extension(latest) }) === switchDigest(operation.next);
+          ...lastCommitBinding(latest), ...nativeExtension(latest) }) === switchDigest(operation.next);
       if (!sourceMatches && !nextMatches) throw new Error("Canonical membership changed during native lifecycle transaction");
     };
     await owned();
@@ -872,7 +861,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await fsyncDirectory(this.root, rootIdentity);
     const source = operation.source, sourceJournal = currentJournal(id, source.providerSession.epoch);
     const current = await this.readRecord(id, rootIdentity, true);
-    const sourceMatches = current.sourceVersion === 5 && switchDigest(this.nativeCanonical(current)) === switchDigest(source);
+    const sourceMatches = current.native !== undefined && switchDigest(this.nativeCanonical(current)) === switchDigest(source);
     // A published canonical next proves its epoch was created first.
     if (operation.disposition === "C" && sourceMatches) {
       await nativeIo(() => this.nativeJournalStorage!.createEpoch(this.epochContext(id, operation.next!.providerSession.epoch, source.native.authority, owned)));
@@ -983,7 +972,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
     const provider = record.providerSession;
-    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0, ...(record.sourceVersion === 5 ? { native: true as const } : {}) };
+    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0, ...(record.native !== undefined ? { native: true as const } : {}) };
   }
 
   async append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
@@ -1144,7 +1133,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       const existing = await this.readRecord(conversationId, rootIdentity);
       this.requireNativeCapability(existing, "whole-conversation deletion", "reset");
-      if (existing.sourceVersion === 5) {
+      if (existing.native !== undefined) {
         const source = this.nativeCanonical(existing);
         const operation: NativeHistoryOperation = { version: 3, disposition: "D", source, timestamp: 0,
           next: { version: 3, conversationId, messages: [], providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) } } };
@@ -1187,7 +1176,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
-      const current = await this.readRecord(normalizedId, rootIdentity); await this.refusePreReleaseOwnerLocked(normalizedId, rootIdentity);
+      const current = await this.readRecord(normalizedId, rootIdentity); await this.assertSwitchOwnerReadable(normalizedId, rootIdentity);
       this.requireNativeCapability(current, "native epoch transition", "host-only append");
       await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity);
@@ -1379,7 +1368,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const id = normalizeConversationId(conversationId), normalizedRunId = normalizeRunId(runId);
     // Read-only preflight before acquisition-time cleanup of unrelated fences;
     // settleHeldTurn rechecks under ownership.
-    const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.refusePreReleaseOwnerLocked(id, preflightRoot);
+    const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.assertSwitchOwnerReadable(id, preflightRoot);
     const held = await this.acquireConversation(id);
     let state: "prepared" | "transferred" | "closed" = "prepared";
     let queue = Promise.resolve();
@@ -1409,7 +1398,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         }),
         captureNativeEvidence: (legacyProvenance) => owned(async () => {
           const native = this.nativeJournalStorage as Partial<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage> | undefined;
-          if (native?.nativeEvidence !== "v1" || !native.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
+          if (!native?.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
           const source = await this.modelSwitchStorageSource(id), record = await this.readRecord(id, held.rootIdentity);
           if (source.status !== "supported") throw new Error("Native evidence source unavailable");
           if (legacyProvenance && `${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
@@ -1440,8 +1429,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           validateFrozenHandoffBudget(cached.artifact.budget);
           await assertOwned(); return { artifact: structuredClone(cached.artifact), budget: structuredClone(cached.artifact.budget) };
         }),
-        acquireNativeHistoryAuthority: (options) => owned(async () => {
-          if (options?.exclusiveWriters !== true) throw new TypeError("Native root authority requires exclusive upgraded writers");
+        acquireNativeHistoryAuthority: () => owned(async () => {
           if (id.length > 512 || held.logical.logicalConversationId.length > 512) return { status: "unsupported" as const, reason: "id_limit" as const };
           const lease = await this.acquireHeldNativeHistoryAuthority(id, borrowed, false);
           if (lease.status === "unsupported") return lease;
@@ -1463,8 +1451,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             release: () => serialize(() => lease.release()) };
         }),
         rollForwardModelSwitch: (switchId, options) => owned(async () => {
-          if (options?.exclusiveWriters !== true || !this.nativeJournalStorage) throw new Error("Managed native switch capability and exclusive writers required");
-          return await this.rollForwardHeldModelSwitch(id, switchId, borrowed, options.onPhase);
+          if (!this.nativeJournalStorage) throw new Error("Managed native switch capability required");
+          return await this.rollForwardHeldModelSwitch(id, switchId, borrowed, options?.onPhase);
         }),
         inspectCurrentJournal: () => owned(async (): Promise<CurrentJournalPresence> => {
           const native = this.nativeJournalStorage;
@@ -1501,7 +1489,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               if (binding.reconciliation) await this.drainBeforeAdmission(id, normalizedRunId, binding);
             } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity); throw error; }
             let turnOwned!: () => Promise<void>;
-            let native: TurnHistoryV5["native"] | undefined;
+            let native: NativeTurnHistory["native"] | undefined;
             try {
               const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion, binding) => { turnOwned = assertion; native = binding; }, missingCurrentEpoch);
               return { ...turn, ...(native ? { native } : {}), assertOwned: () => turnOwned() };
@@ -1530,7 +1518,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return await this.beginHeldProviderSessionTurn(normalizedId, normalizedRunId, binding, held);
   }
   private async beginHeldProviderSessionTurn(normalizedId: string, normalizedRunId: string, binding: ProviderSessionTurnBinding | undefined,
-    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>, native?: TurnHistoryV5["native"]) => void,
+    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>, native?: NativeTurnHistory["native"]) => void,
     missingCurrentEpoch?: string): Promise<ConversationHistoryProviderSessionTurn> {
     const rootIdentity = held.rootIdentity;
     let turnSettled = false;
@@ -1553,7 +1541,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // Ordinary P2 callers cannot supply the accepted native projection/current
       // authority. Refuse before cold rotation, dirty admission or native I/O.
       // Only owner-held preparation may transfer that proof into dispatch.
-      if (existing.sourceVersion === 5 && binding?.unpreparedNativeDispatch === true) throw new OrdinaryNativeDispatchUnavailableError();
+      if (existing.native !== undefined && binding?.unpreparedNativeDispatch === true) throw new OrdinaryNativeDispatchUnavailableError();
       if (binding?.reconciliation && existing.lastCommit?.turnId === normalizedRunId) throw new DurableTurnAlreadyCommittedError();
       const existingProvider = existing.providerSession;
       const modelKey = binding?.modelKey ?? existingProvider?.modelKey;
@@ -1596,7 +1584,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           && !(missingCurrentEpoch !== undefined && existingProvider.epoch === missingCurrentEpoch);
         if (!reusable) {
           this.requireNativeCapability(existing, "native epoch transition", "provider admission cold rotation");
-          if (existing.sourceVersion === 5) {
+          if (existing.native !== undefined) {
             const source = this.nativeCanonical(existing), next = this.coldRecord(source, { version: 3, conversationId: normalizedId, messages: existing.messages,
               ...lastCommitBinding(existing), providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(modelKey) } });
             const operation: NativeHistoryOperation = { version: 3, disposition: "C", source, next, timestamp: 0 };
@@ -1614,7 +1602,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         epoch = reusable ? existing.providerSession!.epoch : createProviderSessionEpoch();
         revision = reusable ? existing.providerSession!.revision as number : 0;
         const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
-        const projectedCleanRecord = preserveV5(existing, {
+        const projectedCleanRecord = preserveNativeHistory(existing, {
           version: STORE_VERSION,
           conversationId: normalizedId,
           messages: retainHistoryMessages(existing.messages, this.maxMessages),
@@ -1628,7 +1616,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           const admission = binding.reconciliation;
           if (admission.purpose === "execution" ? admission.initial === undefined : admission.initial !== undefined) throw new TypeError("Invalid turn admission purpose/initial input.");
           const purpose = admission.purpose;
-          const wire: DurableTurnFence = { version: 5, kind: purpose, conversationKey,
+          const wire: DurableTurnFence = { version: 6, kind: purpose, conversationKey,
             logicalConversationKey: historyKey(logicalConversationIdForFence(normalizedId)), epoch, providerSessionId, modelKey,
             revision, runIdDigest: digestRunId(normalizedRunId), payload: { generation: "0".repeat(32), sha256: "0".repeat(64) } };
           const inputs = admission.initial === undefined ? [] : [createPendingInitialInput({
@@ -1653,7 +1641,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       } finally {
         await releaseRoot();
       }
-      const turnBaseRecord = preserveV5(existing, {
+      const turnBaseRecord = preserveNativeHistory(existing, {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: existing.messages,
@@ -1727,7 +1715,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             payload = settlement.payload; fence = settlement.fence;
             reconciliationSettlement = { nativeReusable: !settlement.cold };
             prepared = await this.prepareRecord(settlement.record, held, rootIdentity, () => { turnSettled = true; }, fence,
-              settlement.cold && existing.sourceVersion !== 5 ? async () => await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]) : undefined,
+              settlement.cold && existing.native === undefined ? async () => await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]) : undefined,
               false, async () => await this.removePendingConversation(conversationKey, rootIdentity, () => held.assertOwned()));
             const pendingAppend = prepared;
             return { commit: async () => {
@@ -1740,11 +1728,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             // The harness normally invalidates a failed/unsynced live handle
             // first. Retire by exact durable id as a second fail-closed layer:
             // a cold/unknown registry entry must not strand its JSONL.
-            if (existing.sourceVersion !== 5) await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]);
+            if (existing.native === undefined) await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]);
           }
           const combined = [...turnBaseRecord.messages, ...admitted];
           const retained = retainHistoryMessages(combined, this.maxMessages);
-          const cleanRecord = preserveV5(existing, {
+          const cleanRecord = preserveNativeHistory(existing, {
             version: STORE_VERSION,
             conversationId: normalizedId,
             messages: retained,
@@ -1919,7 +1907,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const { payload } = await this.pendingPayloads(held.rootIdentity).inspect({
       name: pendingPayloadName(fence.conversationKey, fence.runIdDigest, fence.payload.generation),
     }, fence.payload.sha256);
-    const wire = { version: 5, kind: fence.kind, conversationKey: fence.conversationKey,
+    const wire = { version: 6, kind: fence.kind, conversationKey: fence.conversationKey,
       logicalConversationKey: fence.logicalConversationKey!, epoch: fence.epoch, providerSessionId: fence.providerSessionId!,
       modelKey: fence.modelKey!, revision: fence.revision, runIdDigest: fence.runIdDigest, payload: fence.payload } as const;
     if (historyKey(payload.identity.historyBucket) !== held.marker.conversationKey
@@ -1945,8 +1933,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const evidence = await this.inspectProviderTurn({ descriptor: pendingTurnDescriptor(payload), purpose: payload.identity.purpose,
       modelKey: payload.identity.modelKey, expectedInputs: payload.inputs.map((input) => ({ id: input.id, requestDigest: input.requestDigest, placement: input.placement })) });
     await held.assertOwned();
-    if (existing.sourceVersion === 5 && evidence.status === "matched" && evidence.journalId !== currentJournal(existing.conversationId, existing.providerSession!.epoch).journalId) {
-      throw new Error("Canonical v5 native settlement journal does not match the current journal");
+    if (existing.native !== undefined && evidence.status === "matched" && evidence.journalId !== currentJournal(existing.conversationId, existing.providerSession!.epoch).journalId) {
+      throw new Error("Native canonical native settlement journal does not match the current journal");
     }
     const current = await this.readRecord(payload.identity.historyBucket, held.rootIdentity, true);
     if (historyRecordVersion(current) !== canonicalVersion) throw new Error("Canonical history changed during native inspection.");
@@ -1979,7 +1967,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const lastCommit: DurableTurnReceipt = { version: 1, turnId: payload.identity.turnId, inputDigest: turnInputDigest(payload),
       candidateDigest: turnCandidateDigest(payload), journalId: projection.journalId, tipId: projection.tipId,
       baseRevision: fence.revision, committedRevision: fence.revision + 1, outcome: projection.outcome };
-    return { fence, payload, cold, record: preserveV5(existing, { version: STORE_VERSION, conversationId: payload.identity.historyBucket,
+    return { fence, payload, cold, record: preserveNativeHistory(existing, { version: STORE_VERSION, conversationId: payload.identity.historyBucket,
       messages: retainHistoryMessages([...existing.messages, ...projection.messages], this.maxMessages), lastCommit,
       providerSession: { epoch: cold ? createProviderSessionEpoch() : fence.epoch,
         revision: cold ? 0 : fence.revision + 1, ...modelBinding(fence.modelKey) } }) };
@@ -1987,16 +1975,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   private async settleHeldTurn(conversationId: string, held: HeldConversation): Promise<ConversationHistoryTurnRecovery> {
     await held.assertOwned();
-    // A pre-release record or intent is refused before any recovery or mutation.
     const canonical = await this.readRecord(conversationId, held.rootIdentity);
-    await this.refusePreReleaseOwnerLocked(conversationId, held.rootIdentity);
+    await this.assertSwitchOwnerReadable(conversationId, held.rootIdentity);
     // Ready alone is not runtime switch authority. Once its canonical receipt is
     // published, however, ordinary admission must finish retiring the outgoing
     // journal and the intent rather than strand them.
     if (this.nativeJournalStorage) {
       const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory()).pending
         .filter((entry) => entry.state.identity.historyBucket === conversationId);
-      for (const { state } of pending) if (state.phase === "ready" && canonical.sourceVersion === 5 && recognizesModelSwitchBinding(canonical, state.identity)) {
+      for (const { state } of pending) if (state.phase === "ready" && canonical.native !== undefined && recognizesModelSwitchBinding(canonical, state.identity)) {
         await this.rollForwardHeldModelSwitch(conversationId, state.identity.switchId, held);
       }
     }
@@ -2024,7 +2011,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await held.assertOwned();
         await fsyncDirectory(this.root, held.rootIdentity);
       } finally { await releaseRoot(); }
-      if (existing.sourceVersion !== 5 && existing.providerSession?.epoch !== fence.epoch) await this.retireProviderSessions([{ providerSessionId: fence.providerSessionId!, ...modelBinding(fence.modelKey) }]);
+      if (existing.native === undefined && existing.providerSession?.epoch !== fence.epoch) await this.retireProviderSessions([{ providerSessionId: fence.providerSessionId!, ...modelBinding(fence.modelKey) }]);
       const releaseCleanup = await this.acquireRootTransaction(held.rootIdentity);
       try {
         await held.assertOwned();
@@ -2037,7 +2024,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     const settlement = await this.preparePendingSettlement(fence, payload, held);
     const prepared = await this.prepareRecord(settlement.record, held, held.rootIdentity, undefined, settlement.fence,
-      settlement.cold && existing.sourceVersion !== 5 ? async () => await this.retireProviderSessions([{ providerSessionId: settlement.fence.providerSessionId!, ...modelBinding(settlement.fence.modelKey) }]) : undefined,
+      settlement.cold && existing.native === undefined ? async () => await this.retireProviderSessions([{ providerSessionId: settlement.fence.providerSessionId!, ...modelBinding(settlement.fence.modelKey) }]) : undefined,
       true, async () => await this.removePendingConversation(settlement.fence.conversationKey, held.rootIdentity, () => held.assertOwned()));
     try { await prepared.commit(); }
     catch (error) { await prepared.abort().catch(() => undefined); throw error; }
@@ -2100,14 +2087,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical, "prepare");
       await this.requireNoModelSwitch(record.conversationId, rootIdentity);
       const existing = await this.readRecord(record.conversationId, rootIdentity);
-      if (existing.sourceVersion === 5 && existing.providerSession?.epoch !== record.providerSession.epoch) {
+      if (existing.native !== undefined && existing.providerSession?.epoch !== record.providerSession.epoch) {
         this.requireNativeCapability(existing, "native epoch transition", "cold publication");
         const source = this.nativeCanonical(existing), next = this.coldRecord(source, record);
         const projected = this.projectRecord(next); await this.validateStagingReservation(rootIdentity, projected.bytes);
         stage = await this.writeStage(next, rootIdentity); await this.validateRetentionReservation(rootIdentity, [stage]);
         return this.createNativePreparedAppend(stage, { version: 3, disposition: "C", source, next, timestamp: 0 }, held, keepOwner, onSettled);
       }
-      record = preserveV5(existing, record);
+      record = preserveNativeHistory(existing, record);
       const projected = this.projectRecord(record);
       await this.validateStagingReservation(rootIdentity, projected.bytes);
       // Write while the root transaction is held so another process cannot
@@ -2149,7 +2136,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           try { await this.finishNativeOperation(operation, held.rootIdentity, () => held.assertOwned(), nativeIo); }
           catch (error) {
             const latest = await this.readRecord(operation.source.conversationId, held.rootIdentity, true);
-            if (latest.sourceVersion !== 5 || switchDigest(this.nativeCanonical(latest)) !== switchDigest(operation.next)) throw error;
+            if (latest.native === undefined || switchDigest(this.nativeCanonical(latest)) !== switchDigest(operation.next)) throw error;
             // Canonical rename is the semantic commit; unresolved physical cleanup
             // stays fenced by the durable lifecycle intent and is diagnostic.
             recordPostCommitMaintenanceFailure(this.root, error);
@@ -2509,7 +2496,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       for (const entry of plan.candidates) {
         if (this.now() - entry.mtimeMs <= this.maxAgeMs && count <= this.maxConversations && bytes <= this.maxStoreBytes) continue;
         const record = plan.records.get(entry.name); if (!record) continue;
-        if (record.sourceVersion === 5) {
+        if (record.native !== undefined) {
           if (attempted.has(entry.name)) continue; attempted.add(entry.name);
           let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined, published = false;
           try {
@@ -2589,12 +2576,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const switches = await this.modelSwitchFootprint(rootIdentity, records, native);
     for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
     // Damaged switch/pending evidence protects its own conversation from eviction.
-    for (const key of [...switches.refused, ...switches.damaged]) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    for (const key of switches.damaged) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     const pending = await this.pendingPayloads(rootIdentity).list();
     for (const entry of pending) if (entry.damaged) protectedNames.add(`${entry.conversationKey}${HISTORY_FILE_SUFFIX}`);
     const operations = await this.nativeOperationFootprint(rootIdentity, native);
     for (const key of operations.keys) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
-    for (const [name, record] of records) if (record?.sourceVersion === 5 && !this.nativeJournalStorage) protectedNames.add(name);
+    for (const [name, record] of records) if (record?.native !== undefined && !this.nativeJournalStorage) protectedNames.add(name);
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
     let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + operations.reserved + await this.nativeHistoryRoot(rootIdentity).bytes()
       + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
@@ -2620,7 +2607,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (projectedCount - candidates.length <= this.maxConversations && projectedBytes - removableBytes <= this.maxStoreBytes
         && this.now() - entry.mtimeMs <= this.maxAgeMs) break;
       const record = records.get(entry.name);
-      if (record?.sourceVersion === 5 && requiresExactConversationClaim(record.conversationId)) {
+      if (record?.native !== undefined && requiresExactConversationClaim(record.conversationId)) {
         let exact: HeldExactConversationClaim | undefined;
         try { exact = await this.acquireExactConversationClaim(record.conversationId, true); }
         catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; continue; }
@@ -2628,7 +2615,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       // A victim's orphan generations are collected with it: unreadable ones protect it instead.
       if (await this.anyPendingDamaged(pending.filter((item) => `${item.conversationKey}${HISTORY_FILE_SUFFIX}` === entry.name), rootIdentity)) continue;
-      const journal = record?.sourceVersion === 5 ? currentJournal(record.conversationId, record.providerSession!.epoch) : undefined;
+      const journal = record?.native !== undefined ? currentJournal(record.conversationId, record.providerSession!.epoch) : undefined;
       if (journal && ((native?.journals[journal.journalId]?.stagedBytes ?? 0) > 0 || native?.journals[journal.journalId]?.damaged
         || await this.nativeJournalStorage!.deletionBlocked([journal], record!.native!.authority))) continue;
       const extra = journal ? (native?.journals[journal.journalId]?.retainedBytes ?? 0)
@@ -3147,7 +3134,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const fences = await this.scanDirtyFences(locksIdentity, true);
     if (fences.length === 0) return;
     const inventory = await this.switchInventory(rootIdentity);
-    const switchingKeys = new Set([...inventory.pending.map((entry) => historyKey(entry.state.identity.historyBucket)), ...inventory.refused, ...inventory.damaged]);
+    const switchingKeys = new Set([...inventory.pending.map(({ state }) => historyKey(state.identity.historyBucket)), ...inventory.damaged]);
     for (const name of await readdir(this.root)) { const match = NATIVE_OPERATION_PATTERN.exec(name); if (match) switchingKeys.add(match[1]!); }
     const committedByName = new Map(
       (await this.scanCommittedEntries(rootIdentity, true)).map((entry) => [entry.name, entry]),
@@ -3176,7 +3163,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         && committedRecord.providerSession.modelKey === fence.modelKey
         && committedRecord.providerSession.dirtyRunId === undefined
         && committedRecord.providerSession.revision === fence.revision + 1;
-      if (!canonicalProvesCommit && committedRecord?.sourceVersion === 5) continue; // unresolved native owner is protected, never root-wide blocking
+      if (!canonicalProvesCommit && committedRecord?.native !== undefined) continue; // unresolved native owner is protected, never root-wide blocking
       planned.push({ fence: { ...fence, providerSessionId: fence.providerSessionId }, committedEntry, committedRecord, canonicalProvesCommit });
     }
     let removed = false;
@@ -3210,9 +3197,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async assertNativeRecordAuthority(record: LoadedHistoryRecord, rootIdentity: DirectoryIdentity): Promise<void> {
-    if (record.sourceVersion !== 5) return;
+    if (record.native === undefined) return;
     const rootStore = this.nativeHistoryRoot(rootIdentity), marker = await rootStore.read();
-    if (!marker) throw new TypeError("Canonical v5 root authority marker is missing; restore consistent backup");
+    if (!marker) throw new TypeError("Native canonical root authority marker is missing; restore consistent backup");
     if (switchDigest(record.native?.authority) !== switchDigest(rootStore.authority(marker, logicalConversationIdForFence(record.conversationId), record.conversationId))) {
       throw new TypeError("Canonical native authority does not match the managed root marker");
     }
@@ -3319,7 +3306,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     } finally {
       await releaseRoot();
     }
-    if (record.sourceVersion !== 5) await this.retireProviderSessions(this.providerSessionsForRetirement(record, fence));
+    if (record.native === undefined) await this.retireProviderSessions(this.providerSessionsForRetirement(record, fence));
     return fence;
   }
 
@@ -3406,12 +3393,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       try {
         record = parseHistoryFile(bytes, entry.path); await this.assertNativeRecordAuthority(record, rootIdentity);
         if (`${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}` !== entry.name) throw new Error(`History file ${entry.path} does not match its conversation id.`);
-      } catch (error) { throw error instanceof UnsupportedPreReleaseSwitchFormatError ? error : new CanonicalParseFailure(error); }
+      } catch (error) { throw new CanonicalParseFailure(error); }
       return record;
     } catch (error) {
       // Damage of this one record (mode, links, size, identity) is owner-scoped;
       // absence and root identity failures keep their meaning.
-      if (error instanceof UnsupportedPreReleaseSwitchFormatError || error instanceof CanonicalParseFailure || isErrno(error, "ENOENT")) throw error;
+      if (error instanceof CanonicalParseFailure || isErrno(error, "ENOENT")) throw error;
       await assertDirectoryIdentity(this.root, rootIdentity);
       throw new CanonicalParseFailure(error);
     } finally {
@@ -3529,7 +3516,7 @@ function historyRecordVersion(record: LoadedHistoryRecord | CanonicalHistoryFile
       messages: record.messages,
       providerSession: record.providerSession,
       lastCommit: record.lastCommit,
-      ...v5Extension(record),
+      ...nativeExtension(record),
     }), "utf8")
     .digest("hex");
 }
@@ -3766,25 +3753,25 @@ function lastCommitBinding(record: { readonly lastCommit?: DurableTurnReceipt })
   return record.lastCommit === undefined ? {} : { lastCommit: { ...record.lastCommit } };
 }
 
-function v5Extension(record: { readonly conversationId: string; readonly native?: TurnHistoryV5["native"]; readonly lastSwitch?: TurnHistoryV5["lastSwitch"] }) {
+function nativeExtension(record: { readonly conversationId: string; readonly native?: NativeTurnHistory["native"]; readonly lastSwitch?: NativeTurnHistory["lastSwitch"] }) {
   return record.native === undefined ? {} : { native: structuredClone(record.native),
     ...(record.lastSwitch === undefined ? {} : { lastSwitch: structuredClone(record.lastSwitch) }) };
 }
 /** Preserve authority/projection/switch receipt only for a proven same-epoch
- * write. Never invent a native journal or demote v5 to v3. */
-function preserveV5(existing: LoadedHistoryRecord | CanonicalHistoryFile, next: CanonicalHistoryFile): CanonicalHistoryFile {
-  if (("sourceVersion" in existing ? existing.sourceVersion : existing.version) !== 5) return next;
+ * write. Never invent a native journal or drop its authority. */
+function preserveNativeHistory(existing: LoadedHistoryRecord | CanonicalHistoryFile, next: CanonicalHistoryFile): CanonicalHistoryFile {
+  if (existing.native === undefined) return next;
   if (next.conversationId !== existing.conversationId || next.providerSession.epoch !== existing.providerSession?.epoch
     || next.providerSession.modelKey !== existing.providerSession.modelKey) {
     return next; // The owner-held native lifecycle planner must complete this candidate.
   }
-  const record = { ...next, version: 5, ...v5Extension(existing) };
-  validateTurnHistoryV5(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  const record = { ...next, version: 3, ...nativeExtension(existing) };
+  validateNativeTurnHistory(record, (message) => validateAndCloneMessage(message as HistoryMessage));
   return record;
 }
 
 function serializeHistoryFile(record: CanonicalHistoryFile): Buffer {
-  if (record.version === 5) validateTurnHistoryV5(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  if (record.native !== undefined) validateNativeTurnHistory(record, (message) => validateAndCloneMessage(message as HistoryMessage));
   else validateTurnHistoryV3(record, (message) => validateAndCloneMessage(message as HistoryMessage));
   const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
   if (bytes.byteLength > MAX_STORE_FILE_BYTES) {
@@ -3794,7 +3781,7 @@ function serializeHistoryFile(record: CanonicalHistoryFile): Buffer {
 }
 
 function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffer {
-  if (value.kind !== undefined) return serializeDurableTurnFence({ version: 5, kind: value.kind, conversationKey: value.conversationKey,
+  if (value.kind !== undefined) return serializeDurableTurnFence({ version: 6, kind: value.kind, conversationKey: value.conversationKey,
     logicalConversationKey: value.logicalConversationKey!, epoch: value.epoch, providerSessionId: value.providerSessionId!, modelKey: value.modelKey!,
     revision: value.revision, runIdDigest: value.runIdDigest, ...(value.payload === undefined ? {} : { payload: value.payload }) });
   if (value.modelKey !== undefined) {
@@ -3892,25 +3879,13 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
   if (value.version === LEGACY_STORE_VERSION && keys === "conversationId,messages,version") {
     return { sourceVersion: LEGACY_STORE_VERSION, conversationId, messages };
   }
-  // Pre-release v4 chains are refused, never migrated or mutated.
-  if (value.version === 4) refusePreReleaseSwitchFormat();
-  if (value.version === 5) {
-    validateTurnHistoryV5(value, (message) => validateAndCloneMessage(message as HistoryMessage));
-    if (value.native.authority.ownerKey !== logicalConversationIdForFence(conversationId)) {
-      throw new Error("Canonical v5 native authority does not belong to the managed conversation");
-    }
-    return { sourceVersion: 5, conversationId, messages, providerSession: { ...value.providerSession },
-      ...lastCommitBinding(value), ...v5Extension(value) };
-  }
   if (value.version === STORE_VERSION) {
-    validateTurnHistoryV3(value, (message) => validateAndCloneMessage(message as HistoryMessage));
-    return {
-      sourceVersion: STORE_VERSION,
-      conversationId,
-      messages,
-      providerSession: { epoch: value.providerSession.epoch, revision: value.providerSession.revision, ...modelBinding(value.providerSession.modelKey) },
-      ...lastCommitBinding(value),
-    };
+    if (value.native !== undefined) {
+      validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage));
+      if (value.native.authority.ownerKey !== logicalConversationIdForFence(conversationId)) throw new Error("Native canonical authority does not belong to the managed conversation");
+    } else validateTurnHistoryV3(value, (message) => validateAndCloneMessage(message as HistoryMessage));
+    return { sourceVersion: STORE_VERSION, conversationId, messages, providerSession: { ...value.providerSession },
+      ...lastCommitBinding(value), ...nativeExtension(value) };
   }
   if (
     value.version !== PROVIDER_STORE_VERSION
@@ -4362,7 +4337,7 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     } catch {
       throw new Error(`History dirty fence ${path} is not valid JSON.`);
     }
-    if (isRecord(value) && value.version === 5) {
+    if (isRecord(value) && value.version === 6 && value.kind !== "model-switch") {
       validateDurableTurnFence(value);
       return { path, kind: value.kind, conversationKey: value.conversationKey, logicalConversationKey: value.logicalConversationKey,
         epoch: value.epoch, providerSessionId: value.providerSessionId, modelKey: value.modelKey, revision: value.revision, runIdDigest: value.runIdDigest,
@@ -4599,8 +4574,8 @@ function currentJournal(conversationId: string, epoch: string): RuntimeNativeJou
   const handleId = deriveProviderSessionId(conversationId, epoch); return { handleId, journalId: managedNativeJournalId(handleId) };
 }
 
-function switchCanonicalRecord(existing: LoadedHistoryRecord, state: ModelSwitchState, authority: RuntimeNativeJournalAuthority): TurnHistoryV5 {
-  return { version: 5, conversationId: state.identity.historyBucket, messages: existing.messages,
+function switchCanonicalRecord(existing: LoadedHistoryRecord, state: ModelSwitchState, authority: RuntimeNativeJournalAuthority): NativeTurnHistory {
+  return { version: 3, conversationId: state.identity.historyBucket, messages: existing.messages,
     providerSession: { epoch: state.identity.targetEpoch, revision: 0, modelKey: state.identity.toModelKey },
     native: { authority, projection: state.artifact! }, ...lastCommitBinding(existing),
     lastSwitch: { version: 1, switchId: state.identity.switchId, intentDigest: switchDigest(state.identity), fromEpoch: state.identity.sourceEpoch,

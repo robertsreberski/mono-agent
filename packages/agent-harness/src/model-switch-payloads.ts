@@ -138,24 +138,31 @@ export class ModelSwitchPayloadStore {
    * Every artifact name starts with its conversation key: an entry that fails
    * to read or validate marks only that conversation `damaged` (bytes still
    * charged, never pending, never removed). Root identity failures stay fatal. */
-  async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[];
-    readonly refused: readonly string[]; readonly damaged: readonly string[] }> {
-    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], refused: [], damaged: [] };
-    const bytes = await this.retainedBytes(), entries = await this.entries(), key = (name: string) => name.slice(0, 64);
+  async inventory(bucket?: string): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[];
+    readonly damaged: readonly string[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], damaged: [] };
+    const entries = await this.entries(bucket === undefined ? undefined : `${switchConversationKey(bucket)}.`), key = (name: string) => name.slice(0, 64);
+    const bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
     const pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
-    // Pre-release (version 1) states, fenced or orphaned, mark only their owner as
-    // refused. Their bytes stay charged; unrelated owners keep accounting/admission.
-    const refused = new Set<string>(), damaged = new Set(entries.filter((entry) => entry.damaged).map((entry) => key(entry.name)));
+    const damaged = new Set(entries.filter((entry) => entry.damaged).map((entry) => key(entry.name)));
     const isolate = async (name: string, action: () => Promise<void>) => {
-      if (damaged.has(key(name)) || refused.has(key(name))) return;
-      try { await action(); } catch { await this.assertDirectory(directory); damaged.add(key(name)); }
+      if (damaged.has(key(name))) return;
+      try { await action(); } catch (error) {
+        await this.assertDirectory(directory);
+        // Read-only preflight may overlap removal of an obsolete, just-listed
+        // entry. Absence is a changed inventory, not evidence of owner damage.
+        if (missing(error)) {
+          try { await lstat(join(this.directory, name)); }
+          catch (changed) { if (missing(changed)) return; throw changed; }
+        }
+        damaged.add(key(name));
+      }
     };
     // Every final state and artifact (fenced, retained or orphan) must parse and
     // match its filename coordinates; otherwise it is its owner's damage.
     for (const { name } of entries) if (name.endsWith(".state.json") || name.endsWith(".handoff.json")) await isolate(name, async () => {
       const [, switchId, id] = name.split("."), raw = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES));
       if (name.endsWith(".state.json")) {
-        if ((raw as { version?: unknown } | null)?.version === 1) { refused.add(key(name)); return; }
         validateModelSwitchState(raw);
         if (raw.identity.switchId !== switchId || switchConversationKey(raw.identity.historyBucket) !== key(name)) unavailable();
       } else {
@@ -178,7 +185,7 @@ export class ModelSwitchPayloadStore {
       pending.push({ state: current.state, ...this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached) });
     });
     await this.assertDirectory(directory);
-    return { bytes, pending: pending.filter((entry) => !damaged.has(switchConversationKey(entry.state.identity.historyBucket))), refused: [...refused], damaged: [...damaged] };
+    return { bytes, pending: pending.filter((entry) => !damaged.has(switchConversationKey(entry.state.identity.historyBucket))), damaged: [...damaged] };
   }
   private remainingReservation(state: ModelSwitchState, publicationBytes: number, cached: boolean) {
     const remainingPendingBytes = Math.max(0, state.reservation.pendingBytes - publicationBytes);

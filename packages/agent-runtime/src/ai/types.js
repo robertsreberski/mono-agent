@@ -583,7 +583,6 @@
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
- * @property {"v1"} [nativePreparedDispatch] Explicit before-session native preparation capability.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<NativePreparedDispatch>} [prepareNativeDispatch]
  * @property {"v1"} [sessionTurnReconciliation] Explicit native evidence ownership capability.
  * @property {(request: {sessionsRoot: string, descriptor: any, purpose: "execution"|"compaction", expectedModel: {provider: string, id: string, api?: string}, expectedInputs: ReadonlyArray<{id: string, requestDigest: string, placement: "initial"|"live"}>, expectedBaseTip?: string|null}) => Promise<any>} reconcileSessionTurn Storage-only protected native reconciliation.
@@ -591,7 +590,7 @@
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
  * @property {(providerSessionId: string, sessionsRoot: string) => ReturnType<typeof import('./providers/pi-native/session-salvage.js').salvageDurableNativeSession>} [salvageDurableSession] Read-only best-effort snapshot of a durable Pi transcript.
- * @property {(providerSessionId: string, sessionsRoot: string, deletion?: {hostAuthority:{version:1,canonicalVersion:4,rootId:string,authorityId:string,ownerKey:string,historyBucket:string},disposition:'C'|'D',assertOwned:()=>Promise<void>}) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
+ * @property {(providerSessionId: string, sessionsRoot: string, deletion?: {hostAuthority:{version:1,rootId:string,authorityId:string,ownerKey:string,historyBucket:string},disposition:'C'|'D',assertOwned:()=>Promise<void>}) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
  * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions

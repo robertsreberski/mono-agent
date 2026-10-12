@@ -62,7 +62,7 @@ async function fixture(publicConfig = false) {
     const incoming = (id: string): MonoRuntimeLike => {
       const runtime = runtimeFor(id);
       if (id !== "A" || unsupported === undefined) return runtime;
-      const { nativePreparedDispatch: _native, prepareNativeDispatch: _prepare, ...base } = runtime;
+      const { prepareNativeDispatch: _prepare, ...base } = runtime;
       if (unsupported === "routed") return base;
       const { sessionTurnReconciliation: _reconciliation, reconcileSessionTurn: _reconcile, ...nonNative } = base;
       return nonNative;
@@ -102,7 +102,7 @@ it("same-model no-ID wakes inherit the current journal; explicit no-ID changes r
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
   await h.respond(f.request("fictional-web-message", "faux:B"), { append: async () => {} });
-  const before = await f.record(); expect(before.version).toBe(5); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
+  const before = await f.record(); expect(before.version).toBe(3); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
   const measure = vi.spyOn(f.native, "createEpoch"), handoff = vi.spyOn(f.native, "prepareHandoff");
   const calls = f.transport.mock.calls.length;
   for (const wake of [{ source: "web", web: { trigger: "job" } }, { cron: { jobId: "fictional-scheduled", model: "faux:B" } }]) {
@@ -178,7 +178,7 @@ it("Web retry/reopen never authorize a new billed generation", async () => {
     f.faux.setResponses([reply(summary), reply("Fictional newly authorized answer")]);
     await restarted.respond({ ...f.request("fictional-next-persisted-id", "faux:B"), text: "Fictional next explicit input" }, { append: async () => {} });
     expect(f.transport).toHaveBeenCalledTimes(calls + 2); // One paid producer + ordinary incoming turn.
-    expect((await f.record()).version).toBe(5); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
+    expect((await f.record()).version).toBe(3); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
     const messages = await f.getStore().load(request.conversationId);
     expect(messages.some((message) => message.content === request.text)).toBe(false);
     expect(messages.at(-2)?.content).toBe("Fictional next explicit input");
@@ -207,8 +207,7 @@ it("prepared configured runtime retains protection through summary/close, strips
   const settled = vi.fn(); const waiting = owner.coordinator.waitForSettlement().then(settled); await Promise.resolve(); await Promise.resolve();
   expect(settled).not.toHaveBeenCalled(); expect(prepared.assertReady).toBeTypeOf("function"); expect(prepared.checkHandoffSummary).toBeTypeOf("function"); expect(prepared.produceHandoffSummary).toBeTypeOf("function");
   expect(runtime.salvageDurableSession).toBeUndefined();
-  expect(completionOnlyRuntime(runtime).prepareNativeDispatch).toBeUndefined(); expect(completionOnlyRuntime(runtime).nativePreparedDispatch).toBeUndefined();
-  await prepared.close(); await prepared.close(); await waiting; expect(settled).toHaveBeenCalledOnce();
+  expect(completionOnlyRuntime(runtime).prepareNativeDispatch).toBeUndefined(); await prepared.close(); await prepared.close(); await waiting; expect(settled).toHaveBeenCalledOnce();
 });
 
 it("failed preparation releases protection, but duplicate dispatch cannot release a running lease", async () => {
@@ -218,7 +217,7 @@ it("failed preparation releases protection, but duplicate dispatch cannot releas
   const run = vi.fn(async () => { entered(); await gate; return { text: "Fictional reply" }; });
   const lease: RuntimeNativePreparedDispatch = { snapshot: {} as RuntimeNativePreparedDispatch["snapshot"], run, close: async () => {} };
   const prepare = vi.fn(async () => lease).mockRejectedValueOnce(new Error("Fictional preparation failure"));
-  const raw: MonoRuntimeLike = { run: async () => ({ text: "unused" }), nativePreparedDispatch: "v1", prepareNativeDispatch: prepare };
+  const raw: MonoRuntimeLike = { run: async () => ({ text: "unused" }), prepareNativeDispatch: prepare };
   const runtime = wrapOwnedConfiguredRuntime(raw, f.config, f.root, undefined); cleanup.push(() => runtime.disposeAllSessions!());
   const options = { messages: [], model: f.config.runtime.model, abortSignal: new AbortController().signal };
   await expect(runtime.prepareNativeDispatch!("Fictional instructions", options)).rejects.toThrow("Fictional preparation failure");
@@ -346,7 +345,7 @@ it.each([false, true])("public config switches once before incoming dispatch, in
       incomingDispatches++;
       const record = JSON.parse(readFileSync(canonicalPath, "utf8"));
       // Binding, handoff and receipt are durable and the outgoing journal is retired before dispatch.
-      expect(record.version).toBe(5); expect(record.providerSession.modelKey).toBe("faux:B"); expect(existsSync(sourcePath)).toBe(false);
+      expect(record.version).toBe(3); expect(record.providerSession.modelKey).toBe("faux:B"); expect(existsSync(sourcePath)).toBe(false);
     }
     return f.originalTransport(...args);
   });
@@ -355,7 +354,7 @@ it.each([false, true])("public config switches once before incoming dispatch, in
   await h.respond(f.request(persistedId, "faux:B"), { append: async () => {
     seen.push(await f.record()); expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
   } });
-  const switched = await f.record(); expect(switched.version).toBe(5); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
+  const switched = await f.record(); expect(switched.version).toBe(3); expect(await nativeFiles(f.nativeRoot)).toHaveLength(1);
   expect(switched.providerSession.modelKey).toBe("faux:B"); expect(seen.length).toBeGreaterThan(0); expect(incomingDispatches).toBe(1);
   const calls = f.transport.mock.calls.length;
   await f.dispose(h); const reopened = await f.makePublic();
@@ -436,7 +435,7 @@ it("public upgrade settles a legacy pending turn storage-only, then switches fro
   f.faux.setResponses([reply(summary), reply("Fictional new explicit B answer")]);
   const response = await h.respond({ ...f.request("fictional-post-interruption-id", "faux:B"), text: "Fictional new explicit input" }, { append: async () => {} });
   expect(response.text).toBe("Fictional new explicit B answer"); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
-  const record = await f.record(); expect(record.version).toBe(5); expect(record.providerSession.modelKey).toBe("faux:B");
+  const record = await f.record(); expect(record.version).toBe(3); expect(record.providerSession.modelKey).toBe("faux:B");
   expect(record.messages.some((message: { content: string }) => message.content.includes("Fictional abandoned input"))).toBe(true);
   expect(record.messages.some((message: { content: string }) => message.content.includes("interrupted"))).toBe(true);
   expect(record.messages.at(-2).content).toBe("Fictional new explicit input");
@@ -518,7 +517,7 @@ async function switchedToB() {
   return { f, h };
 }
 it("A->B->A with a malformed outgoing summary returns through the validated checkpoint; no-ID or unpersisted changes refuse unchanged", async () => {
-  const { f, h } = await switchedToB(), before = await f.record(); expect(before.version).toBe(5);
+  const { f, h } = await switchedToB(), before = await f.record(); expect(before.version).toBe(3);
   const canonicalPath = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
   const untouched = await readFile(canonicalPath), callsBeforeRefusal = f.transport.mock.calls.length, id = await persistedId(f.root);
   for (const refused of [f.request(undefined, "faux:A"), { ...f.request(id, "faux:A"), metadata: { ...f.request(id, "faux:A").metadata, source: "tui" } }]) {
@@ -581,17 +580,4 @@ it.each([
   await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_switch_authority_unavailable" } });
   expect(deletion).not.toHaveBeenCalled(); expect(await nativeFiles(f.nativeRoot)).toEqual(files);
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
-});
-
-it("a pre-release v4 conversation is refused typed through the configured host, unchanged and never migrated", async () => {
-  const { f, h } = await switchedToB(), current = await f.record();
-  const canonicalPath = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
-  // Fictional old chain shape: an epoch array instead of the single current journal.
-  await writeFile(canonicalPath, JSON.stringify({ ...current, version: 4, native: { ...current.native, chain: [] } }) + "\n", { mode: 0o600 });
-  const bytes = await readFile(canonicalPath), files = await nativeFiles(f.nativeRoot), calls = f.transport.mock.calls.length;
-  for (const model of ["faux:B", "faux:A"]) {
-    await expect(h.respond(f.request(await persistedId(f.root), model), { append: async () => {} }))
-      .rejects.toMatchObject({ failure: { kind: "native_switch_format_unsupported", message: "unsupported pre-release switch format; reset" } });
-  }
-  expect(await readFile(canonicalPath)).toEqual(bytes); expect(await nativeFiles(f.nativeRoot)).toEqual(files); expect(f.transport).toHaveBeenCalledTimes(calls);
 });

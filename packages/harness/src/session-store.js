@@ -16,12 +16,11 @@ import { assertEvidenceView } from "./evidence-view.js";
 import { JournalValidator, validateJournalHeader } from "./journal-schema.js";
 import { JOURNAL_FORMAT as FORMAT } from "./journal-types.js";
 import { canonicalHostJournalAuthority, validateHeaderUpgradeOptions, sameHostJournalAuthority } from "./header-authority.js";
-import { guardedEpochPlan } from "./managed-journal.js";
+import { guardedEpochPlan, managedJournalId } from "./managed-journal.js";
 const sessionAuthorities = new WeakMap();
-const enabledVersion3Sessions = new WeakSet();
 function acceptHeader(session, header) {
   validateJournalHeader(header);
-  if (header.ownershipSchemaVersion === 2) sessionAuthorities.set(session, clone(header.hostAuthority));
+  if (header.hostAuthority !== undefined) sessionAuthorities.set(session, clone(header.hostAuthority));
 }
 function deletionOptions(contextOrOptions, explicitOptions) {
   const context = contextOrOptions != null && "abortSignal" in Object(contextOrOptions);
@@ -38,7 +37,7 @@ function validateDeletionDisposition(options) {
 }
 async function authorizeGuardedDeletion(header, options) {
   validateDeletionDisposition(options);
-  if (header.ownershipSchemaVersion !== 2) return;
+  if (header.hostAuthority === undefined) return;
   validateHeaderUpgradeOptions(options);
   if (!["C", "D"].includes(options.disposition) || !sameHostJournalAuthority(header.hostAuthority, options.hostAuthority)) {
     throw new TypeError("Guarded native deletion requires an authorized C/D disposition");
@@ -49,7 +48,12 @@ async function authorizeGuardedDeletion(header, options) {
 }
 function checkRecordAuthority(session, record) {
   const authority = sessionAuthorities.get(session);
-  if (!authority) return;
+  if (!authority) {
+    if (record?.payload?.projectionBinding !== undefined
+      || record?.payload?.compaction?.checkpoint?.inheritedCoverage !== undefined
+      || record?.payload?.artifactRef !== undefined) corruptBinding();
+    return;
+  }
   const owner = record?.kind === "owner_binding" ? record.payload : record?.payload?.binding;
   if (owner && owner.kind !== "unbound"
     && (owner.kind !== "host" || owner.ownerKey !== authority.ownerKey || owner.historyBucket !== authority.historyBucket)) corruptBinding();
@@ -80,7 +84,7 @@ export class SessionStore {
     this.closed = false;
     /** @type {Error|null} */ this.failure = null;
     /** @type {Promise<void>|null} */ this.closePromise = null;
-    if (!io?.read && metadata.ownershipSchemaVersion === 2) acceptHeader(this, metadata);
+    if (!io?.read && metadata.hostAuthority !== undefined) acceptHeader(this, metadata);
     for (const record of records) this.apply(record);
   }
   validateRecord(record) {
@@ -122,13 +126,12 @@ export class SessionStore {
     this.line = result.catch(() => {});
     return result;
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3, timestamp?:number}} [identity] */
+  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2, timestamp?:number}} [identity] */
   write(kind, payload, identity = {}) {
     return this.enqueue(() => this.writeRecord(kind, payload, identity));
   }
-  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2|3, timestamp?:number}} [identity] */
+  /** @param {any} kind @param {any} payload @param {{turnId?: string, operationId?: string, id?: string, schemaVersion?: 2, timestamp?:number}} [identity] */
   async writeRecord(kind, payload, { turnId = this.activeTurnId(), operationId, id = randomUUID(), schemaVersion = 2, timestamp = Date.now() } = {}) {
-      if (schemaVersion === 3) this.assertVersion3WritesEnabled();
       const record = { schemaVersion, id, parentId: this.validator.parentId,
         seq: this.seq + 1, timestamp, turnId, kind,
         ...(operationId ? { operationId } : {}), payload: typeof payload === "function" ? payload() : clone(payload) };
@@ -147,7 +150,7 @@ export class SessionStore {
   beginTurn(turnId, config = {}, identitySource = "synthetic", binding, projectionBinding = undefined) {
     return this.write("turn_start", () => ({ config: clone(config), identitySource, baselineTipId: this.tip,
       ...(binding ? { binding: clone(binding) } : {}), ...(projectionBinding ? { projectionBinding: clone(projectionBinding) } : {}) }),
-      { turnId, schemaVersion: projectionBinding ? 3 : 2 });
+      { turnId });
   }
   endTurn(turnId, status, result = null) {
     return this.write("turn_end", () => ({ status, tipId: this.tip,
@@ -171,6 +174,7 @@ export class SessionStore {
     return result;
     });
   }
+  /** @param {any} message @param {string} [id] */
   async appendMessage(message, id = randomUUID(), input = { id: null, complete: true }) {
     return this.scopedWrite(async () => {
       const config = this.validator.operations.get(this.activeOperationId())?.start.payload.config;
@@ -181,21 +185,7 @@ export class SessionStore {
       return record.id;
     }, "seed");
   }
-  /** Only a validated upgraded header authorizes v3, never caller metadata alone.
-   * The host must also stop older binaries and hold its upgraded-root authority.
-   * @param {{exclusiveWriters:true, hostAuthority:import('./header-authority.js').HostJournalAuthority}} options
-   */
-  enableVersion3Writes(options) {
-    if (options?.exclusiveWriters !== true) throw new TypeError("Version-3 writes require exclusive upgraded writers");
-    const authority = sessionAuthorities.get(this);
-    if (!authority || !sameHostJournalAuthority(authority, options.hostAuthority)) throw new TypeError("Version-3 writes require a matching upgraded native header authority");
-    enabledVersion3Sessions.add(this);
-  }
-  assertVersion3WritesEnabled() {
-    if (!enabledVersion3Sessions.has(this) || !sessionAuthorities.has(this)) throw new TypeError("Version-3 writes require enableVersion3Writes with exclusive upgraded writers and an upgraded native header authority");
-  }
   async appendCompaction(data, inheritedCoverage = undefined, source = undefined) {
-    if (inheritedCoverage) this.assertVersion3WritesEnabled();
     // Prepare outside the admitted write queue; getEntries itself drains it.
     const branch = await this.getEntries(); const preservedMessageIds = [], derivedMessages = [];
     let cursor = 0;
@@ -211,7 +201,7 @@ export class SessionStore {
       coverage: { version: 1, sourceTipId: this.tip, sourceEntryCount: branch.length }, projectionVersion: 1, ...(inheritedCoverage ? { inheritedCoverage: clone(inheritedCoverage) } : {}) };
     return this.scopedWrite(async () => (await this.writeRecord("compaction", () => ({
       compaction: { ...clone(data), checkpoint }, contextParentId: this.tip, preservedMessageIds,
-      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId(), schemaVersion: inheritedCoverage ? 3 : 2 })).id, "compaction", inheritedCoverage ? () => {
+      derivedMessages, coverageVersion: 1 }), { operationId: this.activeOperationId() })).id, "compaction", inheritedCoverage ? () => {
       if (!source || source.sourceTipId !== this.tip || source.sourceSeq !== this.seq) throw new TypeError("Composed checkpoint source changed");
     } : undefined);
   }
@@ -329,8 +319,8 @@ export class MemorySessionRepo {
   async create({ id = randomUUID(), cwd = process.cwd(), hostAuthority, assertOwned } = {}) {
     if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned(); }
     if (this.sessions.has(id)) throw new Error("Harness session already exists");
-    const metadata = { id, cwd, createdAt: Date.now(), journalId: randomUUID(), ...(hostAuthority ? {
-      format: FORMAT, version: 2, ownershipSchemaVersion: 2, ownership: { kind: "unbound" }, initialHandle: { id }, hostAuthority: canonicalHostJournalAuthority(hostAuthority),
+    const metadata = { id, cwd, createdAt: Date.now(), journalId: managedJournalId(id), ...(hostAuthority ? {
+      format: FORMAT, version: 2, ownershipSchemaVersion: 1, ownership: { kind: "unbound" }, initialHandle: { id }, hostAuthority: canonicalHostJournalAuthority(hostAuthority),
     } : {}) };
     const header = { format: FORMAT, version: 2, ownershipSchemaVersion: 1,
       ownership: { kind: "unbound" }, initialHandle: { id }, ...clone(metadata) };
@@ -341,6 +331,7 @@ export class MemorySessionRepo {
     await initializeSession(session);
     return session;
   }
+  async find(id, context = undefined) { const header = this.#headers.get(id); return header ? this.#publicMetadata(header) : undefined; }
   async open(metadata, { repair = true } = {}) {
     const id = metadata.id;
     if (this.openSessions.has(id)) throw new Error("Harness session is already open");
@@ -356,7 +347,7 @@ export class MemorySessionRepo {
     catch (error) { await session.close().catch(() => {}); throw error; }
   }
   #publicMetadata(header) {
-    return header.ownershipSchemaVersion === 1
+    return header.hostAuthority === undefined
       ? { id: header.id, cwd: header.cwd, createdAt: header.createdAt, journalId: header.journalId }
       : clone(header);
   }
@@ -413,7 +404,7 @@ export class JsonlSessionRepo {
     if (!isOwned(current, true) || !sameIdentity(current, this.directoryIdentity)) fail();
   }
   checkMetadata(metadata) {
-    if (!safeId(metadata.id) || !/^[A-Za-z0-9_-]+$/.test(metadata.journalId)
+    if (!safeId(metadata.id) || metadata.journalId !== managedJournalId(metadata.id)
       || dirname(resolve(metadata.path)) !== this.directory
       || ![`${metadata.journalId}.jsonl`, `${metadata.journalId}.jsonl.importing`, `${metadata.journalId}.jsonl.creating`].includes(metadata.path.split(/[\\/]/).at(-1))) fail();
   }
@@ -424,19 +415,21 @@ export class JsonlSessionRepo {
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
     const locks = await this.ensureDirectory();
-    const metadata = { id, cwd, createdAt: Date.now(), journalId: randomUUID(), path: "" };
+    const metadata = { id, cwd, createdAt: Date.now(), journalId: managedJournalId(id), path: "" };
     metadata.path = join(this.directory, `${metadata.journalId}.jsonl${staging ? ".importing" : ""}`);
-    const writer = await locks.acquireWriter(metadata.journalId, { signal });
+    if (!await absent(join(this.directory, `${metadata.journalId}.jsonl`))) throw new Error("Harness session already exists");
+    await locks.withCatalog(() => this.#reclaimCreating(metadata), { signal });
+    const writer = await locks.acquireWriter(metadata.journalId, { wait: false, signal });
     let published = false;
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        const catalogue = await this.catalogueUnlocked(true), legacy = await listLegacySessions(this.root);
-        if (this.openSessions.has(id) || catalogue.owned.some((m) => m.id === id)) throw new Error("Harness session already exists");
-        this.assertNotDamaged([...catalogue.unattributed, ...legacy.unattributed], id);
+        if (this.openSessions.has(id) || !await absent(join(this.directory, `${metadata.journalId}.jsonl`))) throw new Error("Harness session already exists");
+        this.assertNotDamaged((await listLegacySessions(this.root)).unattributed, id);
+        if (!await absent(`${join(this.directory, `${metadata.journalId}.jsonl`)}.importing`)) this.assertNotDamaged([{ id }], id);
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
         if (hostAuthority !== undefined) await assertOwned();
-        await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: hostAuthority ? 2 : 1,
+        await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: 1,
           ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, ...(hostAuthority ? { hostAuthority: canonicalHostJournalAuthority(hostAuthority) } : {}) }, true);
         if (hostAuthority !== undefined) await assertOwned();
         published = true;
@@ -482,9 +475,7 @@ export class JsonlSessionRepo {
       const committed = !await absent(metadata.path);
       if (committed) { await validate(metadata.path, false); await syncPath(metadata.path); await this.syncDirectories(); }
       // Never overwrite/discard a foreign same-handle journal or unknown stage.
-      const catalogue = await this.catalogueUnlocked();
-      if (catalogue.owned.some((entry) => entry.id === options.id && entry.journalId !== metadata.journalId)) fail();
-      this.assertNotDamaged(catalogue.unattributed, options.id);
+
       if (!await absent(stage)) {
         const identity = await validate(stage, true); await options.assertOwned();
         const named = await lstat(stage);
@@ -506,6 +497,38 @@ export class JsonlSessionRepo {
       }
       await options.assertOwned(); await this.assertDirectory(); return metadata;
     }); } finally { writer.release(); }
+  }
+  /** Direct current-journal lookup; only a missing path needs legacy/damage discovery.
+   * @param {string} id @param {{abortSignal?:AbortSignal}} [context] */
+  async find(id, context = undefined) {
+    if (!safeId(id)) throw new TypeError("Unsafe harness session id");
+    const journalId = managedJournalId(id), path = join(this.directory, `${journalId}.jsonl`);
+    try {
+      const reader = await JournalReader.open(path, this.root);
+      try {
+        const header = await reader.readHeader(); validateJournalHeader(header);
+        if (header.id !== id || header.journalId !== journalId) fail();
+        await reader.assertIdentity(); return { ...header, path };
+      } finally { await reader.close(); }
+    } catch (error) {
+      // A path can disappear between lookup and read. Absence is not damage;
+      // creation stages are inspected only under catalogue/writer ownership.
+      if (error?.code !== "ENOENT") this.assertNotDamaged([{ id }], id);
+    }
+    const locks = await this.ensureDirectory();
+    const published = await locks.withCatalog(async () => {
+      await this.#reclaimCreating({ id, journalId });
+      return !await absent(path);
+    }, { signal: contextSignal(context) });
+    // A creator may have published while this missing-path lookup waited.
+    if (published) return this.find(id, context);
+    const legacy = await listLegacySessions(this.root);
+    this.assertNotDamaged(legacy.unattributed, id);
+    const matches = legacy.sessions.filter((entry) => entry.id === id);
+    if (matches.length > 1) fail();
+    if (matches.length) return matches[0];
+    for (const suffix of [".importing", ".upgrading"]) if (!await absent(path + suffix)) this.assertNotDamaged([{ id }], id);
+    return undefined;
   }
   /** `signal` cancels only the writer wait, never a started open/repair. */
   async open(metadata, { repair = true, wait = repair, validateHeader = undefined, signal = undefined } = {}) {
@@ -638,9 +661,8 @@ export class JsonlSessionRepo {
         }
       }
       // Recover a guarded publication's directory barrier even when a prior
-      // creator crashed after rename. No v3 writer can escape before this sync.
-      // Ordinary schema-1 opens keep their exact original fsync path/counts.
-      if (storeMetadata.ownershipSchemaVersion === 2) { await handle.sync(); await this.syncDirectories(); }
+      // creator crashed after rename. Guarded writers cannot escape this sync.
+      if (storeMetadata.hostAuthority !== undefined) { await handle.sync(); await this.syncDirectories(); }
       if (repair && (!warm || session.durableSeq !== session.seq)) { await handle.sync(); session.durableSeq = session.seq; }
       this.openSessions.set(metadata.id, session);
       return session;
@@ -732,17 +754,18 @@ export class JsonlSessionRepo {
     validateJournalHeader(stage);
     const publishedPath = join(this.directory, `${journalId}.jsonl`);
     const creatingPath = join(this.directory, `${journalId}.jsonl.creating`);
+    await locks.withCatalog(() => this.#reclaimCreating({ id: metadata.id, journalId }), { signal });
     const writer = await locks.acquireWriter(journalId, { signal });
     let session;
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        const { owned, unattributed } = await this.catalogueUnlocked(true);
+        // Native ownership is deterministic; only legacy source discovery walks.
         const legacy = await listLegacySessions(this.root);
-        this.assertNotDamaged([...unattributed, ...legacy.unattributed], metadata.id);
+        this.assertNotDamaged(legacy.unattributed, metadata.id);
+        if (!await absent(`${publishedPath}.upgrading`)) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
         const sources = legacy.sessions.filter((m) => m.id === metadata.id);
-        if (owned.some((m) => m.id === metadata.id && m.journalId !== journalId)
-          || sources.length > 1 || sources.some((m) => m.path !== metadata.path)) fail();
+        if (sources.length > 1 || sources.some((m) => m.path !== metadata.path)) fail();
         if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
         if (await absent(publishedPath)) {
           if (sources.length !== 1) fail();
@@ -854,7 +877,7 @@ export class JsonlSessionRepo {
     for (const file of files) {
       const suffix = journalEntrySuffix(file.name), creating = suffix === ".jsonl.creating";
       if (!suffix || suffix === ".jsonl.upgrading" || suffix === ".jsonl.importing" && !includeStaging) continue;
-      const skip = (header) => { unattributed.push({ name: file.name, ...(typeof header?.id === "string" ? { id: header.id } : {}) }); };
+      const skip = (header) => { unattributed.push({ name: file.name, ...(typeof header?.id === "string" && file.name === `${managedJournalId(header.id)}${suffix}` ? { id: header.id } : {}) }); };
       if (!file.isFile()) { skip(); continue; }
       const path = join(this.directory, file.name);
       let reader;
@@ -863,16 +886,16 @@ export class JsonlSessionRepo {
       let header;
       try {
         try { header = await reader.readHeader({ allowIncomplete: creating }); } catch { skip(); continue; }
-        // Native create uses UUIDs; imports use deterministic SHA-256 IDs. An
-        // incomplete import header must remain available to source-bound recovery.
+        // All new native journals use deterministic IDs; import stages stay
+        // available to source-bound recovery.
         const journalId = file.name.slice(0, -".jsonl.creating".length);
-        if (creating && (!header || !header.import) && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(journalId)) {
+        if (creating && (!header || !header.import) && /^[0-9a-f]{64}$/i.test(journalId)) {
           if (header) {
             try {
               validateJournalHeader(header); this.checkMetadata({ ...header, path });
               let count = 0; const scan = await reader.scan(() => { count += 1; });
               // Never discard context or future phase data: keep it, unattributed.
-              if (count !== 1 || scan.torn) { skip(header); continue; }
+              if (header.hostAuthority !== undefined || count !== 1 || scan.torn) { skip(header); continue; }
             } catch { skip(header); continue; }
           }
           // A per-entry lock failure (e.g. an insecure writer lock) keeps this
@@ -892,17 +915,37 @@ export class JsonlSessionRepo {
   /** Refuse a handle that an unattributed entry names: damaged own evidence is
    * never silently replaced, recreated or treated as retired. */
   assertNotDamaged(unattributed, id) {
-    if (unattributed.some((entry) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
+    if (unattributed.some((entry) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE", sessionId: id });
+  }
+  // Exact-path recovery only. Context-bearing, guarded and future stages are preserved.
+  async #reclaimCreating(metadata) {
+    const path = join(this.directory, `${metadata.journalId}.jsonl.creating`);
+    if (await absent(path)) return;
+    const reader = await JournalReader.open(path, this.root);
+    try {
+      await this.#reclaimNativeCreation(reader, metadata, async () => {
+        // A live writer's stage is not a stable damage/reclamation verdict.
+        const header = await reader.readHeader({ allowIncomplete: true });
+        let count = 0; const scan = await reader.scan(() => { count++; });
+        if (header !== undefined) {
+          try { validateJournalHeader(header); this.checkMetadata({ ...header, path }); }
+          catch { this.assertNotDamaged([{ id: metadata.id }], metadata.id); }
+          if (header.hostAuthority !== undefined || count !== 1 || scan.torn) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
+        }
+      });
+      if (!await absent(path)) throw Object.assign(new Error("Harness creation writer is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+    } finally { await reader.close(); }
   }
   // Caller holds catalogue: every native creating->rename transaction holds it
   // too. Try the writer, never wait under catalogue or reclaim a live owner.
-  async #reclaimNativeCreation(reader, metadata) {
+  async #reclaimNativeCreation(reader, metadata, validate = async () => {}) {
     const locks = await this.locksPromise;
     const lockPath = join(locks.directory, `${metadata.journalId}.sqlite`);
     await locks.ensureFile(lockPath);
     const writer = await locks.tryLock(lockPath);
     if (!writer) return;
     try {
+      await validate();
       await reader.assertIdentity(); await unlink(reader.path); await this.syncDirectories();
       if (!await this.journalDataGone(metadata)) return;
       await locks.assertRoot();
@@ -921,6 +964,7 @@ export class JsonlSessionRepo {
   }
   async journalDataGone(metadata) {
     await this.assertDirectory();
+    for (const path of this.journalPaths(metadata)) if (!await absent(path)) return false;
     const files = await readdir(this.directory);
     if (files.some((name) => name.startsWith(`${metadata.journalId}.`))) return false;
     // P1a emits no aliases. Adding projections must extend this same predicate
@@ -1012,7 +1056,7 @@ export class JsonlSessionRepo {
     const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     const live = this.openSessions.get(metadata.id), authority = live && sessionAuthorities.get(live);
-    if (authority) await authorizeGuardedDeletion({ ownershipSchemaVersion: 2, hostAuthority: authority }, options);
+    if (authority) await authorizeGuardedDeletion({ ownershipSchemaVersion: 1, hostAuthority: authority }, options);
     this.retireHandle(metadata.id);
     const context = signal ? { abortSignal: signal } : undefined;
     if (metadata.legacy) { try { return await this.delete(metadata, context, options); } finally { this.finishRetirement(metadata.id); } }

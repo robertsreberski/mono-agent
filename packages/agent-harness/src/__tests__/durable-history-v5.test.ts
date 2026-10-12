@@ -7,18 +7,18 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
 import type { DurableHistoryStoreOptions } from "../durable-history.js";
 import type { RuntimeSessionTurnReconciliationResult } from "@mono-agent/runtime-adapter";
-import { validateTurnHistoryV5 } from "../durable-model-switch-contract.js";
-import type { TurnHistoryV5 } from "../durable-model-switch-contract.js";
-import { bucket, modelKey, timestamp, canonicalRecord, preReleaseV4Record, conversationKey, evidence } from "./fixtures/canonical-v5-fixture.mjs";
+import { validateNativeTurnHistory } from "../durable-model-switch-contract.js";
+import type { NativeTurnHistory } from "../durable-model-switch-contract.js";
+import { bucket, modelKey, timestamp, canonicalRecord, conversationKey, evidence } from "./fixtures/canonical-v5-fixture.mjs";
 import { createManagedNativeJournalStorage } from "@mono-agent/runtime-adapter";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function fixture(value: unknown = canonicalRecord(), options: Partial<DurableHistoryStoreOptions> = {}) {
   const root = await mkdtemp(join(tmpdir(), "canonical-v5-test-")); roots.push(root);
-  const id = (value as TurnHistoryV5).conversationId;
+  const id = (value as NativeTurnHistory).conversationId;
   const path = join(root, `${conversationKey(id)}.history.json`), fencePath = join(root, ".locks", `${conversationKey(id)}.dirty.json`);
-  if ([4, 5].includes((value as { version?: number }).version!)) await writeFile(join(root, ".native-history-root.json"), JSON.stringify({ version: 1, kind: "native-history", canonicalVersion: 4, rootId: "1".repeat(64) }), { mode: 0o600 });
+  if ((value as NativeTurnHistory).native !== undefined) await writeFile(join(root, ".native-history-root.json"), JSON.stringify({ version: 1, kind: "native-history", rootId: "1".repeat(64) }), { mode: 0o600 });
   await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   const inspect = vi.fn(async (request) => evidence(request) as RuntimeSessionTurnReconciliationResult);
   const retire = vi.fn(async () => {});
@@ -26,7 +26,7 @@ async function fixture(value: unknown = canonicalRecord(), options: Partial<Dura
   const begin = (purpose: "execution" | "compaction" = "execution") => store.beginProviderSessionTurn(id, "fictional-next-turn", { modelKey,
     reconciliation: { ownerKey: canonicalRecord(id).native.authority.ownerKey, purpose,
       ...(purpose === "execution" ? { initial: { persistText: "Fictional new question.", timestamp } } : {}) } });
-  return { root, path, fencePath, inspect, retire, store, begin, read: async () => JSON.parse(await readFile(path, "utf8")) as TurnHistoryV5 };
+  return { root, path, fencePath, inspect, retire, store, begin, read: async () => JSON.parse(await readFile(path, "utf8")) as NativeTurnHistory };
 }
 
 it("loads validated v5 without writes, retirement or native inspection", async () => {
@@ -55,7 +55,7 @@ it("preserves v5 authority, projection and both receipts on same-epoch synced wr
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-warm-turn", { modelKey });
   expect(turn.providerSessionRevision).toBe(7);
   await (await turn.prepareCommit([{ role: "assistant", content: "Fictional warm answer." }], { providerSessionSynced: true })).commit();
-  const after = await f.read(); validateTurnHistoryV5(after, (message) => message as never);
+  const after = await f.read(); validateNativeTurnHistory(after, (message) => message as never);
   expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch); expect(after.lastCommit).toEqual(before.lastCommit);
   expect(after.providerSession).toEqual({ ...before.providerSession, revision: 8 });
   expect(after.messages).toEqual([{ role: "assistant", content: "Fictional warm answer." }]); expect(f.retire).not.toHaveBeenCalled();
@@ -63,9 +63,9 @@ it("preserves v5 authority, projection and both receipts on same-epoch synced wr
 
 it.each(["execution", "compaction"] as const)("preserves v5 metadata while recovering a v5 %s fence exactly once", async (purpose) => {
   const f = await fixture(), before = await f.read(); const turn = await f.begin(purpose); await turn.abort();
-  expect(JSON.parse(await readFile(f.fencePath, "utf8")).version).toBe(5);
+  expect(JSON.parse(await readFile(f.fencePath, "utf8")).version).toBe(6);
   await expect(f.store.recoverProviderSessionTurn(bucket)).resolves.toMatchObject({ status: "recovered" });
-  const after = await f.read(); expect(after.version).toBe(5); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
+  const after = await f.read(); expect(after.version).toBe(3); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
   expect(after.lastCommit).toMatchObject({ turnId: "fictional-next-turn", committedRevision: 8 });
   expect(after.messages).toHaveLength(purpose === "execution" ? 3 : 1);
   expect(await f.store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" }); expect(await f.read()).toEqual(after);
@@ -197,7 +197,7 @@ for (const phase of ["canonical_stage_synced", "canonical_renamed", "canonical_d
       } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
     };
     await run("commit"); const first = await run("recover"), second = await run("recover");
-    expect(second.record).toEqual(first.record); expect(first.record.version).toBe(5); expect(first.record.native).toEqual(before.native); expect(first.record.lastSwitch).toEqual(before.lastSwitch);
+    expect(second.record).toEqual(first.record); expect(first.record.version).toBe(3); expect(first.record.native).toEqual(before.native); expect(first.record.lastSwitch).toEqual(before.lastSwitch);
     expect(first.record.providerSession.revision).toBe(8); expect(first.record.messages).toHaveLength(3);
     expect(first.record.lastCommit.turnId).toBe("fictional-next-turn"); expect(first.pending).toEqual([]); expect(first.fences).toEqual([]);
     expect(second.pending).toEqual([]); expect(second.fences).toEqual([]); expect(second.inspections).toBe(0);
@@ -205,79 +205,17 @@ for (const phase of ["canonical_stage_synced", "canonical_renamed", "canonical_d
   }, 30000);
 }
 
-// Unsupported pre-release v4 chains and intents are refused
-// before any recovery, cleanup or mutation. Never migrated, deleted or rewritten.
-it("refuses a pre-release v4 root and its outstanding intents with a typed error and no mutation", async () => {
-  const f = await fixture(preReleaseV4Record(), { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) });
-  const opPath = join(f.root, `.native-history-op.${conversationKey(bucket)}.json`);
-  await writeFile(opPath, JSON.stringify({ version: 1, disposition: "D", source: preReleaseV4Record(), next: null, timestamp: 0 }) + "\n", { mode: 0o600 });
-  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]); // unrelated conversations continue
-  const snapshot = async () => Object.fromEntries(await Promise.all((await readdir(f.root)).filter((name) => !name.startsWith(".locks") && name !== ".pending-turns" && !name.startsWith(conversationKey("fictional-unrelated")))
-    .map(async (name) => [name, await readFile(join(f.root, name), "utf8").catch(() => "directory")])));
-  const before = await snapshot();
-  for (const action of [() => f.store.load(bucket), () => f.store.append(bucket, []), () => f.store.reset(bucket), () => f.store.resetLogicalConversation(bucket),
-    () => f.begin(), () => f.store.recoverProviderSessionTurn(bucket), () => f.store.modelSwitchStorageSource(bucket),
-    () => f.store.beginProviderSessionPreparation(bucket, "fictional-preparation"), () => f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true })]) {
-    await expect(action()).rejects.toMatchObject({ code: "ERR_UNSUPPORTED_PRE_RELEASE_SWITCH_FORMAT", message: "unsupported pre-release switch format; reset" });
+it("an unknown switch-state version is owner-scoped damage, not root-wide refusal", async () => {
+  const f = await fixture();
+  const directory = join(f.root, ".model-switches");
+  await (await import("node:fs/promises")).mkdir(directory, { mode: 0o700 });
+  const path = join(directory, `${conversationKey(bucket)}.${"a".repeat(64)}.${"b".repeat(32)}.state.json`);
+  const bytes = JSON.stringify({ version: 999, identity: { historyBucket: bucket } });
+  await writeFile(path, bytes, { mode: 0o600 });
+  for (const action of [() => f.store.append(bucket, []), () => f.store.beginProviderSessionPreparation(bucket, "fictional-unknown"), () => f.store.modelSwitchStorageSource(bucket)]) {
+    await expect(action()).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" });
   }
-  expect(await snapshot()).toEqual(before); expect(f.retire).not.toHaveBeenCalled(); expect(f.inspect).not.toHaveBeenCalled();
-  // Retention protects (never deletes) the refused record.
-  const low = createDurableHistoryStore({ root: f.root, maxConversations: 1, retireProviderSession: f.retire });
-  await expect(low.append("fictional-third", [{ role: "user", content: "Fictional third." }])).rejects.toThrow("quota");
-  expect(await snapshot()).toEqual(before);
-});
-
-// Fictional pre-release switch state (version 1), optionally behind a valid fence.
-async function plantPreReleaseState(root: string, id: string, fenced: boolean): Promise<number> {
-  const { createHash } = await import("node:crypto"), { mkdir } = await import("node:fs/promises");
-  const directory = join(root, ".model-switches"); await mkdir(directory, { recursive: true, mode: 0o700 });
-  const switchId = "e".repeat(64), generation = "f".repeat(32), key = conversationKey(id);
-  const bytes = Buffer.from(`${JSON.stringify({ version: 1, identity: { historyBucket: id, switchId } })}\n`);
-  await writeFile(join(directory, `${key}.${switchId}.${generation}.state.json`), bytes, { mode: 0o600 });
-  if (!fenced) return bytes.byteLength;
-  const fence = Buffer.from(JSON.stringify({ version: 6, kind: "model-switch", conversationKey: key, switchId, targetEpoch: "a".repeat(64),
-    payload: { generation, sha256: createHash("sha256").update(bytes).digest("hex") } }));
-  await writeFile(join(directory, `${key}.${switchId}.fence.json`), fence, { mode: 0o600 });
-  return bytes.byteLength + fence.byteLength;
-}
-const refusal = { code: "ERR_UNSUPPORTED_PRE_RELEASE_SWITCH_FORMAT", message: "unsupported pre-release switch format; reset" };
-const tree = async (root: string) => Object.fromEntries(await Promise.all([".model-switches", ""].map(async (dir) =>
-  [dir, Object.fromEntries(await Promise.all((await readdir(join(root, dir))).filter((name) => name.endsWith(".json") && !name.startsWith(conversationKey("fictional-unrelated")))
-    .map(async (name) => [name, await readFile(join(root, dir, name), "utf8")])))])));
-
-it.each([false, true])("a leftover pre-release switch owner refuses only its own operations; unrelated v3 conversations append and admit (native=%s)", async (native) => {
-  const f = await fixture(undefined, native ? { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) } : {});
-  const planted = await plantPreReleaseState(f.root, bucket, true), before = await tree(f.root);
-  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]);
-  const turn = await f.store.beginProviderSessionTurn("fictional-unrelated", "fictional-unrelated-run", { modelKey });
-  await (await turn.prepareCommit([{ role: "assistant", content: "Fictional unrelated answer." }], { providerSessionSynced: true })).commit();
-  expect(await f.store.load("fictional-unrelated")).toHaveLength(2);
-  for (const action of [() => f.store.append(bucket, []), () => f.begin(), () => f.store.modelSwitchStorageSource(bucket)]) await expect(action()).rejects.toMatchObject(refusal);
-  expect(await tree(f.root)).toEqual(before); // owner A's bytes preserved
-  expect((await f.store.stats()).bytes).toBeGreaterThanOrEqual(planted); // and still charged
-  // Retention never selects the refused owner as a victim.
-  const low = createDurableHistoryStore({ root: f.root, maxConversations: 1, retireProviderSession: f.retire });
-  await expect(low.append("fictional-third", [{ role: "user", content: "Fictional third." }])).rejects.toThrow("quota");
-  expect(await tree(f.root)).toEqual(before);
-});
-
-it("an unfenced orphan pre-release state refuses its owner before authority, preparation or native mutation", async () => {
-  const f = await fixture(undefined, { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) });
-  const id = "fictional-orphan-owner", turn = await f.store.beginProviderSessionTurn(id, "fictional-orphan-seed", { modelKey });
-  await (await turn.prepareCommit([{ role: "assistant", content: "Fictional orphan answer." }], { providerSessionSynced: true })).commit();
-  await plantPreReleaseState(f.root, id, false);
-  const switches = async () => (await readdir(join(f.root, ".model-switches"))).sort(), files = await switches();
-  const canonical = await readFile(join(f.root, `${conversationKey(id)}.history.json`));
-  for (const action of [() => f.store.modelSwitchStorageSource(id), () => f.store.acquireNativeHistoryAuthority(id, { exclusiveWriters: true }),
-    () => f.store.beginProviderSessionPreparation(id, "fictional-orphan-preparation")]) await expect(action()).rejects.toMatchObject(refusal);
-  expect(await switches()).toEqual(files); expect(await readFile(join(f.root, `${conversationKey(id)}.history.json`))).toEqual(canonical);
-  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]); // others continue
-});
-
-it("preparation of a refused pre-release conversation does not retire an unrelated inactive dirty fence first", async () => {
-  const f = await fixture(preReleaseV4Record(), { nativeJournalStorage: createManagedNativeJournalStorage({ sessionsRoot: join(tmpdir(), "mono-unused-native") }) });
-  const crashed = await f.store.beginProviderSessionTurn("fictional-crashed", "fictional-crashed-run"); await crashed.abort();
-  const fence = join(f.root, ".locks", `${conversationKey("fictional-crashed")}.dirty.json`), bytes = await readFile(fence);
-  await expect(f.store.beginProviderSessionPreparation(bucket, "fictional-preparation")).rejects.toMatchObject(refusal);
-  expect(await readFile(fence)).toEqual(bytes); expect(f.retire).not.toHaveBeenCalled();
+  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unaffected message." }]);
+  expect(await f.store.load("fictional-unrelated")).toHaveLength(1);
+  expect(await readFile(path, "utf8")).toBe(bytes);
 });

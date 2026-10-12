@@ -50,9 +50,9 @@ export async function assertNativeSessionAccess(access, action, sessionsRoot) {
 }
 /** Must precede an open that could repair bytes. @param {any} access @param {any} metadata */
 export function assertNativeSessionHeader(access, metadata) {
-  if (access === undefined && metadata.ownershipSchemaVersion !== 2) return;
+  if (access === undefined && metadata.hostAuthority === undefined) return;
   if (access === undefined) throw failure();
-  if (metadata.ownershipSchemaVersion !== 2 || ["version", "canonicalVersion", "rootId", "authorityId", "ownerKey", "historyBucket"]
+  if (metadata.hostAuthority === undefined || ["version", "rootId", "authorityId", "ownerKey", "historyBucket"]
     .some((key) => metadata.hostAuthority?.[key] !== access.hostAuthority[key])) throw failure();
 }
 

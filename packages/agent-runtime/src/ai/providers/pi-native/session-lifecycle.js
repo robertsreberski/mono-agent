@@ -202,16 +202,21 @@ function isSafeSessionId(id) {
  * found while an unreadable entry could be this handle's own damaged journal;
  * `owned` that a damaged entry is attributed to exactly this handle. */
 async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
+  if (!isSafeSessionId(sessionId)) return { entry: null, uncertain: false };
   try {
-    const metadata = (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
+    const direct = typeof repo.find === "function";
+    const metadata = direct ? await repo.find(sessionId, context) : (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
     if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
-    if (typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
+    if (direct || typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
     const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
       owned: unattributed.some((item) => item.id === sessionId) };
-  } catch {
-    // A failed catalogue cannot establish absence or authorize cold replay.
-    return { entry: null, uncertain: true };
+  } catch (error) {
+    // A failed lookup cannot authorize cold replay, but only attributed damage
+    // can prohibit a new conversation. A live creator is busy, not damaged.
+    return { entry: null, uncertain: true,
+      owned: error?.code === "ERR_HARNESS_JOURNAL_UNREADABLE" && error.sessionId === sessionId,
+      busy: error?.code === "ERR_HARNESS_WRITER_BUSY" };
   }
 }
 
@@ -284,11 +289,11 @@ export async function resolveSession(runState, {
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
-    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false;
+    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false, busy = false;
     if (!entry && durableRepo) {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
-        ({ entry, uncertain, owned = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
+        ({ entry, uncertain, owned = false, busy = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
         waitSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
@@ -311,6 +316,9 @@ export async function resolveSession(runState, {
       }
     }
     if (!entry) {
+      if (busy) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is busy`,
+        failureKind: "session_busy", piErrorCode: "pi_session_busy", piTransport }) };
       const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
         sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
         failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
@@ -452,7 +460,6 @@ export async function resolveSession(runState, {
         try {
           assertNativeSessionHeader(access, raw.metadata);
           if (access) await assertNativeProjectionBinding(raw, options.nativeSessionProjection);
-          if (access) raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: access.hostAuthority });
         } catch (error) { await raw.close(); throw error; }
         runState.session = createPiSessionAdapter(raw);
         // Import publishes a new versioned pathname; the registry must sync and
@@ -706,9 +713,9 @@ export async function recoverDurableNativeSession(receipt, context) {
   entry.busy = true;
   let raw;
   try {
-    const matches = (await entry.repo.list(undefined, HARNESS_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
-    if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
-    raw = await entry.repo.open(matches[0], { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
+    const metadata = await entry.repo.find(receipt.providerSessionId, HARNESS_CONTEXT);
+    if (!metadata || metadata.path !== entry.metadata.path) return false;
+    raw = await entry.repo.open(metadata, { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
     if (await raw.getLeafId() !== receipt.tipId) return false;
     const terminal = await raw.getTerminal(proof.operationId);
     if ([...raw.validator.inputs.values()].some((input) => input.state === "queued")) return false;

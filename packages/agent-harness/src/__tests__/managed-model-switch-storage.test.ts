@@ -107,18 +107,19 @@ it("rejects unnormalized buckets and mismatched logical owners before acquiring 
   expect(retire).not.toHaveBeenCalled(); expect((await store.stats()).activePreparedAppends).toBe(0);
   await store.append(bucket, [{ role: "assistant", content: "Still writable" }]);
 });
-it("inventories pending switches only inside the root transaction on ordinary mutation paths", async () => {
+it("keeps global inventory under root ownership while owner-scoped preflight is read-only", async () => {
   const { store } = await fixture();
   const internal = store as any;
   const acquire = internal.acquireRootTransaction.bind(store);
   const inventory = ModelSwitchPayloadStore.prototype.inventory;
-  let held = 0, checks = 0;
+  let held = 0, checks = 0, scoped = 0;
   const rootSpy = vi.spyOn(internal, "acquireRootTransaction").mockImplementation(async (...args: unknown[]) => {
     const release = await acquire(...args); held++;
     return async () => { try { await release(); } finally { held--; } };
   });
-  const inventorySpy = vi.spyOn(ModelSwitchPayloadStore.prototype, "inventory").mockImplementation(async function (this: ModelSwitchPayloadStore) {
-    expect(held).toBeGreaterThan(0); checks++; return inventory.call(this);
+  const inventorySpy = vi.spyOn(ModelSwitchPayloadStore.prototype, "inventory").mockImplementation(async function (this: ModelSwitchPayloadStore, conversation?: string) {
+    if (conversation === undefined) { expect(held).toBeGreaterThan(0); checks++; } else { expect(conversation).toBe(bucket); scoped++; }
+    return inventory.call(this, conversation);
   });
   try {
     await store.append(bucket, [{ role: "assistant", content: "Fictional mutation" }]);
@@ -126,7 +127,7 @@ it("inventories pending switches only inside the root transaction on ordinary mu
     await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
     await store.reset(bucket);
     await store.resetLogicalConversation(bucket);
-    expect(checks).toBeGreaterThan(5); expect(held).toBe(0);
+    expect(checks).toBeGreaterThan(5); expect(scoped).toBeGreaterThan(0); expect(held).toBe(0);
   } finally { rootSpy.mockRestore(); inventorySpy.mockRestore(); }
 });
 it("prechecks every logical sibling before resetting any pending-switch owner", async () => {
@@ -157,7 +158,7 @@ it("requires the provider fence to remain settled when the switch root transacti
   // Simulate settlement returning just before discovering an unresolved fence.
   const settlement = vi.spyOn(store as any, "settleHeldTurn").mockResolvedValue({ status: "clean" });
   try {
-    await writeFile(fencePath, JSON.stringify({ ...sourceFence, version: 5, kind: "execution", payload: { generation: "0".repeat(32), sha256: "0".repeat(64) } }), { mode: 0o600 });
+    await writeFile(fencePath, JSON.stringify({ ...sourceFence, version: 6, kind: "execution", payload: { generation: "0".repeat(32), sha256: "0".repeat(64) } }), { mode: 0o600 });
     await expect(store.beginModelSwitchStorage(state)).rejects.toThrow("Pending provider turn requires explicit owner-held reconciliation");
     expect(await readdir(root)).not.toContain(MODEL_SWITCH_DIRECTORY);
   } finally { settlement.mockRestore(); }
@@ -217,3 +218,29 @@ for (const phase of ["payload_renamed", "fence_renamed", "fence_directory_synced
     expect((await store.stats()).bytes).toBe(first.bytes); expect(retire).not.toHaveBeenCalled();
   }, 30000);
 }
+
+
+it("ignores ENOENT when obsolete switch state disappears after owner preflight lists it", async () => {
+  const { root, store, state } = await fixture();
+  const lease = await store.beginModelSwitchStorage(state);
+  if (lease.status !== "owned") throw new Error("Expected owned lease");
+  await lease.release();
+  const directory = join(root, MODEL_SWITCH_DIRECTORY);
+  const current = (await readdir(directory)).find((name) => name.endsWith(".state.json"))!;
+  const parts = current.split("."); parts[2] = "0".repeat(32);
+  const obsolete = parts.join(".");
+  await writeFile(join(directory, obsolete), await readFile(join(directory, current)), { mode: 0o600 });
+  const original = (ModelSwitchPayloadStore.prototype as any).readBytes;
+  let removed = false;
+  const spy = vi.spyOn(ModelSwitchPayloadStore.prototype as any, "readBytes").mockImplementation(async function (this: any, name: unknown, limit: unknown) {
+    if (!removed && name === obsolete) {
+      removed = true; await rm(join(root, MODEL_SWITCH_DIRECTORY, name));
+      throw Object.assign(new Error("Fictional concurrent obsolete-state removal"), { code: "ENOENT" });
+    }
+    return original.call(this, name, limit);
+  });
+  try {
+    const preparation = await store.beginProviderSessionPreparation(bucket, "fictional-preflight");
+    await preparation.abort(); expect(removed).toBe(true);
+  } finally { spy.mockRestore(); }
+});

@@ -157,8 +157,7 @@ metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
 A positive compaction window override replaces the declared window, and learned
 provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
 
-Native runtimes additionally expose `nativePreparedDispatch: "v1"` and
-`prepareNativeDispatch(systemPrompt, options)`. This opt-in API resolves the
+Native runtimes additionally expose `prepareNativeDispatch(systemPrompt, options)`. This opt-in API resolves the
 actual built-in, MCP and StructuredOutput declarations plus provider
 model/authentication **before any session lookup, open, repair or creation**.
 Its deeply frozen `snapshot` includes the augmented system prompt, input,
@@ -273,7 +272,7 @@ bytes. Busy/recovery-pending handles, cold opens and create reservations must be
 settled first. It is deliberately separate from destructive retirement/invalidation and does not establish
 cross-process canonical authority. Host switching/retention policy is unchanged.
 Coordinated opt-in v3 writers now also require the harness's guarded
-ownership-schema-2 native header and matching host authority reference; a caller
+guarded native header and matching host authority reference; a caller
 acknowledgement alone cannot enable them. Older native readers/deleters reject
 that header before torn-tail repair or deletion. Once any guarded journal exists,
 older catalogue listing and legacy import fail closed for the entire root;

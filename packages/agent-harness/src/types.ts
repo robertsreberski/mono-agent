@@ -152,16 +152,11 @@ export interface ConversationHistoryTurnDrainResult {
 
 export interface ConversationHistoryStore {
   /** Positive owned preparation contract. Does not acknowledge stopped older writers. */
-  readonly providerSessionPreparation?: "v1";
   beginProviderSessionPreparation?(conversationId: string, runId: string): Promise<ManagedProviderSessionPreparation>;
   /** Opted-in owner-held, storage-only native turn settlement. load() stays read-only. */
   readonly providerSessionReconciliation?: "v1" | undefined;
   recoverProviderSessionTurn?(conversationId: string): Promise<ConversationHistoryTurnRecovery>;
   drainPendingProviderSessionTurns?(options?: ConversationHistoryTurnDrainOptions): Promise<ConversationHistoryTurnDrainResult>;
-  /** Checks, persists and retires requested-primary model bindings. */
-  readonly providerSessionModelBinding?: "v1";
-  /** Accepts synced terminal continuity without changing the durable record shape. */
-  readonly providerSessionRecovery?: "v1";
   /**
    * Present only when epoch rotation/retention can fail closed while removing
    * provider-owned durable transcripts that canonical history supersedes.

@@ -5,12 +5,6 @@ import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { HistoryMessage } from "./context/index.js";
 import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-agent/runtime-adapter";
 
-/** Pre-release v4 chains and their intents are refused, never migrated or mutated. */
-export class UnsupportedPreReleaseSwitchFormatError extends TypeError {
-  readonly code = "ERR_UNSUPPORTED_PRE_RELEASE_SWITCH_FORMAT";
-  constructor() { super("unsupported pre-release switch format; reset"); this.name = "UnsupportedPreReleaseSwitchFormatError"; }
-}
-export function refusePreReleaseSwitchFormat(): never { throw new UnsupportedPreReleaseSwitchFormatError(); }
 export class ModelSwitchCapacityError extends Error {
   readonly code = "ERR_MODEL_SWITCH_CAPACITY";
 }
@@ -44,8 +38,8 @@ export interface ModelSwitchReceipt {
 }
 /** One current guarded journal (derived from the epoch), one durable handoff
  * and the latest switch receipt. No epoch ancestry is retained. */
-export interface TurnHistoryV5 extends Omit<TurnHistoryV3, "version" | "providerSession"> {
-  readonly version: 5;
+export interface NativeTurnHistory extends Omit<TurnHistoryV3, "version" | "providerSession" | "native" | "lastSwitch"> {
+  readonly version: 3;
   readonly providerSession: { readonly epoch: string; readonly revision: number; readonly modelKey: string };
   readonly native: { readonly authority: RuntimeNativeJournalAuthority; readonly projection: HandoffReference | null };
   readonly lastSwitch?: ModelSwitchReceipt;
@@ -140,12 +134,12 @@ function validateJournalDescriptor(value: unknown, ownerKey: string, historyBuck
   provenance(value.provenance);
 }
 export function validateSwitchAuthority(value: unknown): asserts value is RuntimeNativeJournalAuthority {
-  switchObject(value); switchKeys(value, ["version", "canonicalVersion", "rootId", "authorityId", "ownerKey", "historyBucket"]);
-  if (value.version !== 1 || value.canonicalVersion !== 4) switchInvalid(); switchHash(value.rootId); switchHash(value.authorityId); text(value.ownerKey); text(value.historyBucket);
+  switchObject(value); switchKeys(value, ["version", "rootId", "authorityId", "ownerKey", "historyBucket"]);
+  if (value.version !== 1) switchInvalid(); switchHash(value.rootId); switchHash(value.authorityId); text(value.ownerKey); text(value.historyBucket);
 }
-export function validateTurnHistoryV5(value: unknown, validateMessage: (message: unknown) => HistoryMessage): asserts value is TurnHistoryV5 {
+export function validateNativeTurnHistory(value: unknown, validateMessage: (message: unknown) => HistoryMessage): asserts value is NativeTurnHistory {
   switchObject(value); switchKeys(value, ["version", "conversationId", "messages", "providerSession", "native"], ["lastCommit", "lastSwitch"]);
-  if (value.version !== 5) switchInvalid();
+  if (value.version !== 3) switchInvalid();
   validateTurnHistoryV3({ version: 3, conversationId: value.conversationId, messages: value.messages, providerSession: value.providerSession,
     ...(value.lastCommit === undefined ? {} : { lastCommit: value.lastCommit }) }, validateMessage);
   switchObject(value.providerSession); assertSessionModelKey(value.providerSession.modelKey);
@@ -162,7 +156,7 @@ export function validateTurnHistoryV5(value: unknown, validateMessage: (message:
   }
 }
 /** Binding recognition is NOT proof that projection is ready for dispatch. */
-export function recognizesModelSwitchBinding(record: Pick<TurnHistoryV5, "conversationId" | "lastSwitch">, identity: ModelSwitchIdentity): boolean {
+export function recognizesModelSwitchBinding(record: Pick<NativeTurnHistory, "conversationId" | "lastSwitch">, identity: ModelSwitchIdentity): boolean {
   const receipt = record.lastSwitch;
   if (!receipt || record.conversationId !== identity.historyBucket || receipt.switchId !== identity.switchId) return false;
   if (receipt.intentDigest !== switchDigest(identity) || receipt.fromEpoch !== identity.sourceEpoch || receipt.toEpoch !== identity.targetEpoch) {
@@ -185,7 +179,7 @@ export function validateFrozenHandoffBudget(value: unknown): asserts value is Ru
 }
 
 export function validateModelSwitchState(value: unknown): asserts value is ModelSwitchState {
-  switchObject(value); if (value.version === 1) refusePreReleaseSwitchFormat();
+  switchObject(value);
   switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"], ["frozenBudget", "initialMessageDigest"]);
   if (value.version !== 2 || value.billingPolicy !== MODEL_SWITCH_BILLING_POLICY || !["outgoing", "checkpoint", "incoming", "pending", "ready"].includes(value.phase as string)) switchInvalid();
   if (value.initialMessageDigest !== undefined) switchHash(value.initialMessageDigest);

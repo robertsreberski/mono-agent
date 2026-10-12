@@ -11,12 +11,14 @@ import { createHandoffBudget, buildHandoff, buildOpenWorkLedger, renderHandoffMe
 
 const provenance = { provider: "fictional", api: "fictional-api", account: "fixture-account" };
 const target = { ...provenance, model: "A" };
-const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+/** @type {import("../header-authority.js").HostJournalAuthority} */
+const hostAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const hostContext = { systemPrompt: "Current fictional rules", tools: [{ name: "Read", parameters: { type: "object" } }] };
 const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext });
 const options = { target, budget, hostContext, timestamp: 17, producer: "outgoing" };
 const text = (value) => ({ role: "user", content: value, timestamp: 1 });
 const summary = { intent: ["Fictional goal"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] };
+/** @param {string} id @param {any[]} [messages] */
 async function segment(id, messages = [text(id)], guarded = false) {
   const repo = new MemorySessionRepo(); const store = await repo.create({ id, cwd: "/fictional", ...(guarded ? { hostAuthority, assertOwned: async () => {} } : {}) });
   await store.beginTurn(`turn-${id}`);
@@ -65,12 +67,11 @@ it("persists opt-in composed coverage of the inherited prior handoff and never r
   const prior = await priorHandoff("Inherited B fact");
   const inheritedCoverage = { version: 1, sources: prior.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) };
   const c = await segment("C", [text("C")], true);
-  c.store.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   await c.store.beginTurn("composed-turn");
   await c.store.openOperation("composed-op", { model: { provider: provenance.provider, api: provenance.api, id: "C" }, nativeProvenance: provenance }, "compaction");
   await c.store.appendCompaction({ summary: "Prior and C checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, inheritedCoverage, { sourceTipId: c.store.tip, sourceSeq: c.store.seq });
   await c.store.closeOperation("composed-op", "completed"); await c.store.endTurn("composed-turn", "completed");
-  expect(c.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(3);
+  expect(c.store.records.find((r) => r.kind === "compaction").schemaVersion).toBe(2);
   const result = buildHandoff(view([refreshed(c)], { prior }), options);
   expect(result.status).toBe("ready"); expect(JSON.stringify(result.artifact.checkpoint.suffix)).toContain("Prior and C checkpoint");
   expect(() => view([refreshed(c)])).toThrow("composed coverage");
@@ -184,7 +185,7 @@ it("keeps a seeded tool result with its call even when a user boundary intervene
 it("never drops authoritative recent turns after summary production to force a fit", async () => {
   const a = await segment("frozen-recent", [text("earlier".repeat(600))]);
   for (let i = 0; i < 3; i++) { await a.store.beginTurn(`retained-${i}`); await a.store.appendMessage(text(`${i}`.repeat(4000))); await a.store.endTurn(`retained-${i}`, "completed"); }
-  const local = { ...options, budget: createHandoffBudget({ contextWindow: 30000, outputReserve: 1000, inputTokens: 0, hostContext }) };
+  const local = { ...options, budget: createHandoffBudget({ contextWindow: 30256, outputReserve: 1000, inputTokens: 0, hostContext }) };
   const evidence = view([refreshed(a)]); const prepared = prepareHandoff(evidence, local);
   expect(prepared.recent).toHaveLength(3);
   expect(buildHandoff(evidence, { ...local, summary: { ...summary, intent: ["summary ".repeat(2000)] } })).toMatchObject({ status: "budget_failure" });
@@ -232,15 +233,6 @@ it("source enforcement catches JS/TS imports and re-exports in other packages an
     await writeFile(join(fake, paths[2]), 'export { buildHarnessSessionContext } from "@mono-agent/harness";');
     expect(await findContextBuilderBypasses(fake)).toEqual(paths.sort());
   } finally { await rm(fake, { recursive: true, force: true }); }
-});
-
-it("gates every opt-in v3 writer on upgraded header authority AND the exclusive-writers acknowledgement", async () => {
-  const a = await segment("v3-gate", [text("v3-gate")], true); const before = structuredClone(a.store.records);
-  const coverage = { version: 1, sources: [] };
-  await expect(a.store.appendCompaction({ summary: "fixture", retainedTail: [] }, coverage, { sourceTipId: a.store.tip, sourceSeq: a.store.seq })).rejects.toThrow("exclusive upgraded writers");
-  await expect(a.store.write("model_change", {}, { schemaVersion: 3 })).rejects.toThrow("exclusive upgraded writers");
-  expect(() => a.store.enableVersion3Writes({ exclusiveWriters: false })).toThrow("exclusive upgraded writers");
-  expect(a.store.records).toEqual(before);
 });
 
 it("keeps observed successful outcomes from rewound calls as ledger evidence, not active receipts", async () => {

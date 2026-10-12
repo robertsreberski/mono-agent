@@ -31,7 +31,7 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
   await session.sync();
   const metadata = { ...session.metadata }; await session.close(); await repo.close();
   await (await turn.prepareCommit([{ role: "user", content: "Fictional source fact" }], { providerSessionSynced: true })).commit();
-  const authority = await store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true });
+  const authority = await store.acquireNativeHistoryAuthority(bucket);
   if (authority.status !== "owned") throw new Error("Expected owned root authority"); await authority.release();
   const source = await store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
   const descriptor = await native.freeze({ epoch: source.sourceEpoch, handleId: turn.providerSessionId,

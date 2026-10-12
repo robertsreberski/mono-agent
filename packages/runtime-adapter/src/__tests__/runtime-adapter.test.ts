@@ -748,7 +748,7 @@ it.each([false, true])("forwards host-only guarded retirement authority without 
   const { readFile } = await import("node:fs/promises");
   const root = await mkdtemp(join(tmpdir(), "adapter-guarded-retire-"));
   try {
-    const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" } as const;
+    const hostAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" } as const;
     const assertOwned = vi.fn(async () => {}), repo = new JsonlSessionRepo({ sessionsRoot: root });
     const store = await repo.create({ id: "guarded-adapter-retire", hostAuthority, assertOwned }); await store.close();
     const runtime = createMonoRuntime(routed ? { chain: [parseMonoRuntimeModelReference("faux:fixture")] } : {});

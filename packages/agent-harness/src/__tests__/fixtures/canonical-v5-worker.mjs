@@ -27,7 +27,7 @@ try {
   const store = createDurableHistoryStore({ root, now: () => Date.parse(timestamp), retireProviderSession: async () => { throw new Error("Unexpected native retirement"); },
     reconcileProviderSessionTurn: async (request) => { inspections++; return evidence(request); } });
   const writeStage = store.writeStage.bind(store);
-  store.writeStage = async (...args) => { const result = await writeStage(...args); if (args[0].version === 5) await pause("canonical_stage_synced"); return result; };
+  store.writeStage = async (...args) => { const result = await writeStage(...args); if (args[0].native !== undefined) await pause("canonical_stage_synced"); return result; };
   const removeFence = store.removeDirtyFenceAfterCommit.bind(store);
   store.removeDirtyFenceAfterCommit = async (...args) => { await pause("fence_cleanup_started"); await removeFence(...args); await pause("fence_removed"); };
   const removePending = store.removePendingConversation.bind(store);

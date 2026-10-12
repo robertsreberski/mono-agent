@@ -142,7 +142,7 @@ Notes:
 - The BuJo memory LLM is separate from the channel runtime. `createConfiguredMemory(config, { memoryRuntime })` is the seam for tests or custom memory LLM execution; otherwise memory builds its own fallback-free runtime from `memory.llm`.
 - Model overrides use a cached `runtimeForModel(model)` owner when supplied; without it, the injected runtime receives the effective per-run model directly. Provide the factory when separate runtimes are needed, such as routers with a fixed primary. Session cleanup resolves the same owner, including after a restart.
 - `createSessionRuntimeResolver` from `@mono-agent/agent-harness` caches runtime identity by canonical model key. Durable-history retirement callbacks receive `(providerSessionId, modelKey?)`; absent keys identify legacy unbound records. The configured app wires retirement to the owning runtime.
-- A custom history coordinator opts into durable alternate-model sessions with `providerSessionModelBinding: "v1"`. Its `beginProviderSessionTurn(conversationId, runId, { modelKey })` must persist and acknowledge the binding, rotate on changes, and return `previousModelKey` for a known change. Legacy coordinators retain their default-model path; alternate-model sessions remain process-local until the coordinator supports binding.
+- A custom history coordinator opts into durable alternate-model sessions by implementing `readProviderSessionBinding`. Its `beginProviderSessionTurn(conversationId, runId, { modelKey })` must persist and acknowledge the binding, rotate on changes, and return `previousModelKey` for a known change. Legacy coordinators retain their default-model path; alternate-model sessions remain process-local until the coordinator supports binding.
 
 ## Custom memory stores
 

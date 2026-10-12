@@ -4,12 +4,12 @@ import { mkdir, mkdtemp, rm, copyFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
-it.each([3, 4])("matches committed P2b bytes for default context/checkpoints/v%s imports/repairs and runtime seams", async (version) => {
+it.each([3, 4])("matches frozen harness bytes for default context/checkpoints/v%s imports/repairs and runtime seams", async (version) => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const scratch = await mkdtemp(join(root, "node_modules", ".p3a-parity-"));
   try {
     const golden = JSON.parse(await readFile(new URL(`./fixtures/projection-golden-v${version}.json`, import.meta.url), "utf8"));
-    expect(golden.base).toBe("10f501d4f1dc102db9951fcebb09a96001910452");
+    expect(golden.format).toBe("release-freeze");
     const worker = fileURLToPath(new URL("./fixtures/projection-parity-worker.mjs", import.meta.url));
     const legacy = fileURLToPath(new URL(`./fixtures/legacy-v${version}.jsonl`, import.meta.url));
     const storage = join(scratch, "session");

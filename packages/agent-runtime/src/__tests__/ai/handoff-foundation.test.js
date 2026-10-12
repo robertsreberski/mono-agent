@@ -73,10 +73,10 @@ it("accepts a successful non-truncated summary even when bytes/3 exceeds the com
   expect(result).toMatchObject({ status: "ready", summary: large });
   expect(completeSimple.mock.calls[0][2]).toMatchObject({ maxTokens: 1000, maxRetries: 0 });
 });
-it.each(["list", "create"])("refuses detach during in-flight cold %s before an idle handle exists", async (phase) => {
+it.each(["find", "create"])("refuses detach during in-flight cold %s before an idle handle exists", async (phase) => {
   const root = await mkdtemp(join(tmpdir(), "native-detach-cold-fixture-")); roots.push(root);
   const repo = resolveDurableNativeSessionRepo(root);
-  if (phase === "list") { const raw = await repo.create({ id: "cold-fixture" }); await raw.close(); }
+  if (phase === "find") { const raw = await repo.create({ id: "cold-fixture" }); await raw.close(); }
   let reached; let release = () => {};
   const waiting = new Promise((resolve) => { reached = resolve; });
   const gate = new Promise((resolve) => { release = () => resolve(undefined); });
@@ -115,7 +115,7 @@ it("turn_advanced reconciliation rejects synchronously without reading context e
 
 it("forwards guarded retirement authority through the durable native helper", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-guarded-retirement-")); roots.push(root);
-  const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+  const hostAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
   const repo = resolveDurableNativeSessionRepo(root), assertOwned = vi.fn(async () => {});
   const store = await repo.create({ id: "guarded-retirement", hostAuthority, assertOwned }); await store.close();
   const bytes = await readFile(store.metadata.path);

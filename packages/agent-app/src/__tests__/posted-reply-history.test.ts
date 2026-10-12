@@ -594,16 +594,16 @@ it("forwards provider-session binding capability arguments and returned ownershi
     history: [], abort: async () => undefined, prepareCommit: vi.fn() };
   const begin = vi.fn(async () => turn);
   const original: ConversationHistoryStore = { load: async () => [], append: async () => undefined,
-    providerSessionModelBinding: "v1", providerSessionRecovery: "v1", providerSessionRetirement: "fail-closed", beginProviderSessionTurn: begin };
+    providerSessionRetirement: "fail-closed", readProviderSessionBinding: async () => ({ modelKey: "faux:override", revision: 0 }), beginProviderSessionTurn: begin };
   const wrap = createSlackPostedReplyHistory({ maxMessages: 10 }).wrapHistoryStore;
   const wrapped = wrap(original);
   const binding = { modelKey: "faux:override" };
-  expect(wrapped.providerSessionModelBinding).toBe("v1");
-  expect(wrapped.providerSessionRecovery).toBe("v1");
+  expect(wrapped.readProviderSessionBinding).toBeTypeOf("function");
+  expect(wrapped.readProviderSessionBinding).toBeTypeOf("function");
   expect(wrapped.providerSessionRetirement).toBe("fail-closed");
   expect(await wrapped.beginProviderSessionTurn!("c", "run", binding)).toBe(turn);
   expect(begin).toHaveBeenCalledWith("c", "run", binding);
-  expect(wrap({ load: original.load, append: original.append }).providerSessionModelBinding).toBeUndefined();
+  expect(wrap({ load: original.load, append: original.append }).readProviderSessionBinding).toBeUndefined();
 });
 
 it("posted-reply store returns all reconciliation capabilities and bound recovery/drain methods", async () => {
@@ -622,11 +622,11 @@ it("forwards real owned preparation through the posted-reply store with its rece
   const root = await mkdtemp(join(tmpdir(), "posted-native-preparation-")); tempDirs.push(root);
   const store = createDurableHistoryStore({ root: join(root, "history") });
   const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
-  expect(wrapped.providerSessionPreparation).toBe("v1");
+  expect(wrapped.beginProviderSessionPreparation).toBeTypeOf("function");
   const owner = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-preparation");
   try { expect((await owner.read()).source.status).toBe("unsupported"); await owner.assertOwned(); }
   finally { await owner.abort(); }
   const next = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-next-preparation"); await next.abort();
   const unsupported = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore({ load: async () => [], append: async () => {} });
-  expect(unsupported.providerSessionPreparation).toBeUndefined(); expect(unsupported.beginProviderSessionPreparation).toBeUndefined();
+  expect(unsupported.beginProviderSessionPreparation).toBeUndefined(); expect(unsupported.beginProviderSessionPreparation).toBeUndefined();
 });

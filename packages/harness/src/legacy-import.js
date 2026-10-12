@@ -1,3 +1,4 @@
+import { managedJournalId } from "./managed-journal.js";
 // One-way idle MAIN branch import only. Never schedule or replay old operations.
 import { lstat, readdir, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -124,7 +125,7 @@ export async function readLegacySession(metadata, root) {
 }
 
 export function legacyJournalId(metadata, root) {
-  return createHash("sha256").update(`legacy\0${relative(resolve(root), resolve(metadata.path))}\0${metadata.id}`).digest("hex");
+  return managedJournalId(metadata.id);
 }
 export function importDescriptor(metadata, root, projected) {
   const source = { path: relative(resolve(root), resolve(metadata.path)), id: metadata.id, identity: projected.evidence.identity };

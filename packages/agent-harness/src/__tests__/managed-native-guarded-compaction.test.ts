@@ -10,7 +10,7 @@ const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "native-guarded-compaction-")); roots.push(root);
-  const f = await fixture(root); await ready(f); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true });
+  const f = await fixture(root); await ready(f); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { });
   return { ...f, before: JSON.parse(await readFile(f.canonicalPath, "utf8")) };
 }
 it("manual compactConversation on a real v5 conversation fails guarded dispatch without generic invalidation/retirement (P is defence-in-depth)", async () => {
@@ -30,7 +30,7 @@ it("manual compactConversation on a real v5 conversation fails guarded dispatch 
     // Only the owned C transaction may replace the current journal; one current journal remains.
     expect(await readdir(journals)).toHaveLength(1);
     const after = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-    expect(after.version).toBe(5); expect(after.lastSwitch).toEqual(f.before.lastSwitch); expect(after.native.authority).toEqual(f.before.native.authority);
+    expect(after.version).toBe(3); expect(after.lastSwitch).toEqual(f.before.lastSwitch); expect(after.native.authority).toEqual(f.before.native.authority);
     if ((await readdir(journals))[0] === current) expect(await readFile(join(journals, current!))).toEqual(currentBytes);
   } finally { await harness.dispose?.(); }
 });

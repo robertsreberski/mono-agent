@@ -90,7 +90,9 @@ reasoning) is never reused across models, even with matching provenance.
 Prepared requests resolve ordinary provider authentication on each actual call,
 including OAuth refresh and credential persistence. Credentials are not pinned to
 leases, and account metadata is neither recorded nor used to match transfers.
-Earlier v5 account fields remain readable.
+Canonical history uses a single version 3, with native metadata selecting the
+guarded shape. Pre-release development roots containing v5 records need a reset;
+those records are not supported read compatibility.
 
 
 Each switch permits at most two billed summary calls per explicit-message generation.
@@ -125,24 +127,8 @@ rejection means preserved evidence, **not successful cleanup**. Unsettled P2
 turns stay protected/charged and reconcile storage-only, without provider or tool
 replay. Ordinary durable registry disposal/TTL removes metadata, not journal bytes.
 
-Older binaries refuse native conversations and scans, but this is **not** a
-universal old-writer admission barrier. Mixed binaries must not run on opted-in
-roots. Rollback means stop writers and restore consistent host/native backups;
+Older binaries must not run against upgraded roots. Rollback means stop writers and restore consistent host/native backups;
 disabling the option, stripping markers or downgrading records is not rollback.
-
-### Unsupported pre-release switch data
-
-Development roots written by earlier pre-release builds (canonical version 4
-records with an epoch chain, or their outstanding switch/lifecycle intents) are
-not migrated. Every operation on such a conversation refuses with
-`native_switch_format_unsupported` and the message
-`unsupported pre-release switch format; reset`, before any recovery, cleanup or
-mutation; other conversations continue normally, with the option on or off.
-Retention never deletes a refused conversation. Reset the agent's conversation state with
-`mono-agent restart --clear-sessions`: it removes the canonical history root
-(including `.model-switches/` and lifecycle intents) and `piSessionsRoot`, while
-durable memory and run artifacts stay. Back up the agent root first if you want
-to keep a copy.
 
 ### Enable, verify and roll back
 
@@ -223,7 +209,7 @@ Setting `enabled: false` afterwards does not convert native conversations back.
 
 | Acceptance | Behavior | Observable evidence | Verified by |
 | --- | --- | --- | --- |
-| A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical version 5 `lastSwitch` receipt; exactly one current native journal | `configured-switch-kill-matrix.test.ts` (SIGKILL boundaries, two fresh-process redeliveries and one new delivery each), `managed-native-switch.test.ts` |
+| A1 one durable switch | A persisted Web message for another model records exactly one switch before the incoming turn is admitted. Restarts and retries finish the recorded switch; they never start a second one. | Canonical version 3 `lastSwitch` receipt; exactly one current native journal | `configured-switch-kill-matrix.test.ts` (SIGKILL boundaries, two fresh-process redeliveries and one new delivery each), `managed-native-switch.test.ts` |
 | A2 complete fitting context | The incoming model receives a structured handoff. The latest turn and the open-work/outcome-unknown ledger are never clipped. A request that cannot fit is refused before dispatch with `handoff_budget_exceeded`. | One immutable handoff artifact under the history directory's `.model-switches/`, referenced by the receipt | `configured-model-switch.test.ts`, `model-switch-return.test.ts`, kill-matrix incoming-context assertions |
 | A3 return to an earlier model | Returning to an earlier model is an ordinary structured transfer that includes the intervening work. It never reuses the earlier model's native session state. | The outgoing journal is retired; the return's artifact comes from the approved producer order | `configured-native-switch.test.ts`, `configured-native-provenance.test.ts`, kill-matrix return boundaries, `model-switch-return.test.ts` |
 | A4 crash, reset, retention | Crashes recover without provider, summary or tool replay beyond the redelivered message, and without leaked reservation or fence. Reset and retention delete the journal and its artifacts. Enabling settles old pending turns first. | Empty `.pending-turns`/dirty fences, no `.native-history-op.*` intent, zero reserved bytes | `configured-switch-kill-lifecycle.test.ts`, `configured-missing-journal-kill.test.ts`, `managed-native-lifecycle.test.ts`, `host-turn-reconciliation.test.ts` |
@@ -633,9 +619,9 @@ reconstructing the harness can allow one additional failed-turn recovery.
 Legacy receipt recovery itself does not widen its fence. The v3/P2 storage
 upgrade has the downgrade consequences described above.
 
-Recovery is opt-in through the built-in coordinator's `providerSessionRecovery:
-"v1"` capability and the owning runtime's `recoverSession` method. Custom stores
-without the capability retain retirement. Clear-sessions, retention removal,
+Recovery is selected by the presence of the coordinator's
+`readProviderSessionBinding` method and the owning runtime's `recoverSession`
+method. Custom stores without these methods retain retirement. Clear-sessions, retention removal,
 host-only appends, model changes and unreconciled dirty fences still reseed.
 If retirement races an abort-ignoring provider, the late result cleans only its
 captured old id. Owned journals reject late append admission and retain the writer
@@ -680,7 +666,7 @@ For retry behavior across *different* models (provider failover, not transport r
 
 ## Administrative native history
 
-The durable-history storage API can explicitly opt into canonical version 5
+The durable-history storage API can explicitly opt into canonical version 3
 single-journal records through `nativeJournalStorage`. This is not configured
 model switching or incoming dispatch. Root authority requires drained owner
 claims and stopped older writers; managed roots strictly preserve unreadable

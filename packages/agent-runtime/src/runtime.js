@@ -284,7 +284,6 @@ export function createRuntime(host = {}) {
      * @returns {Promise<RuntimeResult>}
      */
     run: (systemPrompt, options) => /** @type {Promise<RuntimeResult>} */ (executeRequest(systemPrompt, options)),
-    nativePreparedDispatch: "v1",
     prepareNativeDispatch: (systemPrompt, options) => /** @type {Promise<import('./ai/types.js').NativePreparedDispatch>} */ (
       executeRequest(systemPrompt, snapshotNativeDispatchOptions(options), true)),
     configureTools(next = {}) {

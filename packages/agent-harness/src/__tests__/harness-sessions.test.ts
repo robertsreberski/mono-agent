@@ -2293,7 +2293,7 @@ describe("coordinated terminal recovery", () => {
     try {
       let outcome: "cancelled" | "provider_unavailable" | "success" = "cancelled";
       if (reason === "history_not_coordinated") Object.defineProperty(f.historyStore, "beginProviderSessionTurn", { value: undefined });
-      if (reason === "store_capability") Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      if (reason === "store_capability") Object.defineProperty(f.historyStore, "readProviderSessionBinding", { value: undefined });
       if (reason === "runtime_unsupported") Object.defineProperty(f.runtime, "recoverSession", { value: undefined });
       if (reason === "tool_history_finalize_failed") f.rejectSidecar();
       if (reason === "failure_budget_spent") { await f.run("provider_unavailable", "first failure"); outcome = "provider_unavailable"; }
@@ -2506,7 +2506,7 @@ describe("coordinated terminal recovery", () => {
   it("keeps custom coordinators without the recovery capability on the retirement path", async () => {
     const f = await fixture();
     try {
-      Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      Object.defineProperty(f.historyStore, "readProviderSessionBinding", { value: undefined });
       await f.run("cancelled", "cancelled ask");
       expect(f.fake.calls[0]!.options.sessionRecovery).toBeUndefined();
       expect(f.fake.calls[0]!.options.sessionTurn).toMatchObject({ kind: "host", historyBucket: "recovery",

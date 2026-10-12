@@ -81,10 +81,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   model change, including a return to an earlier model, requires a fitting
   structured handoff (there is no summary-less model change); native session
   state is never reused across models. A native conversation keeps one current
-  journal, one durable handoff and the latest switch receipt. Pre-release
-  development roots with the old chain format refuse with
-  `unsupported pre-release switch format; reset` and are never migrated; reset
-  them with `restart --clear-sessions`. Stale native manual-compaction mappings
+  journal, one durable handoff and the latest switch receipt. Stale native manual-compaction mappings
   select preserving disposal as defence-in-depth; owned header/membership checks
   remain the physical backstop; cold cleanup and reset/retention require owned
   membership, not a cached model label. Subagent/stateless cleanup cannot delete
