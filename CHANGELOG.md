@@ -42,13 +42,14 @@
   never deleted; a damaged file of unknown ownership blocks only a conversation
   whose own session file is missing, with `native_journal_unreadable`.
 
-- Fix one stray or damaged file in the history's pending-turn or model-switch
-  folders, or in a legacy Pi session folder, stopping every conversation.
-  Unrelated names are ignored. A damaged entry (empty, malformed, wrong
-  permissions or hard-linked) is kept, still counts toward storage limits and
-  is never deleted or evicted; only its own conversation is refused, with
-  `ERR_OWNED_FILE_DAMAGED`. Harness journal deletion and retirement called with
-  an `abortSignal` stop waiting for another process's lock when aborted.
+- Fix one stray or damaged file in the conversation history folder, its
+  pending-turn or model-switch folders, or a legacy Pi session folder stopping
+  every conversation. Unrelated names are ignored. A damaged entry (empty,
+  malformed, wrong permissions or hard-linked) is kept, still counts toward
+  storage limits and is never deleted or evicted; only its own conversation is
+  refused (pending-turn and switch damage with `ERR_OWNED_FILE_DAMAGED`).
+  Cancelling a native turn now also stops its wait for a session lock held by
+  another process.
 
 - Recover opt-in Web turns and native wakes whose current model session journal
   was deleted, moved or lost in a partial restore. The turn rotates only that

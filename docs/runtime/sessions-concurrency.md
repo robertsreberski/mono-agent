@@ -188,13 +188,16 @@ deletes it. It refuses only a conversation whose own journal cannot be found, wi
 journal. Losing the whole native root, for example after moving to another
 machine, recovers on the next message without a reset.
 
-The same rule covers the history root's `.pending-turns` and `.model-switches`
-folders and legacy Pi session folders. Unrelated names are ignored. A damaged
+The same rule covers the canonical history root, its `.locks`, `.pending-turns`
+and `.model-switches` folders and legacy Pi session folders. Unrelated names are ignored. A damaged
 entry of one conversation (empty, malformed, not exactly owner-only `0600`, or
 hard-linked) stays on disk, still counts toward storage limits and is never
 deleted or evicted. Only that conversation is refused, with
-`ERR_OWNED_FILE_DAMAGED`, until the file is repaired or removed by hand. A
-replaced or insecure root directory still stops the whole root.
+`ERR_OWNED_FILE_DAMAGED` (an insecure canonical record refuses with its
+permission error), until the file is repaired or removed by hand. A truncated
+canonical record keeps its existing cold-replacement behaviour. A replaced or
+insecure root directory still stops the whole root. Cancelling a native turn
+also stops its wait for a session lock held by another process.
 
 To enable:
 
