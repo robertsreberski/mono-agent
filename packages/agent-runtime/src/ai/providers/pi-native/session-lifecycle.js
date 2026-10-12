@@ -199,14 +199,16 @@ function isSafeSessionId(id) {
 
 /** Reopen by handle. Unrelated or unattributed journal-named entries never
  * block another handle's valid journal. `uncertain` reports that no journal was
- * found while an unreadable entry could be this handle's own damaged journal. */
+ * found while an unreadable entry could be this handle's own damaged journal;
+ * `owned` that a damaged entry is attributed to exactly this handle. */
 async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
   try {
     const metadata = (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
     if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
     if (typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
     const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
-    return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId) };
+    return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
+      owned: unattributed.some((item) => item.id === sessionId) };
   } catch {
     // Unchanged: a catalogue failure stays a resume miss (as before).
     return { entry: null, uncertain: false };
@@ -282,11 +284,11 @@ export async function resolveSession(runState, {
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
-    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false;
+    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false;
     if (!entry && durableRepo) {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
-        ({ entry, uncertain } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
+        ({ entry, uncertain, owned = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
         waitSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
@@ -309,19 +311,24 @@ export async function resolveSession(runState, {
       }
     }
     if (!entry) {
+      const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} may be an unreadable journal; it was preserved`,
+        failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
       if (durableRepo && options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision > 0) {
         // P2 canonical revision proves an earlier native turn existed. Missing
         // bytes cannot become an empty warm transcript. Fail before dispatch;
         // the host must establish a cold boundary, never silently lose context.
         // A possibly-own damaged journal is not "missing": refuse without the
         // session-resume replay, never replacing it (unchanged recovery limit).
-        if (uncertain) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
-          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} may be an unreadable journal; it was preserved`,
-          failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) };
+        if (uncertain) return unreadable();
         return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
           sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is not live`,
           failureKind: "session_not_found", piErrorCode: "pi_session_not_found", piTransport }) };
       }
+      // Damage attributed to this exact handle (native or legacy) is never
+      // replaced by an empty create-on-miss session. Damage of unknown owner
+      // does not block creating every new conversation.
+      if (owned) return unreadable();
       if (durableRepo && isSafeSessionId(providerSessionId)) {
         // Create-on-miss (durable resume only): the requested id has no live
         // registry entry AND no JSONL on disk under piSessionsRoot. This is

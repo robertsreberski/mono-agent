@@ -3,7 +3,7 @@
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -42,3 +42,24 @@ it("cancels a run waiting behind another process's native writer lock", async ()
     rmSync(root, { recursive: true, force: true });
   }
 }, 20_000);
+
+it("refuses create-on-miss for a handle whose damaged legacy file is attributed to it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-native-legacy-damage-"));
+  const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }], tokensPerSecond: undefined });
+  const models = createModels(); models.setProvider(faux.provider);
+  const options = (overrides) => ({ model: { provider: "faux", model: "faux-model", reference: "faux:faux-model" }, piResolvedModel: faux.getModel(),
+    piResolvedModels: models, effort: "none", allowedTools: [], piSessionsRoot: root, sessionKeepAlive: true, ...overrides });
+  try {
+    mkdirSync(join(root, "legacy"), { recursive: true });
+    const damaged = join(root, "legacy", "t_fictional-legacy-damaged.jsonl"); writeFileSync(damaged, "{not json\n");
+    const refused = await generatePiNativeResponse("stable", options({ sessionId: "fictional-legacy-damaged",
+      messages: [{ role: "user", content: "Fictional ask." }] }));
+    expect(refused.failureKind).toBe("native_journal_unreadable");
+    expect(readFileSync(damaged, "utf8")).toBe("{not json\n");
+    expect(existsSync(join(root, "mono-v2", "journals")) ? readdirSync(join(root, "mono-v2", "journals")) : []).toEqual([]);
+    faux.setResponses([fauxAssistantMessage([fauxText("Fictional unrelated reply.")])]);
+    const unrelated = await generatePiNativeResponse("stable", options({ sessionId: "fictional-unrelated", messages: [{ role: "user", content: "Fictional ask." }] }));
+    expect(unrelated.error).toBeNull();
+    await disposeProviderSession("fictional-unrelated");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
