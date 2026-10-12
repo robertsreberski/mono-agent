@@ -49,7 +49,9 @@
   storage limits and is never deleted or evicted; only its own conversation is
   refused (pending-turn and switch damage with `ERR_OWNED_FILE_DAMAGED`).
   Cancelling a native turn now also stops its wait for a session lock held by
-  another process.
+  another process. A conversation history file that reads as truncated is set
+  aside unchanged as `<file>.damaged-<n>` instead of being overwritten, with a
+  `conversation_history_set_aside` warning.
 
 - Recover opt-in Web turns and native wakes whose current model session journal
   was deleted, moved or lost in a partial restore. The turn rotates only that

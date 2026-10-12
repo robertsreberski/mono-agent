@@ -189,15 +189,23 @@ journal. Losing the whole native root, for example after moving to another
 machine, recovers on the next message without a reset.
 
 The same rule covers the canonical history root, its `.locks`, `.pending-turns`
-and `.model-switches` folders and legacy Pi session folders. Unrelated names are ignored. A damaged
-entry of one conversation (empty, malformed, not exactly owner-only `0600`, or
-hard-linked) stays on disk, still counts toward storage limits and is never
-deleted or evicted. Only that conversation is refused, with
-`ERR_OWNED_FILE_DAMAGED` (an insecure canonical record refuses with its
-permission error), until the file is repaired or removed by hand. A truncated
-canonical record keeps its existing cold-replacement behaviour. A replaced or
-insecure root directory still stops the whole root. Cancelling a native turn
-also stops its wait for a session lock held by another process.
+and `.model-switches` folders and legacy Pi session folders. Unrelated names are
+ignored. A damaged entry of one conversation (empty, malformed, not exactly
+owner-only `0600`, or hard-linked) stays on disk, still counts toward storage
+limits and is never deleted or evicted. This applies to pending-turn
+generations, model-switch states and handoffs (fenced or not), canonical
+records and stages, and conversation-keyed dirty fences in `.locks`. Only that
+conversation is refused, with `ERR_OWNED_FILE_DAMAGED` (an insecure canonical
+record refuses with its permission error), until the file is repaired or
+removed by hand. A canonical record that reads as truncated JSON is instead set
+aside unchanged as `<record>.damaged-<n>` beside it, under the conversation's
+lock; the conversation continues from empty history with a one-time
+`conversation_history_set_aside` warning. Set-aside files are not charged and
+are never read or deleted by mono-agent. Shared lock files in `.locks` (the root
+lock, conversation and session shard locks, claim journals and active markers),
+native lifecycle intents and a replaced or insecure root directory still stop
+the whole root. Cancelling a native turn also stops its wait for a session lock
+held by another process.
 
 To enable:
 
@@ -235,12 +243,14 @@ mid-turn, that turn ends failed or interrupted and you send a new message.
 
 Warnings and refusals:
 
-- `degraded_native_context` is the only user-facing warning. It appears once,
+- `degraded_native_context` is the only model-switch warning. It appears once,
   on the turn that recovered a missing current journal. If the process dies
   after that recovery became durable but before that turn streamed the warning,
   recovery finishes it without the warning; the rotated current epoch is the
   only record.
 - Structured handoffs produce no warning.
+- `conversation_history_set_aside` (any durable history, opt-in or not) appears
+  once, on the turn that set an unreadable history record aside.
 - `handoff_pending`, `handoff_budget_exceeded`,
   `native_cold_model_change_unavailable` (a native conversation cannot be
   served by an unprepared or no-ID model change), `native_journal_unreadable`,
