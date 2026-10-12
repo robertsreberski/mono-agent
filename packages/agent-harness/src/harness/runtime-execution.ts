@@ -615,8 +615,8 @@ async function executeHarnessRuntime(preparation: PreparationControl | undefined
       const bridgeStartMs = Date.now();
       try {
         // Normalized initial input and owned-P2 checks may themselves take time.
-        // Recheck immediately before consumption; reject with the dirty fence
-        // still owned for explicit host recovery, never rely on expiry cancellation.
+        // Recheck signal/availability immediately before consumption; the host
+        // retains the dirty fence for explicit recovery if admission fails.
         nativeLease?.assertReady?.();
         const result = nativeLease ? await nativeLease.run({ sessionId: runtimeOptions.sessionId, providerSessionId: runtimeOptions.providerSessionId,
           ...(runtimeOptions.providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId: runtimeOptions.providerAttributionSessionId }), sessionKeepAlive: runtimeOptions.sessionKeepAlive,

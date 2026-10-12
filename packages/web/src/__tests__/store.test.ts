@@ -1369,7 +1369,9 @@ describe("WebStore", () => {
     else if (cause !== "restart") store.failTurn(turn.turnId, { message: "Fictional interruption.", cancelled: cause === "cancelled" });
     store.close(); store = await open();
     const message = store.getMessage(turn.assistantMessageId)!;
-    expect(message.parts.filter((part) => part.type === "text" && part.text === "The question was interrupted. Answer in a new message; no tool was replayed.")).toHaveLength(1);
+    // Quoted provider text is not a stored interruption marker.
+    expect(message.parts.filter((part) => part.type === "text" && part.text === INTERRUPTED_QUESTION_NOTE)).toHaveLength(cause === "existing-note" ? 2 : 1);
+    expect(message.parts.filter((part) => part.type === "text" && part.interruptedQuestion)).toHaveLength(1);
     expect(message.parts.find((part) => part.type === "tool-call")).toEqual({ type: "tool-call", toolCallId: "fictional-ask", toolName: "mcp__host__ask_user", args: { message: "Fictional question." }, status: "failed" });
     store.interruptTurn(turn.turnId); store.close(); store = await open();
     expect(store.getMessage(turn.assistantMessageId)).toEqual(message); store.close();

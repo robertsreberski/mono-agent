@@ -311,7 +311,7 @@ export async function buildTurnHarness(runState, {
     },
     // One runtime knob controls both layers. Zero disables request retries;
     // otherwise retain the inherited three driver retries and transport budget.
-    // Health probes are always single-request, regardless of caller options.
+    // Health probes also disable this layer (their transport budget is zero).
     retry: { enabled: maxRetries > 0 && !(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0),
       maxRetries: maxRetries === 0 ? 0 : 3, baseDelayMs: 1000 },
     steeringMode,
