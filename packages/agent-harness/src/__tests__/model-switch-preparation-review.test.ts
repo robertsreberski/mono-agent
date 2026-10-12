@@ -22,7 +22,7 @@ const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const summary = { intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] };
 function producer(model = "B") {
-  const snapshot: RuntimeNativeDispatchSnapshot = { expiresAt: Date.now() + 300000,
+  const snapshot: RuntimeNativeDispatchSnapshot = { 
     model: { provider: "faux", id: model, api: "faux-api", contextWindow: 100000, maxTokens: 8000 },
     provenance: { provider: "faux", api: "faux-api", model, account: null },
     systemPrompt: "Fictional stable instructions", tools: [], messages: [{ role: "user", content: "Fictional current input" }] };

@@ -665,14 +665,14 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
           contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
         tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
         compactionSummaryMaxTokens: resolveAgentCompactionPolicy(options, auth.model).summaryMaxTokens,
-        provenance: auth.provenance, expiresAt: auth.expiresAt }, {
-        assertReady: (remainingStartMs = 0) => auth.assertValid(true, remainingStartMs),
-        check: (input) => { auth.assertValid(true); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
+        provenance: auth.provenance }, {
+        assertReady: () => options.abortSignal?.throwIfAborted(),
+        check: (input) => { options.abortSignal?.throwIfAborted(); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
           return result.status === "ready" ? { status: "ready" } : result; },
         run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: prepared.piModels.completeSimple.bind(prepared.piModels),
           signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
       });
-      auth.assertValid(true); // Before any native lookup/open or incoming mutation.
+      options.abortSignal?.throwIfAborted(); // Before any native lookup/open or incoming mutation.
       options = { ...options, ...binding };
       providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;
       providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;

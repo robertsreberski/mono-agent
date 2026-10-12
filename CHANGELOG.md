@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep prepared dispatches valid while their abort signal and owner remain valid;
+  remove the five-minute expiry and require explicit unused-lease cleanup.
+
 - Identify interrupted Web questions by stored markers, not quoted notice text.
 
 - Refuse unreadable native catalogues without retiring or cold-replaying a turn.
