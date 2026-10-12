@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let an explicit Web message for the source model cancel a stuck pending model
+  switch without a summary call, and remove the 32-message limit on retrying a
+  pending switch. Requesting a third model while a switch is pending is refused
+  as `handoff_pending`.
+
 - Keep durable turn admission independent of the number of stored
   conversations: aggregate history and staging quotas are checked at commit and
   retention, and the current-journal probe reads only the journal header.

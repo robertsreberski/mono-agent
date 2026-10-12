@@ -398,19 +398,30 @@ export class ModelSwitchPayloadStore {
   }
   /** Canonical/native publication precedes fence release. Retain the winning
    * ready attempt/content for reference lifetime and D deletion. */
-  async complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
+  complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
+    return this.releaseIntent(bucket, switchId, owner, true, assertCanonicalReady);
+  }
+  /** Storage-only abandonment of a non-ready intent, which has no target journal
+   * yet. Only its fence is released: the billing state (every authorization and
+   * attempt, including outcome-unknown ones) and any artifacts stay retained and
+   * charged until a later completed switch or D deletion collects them. */
+  abandon(bucket: string, switchId: string, owner: ModelSwitchStorageOwner): Promise<void> {
+    return this.releaseIntent(bucket, switchId, owner, false, async () => {});
+  }
+  private async releaseIntent(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, ready: boolean, assertCanonical: () => Promise<void>): Promise<void> {
     await owner.withRootTransaction(async () => {
       await this.owner(owner); const current = await this.read(bucket, switchId);
-      await assertCanonicalReady();
+      await assertCanonical();
       if (!current) { await this.syncPublication(); return; }
-      if (current.state.phase !== "ready") throw new Error("Pending switch cannot release its intent fence");
+      if ((current.state.phase === "ready") !== ready) throw new Error(ready ? "Pending switch cannot release its intent fence" : "A ready switch must roll forward, never be abandoned");
       await this.owner(owner, current.state); await this.reconcile(current.state, current.fence.payload, owner);
+      if (!ready && await this.cachedArtifact(current.state)) throw new Error("A cached handoff must roll forward, never be abandoned");
       const name = `${this.coordinates(bucket, switchId)}.fence.json`, directory = await this.ensureDirectory(false); if (!directory) unavailable();
-      const before = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
-      await this.owner(owner, current.state); await assertCanonicalReady();
+      const before = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES), label = ready ? "switch_fence" : "switch_abandon";
+      await this.owner(owner, current.state); await assertCanonical();
       if (!(await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES)).equals(before)) unavailable();
-      await rm(join(this.directory, name)); await owner.onPhase?.("switch_fence_removed");
-      await this.syncDirectory(this.directory, directory); await owner.onPhase?.("switch_fence_directory_synced");
+      await rm(join(this.directory, name)); await owner.onPhase?.(`${label}_removed`);
+      await this.syncDirectory(this.directory, directory); await owner.onPhase?.(`${label}_directory_synced`);
       await this.owner(owner, current.state); await owner.adjustReservation(0);
     });
   }

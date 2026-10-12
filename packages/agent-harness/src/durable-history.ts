@@ -202,6 +202,9 @@ export interface ManagedProviderSessionPreparation {
   acquireNativeHistoryAuthority(): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
   beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
   rollForwardModelSwitch(switchId: string, options?: { readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
+  /** Storage-only release of a non-ready intent (no target journal exists yet).
+   * Its billing state stays retained and charged; no producer or provider runs. */
+  abandonModelSwitch(switchId: string): Promise<void>;
   /** missingCurrentEpoch is owner-approved recovery of an externally missing current
    * journal: when that exact epoch is still canonical, admission first rotates it
    * through the existing same-model cold path (v3 retire/new epoch, v5 durable C).
@@ -1453,6 +1456,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         rollForwardModelSwitch: (switchId, options) => owned(async () => {
           if (!this.nativeJournalStorage) throw new Error("Managed native switch capability required");
           return await this.rollForwardHeldModelSwitch(id, switchId, borrowed, options?.onPhase);
+        }),
+        abandonModelSwitch: (switchId) => owned(async () => {
+          await this.modelSwitchPayloads(held.rootIdentity).abandon(id, switchId, { ownerKey: logicalConversationIdForFence(id), historyBucket: id, assertOwned,
+            withRootTransaction: async (action) => { const unlock = await this.acquireRootTransaction(held.rootIdentity); try { await assertOwned(); return await action(); } finally { await unlock(); } },
+            reserve: async () => { throw new Error("Abandoning a switch cannot reserve anew"); }, adjustReservation: async () => {}, onPhase: this.nativePhase });
         }),
         inspectCurrentJournal: () => owned(async (): Promise<CurrentJournalPresence> => {
           const native = this.nativeJournalStorage;

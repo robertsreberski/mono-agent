@@ -27,6 +27,7 @@ const models = createModels();
 // checkpoint) -> incoming; B summaries are valid, so a B -> A return is
 // accepted from the paid outgoing slot, or from the prior validated checkpoint.
 const contexts = [];
+let malformedB = false; // abandon setup: both producers reject, leaving the intent pending
 const original = faux.provider.streamSimple.bind(faux.provider);
 faux.provider.streamSimple = (model, context, options) => {
   const kind = JSON.stringify(context.messages[0] ?? null).includes("Summarize historical evidence") || context.systemPrompt?.startsWith("Summarize historical evidence") ? "summary" : "turn";
@@ -34,7 +35,7 @@ faux.provider.streamSimple = (model, context, options) => {
   if (kind === "turn") contexts.push(JSON.stringify(context.messages));
   faux.setResponses([async () => {
     await globalThis.__fixtureStop?.(`${kind}-${model.id}`);
-    return fauxAssistantMessage([fauxText(kind === "turn" ? `Fictional ${model.id} answer` : model.id === "A" ? "Fictional malformed summary" : summary)]);
+    return fauxAssistantMessage([fauxText(kind === "turn" ? `Fictional ${model.id} answer` : model.id === "A" || malformedB ? "Fictional malformed summary" : summary)]);
   }]);
   return original(model, context, options);
 };
@@ -164,7 +165,9 @@ process.once("message", async ({ scenario, mode }) => {
     if (mode === "produce") {
       opened = await open();
       results.push(await respond(opened.responder, "fictional-seed", "A"));
+      malformedB = scenario === "abandon";
       if (scenario !== "structured") results.push(await respond(opened.responder, "fictional-switch-b", "B"));
+      malformedB = false;
       if (scenario === "return" || scenario === "missing-switch") results.push(await respond(opened.responder, "fictional-b-turn", "B"));
       if (scenario === "missing-switch") {
         // External loss before an explicit switch: canonical history is the outgoing evidence.
@@ -183,6 +186,8 @@ process.once("message", async ({ scenario, mode }) => {
     // "recover" redelivers the killed persisted message; "resume" is a new explicit delivery.
     if (scenario === "structured") results.push(await respond(opened.responder, mode === "resume" ? "fictional-next" : "fictional-switch", "B"));
     else if (scenario === "return" || scenario === "missing-switch") results.push(await respond(opened.responder, mode === "resume" ? "fictional-next" : "fictional-return", "A"));
+    // abandon: the killed delivery asks for the pending intent's source model.
+    else if (scenario === "abandon") results.push(await respond(opened.responder, mode === "resume" ? "fictional-next" : "fictional-abandon", mode === "resume" ? "B" : "A"));
     else if (scenario === "reset") { await opened.responder.startNewSession(conversationId); results.push({ text: "reset" }); }
     else results.push(await respond(opened.responder, "fictional-successor-message", "A", successorId));
     globalThis.__fixtureArmed = false;

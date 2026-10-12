@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
-export type Scenario = "structured" | "return" | "reset" | "retention" | "missing" | "missing-v3" | "missing-switch" | "missing-root";
+export type Scenario = "structured" | "return" | "reset" | "retention" | "missing" | "missing-v3" | "missing-switch" | "missing-root" | "abandon";
 export interface Call { readonly model: string; readonly kind: "summary" | "turn" | "tool"; readonly armed: boolean }
 export interface Report {
   readonly results: readonly { readonly text?: string; readonly failure?: string; readonly warnings: readonly string[] }[];

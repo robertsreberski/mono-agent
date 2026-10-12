@@ -6,7 +6,7 @@ import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityErro
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./runtime-execution.js";
-import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, type PreparedSwitchProducer } from "./model-switch-preparation.js";
+import { PreparedSwitchTargetMismatchError, advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, type PreparedSwitchProducer } from "./model-switch-preparation.js";
 
 /** @internal
  * @unstable Constructor capability supplied by the configured host,
@@ -92,6 +92,12 @@ export async function prepareConfiguredModelSwitch(input: {
         snapshot = await owner.read(); switched = true;
         if (recovered.modelKey !== host.routing.modelKey) throw pending(); // Finish recorded switch; never dispatch this message on a different target.
         ready = recovered;
+      } else if (messageId !== undefined && snapshot.pending.identity.fromModelKey === host.routing.modelKey) {
+        // An explicit message back to the source model abandons the non-ready
+        // intent storage-only (no target journal exists yet; its billing state
+        // stays charged) and runs on the current journal without a paid call.
+        // Requesting the target again later is a new switch and explicit message.
+        await owner.abandonModelSwitch(snapshot.pending.identity.switchId); snapshot = await owner.read();
       }
     }
     // Probe under the held owner before capture, producers, P2 admission or the
@@ -171,6 +177,8 @@ export async function prepareConfiguredModelSwitch(input: {
         if (result.status === "unsupported") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
         ready = result; switched = true; snapshot = await owner.read();
       } catch (error) {
+        if (error instanceof PreparedSwitchTargetMismatchError && snapshot.pending) throw new AgentHarnessError("handoff_pending",
+          `A model handoff to ${snapshot.pending.identity.toModelKey} is pending. This message was not admitted or queued; request ${snapshot.pending.identity.toModelKey} to continue it or ${snapshot.pending.identity.fromModelKey} to cancel it.`);
         // Typed PRE-INTENT capacity/size refusal is a refusal, never a cold model
         // change. Never disguise corruption, lost ownership, unknown paid work or pending.
         if (!snapshot.pending && capacity(error) && !(await owner.read()).pending) throw budgetFailure("capacity");

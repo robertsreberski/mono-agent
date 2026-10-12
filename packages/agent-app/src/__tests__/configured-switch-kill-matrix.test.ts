@@ -128,3 +128,28 @@ it.each(["switch-intent", "summary-B", "artifact", "guarded-epoch-renamed", "can
   expect(next.results).toEqual([{ text: "Fictional A answer", warnings: [] }]); expectSwitched(next, before, "A"); expectSettled(next);
   expect(count(next.calls, "summary")).toBe(0); expect(count(next.calls, "turn", "A")).toBe(1);
 }, TEST_TIMEOUT_MS);
+
+// Pending A -> B (both producers rejected), then an explicit message back to A
+// abandons the intent storage-only. Boundaries are listed in durable order.
+it.each(["switch-fence-removed", "turn-fence", "turn-A", "canonical"])("abandon pending A->B for A: SIGKILL at %s never bills, keeps the source journal and charged billing", async (phase) => {
+  const { root, before, first, second, armed } = await killAndRecover("abandon", phase);
+  const abandoned = before.switchStates[0]!;
+  expect(abandoned).toMatchObject({ phase: "pending", from: "faux:A", to: "faux:B" });
+  for (const report of [first, second]) {
+    expect(report.results).toEqual([{ text: "Fictional A answer", warnings: [] }]);
+    expect(report.canonical.providerSession.modelKey).toBe("faux:A"); expect(report.canonical.lastSwitch).toBeUndefined();
+    // The abandon keeps the source journal; only a pre-dispatch turn interruption
+    // takes the existing same-model cold rotation onto one fresh epoch.
+    if (phase === "turn-fence") expect(Object.keys(report.journals)).toHaveLength(1);
+    else expect(Object.keys(report.journals)).toEqual(Object.keys(before.journals));
+    expect(report.modelChanges).toBe(0);
+    // Only the intent fence was released; the billing state and its charged attempts remain.
+    expect(report.switchStates).toEqual([abandoned]); expectSettled(report);
+  }
+  expect(count(armed, "summary")).toBe(0); expect(count(first.calls, "turn", "A")).toBe(1); expect(count(second.calls, "turn", "A")).toBe(1);
+  // Requesting B again is a new explicit message and a new switch id; billing applies afresh.
+  const next = await resumeAfter(root, "abandon");
+  expect(next.results).toEqual([{ text: "Fictional B answer", warnings: [] }]); expectSettled(next);
+  expect(count(next.calls, "summary")).toBe(2); expect(next.canonical.providerSession.modelKey).toBe("faux:B");
+  expect(next.canonical.lastSwitch.switchId).not.toBe(abandoned.switchId); expect(next.switchStates).toEqual([expect.objectContaining({ phase: "ready" })]);
+}, TEST_TIMEOUT_MS);

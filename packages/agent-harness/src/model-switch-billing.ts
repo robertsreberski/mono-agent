@@ -56,13 +56,12 @@ export function acceptHandoffReference(state: ModelSwitchState, artifact: Handof
   validateModelSwitchState(result); return result;
 }
 /** Only the host's explicit-message path calls this; recovery/maintenance cannot.
- * Keep all authorization identities bounded and reject exhaustion, never drop a
- * used identity and accidentally treat an old user message as fresh authority. */
+ * Every used identity is retained (bounded only by the serialized state limit),
+ * so an old user message is never treated as fresh authority. */
 export function authorizeSummaryMessage(state: ModelSwitchState, messageDigest: string): ModelSwitchState {
   validateModelSwitchState(state); switchHash(messageDigest);
   if (state.initialMessageDigest === messageDigest || state.authorizations.some((authorization) => authorization.messageDigest === messageDigest)) return structuredClone(state);
   if (state.phase !== "pending") throw new Error("A new summary authorization requires handoff pending");
-  if (state.authorizations.length >= 32) throw new RangeError("Summary authorization journal is full");
   const generation = state.authorizationGeneration + 1;
   const result: ModelSwitchState = { ...state, authorizationGeneration: generation, authorizations: [...state.authorizations, { generation, messageDigest }], phase: "outgoing" };
   validateModelSwitchState(result); return structuredClone(result);

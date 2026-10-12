@@ -195,7 +195,7 @@ export function validateModelSwitchState(value: unknown): asserts value is Model
   if (identity.source !== null) validateJournalDescriptor(identity.source, identity.ownerKey, identity.historyBucket, identity.sourceEpoch as string);
   if (identity.sourceEpoch === identity.targetEpoch) switchInvalid();
   reservationBytes(value.reservation as unknown as ModelSwitchReservation); switchNumber(value.authorizationGeneration);
-  if (!Array.isArray(value.authorizations) || value.authorizations.length > 32 || !Array.isArray(value.attempts) || value.attempts.length > 66) switchInvalid();
+  if (!Array.isArray(value.authorizations) || !Array.isArray(value.attempts)) switchInvalid();
   const messages = new Set<string>(value.initialMessageDigest === undefined ? [] : [value.initialMessageDigest as string]);
   for (let index = 0; index < value.authorizations.length; index++) {
     const authorization: unknown = value.authorizations[index]; switchObject(authorization); switchKeys(authorization, ["generation", "messageDigest"]);

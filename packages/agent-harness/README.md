@@ -544,7 +544,13 @@ through its acknowledged Web-only opt-in. These storage APIs alone are not a
 standalone real-root rollout.
 
 Pending switching stays entirely in host intent/attempt storage: no incoming
-binding is published before accepted handoff content exists. Native journals
+binding is published before accepted handoff content exists. An explicit message
+for the intent's source model abandons a non-ready intent storage-only
+(`abandonModelSwitch`): only its fence is removed, its authorizations and
+attempts stay retained and charged until a later completed switch or deletion
+collects them, and the turn runs on the current journal without a paid call.
+Explicit-message authorizations have no lifetime count cap; the serialized state
+limit bounds them. Native journals
 carry no `model_change` frames; the canonical receipt is the only switch record.
 
 Its v5 wire validators bind single-journal ownership/provenance and stable switch
