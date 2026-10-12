@@ -275,7 +275,9 @@ export async function resolveSession(runState, {
   const access = options.nativeSessionAuthority;
   // The run's signal cancels only lock waits before a session is opened or
   // created; cleanup and durability barriers keep the never-aborted context.
-  const waitContext = options.abortSignal ? { abortSignal: options.abortSignal } : HARNESS_CONTEXT;
+  // Abortable waits need a real AbortSignal (not a structural look-alike).
+  const waitSignal = options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined;
+  const waitContext = waitSignal ? { abortSignal: waitSignal } : HARNESS_CONTEXT;
   if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
@@ -285,7 +287,7 @@ export async function resolveSession(runState, {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
         ({ entry, uncertain } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
-        options.abortSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
+        waitSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
           // cold resume could have reopened+inserted its own entry in this
@@ -437,7 +439,7 @@ export async function resolveSession(runState, {
           await assertNativeSessionAccess(access, "open", durableRepo.root);
         }
         const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
-          ...(access ? { repair: false, wait: false } : {}), signal: options.abortSignal,
+          ...(access ? { repair: false, wait: false } : {}), signal: waitSignal,
           validateHeader: (header) => assertNativeSessionHeader(access, header),
         });
         try {
