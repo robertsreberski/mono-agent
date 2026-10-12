@@ -371,6 +371,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
             callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
           }
+          admission = admitAttempt();
+          if (admission) {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            return admission;
+          }
           let attemptSystemPrompt = promptBase;
           if (pendingSnapshot) {
             callOptions.diagnosticsSeed = {
@@ -412,11 +417,6 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           };
 
           let result;
-          admission = admitAttempt();
-          if (admission) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            return admission;
-          }
           try {
             result = await attemptRuntime.run(attemptSystemPrompt, callOptions);
           } catch (err) {

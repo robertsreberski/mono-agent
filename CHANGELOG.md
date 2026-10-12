@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Avoid announcing provider failover when cancellation settles during history load.
+- Keep one file-operation list when reusing a split-turn compaction summary.
+- Treat empty Pi request-retry budgets as unset, retaining the default retries.
+
 - Disable both automatic request-retry layers with `piMaxRetries: 0`, while
   preserving the default request retry budget.
 

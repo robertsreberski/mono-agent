@@ -513,7 +513,8 @@ export async function compactWithRequest(preparation, options, request, context)
     let summary;
     let summaryUsage;
     if (isSplitTurn && turnPrefixMessages.length > 0) {
-        let historyText = previousSummary ?? "No prior history.";
+        // Reuse prose only; the accumulated file metadata is appended once below.
+        let historyText = previousSummary?.replace(/(?:\n\n<(read-files|modified-files)>\n[\s\S]*?\n<\/\1>)+$/, "") ?? "No prior history.";
         let historyUsage;
         if (messagesToSummarize.length > 0) {
             const historyResult = await generateSummaryWithRequest(messagesToSummarize, { model, reserveTokens: settings.reserveTokens, customInstructions, previousSummary, thinkingLevel }, request, context);

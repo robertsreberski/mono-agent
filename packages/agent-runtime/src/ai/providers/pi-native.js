@@ -630,9 +630,9 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
 
     // Provider retry/backoff is delegated to pi-ai via streamOptions, replacing
     // the legacy hand-rolled stream-retry loop.
-    const maxRetries = Number.isFinite(Number(options.piMaxRetries))
-      ? Math.max(0, Math.min(8, Number(options.piMaxRetries)))
-      : 2;
+    const retryValue = typeof options.piMaxRetries === "string" && options.piMaxRetries.trim() !== ""
+      ? Number(options.piMaxRetries) : options.piMaxRetries;
+    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, retryValue)) : 2;
     const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs))
       ? Number(options.maxRetryDelayMs)
       : 60_000;

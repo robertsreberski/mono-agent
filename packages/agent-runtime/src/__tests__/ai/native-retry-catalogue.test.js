@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createModels, fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
@@ -34,6 +34,7 @@ it.each(["list", "catalogue"])("refuses cold reopen when the native %s throws", 
       messages: [{ role: "user", content: "Fictional request" }],
     }));
     expect(result.failureKind, result.error).toBe("native_journal_unreadable");
+    expect(result.error).toContain("catalogue could not be read; native evidence was preserved");
     expect(faux.state.callCount).toBe(0);
     expect(create).not.toHaveBeenCalled();
   } finally {
@@ -61,4 +62,17 @@ it.each([0, undefined])("piMaxRetries=%s controls both request retry layers and 
     expect(requests.every((options) => options.maxRetries === (piMaxRetries === 0 ? 0 : 2))).toBe(true);
     expect(result.events.filter((event) => event.type === "tool_call_started")).toEqual([]);
   } finally { vi.restoreAllMocks(); }
+});
+
+it.each([null, "", "   ", Infinity, "not-a-number"])("treats an unset/invalid direct retry budget (%s) as the default, not zero", async (piMaxRetries) => {
+  const model = setup(), requests = [];
+  fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) {
+    requests.push(options); return faux.provider.streamSimple(model, context, options);
+  } });
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
+  const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+    piMaxRetries, messages: [{ role: "user", content: "Fictional request" }],
+  }));
+  expect(result.text).toBe("Fictional answer");
+  expect(requests).toHaveLength(1); expect(requests[0].maxRetries).toBe(2);
 });
