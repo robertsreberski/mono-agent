@@ -17,6 +17,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 ## Responsibility
 
+User Stop also marks a running `AskUser` question as interrupted; answer in a new message.
+
 - Discover local agents through the shared trace-source registry and probe their
   loopback operator endpoints.
 - Publish a separate sanitized ACP import contract with canonical agent-owned

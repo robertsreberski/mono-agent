@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Identify interrupted Web questions by stored markers, not quoted notice text.
+
 - Refuse unreadable native catalogues without retiring or cold-replaying a turn.
 
 - Keep the previous compaction summary when splitting the first retained turn.

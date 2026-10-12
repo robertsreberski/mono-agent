@@ -679,7 +679,7 @@ export type WebRestartProposalAvailability =
 export type WebMessagePart =
   | { readonly type: "reply_options"; readonly id: string; readonly options: readonly string[] }
   | WebConversationMarkerPart
-  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "text"; readonly text: string; readonly interruptedQuestion?: true }
   | {
       readonly type: "restart_proposal";
       readonly id: string;
