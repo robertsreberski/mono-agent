@@ -643,12 +643,11 @@ cancellation signal or `close()` is not proof of provider termination. Default
 execution retains ordinary R10; configured preparation is limited to persisted
 Web deliveries and already-native current-journal turns under the explicit opt-in.
 
-Read-only materialized native evidence is limited to the single current journal
-of at most 16 MiB raw bytes. Capacity refusal is
-explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. Preflight and
-secure-reader scan-start checks bound parsing even if a journal grows between
-checks; validation/cloning may use bounded multiples of those raw bytes. Streaming
-inspection retains its uncapped behavior. These are preparation limits, not
+Read-only native evidence is streamed from the single current journal of any
+physical size; at most 16 MiB of it (the effective tail after the last
+checkpoint plus records cited by unresolved work) is retained. Capacity refusal
+is explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. A journal that
+changes between the two streamed passes is refused. These are preparation limits, not
 permission to erase oversized evidence or cold-fallback after switch intent.
 
 ## Public API

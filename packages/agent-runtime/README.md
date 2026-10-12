@@ -208,7 +208,8 @@ Producer input is captured synchronously. Run refuses while production is active
 without consuming dispatch; close/abort retain resources until it settles.
 
 Managed storage exposes typed read-only evidence capture of the single current
-journal plus the prior accepted handoff, and pure budget and handoff/checkpoint
+journal (streamed; only the tail after its last checkpoint and records cited by
+unresolved work are retained, up to 16 MiB) plus the prior accepted handoff, and pure budget and handoff/checkpoint
 preparation. It never projects native envelopes across a model change. Composed
 compaction coverage must equal the inherited prior handoff exactly;
 changed/missing coverage fails.

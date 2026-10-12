@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
@@ -343,3 +343,36 @@ it("a third model requested while a switch is pending is a typed pending refusal
   expect(f.transport).toHaveBeenCalledTimes(billed);
   const owner = await f.store.beginProviderSessionPreparation("fictional", "inspect-third"); expect((await owner.read()).pending).toEqual(pending); await owner.abort();
 });
+
+it("a native journal well over 16 MiB with a small effective tail switches, keeping a far-back outcome-unknown call in the ledger", async () => {
+  const f = await fixture(); await f.seed();
+  // Grow the source journal directly: an early crashed Write (outcome unknown),
+  // then many large completed turns, a compaction checkpoint and a small tail.
+  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: f.nativeRoot });
+  const [metadata] = await repo.list(), store = await repo.open(metadata!), model = { provider: "faux", api: "faux-api", id: "A" };
+  await store.beginTurn("fictional-far-turn", {}, "host", undefined); await store.openOperation("fictional-far-op", { model });
+  await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fictional-far-write", name: "Write", arguments: { file_path: "/fictional/far" } }], stopReason: "toolUse", timestamp: 1 } as never, "fictional-far-message");
+  for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "fictional-far-write", name: "Write", messageId: "fictional-far-message", admission }, { operationId: "fictional-far-op" });
+  await store.write("interruption", { cause: "crashed", operationIds: ["fictional-far-op"], tipId: store.tip, calls: [] });
+  await store.closeOperation("fictional-far-op", "interrupted"); await store.endTurn("fictional-far-turn", "interrupted");
+  for (let index = 0; index < 24; index++) {
+    await store.beginTurn(`fictional-large-${index}`, {}, "host", undefined); await store.openOperation(`fictional-large-op-${index}`, { model });
+    await store.appendMessage({ role: "user", content: `Fictional large turn ${index} `.repeat(40000), timestamp: 1 } as never, `fictional-large-message-${index}`);
+    await store.closeOperation(`fictional-large-op-${index}`, "completed"); await store.endTurn(`fictional-large-${index}`, "completed");
+  }
+  await store.appendCompaction({ summary: "Fictional checkpoint of the large turns", tokensBefore: 10, retainedTail: [] });
+  await store.beginTurn("fictional-tail", {}, "host", undefined); await store.openOperation("fictional-tail-op", { model });
+  await store.appendMessage({ role: "user", content: "Fictional small tail fact", timestamp: 1 } as never, "fictional-tail-message");
+  await store.closeOperation("fictional-tail-op", "completed"); await store.endTurn("fictional-tail", "completed"); await store.sync(); await store.close(); await repo.close();
+  const [journal] = await f.journals(); expect((await stat(join(f.nativeRoot, journal!))).size).toBeGreaterThan(20 * 1024 * 1024);
+  f.faux.setResponses([text(summary), text("Fictional B reply after a long conversation")]);
+  const result = await f.makeHarness("B", true).run(f.request("long-switch", "Fictional switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional B reply after a long conversation");
+  expect((await f.canonical()).providerSession.modelKey).toBe("faux:B"); expect(f.transport).toHaveBeenCalledTimes(3);
+  // The producer saw the checkpoint and tail, not the 24 large turns.
+  expect(JSON.stringify(f.transport.mock.calls[1]![1])).toContain("Fictional checkpoint of the large turns");
+  expect(JSON.stringify(f.transport.mock.calls[1]![1])).not.toContain("Fictional large turn 0");
+  const name = (await switchFiles(f)).find((entry) => entry.endsWith(".handoff.json"))!;
+  const artifact = JSON.parse(await readFile(join(f.historyRoot, ".model-switches", name), "utf8")).artifact;
+  expect(artifact.ledger.filter((entry: { callId?: string }) => entry.callId === "fictional-far-write")).toEqual([expect.objectContaining({ outcome: "unknown", admission: "started", arguments: { file_path: "/fictional/far" } })]);
+}, 60_000);

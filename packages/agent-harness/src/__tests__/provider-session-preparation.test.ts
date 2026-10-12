@@ -295,28 +295,29 @@ it("captures and hands off composed checkpoints covering exactly the inherited p
     intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] } };
   expect(f.native.buildHandoff(captured.view, options).status).toBe("ready");
   const { createEvidenceView, evidenceDigest } = await import("@mono-agent/harness");
-  const forged = JSON.parse(JSON.stringify(captured.view));
-  forged.segments[0].records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
-  forged.segments[0].descriptor.sourceDigest = evidenceDigest(forged.segments[0].records);
+  // The view retains only the suffix after that checkpoint; forge the complete raw journal instead.
+  const [header, ...records] = (await readFile(metadata.path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
+  const forged = { ...JSON.parse(JSON.stringify(captured.view)), segments: [{ header, records,
+    descriptor: { ...JSON.parse(JSON.stringify(captured.view.segments[0]!.descriptor)), sourceDigest: evidenceDigest(records) } }] };
   expect(() => createEvidenceView(forged)).toThrow("composed coverage");
   await prep.abort();
 });
-it("capture rejects oversized journal bytes before allocating or scanning records", async () => {
+it("capture streams journals of any physical size; damage or growth between its two passes is refused, never captured", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "bounded-capture");
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "A", api: "faux-api", account: null });
   const source = captured.source!;
   const context = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: () => prep.assertOwned() };
-  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"); const scan = vi.spyOn(JournalReader.prototype, "scan");
   await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
-  await expect(f.native.captureEvidence(source, context)).rejects.toThrow("byte limit");
-  expect(scan).not.toHaveBeenCalled(); scan.mockRestore();
+  await expect(f.native.captureEvidence(source, context)).rejects.toThrow("Managed native journal evidence changed or is unavailable");
   await writeFile(f.nativePath, f.original);
-  const original = JournalReader.prototype.scan;
+  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"), original = JournalReader.prototype.scan; let passes = 0;
   const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit, options) {
-    await truncate(f.nativePath, 16 * 1024 * 1024 + 1); return original.call(this, visit, options);
+    if (++passes === 2) await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
+    return original.call(this, visit, options);
   });
-  await expect(f.native.captureEvidence(source, context)).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
-  expect(growing).toHaveBeenCalledOnce(); growing.mockRestore(); await prep.abort();
+  await expect(f.native.captureEvidence(source, context)).rejects.toThrow("Managed native journal evidence changed or is unavailable");
+  expect(growing).toHaveBeenCalledTimes(2); growing.mockRestore(); await prep.abort();
 });
 it("capture maps missing and other filesystem errors to generic unavailable without target paths or causes", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "generic-capture");

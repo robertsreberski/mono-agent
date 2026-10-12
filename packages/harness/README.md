@@ -160,10 +160,18 @@ resume.
 native journal entries. A validated view feeds handoffs only: native envelopes
 are never projected across a model change, including a return to an earlier model.
 
-`prepareHandoff` selects up to three whole recent logical turns and a complete
-mechanical open-work/outcome-unknown ledger (including started rewound effects). `buildHandoff` accepts a strict
+`scanEvidenceSegment` streams a frozen journal twice with the secure reader:
+every record is validated and digested, but only the effective tail (from the
+last compaction checkpoint's kept messages, or the whole epoch, which starts
+after the prior handoff) and the records cited by unresolved work are retained.
+`prepareHandoff` selects up to three whole recent logical turns of that tail
+and a mechanical ledger of genuinely unresolved work: outcome-unknown or
+unplaced calls from the whole epoch (including started rewound effects; never
+dropped), turns and calls interrupted since the last completed model turn, and
+unconsumed inputs. Failures the model already saw before a later completed turn
+are history, not ledger entries. `buildHandoff` accepts a strict
 structured summary, or the prior handoff's previously validated structured
-summary plus the complete current suffix. A suffix without a validated prior
+summary plus the complete suffix after the last checkpoint. A suffix without a validated prior
 summary is text-only replay and returns `summary_required`; a compaction
 checkpoint alone is not a handoff. Historical tool calls are labelled data, never executable
 calls or recovery receipts. Visible text is preserved; opaque reasoning is
@@ -316,6 +324,7 @@ readTurnEvidence
 recordInterruption
 renderHandoffMessage
 repairInterruptedSession
+scanEvidenceSegment
 selectTurnInterruptionAccounts
 validateComposedCoverage
 validateHandoffSummary

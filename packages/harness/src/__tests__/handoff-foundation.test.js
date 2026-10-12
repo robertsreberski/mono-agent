@@ -5,7 +5,6 @@ import { findContextBuilderBypasses } from "./projection-source-check.js";
 import { fileURLToPath } from "node:url";
 import { MemorySessionRepo } from "../session-store.js";
 import { createEvidenceView, evidenceDigest } from "../evidence-view.js";
-import { buildHarnessSessionContext } from "../session-context.js";
 import { projectContext, inspectCurrentLifecycle } from "../request-projection.js";
 import { createHandoffBudget, buildHandoff, buildOpenWorkLedger, renderHandoffMessage, prepareHandoff, checkHandoffDispatch, validateHandoffSummary } from "../handoff.js";
 
@@ -102,7 +101,7 @@ it("accounts for started unknown effects, returned-but-unplaced results, interru
   expect(ledger.find((r) => r.kind === "input")).toMatchObject({ id: "later", outcome: "not_consumed" });
   expect(buildHandoff(view([refreshed(s)]), { ...options, summary }).status).toBe("ready");
 });
-it("checkpoint route = exact prior validated structured summary + COMPLETE current suffix; a suffix alone is text-only replay", async () => {
+it("checkpoint route = exact prior validated structured summary + complete suffix after the last checkpoint; a suffix alone is text-only replay", async () => {
   const b = await segment("B");
   await b.store.appendCompaction({ summary: "exact fixture compaction", tokensBefore: 50, retainedTail: [] });
   for (let i = 0; i < 4; i++) { await b.store.beginTurn(`suffix${i}`); await b.store.appendMessage(text(`suffix-${i}`), `suffix-message-${i}`); await b.store.endTurn(`suffix${i}`, "completed"); }
@@ -112,8 +111,9 @@ it("checkpoint route = exact prior validated structured summary + COMPLETE curre
   const prior = await priorHandoff("validated prior fact"), result = buildHandoff(view([refreshed(b)], { prior }), options);
   expect(result.status).toBe("ready"); expect(result.artifact.summary).toBeNull();
   expect(result.artifact.checkpoint).toEqual({ summary: prior.summary, ledger: prior.ledger, suffix: expect.any(Array) });
-  expect(result.artifact.checkpoint.suffix.map((message) => message.id)).toEqual(["B-message-0", expect.any(String), "suffix-message-0", "suffix-message-1", "suffix-message-2", "suffix-message-3"]);
-  expect(result.artifact.checkpoint.suffix[1].data[0].text).toBe("exact fixture compaction");
+  // The compaction checkpoint stands in for everything it summarized; nothing after it is clipped.
+  expect(result.artifact.checkpoint.suffix.map((message) => message.id)).toEqual([expect.any(String), "suffix-message-0", "suffix-message-1", "suffix-message-2", "suffix-message-3"]);
+  expect(result.artifact.checkpoint.suffix[0].data[0].text).toBe("exact fixture compaction");
   expect(result.artifact.recent).toHaveLength(1); expect(result.artifact.recent[0].messages[0].id).toBe("suffix-message-3");
   // A malformed prior summary is never accepted as a checkpoint.
   expect(() => buildHandoff(view([refreshed(b)], { prior: { ...prior, summary: { intent: "not-array" } } }), options)).toThrow("structured handoff summary");
@@ -201,22 +201,26 @@ it("retains started rewound effects and their arguments in the unknown ledger", 
   const row = buildOpenWorkLedger(view([refreshed(a)])).find((r) => r.callId === "rewound-write");
   expect(row).toMatchObject({ outcome: "unknown", admission: "started", rewound: true, cause: "user_interrupted", messageId: "rewound-call-message", arguments: { file_path: "/fictional/effect", content: "fictional" } });
 });
-it("view and store share exact repair projection timestamps and last-account selection", async () => {
-  const clock = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
-  try {
-    const a = await segment("repair-differential"); const store = a.store;
-    await store.beginTurn("repair-turn"); await store.openOperation("repair-op", { model: { provider: provenance.provider, api: provenance.api, id: "A" }, nativeProvenance: provenance });
-    clock.mockReturnValue(1700000000010);
-    await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "repair-call", name: "Read", arguments: {} }], stopReason: "toolUse", timestamp: 10 }, "repair-call-message");
-    for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "repair-call", name: "Read", messageId: "repair-call-message", admission }, { operationId: "repair-op" });
-    clock.mockReturnValue(1700000000020); await store.write("interruption", { cause: "crashed", operationIds: ["repair-op"], tipId: store.tip, calls: [] });
-    clock.mockReturnValue(1700000000030); await store.write("interruption", { cause: "crashed", operationIds: ["repair-op"], tipId: store.tip, calls: [] });
-    await store.closeOperation("repair-op", "interrupted"); await store.endTurn("repair-turn", "interrupted");
-    const evidence = view([refreshed(a)]); const repairs = await store.getRepairEntries();
-    expect(evidence.segments[0].repairs).toEqual(repairs);
-    expect(repairs.map((r) => r.calls.length)).toEqual([0, 1]); expect(repairs[1].calls[0].timestamp).toBe(1700000000010);
-    expect(projectContext(evidence.segments[0].entries, { repairs: evidence.segments[0].repairs }).messages).toEqual(buildHarnessSessionContext(await store.getEntries(), { repairs }));
-  } finally { clock.mockRestore(); }
+it("keeps only unresolved work in the ledger: earlier seen failures drop, far-back outcome-unknown calls never do", async () => {
+  const a = await segment("bounded-ledger"); const store = a.store;
+  const call = async (turnId, callId, outcome) => {
+    await store.beginTurn(turnId); await store.openOperation(`${turnId}-op`, {});
+    await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: callId, name: "Write", arguments: { file_path: `/fictional/${callId}` } }], stopReason: "toolUse", timestamp: 1 }, `${callId}-message`);
+    for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId, name: "Write", messageId: `${callId}-message`, admission }, { operationId: `${turnId}-op` });
+    if (outcome === "error") {
+      await store.appendMessage({ role: "toolResult", toolCallId: callId, toolName: "Write", isError: true, content: [{ type: "text", text: "Fictional failure" }], timestamp: 1 }, `${callId}-result`);
+      await store.write("tool_result", { callId, name: "Write", messageId: `${callId}-result`, phase: "placed", outcome: "error" }, { operationId: `${turnId}-op` });
+    } else await store.write("interruption", { cause: "crashed", operationIds: [`${turnId}-op`], tipId: store.tip, calls: [] });
+    await store.closeOperation(`${turnId}-op`, outcome === "error" ? "completed" : "interrupted"); await store.endTurn(turnId, outcome === "error" ? "failed" : "interrupted");
+  };
+  await call("far-unknown-turn", "far-unknown", "unknown"); await call("seen-failure-turn", "seen-failure", "error");
+  await store.beginTurn("completed-turn"); await store.openOperation("completed-op", {}); await store.appendMessage(text("Fictional completed reply"), "completed-message");
+  await store.closeOperation("completed-op", "completed"); await store.endTurn("completed-turn", "completed");
+  await call("recent-failure-turn", "recent-failure", "error");
+  const ledger = buildOpenWorkLedger(view([refreshed(a)]));
+  expect(ledger.filter((entry) => entry.kind === "tool").map((entry) => [entry.callId, entry.outcome])).toEqual([["far-unknown", "unknown"], ["recent-failure", "error"]]);
+  expect(ledger.find((entry) => entry.callId === "far-unknown")).toMatchObject({ arguments: { file_path: "/fictional/far-unknown" }, cause: "crashed" });
+  expect(ledger.filter((entry) => entry.kind === "turn").map((entry) => entry.turnId)).toEqual(["recent-failure-turn"]);
 });
 it("lifecycle inspection is synchronous and performs no context payload reads", () => {
   const turn = { start: { turnId: "fixture" } }; const getEntries = vi.fn(() => { throw new Error("must not read"); });

@@ -271,8 +271,12 @@ it("captures exactly one current journal, or canonical gaps when it is missing, 
   const missing = await f.bridge.captureEvidence(null, { ...owner, gaps: [gap] });
   expect(missing.segments).toEqual([]); expect(missing.gaps).toEqual([gap]);
   await expect(f.bridge.captureEvidence(null, owner)).rejects.toThrow();
-  await appendFile(f.metadata.path, Buffer.alloc(MAX_CAPTURE_BYTES, 0x20));
-  const capture = () => f.bridge.captureEvidence(f.source, owner);
+  // The limit bounds retained evidence, not the physical journal: an effective
+  // tail (no checkpoint) larger than the limit is the typed capacity refusal.
+  const store = await f.repo.open(f.metadata);
+  await store.appendMessage({ role: "user", content: "x".repeat(MAX_CAPTURE_BYTES), timestamp: 18 }, /** @type {any} */ ("oversized-tail")); await store.sync(); await store.close();
+  const source = await f.bridge.freeze({ epoch: "9".repeat(64), handleId: f.metadata.id, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket, provenance: from });
+  const capture = () => f.bridge.captureEvidence(source, owner);
   await expect(capture()).rejects.toBeInstanceOf(NativeEvidenceCapacityError);
   await expect(capture()).rejects.toMatchObject({ code: "ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT" });
 });
