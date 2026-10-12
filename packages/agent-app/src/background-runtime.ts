@@ -3,7 +3,7 @@ import { constants as fsConstants, type BigIntStats } from "node:fs";
 import {
   chmod,
   cp,
-  lstat,
+  lstat as filesystemLstat,
   mkdir,
   open,
   readFile,
@@ -47,6 +47,14 @@ const MAX_RUNTIME_MARKER_BYTES = 16 * 1024;
 const MAX_RUNTIME_REUSE_PROOF_BYTES = 64 * 1024 * 1024;
 const RUNTIME_REUSE_PROOF_SCHEMA = "mono-agent.managed-runtime-reuse-proof.v1";
 const RUNTIME_REUSE_STAT_CONCURRENCY = 64;
+const RUNTIME_FILE_READ_CONCURRENCY = 16;
+const RUNTIME_PACKAGE_COPY_CONCURRENCY = 4;
+
+// Shared across nested traversals (and concurrent callers), not one pool per directory.
+const limitRuntimeRead = createWorkLimiter(RUNTIME_FILE_READ_CONCURRENCY);
+const limitRuntimeStat = createWorkLimiter(RUNTIME_REUSE_STAT_CONCURRENCY);
+const lstat: typeof filesystemLstat = ((...args: Parameters<typeof filesystemLstat>) =>
+  limitRuntimeStat(() => filesystemLstat(...args))) as typeof filesystemLstat;
 
 export type ManagedRuntimeVerificationMode = "fast-reuse" | "full-reuse" | "installed" | "repaired";
 
@@ -299,7 +307,11 @@ interface ManagedRuntimeReuseProof {
   readonly runtime: RuntimeClosureReuseProof;
 }
 
+/** Freshly descriptor-hashed source bytes, scoped to one preparation invocation only. */
+type SourceCaptureCache = Map<string, SourcePackageCapture>;
+
 interface ExecutionClosureCaptureDeps {
+  readonly sourceCaptures?: SourceCaptureCache;
   readonly afterRootCapture?: () => Promise<void>;
 }
 
@@ -421,7 +433,8 @@ export async function ensureManagedBackgroundRuntime(
     return await runtimeResult(fastRuntime.layout, fastRuntime.identity, input.nodePath, "fast-reuse");
   }
 
-  const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages);
+  const sourceCaptures: SourceCaptureCache = new Map();
+  const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages, undefined, { sourceCaptures });
   const identity: RuntimeIdentity = {
     packageVersion,
     cliSha256,
@@ -478,7 +491,7 @@ export async function ensureManagedBackgroundRuntime(
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
       return await runtimeResult(layout, identity, input.nodePath, "full-reuse");
     }
-    await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "before staging");
+    await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "before staging", sourceCaptures);
     await rm(layout.stagingDir, { recursive: true, force: true });
     await mkdir(layout.stagingDir, { recursive: false, mode: 0o700 });
     await chmod(layout.stagingDir, 0o700);
@@ -489,15 +502,21 @@ export async function ensureManagedBackgroundRuntime(
     });
 
     try {
-      await deps.installPackage({
+      const installInput: ManagedRuntimeInstallInput = {
         stagingDir: layout.stagingDir,
         packageVersion,
         packageSource,
         nodePath: resolve(input.nodePath),
         additionalPackages,
         expectedSourceClosureSha256: identity.sourceClosureSha256,
-      });
-      await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "while staging");
+      };
+      // Keep embed/test installers on their ordinary independent verification path.
+      if (deps.installPackage === materializeExactExecutionClosure) {
+        await materializeExactExecutionClosure(installInput, sourceCaptures);
+      } else {
+        await deps.installPackage(installInput);
+      }
+      await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "while staging", sourceCaptures);
       const staged = runtimeLayoutForRoot(layout, layout.stagingDir);
       if (!(await verifyInstalledPackage(staged, identity))) {
         throw new Error(
@@ -918,8 +937,12 @@ export async function attestManagedBackgroundRuntime(
  * graph materialisation also understands pnpm's workspace links without ever
  * handing `workspace:` ranges to npm.
  */
-async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInput): Promise<void> {
-  const captured = await captureExecutionClosure(input.packageSource, input.additionalPackages);
+async function materializeExactExecutionClosure(
+  input: ManagedRuntimeInstallInput,
+  sourceCaptures?: SourceCaptureCache,
+): Promise<void> {
+  const captureDeps = sourceCaptures === undefined ? {} : { sourceCaptures };
+  const captured = await captureExecutionClosure(input.packageSource, input.additionalPackages, undefined, captureDeps);
   if (captured.sourceClosureSha256 !== input.expectedSourceClosureSha256) {
     throw new Error("The managed runtime package closure changed before staging began.");
   }
@@ -932,7 +955,7 @@ async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInpu
   }
 
   const destinations = new Map<number, string>();
-  for (const node of closure) {
+  await mapWithConcurrency(closure, RUNTIME_PACKAGE_COPY_CONCURRENCY, async (node) => {
     const destination = executionClosureDestination(input.stagingDir, node);
     destinations.set(node.id, destination);
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
@@ -944,18 +967,19 @@ async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInpu
       verbatimSymlinks: true,
       filter: (source) => shouldCopyPackagePath(node.sourceRoot, source),
     });
-  }
+  });
 
   // `cp` is not a transaction: source paths can be replaced while it walks.
   // Compare every copied package against the exact pre-copy package manifest
   // before any staged runtime can receive a marker or be promoted.
-  for (const node of closure) {
+  await mapWithConcurrency(closure, RUNTIME_PACKAGE_COPY_CONCURRENCY, async (node) => {
     const destination = requiredMapValue(destinations, node.id, "package destination");
+    // Never certify destination bytes using the source-content cache.
     const copied = await captureSourcePackage(destination);
     if (JSON.stringify(copied.manifest) !== JSON.stringify(node.sourcePackage)) {
       throw new Error(`Managed runtime source package ${node.metadata.name} changed while it was copied.`);
     }
-  }
+  });
 
   for (const node of closure) {
     const destination = requiredMapValue(destinations, node.id, "package destination");
@@ -1008,7 +1032,7 @@ async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInpu
     },
   });
 
-  const after = await captureExecutionClosure(input.packageSource, input.additionalPackages);
+  const after = await captureExecutionClosure(input.packageSource, input.additionalPackages, undefined, captureDeps);
   if (
     after.sourceClosureSha256 !== captured.sourceClosureSha256
     || after.sourceProofSha256 !== captured.sourceProofSha256
@@ -1047,7 +1071,7 @@ async function captureExecutionClosure(
     const existing = bySourceRoot.get(sourceRoot);
     if (existing !== undefined) return existing;
 
-    const sourcePackage = await captureSourcePackage(sourceRoot);
+    const sourcePackage = await captureSourcePackage(sourceRoot, deps.sourceCaptures);
     const metadata = readInstalledPackageMetadata(sourceRoot, sourcePackage.packageJson);
     const id = nodes.length;
     const node: MutableExecutionClosureNode = {
@@ -1226,23 +1250,18 @@ async function revalidateExecutionClosureProofs(
     readonly proof: SourcePackageProofEntry;
   }[],
 ): Promise<void> {
-  for (const node of closure) {
-    for (const expected of requiredMapValue(proofs, node.id, "source package proof")) {
-      const path = expected.path === "."
-        ? node.sourceRoot
-        : join(node.sourceRoot, ...expected.path.split("/"));
-      const current = await captureFilesystemPathProof(path, expected.path);
-      if (!sameSourceProofEntry(expected, current)) {
-        throw new Error(`Managed runtime source package entry ${expected.path} changed during closure capture.`);
-      }
+  const targets = closure.flatMap((node) =>
+    requiredMapValue(proofs, node.id, "source package proof").map((proof) => ({
+      path: proof.path === "." ? node.sourceRoot : join(node.sourceRoot, ...proof.path.split("/")),
+      logicalPath: proof.path,
+      proof,
+    })));
+  await mapWithConcurrency([...targets, ...links], RUNTIME_REUSE_STAT_CONCURRENCY, async (expected) => {
+    const current = await captureFilesystemPathProof(expected.path, expected.logicalPath);
+    if (!sameSourceProofEntry(expected.proof, current)) {
+      throw new Error(`Managed runtime source entry ${expected.logicalPath} changed during closure capture.`);
     }
-  }
-  for (const link of links) {
-    const current = await captureFilesystemPathProof(link.path, link.logicalPath);
-    if (!sameSourceProofEntry(link.proof, current)) {
-      throw new Error(`Managed runtime package link ${link.logicalPath} changed during closure capture.`);
-    }
-  }
+  });
 }
 
 async function canonicalAdditionalPackages(
@@ -1279,8 +1298,12 @@ async function assertSourceClosureUnchanged(
   additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
   expected: ExecutionClosureCapture,
   phase: string,
+  sourceCaptures?: SourceCaptureCache,
 ): Promise<void> {
-  const current = await captureExecutionClosure(packageSource, additionalPackages);
+  // Graph resolution is always repeated: newly shadowing node_modules entries
+  // can change resolution without altering the old resolved dependency's inode.
+  const current = await captureExecutionClosure(packageSource, additionalPackages, undefined,
+    sourceCaptures === undefined ? {} : { sourceCaptures });
   if (
     current.sourceClosureSha256 !== expected.sourceClosureSha256
     || current.sourceProofSha256 !== expected.sourceProofSha256
@@ -1308,8 +1331,13 @@ async function currentSourceReuseProof(
  * Relative in-package symlinks are allowed; absolute, escaping, dangling, or
  * excluded-target links are rejected before `cp` can observe them.
  */
-async function captureSourcePackage(packageRoot: string): Promise<SourcePackageCapture> {
+async function captureSourcePackage(
+  packageRoot: string,
+  sourceCaptures?: SourceCaptureCache,
+): Promise<SourcePackageCapture> {
   const root = await realpath(packageRoot);
+  const cached = sourceCaptures?.get(root);
+  if (cached !== undefined && await sourcePackageCaptureStillMatches(root, cached)) return cached;
   const rootDetails = await lstat(root, { bigint: true });
   if (!rootDetails.isDirectory() || rootDetails.isSymbolicLink()) {
     throw new Error(`Managed runtime source package ${root} must be a real directory.`);
@@ -1328,30 +1356,30 @@ async function captureSourcePackage(packageRoot: string): Promise<SourcePackageC
     proof.push(sourceProofEntry(pathRelative, "directory", before));
 
     const childNames = (await readdir(directory)).sort(compareCodeUnits);
-    for (const name of childNames) {
+    await mapWithConcurrency(childNames, RUNTIME_FILE_READ_CONCURRENCY, async (name) => {
       const path = join(directory, name);
       const childRelative = sourcePackageRelativePath(root, path);
-      if (isExcludedSourcePackagePath(childRelative)) continue;
+      if (isExcludedSourcePackagePath(childRelative)) return;
       const details = await lstat(path, { bigint: true });
       if (details.isDirectory() && !details.isSymbolicLink()) {
         await visitDirectory(path, childRelative);
-        continue;
+        return;
       }
       if (details.isFile() && !details.isSymbolicLink()) {
         const captured = await captureSourceFile(path, childRelative);
         entries.push(captured.entry);
         proof.push(captured.proof);
         if (childRelative === "package.json") packageJson = captured.bytes;
-        continue;
+        return;
       }
       if (details.isSymbolicLink()) {
         const captured = await captureSourceSymlink(root, path, childRelative, details);
         entries.push(captured.entry);
         proof.push(captured.proof);
-        continue;
+        return;
       }
       throw new Error(`Managed runtime source package contains unsupported entry ${childRelative}.`);
-    }
+    });
 
     const [after, childNamesAfter] = await Promise.all([
       lstat(directory, { bigint: true }),
@@ -1368,14 +1396,32 @@ async function captureSourcePackage(packageRoot: string): Promise<SourcePackageC
   }
   entries.sort((left, right) => compareCodeUnits(left.path, right.path));
   proof.sort((left, right) => compareCodeUnits(left.path, right.path));
-  return {
+  const captured: SourcePackageCapture = {
     manifest: { schema: "mono-agent.source-package.v1", entries },
     proof,
     packageJson,
   };
+  sourceCaptures?.set(root, captured);
+  return captured;
 }
 
-async function captureSourceFile(
+async function sourcePackageCaptureStillMatches(root: string, captured: SourcePackageCapture): Promise<boolean> {
+  try {
+    const matches = await mapWithConcurrency(captured.proof, RUNTIME_REUSE_STAT_CONCURRENCY, async (expected) => {
+      const path = expected.path === "." ? root : join(root, ...expected.path.split("/"));
+      return sameSourceProofEntry(expected, await captureFilesystemPathProof(path, expected.path));
+    });
+    return matches.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+function captureSourceFile(path: string, pathRelative: string): ReturnType<typeof captureSourceFileUnbounded> {
+  return limitRuntimeRead(() => captureSourceFileUnbounded(path, pathRelative));
+}
+
+async function captureSourceFileUnbounded(
   path: string,
   pathRelative: string,
 ): Promise<{
@@ -2481,16 +2527,41 @@ async function mapWithConcurrency<T, R>(
 ): Promise<readonly R[]> {
   const results = new Array<R>(values.length);
   let nextIndex = 0;
+  let failed = false;
   const workers = Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, async () => {
     for (;;) {
       const index = nextIndex;
       nextIndex += 1;
-      if (index >= values.length) return;
-      results[index] = await mapper(values[index]!, index);
+      if (failed || index >= values.length) return;
+      try {
+        results[index] = await mapper(values[index]!, index);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
     }
   });
-  await Promise.all(workers);
+  // No in-flight work may survive rejection and race staging cleanup/release.
+  const settled = await Promise.allSettled(workers);
+  const failure = settled.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
   return results;
+}
+
+function createWorkLimiter(concurrency: number): <T>(work: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async <T>(work: () => Promise<T>): Promise<T> => {
+    if (active >= concurrency) await new Promise<void>((resolvePromise) => waiting.push(resolvePromise));
+    else active += 1;
+    try {
+      return await work();
+    } finally {
+      const next = waiting.shift();
+      if (next === undefined) active -= 1;
+      else next(); // Transfer this permit, keeping the active count unchanged.
+    }
+  };
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -2975,9 +3046,9 @@ async function captureRuntimeClosureManifest(
       throw new Error(`Managed runtime closure directory ${logicalPath} changed type.`);
     }
     const childNames = (await readdir(directory)).sort(compareCodeUnits);
-    for (const name of childNames) {
+    await mapWithConcurrency(childNames, RUNTIME_FILE_READ_CONCURRENCY, async (name) => {
       const path = join(directory, name);
-      if (excluded.has(resolve(path))) continue;
+      if (excluded.has(resolve(path))) return;
       const pathRelative = portableRelativePath(layout.installRoot, path);
       const initial = await captureFilesystemPathProof(path, pathRelative);
       if (initial.type === "symlink") {
@@ -2996,12 +3067,12 @@ async function captureRuntimeClosureManifest(
           target,
         });
         proofs.push({ path, logicalPath: pathRelative, proof: initial });
-        continue;
+        return;
       }
       if (initial.type === "directory") {
         const proof = await visit(path, pathRelative);
         entries.push({ path: pathRelative, type: "directory", mode: fileMode(BigInt(proof.mode)) });
-        continue;
+        return;
       }
       if (initial.type === "file") {
         const captured = await fingerprintClosureFile(path, pathRelative);
@@ -3012,10 +3083,10 @@ async function captureRuntimeClosureManifest(
           sha256: captured.sha256,
         });
         proofs.push({ path, logicalPath: pathRelative, proof: captured.proof });
-        continue;
+        return;
       }
       throw new Error(`Managed runtime closure contains unsupported entry ${pathRelative}.`);
-    }
+    });
 
     const [after, childNamesAfter] = await Promise.all([
       captureFilesystemPathProof(directory, logicalPath),
@@ -3034,17 +3105,21 @@ async function captureRuntimeClosureManifest(
 
   await visit(layout.installRoot, ".");
   await deps.beforeFinalProof?.();
-  for (const expected of proofs) {
+  await mapWithConcurrency(proofs, RUNTIME_REUSE_STAT_CONCURRENCY, async (expected) => {
     const current = await captureFilesystemPathProof(expected.path, expected.logicalPath);
     if (!sameSourceProofEntry(expected.proof, current)) {
       throw new Error(`Managed runtime closure entry ${expected.logicalPath} changed during closure capture.`);
     }
-  }
+  });
   entries.sort((left, right) => compareCodeUnits(left.path, right.path));
   return { schema: "mono-agent.execution-closure.v1", entries };
 }
 
-async function fingerprintClosureFile(
+function fingerprintClosureFile(path: string, pathRelative: string): ReturnType<typeof fingerprintClosureFileUnbounded> {
+  return limitRuntimeRead(() => fingerprintClosureFileUnbounded(path, pathRelative));
+}
+
+async function fingerprintClosureFileUnbounded(
   path: string,
   pathRelative: string,
 ): Promise<{

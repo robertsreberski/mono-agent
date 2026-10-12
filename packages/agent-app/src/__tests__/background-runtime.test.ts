@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import process from "node:process";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   attestManagedBackgroundRuntime,
@@ -18,6 +18,39 @@ import {
 } from "../background-runtime.js";
 import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput } from "../background-runtime.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
+
+const io = vi.hoisted(() => ({
+  beforeCopy: undefined as undefined | ((source: string) => Promise<void>),
+  opened: [] as string[],
+  reads: 0,
+  peakReads: 0,
+  copies: 0,
+  peakCopies: 0,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    cp: async (...args: Parameters<typeof fs.cp>) => {
+      io.copies += 1;
+      io.peakCopies = Math.max(io.peakCopies, io.copies);
+      try {
+        await io.beforeCopy?.(String(args[0]));
+        return await fs.cp(...args);
+      } finally { io.copies -= 1; }
+    },
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const handle = await fs.open(...args);
+      io.opened.push(String(args[0]));
+      io.reads += 1;
+      io.peakReads = Math.max(io.peakReads, io.reads);
+      const close = handle.close.bind(handle);
+      handle.close = async () => { try { await close(); } finally { io.reads -= 1; } };
+      return handle;
+    },
+  };
+});
 
 const roots: string[] = [];
 const TEST_PROCESS_INCARNATION: ProcessIncarnation = {
@@ -45,6 +78,12 @@ function incarnation(bootSessionId: string, processStartId: string): ProcessInca
 }
 
 afterEach(async () => {
+  io.beforeCopy = undefined;
+  io.opened = [];
+  io.peakReads = 0;
+  io.peakCopies = 0;
+  expect(io.reads).toBe(0);
+  expect(io.copies).toBe(0);
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -199,6 +238,107 @@ async function homeFixture(): Promise<string> {
 }
 
 describe("ensureManagedBackgroundRuntime", () => {
+  it("reuses freshly hashed source entries only within the default preparation invocation", async () => {
+    const source = await fixturePackage();
+    const asset = join(source.root, "dist", "asset.txt");
+    await writeFile(asset, "freshly hashed source bytes");
+    const canonicalAsset = await realpath(asset);
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir });
+    expect(io.opened.filter((path) => path === canonicalAsset)).toHaveLength(1);
+    io.opened = [];
+    const defaults = defaultManagedBackgroundRuntimeDeps();
+    const custom = fakeInstallerDeps((input) => defaults.installPackage(input));
+    await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() }, custom);
+    expect(io.opened.filter((path) => path === canonicalAsset).length).toBeGreaterThan(1);
+    io.opened = [];
+    await attestManagedBackgroundRuntime({ currentCliPath: source.cliPath,
+      runtimeCliPath: first.cliPath, homeDir });
+    expect(io.opened.filter((path) => path === canonicalAsset)).toHaveLength(2);
+  });
+
+  it("bounds descriptor reads across nested directories and copies across packages", async () => {
+    const source = await workspaceFixture();
+    const root = dirname(dirname(source.cliPath));
+    for (let dir = 0; dir < 8; dir += 1) {
+      await mkdir(join(root, "dist", `nested-${dir}`));
+      await Promise.all(Array.from({ length: 24 }, (_, index) =>
+        writeFile(join(root, "dist", `nested-${dir}`, `file-${index}.txt`), "bounded bytes")));
+    }
+    const runtime = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() });
+    expect(io.peakReads).toBeGreaterThan(1);
+    expect(io.peakReads).toBeLessThanOrEqual(16);
+    expect(io.peakCopies).toBe(2);
+    const manifest = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-closure.json"), "utf8"));
+    const paths = manifest.entries.map((entry: { path: string }) => entry.path);
+    expect(paths).toEqual([...paths].sort());
+  });
+
+  it.each(["same-size overwrite", "same-size replacement"])("rejects %s after cached source validation", async (mutation) => {
+    const source = await fixturePackage();
+    const asset = join(source.root, "dist", "asset.txt");
+    await writeFile(asset, "original");
+    io.beforeCopy = async () => {
+      io.beforeCopy = undefined;
+      if (mutation === "same-size replacement") {
+        await writeFile(asset + ".replacement", "modified");
+        await rename(asset + ".replacement", asset);
+      } else await writeFile(asset, "modified");
+    };
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() })).rejects.toThrow(/changed while it was copied/);
+  });
+
+  it("re-resolves newly shadowing dependencies even when cached package bytes and old links are unchanged", async () => {
+    const source = await workspaceFixture();
+    const appRoot = dirname(dirname(source.cliPath));
+    const outerScope = join(source.root, "node_modules", "@fixture");
+    await mkdir(outerScope, { recursive: true });
+    await rename(join(appRoot, "node_modules", "@fixture", "workspace-dependency"), join(outerScope, "workspace-dependency"));
+    const shadow = join(appRoot, "node_modules", "@fixture", "workspace-dependency");
+    io.beforeCopy = async () => {
+      io.beforeCopy = undefined;
+      await mkdir(shadow);
+      await writeFile(join(shadow, "package.json"), await readFile(join(dirname(source.dependencyPath), "package.json")));
+      await writeFile(join(shadow, "index.js"), "export const preserved = 'shadowed';\n");
+    };
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() })).rejects.toThrow(/closure changed while it was staged/);
+  });
+
+  it("rejects dependency retargeting after source-content cache reuse", async () => {
+    const source = await workspaceFixture();
+    const replacement = await additionalPackageFixture("@fixture/workspace-dependency");
+    const appRoot = dirname(dirname(source.cliPath));
+    const linkPath = join(appRoot, "node_modules", "@fixture", "workspace-dependency");
+    io.beforeCopy = async () => {
+      io.beforeCopy = undefined;
+      await rm(linkPath);
+      await symlink(replacement.root, linkPath, "dir");
+    };
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() })).rejects.toThrow(/closure changed while it was staged/);
+  });
+
+  it("settles every started copy before rejecting and removing staging", async () => {
+    const source = await workspaceFixture();
+    const appRoot = dirname(dirname(source.cliPath));
+    const canonicalAppRoot = await realpath(appRoot);
+    let finished = false;
+    io.beforeCopy = async (path) => {
+      if (path !== canonicalAppRoot) throw new Error("fixture copy failure");
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+      finished = true;
+    };
+    const homeDir = await homeFixture();
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir })).rejects.toThrow("fixture copy failure");
+    expect(finished).toBe(true);
+    expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
   it("copies an exact local package into a private immutable runtime that survives source deletion", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
