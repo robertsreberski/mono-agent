@@ -52,9 +52,7 @@ export async function prepareConfiguredModelSwitch(input: {
     && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
   if (!supportedRuntime) return undefined;
   if (resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "The configured native root is required.");
-  let owner: ManagedProviderSessionPreparation;
-  try { owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId); }
-  catch (error) { throw error; }
+  const owner: ManagedProviderSessionPreparation = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId);
   let assertOwned = () => owner.assertOwned();
   let incoming: Awaited<ReturnType<typeof prepareHarnessRuntime>> | undefined;
   let outgoing: PreparedSwitchProducer | undefined;

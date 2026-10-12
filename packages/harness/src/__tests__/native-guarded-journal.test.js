@@ -149,3 +149,19 @@ it("keeps cancellation context separate from guarded deletion authority", async 
   }
 });
 
+
+
+it.each(["projectionBinding", "inheritedCoverage", "artifactRef"])("refuses unguarded journal records carrying %s on open", async (field) => {
+  const { repository, metadata, before } = await fixture(await root(), "Fictional fact", false);
+  const lines = before.toString().trimEnd().split("\n").map((line) => JSON.parse(line));
+  // Put the guarded extension on the first record. The header-aware guard must
+  // reject it before ordinary record-shape validation or context application.
+  if (field === "inheritedCoverage") lines[1].payload.compaction = { checkpoint: { inheritedCoverage: {} } };
+  else lines[1].payload[field] = field === "projectionBinding" ? { version: 1,
+    artifact: { id: "3".repeat(64), hash: "4".repeat(64) },
+    coverage: { version: 1, sources: [] }, messageDigest: "5".repeat(64) } : {};
+  const bytes = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
+  await writeFile(metadata.path, bytes);
+  await expect(repository.open(metadata)).rejects.toThrow("Invalid mono-agent harness session binding");
+  expect(await readFile(metadata.path, "utf8")).toBe(bytes);
+});

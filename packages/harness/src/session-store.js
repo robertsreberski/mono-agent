@@ -48,7 +48,12 @@ async function authorizeGuardedDeletion(header, options) {
 }
 function checkRecordAuthority(session, record) {
   const authority = sessionAuthorities.get(session);
-  if (!authority) return;
+  if (!authority) {
+    if (record?.payload?.projectionBinding !== undefined
+      || record?.payload?.compaction?.checkpoint?.inheritedCoverage !== undefined
+      || record?.payload?.artifactRef !== undefined) corruptBinding();
+    return;
+  }
   const owner = record?.kind === "owner_binding" ? record.payload : record?.payload?.binding;
   if (owner && owner.kind !== "unbound"
     && (owner.kind !== "host" || owner.ownerKey !== authority.ownerKey || owner.historyBucket !== authority.historyBucket)) corruptBinding();
@@ -502,7 +507,6 @@ export class JsonlSessionRepo {
       const locks = await this.ensureDirectory();
       await locks.withCatalog(() => this.#reclaimCreating({ id, journalId }), { signal: contextSignal(context) });
       const legacy = await listLegacySessions(this.root);
-      if (legacy.unattributed.some((entry) => entry.id === undefined)) this.assertNotDamaged([{ id }], id);
       this.assertNotDamaged(legacy.unattributed, id);
       const matches = legacy.sessions.filter((entry) => entry.id === id);
       if (matches.length > 1) fail();
@@ -510,12 +514,14 @@ export class JsonlSessionRepo {
       for (const suffix of [".importing", ".upgrading"]) if (!await absent(path + suffix)) this.assertNotDamaged([{ id }], id);
       return undefined;
     }
-    const reader = await JournalReader.open(path, this.root);
     try {
-      const header = await reader.readHeader(); validateJournalHeader(header);
-      if (header.id !== id || header.journalId !== journalId) fail();
-      await reader.assertIdentity(); return { ...header, path };
-    } finally { await reader.close(); }
+      const reader = await JournalReader.open(path, this.root);
+      try {
+        const header = await reader.readHeader(); validateJournalHeader(header);
+        if (header.id !== id || header.journalId !== journalId) fail();
+        await reader.assertIdentity(); return { ...header, path };
+      } finally { await reader.close(); }
+    } catch { this.assertNotDamaged([{ id }], id); }
   }
   /** `signal` cancels only the writer wait, never a started open/repair. */
   async open(metadata, { repair = true, wait = repair, validateHeader = undefined, signal = undefined } = {}) {
@@ -747,12 +753,12 @@ export class JsonlSessionRepo {
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        const { owned, unattributed } = await this.catalogueUnlocked(true);
+        // Native ownership is deterministic; only legacy source discovery walks.
         const legacy = await listLegacySessions(this.root);
-        this.assertNotDamaged([...unattributed, ...legacy.unattributed], metadata.id);
+        this.assertNotDamaged(legacy.unattributed, metadata.id);
+        if (!await absent(`${publishedPath}.upgrading`)) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
         const sources = legacy.sessions.filter((m) => m.id === metadata.id);
-        if (owned.some((m) => m.id === metadata.id && m.journalId !== journalId)
-          || sources.length > 1 || sources.some((m) => m.path !== metadata.path)) fail();
+        if (sources.length > 1 || sources.some((m) => m.path !== metadata.path)) fail();
         if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
         if (await absent(publishedPath)) {
           if (sources.length !== 1) fail();
@@ -902,7 +908,7 @@ export class JsonlSessionRepo {
   /** Refuse a handle that an unattributed entry names: damaged own evidence is
    * never silently replaced, recreated or treated as retired. */
   assertNotDamaged(unattributed, id) {
-    if (unattributed.some((entry) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
+    if (unattributed.some((entry) => entry.id === id)) throw Object.assign(new Error("Harness session journal is unreadable"), { code: "ERR_HARNESS_JOURNAL_UNREADABLE", sessionId: id });
   }
   // Exact-path recovery only. Context-bearing, guarded and future stages are preserved.
   async #reclaimCreating(metadata) {

@@ -248,9 +248,6 @@ export class MonoAgentHarness implements AgentHarness {
         && this.options.runtimeOptionsForManualCompaction === undefined)) {
       throw new AgentHarnessError("compaction_unsupported", "Manual compaction is unavailable for this conversation's model.");
     }
-    if (bound && historyStore.readProviderSessionBinding === undefined) {
-      throw new AgentHarnessError("compaction_unsupported", "The history store cannot report the session model binding.");
-    }
     const runtime = this.runtimeForSession(modelKey);
     if (runtime.syncSession === undefined || runtime.refreshSession === undefined) {
       throw new AgentHarnessError("compaction_unsupported", "The runtime cannot compact a durable session.");

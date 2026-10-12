@@ -232,7 +232,9 @@ producer, then pending. Legacy API/model provenance
 comes from validated owned native binding bytes without resolving credentials;
 account identity remains unknown. Prepared requests use ordinary provider
 authentication on each actual call; no account provenance is recorded or matched.
-Earlier v5 account fields remain readable but do not gate a structured transfer.
+Canonical history uses a single version 3, with native metadata selecting the
+guarded shape. Pre-release development roots containing v5 records need a reset;
+those records are not supported read compatibility.
 Capture overflow throws the exported
 `NativeEvidenceCapacityError`; matching an error-code string is insufficient to
 classify it as capacity.
@@ -366,7 +368,7 @@ existing short root transaction, and caller-owned quota reservation/accounting.
 `beginModelSwitchStorage()` provide an administrative storage lease backed by
 its real logical/physical claims and short SQLite root transactions. They do
 not advertise runtime switching capability or migrate canonical history. Source
-coordinates are revalidated after v5 settlement and require settled provider
+coordinates are revalidated after native version 3 settlement and require settled provider
 fences inside the root transaction; unnormalized buckets and stale/mismatched
 logical-owner coordinates reject before intent publication. IDs longer than 512 characters return
 `switch storage unsupported` (`id_limit`), allowing the caller to keep today's
@@ -542,8 +544,8 @@ Pending switching stays entirely in host intent/attempt storage: no incoming
 binding is published before accepted handoff content exists. Native journals
 carry no `model_change` frames; the canonical receipt is the only switch record.
 
-Its v5 wire validators bind single-journal ownership/provenance and stable switch
-coordinates. Binding receipts describe their own transitions independently of
+Its native version 3 canonical validators bind single-journal ownership/provenance
+and stable switch coordinates. Binding receipts describe their own transitions independently of
 later cold epochs/projection references; receipt recognition alone is not
 projection readiness or dispatch authority. Bounded v6 fences carry only
 references/hashes, never current user text, routing metadata, controllers,
@@ -866,8 +868,8 @@ Before admission, the preparation owner probes the current native journal
 (`inspectCurrentJournal`). A definitively absent journal (no published/staged
 file, or no catalogued handle before the first switch) is passed to admission as
 `missingCurrentEpoch`: only that exact canonical epoch takes the existing
-same-model cold path (v3 retire/new epoch, v5 durable C intent), the turn
-dispatches once on canonical replay and reports `degraded_native_context` once.
+same-model cold path (ordinary version 3 retire/new epoch, native version 3
+durable C intent), the turn dispatches once on canonical replay and reports `degraded_native_context` once.
 A switch request with a lost journal records a canonical `journal_missing` gap
 and summarizes canonical history through the same handoff order; it is never a
 summary-less change. Unreadable bytes, staged-only bytes or catalogue failure

@@ -211,9 +211,12 @@ async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CON
     const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
       owned: unattributed.some((item) => item.id === sessionId) };
-  } catch {
-    // A failed catalogue cannot establish absence or authorize cold replay.
-    return { entry: null, uncertain: true, owned: typeof repo.find === "function" };
+  } catch (error) {
+    // A failed lookup cannot authorize cold replay, but only attributed damage
+    // can prohibit a new conversation. A live creator is busy, not damaged.
+    return { entry: null, uncertain: true,
+      owned: error?.code === "ERR_HARNESS_JOURNAL_UNREADABLE" && error.sessionId === sessionId,
+      busy: error?.code === "ERR_HARNESS_WRITER_BUSY" };
   }
 }
 
@@ -286,11 +289,11 @@ export async function resolveSession(runState, {
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
-    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false;
+    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false, busy = false;
     if (!entry && durableRepo) {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
-        ({ entry, uncertain, owned = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
+        ({ entry, uncertain, owned = false, busy = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
         waitSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
@@ -313,6 +316,9 @@ export async function resolveSession(runState, {
       }
     }
     if (!entry) {
+      if (busy) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is busy`,
+        failureKind: "session_busy", piErrorCode: "pi_session_busy", piTransport }) };
       const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
         sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
         failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
