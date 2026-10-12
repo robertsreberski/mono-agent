@@ -58,6 +58,10 @@
     "./journal-reader.js": {
       "types": "./dist/journal-reader.d.ts",
       "default": "./dist/journal-reader.js"
+    },
+    "./owned-fs.js": {
+      "types": "./dist/owned-fs.d.ts",
+      "default": "./dist/owned-fs.js"
     }
   },
   "scripts": {

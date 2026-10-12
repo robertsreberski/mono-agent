@@ -1222,6 +1222,8 @@ export class MonoAgentHarness implements AgentHarness {
             "provider_session_reconciliation_mismatch", "Durable history did not acknowledge protected native turn admission.");
           if (providerHistoryTurn.recovery?.status === "interrupted") emit({ type: "runtime_warning", warning_kind: "interrupted_turn_recovered",
             message: "The previous turn was interrupted and accounted without replay; this explicit new message starts a new turn." });
+          if (providerHistoryTurn.historySetAside) emit({ type: "runtime_warning", warning_kind: "conversation_history_set_aside",
+            message: "This conversation's history could not be read and was set aside unchanged; the conversation continues from empty history." });
           if (historyStore?.providerSessionModelBinding === "v1" && providerHistoryTurn.modelKey !== requestedModelKey) {
             throw new AgentHarnessError("provider_session_model_binding_mismatch",
               "Durable history did not acknowledge the requested session model binding.");

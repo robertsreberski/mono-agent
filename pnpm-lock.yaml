@@ -232,6 +232,9 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.25.1
         version: link:../agent-contracts
+      '@mono-agent/harness':
+        specifier: workspace:0.25.1
+        version: link:../harness
       '@mono-agent/observability':
         specifier: workspace:0.25.1
         version: link:../observability

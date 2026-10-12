@@ -9,6 +9,7 @@ import { repairInterruptedSession } from "./interruption.js";
 import { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 import { JournalReader } from "./journal-reader.js";
 import { JournalLocks } from "./journal-lock.js";
+import { isOwned, publishAtomic, sameIdentity, syncDir, unchanged } from "./owned-fs.js";
 import { archiveLegacySession, listLegacySessions, readLegacySession, legacyJournalId, importDescriptor, importSourceMetadata, assertLegacyIdentity } from "./legacy-import.js";
 
 import { assertEvidenceView } from "./evidence-view.js";
@@ -28,6 +29,8 @@ function deletionOptions(contextOrOptions, explicitOptions) {
   if (context && authority || explicitOptions !== undefined && authority) throw new TypeError("Ambiguous native deletion context/authority");
   return explicitOptions !== undefined ? explicitOptions : context ? undefined : contextOrOptions;
 }
+/** Cancellation of a repository lock wait; never of a started mutation. */
+const contextSignal = (contextOrOptions) => contextOrOptions != null && "abortSignal" in Object(contextOrOptions) ? contextOrOptions.abortSignal : undefined;
 function validateDeletionDisposition(options) {
   if (options != null && "disposition" in Object(options) && !["C", "D"].includes(options.disposition)) {
     throw new TypeError("Native deletion requires a C/D disposition when provided");
@@ -53,6 +56,7 @@ function checkRecordAuthority(session, record) {
 }
 const clone = (v) => structuredClone(v);
 const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, ordered(v[key])])) : v;
+/** @returns {never} */
 const fail = () => { throw new Error("Invalid mono-agent harness session"); };
 const corruptBinding = () => { throw Object.assign(new Error("Invalid mono-agent harness session binding"), { code: "ERR_HARNESS_JOURNAL_CORRUPT" }); };
 const safeId = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) && !id.includes("..");
@@ -369,11 +373,7 @@ export class MemorySessionRepo {
   async close() { for (const session of this.openSessions.values()) await session.close(); }
 }
 
-async function syncPath(path) {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { await handle.sync(); } finally { await handle.close(); }
-}
-const sameIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const syncPath = (path) => syncDir(path, undefined, fail);
 /** The single journal-directory naming rule shared by every catalogue walk and
  * retention inventory: anything else (`.DS_Store`, temp files, subdirectories)
  * is not a journal and is never read, charged, reclaimed or deleted.
@@ -401,7 +401,7 @@ export class JsonlSessionRepo {
     try { await mkdir(this.directory, { mode: 0o700 }); }
     catch (error) { if (error.code !== "EEXIST") throw error; }
     const stat = await lstat(this.directory);
-    if (!stat.isDirectory() || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) fail();
+    if (!isOwned(stat, true)) fail();
     this.directoryIdentity ??= stat;
     if (!sameIdentity(stat, this.directoryIdentity)) fail();
     return locks;
@@ -410,36 +410,37 @@ export class JsonlSessionRepo {
     const locks = await this.locksPromise;
     await locks.assertRoot();
     const current = await lstat(this.directory);
-    if (!current.isDirectory() || (current.mode & 0o077) !== 0 || !sameIdentity(current, this.directoryIdentity)) fail();
+    if (!isOwned(current, true) || !sameIdentity(current, this.directoryIdentity)) fail();
   }
   checkMetadata(metadata) {
     if (!safeId(metadata.id) || !/^[A-Za-z0-9_-]+$/.test(metadata.journalId)
       || dirname(resolve(metadata.path)) !== this.directory
       || ![`${metadata.journalId}.jsonl`, `${metadata.journalId}.jsonl.importing`, `${metadata.journalId}.jsonl.creating`].includes(metadata.path.split(/[\\/]/).at(-1))) fail();
   }
-  /** @param {{id?: string, cwd?: string, staging?: boolean, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] */
-  async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned } = {}) {
+  /** @param {{id?: string, cwd?: string, staging?: boolean, hostAuthority?:import('./header-authority.js').HostJournalAuthority, assertOwned?:()=>Promise<void>}} [options] @param {{abortSignal?:AbortSignal}} [context] cancels only the lock waits */
+  async create({ id = randomUUID(), cwd = process.cwd(), staging = false, hostAuthority, assertOwned } = {}, context = undefined) {
+    const signal = contextSignal(context);
     if (hostAuthority !== undefined) { validateHeaderUpgradeOptions({ hostAuthority, assertOwned }); await assertOwned(); }
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
     const locks = await this.ensureDirectory();
     const metadata = { id, cwd, createdAt: Date.now(), journalId: randomUUID(), path: "" };
     metadata.path = join(this.directory, `${metadata.journalId}.jsonl${staging ? ".importing" : ""}`);
-    const writer = await locks.acquireWriter(metadata.journalId);
+    const writer = await locks.acquireWriter(metadata.journalId, { signal });
     let published = false;
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        const catalogue = await this.catalogueUnlocked(true);
+        const catalogue = await this.catalogueUnlocked(true), legacy = await listLegacySessions(this.root);
         if (this.openSessions.has(id) || catalogue.owned.some((m) => m.id === id)) throw new Error("Harness session already exists");
-        this.assertNotDamaged(catalogue.unattributed, id);
+        this.assertNotDamaged([...catalogue.unattributed, ...legacy.unattributed], id);
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
         if (hostAuthority !== undefined) await assertOwned();
         await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: hostAuthority ? 2 : 1,
           ownership: { kind: "unbound" }, initialHandle: { id }, ...metadata, ...(hostAuthority ? { hostAuthority: canonicalHostJournalAuthority(hostAuthority) } : {}) }, true);
         if (hostAuthority !== undefined) await assertOwned();
         published = true;
-      });
+      }, { signal });
       const session = await this.openLocked(metadata, writer);
       await initializeSession(session);
       return session;
@@ -448,7 +449,9 @@ export class JsonlSessionRepo {
       const local = this.openSessions.get(id);
       if (local) await local.close().catch(() => {});
       try {
-        if (!published) await locks.releaseWriter(writer, () => this.journalDataGone(metadata));
+        // Cancelled before any mutation: release now, reclaim the lock file off-path.
+        if (!published && signal?.aborted) { writer.release(); locks.reclaimLater(writer.path, () => this.journalDataGone(metadata)); }
+        else if (!published) await locks.releaseWriter(writer, () => this.journalDataGone(metadata));
       } finally { writer.release(); }
       throw error;
     }
@@ -504,17 +507,18 @@ export class JsonlSessionRepo {
       await options.assertOwned(); await this.assertDirectory(); return metadata;
     }); } finally { writer.release(); }
   }
-  async open(metadata, { repair = true, wait = repair, validateHeader = undefined } = {}) {
+  /** `signal` cancels only the writer wait, never a started open/repair. */
+  async open(metadata, { repair = true, wait = repair, validateHeader = undefined, signal = undefined } = {}) {
     if (metadata.legacy) {
       if (!repair) throw new Error("Legacy sources cannot be inspected as bound native turns");
-      return this.importLegacy(metadata);
+      return this.importLegacy(metadata, signal);
     }
     this.checkMetadata(metadata);
     if (metadata.path !== join(this.directory, `${metadata.journalId}.jsonl`)) fail();
     if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
     if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
     const locks = await this.ensureDirectory();
-    const writer = await locks.acquireWriter(metadata.journalId, { wait });
+    const writer = await locks.acquireWriter(metadata.journalId, { wait, signal });
     let session;
     try {
       if (this.openSessions.has(metadata.id)) throw Object.assign(new Error("Harness session is already open"), { code: "ERR_HARNESS_WRITER_BUSY" });
@@ -542,7 +546,6 @@ export class JsonlSessionRepo {
       const identity = await handle.stat();
       if (!sameIdentity(identity, reader.identity)) fail();
       let expectedSize = identity.size, expectedStat = identity, pendingTornTail = null;
-      const unchanged = (a, b) => sameIdentity(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
       const warm = this.warm?.metadata.id === metadata.id && this.warm.metadata.journalId === metadata.journalId
         && this.warm.metadata.path === metadata.path && unchanged(this.warm.identity, identity) ? this.warm : null;
       if (!warm) this.warm = null;
@@ -645,25 +648,14 @@ export class JsonlSessionRepo {
   }
   async writeImportHeader(metadata, catalogOwned = false) {
     const locks = await this.locksPromise;
-    const creating = join(this.directory, `${metadata.journalId}.jsonl.creating`);
+    const phases = { created: "stage_created", written: "stage_written", file_synced: "stage_synced", directory_synced: "stage_ready" };
+    // The `.creating` inode is ours (O_EXCL + writer + catalogue); a failed write
+    // removes it rather than leave a torn header.
     const publish = async () => {
       await this.assertDirectory();
-      const handle = await open(creating, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      let identity;
-      try {
-        identity = await handle.stat();
-        await this.onImportPhase("stage_created");
-        await handle.writeFile(`${JSON.stringify({ ...metadata, path: undefined })}\n`);
-        await this.onImportPhase("stage_written");
-        await handle.sync(); await this.onImportPhase("stage_synced");
-      } catch (error) {
-        // This unpublished inode is ours (O_EXCL + writer + catalogue). Do not
-        // leave a torn header after an ordinary write/sync failure.
-        if (identity && !await absent(creating) && sameIdentity(identity, await lstat(creating))) { await unlink(creating); await this.syncDirectories(); }
-        throw error;
-      } finally { await handle.close(); }
-      await rename(creating, metadata.path); await this.syncDirectories();
-      await this.onImportPhase("stage_ready");
+      await publishAtomic({ path: metadata.path, temporary: join(this.directory, `${metadata.journalId}.jsonl.creating`),
+        bytes: Buffer.from(`${JSON.stringify({ ...metadata, path: undefined })}\n`), fail, sync: () => this.syncDirectories(),
+        check: () => this.assertDirectory(), phase: async (step) => { if (step in phases) await this.onImportPhase(phases[step]); } });
     };
     return catalogOwned ? publish() : locks.withCatalog(publish);
   }
@@ -729,7 +721,7 @@ export class JsonlSessionRepo {
       await session.endTurn(completionId, "completed"); await session.sync();
     }
   }
-  async importLegacy(metadata) {
+  async importLegacy(metadata, signal = undefined) {
     const projected = await readLegacySession(metadata, this.root);
     const info = importDescriptor(metadata, this.root, projected);
     const locks = await this.ensureDirectory();
@@ -740,15 +732,15 @@ export class JsonlSessionRepo {
     validateJournalHeader(stage);
     const publishedPath = join(this.directory, `${journalId}.jsonl`);
     const creatingPath = join(this.directory, `${journalId}.jsonl.creating`);
-    const writer = await locks.acquireWriter(journalId);
+    const writer = await locks.acquireWriter(journalId, { signal });
     let session;
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
         const { owned, unattributed } = await this.catalogueUnlocked(true);
-        this.assertNotDamaged(unattributed, metadata.id);
         const legacy = await listLegacySessions(this.root);
-        const sources = legacy.filter((m) => m.id === metadata.id);
+        this.assertNotDamaged([...unattributed, ...legacy.unattributed], metadata.id);
+        const sources = legacy.sessions.filter((m) => m.id === metadata.id);
         if (owned.some((m) => m.id === metadata.id && m.journalId !== journalId)
           || sources.length > 1 || sources.some((m) => m.path !== metadata.path)) fail();
         if (this.retiredHandles.has(metadata.id)) throw new Error("Harness session handle is retired");
@@ -756,7 +748,7 @@ export class JsonlSessionRepo {
           if (sources.length !== 1) fail();
           await assertLegacyIdentity(metadata.path, this.root, info.source.identity);
         }
-      });
+      }, { signal }); // validation only: no mutation has started
       if (!await absent(publishedPath)) {
         session = await this.openLocked({ ...stage, path: publishedPath }, writer);
         if (session.metadata.import?.importId !== info.importId) fail();
@@ -831,12 +823,18 @@ export class JsonlSessionRepo {
       } else if (session.closed) writer.release();
     }
   }
-  async listOwned({ wait = true } = {}) { return (await this.catalogue({ wait })).owned; }
-  /** Locked catalogue with unattributed journal-named entries (see catalogueUnlocked). */
-  async catalogue({ wait = true } = {}) {
-    if (await absent(this.directory)) return { owned: [], unattributed: [] };
+  async listOwned({ wait = true, signal = undefined } = {}) {
+    if (await absent(this.directory)) return [];
     const locks = await this.ensureDirectory();
-    return locks.withCatalog(() => this.catalogueUnlocked(), { wait });
+    return (await locks.withCatalog(() => this.catalogueUnlocked(), { wait, signal })).owned;
+  }
+  /** Locked native catalogue whose `unattributed` also carries damaged legacy
+   * entries, so a handle's own damaged source is never reported missing. */
+  async catalogue({ wait = true, signal = undefined } = {}) {
+    const legacy = await listLegacySessions(this.root);
+    const native = await absent(this.directory) ? { owned: [], unattributed: [] }
+      : await (await this.ensureDirectory()).withCatalog(() => this.catalogueUnlocked(), { wait, signal });
+    return { owned: native.owned, unattributed: [...native.unattributed, ...legacy.unattributed] };
   }
   async listOwnedUnlocked(includeStaging = false) { return (await this.catalogueUnlocked(includeStaging)).owned; }
   /** Catalogue walk shared by list/create/import/retire. Names without a
@@ -877,7 +875,10 @@ export class JsonlSessionRepo {
               if (count !== 1 || scan.torn) { skip(header); continue; }
             } catch { skip(header); continue; }
           }
-          await this.#reclaimNativeCreation(reader, { journalId });
+          // A per-entry lock failure (e.g. an insecure writer lock) keeps this
+          // stage, unattributed; only shared root/catalogue failures stay fatal.
+          try { await this.#reclaimNativeCreation(reader, { journalId }); }
+          catch { await this.assertDirectory(); skip(header); }
           continue; // a busy failed creator's unpublished header is not a live session
         }
         if (!header || (creating && !includeStaging)) continue;
@@ -909,10 +910,11 @@ export class JsonlSessionRepo {
       writer.release(); await unlink(writer.path); await locks.syncDirectory();
     } finally { writer.release(); }
   }
-  async list() {
-    const owned = await this.listOwned();
-    const legacy = await listLegacySessions(this.root);
-    return [...owned, ...legacy.filter((m) => !owned.some((n) => n.id === m.id))];
+  /** @param {unknown} [_filter] @param {{abortSignal?:AbortSignal}} [context] */
+  async list(_filter = undefined, context = undefined) {
+    const owned = await this.listOwned({ signal: contextSignal(context) });
+    const { sessions } = await listLegacySessions(this.root);
+    return [...owned, ...sessions.filter((m) => !owned.some((n) => n.id === m.id))];
   }
   journalPaths(metadata) {
     return [join(this.directory, `${metadata.journalId}.jsonl`), join(this.directory, `${metadata.journalId}.jsonl.importing`), join(this.directory, `${metadata.journalId}.jsonl.creating`)];
@@ -975,7 +977,7 @@ export class JsonlSessionRepo {
   }
   /** @param {string} id @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async retireByHandle(id, contextOrOptions = undefined, explicitOptions = undefined) {
-    const options = deletionOptions(contextOrOptions, explicitOptions);
+    const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     this.retireHandle(id);
@@ -984,26 +986,16 @@ export class JsonlSessionRepo {
       const locks = await this.ensureDirectory();
       const matches = await locks.withCatalog(async () => {
         const { owned, unattributed } = await this.catalogueUnlocked(true);
-        // Attributable damage is never treated as retired. A headerless entry
-        // of unknown ownership is not reclaimable either: it is left untouched.
-        this.assertNotDamaged(unattributed, id);
         const legacy = await listLegacySessions(this.root, { includeArchives: true });
-        // A headerless/corrupt legacy exact-name candidate is uncertainty, not
-        // authority to unlink it outside ownership or acknowledge complete loss.
-        for (const dir of await readdir(this.root, { withFileTypes: true })) {
-          if (dir.name === "mono-v2") continue;
-          if (dir.isSymbolicLink()) fail();
-          if (!dir.isDirectory()) continue;
-          for (const file of await readdir(join(this.root, dir.name), { withFileTypes: true })) {
-            if (!file.name.endsWith(`_${id}.jsonl`) && !file.name.endsWith(`_${id}.jsonl.migrated`)) continue;
-            if (!file.isFile() || !legacy.some((m) => m.path === join(this.root, dir.name, file.name) && m.id === id)) fail();
-          }
-        }
-        return [...owned, ...legacy].filter((m) => m.id === id);
-      });
+        // Attributable damage (native or legacy, including a damaged exact-name
+        // legacy candidate) is never treated as retired or unlinked. Damage of
+        // unknown ownership is not reclaimable either: it is left untouched.
+        this.assertNotDamaged([...unattributed, ...legacy.unattributed], id);
+        return [...owned, ...legacy.sessions].filter((m) => m.id === id);
+      }, { signal });
       const local = this.openSessions.get(id);
       if (local && !matches.some((m) => m.journalId === local.metadata.journalId)) matches.push(local.metadata);
-      for (const metadata of matches) await this.retire(metadata, options);
+      for (const metadata of matches) await this.retire(metadata, signal ? { abortSignal: signal } : undefined, options);
       const remaining = await locks.withCatalog(() => this.listOwnedUnlocked(true));
       if (remaining.some((m) => m.id === id)) fail();
     } finally {
@@ -1017,36 +1009,37 @@ export class JsonlSessionRepo {
   finishRetirement(id) { if (!this.openSessions.has(id)) this.retiredHandles.delete(id); }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async retire(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
-    const options = deletionOptions(contextOrOptions, explicitOptions);
+    const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     const live = this.openSessions.get(metadata.id), authority = live && sessionAuthorities.get(live);
     if (authority) await authorizeGuardedDeletion({ ownershipSchemaVersion: 2, hostAuthority: authority }, options);
     this.retireHandle(metadata.id);
-    if (metadata.legacy) { try { return await this.delete(metadata, options); } finally { this.finishRetirement(metadata.id); } }
+    const context = signal ? { abortSignal: signal } : undefined;
+    if (metadata.legacy) { try { return await this.delete(metadata, context, options); } finally { this.finishRetirement(metadata.id); } }
     this.checkMetadata(metadata);
     const store = this.openSessions.get(metadata.id);
-    if (!store) { try { return await this.delete(metadata, options); } finally { this.finishRetirement(metadata.id); } }
+    if (!store) { try { return await this.delete(metadata, context, options); } finally { this.finishRetirement(metadata.id); } }
     if (this.warm?.metadata.id === store.metadata.id) this.warm = null;
     store.io?.invalidate?.();
     store.retired = true; // reject new admission before draining prior storage I/O
     await store.line;
     const locks = await this.locksPromise;
-    await locks.withCatalog(() => this.removeOwned(metadata, options));
+    await locks.withCatalog(() => this.removeOwned(metadata, options), { signal });
     // Keep its already-held writer lock until the provider's close/unwind.
   }
   /** @param {any} metadata @param {import('./header-authority.js').HostJournalDeletion|{abortSignal:AbortSignal}} [contextOrOptions] @param {import('./header-authority.js').HostJournalDeletion} [explicitOptions] */
   async delete(metadata, contextOrOptions = undefined, explicitOptions = undefined) {
-    const options = deletionOptions(contextOrOptions, explicitOptions);
+    const options = deletionOptions(contextOrOptions, explicitOptions), signal = contextSignal(contextOrOptions);
     validateDeletionDisposition(options);
     this.clearWarm(metadata.id);
     const locks = await this.ensureDirectory();
     if (metadata.legacy) {
-      await locks.withCatalog(() => this.removeLegacy(metadata)); return;
+      await locks.withCatalog(() => this.removeLegacy(metadata), { signal }); return;
     }
     this.checkMetadata(metadata);
     if (this.openSessions.has(metadata.id)) throw new Error("Harness session is open");
-    const writer = await locks.acquireWriter(metadata.journalId, { wait: options?.hostAuthority === undefined });
-    try { await locks.withCatalog(() => this.removeOwned(metadata, options)); }
+    const writer = await locks.acquireWriter(metadata.journalId, { wait: options?.hostAuthority === undefined, signal });
+    try { await locks.withCatalog(() => this.removeOwned(metadata, options), { signal }); }
     finally {
       try { await locks.releaseWriter(writer, () => this.journalDataGone(metadata)); } finally { writer.release(); }
     }

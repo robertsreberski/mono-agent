@@ -199,14 +199,16 @@ function isSafeSessionId(id) {
 
 /** Reopen by handle. Unrelated or unattributed journal-named entries never
  * block another handle's valid journal. `uncertain` reports that no journal was
- * found while an unreadable entry could be this handle's own damaged journal. */
-async function reopenDurableNativeSession(repo, sessionId) {
+ * found while an unreadable entry could be this handle's own damaged journal;
+ * `owned` that a damaged entry is attributed to exactly this handle. */
+async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
   try {
-    const metadata = (await repo.list(undefined, HARNESS_CONTEXT)).find((entry) => entry?.id === sessionId);
+    const metadata = (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
     if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
     if (typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
-    const { unattributed } = await repo.catalogue();
-    return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId) };
+    const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
+    return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
+      owned: unattributed.some((item) => item.id === sessionId) };
   } catch {
     // A failed catalogue cannot establish absence or authorize cold replay.
     return { entry: null, uncertain: true };
@@ -273,15 +275,21 @@ export async function resolveSession(runState, {
 }) {
   validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
   const access = options.nativeSessionAuthority;
+  // The run's signal cancels only lock waits before a session is opened or
+  // created; cleanup and durability barriers keep the never-aborted context.
+  // Abortable waits need a real AbortSignal (not a structural look-alike).
+  const waitSignal = options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined;
+  const waitContext = waitSignal ? { abortSignal: waitSignal } : HARNESS_CONTEXT;
   if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
-    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false;
+    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false;
     if (!entry && durableRepo) {
       coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
       try {
-        ({ entry, uncertain } = await reopenDurableNativeSession(durableRepo, requestedSessionId));
+        ({ entry, uncertain, owned = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
+        waitSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
         if (entry) {
           // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
           // cold resume could have reopened+inserted its own entry in this
@@ -303,19 +311,24 @@ export async function resolveSession(runState, {
       }
     }
     if (!entry) {
+      const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
+        failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
       if (durableRepo && options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision > 0) {
         // P2 canonical revision proves an earlier native turn existed. Missing
         // bytes cannot become an empty warm transcript. Fail before dispatch;
         // the host must establish a cold boundary, never silently lose context.
         // A possibly-own damaged journal is not "missing": refuse without the
         // session-resume replay, never replacing it (unchanged recovery limit).
-        if (uncertain) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
-          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
-          failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) };
+        if (uncertain) return unreadable();
         return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
           sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is not live`,
           failureKind: "session_not_found", piErrorCode: "pi_session_not_found", piTransport }) };
       }
+      // Damage attributed to this exact handle (native or legacy) is never
+      // replaced by an empty create-on-miss session. Damage of unknown owner
+      // does not block creating every new conversation.
+      if (owned) return unreadable();
       if (durableRepo && isSafeSessionId(providerSessionId)) {
         // Create-on-miss (durable resume only): the requested id has no live
         // registry entry AND no JSONL on disk under piSessionsRoot. This is
@@ -366,7 +379,7 @@ export async function resolveSession(runState, {
             { id: providerSessionId, cwd: cwd || process.cwd(), ...(access ? {
               hostAuthority: access.hostAuthority, assertOwned: () => assertNativeSessionAccess(access, "create", durableRepo.root),
             } : {}) },
-            HARNESS_CONTEXT,
+            waitContext,
           ));
           runState.createdOnMiss = true;
         }
@@ -433,7 +446,7 @@ export async function resolveSession(runState, {
           await assertNativeSessionAccess(access, "open", durableRepo.root);
         }
         const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
-          ...(access ? { repair: false, wait: false } : {}),
+          ...(access ? { repair: false, wait: false } : {}), signal: waitSignal,
           validateHeader: (header) => assertNativeSessionHeader(access, header),
         });
         try {
@@ -463,7 +476,7 @@ export async function resolveSession(runState, {
     // that primary's transcript. Only keep-alive calls use a shared repository.
     if (options.sessionKeepAlive !== true) runState.ephemeralSessionRepo = new MemorySessionRepo();
     runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
-      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, HARNESS_CONTEXT));
+      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, waitContext));
   }
   return { done: false };
 }

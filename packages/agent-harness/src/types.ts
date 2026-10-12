@@ -92,6 +92,8 @@ export interface ConversationHistoryProviderSessionTurn {
   readonly previousModelKey?: string;
   /** A pre-model-binding provider record was replaced without guessing its model owner. */
   readonly previousModelWasUnbound?: boolean;
+  /** The unreadable canonical record was set aside (never deleted); this turn starts from empty history. */
+  readonly historySetAside?: true;
   /** Epoch-derived, filesystem-safe provider session id for this turn. */
   readonly providerSessionId: string;
   /** Durable transcript revision present before this turn starts. */

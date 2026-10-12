@@ -1,6 +1,5 @@
-import { constants } from "node:fs";
-import type { Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, rm } from "node:fs/promises";
+import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomic, readOwned, sameIdentity as same, syncDir, unchanged } from "@mono-agent/harness/owned-fs.js";
 import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { MODEL_SWITCH_DIRECTORY, MAX_MODEL_SWITCH_BYTES, MAX_MODEL_SWITCH_FENCE_BYTES, boundedSwitchBytes, canonicalSwitchJSON,
@@ -42,14 +41,8 @@ export function serializeModelSwitchArtifact(state: ModelSwitchState, artifact: 
 }
 
 const hash = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
-const same = (a: ModelSwitchDirectoryIdentity, b: ModelSwitchDirectoryIdentity): boolean => a.dev === b.dev && a.ino === b.ino;
-const unchanged = (a: Stats, b: Stats): boolean => same(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 function unavailable(): never { throw new Error("Model-switch storage ownership, identity or permissions unavailable"); }
-function secure(stat: Stats, directory: boolean): void {
-  if (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) unavailable();
-  if ((process.platform !== "win32" && (stat.mode & 0o777) !== (directory ? 0o700 : 0o600))
-    || (typeof process.getuid === "function" && stat.uid !== process.getuid())) unavailable();
-}
+const decode = (bytes: Buffer): unknown => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 function missing(error: unknown): boolean { return !!error && typeof error === "object" && "code" in error && error.code === "ENOENT"; }
 const filePattern = /^[a-f0-9]{64}\.[a-f0-9]{64}\.(?:fence|[a-f0-9]{32}\.state|[a-f0-9]{64}\.handoff)\.json(?:\.[a-f0-9]{32}\.tmp)?$/u;
 
@@ -65,18 +58,12 @@ export class ModelSwitchPayloadStore {
     if (!isAbsolute(root)) throw new TypeError("Model-switch root must be absolute");
     this.root = resolve(root); this.directory = join(this.root, MODEL_SWITCH_DIRECTORY);
   }
-  private async assertRoot(): Promise<void> { const stat = await lstat(this.root); secure(stat, true); if (!same(stat, this.rootIdentity)) unavailable(); }
+  private async assertRoot(): Promise<void> { await assertIdentity(this.root, this.rootIdentity, unavailable); }
   private async owner(owner: ModelSwitchStorageOwner, state?: ModelSwitchState): Promise<void> {
     await this.assertRoot(); await owner.assertOwned();
     if (state && (state.identity.ownerKey !== owner.ownerKey || state.identity.historyBucket !== owner.historyBucket)) unavailable();
   }
-  private async syncDirectory(path: string, identity: ModelSwitchDirectoryIdentity): Promise<void> {
-    const before = await lstat(path); secure(before, true); if (!same(before, identity)) unavailable();
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { const stat = await handle.stat(); if (!same(stat, before)) unavailable(); await handle.sync(); }
-    finally { await handle.close(); }
-    const after = await lstat(path); secure(after, true); if (!same(before, after)) unavailable();
-  }
+  private syncDirectory(path: string, identity: ModelSwitchDirectoryIdentity): Promise<void> { return syncDir(path, identity, unavailable); }
   private async ensureDirectory(create: boolean, owner?: ModelSwitchStorageOwner): Promise<ModelSwitchDirectoryIdentity | undefined> {
     let stat;
     try { stat = await lstat(this.directory); } catch (error) {
@@ -87,44 +74,30 @@ export class ModelSwitchPayloadStore {
       await this.syncDirectory(this.root, this.rootIdentity); stat = await lstat(this.directory);
     }
     await this.assertRoot();
-    secure(stat, true); if (this.directoryIdentity && !same(stat, this.directoryIdentity)) unavailable();
+    if (!isOwned(stat, true) || (this.directoryIdentity && !same(stat, this.directoryIdentity))) unavailable();
     this.directoryIdentity ??= { dev: stat.dev, ino: stat.ino }; return this.directoryIdentity;
   }
   private async assertDirectory(identity: ModelSwitchDirectoryIdentity): Promise<void> {
-    await this.assertRoot(); const current = await lstat(this.directory); secure(current, true); if (!same(current, identity)) unavailable();
+    await this.assertRoot(); await assertIdentity(this.directory, identity, unavailable);
+  }
+  /** Artifact-named entries only; strays are skipped, damage is returned flagged. */
+  private entries(prefix = "") {
+    return listOwned(this.directory, filePattern, MAX_MODEL_SWITCH_BYTES).then((all) => all.filter((entry) => entry.name.startsWith(prefix)));
   }
   private coordinates(bucket: string, switchId: string): string { switchHash(switchId); return `${switchConversationKey(bucket)}.${switchId}`; }
   private async readBytes(name: string, maximum: number): Promise<Buffer> {
     if (!filePattern.test(name)) unavailable(); const directory = await this.ensureDirectory(false); if (!directory) unavailable();
-    const path = join(this.directory, name), before = await lstat(path); secure(before, false); if (before.size > maximum) throw new RangeError("Model-switch serialized file exceeds its limit");
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const opened = await handle.stat(); secure(opened, false); if (!unchanged(opened, before)) unavailable();
-      const bytes = await handle.readFile(), after = await handle.stat(), named = await lstat(path); secure(named, false);
-      if (!unchanged(opened, after) || !unchanged(after, named) || bytes.byteLength !== after.size) unavailable();
-      await this.assertDirectory(directory); return bytes;
-    } finally { await handle.close(); }
-  }
-  /** Includes orphan generations, artifacts and crashed temps. Never repairs or
-   * deletes unknown/torn evidence while measuring capacity. */
-  async retainedBytes(): Promise<number> {
-    const directory = await this.ensureDirectory(false); if (!directory) return 0;
-    let total = 0;
-    for (const name of await readdir(this.directory)) {
-      if (!filePattern.test(name)) unavailable(); const stat = await lstat(join(this.directory, name)); secure(stat, false);
-      if (stat.size > MAX_MODEL_SWITCH_BYTES) throw new RangeError("Model-switch serialized file exceeds its limit");
-      total += stat.size; if (!Number.isSafeInteger(total)) unavailable();
-    }
-    await this.assertDirectory(directory); return total;
-  }
-  async conversationBytes(bucket: string): Promise<number> {
-    const directory = await this.ensureDirectory(false); if (!directory) return 0;
-    const prefix = `${switchConversationKey(bucket)}.`; let bytes = 0;
-    for (const name of await readdir(this.directory)) {
-      if (!filePattern.test(name)) unavailable(); if (!name.startsWith(prefix)) continue;
-      const info = await lstat(join(this.directory, name)); secure(info, false); bytes += info.size;
-    }
+    const { bytes } = await readOwned(join(this.directory, name), maximum);
     await this.assertDirectory(directory); return bytes;
+  }
+  /** Includes orphan generations, artifacts, crashed temps and damaged entries.
+   * Never repairs or deletes unknown/torn evidence while measuring capacity. */
+  async retainedBytes(): Promise<number> { return this.conversationBytes(); }
+  async conversationBytes(bucket?: string): Promise<number> {
+    const directory = await this.ensureDirectory(false); if (!directory) return 0;
+    const total = (await this.entries(bucket === undefined ? "" : `${switchConversationKey(bucket)}.`)).reduce((sum, entry) => sum + entry.bytes, 0);
+    if (!Number.isSafeInteger(total)) unavailable();
+    await this.assertDirectory(directory); return total;
   }
   /** Whole-owner D cleanup, or (with `keep`) removal of earlier switches once a
    * newer canonical receipt supersedes them. The durable host intent retains
@@ -134,14 +107,12 @@ export class ModelSwitchPayloadStore {
   async removeConversation(bucket: string, ownerKey: string, assertOwned: () => Promise<void>, onPhase: (phase: string) => Promise<void>, keep?: string): Promise<void> {
     const directory = await this.ensureDirectory(false); if (!directory) return;
     const prefix = `${switchConversationKey(bucket)}.`;
-    const names = (await readdir(this.directory)).filter((name) => name.startsWith(prefix) && (keep === undefined || !name.startsWith(`${prefix}${keep}.`)));
-    const inspected: { name: string; identity: Stats }[] = [];
-    for (const name of names) {
-      if (!filePattern.test(name)) unavailable();
-      const path = join(this.directory, name), identity = await lstat(path); secure(identity, false);
-      if (identity.size > MAX_MODEL_SWITCH_BYTES) unavailable();
+    const inspected = [];
+    for (const { name, stat: identity, damaged } of await this.entries(prefix)) {
+      if (keep !== undefined && name.startsWith(`${prefix}${keep}.`)) continue;
+      if (damaged) throw new OwnedFileDamagedError(name); // damaged own evidence is never removed
       if (!name.endsWith(".tmp")) {
-        const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)));
+        const raw = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES));
         if (name.endsWith(".state.json")) {
           validateModelSwitchState(raw); if (raw.identity.historyBucket !== bucket || raw.identity.ownerKey !== ownerKey || raw.identity.switchId !== name.split(".")[1]) unavailable();
         } else if (name.endsWith(".fence.json")) { validateModelSwitchFence(raw); if (raw.conversationKey !== switchConversationKey(bucket)) unavailable(); }
@@ -156,43 +127,58 @@ export class ModelSwitchPayloadStore {
     inspected.sort((a, b) => Number(b.name.endsWith(".fence.json")) - Number(a.name.endsWith(".fence.json")) || a.name.localeCompare(b.name));
     for (const { name, identity } of inspected) {
       await assertOwned(); await this.assertDirectory(directory);
-      const path = join(this.directory, name), named = await lstat(path); secure(named, false); if (!unchanged(identity, named)) unavailable();
+      const path = join(this.directory, name), named = await lstat(path); if (!isOwned(named) || !unchanged(identity, named)) unavailable();
       await rm(path); await onPhase("lifecycle_switch_file_removed");
       await this.syncDirectory(this.directory, directory);
     }
     await this.syncDirectory(this.directory, directory); await assertOwned();
   }
   /** Read-only managed-root accounting. Hash-only fence coordinates are resolved
-   * exclusively through their validated payload, never guessed from filenames. */
+   * exclusively through their validated payload, never guessed from filenames.
+   * Every artifact name starts with its conversation key: an entry that fails
+   * to read or validate marks only that conversation `damaged` (bytes still
+   * charged, never pending, never removed). Root identity failures stay fatal. */
   async inventory(): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[];
-    readonly refused: readonly string[] }> {
-    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], refused: [] };
-    const bytes = await this.retainedBytes(), pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
+    readonly refused: readonly string[]; readonly damaged: readonly string[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], refused: [], damaged: [] };
+    const bytes = await this.retainedBytes(), entries = await this.entries(), key = (name: string) => name.slice(0, 64);
+    const pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
     // Pre-release (version 1) states, fenced or orphaned, mark only their owner as
     // refused. Their bytes stay charged; unrelated owners keep accounting/admission.
-    const names = await readdir(this.directory), refused = new Set<string>();
-    for (const name of names) {
-      if (!name.endsWith(".state.json")) continue;
-      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)));
-      if ((raw as { version?: unknown } | null)?.version === 1) refused.add(name.split(".")[0]!);
-    }
-    for (const name of names) {
-      if (!name.endsWith(".fence.json") || refused.has(name.split(".")[0]!)) continue;
-      const fenceBytes = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
-      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fenceBytes));
+    const refused = new Set<string>(), damaged = new Set(entries.filter((entry) => entry.damaged).map((entry) => key(entry.name)));
+    const isolate = async (name: string, action: () => Promise<void>) => {
+      if (damaged.has(key(name)) || refused.has(key(name))) return;
+      try { await action(); } catch { await this.assertDirectory(directory); damaged.add(key(name)); }
+    };
+    // Every final state and artifact (fenced, retained or orphan) must parse and
+    // match its filename coordinates; otherwise it is its owner's damage.
+    for (const { name } of entries) if (name.endsWith(".state.json") || name.endsWith(".handoff.json")) await isolate(name, async () => {
+      const [, switchId, id] = name.split("."), raw = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES));
+      if (name.endsWith(".state.json")) {
+        if ((raw as { version?: unknown } | null)?.version === 1) { refused.add(key(name)); return; }
+        validateModelSwitchState(raw);
+        if (raw.identity.switchId !== switchId || switchConversationKey(raw.identity.historyBucket) !== key(name)) unavailable();
+      } else {
+        const bucket = (raw as { historyBucket?: unknown } | null)?.historyBucket;
+        if (typeof bucket !== "string" || switchConversationKey(bucket) !== key(name)) unavailable();
+        await this.readArtifact(bucket, switchId!, { id: id!, hash: id! });
+      }
+    });
+    for (const { name } of entries) if (name.endsWith(".fence.json")) await isolate(name, async () => {
+      const fenceBytes = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES), raw = decode(fenceBytes);
       validateModelSwitchFence(raw);
       const prefix = `${raw.conversationKey}.${raw.switchId}`;
       if (name !== `${prefix}.fence.json`) unavailable();
       const payload = await this.readBytes(`${prefix}.${raw.payload.generation}.state.json`, MAX_MODEL_SWITCH_BYTES);
       if (hash(payload) !== raw.payload.sha256) unavailable();
-      const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload)); validateModelSwitchState(decoded);
+      const decoded = decode(payload); validateModelSwitchState(decoded);
       const current = await this.read(decoded.identity.historyBucket, raw.switchId);
       if (!current || switchDigest(current.fence) !== switchDigest(raw)) unavailable();
       const cached = decoded.phase === "ready" ? decoded.artifact : await this.cachedArtifact(decoded);
-      const remaining = this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached);
-      pending.push({ state: current.state, ...remaining });
-    }
-    await this.assertDirectory(directory); return { bytes, pending, refused: [...refused] };
+      pending.push({ state: current.state, ...this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached) });
+    });
+    await this.assertDirectory(directory);
+    return { bytes, pending: pending.filter((entry) => !damaged.has(switchConversationKey(entry.state.identity.historyBucket))), refused: [...refused], damaged: [...damaged] };
   }
   private remainingReservation(state: ModelSwitchState, publicationBytes: number, cached: boolean) {
     const remainingPendingBytes = Math.max(0, state.reservation.pendingBytes - publicationBytes);
@@ -206,39 +192,23 @@ export class ModelSwitchPayloadStore {
       try { if (!(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)).equals(bytes)) throw new Error("Immutable model-switch content conflicts"); await this.syncDirectory(this.directory, directory); return; }
       catch (error) { if (!missing(error)) throw error; }
     }
-    const temporary = `${path}.${randomBytes(16).toString("hex")}.tmp`;
-    const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    const createdIdentity = await handle.stat();
-    let published = false;
-    try {
-      await handle.writeFile(bytes); const written = await handle.stat(); secure(written, false); if (written.size !== bytes.byteLength) unavailable();
-      await handle.sync(); await owner.onPhase?.(`${label}_file_synced`);
-      await this.owner(owner); await this.assertDirectory(directory);
-      if (!unchanged(written, await lstat(temporary))) unavailable();
-      await rename(temporary, path); published = true; await owner.onPhase?.(`${label}_renamed`);
-      await this.syncDirectory(this.directory, directory); await owner.onPhase?.(`${label}_directory_synced`);
-      await this.assertDirectory(directory); await this.owner(owner);
-    } finally {
-      await handle.close();
-      if (!published) {
-        // Only our open invocation's private temp; crashes leave it charged.
-        await this.assertDirectory(directory);
-        let named;
-        try { named = await lstat(temporary); } catch (error) { if (!missing(error)) throw error; }
-        if (named && same(named, createdIdentity)) { await rm(temporary); await this.syncDirectory(this.directory, directory); }
-      }
-    }
+    // Only this invocation's private temp is ever removed; crashes leave it charged.
+    await publishAtomic({ path, temporary: `${path}.${randomBytes(16).toString("hex")}.tmp`, bytes, fail: unavailable,
+      sync: () => this.syncDirectory(this.directory, directory),
+      check: async () => { await this.owner(owner); await this.assertDirectory(directory); },
+      phase: async (step) => { if (step === "file_synced" || step === "renamed" || step === "directory_synced") await owner.onPhase?.(`${label}_${step}`); } });
+    await this.assertDirectory(directory); await this.owner(owner);
   }
   async read(bucket: string, switchId: string): Promise<{ readonly state: ModelSwitchState; readonly fence: ModelSwitchFence } | undefined> {
     const prefix = this.coordinates(bucket, switchId), directory = await this.ensureDirectory(false); if (!directory) return undefined;
     let bytes;
     try { bytes = await this.readBytes(`${prefix}.fence.json`, MAX_MODEL_SWITCH_FENCE_BYTES); }
     catch (error) { if (!missing(error)) throw error; await this.assertDirectory(directory); return undefined; }
-    const fence: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); validateModelSwitchFence(fence);
+    const fence = decode(bytes); validateModelSwitchFence(fence);
     if (fence.switchId !== switchId || fence.conversationKey !== switchConversationKey(bucket)) unavailable();
     const payload = await this.readBytes(`${prefix}.${fence.payload.generation}.state.json`, MAX_MODEL_SWITCH_BYTES);
     if (hash(payload) !== fence.payload.sha256) unavailable();
-    const state: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload)); validateModelSwitchState(state);
+    const state = decode(payload); validateModelSwitchState(state);
     if (state.identity.switchId !== switchId || state.identity.historyBucket !== bucket || state.identity.targetEpoch !== fence.targetEpoch) unavailable();
     if (state.phase === "ready") {
       const cached = await this.readArtifact(bucket, switchId, state.artifact!);
@@ -282,15 +252,13 @@ export class ModelSwitchPayloadStore {
     // winner's publication barrier before removing any prior payload.
     await this.syncDirectory(this.directory, directory);
     const prefix = `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.`;
-    for (const name of await readdir(this.directory)) {
-      if (!filePattern.test(name)) unavailable();
-      if (!name.startsWith(prefix) || !name.endsWith(".state.json") || name === `${prefix}${pointer.generation}.state.json`) continue;
-      const path = join(this.directory, name), before = await lstat(path); secure(before, false);
-      const bytes = await this.readBytes(name, MAX_MODEL_SWITCH_BYTES);
-      const previous: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); validateModelSwitchState(previous);
+    for (const { name, stat: before, damaged } of await this.entries(prefix)) {
+      if (!name.endsWith(".state.json") || name === `${prefix}${pointer.generation}.state.json`) continue;
+      if (damaged) throw new OwnedFileDamagedError(name);
+      const previous = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)); validateModelSwitchState(previous);
       if (!this.superseded(previous, state)) continue;
       await this.owner(owner, state); await this.assertDirectory(directory);
-      const named = await lstat(path); secure(named, false); if (!unchanged(before, named)) unavailable();
+      const path = join(this.directory, name), named = await lstat(path); if (!isOwned(named) || !unchanged(before, named)) unavailable();
       await rm(path); await owner.onPhase?.("obsolete_state_removed");
     }
     await this.syncDirectory(this.directory, directory); await owner.onPhase?.("obsolete_states_directory_synced");
@@ -313,10 +281,8 @@ export class ModelSwitchPayloadStore {
       await this.owner(owner, state);
       const directory = await this.ensureDirectory(false);
       if (directory) {
-        const key = `${switchConversationKey(state.identity.historyBucket)}.`;
-        for (const name of await readdir(this.directory)) {
-          if (!filePattern.test(name)) unavailable();
-          if (name.startsWith(key) && name.endsWith(".fence.json") && name !== `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.fence.json`) {
+        for (const { name } of await this.entries(`${switchConversationKey(state.identity.historyBucket)}.`)) {
+          if (name.endsWith(".fence.json") && name !== `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.fence.json`) {
             throw new Error("Existing switch must roll forward and settle before a different intent");
           }
         }
@@ -403,9 +369,8 @@ export class ModelSwitchPayloadStore {
   private async cachedArtifact(state: ModelSwitchState): Promise<HandoffReference | undefined> {
     const directory = await this.ensureDirectory(false); if (!directory) return undefined;
     const prefix = this.coordinates(state.identity.historyBucket, state.identity.switchId), candidates: HandoffReference[] = [];
-    for (const name of await readdir(this.directory)) {
-      if (!filePattern.test(name)) unavailable();
-      if (!name.startsWith(`${prefix}.`) || !name.endsWith(".handoff.json")) continue;
+    for (const { name } of await this.entries(`${prefix}.`)) {
+      if (!name.endsWith(".handoff.json")) continue;
       const id = name.slice(prefix.length + 1, -".handoff.json".length), reference = { id, hash: id };
       const cached = await this.readArtifact(state.identity.historyBucket, state.identity.switchId, reference);
       if (cached.ownerKey !== state.identity.ownerKey) unavailable(); this.validateProposal(state, cached.artifact);
@@ -455,7 +420,7 @@ export class ModelSwitchPayloadStore {
     validateSwitchReference(reference);
     const bytes = await this.readBytes(`${this.coordinates(bucket, switchId)}.${reference.id}.handoff.json`, MAX_MODEL_SWITCH_BYTES);
     if (hash(bytes) !== reference.hash || reference.id !== reference.hash) unavailable();
-    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); switchObject(value);
+    const value = decode(bytes); switchObject(value);
     switchKeys(value, ["version", "switchId", "ownerKey", "historyBucket", "attemptId", "artifact"]);
     if (value.version !== 1 || value.switchId !== switchId || value.historyBucket !== bucket) unavailable();
     switchObject(value.artifact); if (value.attemptId !== null) switchHash(value.attemptId);

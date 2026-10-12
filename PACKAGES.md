@@ -73,6 +73,7 @@ flowchart TB
   P_mono_agent_agent_app --> P_mono_agent_web
   P_mono_agent_agent_app --> P_mono_agent_webhook_adapter
   P_mono_agent_agent_harness --> P_mono_agent_agent_contracts
+  P_mono_agent_agent_harness --> P_mono_agent_harness
   P_mono_agent_agent_harness --> P_mono_agent_observability
   P_mono_agent_agent_harness --> P_mono_agent_runtime_adapter
   P_mono_agent_agent_orchestrator --> P_mono_agent_agent_contracts
@@ -114,7 +115,7 @@ flowchart TB
 | `@mono-agent/telegram-adapter` | `@mono-agent/agent-contracts` |
 | `@mono-agent/webhook-adapter` | `@mono-agent/agent-contracts` |
 | `@mono-agent/whatsapp-adapter` | `@mono-agent/agent-contracts` |
-| `@mono-agent/agent-harness` | `@mono-agent/agent-contracts`, `@mono-agent/observability`, `@mono-agent/runtime-adapter` |
+| `@mono-agent/agent-harness` | `@mono-agent/agent-contracts`, `@mono-agent/harness`, `@mono-agent/observability`, `@mono-agent/runtime-adapter` |
 | `@mono-agent/agent-orchestrator` | `@mono-agent/agent-contracts` |
 | `@mono-agent/docs-mcp` | None |
 | `@mono-agent/memory` | `@mono-agent/agent-contracts` |

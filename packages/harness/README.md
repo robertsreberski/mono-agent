@@ -409,6 +409,21 @@ listLegacySessions
 readLegacySession
 ```
 
+**`@mono-agent/harness/owned-fs.js`**
+
+```text
+Identity
+OwnedFileDamagedError
+assertIdentity
+isOwned
+listOwned
+publishAtomic
+readOwned
+sameIdentity
+syncDir
+unchanged
+```
+
 **`@mono-agent/harness/retry-stream.js`**
 
 ```text

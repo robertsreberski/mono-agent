@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import type { Stats } from "node:fs";
 import { lstat, open, readdir, rename, rm } from "node:fs/promises";
+import { assertIdentity, isOwned, readOwned, syncDir, unchanged } from "@mono-agent/harness/owned-fs.js";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { boundedSwitchBytes, switchDigest, switchHash, switchKeys, switchObject } from "./durable-model-switch-contract.js";
@@ -18,13 +18,6 @@ interface Owner {
 }
 function unavailable(): never { throw new Error("Native history root authority identity or permissions unavailable"); }
 const missing = (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-const same = (a: Identity, b: Identity) => a.dev === b.dev && a.ino === b.ino;
-const unchanged = (a: Stats, b: Stats) => same(a, b) && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
-function secure(stat: Stats, directory = false) {
-  if (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) unavailable();
-  if ((process.platform !== "win32" && (stat.mode & 0o777) !== (directory ? 0o700 : 0o600))
-    || (process.getuid && stat.uid !== process.getuid())) unavailable();
-}
 function validate(value: unknown): asserts value is NativeHistoryRootMarker {
   switchObject(value); switchKeys(value, ["version", "kind", "canonicalVersion", "rootId"]);
   if (value.version !== 1 || value.kind !== "native-history" || value.canonicalVersion !== 4) unavailable();
@@ -37,24 +30,13 @@ export class NativeHistoryRootStore {
   constructor(private readonly root: string, private readonly identity: Identity) {
     if (!isAbsolute(root)) throw new TypeError("Native history root must be absolute");
   }
-  private async assertRoot() { const stat = await lstat(this.root); secure(stat, true); if (!same(stat, this.identity)) unavailable(); }
-  private async syncRoot() {
-    await this.assertRoot(); const handle = await open(this.root, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    try { if (!same(await handle.stat(), this.identity)) unavailable(); await handle.sync(); }
-    finally { await handle.close(); }
-    await this.assertRoot();
-  }
-  private async readFile(name: string): Promise<{ marker: NativeHistoryRootMarker; bytes: number; identity: Stats }> {
-    const path = join(this.root, name); await this.assertRoot(); const before = await lstat(path); secure(before);
-    if (before.size > MAX_NATIVE_HISTORY_ROOT_BYTES) unavailable();
-    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    try {
-      const opened = await handle.stat(); secure(opened); if (!unchanged(before, opened)) unavailable();
-      const bytes = await handle.readFile(), after = await handle.stat(), named = await lstat(path); secure(named);
-      if (!unchanged(opened, after) || !unchanged(after, named) || bytes.byteLength !== after.size) unavailable();
-      const marker: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); validate(marker);
-      await this.assertRoot(); return { marker, bytes: bytes.byteLength, identity: named };
-    } finally { await handle.close(); }
+  private async assertRoot() { await assertIdentity(this.root, this.identity, unavailable); }
+  private syncRoot() { return syncDir(this.root, this.identity, unavailable); }
+  /** Root-level authority: any damage here stays fatal for the whole root. */
+  private async readFile(name: string) {
+    await this.assertRoot(); const { bytes, stat: identity } = await readOwned(join(this.root, name), MAX_NATIVE_HISTORY_ROOT_BYTES);
+    const marker: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); validate(marker);
+    await this.assertRoot(); return { marker, bytes: bytes.byteLength, identity };
   }
   async read(): Promise<NativeHistoryRootMarker | undefined> {
     try {
@@ -73,7 +55,7 @@ export class NativeHistoryRootStore {
     let bytes = 0;
     for (const name of await readdir(this.root)) {
       if (name !== NATIVE_HISTORY_ROOT_FILE && !NATIVE_HISTORY_ROOT_TEMP.test(name)) continue;
-      const stat = await lstat(join(this.root, name)); secure(stat);
+      const stat = await lstat(join(this.root, name)); if (!isOwned(stat)) unavailable();
       if (stat.size > MAX_NATIVE_HISTORY_ROOT_BYTES) unavailable(); bytes += stat.size;
       if (name === NATIVE_HISTORY_ROOT_FILE) await this.read();
     }
