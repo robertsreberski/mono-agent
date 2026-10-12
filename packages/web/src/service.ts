@@ -3126,6 +3126,7 @@ export class WebService {
         && connection.info.supportsLiveInput && this.withProjectPrefix(input.threadId, prompt).length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         if (!this.store.claimParentInterruptionWake(input.sourceId, input.turnId, active.turnId)) return;
         try {
+          // The prompt guards the old question; do not suppress AskUser for the active user's unrelated task.
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`, id: input.wakeKey,
             text: this.withProjectPrefix(input.threadId, prompt),
