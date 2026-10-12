@@ -202,16 +202,18 @@ function isSafeSessionId(id) {
  * found while an unreadable entry could be this handle's own damaged journal;
  * `owned` that a damaged entry is attributed to exactly this handle. */
 async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
+  if (!isSafeSessionId(sessionId)) return { entry: null, uncertain: false };
   try {
-    const metadata = (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
+    const direct = typeof repo.find === "function";
+    const metadata = direct ? await repo.find(sessionId, context) : (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
     if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
-    if (typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
+    if (direct || typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
     const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
       owned: unattributed.some((item) => item.id === sessionId) };
   } catch {
     // A failed catalogue cannot establish absence or authorize cold replay.
-    return { entry: null, uncertain: true };
+    return { entry: null, uncertain: true, owned: typeof repo.find === "function" };
   }
 }
 
@@ -452,7 +454,6 @@ export async function resolveSession(runState, {
         try {
           assertNativeSessionHeader(access, raw.metadata);
           if (access) await assertNativeProjectionBinding(raw, options.nativeSessionProjection);
-          if (access) raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: access.hostAuthority });
         } catch (error) { await raw.close(); throw error; }
         runState.session = createPiSessionAdapter(raw);
         // Import publishes a new versioned pathname; the registry must sync and
@@ -706,9 +707,9 @@ export async function recoverDurableNativeSession(receipt, context) {
   entry.busy = true;
   let raw;
   try {
-    const matches = (await entry.repo.list(undefined, HARNESS_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
-    if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
-    raw = await entry.repo.open(matches[0], { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
+    const metadata = await entry.repo.find(receipt.providerSessionId, HARNESS_CONTEXT);
+    if (!metadata || metadata.path !== entry.metadata.path) return false;
+    raw = await entry.repo.open(metadata, { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
     if (await raw.getLeafId() !== receipt.tipId) return false;
     const terminal = await raw.getTerminal(proof.operationId);
     if ([...raw.validator.inputs.values()].some((input) => input.state === "queued")) return false;

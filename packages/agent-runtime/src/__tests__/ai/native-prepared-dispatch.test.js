@@ -158,7 +158,7 @@ it("opens only the late-bound current handle, preserving the frozen root and pro
     sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "fictional-turn", handleId: handle, baseRevision: 0,
       reconciliation: { version: 1, purpose: "execution", fenceDigest: "c".repeat(64), initialInputId: "fictional-input" } },
     nativeSessionAuthority: { version: 1, currentHandleId: handle, sessionsRoot: f.root,
-      hostAuthority: { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" }, assertCurrent } });
+      hostAuthority: { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" }, assertCurrent } });
   expect(result.error).toBeNull(); expect(assertCurrent).toHaveBeenCalled();
   expect(assertCurrent.mock.calls.every(([request]) => request.handleId === handle && request.sessionsRoot === f.root)).toBe(true);
 });
@@ -167,7 +167,7 @@ it("prepares the certified router primary once, keeps resolver resources until s
   const f = await fixture(), cleanup = vi.fn(), resolveAttempt = vi.fn(async (..._args) => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models }, cleanup }));
   const router = createRouterRuntime({ chain: [{ model: f.options.model, attempts: 3 }, { model: { provider: "faux", model: "backup", reference: "faux:backup" } }],
     resolveAttempt, sessionTurnReconciliation: "v1" });
-  expect(router.nativePreparedDispatch).toBe("v1"); const lease = await prepare(f, {}, router);
+  expect(router.prepareNativeDispatch).toBeTypeOf("function"); const lease = await prepare(f, {}, router);
   expect(resolveAttempt).toHaveBeenCalledTimes(1); expect(cleanup).not.toHaveBeenCalled();
   // @ts-expect-error Faux accepts thrown failures at runtime.
   f.faux.setResponses([new Error("Fictional terminal failure")]); const result = await lease.run(); expect(result.error).toBeTruthy();
@@ -177,7 +177,6 @@ it("prepares the certified router primary once, keeps resolver resources until s
 it("does not certify an arbitrary router resolver from method presence", async () => {
   const f = await fixture(), resolveAttempt = vi.fn();
   const router = createRouterRuntime({ chain: [{ model: f.options.model }], resolveAttempt });
-  expect(router.nativePreparedDispatch).toBeUndefined();
   await expect(router.prepareNativeDispatch("Rules", f.options)).rejects.toThrow("does not support"); expect(resolveAttempt).not.toHaveBeenCalled();
 });
 
@@ -261,7 +260,7 @@ it.each([false, true])("close settles rather than rethrowing a consumed run's re
   const direct = await createPreparedDispatchLease(async ({ ready }) => { await ready({}); throw new Error("Fictional execution rejection"); }, undefined);
   const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
   // @ts-expect-error Deliberately partial runtime double.
-    resolveAttempt: async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), nativePreparedDispatch: "v1", prepareNativeDispatch: async () => direct } }) });
+    resolveAttempt: async () => ({ runtime: { run: vi.fn(), configureTools: vi.fn(), prepareNativeDispatch: async () => direct } }) });
   const lease = routed ? await router.prepareNativeDispatch("Fictional rules", f.options) : direct;
   await expect(lease.run()).rejects.toThrow("Fictional execution rejection");
   await expect(lease.close()).resolves.toBeUndefined(); await expect(lease.close()).resolves.toBeUndefined();

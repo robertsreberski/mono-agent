@@ -12,7 +12,7 @@ try {
     } }); };
   }
   const store = createDurableHistoryStore({ root, retireProviderSession: async () => { throw new Error("Unexpected native retirement"); } });
-  const lease = await store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority lease");
+  const lease = await store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority lease");
   await lease.assertOwned(); const authority = lease.authority; await lease.release();
   if (action === "issue") throw new Error(`Expected crash pause at ${phase}`);
   process.send?.({ authority, marker: JSON.parse(await readFile(join(root, NATIVE_HISTORY_ROOT_FILE), "utf8")),

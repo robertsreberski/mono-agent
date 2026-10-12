@@ -9,7 +9,7 @@ import type { DurableTurnFence, PendingTurnPayload } from "../durable-turn-contr
 const hash = "a".repeat(64);
 const identity = { purpose: "execution" as const, ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "fictional-turn", handleId: hash, modelKey: "openai:fictional-model", baseRevision: 0, fenceDigest: hash };
 const payload = (): PendingTurnPayload => ({ version: 1, identity, disposition: "admitted", inputs: [{ kind: "initial", id: "initial", placement: "initial", requestDigest: hash, persistText: "Fictional redacted input.", timestamp: "2026-01-01T00:00:00.000Z", senderLabel: "Fictional sender" }] });
-const fence = (): DurableTurnFence => ({ version: 5, kind: "execution", conversationKey: hash, logicalConversationKey: hash, epoch: hash, providerSessionId: hash, modelKey: "openai:fictional-model", revision: 0, runIdDigest: hash, payload: { generation: "b".repeat(32), sha256: hash } });
+const fence = (): DurableTurnFence => ({ version: 6, kind: "execution", conversationKey: hash, logicalConversationKey: hash, epoch: hash, providerSessionId: hash, modelKey: "openai:fictional-model", revision: 0, runIdDigest: hash, payload: { generation: "b".repeat(32), sha256: hash } });
 
 describe("P2b private payload/fence/receipt contracts", () => {
   it("round-trips canonical fields without transport or memory-only metadata", () => {

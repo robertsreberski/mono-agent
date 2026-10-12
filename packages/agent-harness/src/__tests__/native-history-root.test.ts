@@ -19,23 +19,22 @@ async function fixture() {
 
 it("requires explicit exclusive-writer acknowledgement and drained host ownership", async () => {
   const f = await fixture(), before = await readFile(f.path);
-  await expect(f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: false } as never)).rejects.toThrow("exclusive upgraded writers");
   const active = await f.store.beginProviderSessionTurn("fictional-active", "fictional-active-turn", { modelKey });
-  await expect(f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true })).rejects.toThrow("drained host owners");
+  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("drained host owners");
   expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(await readFile(f.path)).toEqual(before); await active.abort();
 });
 
 it("issues immutable bounded root authority without migrating canonical history or native files", async () => {
   const f = await fixture(), before = await readFile(f.path), initial = await f.store.stats();
-  const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected owned authority");
+  const lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected owned authority");
   await lease.assertOwned(); expect(Object.isFrozen(lease.authority)).toBe(true);
   const markerBytes = await readFile(join(f.root, NATIVE_HISTORY_ROOT_FILE)), marker = JSON.parse(markerBytes.toString());
   expect(marker.rootId).toBe(lease.authority.rootId); expect(markerBytes.byteLength).toBeLessThanOrEqual(1024);
-  expect(lease.authority).toMatchObject({ version: 1, canonicalVersion: 4, ownerKey: bucket, historyBucket: bucket });
+  expect(lease.authority).toMatchObject({ version: 1, ownerKey: bucket, historyBucket: bucket });
   expect(await readFile(f.path)).toEqual(before); expect(f.retire).not.toHaveBeenCalled();
   await lease.release(); await expect(lease.assertOwned()).rejects.toThrow("released");
   const fresh = createDurableHistoryStore({ root: f.root, retireProviderSession: f.retire });
-  const replay = await fresh.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (replay.status !== "owned") throw new Error("Expected replay authority");
+  const replay = await fresh.acquireNativeHistoryAuthority(bucket); if (replay.status !== "owned") throw new Error("Expected replay authority");
   expect(replay.authority).toEqual(lease.authority); await replay.release();
   expect(await readFile(join(f.root, NATIVE_HISTORY_ROOT_FILE))).toEqual(markerBytes);
   expect((await fresh.stats()).bytes).toBe(initial.bytes + markerBytes.byteLength);
@@ -44,16 +43,16 @@ it("issues immutable bounded root authority without migrating canonical history 
 it("refuses capacity before marker publication and preserves unknown proposals", async () => {
   const f = await fixture(), bytes = (await f.store.stats()).bytes;
   const low = createDurableHistoryStore({ root: f.root, maxStoreBytes: bytes, retireProviderSession: f.retire });
-  await expect(low.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true })).rejects.toThrow("capacity unavailable");
+  await expect(low.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("capacity unavailable");
   expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE);
   const proposal = join(f.root, `.native-history-root.${"1".repeat(32)}.tmp`); await writeFile(proposal, "Unknown fictional proposal", { mode: 0o600 });
-  await expect(f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true })).rejects.toThrow();
+  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow();
   expect(await readFile(proposal, "utf8")).toBe("Unknown fictional proposal");
   expect((await f.store.stats()).bytes).toBe(bytes + Buffer.byteLength("Unknown fictional proposal"));
 });
 
 it("fails closed on disappearance or replacement of a pinned root marker", async () => {
-  const f = await fixture(), lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority");
+  const f = await fixture(), lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority");
   const path = join(f.root, NATIVE_HISTORY_ROOT_FILE), original = await readFile(path);
   await writeFile(path, JSON.stringify({ ...JSON.parse(original.toString()), rootId: "9".repeat(64) }), { mode: 0o600 });
   await expect(lease.assertOwned()).rejects.toThrow("unavailable"); await writeFile(path, original, { mode: 0o600 });
@@ -61,7 +60,7 @@ it("fails closed on disappearance or replacement of a pinned root marker", async
 });
 
 it.each(["append", "reset", "logical reset", "exclusive", "import", "admission"])("strictly rejects truncated managed v4 before %s can overwrite it as v3", async (action) => {
-  const f = await fixture(), lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority");
+  const f = await fixture(), lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority");
   const value = canonicalRecord(); value.native.authority = { ...lease.authority }; await lease.release();
   await writeFile(f.path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   const torn = Buffer.from(JSON.stringify(value).slice(0, -8)); await writeFile(f.path, torn, { mode: 0o600 });
@@ -76,7 +75,7 @@ it.each(["append", "reset", "logical reset", "exclusive", "import", "admission"]
 });
 
 it("does not let valid unresolved v4 fences block unrelated v1-v4 owners", async () => {
-  const f = await fixture(); await writeFile(join(f.root, NATIVE_HISTORY_ROOT_FILE), JSON.stringify({ version: 1, kind: "native-history", canonicalVersion: 4, rootId: "1".repeat(64) }), { mode: 0o600 });
+  const f = await fixture(); await writeFile(join(f.root, NATIVE_HISTORY_ROOT_FILE), JSON.stringify({ version: 1, kind: "native-history", rootId: "1".repeat(64) }), { mode: 0o600 });
   await writeFile(f.path, `${JSON.stringify(canonicalRecord())}\n`, { mode: 0o600 });
   const original = await f.store.beginProviderSessionTurn(bucket, "fictional-abandoned", { modelKey }); await original.abort();
   const fencePath = join(f.root, ".locks", `${conversationKey(bucket)}.dirty.json`), fence = await readFile(fencePath), canonical = await readFile(f.path);
@@ -93,7 +92,7 @@ it("does not let valid unresolved v4 fences block unrelated v1-v4 owners", async
 });
 
 it("prunes legacy victims around protected v4 and never grows past count or byte quotas", async () => {
-  const f = await fixture(); await writeFile(join(f.root, NATIVE_HISTORY_ROOT_FILE), JSON.stringify({ version: 1, kind: "native-history", canonicalVersion: 4, rootId: "1".repeat(64) }), { mode: 0o600 });
+  const f = await fixture(); await writeFile(join(f.root, NATIVE_HISTORY_ROOT_FILE), JSON.stringify({ version: 1, kind: "native-history", rootId: "1".repeat(64) }), { mode: 0o600 });
   await writeFile(f.path, `${JSON.stringify(canonicalRecord())}\n`, { mode: 0o600 });
   const canonical = await readFile(f.path), bounded = createDurableHistoryStore({ root: f.root, maxConversations: 2, maxStoreBytes: 8192, retireProviderSession: f.retire });
   for (let index = 0; index < 12; index++) {
@@ -110,7 +109,7 @@ for (const phase of ["root_marker_file_synced", "root_marker_renamed", "root_mar
   it(`recovers root authority twice in fresh processes after SIGKILL at ${phase}`, async () => {
     const f = await fixture(), before = await readFile(f.path);
     if (phase === "root_marker_proposal_removed") {
-      const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release();
+      const lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release();
       await writeFile(join(f.root, `.native-history-root.${"8".repeat(32)}.tmp`), await readFile(join(f.root, NATIVE_HISTORY_ROOT_FILE)), { mode: 0o600 });
     }
     const run = async (action: "issue" | "recover") => {
@@ -133,7 +132,7 @@ for (const phase of ["root_marker_file_synced", "root_marker_renamed", "root_mar
 it.each([false, true])("keeps unrelated append independent of unreadable canonicals (managed=%s)", async (managed) => {
   for (const bytes of ["{", "{}", JSON.stringify({ version: 99, conversationId: bucket }), JSON.stringify(legacy("fictional-wrong-file-id"))]) {
     const f = await fixture();
-    if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
+    if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
     await writeFile(f.path, bytes);
     await f.store.append("fictional-unrelated", [{ role: "assistant", content: "Independent valid history" }]);
     expect(await f.store.load("fictional-unrelated")).toHaveLength(1); expect(await readFile(f.path, "utf8")).toBe(bytes);
@@ -151,7 +150,7 @@ it("does not deserialize existing legacy canonicals on an under-quota append", a
 
 it.each([false, true])("retains the previous unmanaged retirement-fence failure policy (managed=%s)", async (managed) => {
   const f = await fixture();
-  if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true }); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
+  if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
   const interrupted = await f.store.beginProviderSessionTurn(bucket, "fictional-interrupted", { modelKey }); await interrupted.abort();
   await writeFile(f.path, "{");
   const append = f.store.append("fictional-independent", [{ role: "assistant", content: "Independent update" }]);

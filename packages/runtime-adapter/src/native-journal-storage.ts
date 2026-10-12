@@ -6,7 +6,7 @@ export function createManagedNativeJournalStorage(options: {
   readonly sessionsRoot: string; readonly onPhase?: (phase: string) => Promise<void>;
 }): RuntimeNativePreparationStorage & { readonly checkInheritedPrefix: NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]> } {
   const storage = nativeStorage(options);
-  return { nativeEvidence: "v1", captureEvidence: (source, context) => storage.captureEvidence(source, context),
+  return { captureEvidence: (source, context) => storage.captureEvidence(source, context),
     createBudget: (input) => storage.createBudget(input), prepareHandoff: (view, options) => storage.prepareHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["prepareHandoff"]>,
     checkInheritedPrefix: async (messages, model, compaction, prefixTokenCap) => await storage.checkInheritedPrefix([...messages], model, compaction, prefixTokenCap) as Awaited<ReturnType<NonNullable<RuntimeNativePreparationStorage["checkInheritedPrefix"]>>>,
     buildHandoff: (view, options) => storage.buildHandoff(view, options) as ReturnType<RuntimeNativePreparationStorage["buildHandoff"]>,

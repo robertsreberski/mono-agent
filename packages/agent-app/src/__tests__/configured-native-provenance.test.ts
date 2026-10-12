@@ -103,7 +103,7 @@ it("fresh opt-in Web conversation stops recording account metadata; A->B->A stil
   await h.respond(f.request("fictional-return-a", "A"), { append: async () => {} });
   const canonical = await f.record(), artifacts = await f.artifacts();
   // Matching provider, API and account no longer reuse native envelopes.
-  expect(canonical.version).toBe(5); expect(canonical.providerSession.modelKey).toBe(`${provider}:A`);
+  expect(canonical.version).toBe(3); expect(canonical.providerSession.modelKey).toBe(`${provider}:A`);
   expect(artifacts).toHaveLength(1); // exactly one durable handoff remains
   expect(artifactOf(artifacts, canonical.lastSwitch.switchId)).toMatchObject({ producer: "outgoing", summary: expect.any(Object) });
   expect(artifacts.every((entry) => !Object.hasOwn(entry.artifact, "nativeProjection"))).toBe(true);
@@ -203,7 +203,7 @@ it("a second same-model persisted Web turn after a v5 switch keeps the single cu
   f.faux.setResponses([f.reply("Fictional A answer"), f.reply(summary), f.reply("Fictional B answer"), f.reply("Fictional second B answer")]);
   await h.respond(f.request("fictional-seed", "A"), { append: async () => {} });
   await h.respond(f.request("fictional-switch", "B"), { append: async () => {} });
-  const before = await f.record(); expect(before.version).toBe(5);
+  const before = await f.record(); expect(before.version).toBe(3);
   const journals = join(f.root, "native", "mono-v2", "journals"), [current] = (await readdir(journals)).filter((name) => name.endsWith(".jsonl"));
   const currentBytes = await readFile(join(journals, current!));
   const retire = vi.spyOn(JsonlSessionRepo.prototype, "retireByHandle"), remove = vi.spyOn(JsonlSessionRepo.prototype, "delete");

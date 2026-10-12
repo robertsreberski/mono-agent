@@ -10,7 +10,7 @@ export const NATIVE_HISTORY_ROOT_FILE = ".native-history-root.json";
 export const NATIVE_HISTORY_ROOT_TEMP = /^\.native-history-root\.[a-f0-9]{32}\.tmp$/u;
 export const MAX_NATIVE_HISTORY_ROOT_BYTES = 1024;
 interface Identity { readonly dev: number; readonly ino: number }
-export interface NativeHistoryRootMarker { readonly version: 1; readonly kind: "native-history"; readonly canonicalVersion: 4; readonly rootId: string }
+export interface NativeHistoryRootMarker { readonly version: 1; readonly kind: "native-history";  readonly rootId: string }
 interface Owner {
   assertOwned(): Promise<void>;
   reserve(bytes: number): Promise<void>;
@@ -19,8 +19,8 @@ interface Owner {
 function unavailable(): never { throw new Error("Native history root authority identity or permissions unavailable"); }
 const missing = (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 function validate(value: unknown): asserts value is NativeHistoryRootMarker {
-  switchObject(value); switchKeys(value, ["version", "kind", "canonicalVersion", "rootId"]);
-  if (value.version !== 1 || value.kind !== "native-history" || value.canonicalVersion !== 4) unavailable();
+  switchObject(value); switchKeys(value, ["version", "kind", "rootId"]);
+  if (value.version !== 1 || value.kind !== "native-history") unavailable();
   switchHash(value.rootId);
 }
 /** Immutable host format marker, not a native catalogue or dispatch capability.
@@ -68,7 +68,7 @@ export class NativeHistoryRootStore {
     if (!marker && inspected.length > 1 && inspected.some((entry) => entry.marker.rootId !== inspected[0]!.marker.rootId)) unavailable();
     marker ??= inspected[0]?.marker;
     if (!await this.read()) {
-      marker ??= { version: 1, kind: "native-history", canonicalVersion: 4, rootId: randomBytes(32).toString("hex") };
+      marker ??= { version: 1, kind: "native-history", rootId: randomBytes(32).toString("hex") };
       const bytes = boundedSwitchBytes(marker, MAX_NATIVE_HISTORY_ROOT_BYTES); await owner.reserve(inspected.length ? 0 : bytes.byteLength);
       const name = inspected[0]?.name ?? `.native-history-root.${randomBytes(16).toString("hex")}.tmp`;
       const temporary = join(this.root, name);
@@ -95,7 +95,7 @@ export class NativeHistoryRootStore {
     await this.syncRoot(); await owner.onPhase?.("root_marker_proposals_synced"); await owner.assertOwned(); return current;
   }
   authority(marker: NativeHistoryRootMarker, ownerKey: string, historyBucket: string): RuntimeNativeJournalAuthority {
-    const coordinates = { version: 1 as const, canonicalVersion: 4 as const, rootId: marker.rootId, ownerKey, historyBucket };
+    const coordinates = { version: 1 as const, rootId: marker.rootId, ownerKey, historyBucket };
     return { ...coordinates, authorityId: switchDigest(coordinates) };
   }
 }

@@ -2,7 +2,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
-import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError, UnsupportedPreReleaseSwitchFormatError } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./runtime-execution.js";
@@ -12,7 +12,7 @@ import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPrep
  * @unstable Constructor capability supplied by the configured host,
  * not a supported ordinary constructor API. */
 export interface InternalNativeSwitchPolicy {
-  readonly exclusiveWriters: true;
+
   readonly native: RuntimeNativePreparationStorage;
   readonly sessionsRoot: string;
   /** Durable host delivery identity, never run ID or text hash. Undefined means
@@ -33,9 +33,6 @@ export interface ConfiguredPreparedTurn {
 const pending = () => new AgentHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit message to authorize further summary work.");
 const budgetFailure = (reason: string) => new AgentHarnessError("handoff_budget_exceeded", `Model handoff cannot fit: ${reason}. No incoming turn was admitted or queued.`);
 const capacity = (error: unknown) => error instanceof ModelSwitchCapacityError || error instanceof NativeEvidenceCapacityError;
-/** Old pre-release chain data is refused unchanged; the operator resets it manually. */
-const preRelease = (error: unknown) => error instanceof UnsupportedPreReleaseSwitchFormatError
-  ? new AgentHarnessError("native_switch_format_unsupported", "unsupported pre-release switch format; reset") : error;
 
 /** Host path behind the private capability. Unsupported custom stores/runtimes
  * retain the original path without preparing resources or issuing authority. */
@@ -50,14 +47,14 @@ export async function prepareConfiguredModelSwitch(input: {
   const messageId = policy.deliveryId(host.request);
   const runtime = host.routing.runtimeForSession(host.routing.modelKey), store = options.historyStore;
   const checkInheritedPrefix = policy.native.checkInheritedPrefix?.bind(policy.native);
-  if (store?.providerSessionPreparation !== "v1" || !store.beginProviderSessionPreparation) return undefined;
-  const supportedRuntime = policy.native.nativeEvidence === "v1" && checkInheritedPrefix
-    && runtime.nativePreparedDispatch === "v1" && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
+  if (!store?.beginProviderSessionPreparation) return undefined;
+  const supportedRuntime = checkInheritedPrefix
+    && runtime.prepareNativeDispatch && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn;
   if (!supportedRuntime) return undefined;
-  if (policy.exclusiveWriters !== true || resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "Explicit upgraded-writer acknowledgement and the configured native root are required.");
+  if (resolve(policy.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new AgentHarnessError("native_switch_authority_unavailable", "The configured native root is required.");
   let owner: ManagedProviderSessionPreparation;
   try { owner = await store.beginProviderSessionPreparation(host.request.conversationId, host.runId); }
-  catch (error) { throw preRelease(error); }
+  catch (error) { throw error; }
   let assertOwned = () => owner.assertOwned();
   let incoming: Awaited<ReturnType<typeof prepareHarnessRuntime>> | undefined;
   let outgoing: PreparedSwitchProducer | undefined;
@@ -87,7 +84,7 @@ export async function prepareConfiguredModelSwitch(input: {
     // path's ordinary cancelled-turn continuity, exactly as before this route.
     if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending && (!fresh || host.request.abortSignal.aborted)) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
-      const recovered = await recoverPreparedModelSwitch(owner, { exclusiveWriters: true });
+      const recovered = await recoverPreparedModelSwitch(owner);
       if (recovered.status === "ready") {
         snapshot = await owner.read(); switched = true;
         if (recovered.modelKey !== host.routing.modelKey) throw pending(); // Finish recorded switch; never dispatch this message on a different target.
@@ -116,7 +113,7 @@ export async function prepareConfiguredModelSwitch(input: {
         const prepareOutgoing = async (): Promise<PreparedSwitchProducer | undefined> => {
           try {
             const outgoingRuntime = host.routing.runtimeForSession(from);
-            if (outgoingRuntime.nativePreparedDispatch !== "v1" || !outgoingRuntime.prepareNativeDispatch) return undefined;
+            if (!outgoingRuntime.prepareNativeDispatch) return undefined;
             const outgoingOptions: RuntimeRunOptions = { ...options.runtimeOptions, model: parseMonoRuntimeModelReference(from), messages: [],
               abortSignal: host.request.abortSignal, allowedTools: [], disallowedTools: [], mcpServers: {}, skills: [], piSessionsRoot: host.durablePiSessionsRoot };
             for (const key of ["outputSchema", "piResolvedModel", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection", "liveInput", "detachedContext"]) delete (outgoingOptions as Record<string, unknown>)[key];
@@ -157,14 +154,14 @@ export async function prepareConfiguredModelSwitch(input: {
             const fit = await checkInheritedPrefix(proposal.messages, incoming.snapshot.model, compaction);
             if (fit.status !== "ready") throw budgetFailure(fit.reason);
           }
-          const authority = await owner.acquireNativeHistoryAuthority({ exclusiveWriters: policy.exclusiveWriters });
+          const authority = await owner.acquireNativeHistoryAuthority();
           if (authority.status !== "owned") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
           const canonicalBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Buffer.byteLength(JSON.stringify(snapshot)) + 16384);
           const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget!.historyAllowance * 3 + 4096));
           state = { ...state, reservation: { canonicalBytes, artifactBytes, nativeBytes: MAX_NATIVE_EPOCH_BYTES, pendingBytes: Buffer.byteLength(JSON.stringify(state)) * 3 + 65536 } };
         }
         const result = await advancePreparedModelSwitch({ preparation: owner, native: policy.native, incoming, state, view: captured.view, messageId,
-          exclusiveWriters: policy.exclusiveWriters, outgoing: prepareOutgoing,
+          outgoing: prepareOutgoing,
           checkInheritedPrefix: (messages) => checkInheritedPrefix(messages, incoming!.snapshot.model, compaction) });
         if (result.status === "pending") throw pending();
         if (result.status === "budget_failure") throw budgetFailure(result.reason);
@@ -213,7 +210,7 @@ export async function prepareConfiguredModelSwitch(input: {
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         }));
       }, close: async () => { try { await prepared.close(); } finally { await owner.abort(); } } };
-  } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw preRelease(error); }
+  } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw error; }
   finally { await outgoing?.close().catch(() => {}); }
 }
 // Same epoch/handle identity as durable history; never a process/run identifier.

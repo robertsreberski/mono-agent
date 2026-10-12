@@ -1,7 +1,7 @@
 // @ts-check
 import { checkNativeInheritedPrefix } from "./handoff-producer.js";
 // Private storage-only bridge: no provider dispatch, repair accounting or tools.
-import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff } from "@mono-agent/harness";
+import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, managedJournalId } from "@mono-agent/harness";
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -28,21 +28,19 @@ const captureLimit = () => { throw new NativeEvidenceCapacityError(); };
 const hex64 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 const missing = (error) => error?.code === "ENOENT";
-const STAGES = ["", ".creating", ".importing"];
+const STAGES = ["", ".creating", ".importing", ".upgrading"];
 /** @param {{sessionsRoot:string, onPhase?:(phase:string)=>Promise<void>}} options */
 export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = async () => {} }) {
   if (typeof sessionsRoot !== "string" || !isAbsolute(sessionsRoot.trim())) throw new TypeError("Managed native root must be absolute");
   const root = normalizeDurableSessionsRoot(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
   const phase = async (name) => { await onPhase(name); };
   const path = (id) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "mono-v2", "journals", `${id}.jsonl`); };
-  const metadata = async (source) => {
-    const matches = (await repo.listOwned({ wait: false })).filter((item) => item.id === source.handleId && (!source.journalId || item.journalId === source.journalId));
-    if (matches.length !== 1 || matches[0].path !== path(matches[0].journalId)) fail(); return matches[0];
-  };
   /** Streaming digest of one exact journal; records are retained only for capture.
    * @param {any} coordinate */
-  const snapshot = async (coordinate, capture = 0, direct = false) => {
-    const meta = capture || direct ? { id: coordinate.handleId, journalId: coordinate.journalId, path: path(coordinate.journalId) } : await metadata(coordinate), reader = await JournalReader.open(meta.path, root);
+  const snapshot = async (coordinate, capture = 0) => {
+    const journalId = managedJournalId(coordinate.handleId);
+    if (coordinate.journalId && coordinate.journalId !== journalId) fail();
+    const meta = { id: coordinate.handleId, journalId, path: path(journalId) }, reader = await JournalReader.open(meta.path, root);
     try {
       if (capture && reader.identity.size > capture) captureLimit();
       /** @type {any} */ let header;
@@ -76,45 +74,36 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     }
     return true;
   };
-  // Read-only, stage-aware catalogue for one v3 handle. Unlike repo.list() it
-  // never reclaims a `.creating` stage and counts `.importing`/`.upgrading`
-  // copies and legacy archives, so a staged-only restore is never "absent".
-  // Serialized with native creators by the catalogue lock. Entry selection
-  // matches listOwnedUnlocked: unrelated names are skipped and a matching
-  // non-file fails. Like its reclaim rule, a `.creating` stage with an
-  // incomplete or header-only body is a failed unpublished creation, not
-  // evidence (ignored here, never unlinked). Any other matching file whose
-  // header cannot be read, parsed or validated is unattributed: it could be
-  // this handle's damaged journal, so it blocks only a "missing" verdict, never
-  // a found published journal. repo.list() skips unattributed entries.
+  // Read only the authoritative published/staged paths. Failed header-only
+  // creations are ignored, never unlinked; contextual/future stages refuse absence.
+  // Legacy discovery runs only on miss, never for an existing native journal.
   const handleCatalogue = async (handleId) => {
     const found = { published: /** @type {any[]} */ ([]), staged: 0, legacy: 0, archived: 0, unattributed: 0 };
-    let present = false;
-    try { present = (await lstat(repo.directory)).isDirectory(); } catch (error) { if (!missing(error)) throw error; }
-    if (present) {
-      const locks = await repo.ensureDirectory();
-      await locks.withCatalog(async () => {
-        for (const file of await readdir(repo.directory, { withFileTypes: true })) {
-          const suffix = journalEntrySuffix(file.name);
-          if (!suffix) continue;
-          if (!file.isFile()) { found.unattributed += 1; continue; }
-          const filePath = join(repo.directory, file.name);
-          let header, bodyless = false;
-          try {
-            const reader = await JournalReader.open(filePath, root);
-            try {
-              header = await reader.readHeader({ allowIncomplete: true });
-              if (suffix === ".jsonl.creating" && header) { let count = 0; const scan = await reader.scan(() => { count += 1; }); bodyless = count === 1 && !scan.torn; }
-            } finally { await reader.close(); }
-          } catch (error) { if (missing(error)) continue; header = null; }
-          if (suffix === ".jsonl.creating" && (header === undefined || bodyless)) continue;
-          if (!header || typeof header !== "object") { found.unattributed += 1; continue; }
-          if (header.id !== handleId) continue;
-          if (suffix !== ".jsonl") { found.staged += 1; continue; }
-          try { validateJournalHeader(header); } catch { found.unattributed += 1; continue; }
-          found.published.push({ id: handleId, journalId: file.name.slice(0, -suffix.length), path: filePath });
-        }
-      });
+    const journalId = managedJournalId(handleId);
+    let reader;
+    try { await lstat(path(journalId)); reader = await JournalReader.open(path(journalId), root); }
+    catch (error) { if (!missing(error)) throw error; }
+    if (reader) {
+      try {
+        const header = await reader.readHeader(); validateJournalHeader(header);
+        if (header.id !== handleId || header.journalId !== journalId) fail();
+        await reader.assertIdentity(); found.published.push({ id: handleId, journalId, path: path(journalId) });
+        return found;
+      } finally { await reader.close(); }
+    }
+    for (const suffix of STAGES.slice(1)) {
+      const stage = path(journalId) + suffix;
+      try { await lstat(stage); } catch (error) { if (missing(error)) continue; throw error; }
+      if (suffix === ".creating") {
+        const stageReader = await JournalReader.open(stage, root);
+        try {
+          const header = await stageReader.readHeader({ allowIncomplete: true });
+          if (header !== undefined) validateJournalHeader(header);
+          let count = 0; const scan = await stageReader.scan(() => { count++; });
+          if (header === undefined || header.id === handleId && header.journalId === journalId && header.hostAuthority === undefined && count === 1 && !scan.torn) continue;
+        } finally { await stageReader.close(); }
+      }
+      found.staged++;
     }
     const legacy = await listLegacySessions(root, { includeArchives: true });
     // Damaged legacy entries named for this handle, or of unknown owner, could be ours.
@@ -141,7 +130,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         try {
           const header = await reader.readHeader(); validateJournalHeader(header);
           if (header.id !== entry.handleId || header.journalId !== entry.journalId
-            || header.ownershipSchemaVersion === 2 && !same(header.hostAuthority, context.hostAuthority)) fail();
+            || header.hostAuthority !== undefined && !same(header.hostAuthority, context.hostAuthority)) fail();
           if (suffix) {
             const validator = new JournalValidator(); let first = true;
             const evidence = await reader.scan((record) => {
@@ -156,7 +145,6 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     await repo.assertDirectory(); await context.assertOwned();
   };
   return {
-    nativeEvidence: "v1",
     createBudget: createHandoffBudget, prepareHandoff, buildHandoff, checkInheritedPrefix: checkNativeInheritedPrefix,
     /** Read only: no detach/open-for-writing, repair, import or publication.
      * Caller first freezes the current coordinate under its settled claim. A null
@@ -176,7 +164,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         let captured;
         try { captured = await snapshot(source, MAX_CAPTURE_BYTES); }
         catch (error) { if (error instanceof NativeEvidenceCapacityError) throw error; fail(); }
-        if (!same(captured.descriptor, source) || captured.header.ownershipSchemaVersion === 2 && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
+        if (!same(captured.descriptor, source) || captured.header.hostAuthority !== undefined && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
         const { epoch: _epoch, ...descriptor } = source;
         segments.push({ descriptor, header: captured.header, records: captured.records });
       }
@@ -229,13 +217,13 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
             catch (error) { if (missing(error)) continue; return true; } // damaged evidence is never a victim
             try {
               const header = await reader.readHeader(); validateJournalHeader(header);
-              if (header.id !== entry.handleId || header.journalId !== entry.journalId || header.ownershipSchemaVersion !== 2 || !same(header.hostAuthority, authority)) return true;
+              if (header.id !== entry.handleId || header.journalId !== entry.journalId || header.hostAuthority === undefined || !same(header.hostAuthority, authority)) return true;
               for (const suffix of STAGES.slice(1)) {
                 let copy; try { copy = await JournalReader.open(path(entry.journalId) + suffix, root); }
                 catch (error) { if (missing(error)) continue; return true; }
                 try {
                   const copied = await copy.readHeader(); validateJournalHeader(copied);
-                  if (copied.id !== entry.handleId || copied.journalId !== entry.journalId || copied.ownershipSchemaVersion !== 2 || !same(copied.hostAuthority, authority)) return true;
+                  if (copied.id !== entry.handleId || copied.journalId !== entry.journalId || copied.hostAuthority === undefined || !same(copied.hostAuthority, authority)) return true;
                 } catch { return true; } finally { await copy.close(); }
               }
             } catch { return true; } finally { await reader.close(); }
@@ -340,7 +328,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           if (!scope || !scope.has(id)) {
             let header; try { header = await reader.readHeader({ allowIncomplete: true }); validateJournalHeader(header); }
             catch { continue; }
-            if (header?.ownershipSchemaVersion !== 2) continue;
+            if (header?.hostAuthority === undefined) continue;
             if (scope && (!unreadableOwners || !same(header.hostAuthority.rootId, unreadableOwners.rootId)
               || !unknownKeys.has(createHash("sha256").update("mono-agent-history-v1\0").update(header.hostAuthority.historyBucket).digest("hex")))) continue;
           }

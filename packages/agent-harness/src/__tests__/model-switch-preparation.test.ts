@@ -54,7 +54,7 @@ async function setup(long = false, checkpoint = false) {
   const incoming = producer(), outgoing = producer("A"), state = createPreparedModelSwitchState({ source, historyBucket: bucket, journal: captured.source, incoming: incoming.snapshot,
     native, targetEpoch: "5".repeat(64), reservation: f.state.reservation, timestamp: 17, messageId: "initial-message", outputReserve: 2000 });
   const advance = (extra: Partial<Parameters<typeof advancePreparedModelSwitch>[0]> = {}) => advancePreparedModelSwitch({ preparation: prep, native,
-    incoming, state, view: captured.view, messageId: "initial-message", exclusiveWriters: true, outgoing: async () => outgoing, ...extra });
+    incoming, state, view: captured.view, messageId: "initial-message", outgoing: async () => outgoing, ...extra });
   return { ...f, prep, native, captured, source, incoming, outgoing, state, advance };
 }
 const sourceRetained = (f: Awaited<ReturnType<typeof setup>>) => readFile(f.nativePath).then(() => true, () => false);
@@ -122,9 +122,9 @@ it("reports pending after two calls, restart never rebills, and a new explicit d
   expect((await f.prep.read()).source).toMatchObject({ fromModelKey: "faux:A" });
   await f.prep.abort();
   const reopened = openStore(f.base).store, prep = await reopened.beginProviderSessionPreparation(bucket, "restarted-message");
-  expect(await recoverPreparedModelSwitch(prep, { exclusiveWriters: true })).toEqual({ status: "pending", switchId: f.state.identity.switchId });
+  expect(await recoverPreparedModelSwitch(prep)).toEqual({ status: "pending", switchId: f.state.identity.switchId });
   const request = { preparation: prep, native: f.native, incoming, state: f.state, view: f.captured.view,
-    messageId: "initial-message", exclusiveWriters: true as const, outgoing: async () => outgoing };
+    messageId: "initial-message", outgoing: async () => outgoing };
   expect((await advancePreparedModelSwitch(request)).status).toBe("pending");
   expect(outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(incoming.produceHandoffSummary).toHaveBeenCalledTimes(1);
   expect((await advancePreparedModelSwitch({ ...request, messageId: "next-explicit-message" })).status).toBe("pending");
@@ -144,7 +144,7 @@ it("an exception after durable outgoing admission stays unknown on restart, with
   const prep = await openStore(f.base).store.beginProviderSessionPreparation(bucket, "after-loss");
   const outgoing = vi.fn(async () => producer("A"));
   const result = await advancePreparedModelSwitch({ preparation: prep, native: f.native, incoming: f.incoming, state: f.state,
-    view: f.captured.view, messageId: "initial-message", exclusiveWriters: true, outgoing });
+    view: f.captured.view, messageId: "initial-message", outgoing });
   expect(result.status).toBe("ready"); expect(outgoing).not.toHaveBeenCalled(); expect(f.incoming.produceHandoffSummary).toHaveBeenCalledTimes(1);
   await prep.abort();
 });
@@ -157,7 +157,6 @@ it("rejects unfit mandatory history before intent or billing; unsupported owners
   expect((await f.advance({ state })).status).toBe("budget_failure");
   expect((await f.prep.read()).pending).toBeUndefined(); expect(f.outgoing.produceHandoffSummary).not.toHaveBeenCalled();
   expect(await readdir(join(f.base, "history"))).not.toContain(".model-switches");
-  await expect(f.advance({ exclusiveWriters: false as never })).rejects.toThrow("acknowledged");
   await expect(f.advance({ view: { ...f.captured.view, segments: [] } })).rejects.toThrow("coverage");
   const wrong = producer("C"); await expect(f.advance({ incoming: wrong })).rejects.toThrow("recorded target");
   await f.prep.abort();
@@ -179,9 +178,9 @@ it("storage-only recovery rolls forward an artifact lost after acceptance, with 
   await expect(f.advance()).rejects.toThrow("publication interruption"); roll.mockRestore();
   expect((await f.prep.read()).pending!.phase).toBe("ready"); await f.prep.abort();
   const prep = await openStore(f.base).store.beginProviderSessionPreparation(bucket, "recovery-request-for-A");
-  const result = await recoverPreparedModelSwitch(prep, { exclusiveWriters: true }); expect(result.status).toBe("ready");
+  const result = await recoverPreparedModelSwitch(prep); expect(result.status).toBe("ready");
   expect((await prep.read()).source).toMatchObject({ fromModelKey: "faux:B" });
-  expect(await recoverPreparedModelSwitch(prep, { exclusiveWriters: true })).toEqual(result);
+  expect(await recoverPreparedModelSwitch(prep)).toEqual(result);
   expect(await sourceRetained(f)).toBe(false);
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
   await prep.abort();
@@ -251,7 +250,7 @@ it("recovers exact accepted content when artifact fsync preceded a lost ready-st
   const bytes = await readFile(join(f.base, "history", ".model-switches", name));
   await f.prep.abort();
   const prep = await openStore(f.base).store.beginProviderSessionPreparation(bucket, "cache-recovery");
-  const recovered = await recoverPreparedModelSwitch(prep, { exclusiveWriters: true }); expect(recovered.status).toBe("ready");
+  const recovered = await recoverPreparedModelSwitch(prep); expect(recovered.status).toBe("ready");
   expect(await readFile(join(f.base, "history", ".model-switches", name))).toEqual(bytes);
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
   await prep.abort();
@@ -279,7 +278,7 @@ it("a new explicit message after a crashed producer gets its own generation befo
     return { status: "summary_rejected", reason: "malformed_summary" };
   });
   const request = { preparation: prep, native: f.native, incoming, state: f.state, view: f.captured.view,
-    messageId: "new-explicit", exclusiveWriters: true as const, outgoing: async () => outgoing };
+    messageId: "new-explicit", outgoing: async () => outgoing };
   expect((await advancePreparedModelSwitch(request)).status).toBe("pending");
   const active = (await prep.read()).pending!;
   expect(active.attempts).toHaveLength(3); expect(active.attempts[0]).toMatchObject({ generation: 0, outcome: "started" });
@@ -298,7 +297,6 @@ it("redelivery of an older generation cannot spend a newer generation's unused p
   expect((await f.advance()).status).toBe("pending");
   expect((await f.prep.read()).pending).toEqual(before);
   expect(f.outgoing.produceHandoffSummary).not.toHaveBeenCalled(); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
-  await expect(recoverPreparedModelSwitch(f.prep, { exclusiveWriters: false } as never)).rejects.toThrow("acknowledged");
   await f.prep.abort();
 });
 

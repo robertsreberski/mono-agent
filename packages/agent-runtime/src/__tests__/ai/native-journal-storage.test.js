@@ -11,7 +11,7 @@ import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { createManagedNativeJournalStorage, NativeEvidenceCapacityError, MAX_CAPTURE_BYTES } from "../../ai/providers/pi-native/native-journal-storage.js";
 const roots = [], repos = [];
-const authority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const from = { provider: "openai", api: "responses", model: "gpt-5.5", account: null };
 // One deterministic guarded epoch: a switch target or a same-model cold rotation.
 const context = { hostAuthority: authority, assertOwned: async () => {}, timestamp: 17, targetHandleId: "4".repeat(64) };
@@ -45,7 +45,7 @@ it("creates the exact initialized guarded epoch idempotently, without copied con
   await f.bridge.createEpoch(context); const target = (await f.repo.listOwned()).find((m) => m.id === context.targetHandleId);
   const bytes = await readFile(target.path); await f.bridge.createEpoch(context); expect(await readFile(target.path)).toEqual(bytes);
   const rows = bytes.toString().trim().split("\n").map((line) => JSON.parse(line));
-  expect(rows[0]).toMatchObject({ ownershipSchemaVersion: 2, hostAuthority: authority }); expect(rows.slice(1)).toHaveLength(4);
+  expect(rows[0]).toMatchObject({ ownershipSchemaVersion: 1, hostAuthority: authority }); expect(rows.slice(1)).toHaveLength(4);
   expect(rows.filter((r) => r.kind === "message")).toHaveLength(0);
   expect(await readFile(f.metadata.path)).toEqual(f.before);
   expect((await f.bridge.inventory()).bytes).toBe(bytes.length); expect((await f.bridge.inventory()).stagedBytes).toBe(0);
@@ -116,7 +116,7 @@ it.each([
   const frozen = await bridge.freeze({ epoch: "9".repeat(64), handleId: metadata.id, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket });
   expect(frozen.provenance).toEqual({ ...from, account: expected });
 });
-it("handle lookup skips unrelated entries; an unattributable damaged journal blocks only a missing verdict", async () => {
+it("deterministic lookup ignores misnamed damage, including when the requested journal is missing", async () => {
   const f = await fixture(), present = { handleId: f.metadata.id }, absent = { handleId: "a".repeat(64) };
   await writeFile(join(f.repo.directory, ".DS_Store"), "fictional", { mode: 0o600 });
   await writeFile(join(f.repo.directory, "notes.txt~"), "fictional", { mode: 0o644 });
@@ -128,7 +128,7 @@ it("handle lookup skips unrelated entries; an unattributable damaged journal blo
   for (const bytes of ["", "{not json\n"]) {
     await writeFile(foreign, bytes, { mode: 0o600 });
     expect(await f.bridge.inspectCurrentJournal(present)).toEqual({ status: "present" });
-    expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "unreadable", reason: "unattributed" });
+    expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
     expect(await readFile(foreign, "utf8")).toBe(bytes);
   }
   // A readable header for another handle is unrelated evidence and never blocks.

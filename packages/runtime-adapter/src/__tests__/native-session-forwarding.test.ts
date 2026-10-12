@@ -5,16 +5,15 @@ const prepared = vi.hoisted(() => ({ snapshot: Object.freeze({ model: { provider
   produceHandoffSummary: vi.fn(async (_input: unknown) => ({ status: "summary_rejected" as const, reason: "fictional-refusal" })),
   run: vi.fn(async (_binding?: unknown) => ({ text: "Prepared fictional answer" })), close: vi.fn(async () => {}) }));
 const kernel = vi.hoisted(() => ({ run: vi.fn(async (_system: string, _options: Record<string, any>): Promise<import("../types.js").RuntimeResult> => ({ text: "Fictional answer" })),
-  nativePreparedDispatch: "v1" as "v1" | undefined,
   prepareNativeDispatch: vi.fn(async (_system: string, _options: Record<string, any>) => prepared) }));
-beforeEach(() => { vi.clearAllMocks(); kernel.nativePreparedDispatch = "v1"; });
+beforeEach(() => { vi.clearAllMocks(); });
 vi.mock("@mono-agent/agent-runtime", () => ({ createRuntime: () => kernel, createRouterRuntime: () => kernel }));
 import { createMonoRuntime } from "../runtime-adapter.js";
 import type { RuntimeNativeSessionAuthority, RuntimeNativeSessionProjection } from "../types.js";
 const model = { provider: "faux", model: "fixture", reference: "faux:fixture" };
 it.each([false, true])("forwards host native authority/projection unchanged through the facade (routed=%s)", async (routed) => {
   const authority: RuntimeNativeSessionAuthority = { version: 1, currentHandleId: "a".repeat(64), sessionsRoot: "/fictional/native",
-    hostAuthority: { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" }, assertCurrent: vi.fn(async () => {}) };
+    hostAuthority: { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" }, assertCurrent: vi.fn(async () => {}) };
   const projection: RuntimeNativeSessionProjection = { version: 1, artifact: { id: "3".repeat(64), hash: "4".repeat(64) },
     inherited: { messages: [{ role: "user", content: "Fictional retained data" }], coverage: { version: 1, sources: [{ journalId: "retained", sourceTipId: null, sourceSeq: 0, sourceDigest: "5".repeat(64) }] } } };
   const runtime = createMonoRuntime(routed ? { fallbackChain: [{ model }] } : {});
@@ -26,7 +25,7 @@ it.each([false, true])("forwards host native authority/projection unchanged thro
 
 it.each([false, true])("forwards typed native preparation and its exact lease without implicit activation (routed=%s)", async (routed) => {
   const runtime = createMonoRuntime(routed ? { fallbackChain: [{ model }] } : {});
-  expect(runtime.nativePreparedDispatch).toBe("v1"); expect(kernel.prepareNativeDispatch).not.toHaveBeenCalled();
+  expect(runtime.prepareNativeDispatch).toBeTypeOf("function"); expect(kernel.prepareNativeDispatch).not.toHaveBeenCalled();
   const signal = new AbortController().signal;
   const lease = await runtime.prepareNativeDispatch!("Frozen rules", { model, messages: [{ role: "user", content: "Frozen fictional input" }],
     abortSignal: signal, piSessionsRoot: "/fictional/native", sandbox: { fictional: true } } as any);
@@ -43,16 +42,18 @@ it.each([false, true])("forwards typed native preparation and its exact lease wi
   await lease.close(); expect(prepared.close).toHaveBeenCalledTimes(1);
 });
 
-it("refuses method-only preparation and invalid requests without invoking kernel preparation", async () => {
-  kernel.nativePreparedDispatch = undefined;
-  const runtime = createMonoRuntime(); expect(runtime.nativePreparedDispatch).toBeUndefined();
-  const options = { model, messages: [], abortSignal: new AbortController().signal };
-  await expect(runtime.prepareNativeDispatch!("Rules", options)).rejects.toMatchObject({ code: "runtime_backend_unavailable" });
-  await expect(runtime.prepareNativeDispatch!("", options)).rejects.toMatchObject({ code: "invalid_runtime_options" });
-  await expect(runtime.prepareNativeDispatch!("Rules", { ...options, model: { ...model, reference: "wrong" } })).rejects.toMatchObject({ code: "invalid_model_reference" });
-  expect(kernel.prepareNativeDispatch).not.toHaveBeenCalled();
+it("refuses missing preparation methods and invalid requests without invoking kernel preparation", async () => {
+  const prepare = kernel.prepareNativeDispatch;
+  kernel.prepareNativeDispatch = undefined as never;
+  try {
+    const runtime = createMonoRuntime();
+    const options = { model, messages: [], abortSignal: new AbortController().signal };
+    await expect(runtime.prepareNativeDispatch!("Rules", options)).rejects.toMatchObject({ code: "runtime_backend_unavailable" });
+    await expect(runtime.prepareNativeDispatch!("", options)).rejects.toMatchObject({ code: "invalid_runtime_options" });
+    await expect(runtime.prepareNativeDispatch!("Rules", { ...options, model: { ...model, reference: "wrong" } })).rejects.toMatchObject({ code: "invalid_model_reference" });
+    expect(prepare).not.toHaveBeenCalled();
+  } finally { kernel.prepareNativeDispatch = prepare; }
 });
-
 it("forwards Pi dispatch progress without dropping fields", async () => {
   const dispatchProgress = { version: 1 as const, armed: true, toolAdmitted: true, liveInputTaken: true };
   kernel.run.mockResolvedValueOnce({ text: "Fictional result", dispatchProgress });

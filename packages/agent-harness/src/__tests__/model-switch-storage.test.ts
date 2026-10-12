@@ -8,8 +8,8 @@ import { once } from "node:events";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import type { ModelSwitchStorageOwner } from "../model-switch-payloads.js";
 import { createModelSwitchState, admitSummaryAttempt, finishSummaryAttempt, advanceUnfitProducer, authorizeSummaryMessage } from "../model-switch-billing.js";
-import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateTurnHistoryV5 } from "../durable-model-switch-contract.js";
-import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, TurnHistoryV5 } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_FENCE_BYTES, MODEL_SWITCH_DIRECTORY, canonicalSwitchJSON, switchDigest, serializeModelSwitchState, recognizesModelSwitchBinding, validateModelSwitchState, validateNativeTurnHistory } from "../durable-model-switch-contract.js";
+import type { CanonicalJournalDescriptor, ModelSwitchIdentity, ModelSwitchState, NativeTurnHistory } from "../durable-model-switch-contract.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const source: CanonicalJournalDescriptor = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
@@ -38,18 +38,18 @@ async function fixture() {
   return { root, store, state, owner, reservations, adjustments, phases, rootHeld: () => rootHeld };
 }
 
-it("validates canonical v5 single-journal binding and receipts, and refuses pre-release v4/v1 shapes", () => {
-  const value: TurnHistoryV5 = { version: 5, conversationId: source.historyBucket, messages: [], providerSession: { epoch: source.epoch, revision: 2, modelKey: "faux:A" },
-    native: { authority: { version: 1, canonicalVersion: 4, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, projection: null } };
-  expect(() => validateTurnHistoryV5(value, (message) => message as never)).not.toThrow();
+it("validates native canonical binding and receipts and rejects unknown state versions", () => {
+  const value: NativeTurnHistory = { version: 3, conversationId: source.historyBucket, messages: [], providerSession: { epoch: source.epoch, revision: 2, modelKey: "faux:A" },
+    native: { authority: { version: 1, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, projection: null } };
+  expect(() => validateNativeTurnHistory(value, (message) => message as never)).not.toThrow();
   for (const mutation of [
     (copy: any) => { copy.native.chain = [source]; },
     (copy: any) => { copy.native.authority.historyBucket = "foreign"; },
     (copy: any) => { copy.version = 4; },
     (copy: any) => { copy.lastSwitch = { version: 1, kind: "cold", switchId: "1".repeat(64), intentDigest: "1".repeat(64), fromEpoch: "1".repeat(64), toEpoch: "2".repeat(64), artifact: null, messageDigest: "3".repeat(64) }; },
     (copy: any) => { copy.deliveryKey = "private transport stand-in"; },
-  ]) { const copy = structuredClone(value); mutation(copy); expect(() => validateTurnHistoryV5(copy, (message) => message as never)).toThrow(); }
-  expect(() => validateModelSwitchState({ ...initial(), version: 1 })).toThrow("unsupported pre-release switch format; reset");
+  ]) { const copy = structuredClone(value); mutation(copy); expect(() => validateNativeTurnHistory(copy, (message) => message as never)).toThrow(); }
+  expect(() => validateModelSwitchState({ ...initial(), version: 999 })).toThrow("Invalid model-switch storage contract");
 });
 
 it("binds switch identity to source revision/tips/target provenance and frozen budget", () => {
@@ -228,10 +228,10 @@ it("stores an actual P3a checkpoint proposal, including optional ledger fields, 
 
 it("recognizes a switch binding independently of later cold epochs and projection references", () => {
   const state = initial();
-  const record: TurnHistoryV5 = { version: 5, conversationId: source.historyBucket, messages: [], providerSession: { epoch: "9".repeat(64), revision: 0, modelKey: "faux:B" },
-    native: { authority: { version: 1, canonicalVersion: 4, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, projection: null },
+  const record: NativeTurnHistory = { version: 3, conversationId: source.historyBucket, messages: [], providerSession: { epoch: "9".repeat(64), revision: 0, modelKey: "faux:B" },
+    native: { authority: { version: 1, rootId: "7".repeat(64), authorityId: "8".repeat(64), ownerKey: source.ownerKey, historyBucket: source.historyBucket }, projection: null },
     lastSwitch: { version: 1, switchId: state.identity.switchId, intentDigest: switchDigest(state.identity), fromEpoch: source.epoch, toEpoch: state.identity.targetEpoch, artifact: { id: "a".repeat(64), hash: "a".repeat(64) } } };
-  expect(() => validateTurnHistoryV5(record, (message) => message as never)).not.toThrow();
+  expect(() => validateNativeTurnHistory(record, (message) => message as never)).not.toThrow();
   expect(recognizesModelSwitchBinding(record, state.identity)).toBe(true);
   expect(() => recognizesModelSwitchBinding({ ...record, lastSwitch: { ...record.lastSwitch!, intentDigest: "b".repeat(64) } }, state.identity)).toThrow("conflicts");
 });
@@ -305,7 +305,7 @@ it("keeps the referenced generation on pre-fence failures and preserves unrecogn
 it("returns absent inventory before root validation and follows win32 permission exemptions", async () => {
   const { root, store, state, owner } = await fixture();
   const rootCheck = vi.spyOn(store as any, "assertRoot").mockRejectedValue(new Error("Root check must not run for absent storage"));
-  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [], refused: [], damaged: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
+  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [], damaged: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
   finally { rootCheck.mockRestore(); }
   await store.begin(state, owner);
   const directory = join(root, MODEL_SWITCH_DIRECTORY), before = await store.inventory();

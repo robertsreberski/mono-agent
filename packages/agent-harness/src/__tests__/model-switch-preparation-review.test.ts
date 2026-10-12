@@ -41,7 +41,7 @@ async function setup() {
   const state = createPreparedModelSwitchState({ source, historyBucket: bucket, journal: captured.source, incoming: incoming.snapshot, native: f.native,
     targetEpoch: "5".repeat(64), reservation: f.state.reservation, timestamp: 17, messageId: "channel:conversation:delivery:001", outputReserve: 2000 });
   const input = { preparation: prep, native: f.native, incoming, outgoing: async () => outgoing, state, view: captured.view,
-    messageId: "channel:conversation:delivery:001", exclusiveWriters: true as const };
+    messageId: "channel:conversation:delivery:001", };
   return { ...f, store, prep, captured, source, incoming, outgoing, state, input };
 }
 /** The outgoing journal is retired once the canonical receipt is durable. */
@@ -55,12 +55,12 @@ it.each(["recover", "advance"])("%s rolls forward first after switch_canonical_r
   const snapshot = await f.prep.read(); expect(snapshot.pending?.phase).toBe("ready"); expect(snapshot.source).toMatchObject({ fromModelKey: "faux:B" });
   const begin = vi.spyOn(f.prep, "beginModelSwitchStorage").mockRejectedValue(new Error("Must not re-begin old source"));
   const otherIncoming = producer("C"), outgoing = vi.fn(async () => producer("B"));
-  const result = entry === "recover" ? await recoverPreparedModelSwitch(f.prep, { exclusiveWriters: true })
+  const result = entry === "recover" ? await recoverPreparedModelSwitch(f.prep)
     : await advancePreparedModelSwitch({ ...f.input, incoming: otherIncoming, outgoing, messageId: "next-message-asks-for-C", view: { ...f.captured.view, segments: [] } });
   expect(result).toMatchObject({ status: "ready", modelKey: "faux:B", switchId: f.state.identity.switchId });
   expect(begin).not.toHaveBeenCalled(); expect(outgoing).not.toHaveBeenCalled(); expect(otherIncoming.produceHandoffSummary).not.toHaveBeenCalled();
   expect((await f.prep.read()).pending).toBeUndefined(); expect(await retired(f.nativePath)).toBe(true);
-  expect(await recoverPreparedModelSwitch(f.prep, { exclusiveWriters: true })).toEqual(result);
+  expect(await recoverPreparedModelSwitch(f.prep)).toEqual(result);
   await f.prep.abort();
 });
 
@@ -70,14 +70,14 @@ it("outgoing close and diagnostic failures cannot mask a committed result; lastS
   const onCleanupError = vi.fn(() => { throw new Error("Fictional diagnostic failure"); });
   const result = await advancePreparedModelSwitch({ ...f.input, onCleanupError }); expect(result.status).toBe("ready");
   expect(onCleanupError).toHaveBeenCalledWith(error); expect((await f.prep.read()).pending).toBeUndefined();
-  expect(await recoverPreparedModelSwitch(f.prep, { exclusiveWriters: true })).toEqual(result);
+  expect(await recoverPreparedModelSwitch(f.prep)).toEqual(result);
   expect(await advancePreparedModelSwitch(f.input)).toEqual(result);
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(await retired(f.nativePath)).toBe(true);
   await f.prep.abort();
   const reopened = createDurableHistoryStore({ root: join(f.base, "history"), nativeJournalStorage: f.native,
     retireProviderSession: async () => { throw new Error("Preserve committed chain"); } });
   const restarted = await reopened.beginProviderSessionPreparation(bucket, "receipt-recovery");
-  try { expect(await recoverPreparedModelSwitch(restarted, { exclusiveWriters: true })).toEqual(result); }
+  try { expect(await recoverPreparedModelSwitch(restarted)).toEqual(result); }
   finally { await restarted.abort(); }
 });
 
@@ -151,7 +151,7 @@ it("incoming prepared execution commits through the real native P2 inspector, re
     // No outgoing producer and no prior structured summary: the incoming model summarizes (one billed call).
     faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify(summary))])]);
     const ready = await advancePreparedModelSwitch({ preparation: prep, native: f.native, incoming, state, view: captured.view,
-      messageId: "channel:conversation:delivery:real", exclusiveWriters: true });
+      messageId: "channel:conversation:delivery:real", });
     if (ready.status !== "ready") throw new Error("Expected ready switch");
     faux.setResponses([fauxAssistantMessage([fauxText("Fictional inspected reply")])]);
     const result = await runPreparedModelSwitch({ preparation: prep, incoming, ready, sessionsRoot: nativeRoot,
@@ -163,7 +163,7 @@ it("incoming prepared execution commits through the real native P2 inspector, re
       { role: "assistant", content: result.text!, runId: "real-incoming-turn", timestamp: "2000-01-01T00:00:01.000Z" }], { providerSessionSynced: true })).commit();
     expect(inspect).toHaveBeenCalled(); expect(observations).toEqual(expect.arrayContaining([expect.objectContaining({ status: "matched", outcome: "completed" })]));
     const canonical = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-    expect(canonical.lastCommit.turnId).toBe("real-incoming-turn"); expect(canonical.providerSession.revision).toBe(1); expect(canonical.version).toBe(5);
+    expect(canonical.lastCommit.turnId).toBe("real-incoming-turn"); expect(canonical.providerSession.revision).toBe(1); expect(canonical.version).toBe(3);
     expect(await retired(f.nativePath)).toBe(true); expect(await store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
     expect(transport).toHaveBeenCalledTimes(2);
   } finally { await incoming.close(); await turn?.abort(); await prep.abort(); }

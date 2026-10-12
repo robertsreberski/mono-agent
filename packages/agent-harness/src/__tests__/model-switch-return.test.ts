@@ -26,7 +26,7 @@ async function setup(api = provenance.api) {
   const f = await fixture(root, bucket, dispatchProvenance);
   // Bootstrap the A -> B boundary, then one intervening B turn. No real
   // credentials/provider calls: later evidence uses exact journals.
-  await ready(f, { summary: firstSummary }); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true });
+  await ready(f, { summary: firstSummary }); await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { });
   const store = createDurableHistoryStore({ root: join(root, "history"), nativeJournalStorage: f.native,
     reconcileProviderSessionTurn: async () => ({ status: "absent" }),
     retireProviderSession: async () => { throw new Error("Predecessors must not be deleted"); } });
@@ -55,7 +55,7 @@ async function setup(api = provenance.api) {
   const outgoing = { ...incoming, snapshot: { ...incoming.snapshot, model: { ...incoming.snapshot.model, id: "B" }, provenance: { ...dispatchProvenance, model: "B" } },
     produceHandoffSummary: vi.fn(async () => ({ status: "ready" as const, summary })) };
   const advance = () => advancePreparedModelSwitch({ preparation: prep, native, incoming, state, view: captured.view,
-    messageId: "persisted-return-delivery", exclusiveWriters: true, outgoing: async () => outgoing });
+    messageId: "persisted-return-delivery", outgoing: async () => outgoing });
   return { ...f, store, prep, native, captured, incoming, outgoing, state, advance };
 }
 const switchStates = async (base: string, switchId: string) => {
@@ -76,10 +76,10 @@ it("B -> A takes the outgoing structured summary with intervening B work, never 
   // The producer saw the inherited prior handoff; the new artifact does not nest it.
   expect(JSON.stringify((f.outgoing.produceHandoffSummary.mock.calls as unknown[][])[0]![0])).toContain("Fictional source fact summarized at A -> B");
   expect(JSON.stringify(cached.artifact)).not.toContain("Fictional source fact summarized");
-  const record = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(record.version).toBe(5);
+  const record = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(record.version).toBe(3);
   expect(await readdir(join(f.base, "native", "mono-v2", "journals"))).toHaveLength(1);
   expect(record.providerSession.modelKey).toBe("faux:A"); expect(record.lastSwitch.artifact).toEqual(result.artifact);
-  expect(await recoverPreparedModelSwitch(f.prep, { exclusiveWriters: true })).toEqual(result);
+  expect(await recoverPreparedModelSwitch(f.prep)).toEqual(result);
   let binding: HarnessPreparedBinding | undefined;
   const incoming = { ...f.incoming, run: async (resolve: () => Promise<HarnessPreparedBinding>) => { binding = await resolve(); return { text: "Fictional incoming reply" }; } } as unknown as PreparedHarnessRuntime;
   let admitted: any;
@@ -121,11 +121,11 @@ it("recovers accepted structured bytes after a lost ready pointer without any fu
   await expect(f.advance()).rejects.toThrow("ready interruption");
   expect((await f.prep.read()).pending?.phase).toBe("outgoing"); await f.prep.abort();
   const prep = await f.store.beginProviderSessionPreparation(bucket, "fictional-return-recovery");
-  const result = await recoverPreparedModelSwitch(prep, { exclusiveWriters: true }); expect(result.status).toBe("ready");
+  const result = await recoverPreparedModelSwitch(prep); expect(result.status).toBe("ready");
   if (result.status !== "ready") throw new Error("Expected ready");
   expect((await prep.readHandoff(result.switchId, result.artifact)).artifact).toMatchObject({ producer: "outgoing", summary });
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce(); expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled();
-  expect(await recoverPreparedModelSwitch(prep, { exclusiveWriters: true })).toEqual(result); await prep.abort();
+  expect(await recoverPreparedModelSwitch(prep)).toEqual(result); await prep.abort();
 });
 
 it("actually dispatches and reconciles the inherited structured handoff on same-model reopening", async () => {

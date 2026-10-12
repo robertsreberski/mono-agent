@@ -739,7 +739,6 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
 
     if (options.nativeSessionProjection) {
       runState.session.setInheritedProjection(options.nativeSessionProjection.inherited);
-      runState.session.rawSession.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: options.nativeSessionAuthority.hostAuthority });
     }
     // Seed prior transcript (everything before the trailing user turn) into the
     // harness-owned session. On a true resume the session already holds the

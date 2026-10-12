@@ -16,14 +16,14 @@ import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
 const roots = [];
 afterEach(async () => { await refreshProviderSession(handle); for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });
 const handle = "a".repeat(64);
-const hostAuthority = { version: 1, canonicalVersion: 4, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
+const hostAuthority = { version: /** @type {1} */ (1), rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const coverage = { version: 1, sources: [{ journalId: "retained-A", sourceTipId: "frozen-tip", sourceSeq: 7, sourceDigest: "3".repeat(64) }] };
 const inherited = { messages: [{ role: "user", content: "Historical handoff: Morgan chose amber; approval remains read-only; unknown effect requires checking.", timestamp: 1 }], coverage };
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "native-projection-")); roots.push(root);
   const faux = fauxProvider({ provider: "faux", models: [{ id: "projection", contextWindow: 100000, maxTokens: 4096 }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider); const model = faux.getModel();
-  const assertCurrent = vi.fn(async () => {});
+  const assertCurrent = vi.fn(async (_request) => {});
   const options = (turn = 1, extra = {}) => ({ model: { provider: model.provider, model: model.id, reference: `${model.provider}:${model.id}` },
     piResolvedModel: model, piResolvedModels: models, effort: "none", allowedTools: [],
     sessionId: handle, providerSessionId: handle, sessionKeepAlive: true, piSessionsRoot: root,
@@ -37,7 +37,7 @@ async function setup() {
 async function journal(root) {
   const directory = join(root, "mono-v2/journals");
   const name = (await readdir(directory)).find((name) => name.endsWith(".jsonl"));
-  return (await readFile(join(directory, name), "utf8")).trim().split("\n").map(JSON.parse);
+  return (await readFile(join(directory, name), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 }
 
 it("creates only an authorized current guarded handle and dispatches inherited + current delta on true warm/cold resumes without seeding copies", async () => {
@@ -58,7 +58,7 @@ it("creates only an authorized current guarded handle and dispatches inherited +
     if (index > 0) expect(wire).toContain(`reply-${index}`);
   }
   const records = await journal(f.root);
-  expect(records[0]).toMatchObject({ ownershipSchemaVersion: 2, hostAuthority });
+  expect(records[0]).toMatchObject({ ownershipSchemaVersion: 1, hostAuthority });
   expect(JSON.stringify(records)).not.toContain("Morgan chose amber");
   expect(records.filter((record) => record.kind === "message" && record.payload.message.role === "user")).toHaveLength(3);
   expect(f.assertCurrent.mock.calls.some(([request]) => request.action === "create")).toBe(true);
@@ -106,7 +106,6 @@ it("checks fitting normalized dispatch and pins the frozen output reserve", asyn
 it("compacts the composed view, records inherited coverage and reopens without duplicating its prefix", async () => {
   const f = await setup(), repo = new JsonlSessionRepo({ sessionsRoot: f.root });
   let raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
-  raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   const session = createPiSessionAdapter(raw); session.setInheritedProjection(inherited);
   const driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [], inheritedProjection: inherited });
   let seen;
@@ -119,7 +118,7 @@ it("compacts the composed view, records inherited coverage and reopens without d
   const context = await session.buildContext(); expect(context.messages).toHaveLength(1); expect(context.messages[0].role).toBe("compactionSummary");
   await driver.close();
   const records = await journal(f.root), checkpoint = records.find((record) => record.kind === "compaction");
-  expect(checkpoint.schemaVersion).toBe(3); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage);
+  expect(checkpoint.schemaVersion).toBe(2); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage);
   raw = await repo.open((await repo.list())[0]);
   const reopened = createPiSessionAdapter(raw); reopened.setInheritedProjection(inherited);
   expect((await reopened.buildContext()).messages).toEqual(context.messages);
@@ -130,7 +129,6 @@ it("compacts the composed view, records inherited coverage and reopens without d
 
 it("refuses a composed cut retaining predecessor envelopes rather than copying them into current evidence", async () => {
   const f = await setup(), repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
-  raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   const session = createPiSessionAdapter(raw); session.setInheritedProjection(inherited);
   const driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [], inheritedProjection: inherited });
   driver.on("session_before_compact", () => ({ compaction: { summary: "Cannot consume prefix", tokensBefore: 100, retainedTail: inherited.messages } }));
@@ -151,7 +149,6 @@ it("denies current-handle creation before publishing a guarded header", async ()
 it("the real default guarded hook summarizes the entire large inherited prefix with a small current delta, then compacts a later turn normally", async () => {
   const f = await setup(), repo = new JsonlSessionRepo({ sessionsRoot: f.root });
   const raw = await repo.create({ id: handle, hostAuthority, assertOwned: async () => {} });
-  raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   const prefix = { ...inherited, messages: [{ role: "user", content: "inherited-prefix " + "x".repeat(120000), timestamp: 1 }] };
   const session = createPiSessionAdapter(raw); session.setInheritedProjection(prefix);
   await raw.appendMessage({ role: "user", content: "small-current-delta", timestamp: 2 });
@@ -160,7 +157,7 @@ it("the real default guarded hook summarizes the entire large inherited prefix w
   f.faux.setResponses([summary, fauxAssistantMessage([fauxText("growth-one reply")]), fauxAssistantMessage([fauxText("growth-two reply")]), summary]);
   const driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [], inheritedProjection: prefix });
   const policy = { keepRecentTokens: 20000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 1 };
-  const compact = () => tryCompact(driver, { trigger: "manual", model: "faux:projection", session, policy, runtimeWarnings: [] });
+  const compact = () => tryCompact(driver, { onEvent: undefined, onCompactionRecorded: undefined, runId: undefined, trigger: "manual", model: "faux:projection", session, policy, runtimeWarnings: [] });
   expect(await compact()).toMatchObject({ applied: true, reduced: true });
   expect(summaries).toHaveLength(1); expect(summaries[0]).toContain("inherited-prefix");
   const first = (await journal(f.root)).find((record) => record.kind === "compaction");
@@ -187,7 +184,7 @@ it.each(["omitted", "id", "hash", "coverage", "messages"])("durably binds the ac
   expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull();
   await refreshProviderSession(handle);
   const records = await journal(f.root), bound = records.find((record) => record.kind === "turn_start" && record.payload.projectionBinding);
-  expect(bound.schemaVersion).toBe(3);
+  expect(bound.schemaVersion).toBe(2);
   expect(bound.payload.projectionBinding).toMatchObject({ version: 1, artifact: f.options().nativeSessionProjection.artifact, coverage });
   expect(bound.payload.projectionBinding.messageDigest).toMatch(/^[a-f0-9]{64}$/);
   // A fresh repository scan, not only the runtime's warm state, reconstructs binding.
@@ -208,7 +205,6 @@ it("permits projection omission after a composed checkpoint and validates suppli
   const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("after checkpoint")])]);
   expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
   const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.open((await repo.list())[0]);
-  raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
   await raw.appendCompaction({ summary: "Accepted inherited context was consumed", tokensBefore: 100, retainedTail: [] }, coverage,
     { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
   const omitted = f.options(2); delete omitted.nativeSessionProjection;
@@ -258,22 +254,20 @@ it.each([false, true])("carries composed coverage through omitted-projection com
   f.faux.setResponses([fauxAssistantMessage([fauxText("initial reply")]), fauxAssistantMessage([fauxText("growth one")]), fauxAssistantMessage([fauxText("growth two")]), summary, final]);
   expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
   const repo = new JsonlSessionRepo({ sessionsRoot: f.root });
-  let raw = await repo.open((await repo.list())[0]); raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
-  await raw.appendCompaction({ summary: "Inherited work consumed", tokensBefore: 100, retainedTail: [] }, coverage, { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
+  let raw = await repo.open((await repo.list())[0]); await raw.appendCompaction({ summary: "Inherited work consumed", tokensBefore: 100, retainedTail: [] }, coverage, { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
   for (const turn of [2, 3]) {
     const opts = f.options(turn); delete opts.nativeSessionProjection;
     opts.messages = [{ role: "user", content: `growth-${turn} ` + "x".repeat(80000) }];
     expect((await generatePiNativeResponse("Rules", opts)).error).toBeNull();
   }
   await refreshProviderSession(handle);
-  raw = await repo.open((await repo.list())[0]); raw.enableVersion3Writes({ exclusiveWriters: true, hostAuthority });
-  const session = createPiSessionAdapter(raw), driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [] });
-  expect(await tryCompact(driver, { trigger: "manual", model: "faux:projection", session,
+  raw = await repo.open((await repo.list())[0]); const session = createPiSessionAdapter(raw), driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [] });
+  expect(await tryCompact(driver, { onEvent: undefined, onCompactionRecorded: undefined, runId: undefined, trigger: "manual", model: "faux:projection", session,
     policy: { keepRecentTokens: 20000, summaryMaxTokens: 2000, compactionMinSavingsTokens: 1 }, runtimeWarnings: [] })).toMatchObject({ applied: true, reduced: true });
   expect(summary).toHaveBeenCalledOnce(); await driver.close();
   const checkpoints = (await journal(f.root)).filter((record) => record.kind === "compaction");
   expect(checkpoints).toHaveLength(2);
-  for (const checkpoint of checkpoints) { expect(checkpoint.schemaVersion).toBe(3); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage); }
+  for (const checkpoint of checkpoints) { expect(checkpoint.schemaVersion).toBe(2); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage); }
   await refreshProviderSession(handle);
   const reopened = f.options(4); if (!restore) delete reopened.nativeSessionProjection;
   const result = await generatePiNativeResponse("Rules", reopened);
@@ -311,6 +305,7 @@ it.each([discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupS
     const reservation = { release: vi.fn() };
     await cleanup({ preserveTurnEvidence: true, session: raw, sessionEntry: { repo, metadata }, reservation,
       hasBaselineLeaf: true, baselineLeafId: "fictional-previous-leaf" },
+    // @ts-expect-error Cleanup variants intentionally receive a common superset context.
     { durableRepo: repo, options: { sessionKeepAlive: true }, requestedSessionId: handle, providerSessionId: handle,
       externalAbort: true, errorMessage: "Fictional poisoned transcript", onEvent: vi.fn() });
     expect(close).toHaveBeenCalledTimes(1); expect(reservation.release).toHaveBeenCalledTimes(1);

@@ -494,7 +494,7 @@ function configuredSandboxEngine(
 
 // Explicit ownership boundary: new runtime/prepared methods require disposition.
 const ownedRuntimeKeys = {
-  nativePreparedDispatch: true, prepareNativeDispatch: true, run: true,
+  run: true, prepareNativeDispatch: true,
   configureTools: true, syncSession: true, sessionTurnReconciliation: true,
   reconcileSessionTurn: true, recoverSession: true, refreshSession: true,
   // Deliberately omitted: switch dispatch does not need default-path salvage.
@@ -602,7 +602,6 @@ export function wrapOwnedConfiguredRuntime(
       try { return await runtime.run(systemPrompt, secured.effectiveOptions); }
       finally { secured.release(); }
     },
-    ...(runtime.nativePreparedDispatch === undefined ? {} : { nativePreparedDispatch: runtime.nativePreparedDispatch }),
     ...(runtime.prepareNativeDispatch === undefined ? {} : {
       async prepareNativeDispatch(systemPrompt: string, runOptions: RuntimeRunOptions) {
         const secured = await secureOptions(runOptions);
@@ -1166,7 +1165,7 @@ async function createConfiguredAgentHarnessInternal(
   // The acknowledgement is a distinct operator statement, never inferred from
   // runtime methods/capabilities. Storage authority remains lazy and owner-held.
   const nativeModelSwitch = switchConfig?.enabled === true
-    ? { exclusiveWriters: true as const, native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
+    ? { native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
     : undefined;
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());

@@ -13,3 +13,5 @@ export { digestTurnInput, createTurnBinding, selectTurnInterruptionAccounts, rea
 
 export { createEvidenceView, evidenceDigest } from "./evidence-view.js";
 export { HANDOFF_POLICY, HANDOFF_SUMMARY_FIELDS, estimateHandoffTokens, createHandoffBudget, checkHandoffDispatch, validateHandoffSummary, renderHandoffMessage, buildOpenWorkLedger, prepareHandoff, buildHandoff } from "./handoff.js";
+
+export { managedJournalId } from "./managed-journal.js";

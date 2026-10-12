@@ -44,7 +44,7 @@ async function fixture() {
     // Publication fixture owns no model/tool; store mutation itself acquires real owners.
     const pointer = await payloads.publish(payload, { assertOwned: async () => undefined, reserve: async () => undefined });
     const coordinates = pendingCoordinates(identity), path = join(root, ".locks", `${coordinates.conversationKey}.dirty.json`);
-    if (withFence) await writeFile(path, serializeDurableTurnFence({ version: 5, kind: purpose, ...coordinates,
+    if (withFence) await writeFile(path, serializeDurableTurnFence({ version: 6, kind: purpose, ...coordinates,
       logicalConversationKey: pendingCoordinates({ historyBucket: identity.ownerKey, turnId }).conversationKey,
       epoch: hash, providerSessionId: hash, modelKey, revision: 0, payload: pointer }), { mode: 0o600 });
     return { coordinates, path, pointer };
@@ -63,7 +63,7 @@ it.each(["execution", "compaction"] as const)("explicit physical reset removes e
   const sibling = await f.publish("fictional-sibling", "fictional-sibling-turn");
   f.retireProviderSession.mockImplementation(async () => {
     // The reset intent is durable and explicitly non-adoptable before deletion.
-    expect(JSON.parse(await readFile(pending.path, "utf8"))).toMatchObject({ version: 5, kind: "retirement" });
+    expect(JSON.parse(await readFile(pending.path, "utf8"))).toMatchObject({ version: 6, kind: "retirement" });
     expect(JSON.parse(await readFile(pending.path, "utf8"))).not.toHaveProperty("payload");
     expect((await f.payloads.list()).filter((entry) => entry.conversationKey === pending.coordinates.conversationKey)).toHaveLength(3);
   });

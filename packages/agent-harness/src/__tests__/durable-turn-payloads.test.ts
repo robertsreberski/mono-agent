@@ -130,7 +130,7 @@ it.each(["execution", "compaction"] as const)("preserves a new %s fence against 
   await history.append(value.identity.historyBucket, [{ role: "user", content: "Fictional prior canonical history." }]); const pointer = await store.publish(value, owner);
   const coordinates = pendingCoordinates(value.identity), path = join(root, ".locks", `${coordinates.conversationKey}.dirty.json`);
   const logicalConversationKey = coordinates.conversationKey;
-  const bytes = serializeDurableTurnFence({ version: 5, kind, conversationKey: coordinates.conversationKey, logicalConversationKey, epoch: "a".repeat(64), providerSessionId: "b".repeat(64), modelKey: value.identity.modelKey, revision: 0, runIdDigest: coordinates.runIdDigest, payload: pointer });
+  const bytes = serializeDurableTurnFence({ version: 6, kind, conversationKey: coordinates.conversationKey, logicalConversationKey, epoch: "a".repeat(64), providerSessionId: "b".repeat(64), modelKey: value.identity.modelKey, revision: 0, runIdDigest: coordinates.runIdDigest, payload: pointer });
   await writeFile(path, bytes, { mode: 0o600 }); const count = retired.mock.calls.length;
   expect(await history.load(value.identity.historyBucket)).toMatchObject([{ content: "Fictional prior canonical history." }]); expect(await readFile(path)).toEqual(bytes); expect(retired).toHaveBeenCalledTimes(count);
   await expect(history.beginProviderSessionTurn(value.identity.historyBucket, "new-turn", { modelKey: value.identity.modelKey })).rejects.toThrow("owner-held reconciliation");

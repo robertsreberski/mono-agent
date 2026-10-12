@@ -45,7 +45,7 @@ function checkPreparedFit(snapshot: RuntimeNativeDispatchSnapshot, budget: Runti
   return undefined;
 }
 
-// Account metadata in earlier v5 roots remains readable, but never selects auth
+// Optional recorded account metadata never selects auth
 // or gates a structured transfer. Only the resolved model must match.
 function sameTarget(a: RuntimeNativeDispatchSnapshot["provenance"], b: unknown): boolean {
   return !!b && typeof b === "object" && "provider" in b && "api" in b && "model" in b
@@ -94,7 +94,7 @@ async function current(lease: ManagedModelSwitchStorageLease): Promise<ModelSwit
   const stored = await lease.read(); if (!stored) throw new Error("Prepared switch intent disappeared"); return stored.state;
 }
 async function ready(preparation: ManagedProviderSessionPreparation, state: { readonly identity: Pick<ModelSwitchState["identity"], "switchId" | "toModelKey"> }, artifact: HandoffReference): Promise<PreparedSwitchResult> {
-  const result = await preparation.rollForwardModelSwitch(state.identity.switchId, { exclusiveWriters: true });
+  const result = await preparation.rollForwardModelSwitch(state.identity.switchId, { });
   if (result.status !== "committed") throw new Error("Accepted switch did not publish a ready binding");
   const snapshot = await preparation.read();
   if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== state.identity.toModelKey
@@ -107,8 +107,7 @@ async function ready(preparation: ManagedProviderSessionPreparation, state: { re
 
 /** Storage-only restart entry. No producer, message authorization or incoming P2.
  * Always finish the recorded transition, irrespective of the next requested model. */
-export async function recoverPreparedModelSwitch(preparation: ManagedProviderSessionPreparation, acknowledgement: { readonly exclusiveWriters: true }): Promise<PreparedSwitchResult | { readonly status: "absent" }> {
-  if (acknowledgement?.exclusiveWriters !== true) throw new Error("Switch recovery requires acknowledged exclusive upgraded writers");
+export async function recoverPreparedModelSwitch(preparation: ManagedProviderSessionPreparation): Promise<PreparedSwitchResult | { readonly status: "absent" }> {
   const snapshot = await preparation.read();
   if (!snapshot.pending) {
     const receipt = snapshot.lastSwitch;
@@ -142,7 +141,7 @@ export async function advancePreparedModelSwitch(input: {
   readonly view: RuntimeNativeEvidenceView;
   /** Durable host delivery identity, never run ID or text hash; see explicitSwitchMessageDigest. */
   readonly messageId: string;
-  readonly exclusiveWriters: true;
+
   /** Resolve the outgoing owner with ordinary provider auth, no tools or router. */
   readonly outgoing?: (() => Promise<PreparedSwitchProducer | undefined>) | undefined;
   /** Diagnostic only. Cleanup rejection (including from this callback) never
@@ -151,11 +150,10 @@ export async function advancePreparedModelSwitch(input: {
   /** Refuse an uncompactable inherited prefix BEFORE accepting any artifact. */
   readonly checkInheritedPrefix?: (messages: readonly Readonly<Record<string, unknown>>[]) => Promise<RuntimeHandoffFit>;
 }): Promise<PreparedSwitchResult> {
-  if (input.exclusiveWriters !== true) throw new Error("Prepared switch requires acknowledged exclusive upgraded writers");
   const snapshot = await input.preparation.read();
   if (snapshot.pending?.phase === "ready") return await ready(input.preparation, snapshot.pending, snapshot.pending.artifact!);
   if (!snapshot.pending && snapshot.lastSwitch?.switchId === input.state.identity.switchId) {
-    const recovered = await recoverPreparedModelSwitch(input.preparation, { exclusiveWriters: true });
+    const recovered = await recoverPreparedModelSwitch(input.preparation);
     if (recovered.status === "ready") return recovered;
     throw new Error("Recorded switch is no longer the current ready transition");
   }
@@ -163,7 +161,7 @@ export async function advancePreparedModelSwitch(input: {
     // Accepted bytes can precede a lost ready-state pointer. Recover them before
     // remeasuring the new message: accepted transitions roll forward even when
     // the next request cannot fit or asks for another model.
-    const recovered = await recoverPreparedModelSwitch(input.preparation, { exclusiveWriters: true });
+    const recovered = await recoverPreparedModelSwitch(input.preparation);
     if (recovered.status === "ready") return recovered;
   }
   const messageDigest = explicitSwitchMessageDigest(input.messageId);

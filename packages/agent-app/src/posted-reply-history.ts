@@ -97,13 +97,10 @@ void forwardedResponderKeys;
 // Review every history capability when the shared store contract grows: this
 // decorator must preserve durable provider-session operations even for non-Slack turns.
 const forwardedHistoryKeys = {
-  providerSessionPreparation: true,
   beginProviderSessionPreparation: true,
   providerSessionReconciliation: true,
   recoverProviderSessionTurn: true,
   drainPendingProviderSessionTurns: true,
-  providerSessionRecovery: true,
-  providerSessionModelBinding: true,
   providerSessionRetirement: true,
   contextImport: true,
   load: true,
@@ -126,13 +123,10 @@ function wrapHistoryStore(
   const providerSessionRetirement = store.providerSessionRetirement;
   const contextImport = store.contextImport;
   return {
-    ...(store.providerSessionPreparation === undefined ? {} : { providerSessionPreparation: store.providerSessionPreparation }),
     ...(store.beginProviderSessionPreparation === undefined ? {} : { beginProviderSessionPreparation: store.beginProviderSessionPreparation.bind(store) }),
     ...(store.providerSessionReconciliation === undefined ? {} : { providerSessionReconciliation: store.providerSessionReconciliation }),
     ...(store.drainPendingProviderSessionTurns === undefined ? {} : { drainPendingProviderSessionTurns: store.drainPendingProviderSessionTurns.bind(store) }),
     ...(store.recoverProviderSessionTurn === undefined ? {} : { recoverProviderSessionTurn: store.recoverProviderSessionTurn.bind(store) }),
-    ...(store.providerSessionRecovery === undefined ? {} : { providerSessionRecovery: store.providerSessionRecovery }),
-    ...(store.providerSessionModelBinding === undefined ? {} : { providerSessionModelBinding: store.providerSessionModelBinding }),
     ...(providerSessionRetirement === undefined
       ? {}
       : { providerSessionRetirement }),

@@ -19,7 +19,7 @@ function runOptions(model, overrides = {}) {
     piResolvedModel: model, piResolvedModels: fauxModels, effort: "none", allowedTools: [], ...overrides };
 }
 
-it.each(["list", "catalogue"])("refuses cold reopen when the native %s throws", async (method) => {
+it.each(["find"])("refuses cold reopen when the native %s throws", async (method) => {
   const model = setup();
   const root = mkdtempSync(join(tmpdir(), "catalogue-failure-"));
   const repo = resolveDurableNativeSessionRepo(root);

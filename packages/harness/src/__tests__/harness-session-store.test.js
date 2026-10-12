@@ -116,7 +116,7 @@ describe("mono-agent harness session store", () => {
     const pending = s.appendMessage(message);
     const commit = s.sync().then(() => order.push("host-history-commit"));
     await vi.waitFor(() => expect(order).toEqual(["append"]));
-    release(); await pending; await commit;
+    /** @type {any} */ (release)?.(); await pending; await commit;
     expect(order).toEqual(["append", "file+directory-sync", "host-history-commit"]);
     await s.close();
   });
@@ -180,7 +180,7 @@ it("completes short writes instead of publishing a partial record", async () => 
   const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
   const original = prototype.write;
   const spy = vi.spyOn(prototype, "write").mockImplementationOnce(function (buffer, offset, length, position) {
-    return original.call(this, buffer, offset, Math.min(7, length), position);
+    return original.call(this, buffer, offset, Math.min(7, Number(length)), position);
   });
   try { await session.appendMessage(message); expect(spy.mock.calls.length).toBeGreaterThan(1); }
   finally { spy.mockRestore(); await session.close(); }
@@ -192,7 +192,7 @@ it("poisons ENOSPC writes, releases ownership on close, and fsync-repairs only t
   const fd = await open(session.metadata.path, "r"); const prototype = Object.getPrototypeOf(fd); await fd.close();
   const original = prototype.write;
   const spy = vi.spyOn(prototype, "write").mockImplementationOnce(async function (buffer, offset, length, position) {
-    await original.call(this, buffer, offset, Math.min(7, length), position);
+    await original.call(this, buffer, offset, Math.min(7, Number(length)), position);
     throw Object.assign(new Error("Fictional no space"), { code: "ENOSPC" });
   });
   try {
@@ -247,7 +247,7 @@ it("retires a local writer only after draining storage and holds its lock until 
   const append = session.io.append; session.io.append = async (text) => { started(); await gate; return append(text); };
   const pending = session.appendMessage(message); await admitted;
   const retired = repo.retire(session.metadata); expect(await stat(session.metadata.path)).toBeTruthy();
-  release(); await pending; await retired;
+  /** @type {any} */ (release)?.(); await pending; await retired;
   await expect(stat(session.metadata.path)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(session.appendMessage(message)).rejects.toThrow("retired");
   expect((await readdir(join(r, "mono-v2", "locks"))).length).toBe(2);
@@ -268,7 +268,7 @@ it("waits for foreign writer ownership before retirement and reclaims its releas
     const locks = await repo.locksPromise; const original = locks.tryLock.bind(locks);
     let signal; const blocked = new Promise((resolve) => { signal = resolve; });
     spy = vi.spyOn(locks, "tryLock").mockImplementation(async (path) => {
-      const result = await original(path); if (!result && path.endsWith(`${session.metadata.journalId}.sqlite`)) signal(); return result;
+      const result = await original(path); if (!result && String(path).endsWith(`${session.metadata.journalId}.sqlite`)) signal(); return result;
     });
     const retirement = repo.retire(session.metadata); await blocked;
     expect(await stat(session.metadata.path)).toBeTruthy();
@@ -380,13 +380,13 @@ it.each(["stage_created", "stage_synced"].flatMap((phase) => ["native", "legacy"
   if (next === "native") resumed = await repo.create({ id: "fixture-session" });
   else { await fixture(r, 4); resumed = await repo.open((await listLegacySessions(r)).sessions[0]); expect(await resumed.getEntries()).toHaveLength(2); }
   await resumed.close(); await expect(stat(join(directory, abandoned))).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(resumed.metadata.journalId).toBe(journalId); expect((await stat(lock)).isFile()).toBe(true);
   expect((await repo.list()).map((metadata) => metadata.id)).toEqual(["fixture-session"]);
 });
 
 it("does not reclaim a native creation whose writer is still held", async () => {
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const locks = await repo.ensureDirectory();
-  const journalId = "11111111-2222-4333-8444-555555555555"; const writer = await locks.acquireWriter(journalId);
+  const journalId = (await import("../managed-journal.js")).managedJournalId("fictional-held-creation"); const writer = await locks.acquireWriter(journalId);
   const path = join(r, "mono-v2", "journals", `${journalId}.jsonl.creating`);
   try {
     await writeFile(path, "", { mode: 0o600 }); expect(await repo.list()).toEqual([]);
@@ -419,13 +419,13 @@ it("ignores stray entries and skips unattributed damaged journal-named files wit
   const damagedHeader = JSON.parse((await readFile(kept.metadata.path, "utf8")).split("\n")[0]);
   await writeFile(join(journals, "44444444-4444-4444-8444-444444444444.jsonl"), `${JSON.stringify({ ...damagedHeader, id: "fictional-damaged", format: "fictional" })}\n`, { mode: 0o600 });
   expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-kept", "fictional-retired"]);
-  expect((await repo.catalogue()).unattributed.map((entry) => entry.id ?? null).sort()).toEqual(["fictional-damaged", null, null, null]);
+  expect((await repo.catalogue()).unattributed.map((entry) => entry.id ?? null).sort()).toEqual([null, null, null, null]);
   const reopened = await repo.open((await repo.list()).find((m) => m.id === "fictional-kept")); await reopened.close();
   await (await repo.create({ id: "fictional-new" })).close();
   await repo.retireByHandle("fictional-retired"); await repo.retireByHandle("fictional-absent");
-  await expect(repo.retireByHandle("fictional-damaged")).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
-  await expect(repo.create({ id: "fictional-damaged" })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
-  expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-kept", "fictional-new"]);
+  await repo.retireByHandle("fictional-damaged");
+  await (await repo.create({ id: "fictional-damaged" })).close();
+  expect((await repo.list()).map((m) => m.id).sort()).toEqual(["fictional-damaged", "fictional-kept", "fictional-new"]);
   for (const [name, text] of Object.entries(strays)) expect(await readFile(join(journals, name), "utf8")).toBe(text);
   expect((await stat(join(journals, "scratch"))).isDirectory()).toBe(true);
   expect((await stat(join(journals, "44444444-4444-4444-8444-444444444444.jsonl"))).isFile()).toBe(true);

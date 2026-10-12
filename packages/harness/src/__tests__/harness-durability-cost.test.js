@@ -1,11 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 const meter = vi.hoisted(() => ({ enabled: false, journal: 0, directory: 0, lock: 0, reads: 0 }));
 vi.mock("node:fs/promises", async (original) => {
-  const fs = await original();
+  const fs = /** @type {typeof import("node:fs/promises")} */ (await original());
   return { ...fs, open: async (...args) => {
-    const handle = await fs.open(...args); const path = String(args[0]);
+    const handle = await fs.open(.../** @type {Parameters<typeof fs.open>} */ (args)); const path = String(args[0]);
     const sync = handle.sync.bind(handle), read = handle.read.bind(handle);
-    handle.sync = async (...rest) => { if (meter.enabled) meter[path.includes(".jsonl") ? "journal" : path.endsWith(".sqlite") ? "lock" : "directory"] += 1; return sync(...rest); };
+    handle.sync = async (...rest) => { if (meter.enabled) meter[path.includes(".jsonl") ? "journal" : String(path).endsWith(".sqlite") ? "lock" : "directory"] += 1; return sync(...rest); };
     handle.read = async (...rest) => { if (meter.enabled && path.includes(".jsonl")) meter.reads += 1; return read(...rest); };
     return handle;
   } };
@@ -51,7 +51,7 @@ it("keeps all nine tool-turn file barriers but zero repeated directory fsyncs or
 it("only reuses a warm index for the exact unchanged inode/version/header, and sees another writer's tail", async () => {
   const { repo, raw, root } = await fixture(); await raw.appendMessage({ role: "user", content: "Fictional original." }); await raw.sync(); const metadata = raw.metadata; await raw.close();
   const scan = vi.spyOn(JournalReader.prototype, "scan");
-  await expect(repo.open({ ...metadata, id: "wrong-handle" })).rejects.toThrow(); expect(scan).toHaveBeenCalledTimes(1);
+  await expect(repo.open({ ...metadata, id: "wrong-handle" })).rejects.toThrow(); expect(scan).not.toHaveBeenCalled();
   const first = await repo.open(metadata); await first.close(); scan.mockClear();
   const other = new JsonlSessionRepo({ sessionsRoot: root }); const writer = await other.open(metadata);
   await writer.appendMessage({ role: "user", content: "Fictional other-process tail." }); await writer.sync(); await writer.close(); scan.mockClear();
@@ -88,9 +88,9 @@ it("serializes verified cache batches against legitimate queued appends instead 
   const { raw } = await fixture(); await raw.appendMessage({ role: "user", content: "Fictional prefix." }); await raw.sync();
   const verify = raw.io.verify; let entered, release, once = true;
   const waiting = new Promise((resolve) => { entered = resolve; }); const gate = new Promise((resolve) => { release = resolve; });
-  raw.io.verify = async () => { if (once) { once = false; entered(); await gate; } return verify(); };
+  raw.io.verify = async () => { if (once) { once = false; entered?.(); await gate; } return verify(); };
   const read = raw.getEntries(); await waiting; const seq = raw.seq; const append = raw.appendMessage({ role: "user", content: "Fictional concurrent tail." });
-  await new Promise((resolve) => setImmediate(resolve)); expect(raw.seq).toBe(seq); release();
+  await new Promise((resolve) => setImmediate(resolve)); expect(raw.seq).toBe(seq); /** @type {any} */ (release)?.();
   expect((await read).map((entry) => entry.message.content)).toEqual(["Fictional prefix."]); await append;
   expect((await raw.getEntries()).at(-1).message.content).toBe("Fictional concurrent tail."); expect(raw.failure).toBeNull(); await raw.close();
 });

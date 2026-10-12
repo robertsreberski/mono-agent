@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Freeze harness storage formats and deterministic journal identities. The first
+  durable turn after upgrading writes `mono-v2` journals, `.pending-turns` and
+  the new canonical history format. This is a one-way upgrade: older binaries
+  must not run against that root; rollback requires restoring a backup.
+
 - Avoid announcing provider failover when cancellation settles during history load.
 - Keep one file-operation list when reusing a split-turn compaction summary.
 - Treat empty Pi request-retry budgets as unset, retaining the default retries.
@@ -34,10 +39,7 @@
   receipt, with no epoch chain. A switch creates the target journal, publishes
   the binding, handoff and receipt, then retires the outgoing journal. Every
   model change, including capacity or lost-journal cases, needs a structured
-  summary; there is no summary-less model change. Development roots from
-  earlier pre-release builds refuse with `unsupported pre-release switch
-  format; reset` and are never migrated; reset them with
-  `mono-agent restart --clear-sessions`.
+  summary; there is no summary-less model change.
 
 - Use the structured handoff for every opt-in Web model change, including a
   return to an earlier model: outgoing summary, then the previously validated

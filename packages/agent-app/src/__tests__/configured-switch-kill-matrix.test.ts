@@ -11,7 +11,7 @@ afterEach(cleanupRoots);
 
 /** One current journal, no model-change framing and the outgoing journal retired. */
 function expectSwitched(report: Report, before: Report, model: string): void {
-  expect(report.canonical.version).toBe(5); expect(report.canonical.providerSession.modelKey).toBe(`faux:${model}`);
+  expect(report.canonical.version).toBe(3); expect(report.canonical.providerSession.modelKey).toBe(`faux:${model}`);
   expect(report.modelChanges).toBe(0); expect(Object.keys(report.journals)).toHaveLength(1);
   for (const name of Object.keys(before.journals)) expect(report.journals[name]).toBeUndefined();
   expect(report.switchStates).toHaveLength(1); expect(report.artifacts).toHaveLength(1); // one durable handoff

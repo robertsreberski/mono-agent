@@ -240,7 +240,7 @@ export class MonoAgentHarness implements AgentHarness {
       ...(typeof compactionOptions?.model === "string" ? { metadata: { web: { model: compactionOptions.model } } } : {}),
     }, this.options.model);
     const modelKey = modelReferenceKey(requestedModel);
-    const bound = historyStore.providerSessionModelBinding === "v1";
+    const bound = typeof historyStore.readProviderSessionBinding === "function";
     if (modelKey !== sessionModelKey(this.options.model) && (!bound
       // A default local endpoint cannot serve an override without the host's
       // model-only resolver (the ordinary turn extension owns this block).
@@ -864,7 +864,7 @@ export class MonoAgentHarness implements AgentHarness {
       let skipReason: TerminalRecoverySkipReason | undefined;
       if (providerHistoryOwnershipTransferred) skipReason = "history_ownership_transferred";
       else if (providerHistoryTurn === undefined) skipReason = "history_not_coordinated";
-      else if (this.options.historyStore?.providerSessionRecovery !== "v1") skipReason = "store_capability";
+      else if (this.options.historyStore?.readProviderSessionBinding === undefined) skipReason = "store_capability";
       else if (!coordinatedProviderAttemptEligibleForSync) skipReason = "attempt_not_coordinated";
       else if (typeof recoveryRuntime.recoverSession !== "function") skipReason = "runtime_unsupported";
       else if (toolHistoryError !== undefined) skipReason = "tool_history_finalize_failed";
@@ -1183,7 +1183,7 @@ export class MonoAgentHarness implements AgentHarness {
         && this.options.piSessionsRoot !== undefined
         && historyStore?.providerSessionRetirement === "fail-closed"
         && beginProviderSessionTurn !== undefined
-        && (historyStore?.providerSessionModelBinding === "v1"
+        && (historyStore?.readProviderSessionBinding !== undefined
           || requestedModelKey === sessionModelKey(this.options.model));
       if (durableProviderSessionsEnabled) {
         const sessionOwner = this.runtimeForSession(requestedModelKey);
@@ -1211,7 +1211,7 @@ export class MonoAgentHarness implements AgentHarness {
             }
           }
           providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
-            ...(historyStore?.providerSessionModelBinding === "v1" ? [{ modelKey: requestedModelKey,
+            ...(historyStore?.readProviderSessionBinding !== undefined ? [{ modelKey: requestedModelKey,
               ...(this.nativeModelSwitch ? { unpreparedNativeDispatch: true as const } : {}),
               ...(reconcileTurn ? { reconciliation: { purpose: "execution" as const,
                 ownerKey: this.options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
@@ -1224,7 +1224,7 @@ export class MonoAgentHarness implements AgentHarness {
             message: "The previous turn was interrupted and accounted without replay; this explicit new message starts a new turn." });
           if (providerHistoryTurn.historySetAside) emit({ type: "runtime_warning", warning_kind: "conversation_history_set_aside",
             message: "This conversation's history could not be read and was set aside unchanged; the conversation continues from empty history." });
-          if (historyStore?.providerSessionModelBinding === "v1" && providerHistoryTurn.modelKey !== requestedModelKey) {
+          if (historyStore?.readProviderSessionBinding !== undefined && providerHistoryTurn.modelKey !== requestedModelKey) {
             throw new AgentHarnessError("provider_session_model_binding_mismatch",
               "Durable history did not acknowledge the requested session model binding.");
           }
@@ -1420,7 +1420,7 @@ export class MonoAgentHarness implements AgentHarness {
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession, reconciliation: p2Turn,
             ...(exclusiveCapturedHistory === undefined ? {} : { detachedHistoryOverride: exclusiveCapturedHistory }),
             ...(coordinatedProviderAttemptEligibleForSync ? { turnRevision: coordinatedProviderSessionRevision } : {}),
-            ...(this.options.historyStore?.providerSessionRecovery === "v1" && coordinatedProviderAttemptEligibleForSync
+            ...(this.options.historyStore?.readProviderSessionBinding !== undefined && coordinatedProviderAttemptEligibleForSync
               ? { recoveryRevision: coordinatedProviderSessionRevision } : {}),
             onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,

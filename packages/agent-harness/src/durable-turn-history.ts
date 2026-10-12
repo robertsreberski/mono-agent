@@ -5,6 +5,8 @@ import type { DurableTurnReceipt } from "./durable-turn-contract.js";
 
 /** Canonical P2b replacement; old v1/v2 readers reject the version explicitly. */
 export interface TurnHistoryV3 {
+  readonly native?: never;
+  readonly lastSwitch?: never;
   readonly version: 3;
   readonly conversationId: string;
   readonly messages: readonly HistoryMessage[];

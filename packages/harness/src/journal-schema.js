@@ -19,12 +19,12 @@ export function digestTurnInput(content) {
 export function validateJournalHeader(header) {
   requireValue(object(header) && header.format === JOURNAL_FORMAT && header.version === JOURNAL_VERSION
     && id(header.journalId) && /^[A-Za-z0-9_-]+$/.test(header.journalId)
-    && [1, 2].includes(header.ownershipSchemaVersion) && header.ownership?.kind === "unbound"
+    && header.ownershipSchemaVersion === 1 && header.ownership?.kind === "unbound"
     && id(header.initialHandle?.id) && header.id === header.initialHandle.id
     && typeof header.cwd === "string" && time(header.createdAt));
-  if (header.ownershipSchemaVersion === 2) {
+  if (header.hostAuthority !== undefined) {
     try { validateHostJournalAuthority(header.hostAuthority); } catch { fail(); }
-  } else requireValue(header.hostAuthority === undefined);
+  }
   if (header.import !== undefined) {
     const info = header.import, source = info?.source, identity = source?.identity;
     requireValue(object(info) && info.version === 1 && /^[a-f0-9]{64}$/.test(info.importId)
@@ -100,14 +100,14 @@ export class JournalValidator {
   }
   /** @param {import('./journal-types.js').JournalEntry} record */
   validate(record) {
-    requireValue(object(record) && (record.schemaVersion === JOURNAL_VERSION || record.schemaVersion === 3 && ["compaction", "model_change", "turn_start"].includes(record.kind))
+    requireValue(object(record) && record.schemaVersion === JOURNAL_VERSION
       && id(record.id) && !this.ids.has(record.id) && record.parentId === this.parentId
       && record.seq === this.seq + 1 && time(record.timestamp) && id(record.turnId)
       && JOURNAL_KINDS.includes(record.kind) && object(record.payload));
     const p = record.payload;
     const turn = this.turns.get(record.turnId);
     if (record.kind === "turn_start") {
-      if (record.schemaVersion === 3) {
+      if (p.projectionBinding !== undefined) {
         const projection = p.projectionBinding;
         requireValue(keys(projection, ["version", "artifact", "coverage", "messageDigest"]) && projection.version === 1 && digest(projection.messageDigest)
           && keys(projection.artifact, ["id", "hash"]) && digest(projection.artifact.id) && digest(projection.artifact.hash)
@@ -117,7 +117,7 @@ export class JournalValidator {
             && id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
           && new Set(projection.coverage.sources.map((s) => s.journalId)).size === projection.coverage.sources.length
           && this.projectionBinding === null);
-      } else requireValue(p.projectionBinding === undefined);
+      }
       requireValue(!turn && this.openTurns.size === 0
         && ["host", "instance", "synthetic"].includes(p.identitySource) && object(p.config)
         && p.baselineTipId === this.tip && record.operationId === undefined);
@@ -185,12 +185,12 @@ export class JournalValidator {
               && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
             && Array.isArray(p.derivedMessages) && Number.isSafeInteger(p.coverageVersion) && p.coverageVersion > 0);
           const checkpoint = p.compaction.checkpoint;
-          if (record.schemaVersion === 3) {
-            const inherited = checkpoint?.inheritedCoverage;
+          if (checkpoint?.inheritedCoverage !== undefined) {
+            const inherited = checkpoint.inheritedCoverage;
             requireValue(inherited?.version === 1 && Array.isArray(inherited.sources)
               && inherited.sources.every((s) => id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
               && new Set(inherited.sources.map((s) => s.journalId)).size === inherited.sources.length);
-          } else requireValue(checkpoint?.inheritedCoverage === undefined);
+          }
           if (checkpoint !== undefined) requireValue(object(checkpoint) && checkpoint.version === 1
             && checkpoint.projectionVersion === 1 && checkpoint.summaryMessage?.role === "compactionSummary"
             && checkpoint.summaryMessage.summary === p.compaction.summary && time(checkpoint.summaryMessage.timestamp)
@@ -233,7 +233,7 @@ export class JournalValidator {
               && (call.cause !== "observed_outcome" || known.result);
           })));
       } else if (record.kind === "model_change") {
-        if (record.schemaVersion === 3) requireValue(keys(p, ["version", "switchId", "from", "to", "source", "checkpointId", "artifactRef"])
+        if (p.artifactRef !== undefined) requireValue(keys(p, ["version", "switchId", "from", "to", "source", "checkpointId", "artifactRef"])
           && p.version === 1 && id(p.switchId) && keys(p.artifactRef, ["id", "hash"]) && id(p.artifactRef.id) && digest(p.artifactRef.hash));
         requireValue(object(p.from) && object(p.to) && typeof p.source === "string"
           && (p.checkpointId === null || this.contextIds.has(p.checkpointId)));

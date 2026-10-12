@@ -66,8 +66,7 @@ it("rejects a different model before any incoming fence or retirement, retaining
 it("borrows authority/switch leases without reacquisition; child release does not release the preparation", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "prepared");
   const original = await markers(join(f.base, "history"));
-  await expect(prep.acquireNativeHistoryAuthority({ exclusiveWriters: false } as never)).rejects.toThrow("exclusive upgraded writers");
-  const authority = await prep.acquireNativeHistoryAuthority({ exclusiveWriters: true });
+  const authority = await prep.acquireNativeHistoryAuthority();
   if (authority.status !== "owned") throw new Error("Expected authority"); await authority.assertOwned(); await authority.release();
   await expect(authority.assertOwned()).rejects.toThrow("released"); await prep.assertOwned();
   const switchLease = await prep.beginModelSwitchStorage(f.state); if (switchLease.status !== "owned") throw new Error("Expected switch lease");
@@ -80,17 +79,17 @@ it("borrows authority/switch leases without reacquisition; child release does no
 
 it("publishes a ready switch and admits B under the original owner without executable predecessor authority", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "prepared");
-  const original = await markers(join(f.base, "history")), authority = await prep.acquireNativeHistoryAuthority({ exclusiveWriters: true });
+  const original = await markers(join(f.base, "history")), authority = await prep.acquireNativeHistoryAuthority();
   const lease = await prep.beginModelSwitchStorage(f.state); if (lease.status !== "owned") throw new Error("Expected switch lease");
   await lease.advanceUnfit(); const reference = await lease.accept(artifact(f));
-  expect(await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
+  expect(await prep.rollForwardModelSwitch(f.state.identity.switchId, { })).toEqual({ status: "committed" });
   const snapshot = await prep.read(); expect(snapshot.native?.projection).toEqual(reference); expect(snapshot.lastSwitch?.artifact).toEqual(reference);
   const turn = await prep.admit({ modelKey: "faux:B" }); expect(turn.modelKey).toBe("faux:B"); expect(turn.providerSessionRevision).toBe(0);
   expect(await markers(join(f.base, "history"))).toEqual(original); await prep.abort(); await turn.assertOwned();
   await expect(lease.read()).rejects.toThrow("no longer owned");
   if (authority.status === "owned") await expect(authority.assertOwned()).rejects.toThrow("no longer owned");
   await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
-  const canonical = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(canonical.native.projection).toEqual(reference); expect(canonical.version).toBe(5);
+  const canonical = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(canonical.native.projection).toEqual(reference); expect(canonical.version).toBe(3);
   expect(await markers(join(f.base, "history"))).toEqual([]);
 });
 
@@ -100,7 +99,7 @@ it("requires canonical ready publication before admission and refuses rotation b
   await lease.advanceUnfit(); await lease.accept(artifact(f));
   await expect(prep.admit({ modelKey: "faux:A" })).rejects.toThrow("pending");
   expect((await prep.read()).source).toMatchObject({ status: "supported", fromModelKey: "faux:A" });
-  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { });
   await expect(prep.admit({ modelKey: "faux:A" })).rejects.toThrow("ready canonical model binding");
   expect((await prep.read()).source).toMatchObject({ status: "supported", fromModelKey: "faux:B" });
   const turn = await prep.admit({ modelKey: "faux:B" }); await turn.abort();
@@ -121,7 +120,7 @@ it("keeps native publication outside the root lock while retaining the prepared 
   try {
     const lease = await prep.beginModelSwitchStorage(f.state); if (lease.status !== "owned") throw new Error("Expected lease");
     await lease.advanceUnfit(); await lease.accept(artifact(f));
-    expect(await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
+    expect(await prep.rollForwardModelSwitch(f.state.identity.switchId, { })).toEqual({ status: "committed" });
     expect(observed).toBe(true); await prep.assertOwned();
   } finally { await prep.abort(); }
 });
@@ -160,7 +159,7 @@ it("admits the existing reconciled P2 fence only after preparation and updates t
   const id = turn.reconciliation!.descriptor.reconciliation!.initialInputId!;
   await turn.reconciliation!.admit(createPendingInitialInput({ id, persistText: "Fictional input", timestamp: "2001-01-01T00:00:00Z" }, "Frozen decorated fictional input"));
   const files = (await readdir(join(path, ".locks"))).filter((name) => name.endsWith(".dirty.json")); expect(files).toHaveLength(1);
-  expect(JSON.parse(await readFile(join(path, ".locks", files[0]!), "utf8")).version).toBe(5);
+  expect(JSON.parse(await readFile(join(path, ".locks", files[0]!), "utf8")).version).toBe(6);
   expect(inspect).not.toHaveBeenCalled(); await prep.abort(); await turn.assertOwned(); await turn.abort();
   expect(await markers(path)).toEqual([]); expect((await readdir(join(path, ".locks"))).filter((name) => name.endsWith(".dirty.json"))).toEqual(files);
 });
@@ -247,7 +246,7 @@ it("reads accepted pending/current artifacts under the same claim without admiss
   (cached.budget as unknown as { inputTokens: number }).inputTokens = 999;
   expect((await prep.readHandoff(f.state.identity.switchId, reference)).budget).toEqual(f.budget);
   await expect(prep.readHandoff(f.state.identity.switchId, { id: "a".repeat(64), hash: "a".repeat(64) })).rejects.toThrow("accepted");
-  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { });
   expect((await prep.readHandoff(f.state.identity.switchId, reference)).budget).toEqual(f.budget); await prep.abort();
   await expect(prep.readHandoff(f.state.identity.switchId, reference)).rejects.toThrow("no longer owned");
 });
@@ -264,7 +263,7 @@ it("rejects changed frozen budget before intent publication and captures complet
 it("captures only the current journal plus the inherited prior handoff, read-only, and exposes typed pure handoff preparation", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "current-only"), lease = await prep.beginModelSwitchStorage(f.state);
   if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
-  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { });
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "B", api: "faux-api", account: "unproven" });
   expect(captured.view.segments).toHaveLength(1); expect(captured.source!.epoch).toBe(f.state.identity.targetEpoch);
   expect(captured.view.prior).toEqual(JSON.parse(JSON.stringify(artifact(f))));
@@ -282,13 +281,12 @@ it("captures only the current journal plus the inherited prior handoff, read-onl
 it("captures and hands off composed checkpoints covering exactly the inherited prior handoff", async () => {
   const f = await fixture(await root()), prep = await f.store.beginProviderSessionPreparation(bucket, "composed"), lease = await prep.beginModelSwitchStorage(f.state);
   if (lease.status !== "owned") throw new Error("Expected switch"); await lease.advanceUnfit(); await lease.accept(artifact(f));
-  await prep.rollForwardModelSwitch(f.state.identity.switchId, { exclusiveWriters: true });
+  await prep.rollForwardModelSwitch(f.state.identity.switchId, { });
   const snapshot = await prep.read(), { createHash } = await import("node:crypto");
   const handleId = createHash("sha256").update("mono-agent-provider-session-v2\0").update(bucket).update("\0").update(f.state.identity.targetEpoch).digest("hex");
   const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
   const metadata = (await repo.list()).find((entry) => entry.id === handleId)!;
-  const current = await repo.open(metadata); current.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: snapshot.native!.authority });
-  await current.appendCompaction({ summary: "Fictional inherited checkpoint", tokensBefore: 10, retainedTail: [] }, { version: 1,
+  const current = await repo.open(metadata); await current.appendCompaction({ summary: "Fictional inherited checkpoint", tokensBefore: 10, retainedTail: [] }, { version: 1,
     sources: [f.state.identity.source!].map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }, { sourceTipId: current.tip, sourceSeq: current.seq });
   await current.sync(); await current.close(); await repo.close();
   const captured = await prep.captureNativeEvidence({ provider: "faux", model: "B", api: "faux-api", account: null });

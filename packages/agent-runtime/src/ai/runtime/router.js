@@ -627,7 +627,6 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
     },
     // Preparation is a primary-only single attempt, never a routed retry or
     // backup. A custom resolver must explicitly certify native ownership.
-    nativePreparedDispatch: resolveAttempt === undefined || sessionTurnReconciliation === "v1" ? "v1" : undefined,
     async prepareNativeDispatch(systemPrompt, options) {
       const primary = entries[0];
       if (resolveAttempt !== undefined && sessionTurnReconciliation !== "v1"
@@ -649,7 +648,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           assertRuntimeLike(resolution.runtime); attemptRuntime = resolution.runtime;
           projectPiRuntimeToolContext(attemptRuntime, capturedTools);
         }
-        if (attemptRuntime.nativePreparedDispatch !== "v1" || !attemptRuntime.prepareNativeDispatch) throw new Error("Native prepared dispatch unavailable");
+        if (!attemptRuntime.prepareNativeDispatch) throw new Error("Native prepared dispatch unavailable");
         const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
         let available = true, producing = false;
         return { snapshot: lease.snapshot,

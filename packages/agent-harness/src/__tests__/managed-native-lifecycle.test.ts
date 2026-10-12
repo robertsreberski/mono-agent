@@ -22,7 +22,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 async function setup(id = bucket) {
   const root = await mkdtemp(join(tmpdir(), "mono-native-lifecycle-")); roots.push(root);
   const f = await fixture(root, id); await ready(f);
-  await f.store.rollForwardModelSwitch(id, f.state.identity.switchId, { exclusiveWriters: true });
+  await f.store.rollForwardModelSwitch(id, f.state.identity.switchId, { });
   const before = JSON.parse(await readFile(f.canonicalPath, "utf8"));
   return { ...f, before };
 }
@@ -30,7 +30,7 @@ it("cold host append publishes an exact current replacement and reference-checks
   const f = await setup();
   await f.store.append(bucket, [{ role: "assistant", content: "Fictional host-only update" }]);
   const after = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-  expect(after.version).toBe(5); expect(after.providerSession.epoch).not.toBe(f.before.providerSession.epoch);
+  expect(after.version).toBe(3); expect(after.providerSession.epoch).not.toBe(f.before.providerSession.epoch);
   expect(after.native).toEqual({ authority: f.before.native.authority, projection: null }); // a cold epoch replays canonical history
   expect(after.lastSwitch).toEqual(f.before.lastSwitch);
   expect(await journalNames(f)).toEqual([`${journalOf(after.providerSession.epoch)}.jsonl`]);
@@ -77,7 +77,7 @@ it("exclusive host mutation and empty-owner context import keep the native autho
   current.messages = []; await writeFile(f.canonicalPath, JSON.stringify(current) + "\n", { mode: 0o600 });
   const imported = await f.store.contextImport!.prepareImport(bucket, { text: "Fictional import", idempotencyKey: "fictional-import", timestamp: "2030-01-01T00:00:00.000Z" });
   expect(imported.result.status).toBe("appended"); await imported.append!.commit();
-  current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.version).toBe(5); expect(current.native.authority).toEqual(f.before.native.authority);
+  current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.version).toBe(3); expect(current.native.authority).toEqual(f.before.native.authority);
   expect(await journalNames(f)).toHaveLength(1);
 });
 it("cleans a resurrected completed switch fence after cold rotation without restoring obsolete B", async () => {
@@ -89,7 +89,7 @@ it("cleans a resurrected completed switch fence after cold rotation without rest
     payload: { generation: stateName.split(".")[2]!, sha256: createHash("sha256").update(stateBytes).digest("hex") } };
   validateModelSwitchFence(fence);
   await writeFile(join(directory, `${switchConversationKey(bucket)}.${f.state.identity.switchId}.fence.json`), boundedSwitchBytes(fence, 1024), { mode: 0o600 });
-  expect(await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true })).toEqual({ status: "committed" });
+  expect(await f.store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { })).toEqual({ status: "committed" });
   expect(await readFile(f.canonicalPath)).toEqual(before); expect(await journalNames(f)).toHaveLength(1);
 });
 it("logical reset deletes the v5 journal and leaves another logical owner untouched", async () => {
@@ -132,7 +132,6 @@ it("two switches keep exactly one current journal and one durable handoff; D cle
   const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
   const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === turn.providerSessionId)!;
   const native = await repo.open(metadata, { repair: false, wait: false });
-  native.enableVersion3Writes({ exclusiveWriters: true, hostAuthority: f.before.native.authority });
   await native.beginTurn("fictional-B-native", {}, "synthetic", undefined); await native.write("owner_binding", { kind: "host", ownerKey: bucket, historyBucket: bucket });
   await native.write("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "B", api: "faux-api" } });
   await native.appendMessage({ role: "user", content: "Fictional intervening B fact", timestamp: 23 }); await native.endTurn("fictional-B-native", "completed");
@@ -146,9 +145,9 @@ it("two switches keep exactly one current journal and one durable handoff; D cle
   const state = createModelSwitchState({ ...identity, sourceCanonicalDigest: source.sourceCanonicalDigest, sourceRevision: source.sourceRevision,
     sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:B", toModelKey: "faux:A", targetEpoch: "d".repeat(64),
     targetProvenance: { provider: "faux", api: "faux-api", model: "A", account: null }, timestamp: 23 }, f.state.reservation);
-  const reference = await ready({ ...f, state }); await f.store.rollForwardModelSwitch(bucket, state.identity.switchId, { exclusiveWriters: true });
+  const reference = await ready({ ...f, state }); await f.store.rollForwardModelSwitch(bucket, state.identity.switchId, { });
   const switched = JSON.parse(await readFile(f.canonicalPath, "utf8"));
-  expect(switched).toMatchObject({ version: 5, providerSession: { epoch: "d".repeat(64), modelKey: "faux:A" }, native: { projection: reference } });
+  expect(switched).toMatchObject({ version: 3, providerSession: { epoch: "d".repeat(64), modelKey: "faux:A" }, native: { projection: reference } });
   expect(await journalNames(f)).toEqual([`${journalOf("d".repeat(64))}.jsonl`]);
   const switches = await readdir(join(f.base, "history", ".model-switches"));
   expect(switches.every((name) => name.includes(state.identity.switchId))).toBe(true); // the first switch's handoff was retired
@@ -193,7 +192,7 @@ it.skipIf(process.platform === "win32").each([
   const first = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 30000 })).stdout);
   const second = JSON.parse((await run(process.execPath, [worker, f.base], { timeout: 30000 })).stdout);
   expect(second).toEqual(first); expect(first.stats.reservedBytes).toBe(0); expect(first.operations).toEqual([]);
-  if (operation === "cold") { expect(first.canonical.version).toBe(5); expect(first.journals).toEqual([`${journalOf(first.canonical.providerSession.epoch)}.jsonl`]); expect(first.canonical.messages.at(-1).content).toBe("Fictional cold update"); }
+  if (operation === "cold") { expect(first.canonical.version).toBe(3); expect(first.journals).toEqual([`${journalOf(first.canonical.providerSession.epoch)}.jsonl`]); expect(first.canonical.messages.at(-1).content).toBe("Fictional cold update"); }
   else { if (operation === "retention") { expect(first.canonical).toBeNull(); expect(first.stats.conversations).toBe(1); }
     else expect(first.canonical.version).toBe(3); expect(first.journals).toEqual([]); expect(first.switches).toEqual([]); }
 }, 60000);
@@ -324,8 +323,7 @@ it.each(["switch_canonical_directory_synced", "switch_source_retired"])("ordinar
   const f = await fixture(root); await ready(f);
   let stopped = false;
   const { store } = openStore(root);
-  await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { exclusiveWriters: true,
-    onPhase: async (phase) => { if (!stopped && phase === boundary) { stopped = true; throw new Error("Interrupted current reference"); } } })).rejects.toThrow("Interrupted current reference");
+  await expect(store.rollForwardModelSwitch(bucket, f.state.identity.switchId, { onPhase: async (phase) => { if (!stopped && phase === boundary) { stopped = true; throw new Error("Interrupted current reference"); } } })).rejects.toThrow("Interrupted current reference");
   const current = JSON.parse(await readFile(f.canonicalPath, "utf8")); expect(current.providerSession.epoch).toBe(f.state.identity.targetEpoch);
   // No administrative rollForwardModelSwitch call: ordinary admission completes
   // the published switch (retire outgoing, clear intent) before its own C.
@@ -424,7 +422,7 @@ it.each([false, true])("keeps markerless ready state fenced without wedging auth
   expect(await store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" });
   expect(await store.drainPendingProviderSessionTurns()).toMatchObject({ settled: 0, busy: 0, unresolved: 0, remaining: false });
   await expect(store.beginProviderSessionTurn(bucket, "fenced-ready", { modelKey: "faux:A" })).rejects.toThrow("pending");
-  const authority = await store.acquireNativeHistoryAuthority(bucket, { exclusiveWriters: true });
+  const authority = await store.acquireNativeHistoryAuthority(bucket);
   expect(authority.status).toBe("owned"); if (authority.status === "owned") await authority.release();
   await expect(store.append(bucket, [{ role: "assistant", content: "Still fenced" }])).rejects.toThrow("pending");
   expect(await readFile(f.nativePath)).toEqual(original); expect(inspect).not.toHaveBeenCalled();
