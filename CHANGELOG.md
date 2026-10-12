@@ -16,6 +16,14 @@
   conversations: aggregate history and staging quotas are checked at commit and
   retention, and the current-journal probe reads only the journal header.
 
+- Treat transiently missing native journals as absence and writer-owned creation
+  stages as busy, while preserving refusal of genuine owner damage.
+
+- Fix new durable conversations being blocked by unowned legacy damage,
+  and avoid false owner damage when obsolete switch state is removed.
+  Reject guarded projection data without journal host authority and native
+  replacements in deletion intents.
+
 - Freeze harness storage formats and deterministic journal identities. The first
   durable turn after upgrading writes `mono-v2` journals, `.pending-turns` and
   the new canonical history format. This is a one-way upgrade: older binaries

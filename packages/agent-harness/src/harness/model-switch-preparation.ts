@@ -100,7 +100,7 @@ async function current(lease: ManagedModelSwitchStorageLease): Promise<ModelSwit
   const stored = await lease.read(); if (!stored) throw new Error("Prepared switch intent disappeared"); return stored.state;
 }
 async function ready(preparation: ManagedProviderSessionPreparation, state: { readonly identity: Pick<ModelSwitchState["identity"], "switchId" | "toModelKey"> }, artifact: HandoffReference): Promise<PreparedSwitchResult> {
-  const result = await preparation.rollForwardModelSwitch(state.identity.switchId, { });
+  const result = await preparation.rollForwardModelSwitch(state.identity.switchId);
   if (result.status !== "committed") throw new Error("Accepted switch did not publish a ready binding");
   const snapshot = await preparation.read();
   if (snapshot.source.status !== "supported" || snapshot.source.fromModelKey !== state.identity.toModelKey
@@ -147,7 +147,6 @@ export async function advancePreparedModelSwitch(input: {
   readonly view: RuntimeNativeEvidenceView;
   /** Durable host delivery identity, never run ID or text hash; see explicitSwitchMessageDigest. */
   readonly messageId: string;
-
   /** Resolve the outgoing owner with ordinary provider auth, no tools or router. */
   readonly outgoing?: (() => Promise<PreparedSwitchProducer | undefined>) | undefined;
   /** Diagnostic only. Cleanup rejection (including from this callback) never

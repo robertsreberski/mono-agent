@@ -769,7 +769,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     if (value.disposition === "C") {
       if (!value.next || value.next.native === undefined || value.next.providerSession.modelKey !== value.source.providerSession.modelKey || switchDigest(this.coldRecord(value.source, value.next)) !== switchDigest(value.next)) throw new TypeError("Native cold plan changed");
-    } else if (value.next && (value.next.version !== 3 || value.next.messages.length || value.next.lastCommit)) throw new TypeError("Invalid native deletion replacement");
+    } else if (value.next && (value.next.version !== 3 || value.next.native !== undefined || value.next.messages.length || value.next.lastCommit)) throw new TypeError("Invalid native deletion replacement");
   }
   private async readNativeOperationBytes(name: string, rootIdentity: DirectoryIdentity): Promise<Buffer> {
     if (!NATIVE_OPERATION_PATTERN.test(name)) throw new TypeError("Invalid native lifecycle filename");

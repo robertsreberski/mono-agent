@@ -218,3 +218,29 @@ for (const phase of ["payload_renamed", "fence_renamed", "fence_directory_synced
     expect((await store.stats()).bytes).toBe(first.bytes); expect(retire).not.toHaveBeenCalled();
   }, 30000);
 }
+
+
+it("ignores ENOENT when obsolete switch state disappears after owner preflight lists it", async () => {
+  const { root, store, state } = await fixture();
+  const lease = await store.beginModelSwitchStorage(state);
+  if (lease.status !== "owned") throw new Error("Expected owned lease");
+  await lease.release();
+  const directory = join(root, MODEL_SWITCH_DIRECTORY);
+  const current = (await readdir(directory)).find((name) => name.endsWith(".state.json"))!;
+  const parts = current.split("."); parts[2] = "0".repeat(32);
+  const obsolete = parts.join(".");
+  await writeFile(join(directory, obsolete), await readFile(join(directory, current)), { mode: 0o600 });
+  const original = (ModelSwitchPayloadStore.prototype as any).readBytes;
+  let removed = false;
+  const spy = vi.spyOn(ModelSwitchPayloadStore.prototype as any, "readBytes").mockImplementation(async function (this: any, name: unknown, limit: unknown) {
+    if (!removed && name === obsolete) {
+      removed = true; await rm(join(root, MODEL_SWITCH_DIRECTORY, name));
+      throw Object.assign(new Error("Fictional concurrent obsolete-state removal"), { code: "ENOENT" });
+    }
+    return original.call(this, name, limit);
+  });
+  try {
+    const preparation = await store.beginProviderSessionPreparation(bucket, "fictional-preflight");
+    await preparation.abort(); expect(removed).toBe(true);
+  } finally { spy.mockRestore(); }
+});

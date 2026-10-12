@@ -488,3 +488,11 @@ it("manual/stale-map P disposal preserves the guarded current journal under the 
     expect(await readFile(path)).toEqual(bytes);
   } finally { await turn.abort(); await runtime.disposeAllSessions?.(); }
 });
+
+
+it("rejects D intents with a native replacement even when the replacement is empty", async () => {
+  const f = await setup();
+  const next = { ...f.before, messages: [] }; delete next.lastCommit;
+  const intent = { version: 3, disposition: "D", timestamp: 0, source: f.before, next };
+  expect(() => (f.store as any).validateNativeOperation(intent)).toThrow("Invalid native deletion replacement");
+});

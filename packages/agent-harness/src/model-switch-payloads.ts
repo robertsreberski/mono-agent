@@ -147,7 +147,16 @@ export class ModelSwitchPayloadStore {
     const damaged = new Set(entries.filter((entry) => entry.damaged).map((entry) => key(entry.name)));
     const isolate = async (name: string, action: () => Promise<void>) => {
       if (damaged.has(key(name))) return;
-      try { await action(); } catch { await this.assertDirectory(directory); damaged.add(key(name)); }
+      try { await action(); } catch (error) {
+        await this.assertDirectory(directory);
+        // Read-only preflight may overlap removal of an obsolete, just-listed
+        // entry. Absence is a changed inventory, not evidence of owner damage.
+        if (missing(error)) {
+          try { await lstat(join(this.directory, name)); }
+          catch (changed) { if (missing(changed)) return; throw changed; }
+        }
+        damaged.add(key(name));
+      }
     };
     // Every final state and artifact (fenced, retained or orphan) must parse and
     // match its filename coordinates; otherwise it is its owner's damage.

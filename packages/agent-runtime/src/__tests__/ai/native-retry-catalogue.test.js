@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -75,4 +75,39 @@ it.each([null, "", "   ", Infinity, "not-a-number"])("treats an unset/invalid di
   }));
   expect(result.text).toBe("Fictional answer");
   expect(requests).toHaveLength(1); expect(requests[0].maxRetries).toBe(2);
+});
+
+
+it("creates a new conversation despite id-less legacy damage", async () => {
+  const model = setup(), root = mkdtempSync(join(tmpdir(), "legacy-unowned-"));
+  const sessionId = "fictional-new-conversation";
+  mkdirSync(join(root, "x"));
+  const stray = join(root, "x", "notes.jsonl"), bytes = '{"type":"fictional-not-pi"}\n';
+  writeFileSync(stray, bytes);
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
+  try {
+    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+      sessionId, piSessionsRoot: root, sessionKeepAlive: true,
+      messages: [{ role: "user", content: "Fictional request" }],
+    }));
+    expect(result.text, result.error).toBe("Fictional answer");
+    expect(faux.state.callCount).toBe(1);
+    expect(await resolveDurableNativeSessionRepo(root).find(sessionId)).toMatchObject({ id: sessionId });
+    expect(readFileSync(stray, "utf8")).toBe(bytes);
+  } finally { await disposeProviderSession(sessionId).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each(["ERR_HARNESS_WRITER_BUSY", "ERR_HARNESS_JOURNAL_UNREADABLE"])("classifies attributed lookup failure %s without creating", async (code) => {
+  const model = setup(), root = mkdtempSync(join(tmpdir(), "lookup-failure-"));
+  const sessionId = "fictional-lookup-owner", repo = resolveDurableNativeSessionRepo(root);
+  vi.spyOn(repo, "find").mockRejectedValue(Object.assign(new Error("Fictional lookup failure"), { code, sessionId }));
+  const create = vi.spyOn(repo, "create");
+  try {
+    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+      sessionId, piSessionsRoot: root, sessionKeepAlive: true,
+      messages: [{ role: "user", content: "Fictional request" }],
+    }));
+    expect(result.failureKind).toBe(code === "ERR_HARNESS_WRITER_BUSY" ? "session_busy" : "native_journal_unreadable");
+    expect(create).not.toHaveBeenCalled(); expect(faux.state.callCount).toBe(0);
+  } finally { await disposeProviderSession(sessionId).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });

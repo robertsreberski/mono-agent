@@ -312,9 +312,9 @@ it("capture streams journals of any physical size; damage or growth between its 
   await expect(f.native.captureEvidence(source, context)).rejects.toThrow("Managed native journal evidence changed or is unavailable");
   await writeFile(f.nativePath, f.original);
   const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"), original = JournalReader.prototype.scan; let passes = 0;
-  const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit, options) {
+  const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit: Parameters<typeof original>[0]) {
     if (++passes === 2) await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
-    return original.call(this, visit, options);
+    return original.call(this, visit);
   });
   await expect(f.native.captureEvidence(source, context)).rejects.toThrow("Managed native journal evidence changed or is unavailable");
   expect(growing).toHaveBeenCalledTimes(2); growing.mockRestore(); await prep.abort();
