@@ -503,17 +503,6 @@ export class JsonlSessionRepo {
   async find(id, context = undefined) {
     if (!safeId(id)) throw new TypeError("Unsafe harness session id");
     const journalId = managedJournalId(id), path = join(this.directory, `${journalId}.jsonl`);
-    if (await absent(path)) {
-      const locks = await this.ensureDirectory();
-      await locks.withCatalog(() => this.#reclaimCreating({ id, journalId }), { signal: contextSignal(context) });
-      const legacy = await listLegacySessions(this.root);
-      this.assertNotDamaged(legacy.unattributed, id);
-      const matches = legacy.sessions.filter((entry) => entry.id === id);
-      if (matches.length > 1) fail();
-      if (matches.length) return matches[0];
-      for (const suffix of [".importing", ".upgrading"]) if (!await absent(path + suffix)) this.assertNotDamaged([{ id }], id);
-      return undefined;
-    }
     try {
       const reader = await JournalReader.open(path, this.root);
       try {
@@ -521,7 +510,25 @@ export class JsonlSessionRepo {
         if (header.id !== id || header.journalId !== journalId) fail();
         await reader.assertIdentity(); return { ...header, path };
       } finally { await reader.close(); }
-    } catch { this.assertNotDamaged([{ id }], id); }
+    } catch (error) {
+      // A path can disappear between lookup and read. Absence is not damage;
+      // creation stages are inspected only under catalogue/writer ownership.
+      if (error?.code !== "ENOENT") this.assertNotDamaged([{ id }], id);
+    }
+    const locks = await this.ensureDirectory();
+    const published = await locks.withCatalog(async () => {
+      await this.#reclaimCreating({ id, journalId });
+      return !await absent(path);
+    }, { signal: contextSignal(context) });
+    // A creator may have published while this missing-path lookup waited.
+    if (published) return this.find(id, context);
+    const legacy = await listLegacySessions(this.root);
+    this.assertNotDamaged(legacy.unattributed, id);
+    const matches = legacy.sessions.filter((entry) => entry.id === id);
+    if (matches.length > 1) fail();
+    if (matches.length) return matches[0];
+    for (const suffix of [".importing", ".upgrading"]) if (!await absent(path + suffix)) this.assertNotDamaged([{ id }], id);
+    return undefined;
   }
   /** `signal` cancels only the writer wait, never a started open/repair. */
   async open(metadata, { repair = true, wait = repair, validateHeader = undefined, signal = undefined } = {}) {
@@ -916,26 +923,29 @@ export class JsonlSessionRepo {
     if (await absent(path)) return;
     const reader = await JournalReader.open(path, this.root);
     try {
-      const header = await reader.readHeader({ allowIncomplete: true });
-      let count = 0; const scan = await reader.scan(() => { count++; });
-      if (header !== undefined) {
-        try { validateJournalHeader(header); this.checkMetadata({ ...header, path }); }
-        catch { this.assertNotDamaged([{ id: metadata.id }], metadata.id); }
-        if (header.hostAuthority !== undefined || count !== 1 || scan.torn) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
-      }
-      await this.#reclaimNativeCreation(reader, metadata);
+      await this.#reclaimNativeCreation(reader, metadata, async () => {
+        // A live writer's stage is not a stable damage/reclamation verdict.
+        const header = await reader.readHeader({ allowIncomplete: true });
+        let count = 0; const scan = await reader.scan(() => { count++; });
+        if (header !== undefined) {
+          try { validateJournalHeader(header); this.checkMetadata({ ...header, path }); }
+          catch { this.assertNotDamaged([{ id: metadata.id }], metadata.id); }
+          if (header.hostAuthority !== undefined || count !== 1 || scan.torn) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
+        }
+      });
       if (!await absent(path)) throw Object.assign(new Error("Harness creation writer is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
     } finally { await reader.close(); }
   }
   // Caller holds catalogue: every native creating->rename transaction holds it
   // too. Try the writer, never wait under catalogue or reclaim a live owner.
-  async #reclaimNativeCreation(reader, metadata) {
+  async #reclaimNativeCreation(reader, metadata, validate = async () => {}) {
     const locks = await this.locksPromise;
     const lockPath = join(locks.directory, `${metadata.journalId}.sqlite`);
     await locks.ensureFile(lockPath);
     const writer = await locks.tryLock(lockPath);
     if (!writer) return;
     try {
+      await validate();
       await reader.assertIdentity(); await unlink(reader.path); await this.syncDirectories();
       if (!await this.journalDataGone(metadata)) return;
       await locks.assertRoot();

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Treat transiently missing native journals as absence and writer-owned creation
+  stages as busy, while preserving refusal of genuine owner damage.
+
 - Fix new durable conversations being blocked by unowned legacy damage,
   and avoid false owner damage when obsolete switch state is removed.
   Reject guarded projection data without journal host authority and native

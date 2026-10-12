@@ -1495,13 +1495,24 @@ describe("pi-native sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-coldcreate-"));
     try {
       // Both calls target the SAME requested id against an EMPTY sessions root, so
-      // each MISSES the registry AND finds no jsonl on disk → both take the
-      // create-on-miss branch. Without the R8 reservation both would create a
-      // durable session under the same id, leaving two transcripts for one logical
-      // id (JsonlSessionRepo names files by `${createdAt}_${id}`, no fs dedup). The
-      // fix reserves a BUSY placeholder synchronously before the create await, so
-      // the loser observes it and returns session_busy — exactly one create.
+      // the first MISSES the registry AND finds no jsonl on disk. R8 reserves a
+      // BUSY placeholder synchronously before the create await; even a second
+      // lookup finishing after publication must return session_busy. Deterministic
+      // journal paths also prevent duplicate files, but must not replace this
+      // runtime busy contract with a storage collision or an idle second turn.
       const derivedId = "concurrent-create-on-miss-id";
+      const repo = resolveDurableNativeSessionRepo(root);
+      assertPresent(repo);
+      const originalFind = repo.find.bind(repo);
+      /** @type {(() => void)|undefined} */ let providerStarted;
+      const started = new Promise((resolve) => { providerStarted = () => resolve(undefined); });
+      let lookups = 0;
+      // Exercise a late cold lookup without a wall-clock delay: it must still
+      // observe the winner's reservation while that provider turn is gated.
+      const findSpy = vi.spyOn(repo, "find").mockImplementation(async (id, context) => {
+        if (++lookups === 2) await started;
+        return originalFind(id, context);
+      });
 
       // Gate the winner mid-run so the session is observably busy (placeholder
       // reserved) while the loser races through the create-on-miss branch. Count
@@ -1511,7 +1522,7 @@ describe("pi-native sessions", () => {
       const gate = new Promise((resolve) => { release = resolve; });
       let invocations = 0;
       faux.setResponses([
-        async () => { invocations += 1; await gate; return fauxAssistantMessage([fauxText("reply-1")]); },
+        async () => { invocations += 1; providerStarted?.(); await gate; return fauxAssistantMessage([fauxText("reply-1")]); },
       ]);
 
       const optionsCreate = runOptions(model, {
@@ -1525,10 +1536,18 @@ describe("pi-native sessions", () => {
       const runA = generatePiNativeResponse("system", optionsCreate);
       const runB = generatePiNativeResponse("system", optionsCreate);
 
-      // Let the winner reserve the busy placeholder and the loser observe it,
-      // then release the gated winning turn.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      /** @type {any} */ (release)?.();
+      // Keep the winner busy until the loser actually settles. A fixed sleep
+      // can release the winner before a slow lookup finishes, turning the loser
+      // into an ordinary idle resume rather than a concurrent-turn refusal.
+      try {
+        const loser = await Promise.race([runA, runB]);
+        expect(loser.failureKind).toBe("session_busy");
+        expect(countJsonlFiles(root)).toBe(1);
+      } finally {
+        /** @type {any} */ (release)?.();
+        await Promise.allSettled([runA, runB]);
+        findSpy.mockRestore();
+      }
       const settled = await Promise.allSettled([runA, runB]);
       expect(settled.every((entry) => entry.status === "fulfilled")).toBe(true);
       const results = settled.map((entry) => { if (entry.status !== "fulfilled") throw entry.reason; return entry.value; });
