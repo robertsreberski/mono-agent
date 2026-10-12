@@ -2087,6 +2087,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let releaseRoot = await this.acquireRootTransaction(rootIdentity);
     const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
     let stage: ActiveStage | undefined;
+    // Settling a reconciled turn releases its own pending payload, so its net
+    // effect on staging is a decrease: the staging quota never blocks it (only
+    // its transient canonical stage can overshoot). Retention still applies.
+    const settles = dirtyFence?.payload !== undefined;
     try {
       await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical, "prepare");
       await this.requireNoModelSwitch(record.conversationId, rootIdentity);
@@ -2094,13 +2098,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (existing.native !== undefined && existing.providerSession?.epoch !== record.providerSession.epoch) {
         this.requireNativeCapability(existing, "native epoch transition", "cold publication");
         const source = this.nativeCanonical(existing), next = this.coldRecord(source, record);
-        const projected = this.projectRecord(next); await this.validateStagingReservation(rootIdentity, projected.bytes);
+        const projected = this.projectRecord(next); if (!settles) await this.validateStagingReservation(rootIdentity, projected.bytes);
         stage = await this.writeStage(next, rootIdentity); await this.validateRetentionReservation(rootIdentity, [stage]);
-        return this.createNativePreparedAppend(stage, { version: 3, disposition: "C", source, next, timestamp: 0 }, held, keepOwner, onSettled);
+        return this.createNativePreparedAppend(stage, { version: 3, disposition: "C", source, next, timestamp: 0 }, held, keepOwner, onSettled, settles);
       }
       record = preserveNativeHistory(existing, record);
       const projected = this.projectRecord(record);
-      await this.validateStagingReservation(rootIdentity, projected.bytes);
+      if (!settles) await this.validateStagingReservation(rootIdentity, projected.bytes);
       // Write while the root transaction is held so another process cannot
       // pass the same staged-byte reservation before this temp becomes visible.
       stage = await this.writeStage(record, rootIdentity);
@@ -2117,15 +2121,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async reserveNativeCold(operation: NativeHistoryOperation, rootIdentity: DirectoryIdentity): Promise<void> {
+  private async reserveNativeCold(operation: NativeHistoryOperation, rootIdentity: DirectoryIdentity, settles = false): Promise<void> {
     const existing = await this.readNativeOperation(operation.source.conversationId, rootIdentity);
     if (existing) { if (switchDigest(existing) !== switchDigest(operation)) throw new Error("Conflicting native cold reservation"); return; }
     const bytes = Buffer.byteLength(JSON.stringify(operation) + "\n");
     const retention = await this.retentionPlan(rootIdentity, [this.projectRecord(operation.next!)]);
     if (retention.minimumBytes + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStoreBytes || retention.minimumCount > this.maxConversations) throw new Error("Native cold history capacity unavailable");
-    if (await this.scanStagedBytes(rootIdentity) + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStagedBytes) throw new Error("Native cold staging capacity unavailable");
+    if (!settles && await this.scanStagedBytes(rootIdentity) + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStagedBytes) throw new Error("Native cold staging capacity unavailable");
   }
-  private createNativePreparedAppend(stage: ActiveStage, operation: NativeHistoryOperation, held: HeldConversation, keepOwner: boolean, onSettled?: () => void): PreparedHistoryAppend {
+  private createNativePreparedAppend(stage: ActiveStage, operation: NativeHistoryOperation, held: HeldConversation, keepOwner: boolean, onSettled?: () => void, settles = false): PreparedHistoryAppend {
     let state: "prepared" | "committed" | "aborted" = "prepared", pending = Promise.resolve();
     const serialize = (action: () => Promise<void>) => { const current = pending.then(action, action); pending = current.catch(() => {}); return current; };
     const release = async () => { if (!keepOwner) { await this.removeActiveMarker(held.marker); await held.release(); onSettled?.(); } };
@@ -2135,7 +2139,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         let unlock = await this.acquireRootTransaction(held.rootIdentity);
         const nativeIo = this.nativeIoOutsideRoot(held.rootIdentity, () => unlock(), (release) => { unlock = release; });
         try {
-          await held.assertOwned(); await this.reserveNativeCold(operation, held.rootIdentity);
+          await held.assertOwned(); await this.reserveNativeCold(operation, held.rootIdentity, settles);
           await this.publishNativeOperation(operation, held.rootIdentity);
           try { await this.finishNativeOperation(operation, held.rootIdentity, () => held.assertOwned(), nativeIo); }
           catch (error) {

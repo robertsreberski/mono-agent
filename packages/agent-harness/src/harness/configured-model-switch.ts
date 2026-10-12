@@ -2,7 +2,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
-import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError, ModelSwitchMessageConsumedError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./runtime-execution.js";
@@ -175,6 +175,8 @@ export async function prepareConfiguredModelSwitch(input: {
         if (result.status === "unsupported") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
         ready = result; switched = true; snapshot = await owner.read();
       } catch (error) {
+        if (error instanceof ModelSwitchMessageConsumedError) throw new AgentHarnessError("handoff_pending",
+          "This message already authorized an earlier model handoff. It was not admitted or queued and nothing was billed; send a new message to switch models.");
         if (error instanceof PreparedSwitchTargetMismatchError && snapshot.pending) throw new AgentHarnessError("handoff_pending",
           `A model handoff to ${snapshot.pending.identity.toModelKey} is pending. This message was not admitted or queued; request ${snapshot.pending.identity.toModelKey} to continue it or ${snapshot.pending.identity.fromModelKey} to cancel it.`);
         // Typed PRE-INTENT capacity/size refusal is a refusal, never a cold model

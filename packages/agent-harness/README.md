@@ -133,8 +133,9 @@ quota even after a crash. Admission does no whole-root accounting: it checks
 only the turn's own projected record and payload against the quotas and the
 in-flight fences/payloads, so its cost does not grow with the number of
 conversations. Aggregate history and staging quotas are enforced at commit and
-retention; concurrent in-flight turns can overshoot staging by at most one
-payload cap each before a commit refuses. Payloads contain explicitly selected canonical input,
+retention. Settling a reconciled turn (commit, recovery or drain) releases its
+own payload, so the staging quota never refuses it; concurrent in-flight turns
+can therefore overshoot staging transiently, by at most one payload cap each. Payloads contain explicitly selected canonical input,
 identity and candidate fields, not `deliveryKey`, memory-only `ownerText`, private
 wake bodies or arbitrary controllers. Execution, compaction and retirement
 fences stay at 1 KiB; payload generations are bounded at 16 MiB.
@@ -551,6 +552,8 @@ for the intent's source model abandons a non-ready intent storage-only
 (`abandonModelSwitch`): only its fence is removed, its authorizations and
 attempts stay retained and charged until a later completed switch or deletion
 collects them, and the turn runs on the current journal without a paid call.
+A new intent whose initiating message a retained intent already consumed is
+refused (`ModelSwitchMessageConsumedError`) before any paid call.
 Explicit-message authorizations have no lifetime count cap; the serialized state
 limit bounds them. Native journals
 carry no `model_change` frames; the canonical receipt is the only switch record.

@@ -8,6 +8,11 @@ import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-
 export class ModelSwitchCapacityError extends Error {
   readonly code = "ERR_MODEL_SWITCH_CAPACITY";
 }
+/** The explicit message already authorized a retained switch intent's billing. */
+export class ModelSwitchMessageConsumedError extends Error {
+  readonly code = "ERR_MODEL_SWITCH_MESSAGE_CONSUMED";
+  constructor() { super("This explicit message already authorized a model switch; it never authorizes paid work again"); this.name = "ModelSwitchMessageConsumedError"; }
+}
 export const MODEL_SWITCH_DIRECTORY = ".model-switches";
 export const MAX_MODEL_SWITCH_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SWITCH_FENCE_BYTES = 1024;

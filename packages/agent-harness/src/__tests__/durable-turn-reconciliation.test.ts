@@ -511,7 +511,7 @@ it("keeps native accepted acknowledgement behind durable live payload and fence 
   }
 }, 10_000);
 
-it("admits a reconciled turn and its live inputs without whole-root accounting; quotas are enforced at commit", async () => {
+it("admits a reconciled turn and its live inputs without whole-root accounting; retention is enforced at commit", async () => {
   const f = await fixture();
   for (const id of ["fictional-other-a", "fictional-other-b", "fictional-other-c"]) await f.store.append(id, [{ role: "assistant", content: `Fictional ${id} reply.` }]);
   const internals = f.store as unknown as Record<"retentionPlan" | "scanStagedBytes", (...args: unknown[]) => Promise<unknown>>;
@@ -522,5 +522,25 @@ it("admits a reconciled turn and its live inputs without whole-root accounting; 
   f.inspect.mockImplementation(async (request) => ({ ...evidence(request), consumedInputIds: request.expectedInputs.map((input) => input.id),
     inputs: request.expectedInputs.map((input) => ({ ...input, messageId: `envelope:${input.id}`, complete: true })) }));
   await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
-  expect(retention).toHaveBeenCalled(); expect(staged).toHaveBeenCalled();
+  // Settlement releases its own payload: retention applies, the staging quota never blocks it.
+  expect(retention).toHaveBeenCalled(); expect(staged).not.toHaveBeenCalled();
+});
+
+it("settles concurrent admissions whose pending payloads together exceed the staging quota: commit and recovery are never wedged", async () => {
+  const f = await fixture({ maxStagedBytes: 6_000 });
+  const ids = ["fictional-over-a", "fictional-over-b", "fictional-over-c"];
+  const turns = await Promise.all(ids.map(async (id) => await f.store.beginProviderSessionTurn(id, `${id}-turn`, { modelKey,
+    reconciliation: { purpose: "execution", ownerKey: id, initial: { persistText: `Fictional ${id} input `.repeat(80), timestamp } } })));
+  // Each payload passed its O(1) admission; together they exceed the quota.
+  const pending = await readdir(join(f.root, ".pending-turns"));
+  const staged = (await Promise.all(pending.map(async (name) => (await lstat(join(f.root, ".pending-turns", name))).size))).reduce((a, b) => a + b, 0);
+  expect(pending).toHaveLength(3); expect(staged).toBeGreaterThan(6_000);
+  // Two commit through prepareCommit; the third is left for recovery.
+  for (const turn of turns.slice(0, 2)) await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+  await turns[2]!.abort();
+  expect(await f.store.recoverProviderSessionTurn(ids[2]!)).toMatchObject({ status: "recovered", outcome: "completed" });
+  expect(await readdir(join(f.root, ".pending-turns"))).toEqual([]);
+  for (const id of ids) expect((await f.store.load(id)).at(-1)).toMatchObject({ role: "assistant", content: "Fictional final reply." });
+  // An ordinary append that would grow staging is still quota-checked.
+  await expect(createDurableHistoryStore({ root: f.root, maxStagedBytes: 1 }).append("fictional-other", [{ role: "assistant", content: "Fictional" }])).rejects.toThrow("staging quota");
 });

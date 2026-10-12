@@ -101,7 +101,9 @@ ID grant no new generation; the next explicit message permits one attempt per
 producer, without a lifetime cap on such messages. While a switch is pending, an
 explicit message for the source model cancels it storage-only: the turn runs on
 the current journal with no summary call, and the intent's billing record stays
-charged. Requesting the target again later starts a new switch. A different
+charged. Requesting the target again with a new message starts a new switch; a
+redelivery of a message that the cancelled switch already used is refused
+without a summary call. A different
 third model is refused as `handoff_pending`.
 Pending messages are **not queued or replayed**. Interrupted turns are
 reported; tools never rerun. Detached same-conversation work may receive retryable

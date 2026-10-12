@@ -376,3 +376,22 @@ it("a native journal well over 16 MiB with a small effective tail switches, keep
   const artifact = JSON.parse(await readFile(join(f.historyRoot, ".model-switches", name), "utf8")).artifact;
   expect(artifact.ledger.filter((entry: { callId?: string }) => entry.callId === "fictional-far-write")).toEqual([expect.objectContaining({ outcome: "unknown", admission: "started", arguments: { file_path: "/fictional/far" } })]);
 }, 60_000);
+
+it("a redelivered message whose abandoned switch already billed it makes no paid call; a new message starts a fresh switch", async () => {
+  const f = await fixture(); await f.seed();
+  const abandoned = await pendingSwitch(f, "fictional-m1"); const billed = f.transport.mock.calls.length;
+  f.faux.setResponses([text("Fictional A reply after cancelling")]);
+  expect((await f.makeHarness("A", true).run(f.request("fictional-m2", "Fictional back to A", { metadata: { web: { model: "faux:A" } } }))).failure).toBeUndefined();
+  expect(f.transport).toHaveBeenCalledTimes(billed + 1);
+  // M1 redelivered for B: its retained billing state already consumed it.
+  f.faux.setResponses([text(summary), text("Fictional must not run")]);
+  const redelivered = await f.makeHarness("B", true).run(f.request("fictional-m1", "Fictional switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(redelivered.failure).toMatchObject({ kind: "handoff_pending", message: expect.stringContaining("send a new message") });
+  expect(f.transport).toHaveBeenCalledTimes(billed + 1); expect((await f.canonical()).providerSession.modelKey).toBe("faux:A");
+  expect((await switchFiles(f)).filter((name) => name.endsWith(".fence.json"))).toEqual([]);
+  // A genuinely new explicit message starts a fresh switch.
+  f.faux.setResponses([text(summary), text("Fictional B reply")]);
+  const fresh = await f.makeHarness("B", true).run(f.request("fictional-m3", "Fictional new switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(fresh.failure).toBeUndefined(); expect(fresh.text).toBe("Fictional B reply");
+  expect(f.transport).toHaveBeenCalledTimes(billed + 3); expect((await f.canonical()).lastSwitch.switchId).not.toBe(abandoned.identity.switchId);
+});
