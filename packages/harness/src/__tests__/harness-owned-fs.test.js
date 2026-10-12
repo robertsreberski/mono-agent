@@ -131,3 +131,28 @@ it("cancels open, create and list lock waits from the caller's signal without le
   expect((await readdir(join(r, "mono-v2", "locks"))).sort()).toEqual(["catalog.sqlite", `${session.metadata.journalId}.sqlite`].sort());
   const reopened = await other.open(session.metadata, { signal: new AbortController().signal }); await reopened.close();
 });
+
+it("refuses creating a handle that a damaged legacy file is attributed to", async () => {
+  const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }); await mkdir(join(r, "legacy"));
+  await writeFile(join(r, "legacy", "t_fictional-legacy.jsonl"), "{not json\n");
+  await expect(repo.create({ id: "fictional-legacy" })).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_UNREADABLE" });
+  await (await repo.create({ id: "fictional-other" })).close();
+  expect(await readFile(join(r, "legacy", "t_fictional-legacy.jsonl"), "utf8")).toBe("{not json\n");
+});
+
+it("settles a create cancelled behind the catalogue promptly, releasing its writer and reclaiming the lock later", async () => {
+  const r = await root(), repo = new JsonlSessionRepo({ sessionsRoot: r }), locks = await repo.ensureDirectory();
+  const acquire = locks.acquireWriter.bind(locks); let held;
+  vi.spyOn(locks, "acquireWriter").mockImplementation(async (...args) => {
+    const writer = await acquire(...args); held = await locks.tryLock(locks.catalogPath); return writer; // another owner takes the catalogue
+  });
+  const controller = new AbortController(), creating = repo.create({ id: "fictional-cancelled" }, { abortSignal: controller.signal });
+  setTimeout(() => controller.abort(), 30);
+  const settled = await Promise.race([creating.then(() => "created", (error) => error.name), new Promise((resolve) => setTimeout(() => resolve("stuck"), 2_000))]);
+  try {
+    expect(settled).toBe("AbortError"); // settled while the catalogue is still held
+  } finally { held.release(); vi.restoreAllMocks(); }
+  for (let i = 0; i < 50 && (await readdir(locks.directory)).length > 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(await readdir(locks.directory)).toEqual(["catalog.sqlite"]);
+  expect(await repo.list()).toEqual([]);
+});

@@ -431,9 +431,9 @@ export class JsonlSessionRepo {
     try {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
-        const catalogue = await this.catalogueUnlocked(true);
+        const catalogue = await this.catalogueUnlocked(true), legacy = await listLegacySessions(this.root);
         if (this.openSessions.has(id) || catalogue.owned.some((m) => m.id === id)) throw new Error("Harness session already exists");
-        this.assertNotDamaged(catalogue.unattributed, id);
+        this.assertNotDamaged([...catalogue.unattributed, ...legacy.unattributed], id);
         if (this.retiredHandles.has(id)) throw new Error("Harness session handle is retired");
         if (hostAuthority !== undefined) await assertOwned();
         await this.writeImportHeader({ format: FORMAT, version: 2, ownershipSchemaVersion: hostAuthority ? 2 : 1,
@@ -449,7 +449,9 @@ export class JsonlSessionRepo {
       const local = this.openSessions.get(id);
       if (local) await local.close().catch(() => {});
       try {
-        if (!published) await locks.releaseWriter(writer, () => this.journalDataGone(metadata));
+        // Cancelled before any mutation: release now, reclaim the lock file off-path.
+        if (!published && signal?.aborted) { writer.release(); locks.reclaimLater(writer.path, () => this.journalDataGone(metadata)); }
+        else if (!published) await locks.releaseWriter(writer, () => this.journalDataGone(metadata));
       } finally { writer.release(); }
       throw error;
     }

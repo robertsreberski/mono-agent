@@ -135,6 +135,17 @@ export class JournalLocks {
    * @param {any} lock
    * @param {() => Promise<boolean>} [dataGone]
    */
+  /** Off-path reclamation after a cancelled, pre-mutation acquisition (the
+   * caller already released its writer): never blocks cancellation; on any
+   * failure the lock file simply stays, pinning no data.
+   * @param {string} path @param {() => Promise<boolean>} dataGone */
+  reclaimLater(path, dataGone) {
+    setImmediate(async () => {
+      let lock;
+      try { lock = await this.tryLock(path); if (lock) await this.releaseWriter(lock, dataGone); }
+      catch { /* keep the lock file */ } finally { lock?.release(); }
+    });
+  }
   async releaseWriter(lock, dataGone) {
     if (!dataGone) { lock.release(); return; }
     await this.withCatalog(async () => {

@@ -59,8 +59,11 @@ export async function readOwned(path, maxBytes = Infinity) {
   try { handle = await open(path, constants.O_RDONLY | NOFOLLOW); }
   catch (error) { if (/** @type {any} */ (error)?.code === "ENOENT") throw error; throw damaged(error); }
   try {
-    const opened = await handle.stat(), bytes = await handle.readFile(), after = await handle.stat(), named = await lstat(path);
-    if (!unchanged(before, opened) || !unchanged(opened, after) || !unchanged(after, named) || !isOwned(named) || bytes.byteLength !== after.size) throw damaged();
+    // Check the descriptor before reading so a swapped pathname never bypasses the size bound.
+    const opened = await handle.stat();
+    if (!isOwned(opened) || !unchanged(before, opened) || opened.size > maxBytes) throw damaged();
+    const bytes = await handle.readFile(), after = await handle.stat(), named = await lstat(path);
+    if (!unchanged(opened, after) || !unchanged(after, named) || !isOwned(named) || bytes.byteLength !== after.size) throw damaged();
     return { bytes, stat: named };
   } finally { await handle.close(); }
 }
