@@ -776,7 +776,7 @@ export interface RuntimeNativeJournalStorage {
   /** Exact listed journals only; definitively absent members are idempotent success. */
   deleteJournals(journals: readonly RuntimeNativeJournalRef[], context: RuntimeNativeJournalDeletion): Promise<void>;
   freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest" | "provenance"> & { readonly provenance?: RuntimeNativeJournalDescriptor["provenance"] }): Promise<RuntimeNativeJournalDescriptor>;
-  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly stagedBytes: number }>> }>;
+  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly stagedBytes: number; readonly damaged?: true }>> }>;
   /** Read-only presence probe for the canonical current journal, called under the
    * held host claim. `missing` only when no published or staged bytes exist for
    * the exact coordinate; any doubt (unreadable header/record, staged-only bytes,

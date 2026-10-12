@@ -9,6 +9,8 @@ import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-hist
 import type { TurnHistoryV3 } from "./durable-turn-history.js";
 import type { DurableTurnReceipt, PendingTurnPointer, PendingTurnPayload, PendingTurnInput, PendingTurnCandidate, DurableTurnFence } from "./durable-turn-contract.js";
 import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
+import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
+import { OwnedFileDamagedError } from "@mono-agent/harness/owned-fs.js";
 import { PENDING_TURN_DIRECTORY, DurableTurnAlreadyCommittedError, validateDurableTurnFence, serializeDurableTurnFence, createPendingTurnPayload, createPendingInitialInput, durableTurnFenceDigest, pendingPayloadName, serializePendingTurnPayload } from "./durable-turn-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
@@ -518,8 +520,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (state.identity.source) ids.add(state.identity.source.journalId);
         ids.add(currentJournal(state.identity.historyBucket, state.identity.targetEpoch).journalId);
       }
-      const unknownKeys = [...(records?.entries() ?? [])].filter(([, record]) => record === undefined)
-        .map(([name]) => name.slice(0, -HISTORY_FILE_SUFFIX.length));
+      // A damaged switch hides its journals: charge that owner's attested journals too.
+      const unknownKeys = [...[...(records?.entries() ?? [])].filter(([, record]) => record === undefined)
+        .map(([name]) => name.slice(0, -HISTORY_FILE_SUFFIX.length)), ...(await this.switchInventory(rootIdentity)).damaged];
       const marker = unknownKeys.length === 0 ? undefined : await this.nativeHistoryRoot(rootIdentity).read();
       return this.nativeJournalStorage!.inventory([...ids], marker ? { rootId: marker.rootId, conversationKeys: unknownKeys } : undefined);
     };
@@ -549,9 +552,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private epochContext(id: string, epoch: string, authority: RuntimeNativeJournalAuthority, assertOwned: () => Promise<void>, timestamp = 0): RuntimeNativeEpochContext {
     return { hostAuthority: authority, assertOwned, targetHandleId: deriveProviderSessionId(id, epoch), timestamp };
   }
-  /** Owner-scoped, read-only: refuse only a conversation that has pre-release switch data. */
+  /** Owner-scoped, read-only: refuse only a conversation that has pre-release or damaged switch data. */
   private async refusePreReleaseOwner(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
-    if ((await this.switchInventory(rootIdentity)).refused.includes(historyKey(conversationId))) refusePreReleaseSwitchFormat();
+    const inventory = await this.switchInventory(rootIdentity), key = historyKey(conversationId);
+    if (inventory.refused.includes(key)) refusePreReleaseSwitchFormat();
+    if (inventory.damaged.includes(key)) throw new OwnedFileDamagedError(`${MODEL_SWITCH_DIRECTORY}/${key}`);
   }
   private async refusePreReleaseOwnerLocked(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
     const unlock = await this.acquireRootTransaction(rootIdentity);
@@ -2565,7 +2570,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const native = this.nativeJournalStorage ? await this.managedNativeInventory(rootIdentity, records) : undefined;
     const switches = await this.modelSwitchFootprint(rootIdentity, records, native);
     for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
-    for (const key of switches.refused) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    // Damaged switch/pending evidence protects its own conversation from eviction.
+    for (const key of [...switches.refused, ...switches.damaged]) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    const pending = await this.pendingPayloads(rootIdentity).list();
+    for (const entry of pending) if (entry.damaged) protectedNames.add(`${entry.conversationKey}${HISTORY_FILE_SUFFIX}`);
     const operations = await this.nativeOperationFootprint(rootIdentity, native);
     for (const key of operations.keys) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     for (const [name, record] of records) if (record?.sourceVersion === 5 && !this.nativeJournalStorage) protectedNames.add(name);
@@ -2600,8 +2608,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; continue; }
         finally { await exact?.release(); }
       }
+      // A victim's orphan generations are collected with it: unreadable ones protect it instead.
+      if (await this.anyPendingDamaged(pending.filter((item) => `${item.conversationKey}${HISTORY_FILE_SUFFIX}` === entry.name), rootIdentity)) continue;
       const journal = record?.sourceVersion === 5 ? currentJournal(record.conversationId, record.providerSession!.epoch) : undefined;
-      if (journal && ((native?.journals[journal.journalId]?.stagedBytes ?? 0) > 0
+      if (journal && ((native?.journals[journal.journalId]?.stagedBytes ?? 0) > 0 || native?.journals[journal.journalId]?.damaged
         || await this.nativeJournalStorage!.deletionBlocked([journal], record!.native!.authority))) continue;
       const extra = journal ? (native?.journals[journal.journalId]?.retainedBytes ?? 0)
         + await this.modelSwitchPayloads(rootIdentity).conversationBytes(record!.conversationId) : 0;
@@ -2613,6 +2623,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // even after every eligible record is removed must not destroy older
     // history merely to discover that fact.
     return { projectedBytes, projectedCount, minimumBytes, minimumCount, candidates, records };
+  }
+
+  private async anyPendingDamaged(entries: readonly PendingPayloadEntry[], rootIdentity: DirectoryIdentity): Promise<boolean> {
+    for (const entry of entries) {
+      if (entry.name.endsWith(".tmp")) continue;
+      try { await this.pendingPayloads(rootIdentity).inspect(entry); } catch { await assertDirectoryIdentity(this.root, rootIdentity); return true; }
+    }
+    return false;
   }
 
   private async scanStagedBytes(rootIdentity: DirectoryIdentity): Promise<number> {
@@ -3124,7 +3142,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const fences = await this.scanDirtyFences(locksIdentity, true);
     if (fences.length === 0) return;
     const inventory = await this.switchInventory(rootIdentity);
-    const switchingKeys = new Set([...inventory.pending.map((entry) => historyKey(entry.state.identity.historyBucket)), ...inventory.refused]);
+    const switchingKeys = new Set([...inventory.pending.map((entry) => historyKey(entry.state.identity.historyBucket)), ...inventory.refused, ...inventory.damaged]);
     for (const name of await readdir(this.root)) { const match = NATIVE_OPERATION_PATTERN.exec(name); if (match) switchingKeys.add(match[1]!); }
     const committedByName = new Map(
       (await this.scanCommittedEntries(rootIdentity, true)).map((entry) => [entry.name, entry]),

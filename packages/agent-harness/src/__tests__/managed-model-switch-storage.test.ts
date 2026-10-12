@@ -83,11 +83,12 @@ it("treats long IDs as unsupported storage, preserving today's cold-epoch replay
   const cold = await store.beginProviderSessionTurn(id, "fictional-long-B", { modelKey: "faux:B" }); expect(cold.providerSessionId).not.toBe(turn.providerSessionId); expect(cold.providerSessionRevision).toBe(0);
   expect(await store.load(id)).toHaveLength(1); await cold.abort();
 });
-it("root enumeration accepts only private owned model storage and preserves malformed evidence", async () => {
+it("root enumeration accepts only private owned model storage and skips stray evidence without touching it", async () => {
   const { root, store, state } = await fixture(); expect((await lstat(root)).mode & 0o777).toBe(0o700);
   const lease = await store.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned lease"); await lease.release();
   const directory = join(root, MODEL_SWITCH_DIRECTORY); await chmod(directory, 0o755); await expect(store.stats()).rejects.toThrow("permissions"); await chmod(directory, 0o700);
-  await writeFile(join(directory, "unknown-evidence"), "Preserved fictional evidence", { mode: 0o600 }); await expect(store.stats()).rejects.toThrow("unavailable");
+  const before = await store.stats();
+  await writeFile(join(directory, "unknown-evidence"), "Preserved fictional evidence", { mode: 0o600 }); expect(await store.stats()).toEqual(before);
   expect(await readFile(join(directory, "unknown-evidence"), "utf8")).toBe("Preserved fictional evidence");
 });
 

@@ -116,10 +116,10 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         }
       });
     }
-    let legacy;
-    try { legacy = await listLegacySessions(root, { includeArchives: true }); }
-    catch { legacy = await listLegacySessions(root); found.unattributed += 1; } // an unreadable archive could be ours
-    for (const entry of legacy) {
+    const legacy = await listLegacySessions(root, { includeArchives: true });
+    // Damaged legacy entries named for this handle, or of unknown owner, could be ours.
+    found.unattributed += legacy.unattributed.filter((entry) => entry.id === undefined || entry.id === handleId).length;
+    for (const entry of legacy.sessions) {
       if (entry.id === handleId) { if (entry.path.endsWith(".migrated")) found.archived += 1; else found.legacy += 1; }
     }
     return found;
@@ -226,7 +226,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
             if (!writer) return true; writers.push(writer);
             let reader;
             try { reader = await JournalReader.open(path(entry.journalId), root); }
-            catch (error) { if (missing(error)) continue; throw error; }
+            catch (error) { if (missing(error)) continue; return true; } // damaged evidence is never a victim
             try {
               const header = await reader.readHeader(); validateJournalHeader(header);
               if (header.id !== entry.handleId || header.journalId !== entry.journalId || header.ownershipSchemaVersion !== 2 || !same(header.hostAuthority, authority)) return true;
@@ -302,6 +302,8 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
     },
     /** Only guarded managed journals, plus exact IDs enrolled by durable host
      * intents. Legacy provider journals never receive implicit charge/credit.
+     * An enrolled journal that cannot be opened (or is hard-linked) is damage:
+     * its row is `damaged`, charged its named bytes, never credited or deleted.
      * Unreadable canonicals still charge independently attested schema-2
      * evidence for those exact buckets in this pinned root, never legacy files
      * or journals belonging to another root/bucket.
@@ -316,7 +318,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       const directory = join(root, "mono-v2", "journals");
       try { await lstat(directory); } catch (error) { if (missing(error)) { if (repo.directoryIdentity) fail(); return { bytes: 0, stagedBytes: 0, journals: {} }; } throw error; }
       const locks = await repo.ensureDirectory(); return locks.withCatalog(async () => { let bytes = 0, stagedBytes = 0;
-      /** @type {Record<string,{retainedBytes:number,stagedBytes:number}>} */ const journals = Object.create(null);
+      /** @type {Record<string,{retainedBytes:number,stagedBytes:number,damaged?:true}>} */ const journals = Object.create(null);
       for (const name of await readdir(directory)) {
         // Shared skip rule: non-journal names and unattributed journal-named
         // entries are neither charged nor credited, and retention never deletes them.
@@ -325,7 +327,15 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         if (scope && !scope.has(id) && !unreadableOwners) continue;
         let reader;
         try { reader = await JournalReader.open(join(directory, name), root); }
-        catch (error) { if (scope?.has(id)) throw error; continue; }
+        catch (error) {
+          if (!scope?.has(id) || missing(error)) continue;
+          await repo.assertDirectory(); // root identity stays fatal; the entry alone is damaged
+          let size = 0; try { size = (await lstat(join(directory, name))).size; } catch (statError) { if (!missing(statError)) throw statError; }
+          const row = journals[id] ??= { retainedBytes: 0, stagedBytes: 0 };
+          row.damaged = true; row.retainedBytes += size; bytes += size;
+          if (!name.endsWith(".jsonl")) { row.stagedBytes += size; stagedBytes += size; }
+          continue;
+        }
         try {
           if (!scope || !scope.has(id)) {
             let header; try { header = await reader.readHeader({ allowIncomplete: true }); validateJournalHeader(header); }
@@ -334,7 +344,7 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
             if (scope && (!unreadableOwners || !same(header.hostAuthority.rootId, unreadableOwners.rootId)
               || !unknownKeys.has(createHash("sha256").update("mono-agent-history-v1\0").update(header.hostAuthority.historyBucket).digest("hex")))) continue;
           }
-          const stat = await reader.assertIdentity(); if (stat.nlink !== 1) fail(); bytes += stat.size; if (!Number.isSafeInteger(bytes)) fail();
+          const stat = await reader.assertIdentity(); bytes += stat.size; if (!Number.isSafeInteger(bytes)) fail();
           const row = journals[id] ??= { retainedBytes: 0, stagedBytes: 0 };
           row.retainedBytes += stat.size;
           if (!name.endsWith(".jsonl")) { row.stagedBytes += stat.size; stagedBytes += stat.size; }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { fork, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
@@ -134,6 +134,31 @@ it("handle lookup skips unrelated entries; an unattributable damaged journal blo
   // A readable header for another handle is unrelated evidence and never blocks.
   await writeFile(foreign, f.before.toString().replaceAll(f.metadata.id, "b".repeat(64)).replaceAll(f.metadata.journalId, "11111111-1111-4111-8111-111111111111"), { mode: 0o600 });
   expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
+});
+it("charges an enrolled hard-linked or unopenable journal as owner damage without failing the root inventory", async () => {
+  const f = await lifecycleFixture(), ids = [f.metadata.journalId, f.target.journalId], targetBytes = await readFile(f.target.path);
+  const outside = await mkdtemp(join(tmpdir(), "mono-native-alias-")); roots.push(outside);
+  await link(f.target.path, join(outside, "alias.jsonl"));
+  const linked = await f.bridge.inventory(ids);
+  expect(linked.journals[f.target.journalId]).toEqual({ retainedBytes: targetBytes.length, stagedBytes: 0, damaged: true });
+  expect(linked.journals[f.metadata.journalId]).toEqual({ retainedBytes: f.before.length, stagedBytes: 0 });
+  expect(linked.bytes).toBe(targetBytes.length + f.before.length);
+  expect(await f.bridge.deletionBlocked([f.journals.target], authority)).toBe(true); // damaged evidence is never a victim
+  expect((await stat(f.target.path)).nlink).toBe(2); expect(await readFile(f.target.path)).toEqual(targetBytes);
+  await rm(join(outside, "alias.jsonl")); await chmod(f.metadata.path, 0o644);
+  const insecure = await f.bridge.inventory(ids);
+  expect(insecure.journals[f.metadata.journalId]).toEqual({ retainedBytes: f.before.length, stagedBytes: 0, damaged: true });
+  expect(insecure.journals[f.target.journalId].damaged).toBeUndefined();
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.target.id, journalId: f.target.journalId })).toEqual({ status: "present" });
+  expect(await readFile(f.metadata.path)).toEqual(f.before);
+});
+it("a damaged legacy source blocks only its own handle's missing verdict", async () => {
+  const f = await fixture(), legacy = join(f.root, "legacy"), absent = { handleId: "a".repeat(64) }; await mkdir(legacy);
+  await writeFile(join(legacy, ".DS_Store"), "fictional"); await writeFile(join(legacy, `t_${"b".repeat(64)}.jsonl`), "{not json\n");
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toEqual({ status: "present" });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: "b".repeat(64) })).toEqual({ status: "unreadable", reason: "unattributed" });
+  expect(await readFile(join(legacy, `t_${"b".repeat(64)}.jsonl`), "utf8")).toBe("{not json\n");
 });
 const worker = fileURLToPath(new URL("./fixtures/native-journal-storage-worker.mjs", import.meta.url));
 it.skipIf(process.platform === "win32").each(["epoch_stage_created", "epoch_stage_synced", "epoch_renamed", "epoch_directory_synced"])("recovers epoch creation twice in fresh processes after SIGKILL at %s", async (phase) => {

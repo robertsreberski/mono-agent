@@ -57,13 +57,14 @@ it("checks expected identity/digest without altering referenced bytes", async ()
   await expect(store.read({ ...pointer, sha256: "c".repeat(64) }, value.identity)).rejects.toThrow("digest mismatch"); expect(await readFile(path)).toEqual(bytes);
   await writeFile(path, Buffer.concat([bytes, Buffer.from(" ")])); await expect(store.read(pointer, value.identity)).rejects.toThrow("digest mismatch");
 });
-it("rejects symlink/hardening failures, traversal pointers and unknown namespace entries", async () => {
+it("refuses symlink/hardening failures and traversal pointers, flags damage and skips unknown namespace entries", async () => {
   const { root, store, owner } = await fixture(), value = payload(); const pointer = await store.publish(value, owner);
   const [entry] = await store.list(), path = join(root, ".pending-turns", entry!.name), real = join(root, "fixture-target");
   await rename(path, real); await symlink(real, path); await expect(store.read(pointer, value.identity)).rejects.toThrow("permissions"); await rm(path); await rename(real, path);
-  await chmod(path, 0o644); await expect(store.list()).rejects.toThrow("permissions"); await chmod(path, 0o600);
+  await chmod(path, 0o644); expect(await store.list()).toEqual([{ ...entry, damaged: true }]);
+  await expect(store.read(pointer, value.identity)).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" }); await chmod(path, 0o600);
   await expect(store.read({ ...pointer, generation: "../foreign" }, value.identity)).rejects.toThrow();
-  await writeFile(join(root, ".pending-turns", "unknown"), "Fictional unknown artifact."); await expect(store.list()).rejects.toThrow("Unsupported");
+  await writeFile(join(root, ".pending-turns", "unknown"), "Fictional unknown artifact."); expect(await store.list()).toEqual([entry]);
 });
 it("pins the root and pending directory so reset/replacement cannot resurrect a late generation", async () => {
   const { root, store, owner } = await fixture(), value = payload(); await store.publish(value, owner);
@@ -93,10 +94,12 @@ it("preserves referenced payloads and removes an unpublished temp after ENOSPC a
   await expect(store.publish(value, owner)).rejects.toMatchObject({ code: "ENOSPC" });
   expect(await store.read(first, value.identity)).toEqual(value); const entries = await store.list(); expect(entries).toHaveLength(1); expect(entries[0]!.name).not.toMatch(/\.tmp$/u);
 });
-it("rejects a hard-linked generation and root replacement without recreating data", async () => {
+it("flags a hard-linked generation as damage and rejects root replacement without recreating data", async () => {
   const { root, store, owner } = await fixture(), value = payload(); await store.publish(value, owner);
   const [entry] = await store.list(), path = join(root, ".pending-turns", entry!.name), alias = join(root, "hardlink-fixture");
-  await link(path, alias); await expect(store.list()).rejects.toThrow("permissions"); await rm(alias);
+  await link(path, alias); expect((await store.list())[0]!.damaged).toBe(true);
+  await expect(store.collectUnreferenced(pendingCoordinates(value.identity), [], owner)).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" });
+  expect((await lstat(path)).nlink).toBe(2); await rm(alias);
   const oldRoot = `${root}-old`; roots.push(oldRoot); await rename(root, oldRoot); await mkdir(root, { mode: 0o700 });
   await expect(store.publish(value, owner)).rejects.toThrow("identity"); expect(await readdir(root)).toEqual([]);
 });

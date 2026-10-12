@@ -134,7 +134,7 @@ it("recovers an artifact returned before ready-fence fsync without rebilling or 
   expect((await fresh.read(source.historyBucket, state.identity.switchId))!.state.attempts[0]!.outcome).toBe("accepted");
 });
 
-it("foreign owners, malformed files and oversized content fail closed without cleanup", async () => {
+it("foreign owners and oversized content fail closed without cleanup; stray names are skipped", async () => {
   const { store, state, owner, root } = await fixture();
   await expect(store.begin(state, { ...owner, ownerKey: "foreign" })).rejects.toThrow("ownership");
   await store.begin(state, owner); await store.admit(source.historyBucket, state.identity.switchId, "outgoing", owner);
@@ -143,7 +143,7 @@ it("foreign owners, malformed files and oversized content fail closed without cl
   expect(await store.retainedBytes()).toBe(before);
   await expect(store.accept(source.historyBucket, state.identity.switchId, { ...proposal(state), recent: ["x".repeat(17 * 1024 * 1024)] }, owner)).rejects.toThrow("limit"); expect(await store.retainedBytes()).toBe(before);
   const directory = join(root, MODEL_SWITCH_DIRECTORY); await writeFile(join(directory, "unknown"), "Fictional preserved evidence", { mode: 0o600 });
-  await expect(store.retainedBytes()).rejects.toThrow("ownership"); expect(await readFile(join(directory, "unknown"), "utf8")).toBe("Fictional preserved evidence");
+  expect(await store.retainedBytes()).toBe(before); expect(await readFile(join(directory, "unknown"), "utf8")).toBe("Fictional preserved evidence");
 });
 
 async function worker(root: string, action: string, phase: string, kill = false): Promise<any> {
@@ -305,7 +305,7 @@ it("keeps the referenced generation on pre-fence failures and preserves unrecogn
 it("returns absent inventory before root validation and follows win32 permission exemptions", async () => {
   const { root, store, state, owner } = await fixture();
   const rootCheck = vi.spyOn(store as any, "assertRoot").mockRejectedValue(new Error("Root check must not run for absent storage"));
-  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [], refused: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
+  try { expect(await store.inventory()).toEqual({ bytes: 0, pending: [], refused: [], damaged: [] }); expect(rootCheck).not.toHaveBeenCalled(); }
   finally { rootCheck.mockRestore(); }
   await store.begin(state, owner);
   const directory = join(root, MODEL_SWITCH_DIRECTORY), before = await store.inventory();
