@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Disable both automatic request-retry layers with `piMaxRetries: 0`, while
+  preserving the default request retry budget.
+
 - Keep prepared dispatches valid while their abort signal and owner remain valid;
   remove the five-minute expiry and require explicit unused-lease cleanup.
 

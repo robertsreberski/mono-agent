@@ -2327,3 +2327,20 @@ it.each(["list", "catalogue"])("refuses cold reopen when the native %s throws", 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.each([0, undefined])("piMaxRetries=%s controls both request retry layers and preserves the default", async (piMaxRetries) => {
+  const model = setup();
+  const stream = vi.spyOn(faux.provider, "streamSimple");
+  faux.setResponses(Array.from({ length: 5 }, () => fauxAssistantMessage([], {
+    stopReason: "error", errorMessage: "503 service unavailable",
+  })));
+  try {
+    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+      piMaxRetries, messages: [{ role: "user", content: "Fictional request" }],
+    }));
+    expect(result.error).toContain("503");
+    expect(faux.state.callCount).toBe(piMaxRetries === 0 ? 1 : 4);
+    expect(stream.mock.calls.every((call) => call[2].maxRetries === (piMaxRetries === 0 ? 0 : 2))).toBe(true);
+    expect(result.events.filter((event) => event.type === "tool_call_started")).toEqual([]);
+  } finally { stream.mockRestore(); }
+});
