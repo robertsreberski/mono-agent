@@ -4110,7 +4110,7 @@ export class WebStore {
       .get(turnId) as { threadId: string; startedAt: string; messageId: string; noticedAt: string | null } | undefined;
     if (turn === undefined) return { questionInterrupted: false, unconfirmedLiveInputs: 0 };
     const questionInterrupted = this.getMessage(turn.messageId)?.parts
-      .some((part) => part.type === "text" && part.text.includes(INTERRUPTED_QUESTION_NOTE)) ?? false;
+      .some((part) => part.type === "text" && part.interruptedQuestion === true) ?? false;
     // Uncertain inputs lose their turn link, so bound them by the interrupted turn's window.
     const uncertain = (this.database.prepare(`SELECT id FROM messages WHERE thread_id = ? AND role = 'user'
       AND created_at >= ? AND created_at <= ?`).all(turn.threadId, turn.startedAt, turn.noticedAt ?? this.now()) as Array<{ id: string }>)
@@ -6851,8 +6851,8 @@ export class WebStore {
         return { ...part, status: "failed" as const };
       });
       const notice = INTERRUPTED_QUESTION_NOTE;
-      if (interruptedAsk && !parts.some((part) => part.type === "text" && part.text.includes(notice))) {
-        parts.push({ type: "text", text: notice });
+      if (interruptedAsk && !parts.some((part) => part.type === "text" && part.interruptedQuestion === true)) {
+        parts.push({ type: "text", text: notice, interruptedQuestion: true });
       }
     }
     const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
@@ -9865,7 +9865,8 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
   if (part.type === "conversation-marker") return isConversationMarker(part);
-  if (part.type === "text" || part.type === "reasoning") return typeof part.text === "string";
+  if (part.type === "text") return typeof part.text === "string" && (part.interruptedQuestion === undefined || part.interruptedQuestion === true);
+  if (part.type === "reasoning") return typeof part.text === "string";
   if (part.type === "tool-call") return isWebToolCall(part);
   if (part.type === "subagent") {
     return typeof part.toolCallId === "string"

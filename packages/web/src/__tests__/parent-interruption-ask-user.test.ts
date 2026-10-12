@@ -73,3 +73,46 @@ it("a parent-interruption wake after an interrupted AskUser suppresses interacti
     finally { db.close(); }
   } finally { await service.stop(); }
 });
+
+it("steers an active human turn with the interrupted-question guard without disabling its interactions", async () => {
+  const root = await temporaryRoot(); roots.push(root);
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const turns: Array<{ metadata: { web: Record<string, unknown> } }> = [];
+  const wakes: Array<{ text: string; id: string }> = [];
+  const service = await WebService.create({
+    stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
+    discoverImpl: async () => [fakeDiscoveredAgent({ apiKey: "fixture-key" })],
+    fetchImpl: (async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/info")) return Response.json({ schema: 1, pid: 12345, capabilities: { askUser: true, liveInput: true } });
+      if (url.endsWith("/v1/turns")) {
+        turns.push(JSON.parse(String(init?.body)));
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+          { headers: { "content-type": "application/x-ndjson" } });
+      }
+      if (url.endsWith("/live-input")) {
+        const wake = JSON.parse(String(init?.body)); wakes.push(wake);
+        return Response.json({ status: "applied", id: wake.id });
+      }
+      if (url.includes("/ask")) return new Response(null, { status: 404 });
+      throw new Error(`Unexpected fictional request: ${url}`);
+    }) as typeof fetch,
+  });
+  try {
+    const thread = service.createThread("agent-one");
+    const old = service.store.beginTurn({ threadId: thread.id, text: "Fictional old task", attachmentIds: [] });
+    service.store.markTurnDispatchStarted(old.turnId, "fictional-old-generation");
+    service.store.applyStreamFrames(old.turnId, [{ kind: "event", event: { type: "tool_call_started", id: "fictional-old-ask",
+      name: "AskUser", arguments: { message: "Old question?" } } }]);
+    service.store.failTurn(old.turnId, { message: "Fictional process loss", code: "agent_connection_lost" });
+    await service.startTurn(thread.id, { text: "Fictional unrelated human task" });
+    await vi.waitFor(() => expect(stream).toBeDefined());
+    await service.refreshAgents();
+    await vi.waitFor(() => expect(wakes).toHaveLength(1));
+    expect(turns).toHaveLength(1); expect(turns[0]!.metadata.web.suppressInteractionTools).toBeUndefined();
+    expect(wakes[0]!.text).toContain("Do not re-ask the interrupted question; the user will answer in a new message.");
+    expect(wakes[0]!.text).toContain("no tool was replayed");
+    stream.enqueue(new TextEncoder().encode(JSON.stringify({ kind: "finish", finalText: "Fictional current reply" }) + "\n")); stream.close();
+    await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
+  } finally { await service.stop(); }
+});

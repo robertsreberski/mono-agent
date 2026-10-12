@@ -90,23 +90,18 @@ it.each(["context", "native", "claim"])("failed %s preparation closes acquired r
 });
 
 
-it("forgotten/expired preparations free semaphore(1), extensions and native runState without caller close", async () => {
-  const f = await fixture(), timers: { callback: () => void; handle: ReturnType<typeof setTimeout> }[] = [];
-  const original = globalThis.setTimeout;
-  const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number, ...args: unknown[]) => {
-    const handle = Reflect.apply(original, globalThis, [callback, ms, ...args]); if (ms > 290000 && ms <= 300000) timers.push({ callback, handle }); return handle;
-  }) as typeof setTimeout);
-  const forgotten = await prepareHarnessRuntime(f.input); expect(f.limiter.inUse()).toBe(1);
-  expect(timers).toHaveLength(2); expect(timers.every((timer) => !timer.handle.hasRef())).toBe(true);
-  timers.forEach((timer) => timer.callback()); await vi.waitFor(() => expect(f.limiter.inUse()).toBe(0)); spy.mockRestore();
-  expect(f.extensionClose).toHaveBeenCalledOnce(); expect(f.settleClose).toHaveBeenCalledOnce(); await f.owner.assertOwned();
-  await expect(forgotten.run({} as never)).rejects.toThrow("no longer available");
-  const next = await prepareHarnessRuntime(f.input); expect(f.limiter.inUse()).toBe(1); await next.close(); expect(f.limiter.inUse()).toBe(0);
+it("idle preparations retain the permit until explicit close, even after a long delay", async () => {
+  const f = await fixture(), lease = await prepareHarnessRuntime(f.input);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000);
+  lease.assertReady(); expect(f.limiter.inUse()).toBe(1); await f.owner.assertOwned();
+  await lease.close(); await lease.close(); expect(f.limiter.inUse()).toBe(0);
+  expect(f.extensionClose).toHaveBeenCalledOnce(); expect(f.settleClose).toHaveBeenCalledOnce();
+  await expect(lease.run({} as never)).rejects.toThrow("no longer available");
 });
 
-it("run checks at least 30 seconds before invoking incoming P2 admission, including the exact allowance boundary", async () => {
+it("run admits P2 once after a long delay under the same ownership claim", async () => {
   const f = await fixture(), lease = await prepareHarnessRuntime(f.input); cleanup.push(() => lease.close());
-  const clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 29999);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000);
   const admission = vi.fn(async () => {
     const turn = await f.owner.admit({ modelKey: "faux:fixture", reconciliation: { purpose: "execution", ownerKey: "fictional",
       initial: { persistText: "Original fictional input", timestamp: new Date().toISOString() } } });
@@ -114,10 +109,9 @@ it("run checks at least 30 seconds before invoking incoming P2 admission, includ
     return { reconciliation: turn.reconciliation!, assertOwned: () => turn.assertOwned(), turnRevision: turn.providerSessionRevision,
       sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true };
   });
-  expect(() => lease.assertReady()).toThrow("start allowance"); await expect(lease.run(admission)).rejects.toThrow("start allowance"); expect(admission).not.toHaveBeenCalled();
-  expect((await readdir(join(f.root, "history", ".locks"))).filter((name) => name.endsWith(".dirty.json"))).toEqual([]); await f.owner.assertOwned();
-  clock.mockReturnValue(lease.snapshot.expiresAt - 30000); f.f.faux.setResponses([f.f.response("Allowance accepted")]);
-  expect((await lease.run(admission)).text).toBe("Allowance accepted"); expect(admission).toHaveBeenCalledOnce();
+  lease.assertReady(); await f.owner.assertOwned();
+  f.f.faux.setResponses([f.f.response("Delayed admission accepted")]);
+  expect((await lease.run(admission)).text).toBe("Delayed admission accepted"); expect(admission).toHaveBeenCalledOnce();
 });
 
 it("prepared running abort intentionally holds resources/permit until the provider settles unlike ordinary R10", async () => {
@@ -137,39 +131,37 @@ it("prepared running abort intentionally holds resources/permit until the provid
 });
 
 
-it("max-age expiry during active production waits for settlement before releasing semaphore(1)", async () => {
-  const f = await fixture(), timers: (() => void)[] = [], original = globalThis.setTimeout;
-  const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number, ...args: unknown[]) => {
-    const handle = Reflect.apply(original, globalThis, [callback, ms, ...args]); if (ms > 290000 && ms <= 300000) timers.push(callback); return handle;
-  }) as typeof setTimeout);
-  const lease = await prepareHarnessRuntime(f.input);
+it("close during active production waits for settlement before releasing semaphore(1)", async () => {
+  const f = await fixture(), lease = await prepareHarnessRuntime(f.input);
   let enter!: () => void, finish!: () => void;
   const entered = new Promise<void>((resolve) => { enter = resolve; }), gate = new Promise<void>((resolve) => { finish = resolve; });
   f.f.faux.setResponses([async () => { enter(); await gate; return f.f.response(summary); }]);
-  const production = lease.produceHandoffSummary(producer); await entered; timers.forEach((callback) => callback());
-  expect(f.limiter.inUse()).toBe(1); expect(f.extensionClose).not.toHaveBeenCalled(); finish(); await production;
-  await vi.waitFor(() => expect(f.limiter.inUse()).toBe(0)); expect(f.extensionClose).toHaveBeenCalledOnce(); spy.mockRestore();
-  await lease.close(); await f.owner.assertOwned();
+  const production = lease.produceHandoffSummary(producer); await entered;
+  const closing = lease.close();
+  expect(f.limiter.inUse()).toBe(1); expect(f.extensionClose).not.toHaveBeenCalled();
+  finish(); await production; await closing;
+  expect(f.limiter.inUse()).toBe(0); expect(f.extensionClose).toHaveBeenCalledOnce(); await f.owner.assertOwned();
 });
 
 
-it.each(["admission", "normalization"])("requires five seconds after slow %s before consuming the native lease", async (phase) => {
+it.each(["admission", "normalization"])("allows slow %s while the signal and transferred owner remain valid", async (phase) => {
   const f = await fixture(), transport = vi.spyOn(f.f.faux.provider, "streamSimple"), lease = await prepareHarnessRuntime(f.input);
-  cleanup.push(() => lease.close()); const clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 30000);
+  cleanup.push(() => lease.close()); const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  f.f.faux.setResponses([f.f.response("Slow admission accepted")]);
   let turn: Awaited<ReturnType<typeof f.owner.admit>> | undefined;
   const running = lease.run(async () => {
     turn = await f.owner.admit({ modelKey: "faux:fixture", reconciliation: { purpose: "execution", ownerKey: "fictional",
       initial: { persistText: "Original fictional input", timestamp: new Date().toISOString() } } });
     cleanup.push(() => turn!.abort());
-    if (phase === "admission") clock.mockReturnValue(lease.snapshot.expiresAt - 4999);
+    if (phase === "admission") clock.mockReturnValue(now + 10 * 60_000);
     else {
       const admit = turn.reconciliation!.admit.bind(turn.reconciliation);
-      vi.spyOn(turn.reconciliation!, "admit").mockImplementation(async (input) => { await admit(input); clock.mockReturnValue(lease.snapshot.expiresAt - 4999); });
+      vi.spyOn(turn.reconciliation!, "admit").mockImplementation(async (input) => { await admit(input); clock.mockReturnValue(now + 10 * 60_000); });
     }
     return { reconciliation: turn.reconciliation!, assertOwned: () => turn!.assertOwned(), turnRevision: turn.providerSessionRevision,
       sessionId: turn.providerSessionId, providerSessionId: turn.providerSessionId, sessionKeepAlive: true };
   });
-  await expect(running).rejects.toThrow("start allowance"); expect(transport).not.toHaveBeenCalled(); await turn!.assertOwned();
+  expect((await running).text).toBe("Slow admission accepted"); expect(transport).toHaveBeenCalledOnce(); await turn!.assertOwned();
   expect((await readdir(join(f.root, "history", ".locks"))).filter((name) => name.endsWith(".dirty.json"))).toHaveLength(1);
   await lease.close(); expect(f.limiter.inUse()).toBe(0); await turn!.abort();
 });

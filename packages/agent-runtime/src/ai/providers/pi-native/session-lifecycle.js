@@ -210,8 +210,8 @@ async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CON
     return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
       owned: unattributed.some((item) => item.id === sessionId) };
   } catch {
-    // Unchanged: a catalogue failure stays a resume miss (as before).
-    return { entry: null, uncertain: false };
+    // A failed catalogue cannot establish absence or authorize cold replay.
+    return { entry: null, uncertain: true };
   }
 }
 
@@ -312,7 +312,7 @@ export async function resolveSession(runState, {
     }
     if (!entry) {
       const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
-        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} may be an unreadable journal; it was preserved`,
+        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
         failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
       if (durableRepo && options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision > 0) {
         // P2 canonical revision proves an earlier native turn existed. Missing

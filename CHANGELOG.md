@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Avoid announcing provider failover when cancellation settles during history load.
+- Keep one file-operation list when reusing a split-turn compaction summary.
+- Treat empty Pi request-retry budgets as unset, retaining the default retries.
+
+- Disable both automatic request-retry layers with `piMaxRetries: 0`, while
+  preserving the default request retry budget.
+
+- Keep prepared dispatches valid while their abort signal and owner remain valid;
+  remove the five-minute expiry and require explicit unused-lease cleanup.
+
+- Identify interrupted Web questions by stored markers, not quoted notice text.
+
+- Refuse unreadable native catalogues without retiring or cold-replaying a turn.
+
+- Keep the previous compaction summary when splitting the first retained turn.
+
 - Fix prepared OpenCode session attribution after late binding and keep pending
   model switches readable when earlier source account metadata is present.
 

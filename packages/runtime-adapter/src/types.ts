@@ -837,7 +837,6 @@ export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalSto
 /** Actual resolved native request, never credentials/auth headers. */
 export interface RuntimeNativeDispatchSnapshot {
   readonly compactionSummaryMaxTokens?: number;
-  readonly expiresAt: number;
   readonly model: { readonly provider: string; readonly id: string; readonly api: string; readonly contextWindow: number; readonly maxTokens: number };
   readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
   readonly systemPrompt: string;
@@ -850,7 +849,7 @@ export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sess
   | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
 export interface RuntimeNativePreparedDispatch {
   readonly snapshot: RuntimeNativeDispatchSnapshot;
-  assertReady?(remainingStartMs?: number): void;
+  assertReady?(): void;
   checkHandoffSummary?(input: RuntimeHandoffProducerRequest): RuntimeHandoffFit;
   produceHandoffSummary?(input: RuntimeHandoffProducerRequest): Promise<RuntimeHandoffProducerResult>;
   /** Single primary attempt; no router replay/failover or repeated tool setup. */

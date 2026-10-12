@@ -10,7 +10,7 @@ import { createRouterRuntime } from "../../ai/runtime/router.js";
 import { preparePiNativeDispatch, generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
-import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData, PREPARED_DISPATCH_MAX_AGE_MS } from "../../ai/providers/pi-native/prepared-dispatch.js";
+import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData } from "../../ai/providers/pi-native/prepared-dispatch.js";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { Type } from "@earendil-works/pi-ai";
 
@@ -267,11 +267,13 @@ it.each([false, true])("close settles rather than rethrowing a consumed run's re
   await expect(lease.close()).resolves.toBeUndefined(); await expect(lease.close()).resolves.toBeUndefined();
 });
 
-it("refuses a stale prepared lease before any native mutation or provider call", async () => {
-  const f = await fixture(), provider = vi.spyOn(f.faux.provider, "streamSimple"), lease = await prepare(f), now = Date.now();
-  vi.spyOn(Date, "now").mockReturnValue(now + PREPARED_DISPATCH_MAX_AGE_MS + 1);
-  expect(() => lease.assertReady()).toThrow("lease expired");
-  expect((await lease.run()).error).toContain("lease expired"); expect(await readdir(f.root)).toEqual([]); expect(provider).not.toHaveBeenCalled();
+it("keeps a prepared lease valid after a long delay without pinning auth", async () => {
+  const f = await fixture(), lease = await prepare(f), now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now + 10 * 60_000);
+  expect(() => lease.assertReady()).not.toThrow();
+  expect(lease.snapshot).not.toHaveProperty("expiresAt");
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Delayed dispatch")])]);
+  expect((await lease.run()).text).toBe("Delayed dispatch");
 });
 
 it("preserves prototype methods and their original private-field receiver", async () => {
@@ -361,29 +363,29 @@ it("close waits for an active producer before closing native/MCP resources; run 
 });
 
 
-it("forgotten idle native leases expire and close MCP/runState exactly once without provider/native mutation", async () => {
+it("idle native leases have no expiry timer and close MCP/runState exactly once", async () => {
   const f = await fixture(), endpoint = await mcp(), closed = vi.spyOn(Client.prototype, "close"), provider = vi.spyOn(f.faux.provider, "streamSimple");
-  // Capture just lease-age callbacks instead of advancing filesystem/network timers.
   const observed = [];
   const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, ms, ...args) => {
-    const actual = originalTimer(callback, ms, ...args); if (ms > 290000 && ms <= 300000) observed.push({ callback, actual }); return actual;
+    const actual = originalTimer(callback, ms, ...args); if (ms > 290000 && ms <= 300000) observed.push(actual); return actual;
   });
-  const second = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
-  expect(observed).toHaveLength(1); expect(observed[0].actual.hasRef()).toBe(false);
-  observed[0].callback(); await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce()); await second.close(); timer.mockRestore();
+  const lease = await prepare(f, { mcpServers: { fictional: { type: "http", url: endpoint.url } } });
+  expect(observed).toHaveLength(0); expect(closed).not.toHaveBeenCalled();
+  await lease.close(); await lease.close(); timer.mockRestore();
   expect(closed).toHaveBeenCalledOnce(); expect(provider).not.toHaveBeenCalled(); expect(await readdir(f.root)).toEqual([]);
-  await expect(second.run()).rejects.toThrow("no longer available"); expect(closed).toHaveBeenCalledOnce();
+  await expect(lease.run()).rejects.toThrow("no longer available");
 });
 const originalTimer = globalThis.setTimeout;
 
 
-it("routed assertReady forwards the requested minimum start allowance without consuming the lease", async () => {
+it("routed assertReady checks availability after a long delay without consuming the lease", async () => {
   const f = await fixture(), router = createRouterRuntime({ chain: [f.options.model], sessionTurnReconciliation: "v1",
     resolveAttempt: async () => ({ options: { piResolvedModel: f.faux.getModel(), piResolvedModels: f.models } }) });
-  const lease = await prepare(f, {}, router), clock = vi.spyOn(Date, "now").mockReturnValue(lease.snapshot.expiresAt - 29999);
-  expect(() => lease.assertReady(30000)).toThrow("start allowance"); expect(() => lease.assertReady(5000)).not.toThrow();
-  clock.mockReturnValue(lease.snapshot.expiresAt - 30000); expect(() => lease.assertReady(30000)).not.toThrow();
-  f.faux.setResponses([fauxAssistantMessage([fauxText("Routed allowance")])]); expect((await lease.run()).text).toBe("Routed allowance");
+  const lease = await prepare(f, {}, router);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000);
+  expect(() => lease.assertReady()).not.toThrow();
+  f.faux.setResponses([fauxAssistantMessage([fauxText("Routed delayed dispatch")])]);
+  expect((await lease.run()).text).toBe("Routed delayed dispatch");
 });
 
 it("installed pi-ai Codex oauth.refresh returns a complete typed OAuth credential without normalisation", async () => {

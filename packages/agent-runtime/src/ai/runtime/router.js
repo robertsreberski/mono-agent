@@ -188,7 +188,13 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       const failoverHistory = [];
       /** @type {RuntimeResult|null} */
       let lastResult = null;
+      /** @type {{descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}|undefined} */
       let pendingDetach;
+      const markPendingDetach = (model, attemptIndex, retryIndex, result) => {
+        if (options.sessionTurn?.reconciliation) pendingDetach = {
+          descriptor: structuredClone(options.sessionTurn), model, attemptIndex, retryIndex, result,
+        };
+      };
       let detachedAcknowledged = false;
       /** @type {ReadonlyArray<Object>|undefined} */
       let detachedMessages;
@@ -209,9 +215,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             cancelled: false,
             usage: {},
           };
-          if (i === 0 && options.sessionTurn?.reconciliation) pendingDetach = {
-            descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex: 0, result: lastRouteSkip,
-          };
+          if (i === 0) markPendingDetach(entry.model, i, 0, lastRouteSkip);
           // A settled user abort may have no provider failure. Preserve that
           // distinction in attempt evidence used by strict native-tail recovery.
           failoverHistory.push({
@@ -286,9 +290,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             const failure = attemptResolutionFailureResult(error);
             lastResult = failure;
-            if (i === 0 && retryIndex === 0 && options.sessionTurn?.reconciliation) pendingDetach = {
-              descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result: failure,
-            };
+            if (i === 0 && retryIndex === 0) markPendingDetach(entry.model, i, retryIndex, failure);
             failoverHistory.push({
               model: entry.model,
               failureKind: failure.failureKind || null,
@@ -298,16 +300,24 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             break;
           }
 
-          // Admission fence: a route runtime may settle side effects late (e.g.
-          // acknowledge a live input during backoff or while the resolver ran).
-          // Re-check the failed attempt immediately before admitting another.
-          const lateEffects = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
-          const lateReason = lateEffects === undefined ? null : sideEffectReason(lateEffects.effects);
-          if (lateEffects !== undefined && lateReason !== null) {
+          // Recheck late effects and cancellation after each awaited boundary.
+          // Admission itself is synchronous: no await may follow its final check.
+          const admitAttempt = () => {
+            const failed = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
+            const reason = failed === undefined ? null : sideEffectReason(failed.effects);
+            if (failed !== undefined && reason !== null) {
+              const blocked = failoverBlockedResult(failed.result, modelKey(failed.model), reason);
+              emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+              return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
+            }
+            if (!sessionEligibleAttempt && callOptions.abortSignal?.aborted) {
+              return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
+            }
+          };
+          let admission = admitAttempt();
+          if (admission) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            const blocked = failoverBlockedResult(lateEffects.result, modelKey(lateEffects.model), lateReason);
-            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
-            return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
+            return admission;
           }
 
           applyEntryEffort(callOptions, entry.effort);
@@ -319,17 +329,12 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             // session (Pi session id, OpenCode x-opencode-session header).
             callOptions.providerAttributionSessionId = randomUUID();
           }
-          if (i === 0 && retryIndex === 0 && !sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
-            descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex,
-            result: { text: null, error: "Primary route cannot own the protected native session", failureKind: "skipped_capability_mismatch", events: [], cancelled: false, usage: {} },
-          };
+          if (i === 0 && retryIndex === 0 && !sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex,
+            { text: null, error: "Primary route cannot own the protected native session", failureKind: "skipped_capability_mismatch", events: [], cancelled: false, usage: {} });
           delete callOptions.onSessionTurnDetached;
           delete callOptions.detachedContext;
-          if (!sessionEligibleAttempt && callOptions.abortSignal?.aborted) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
-          }
           if (pendingDetach && !sessionEligibleAttempt) {
+            const detachment = pendingDetach;
             try {
               if (typeof options.onSessionTurnDetached !== "function") throw new Error("Detached native turn acknowledgement unavailable");
               await options.onSessionTurnDetached(pendingDetach);
@@ -337,19 +342,14 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               detachedAcknowledged = true;
             } catch {
               try { await attemptCleanup?.(); } catch { /* retain native evidence */ }
-              return { ...normalizeAttemptResult(lastResult || lastRouteSkip || pendingDetach.result, false), error: "Protected native turn could not be durably detached", failureKind: "safety_session_turn_reconciliation",
+              return { ...normalizeAttemptResult(lastResult || lastRouteSkip || detachment.result, false), error: "Protected native turn could not be durably detached", failureKind: "safety_session_turn_reconciliation",
                 retryable: false, failoverHistory };
             }
           }
-          // Detachment can await host persistence; include side effects that
-          // settled during that acknowledgement in the admission fence too.
-          const detachedEffects = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
-          const detachedReason = detachedEffects === undefined ? null : sideEffectReason(detachedEffects.effects);
-          if (detachedEffects !== undefined && detachedReason !== null) {
+          admission = admitAttempt();
+          if (admission) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            const blocked = failoverBlockedResult(detachedEffects.result, modelKey(detachedEffects.model), detachedReason);
-            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
-            return { ...normalizeAttemptResult(blocked.result, false), failoverHistory };
+            return admission;
           }
 
           // Host replay is private, lazy and shared across detached attempts.
@@ -371,21 +371,11 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
             callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
           }
-          // The loader can await I/O. Never admit an attempt if side effects or
-          // cancellation settled during that await. No await follows this fence.
-          const contextEffects = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
-          const contextReason = contextEffects === undefined ? null : sideEffectReason(contextEffects.effects);
-          if (contextEffects !== undefined && contextReason !== null) {
+          admission = admitAttempt();
+          if (admission) {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            const blocked = failoverBlockedResult(contextEffects.result, modelKey(contextEffects.model), contextReason);
-            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
-            return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
+            return admission;
           }
-          if (!sessionEligibleAttempt && callOptions.abortSignal?.aborted) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
-          }
-
           let attemptSystemPrompt = promptBase;
           if (pendingSnapshot) {
             callOptions.diagnosticsSeed = {
@@ -495,9 +485,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
             failedAttempts.push({ effects: attemptEffects, model: entry.model, result });
             lastRouteSkip = result;
-            if (sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
-              descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result,
-            };
+            if (sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex, result);
             // A bridge-level mismatch is about this route, not the logical run.
             // Try the next entry and do not derive a transcript snapshot from it.
             break;
@@ -514,9 +502,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             terminalResult = result;
             break;
           }
-          if (sessionEligibleAttempt && options.sessionTurn?.reconciliation) pendingDetach = {
-            descriptor: structuredClone(options.sessionTurn), model: entry.model, attemptIndex: i, retryIndex, result,
-          };
+          if (sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex, result);
 
           // context_limit is forced retryable so the chain can reach a model with
           // a bigger window, but it is deterministic against the SAME window:
@@ -667,7 +653,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
         const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
         let available = true, producing = false;
         return { snapshot: lease.snapshot,
-          ...(lease.assertReady ? { assertReady: (remainingStartMs) => { if (!available || producing) throw new Error("Prepared dispatch is no longer available"); lease.assertReady(remainingStartMs); } } : {}),
+          ...(lease.assertReady ? { assertReady: () => { if (!available || producing) throw new Error("Prepared dispatch is no longer available"); lease.assertReady(); } } : {}),
           ...(lease.checkHandoffSummary ? { checkHandoffSummary: (input) => { if (!available) throw new Error("Prepared dispatch is no longer available"); return lease.checkHandoffSummary(input); } } : {}),
           ...(lease.produceHandoffSummary ? { produceHandoffSummary: async (input) => { if (!available || producing) throw new Error("Prepared producer is no longer available"); const captured = structuredClone(input); producing = true; try { return await lease.produceHandoffSummary(captured); } finally { producing = false; } } } : {}),
           run: async (input) => {
