@@ -1391,7 +1391,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         assertOwned,
         read: () => owned(async () => {
           const record = await this.readRecord(id, held.rootIdentity);
-          const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory()).pending.filter((entry) => entry.state.identity.historyBucket === id);
+          const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory(id)).pending.filter((entry) => entry.state.identity.historyBucket === id);
           if (pending.length > 1) throw new Error("Conflicting pending model switches");
           return structuredClone({ ...(pending[0] ? { pending: pending[0].state } : {}), history: record.messages, source: await this.modelSwitchStorageSource(id),
             ...(record.native ? { native: record.native } : {}), ...(record.lastSwitch ? { lastSwitch: record.lastSwitch } : {}) });
@@ -1609,7 +1609,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           ...lastCommitBinding(existing),
           providerSession: { epoch, revision: revision + 1, ...modelBinding(modelKey) },
         });
-        await this.validateRetentionReservation(rootIdentity, [this.projectRecord(projectedCleanRecord)]);
+        // O(1) self-feasibility only: aggregate retention is checked at commit.
+        if (this.projectRecord(projectedCleanRecord).bytes > this.maxStoreBytes) throw new Error(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`);
         await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
         if (binding?.reconciliation !== undefined) {
           if (this.inspectProviderTurn === undefined || modelKey === undefined) throw new Error("Native turn reconciliation is not configured.");
@@ -1626,7 +1627,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           payload = createPendingTurnPayload({ purpose, ownerKey: admission.ownerKey, historyBucket: normalizedId, turnId: normalizedRunId,
             handleId: providerSessionId, modelKey, baseRevision: revision, fenceDigest: durableTurnFenceDigest(wire) }, inputs, "admitted");
           const pointer = await this.pendingPayloads(rootIdentity).publish(payload, {
-            assertOwned: () => held.assertOwned(), reserve: async (bytes) => await this.validateStagingReservation(rootIdentity, bytes),
+            assertOwned: () => held.assertOwned(), reserve: async (bytes) => this.admitPendingBytes(bytes),
           });
           fence = await this.publishDirtyFence({ ...wire, payload: pointer }, locksIdentity);
         } else fence = await this.publishDirtyFence({
@@ -1778,19 +1779,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let needsDrain;
     try {
-      const fences = await this.scanDirtyFences(locksIdentity, true);
-      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged,
-        ...(await this.pendingPayloads(rootIdentity).list()).map((entry) => entry.conversationKey)]);
+      // Admission inspects only in-flight evidence (fences and pending payloads),
+      // never whole-root history/journal accounting; aggregate quotas are
+      // enforced at commit and retention.
+      const fences = await this.scanDirtyFences(locksIdentity, true), pending = await this.pendingPayloads(rootIdentity).list();
+      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged, ...pending.map((entry) => entry.conversationKey)]);
       physicalOwners.delete(historyKey(conversationId));
-      const existing = await this.readRecord(conversationId, rootIdentity);
-      const nextRevision = (existing.providerSession?.revision ?? 0) < Number.MAX_SAFE_INTEGER
-        ? (existing.providerSession?.revision ?? 0) + 1 : 1;
-      const reservation = await this.retentionPlan(rootIdentity, [this.projectRecord({ version: STORE_VERSION,
-        conversationId, messages: retainHistoryMessages(existing.messages, this.maxMessages), ...lastCommitBinding(existing),
-        providerSession: { epoch: "0".repeat(64), revision: nextRevision, modelKey: binding.modelKey } })]);
       needsDrain = physicalOwners.size >= this.maxConversations
-        || (await this.scanStagedBytes(rootIdentity)) + projected > this.maxStagedBytes
-        || reservation.minimumCount > this.maxConversations || reservation.minimumBytes > this.maxStoreBytes;
+        || pending.reduce((total, entry) => total + entry.bytes, 0) + projected > this.maxStagedBytes;
     } finally { await releaseRoot(); }
     if (needsDrain) await this.drainInactiveTurns({}, historyKey(conversationId));
   }
@@ -1887,7 +1883,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const current = await this.findDirtyFence(fence.conversationKey, await this.ensureLocksRoot());
       if (!current || serializeDirtyFence(current).compare(serializeDirtyFence(fence)) !== 0) throw new Error("Pending fence changed during owner-held publication.");
       const pointer = await this.pendingPayloads(held.rootIdentity).publish(payload, {
-        assertOwned: () => held.assertOwned(), reserve: async (bytes) => await this.validateStagingReservation(held.rootIdentity, bytes),
+        assertOwned: () => held.assertOwned(), reserve: async (bytes) => this.admitPendingBytes(bytes),
       });
       const replacement = await this.publishDirtyFence({ ...fence, payload: pointer }, await this.ensureLocksRoot());
       // After durable pointer replacement, old generations are no longer needed.
@@ -1981,7 +1977,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // published, however, ordinary admission must finish retiring the outgoing
     // journal and the intent rather than strand them.
     if (this.nativeJournalStorage) {
-      const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory()).pending
+      const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory(conversationId)).pending
         .filter((entry) => entry.state.identity.historyBucket === conversationId);
       for (const { state } of pending) if (state.phase === "ready" && canonical.native !== undefined && recognizesModelSwitchBinding(canonical, state.identity)) {
         await this.rollForwardHeldModelSwitch(conversationId, state.identity.switchId, held);
@@ -2473,14 +2469,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async validateStagingReservation(
-    rootIdentity: DirectoryIdentity,
-    plannedBytes: number,
-  ): Promise<void> {
-    const stagedBytes = await this.scanStagedBytes(rootIdentity);
-    if (stagedBytes + plannedBytes > this.maxStagedBytes) {
-      throw new Error(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`);
-    }
+  private async validateStagingReservation(rootIdentity: DirectoryIdentity, plannedBytes: number): Promise<void> {
+    this.admitPendingBytes(await this.scanStagedBytes(rootIdentity) + plannedBytes);
+  }
+  /** Pending-turn payloads are admitted against the staging quota without a
+   * root scan; each is bounded by its per-turn cap and charged at commit. */
+  private admitPendingBytes(bytes: number): void {
+    if (bytes > this.maxStagedBytes) throw new Error(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`);
   }
 
   private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {

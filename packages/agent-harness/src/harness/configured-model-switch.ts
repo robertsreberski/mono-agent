@@ -33,6 +33,9 @@ export interface ConfiguredPreparedTurn {
 const pending = () => new AgentHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit message to authorize further summary work.");
 const budgetFailure = (reason: string) => new AgentHarnessError("handoff_budget_exceeded", `Model handoff cannot fit: ${reason}. No incoming turn was admitted or queued.`);
 const capacity = (error: unknown) => error instanceof ModelSwitchCapacityError || error instanceof NativeEvidenceCapacityError;
+const unreadableJournal = (reason: string) => new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason });
+// The presence probe reads only the header; record damage surfaces at the validating open.
+const journalCorruption = (error: unknown) => error instanceof SyntaxError || (error as { code?: unknown } | null)?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
 
 /** Host path behind the private capability. Unsupported custom stores/runtimes
  * retain the original path without preparing resources or issuing authority. */
@@ -96,7 +99,7 @@ export async function prepareConfiguredModelSwitch(input: {
     // definitive absence counts as missing.
     if (!snapshot.pending && owner.inspectCurrentJournal) {
       const presence = await owner.inspectCurrentJournal();
-      if (presence.status === "unreadable") throw new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason: presence.reason });
+      if (presence.status === "unreadable") throw unreadableJournal(presence.reason);
       if (presence.status === "missing") { missingEpoch = presence.epoch; ready = undefined; switched = false; }
     }
     incoming = await prepareHarnessRuntime({ ...host, assertOwned: () => assertOwned(), prepareContext: input.prepareContext });
@@ -109,7 +112,7 @@ export async function prepareConfiguredModelSwitch(input: {
         // Capture owned bytes (or canonical history for a missing journal) without
         // old auth/provider availability. Resolve the outgoing no-tools lease
         // lazily at its unbilled producer slot.
-        const captured = await owner.captureNativeEvidence();
+        const captured = await owner.captureNativeEvidence().catch((error: unknown) => { throw journalCorruption(error) ? unreadableJournal("malformed") : error; });
         const prepareOutgoing = async (): Promise<PreparedSwitchProducer | undefined> => {
           try {
             const outgoingRuntime = host.routing.runtimeForSession(from);

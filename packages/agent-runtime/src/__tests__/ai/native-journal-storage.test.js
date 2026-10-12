@@ -287,12 +287,18 @@ it("classifies the current journal as present, definitively missing or unreadabl
   await appendFile(f.metadata.path, "{\"torn\":");
   expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "present" });
   const lines = f.before.toString().split("\n");
-  for (const [kind, bytes] of [["record", [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n")], ["header", ["{not json", ...lines.slice(1)].join("\n")]]) {
-    await writeFile(f.metadata.path, bytes);
-    expect(await f.bridge.inspectCurrentJournal(exact), kind).toMatchObject({ status: "unreadable" });
-    expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id }), kind).toMatchObject({ status: "unreadable" });
-    expect(await readFile(f.metadata.path, "utf8")).toBe(bytes);
-  }
+  // The probe is O(1): header identity only. Record damage is refused by the
+  // ordinary open/capture path, never reported as missing or silently used.
+  const record = [...lines.slice(0, 2), "{\"broken\":", ...lines.slice(3)].join("\n");
+  await writeFile(f.metadata.path, record);
+  expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "present" });
+  await expect(f.bridge.captureEvidence(f.source, { assertOwned: async () => {}, ownerKey: authority.ownerKey, historyBucket: authority.historyBucket })).rejects.toThrow();
+  expect(await readFile(f.metadata.path, "utf8")).toBe(record);
+  const header = ["{not json", ...lines.slice(1)].join("\n");
+  await writeFile(f.metadata.path, header);
+  expect(await f.bridge.inspectCurrentJournal(exact)).toMatchObject({ status: "unreadable" });
+  expect(await f.bridge.inspectCurrentJournal({ handleId: f.metadata.id })).toMatchObject({ status: "unreadable" });
+  expect(await readFile(f.metadata.path, "utf8")).toBe(header);
   // Staged-only bytes are uncertainty, not absence.
   await writeFile(`${f.metadata.path}.importing`, f.before, { mode: 0o600 }); await rm(f.metadata.path);
   expect(await f.bridge.inspectCurrentJournal(exact)).toEqual({ status: "unreadable", reason: "staged_only" });

@@ -232,12 +232,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         } finally { for (const writer of writers) writer.release(); }
       }, { wait: false }); } catch (error) { if (error?.code === "ERR_HARNESS_WRITER_BUSY") return true; throw error; }
     },
-    /** Read-only presence probe under the held host claim. Never opens for
+    /** Read-only O(1) presence probe under the held host claim. Never opens for
      * writing, repairs, imports, creates or deletes. `missing` requires a
      * definitive absence: no published/staged file for an exact journal ID, or
      * no catalogue entry (owned or legacy) for the handle. Any other doubt is
-     * `unreadable`, never cold authority. A torn final line is left to the
-     * existing open/repair path; every complete line must parse and validate.
+     * `unreadable`, never cold authority. Only the header is read here; record
+     * damage is refused by the existing open/repair path.
      * @param {{handleId:string, journalId?:string}} coordinates */
     async inspectCurrentJournal(coordinates) {
       const { handleId, journalId } = coordinates ?? {};
@@ -260,11 +260,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           else if (found.unattributed) return unreadable("unattributed");
           else return { status: "missing" };
         }
+        // O(1) presence probe: secure open plus header identity. Body damage is
+        // refused when the ordinary open path validates the journal.
         const reader = await JournalReader.open(meta.path, root);
         try {
-          /** @type {any} */ let header; const validator = new JournalValidator();
-          await reader.scan((record) => { if (!header) { validateJournalHeader(record); header = record; } else validator.apply(record); });
-          if (!header || header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
+          const header = await reader.readHeader(); validateJournalHeader(header);
+          if (header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
         } finally { await reader.close(); }
         return { status: "present" };
       } catch (error) {

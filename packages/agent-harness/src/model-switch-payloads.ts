@@ -82,7 +82,7 @@ export class ModelSwitchPayloadStore {
   }
   /** Artifact-named entries only; strays are skipped, damage is returned flagged. */
   private entries(prefix = "") {
-    return listOwned(this.directory, filePattern, MAX_MODEL_SWITCH_BYTES).then((all) => all.filter((entry) => entry.name.startsWith(prefix)));
+    return listOwned(this.directory, filePattern, MAX_MODEL_SWITCH_BYTES, prefix);
   }
   private coordinates(bucket: string, switchId: string): string { switchHash(switchId); return `${switchConversationKey(bucket)}.${switchId}`; }
   private async readBytes(name: string, maximum: number): Promise<Buffer> {

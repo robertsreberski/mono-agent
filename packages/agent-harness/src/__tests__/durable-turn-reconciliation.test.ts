@@ -510,3 +510,17 @@ it("keeps native accepted acknowledgement behind durable live payload and fence 
     release(); fault.beforePendingSync = undefined; controller.abort(); await response.catch(() => {}); await harness.dispose?.();
   }
 }, 10_000);
+
+it("admits a reconciled turn and its live inputs without whole-root accounting; quotas are enforced at commit", async () => {
+  const f = await fixture();
+  for (const id of ["fictional-other-a", "fictional-other-b", "fictional-other-c"]) await f.store.append(id, [{ role: "assistant", content: `Fictional ${id} reply.` }]);
+  const internals = f.store as unknown as Record<"retentionPlan" | "scanStagedBytes", (...args: unknown[]) => Promise<unknown>>;
+  const retention = vi.spyOn(internals, "retentionPlan"), staged = vi.spyOn(internals, "scanStagedBytes");
+  const turn = await f.begin();
+  await turn.reconciliation!.admit(createPendingLiveInput({ id: "fictional-live", persistText: "Fictional follow-up.", receivedAt: timestamp }, "Fictional follow-up.", "live"));
+  expect(retention).not.toHaveBeenCalled(); expect(staged).not.toHaveBeenCalled();
+  f.inspect.mockImplementation(async (request) => ({ ...evidence(request), consumedInputIds: request.expectedInputs.map((input) => input.id),
+    inputs: request.expectedInputs.map((input) => ({ ...input, messageId: `envelope:${input.id}`, complete: true })) }));
+  await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+  expect(retention).toHaveBeenCalled(); expect(staged).toHaveBeenCalled();
+});

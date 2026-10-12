@@ -129,7 +129,12 @@ history format. Ordinary turn options receive the same validated policy.
 
 Coordinated native turns use immutable `.pending-turns/` generations under the
 private history root, measured before publication and charged to staged-byte
-quota even after a crash. Payloads contain explicitly selected canonical input,
+quota even after a crash. Admission does no whole-root accounting: it checks
+only the turn's own projected record and payload against the quotas and the
+in-flight fences/payloads, so its cost does not grow with the number of
+conversations. Aggregate history and staging quotas are enforced at commit and
+retention; concurrent in-flight turns can overshoot staging by at most one
+payload cap each before a commit refuses. Payloads contain explicitly selected canonical input,
 identity and candidate fields, not `deliveryKey`, memory-only `ownerText`, private
 wake bodies or arbitrary controllers. Execution, compaction and retirement
 fences stay at 1 KiB; payload generations are bounded at 16 MiB.
@@ -871,7 +876,9 @@ dispatches once on canonical replay and reports `degraded_native_context` once.
 A switch request with a lost journal records a canonical `journal_missing` gap
 and summarizes canonical history through the same handoff order; it is never a
 summary-less change. Unreadable bytes, staged-only bytes or catalogue failure
-refuse with `native_journal_unreadable` and preserve evidence.
+refuse with `native_journal_unreadable` and preserve evidence. The probe reads
+only the journal header; record damage is refused the same way when the journal
+is opened or captured.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next

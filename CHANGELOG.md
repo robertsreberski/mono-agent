@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep durable turn admission independent of the number of stored
+  conversations: aggregate history and staging quotas are checked at commit and
+  retention, and the current-journal probe reads only the journal header.
+
 - Freeze harness storage formats and deterministic journal identities. The first
   durable turn after upgrading writes `mono-v2` journals, `.pending-turns` and
   the new canonical history format. This is a one-way upgrade: older binaries
