@@ -142,7 +142,11 @@ and native inventory. Retention can repeat planning after native-I/O windows.
 Quotas are not fixed scan-time bounds: large or damaged roots can delay unrelated
 publication. See [shared-root limits and offline recovery](../../docs/runtime/sessions-concurrency.md#stopped-writer-recovery-of-shared-coordination).
 Damaged per-conversation locks, active markers, dirty fences/temps and lifecycle
-intents stay charged and protected and refuse only their owner. Shared root and
+intents stay charged and protected and refuse only their owner. Owned, bounded
+torn markers and fence temps are reclaimed after their filename PID dies;
+operational filesystem errors propagate rather than becoming damage. First
+native-root bootstrap still refuses damaged recovery evidence anywhere in the
+root when it cannot prove those owners drained. Shared root and
 logical-session coordination damage remains root-fatal. Redundant conversation
 shard locks are no longer created or validated; older writers' files stay intact.
 

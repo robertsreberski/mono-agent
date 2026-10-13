@@ -321,10 +321,13 @@ interface HeldExactConversationClaim {
 }
 
 class HistoryOwnerBusyError extends Error {}
+/** Only emitted after securely reading a marker/fence; never an I/O error. */
+class TornCoordinationFileError extends Error {}
 class NativeRootMarkerMissingError extends TypeError { constructor() { super("Native canonical root authority marker is missing; restore consistent backup"); } }
 class CanonicalParseFailure extends Error { constructor(error: unknown) { super(error instanceof Error ? error.message : "Unreadable canonical history", { cause: error }); } }
 
 interface RootAccounting {
+  readonly damaged: Set<string>;
   readonly records: Map<string, LoadedHistoryRecord | undefined>;
   rawSwitches?: Promise<Awaited<ReturnType<ModelSwitchPayloadStore["inventory"]>>>;
   native?: Promise<Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>>;
@@ -470,13 +473,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             catch (error) {
               await assertDirectoryIdentity(this.root, rootIdentity);
               await this.pendingPayloads(rootIdentity).list(); // recheck the pinned subdirectory before isolating damage
-              const code = causedErrno(error);
-              if (code === "ENOENT") { pending.delete(entry.name); continue; }
-              if (code && !["EACCES", "EPERM", "ELOOP"].includes(code)) throw error;
+              if (entryAbsentOrThrowOperational(error)) { pending.delete(entry.name); continue; }
               damaged = entry.name;
             }
           }
-          if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || pending.size) {
+          if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || fences.incomplete.size || pending.size) {
             throw new NativeHistoryAuthorityBusyError(damaged !== undefined, damaged);
           }
           // A readable native record without the marker refuses; an unreadable sibling stays isolated to its owner.
@@ -488,7 +489,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         marker = await rootStore.ensure({ assertOwned, reserve: async (bytes) => {
           const plan = await this.retentionPlan(rootIdentity, []);
           if (plan.projectedBytes + bytes > this.maxStoreBytes || await this.scanStagedBytes(rootIdentity) + bytes > this.maxStagedBytes) {
-            throw new ModelSwitchCapacityError("Native root authority capacity unavailable");
+            throw new ModelSwitchCapacityError(this.quotaDiagnostic("Native root authority capacity unavailable"));
           }
         } });
       } finally { await releaseRoot(); }
@@ -505,9 +506,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     this.modelSwitchPayloadStore ??= new ModelSwitchPayloadStore(this.root, rootIdentity); return this.modelSwitchPayloadStore;
   }
   private rootAccounting: RootAccounting | undefined;
+  private noteDamagedEntry(name: string): void { this.rootAccounting?.damaged.add(name); }
+  private quotaDiagnostic(message: string): string {
+    const names = [...this.rootAccounting?.damaged ?? []].sort();
+    return names.length ? `${message} Protected damaged entries: ${names.slice(0, 8).join(", ")}${names.length > 8 ? ` (+${names.length - 8} more)` : ""}.` : message;
+  }
   private invalidateCanonicalAccounting(name: string): void {
     if (!this.rootAccounting) return;
-    this.rootAccounting.records.delete(name);
+    this.rootAccounting.records.delete(name); this.rootAccounting.damaged.delete(name);
     delete this.rootAccounting.rawSwitches; delete this.rootAccounting.switches;
     delete this.rootAccounting.native; delete this.rootAccounting.operations;
   }
@@ -519,7 +525,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const cached = this.rootAccounting?.records ?? new Map<string, LoadedHistoryRecord | undefined>();
     for (const entry of entries) if (!cached.has(entry.name)) {
       try { cached.set(entry.name, await this.readCommittedEntryRecord(entry, rootIdentity)); }
-      catch (error) { if (!(error instanceof CanonicalParseFailure)) throw error; cached.set(entry.name, undefined); }
+      catch (error) { if (!(error instanceof CanonicalParseFailure)) throw error; this.noteDamagedEntry(entry.name); cached.set(entry.name, undefined); }
     }
     return new Map(entries.map((entry) => [entry.name, cached.get(entry.name)]));
   }
@@ -550,6 +556,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async modelSwitchFootprint(rootIdentity: DirectoryIdentity, records?: ReadonlyMap<string, LoadedHistoryRecord | undefined>, native?: Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>) {
     const compute = async () => {
       const footprint = await this.switchInventory(rootIdentity);
+      for (const key of footprint.damaged) this.noteDamagedEntry(`${MODEL_SWITCH_DIRECTORY}/${key}.*`);
       if (!this.nativeJournalStorage) return { ...footprint, nativeBytes: 0, nativeStagedBytes: 0 };
       const physical = native ?? await this.managedNativeInventory(rootIdentity, records);
       let nativeStagedBytes = physical.stagedBytes;
@@ -639,8 +646,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const plan = await this.retentionPlan(rootIdentity, []);
         // Storage admission never deletes unrelated owners merely to reserve a
         // switch; failure precedes publication/provider work.
-        if (plan.projectedBytes + additional > this.maxStoreBytes || plan.projectedCount > this.maxConversations) throw new ModelSwitchCapacityError("Model-switch aggregate history capacity unavailable");
-        if (await this.scanStagedBytes(rootIdentity) + additional > this.maxStagedBytes) throw new ModelSwitchCapacityError("Model-switch staged capacity unavailable");
+        if (plan.projectedBytes + additional > this.maxStoreBytes || plan.projectedCount > this.maxConversations) throw new ModelSwitchCapacityError(this.quotaDiagnostic("Model-switch aggregate history capacity unavailable"));
+        if (await this.scanStagedBytes(rootIdentity) + additional > this.maxStagedBytes) throw new ModelSwitchCapacityError(this.quotaDiagnostic("Model-switch staged capacity unavailable"));
       };
       const owner: ModelSwitchStorageOwner = { ownerKey, historyBucket: bucket, assertOwned,
         withRootTransaction: async (action) => { await assertOwned(); const unlock = await this.acquireRootTransaction(rootIdentity); try {
@@ -818,12 +825,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const physical = this.nativeJournalStorage ? native ?? await this.managedNativeInventory(rootIdentity) : undefined;
       for (const name of await readdir(this.root)) {
         const match = NATIVE_OPERATION_PATTERN.exec(name); if (!match) continue;
-        keys.add(match[1]!);
-        try { bytes += (await lstat(join(this.root, name))).size; }
+        keys.add(match[1]!); let size = 0;
+        try { size = (await lstat(join(this.root, name))).size; bytes += size; }
         catch (error) {
           await assertDirectoryIdentity(this.root, rootIdentity);
-          if (isErrno(error, "ENOENT")) { keys.delete(match[1]!); continue; }
-          bytes += MAX_NATIVE_OPERATION_BYTES; continue;
+          if (entryAbsentOrThrowOperational(error)) { keys.delete(match[1]!); continue; }
+          this.noteDamagedEntry(name); bytes += MAX_NATIVE_OPERATION_BYTES; continue;
         }
         // Accounting does not need dispatchable membership. Invalid owner evidence
         // remains charged and protected rather than blocking unrelated mutation.
@@ -833,7 +840,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (raw.disposition === "C" && raw.next) {
             reserved += Math.max(0, MAX_NATIVE_EPOCH_BYTES - (physical?.journals[currentJournal(raw.next.conversationId, raw.next.providerSession.epoch).journalId]?.retainedBytes ?? 0));
           }
-        } catch { await assertDirectoryIdentity(this.root, rootIdentity); }
+        } catch (error) {
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          if (entryAbsentOrThrowOperational(error)) { keys.delete(match[1]!); bytes -= size; continue; }
+          this.noteDamagedEntry(name);
+        }
       }
       await assertDirectoryIdentity(this.root, rootIdentity); return { bytes, reserved, keys };
     };
@@ -936,7 +947,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readNativeOperationBytes(name, rootIdentity))); this.validateNativeOperation(raw);
         const operation = await this.readNativeOperation(raw.source.conversationId, rootIdentity);
         if (!operation || this.nativeOperationPath(raw.source.conversationId) !== path) throw new TypeError("Native lifecycle filename changed"); operations.push(operation);
-      } catch { await assertDirectoryIdentity(this.root, rootIdentity); await this.nativeHistoryRoot(rootIdentity).read(); }
+      } catch (error) {
+        await assertDirectoryIdentity(this.root, rootIdentity); await this.nativeHistoryRoot(rootIdentity).read();
+        if (!entryAbsentOrThrowOperational(error)) this.noteDamagedEntry(name);
+      }
     }
     return operations;
   }
@@ -959,7 +973,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     committingOwner: HeldLogicalConversation, phase: "prepare" | "maintenance"): Promise<void> {
     if (!this.nativeJournalStorage) return;
     const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
-    for (const key of (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).damaged.keys()) active.add(key);
+    const fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+    for (const key of [...fences.damaged.keys(), ...fences.incomplete.keys()]) active.add(key);
     for (const operation of await this.nativeOperationOwners(rootIdentity)) {
       const id = operation.source.conversationId, logicalId = logicalConversationIdForFence(id);
       if (operation.disposition !== "D" || active.has(historyKey(id))
@@ -1643,7 +1658,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           providerSession: { epoch, revision: revision + 1, ...modelBinding(modelKey) },
         });
         // O(1) self-feasibility only: aggregate retention is checked at commit.
-        if (this.projectRecord(projectedCleanRecord).bytes > this.maxStoreBytes) throw new Error(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`);
+        if (this.projectRecord(projectedCleanRecord).bytes > this.maxStoreBytes) throw new Error(this.quotaDiagnostic(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`));
         await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
         if (binding?.reconciliation !== undefined) {
           if (this.inspectProviderTurn === undefined || modelKey === undefined) throw new Error("Native turn reconciliation is not configured.");
@@ -1816,7 +1831,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // never whole-root history/journal accounting; aggregate quotas are
       // enforced at commit and retention.
       const fences = await this.scanDirtyFences(locksIdentity, true), pending = await this.pendingPayloads(rootIdentity).list();
-      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...pending.map((entry) => entry.conversationKey)]);
+      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...fences.incomplete.keys(), ...pending.map((entry) => entry.conversationKey)]);
       physicalOwners.delete(historyKey(conversationId));
       needsDrain = physicalOwners.size >= this.maxConversations
         || pending.reduce((total, entry) => total + entry.bytes, 0) + projected > this.maxStagedBytes;
@@ -2086,7 +2101,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         conversations: entries.length,
         bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + await this.nativeHistoryRoot(rootIdentity).bytes(),
         reservedBytes: switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0) + operations.reserved,
-        activePreparedAppends: active.length,
+        activePreparedAppends: active.filter((marker) => !marker.damaged).length,
         postCommitMaintenanceFailures: maintenance?.count ?? 0,
         ...(maintenance?.lastError === undefined
           ? {}
@@ -2156,8 +2171,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (existing) { if (switchDigest(existing) !== switchDigest(operation)) throw new Error("Conflicting native cold reservation"); return; }
     const bytes = Buffer.byteLength(JSON.stringify(operation) + "\n");
     const retention = await this.retentionPlan(rootIdentity, [this.projectRecord(operation.next!)]);
-    if (retention.minimumBytes + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStoreBytes || retention.minimumCount > this.maxConversations) throw new Error("Native cold history capacity unavailable");
-    if (!settles && await this.scanStagedBytes(rootIdentity) + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStagedBytes) throw new Error("Native cold staging capacity unavailable");
+    if (retention.minimumBytes + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStoreBytes || retention.minimumCount > this.maxConversations) throw new Error(this.quotaDiagnostic("Native cold history capacity unavailable"));
+    if (!settles && await this.scanStagedBytes(rootIdentity) + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStagedBytes) throw new Error(this.quotaDiagnostic("Native cold staging capacity unavailable"));
   }
   private createNativePreparedAppend(stage: ActiveStage, operation: NativeHistoryOperation, held: HeldConversation, keepOwner: boolean, onSettled?: () => void, settles = false): PreparedHistoryAppend {
     let state: "prepared" | "committed" | "aborted" = "prepared", pending = Promise.resolve();
@@ -2211,6 +2226,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<DirtyFence | undefined> {
     const fences = await this.scanDirtyFences(locksIdentity, true);
     if (fences.damaged.has(conversationKey)) throw new OwnedFileDamagedError(fences.damaged.get(conversationKey)!);
+    if (fences.incomplete.has(conversationKey)) throw new HistoryOwnerBusyError(`History coordination write is incomplete: ${fences.incomplete.get(conversationKey)}`);
     return fences.find((fence) => fence.conversationKey === conversationKey);
   }
 
@@ -2221,7 +2237,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<void> {
     let fences = await this.scanDirtyFences(locksIdentity, true);
     const pendingKeys = new Set((await this.pendingPayloads(rootIdentity).list()).map((entry) => entry.conversationKey));
-    const targetCount = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...pendingKeys, conversationKey]).size;
+    const targetCount = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...fences.incomplete.keys(), ...pendingKeys, conversationKey]).size;
     if (targetCount <= this.maxConversations) return;
 
     const committedKeys = new Set(
@@ -2256,12 +2272,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
     if (remaining > this.maxConversations) {
-      throw new Error(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`);
+      throw new Error(this.quotaDiagnostic(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`));
     }
     fences = await this.scanDirtyFences(locksIdentity, false);
-    if (new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...pendingKeys, conversationKey]).size
+    if (new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...fences.incomplete.keys(), ...pendingKeys, conversationKey]).size
       > this.maxConversations) {
-      throw new Error(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`);
+      throw new Error(this.quotaDiagnostic(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`));
     }
   }
 
@@ -2504,10 +2520,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<void> {
     const plan = await this.retentionPlan(rootIdentity, projectedStages);
     if (plan.minimumCount > this.maxConversations) {
-      throw new Error(`Conversation history exceeds its ${this.maxConversations}-conversation quota.`);
+      throw new Error(this.quotaDiagnostic(`Conversation history exceeds its ${this.maxConversations}-conversation quota.`));
     }
     if (plan.minimumBytes > this.maxStoreBytes) {
-      throw new Error(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`);
+      throw new Error(this.quotaDiagnostic(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`));
     }
   }
 
@@ -2517,7 +2533,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   /** Pending-turn payloads are admitted against the staging quota without a
    * root scan; each is bounded by its per-turn cap and charged at commit. */
   private admitPendingBytes(bytes: number): void {
-    if (bytes > this.maxStagedBytes) throw new Error(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`);
+    if (bytes > this.maxStagedBytes) throw new Error(this.quotaDiagnostic(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`));
   }
 
   private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
@@ -2526,7 +2542,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const maxPlans = (await this.scanCommittedEntries(rootIdentity, false)).length + 1;
     for (let iteration = 0; iteration < maxPlans; iteration++) {
       const plan = await this.retentionPlan(rootIdentity, [committedStage], attempted);
-      if (plan.minimumCount > this.maxConversations || plan.minimumBytes > this.maxStoreBytes) throw new Error("Conversation history retention reservation changed after publication.");
+      if (plan.minimumCount > this.maxConversations || plan.minimumBytes > this.maxStoreBytes) throw new Error(this.quotaDiagnostic("Conversation history retention reservation changed after publication."));
       let bytes = plan.projectedBytes, count = plan.projectedCount, replan = false;
       // Preserve global LRU order. After any unlocked native window, rebuild
       // all coordinates, protections and estimates before considering a victim.
@@ -2573,10 +2589,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         count--; bytes -= entry.size;
       }
       if (replan) continue;
-      if (count > this.maxConversations || bytes > this.maxStoreBytes) throw new Error("Retention victims became unavailable; quota maintenance remains pending.");
+      if (count > this.maxConversations || bytes > this.maxStoreBytes) throw new Error(this.quotaDiagnostic("Retention victims became unavailable; quota maintenance remains pending."));
       await assertDirectoryIdentity(this.root, rootIdentity); return;
     }
-    throw new Error("Retention replanning bound reached; quota maintenance remains pending.");
+    throw new Error(this.quotaDiagnostic("Retention replanning bound reached; quota maintenance remains pending."));
   }
 
   private async retentionPlan(
@@ -2601,7 +2617,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const fence of fences) {
       if (fence.kind === "execution" || fence.kind === "compaction") protectedNames.add(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
     }
-    for (const key of fences.damaged.keys()) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    for (const key of [...fences.damaged.keys(), ...fences.incomplete.keys()]) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     const managedRoot = await this.nativeHistoryRoot(rootIdentity).read() !== undefined;
     let records = new Map<string, LoadedHistoryRecord | undefined>();
     const wantsPruning = entries.length + projectedStages.filter((stage) => !entries.some((entry) => entry.name === stage.destinationName)).length > this.maxConversations
@@ -2613,9 +2629,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const switches = await this.modelSwitchFootprint(rootIdentity, records, native);
     for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
     // Damaged switch/pending evidence protects its own conversation from eviction.
-    for (const key of switches.damaged) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    for (const key of switches.damaged) { protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`); this.noteDamagedEntry(`${MODEL_SWITCH_DIRECTORY}/${key}.*`); }
     const pending = await this.pendingPayloads(rootIdentity).list();
-    for (const entry of pending) if (entry.damaged) protectedNames.add(`${entry.conversationKey}${HISTORY_FILE_SUFFIX}`);
+    for (const entry of pending) if (entry.damaged) { protectedNames.add(`${entry.conversationKey}${HISTORY_FILE_SUFFIX}`); this.noteDamagedEntry(entry.name); }
     const operations = await this.nativeOperationFootprint(rootIdentity, native);
     for (const key of operations.keys) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     for (const [name, record] of records) if (record?.native !== undefined && !this.nativeJournalStorage) protectedNames.add(name);
@@ -2654,6 +2670,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // A victim's orphan generations are collected with it: unreadable ones protect it instead.
       if (await this.anyPendingDamaged(pending.filter((item) => `${item.conversationKey}${HISTORY_FILE_SUFFIX}` === entry.name), rootIdentity)) continue;
       const journal = record?.native !== undefined ? currentJournal(record.conversationId, record.providerSession!.epoch) : undefined;
+      if (journal && native?.journals[journal.journalId]?.damaged) this.noteDamagedEntry(`native journal ${journal.journalId}`);
       if (journal && ((native?.journals[journal.journalId]?.stagedBytes ?? 0) > 0 || native?.journals[journal.journalId]?.damaged
         || await this.nativeJournalStorage!.deletionBlocked([journal], record!.native!.authority))) continue;
       const extra = journal ? (native?.journals[journal.journalId]?.retainedBytes ?? 0)
@@ -2671,7 +2688,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async anyPendingDamaged(entries: readonly PendingPayloadEntry[], rootIdentity: DirectoryIdentity): Promise<boolean> {
     for (const entry of entries) {
       if (entry.name.endsWith(".tmp")) continue;
-      try { await this.pendingPayloads(rootIdentity).inspect(entry); } catch { await assertDirectoryIdentity(this.root, rootIdentity); return true; }
+      try { await this.pendingPayloads(rootIdentity).inspect(entry); }
+      catch (error) {
+        await assertDirectoryIdentity(this.root, rootIdentity);
+        if (entryAbsentOrThrowOperational(error)) continue;
+        this.noteDamagedEntry(entry.name); return true;
+      }
     }
     return false;
   }
@@ -2685,7 +2707,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // They are not abandoned canonical staging and require owner-held recovery.
     const switches = await this.modelSwitchFootprint(rootIdentity);
     const operations = await this.nativeOperationFootprint(rootIdentity);
-    let bytes = operations.bytes + operations.reserved + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0) + switches.bytes + switches.nativeStagedBytes + await this.nativeHistoryRoot(rootIdentity).bytes()
+    const pending = await this.pendingPayloads(rootIdentity).list();
+    for (const entry of pending) if (entry.damaged) this.noteDamagedEntry(entry.name);
+    let bytes = operations.bytes + operations.reserved + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + pending.reduce((total, entry) => total + entry.bytes, 0) + switches.bytes + switches.nativeStagedBytes + await this.nativeHistoryRoot(rootIdentity).bytes()
       + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let removed = false;
     for (const name of (await readdir(this.root)).sort()) {
@@ -2694,7 +2718,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const path = join(this.root, name);
       const info = await lstat(path);
       // A damaged stage is charged and kept, never removed or root-fatal.
-      if (damagedStage(info)) { bytes += info.size; continue; }
+      if (damagedStage(info)) { this.noteDamagedEntry(name); bytes += info.size; continue; }
       // Every legitimate stage is created only after its active marker and
       // both are mutated under the root transaction. A stage without a marker
       // is therefore abandoned even when its filename PID is still live or
@@ -2795,7 +2819,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       await assertDirectoryIdentity(this.root, rootIdentity);
       const locksIdentity = await this.ensureLocksRoot();
       const lock = await acquireCrossProcessLock(join(this.root, LOCKS_DIRECTORY, ROOT_LOCK_FILE), locksIdentity);
-      const accounting: RootAccounting = { records: new Map() };
+      const accounting: RootAccounting = { records: new Map(), damaged: new Set() };
       this.rootAccounting = accounting;
       let released = false;
       return async (): Promise<void> => {
@@ -3078,10 +3102,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await readActiveMarker(path);
       } catch (error) {
         await this.assertLocksIdentity(locksIdentity);
-        if (isErrno(error, "ENOENT")) continue;
-        markers.push({ ...marker, damaged: true }); continue;
+        if (entryAbsentOrThrowOperational(error)) continue;
+        // Only a successful owned-file read may prove a torn liveness marker.
+        // A dead writer cannot finish it; there is no recoverable payload here.
+        if (error instanceof TornCoordinationFileError && cleanDead && !isProcessAlive(marker.pid)) {
+          await rm(path); removed = true; continue;
+        }
+        if (error instanceof TornCoordinationFileError) { markers.push(marker); continue; }
+        this.noteDamagedEntry(name); markers.push({ ...marker, damaged: true }); continue;
       }
-      // Only validated evidence may be reclaimed, even when its filename PID is dead.
+      // Valid markers and owned torn markers are both reclaimable after owner death.
       if (cleanDead && !isProcessAlive(marker.pid)) { await rm(path); removed = true; }
       else markers.push(marker);
     }
@@ -3094,7 +3124,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async legacyLockAvailable(key: string): Promise<boolean> {
     const identity = await this.ensureLocksRoot(); let lock: CrossProcessLock | undefined;
     try { lock = await acquireExistingCrossProcessLock(join(this.root, LOCKS_DIRECTORY, `${key}.sqlite`), identity, true); return true; }
-    catch { await this.assertLocksIdentity(identity); return false; }
+    catch (error) {
+      await this.assertLocksIdentity(identity);
+      if (entryAbsentOrThrowOperational(error)) return true;
+      if (!(error instanceof HistoryOwnerBusyError)) this.noteDamagedEntry(`${key}.sqlite`);
+      return false;
+    }
     finally { await lock?.release(); }
   }
 
@@ -3109,10 +3144,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async scanDirtyFences(
     locksIdentity: DirectoryIdentity,
     cleanDeadTemps: boolean,
-  ): Promise<readonly DirtyFence[] & { readonly damaged: ReadonlyMap<string, string>; readonly bytes: number }> {
+  ): Promise<readonly DirtyFence[] & { readonly damaged: ReadonlyMap<string, string>; readonly incomplete: ReadonlyMap<string, string>; readonly bytes: number }> {
     const locksRoot = join(this.root, LOCKS_DIRECTORY);
     await assertDirectoryIdentity(locksRoot, locksIdentity);
-    const fences: DirtyFence[] = [], damaged = new Map<string, string>();
+    const fences: DirtyFence[] = [], damaged = new Map<string, string>(), incomplete = new Map<string, string>();
     let removed = false, bytes = 0;
     for (const name of (await readdir(locksRoot)).sort()) {
       const path = join(locksRoot, name);
@@ -3139,14 +3174,23 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (legacy) { bytes += info.size; continue; } // SQLite content is checked only by its owning connection
         const fence = await readDirtyFence(path);
         const key = (fenceMatch ?? tempMatch)![1]!;
-        if (fence.conversationKey !== key) throw new Error(`History dirty fence ${path} does not match its filename.`);
+        if (fence.conversationKey !== key) throw new TornCoordinationFileError(`History dirty fence ${path} does not match its filename.`);
         if (fenceMatch) fences.push({ ...fence, mtimeMs: info.mtimeMs });
         else if (cleanDeadTemps && !isProcessAlive(Number.parseInt(tempMatch![2]!, 10))) {
           await rm(path); removed = true;
         }
       } catch (error) {
         await this.assertLocksIdentity(locksIdentity);
-        if (isErrno(error, "ENOENT")) continue;
+        if (entryAbsentOrThrowOperational(error)) continue;
+        const temporaryOwner = tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name);
+        if (error instanceof TornCoordinationFileError && temporaryOwner && cleanDeadTemps
+          && !isProcessAlive(Number.parseInt(temporaryOwner[2]!, 10))) {
+          await rm(path); removed = true; continue;
+        }
+        if (error instanceof TornCoordinationFileError && temporaryOwner) {
+          incomplete.set(temporaryOwner[1]!, name); bytes += info!.size; continue;
+        }
+        this.noteDamagedEntry(name);
         // Healthy markers/fences are coordination overhead; damage stays charged.
         // If metadata itself is unreadable, reserve the format cap, never zero.
         bytes += info?.size ?? (legacy ? 64 * 1024 : ACTIVE_MARKER_PATTERN.test(name) ? MAX_ACTIVE_MARKER_BYTES : MAX_DIRTY_FENCE_BYTES);
@@ -3155,7 +3199,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // Unrelated names are never read, charged or deleted.
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
-    return Object.assign(fences, { damaged, bytes });
+    return Object.assign(fences, { damaged, incomplete, bytes });
   }
 
   private async retireInactiveDirtyFences(
@@ -3178,7 +3222,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (
         fence.conversationKey === excludedConversationKey
         || fence.kind === "execution" || fence.kind === "compaction"
-        || activeKeys.has(fence.conversationKey) || fences.damaged.has(fence.conversationKey)
+        || activeKeys.has(fence.conversationKey) || fences.damaged.has(fence.conversationKey) || fences.incomplete.has(fence.conversationKey)
         || switchingKeys.has(fence.conversationKey)
         || fence.providerSessionId === undefined
       ) {
@@ -4306,7 +4350,7 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
   const before = await lstat(path);
   assertSecureHistoryFile(before, path);
   if (before.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
-  let handle;
+  let handle, contentsRead = false;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
     const opened = await handle.stat();
@@ -4315,7 +4359,8 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
     const bytes = await handle.readFile();
     if (bytes.byteLength > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
     const after = await handle.stat();
-    assertSameIdentity(opened, after, path);
+    assertSecureHistoryFile(after, path); assertSameIdentity(opened, after, path);
+    contentsRead = true;
     let value: unknown;
     try {
       value = JSON.parse(bytes.toString("utf8"));
@@ -4342,6 +4387,9 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
       pid: value.pid as number,
       token: value.token,
     };
+  } catch (error) {
+    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
+    throw error;
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -4351,7 +4399,7 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
   const before = await lstat(path);
   assertSecureHistoryFile(before, path);
   if (before.size > MAX_DIRTY_FENCE_BYTES) throw new Error(`History dirty fence ${path} is too large.`);
-  let handle;
+  let handle, contentsRead = false;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
     const opened = await handle.stat();
@@ -4360,7 +4408,8 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     const bytes = await handle.readFile();
     if (bytes.byteLength > MAX_DIRTY_FENCE_BYTES) throw new Error(`History dirty fence ${path} is too large.`);
     const after = await handle.stat();
-    assertSameIdentity(opened, after, path);
+    assertSecureHistoryFile(after, path); assertSameIdentity(opened, after, path);
+    contentsRead = true;
     let value: unknown;
     try {
       value = JSON.parse(bytes.toString("utf8"));
@@ -4421,6 +4470,9 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
       revision: value.revision as number,
       runIdDigest: value.runIdDigest,
     };
+  } catch (error) {
+    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
+    throw error;
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -4617,4 +4669,11 @@ function causedErrno(error: unknown): string | undefined {
     error = "cause" in error ? error.cause : undefined;
   }
   return undefined;
+}
+
+/** Absence is not damage; resource/device failures retain their original cause. */
+function entryAbsentOrThrowOperational(error: unknown): boolean {
+  const code = causedErrno(error);
+  if (code && !["ENOENT", "EACCES", "EPERM", "ELOOP"].includes(code)) throw error;
+  return code === "ENOENT";
 }

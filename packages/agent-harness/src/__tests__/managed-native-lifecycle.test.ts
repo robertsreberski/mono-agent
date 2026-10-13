@@ -497,14 +497,14 @@ it("rejects D intents with a native replacement even when the replacement is emp
   expect(() => (f.store as any).validateNativeOperation(intent)).toThrow("Invalid native deletion replacement");
 });
 
-it.each(["intent", "lock", "marker", "fence", "temporary"])("preserves native inventory and never resumes D through damaged owner %s evidence", async (kind) => {
+it.each(["intent", "lock", "marker", "fence", "temporary"])("preserves native inventory and never resumes D through damaged or incomplete owner %s evidence", async (kind) => {
   const f = await setup(), deletion = vi.spyOn(f.native, "deleteJournals").mockRejectedValue(new Error("Fictional paused deletion"));
   await expect(f.store.reset(bucket)).rejects.toThrow("Fictional paused deletion");
   const root = join(f.base, "history"), key = switchConversationKey(bucket);
   const intent = join(root, `.native-history-op.${key}.json`), original = await readFile(intent), canonical = await readFile(f.canonicalPath);
   const path = kind === "intent" ? intent : join(root, ".locks", kind === "lock" ? `${key}.sqlite`
-    : kind === "marker" ? `${key}.1073741824.${"a".repeat(32)}.active`
-    : kind === "fence" ? `${key}.dirty.json` : `.${key}.1073741824.${"a".repeat(24)}.dirty.tmp`);
+    : kind === "marker" ? `${key}.${process.pid}.${"a".repeat(32)}.active`
+    : kind === "fence" ? `${key}.dirty.json` : `.${key}.${process.pid}.${"a".repeat(24)}.dirty.tmp`);
   if (kind === "intent") await chmod(path, 0o644);
   else await writeFile(path, "{broken", { mode: 0o600 });
   const before = (await f.store.stats()).bytes, calls = deletion.mock.calls.length;

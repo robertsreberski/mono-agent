@@ -5,7 +5,9 @@
 - Keep damaged conversation locks, active markers, dirty fences and lifecycle
   intents charged and protected without refusing unrelated conversations.
   Stop creating redundant conversation-shard locks while preserving older
-  writers' files. Document stopped-writer recovery for shared coordination.
+  writers' files. Reclaim owned torn markers and fence temps after writer death,
+  preserve operational filesystem errors, and name damaged quota blockers.
+  Document stopped-writer recovery for shared coordination.
 - Fix native-authority bootstrap to drop vanished pending entries, name damaged
   artifacts and preserve operational filesystem errors and their causes.
 

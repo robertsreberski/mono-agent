@@ -201,7 +201,10 @@ records and stages, per-conversation lock files, active markers, dirty fences
 and fence temps in `.locks`, and `.native-history-op.<hash>.json` lifecycle
 intents. Insecure, oversized and unreadable owner artifacts are preserved too;
 damaged lifecycle contents are never executed. Only their owning conversation
-is refused until offline repair. The diagnostic names the unavailable artifact;
+is refused until offline repair. An owned, bounded marker or fence temp torn by
+a killed writer has no recoverable payload: it is reclaimed once its filename
+PID is dead. Torn files with live PIDs remain protected. Resource/device errors
+such as EMFILE or EIO propagate; they are not classified as owner damage. The diagnostic names the unavailable artifact;
 canonical records and legacy SQLite locks may report their underlying error.
 A canonical record that reads as truncated JSON is instead set aside unchanged
 as `<record>.damaged-<n>` beside it, under the conversation's lock; the conversation
@@ -216,6 +219,12 @@ journals, `.native-history-root.json`, or pinned root/subdirectory identities
 still stops the whole root. Cancelling a native turn stops its wait for a native
 session lock held by another process; host history-claim waits are not yet
 cancellable.
+
+First native-root bootstrap is an exception to owner-local refusal: it cannot
+prove that earlier recovery owners are drained when another owner's marker,
+fence or pending-turn evidence is damaged. Bootstrap then refuses non-retryably
+until that evidence is repaired; ordinary unrelated history operations remain
+available, and an already-issued root authority does not repeat this check.
 
 Admission avoids a root-wide history inventory, but preparation, commit and
 retention may scan all recognized history and recovery artifacts while holding
@@ -237,9 +246,10 @@ samples are not latency guarantees (`scripts/measure-history-accounting.mjs`).
    Identify the exact failed artifact from the diagnostic; do not guess from
    another conversation's symptoms.
 3. Rename only that identified file to a collision-free `<name>.damaged-<n>`
-   beside it. For a SQLite database with an associated recovery journal, preserve
-   the corresponding journal alongside that database before rebuilding it. Do
-   **not** remove `.locks` wholesale, or move fences, payloads or lifecycle intents
+   beside it. Rename `<name>.sqlite-journal`, if present, together with the
+   identified `<name>.sqlite` (using the same `.damaged-<n>` suffix). Never leave
+   an old journal beside a recreated database. Do **not** remove `.locks`
+   wholesale, or move fences, payloads or lifecycle intents
    as part of shared-lock recovery.
 4. An empty shared coordination database can be recreated at restart. A damaged
    `.native-history-root.json` cannot: restore that exact authority marker from
@@ -548,8 +558,9 @@ The root SQLite lock still serializes retention accounting, active-marker and
 dirty-fence maintenance, and history publication; it is not held across provider
 execution. Fail-closed provider retirement during root maintenance can still delay
 other mutations. Claim rows are deleted on settlement or reclaimed only after
-owner death, never stolen on a timer. The bounded registry and existing 16
-conversation-shard files remain in place; no per-conversation lock files are
+owner death, never stolen on a timer. The fixed 16-file logical-session registry
+remains; redundant conversation-shard files are no longer created or validated,
+but older writers' existing files stay in place. No per-conversation lock files are
 created, and no possibly-open lock inode is unlinked. Storage growth and claim
 capacity limits are unchanged.
 

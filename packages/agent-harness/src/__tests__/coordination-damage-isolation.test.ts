@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { fork } from "node:child_process";
+import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { OwnedFileDamagedError } from "@mono-agent/harness/owned-fs.js";
@@ -29,8 +31,10 @@ const artifacts = {
   lifecycle: (root: string) => join(root, `.native-history-op.${key(owner)}.json`),
 };
 for (const [kind, artifact] of Object.entries(artifacts)) {
-  it.each(["malformed", "insecure", "oversized", "read failure"])(`${kind}: %s damage refuses only its owner, stays charged and survives retention`, async (damage) => {
-    const { root, store } = await fixture(), path = artifact(root);
+  it.each(["malformed", "insecure", "oversized", "read failure"])(`${kind}: %s evidence refuses only its owner, stays charged and survives retention`, async (damage) => {
+    const { root, store } = await fixture();
+    // A live writer may still finish a torn marker/temp; only dead torn files are reclaimable.
+    const path = damage === "malformed" ? artifact(root).replace(".1073741824.", `.${process.pid}.`) : artifact(root);
     await fs.writeFile(path, "{broken", { mode: 0o600 });
     if (damage === "insecure") await fs.chmod(path, 0o644);
     if (damage === "oversized") await fs.truncate(path, 2 ** 28); // sparse, above every owner-artifact cap
@@ -38,14 +42,14 @@ for (const [kind, artifact] of Object.entries(artifacts)) {
     if (damage === "read failure") {
       const original = fs.open;
       vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-        if (String(args[0]) === path) throw Object.assign(new Error("Injected entry read failure"), { code: "EIO" });
+        if (String(args[0]) === path) throw Object.assign(new Error("Injected entry read failure"), { code: "EACCES" });
         return original(...args);
       });
       // SQLite reads through its own connection, never a raw descriptor. Fail its metadata probe instead.
       if (kind === "lock") {
         const stat = fs.lstat;
         vi.spyOn(fs, "lstat").mockImplementation(((...args: Parameters<typeof fs.lstat>) => {
-          if (String(args[0]) === path) return Promise.reject(Object.assign(new Error("Injected lock metadata failure"), { code: "EIO" }));
+          if (String(args[0]) === path) return Promise.reject(Object.assign(new Error("Injected lock metadata failure"), { code: "EACCES" }));
           return stat(...args);
         }) as typeof fs.lstat);
       }
@@ -87,7 +91,7 @@ it.each(["root", "locks"])("rechecks the pinned %s before classifying a marker r
   vi.spyOn(fs, "open").mockImplementation(async (...args) => {
     if (String(args[0]) === path) {
       await fs.chmod(target, 0o755);
-      throw Object.assign(new Error("Injected entry read failure"), { code: "EIO" });
+      throw Object.assign(new Error("Injected entry read failure"), { code: "EACCES" });
     }
     return original(...args);
   });
@@ -130,4 +134,100 @@ it("bootstrap rechecks the pinned pending directory before isolating an inspecti
     throw new OwnedFileDamagedError(f.name);
   });
   await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toThrow("Pending turn storage identity or permissions unavailable");
+});
+
+for (const [kind, artifact] of Object.entries(artifacts)) {
+  it.each(["EMFILE", "EIO"])(`${kind}: operational %s escapes unchanged instead of becoming damage`, async (code) => {
+    const { root, store } = await fixture(), path = artifact(root), error = Object.assign(new Error("Injected operational failure"), { code });
+    await fs.writeFile(path, "{broken", { mode: 0o600 });
+    const original = fs.lstat;
+    vi.spyOn(fs, "lstat").mockImplementation(((...args: Parameters<typeof fs.lstat>) => {
+      if (String(args[0]) === path) return Promise.reject(error);
+      return original(...args);
+    }) as typeof fs.lstat);
+    await expect(store.append(sibling, message)).rejects.toBe(error);
+    vi.restoreAllMocks(); expect(await fs.readFile(path, "utf8")).toBe("{broken");
+  });
+}
+it.each(["EMFILE", "EIO", "ENOENT"])("lifecycle discovery and content accounting preserve the %s distinction", async (code) => {
+  const { root, store } = await fixture(), path = artifacts.lifecycle(root), cause = Object.assign(new Error("Injected content read failure"), { code });
+  await fs.writeFile(path, "{broken", { mode: 0o600 });
+  const error = new OwnedFileDamagedError(basename(path), cause), original = fs.open;
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    if (String(args[0]) === path) throw error;
+    return original(...args);
+  });
+  const internal = store as unknown as { nativeOperationOwners(identity: Awaited<ReturnType<typeof fs.lstat>>): Promise<unknown> };
+  const discovery = internal.nativeOperationOwners(await fs.lstat(root));
+  if (code === "ENOENT") {
+    await expect(discovery).resolves.toEqual([]);
+    await expect(store.stats()).resolves.toMatchObject({ bytes: (await fs.lstat(join(root, `${key(owner)}.history.json`))).size + (await fs.lstat(join(root, `${key(victim)}.history.json`))).size });
+  } else {
+    await expect(discovery).rejects.toBe(error);
+    await expect(store.stats()).rejects.toBe(error);
+  }
+});
+it("a no-code marker read failure is damage, never evidence of a torn write", async () => {
+  const { root, store } = await fixture(), path = artifacts.active(root), original = fs.open;
+  await fs.writeFile(path, "", { mode: 0o600 });
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    if (String(args[0]) === path) throw new Error("Injected unreadable marker");
+    return original(...args);
+  });
+  await store.append(sibling, message);
+  await expect(store.append(owner, message)).rejects.toThrow();
+  expect((await fs.lstat(path)).size).toBe(0);
+});
+it("stats exclude damaged markers while counting healthy prepared appends", async () => {
+  const { root, store } = await fixture(), path = artifacts.active(root);
+  await fs.writeFile(path, "{broken", { mode: 0o600 }); await fs.chmod(path, 0o644);
+  expect((await store.stats()).activePreparedAppends).toBe(0);
+  const prepared = await store.prepareAppend(sibling, message);
+  expect((await store.stats()).activePreparedAppends).toBe(1);
+  await prepared.abort(); expect((await store.stats()).activePreparedAppends).toBe(0);
+});
+it.each(["active", "temporary"] as const)("reaps a dead writer's torn %s before native-root bootstrap", async (kind) => {
+  const f = await bootstrapFixture(); await fs.rm(f.path);
+  const torn = artifacts[kind](f.root); await fs.writeFile(torn, "{", { mode: 0o600 });
+  const lease = await f.store.acquireNativeHistoryAuthority(sibling);
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
+  await expect(fs.lstat(torn)).rejects.toMatchObject({ code: "ENOENT" });
+});
+it.each(["count", "bytes"])("%s quota refusal names the damaged entry protecting an owner", async (quota) => {
+  const { root } = await fixture(), path = artifacts.fence(root);
+  await fs.writeFile(path, "{broken", { mode: 0o600 });
+  const store = createDurableHistoryStore({ root, ...(quota === "count" ? { maxConversations: 1 } : { maxStoreBytes: 1, maxStagedBytes: 2 ** 40 }), now: () => 10_000 });
+  await expect(store.append(sibling, message)).rejects.toThrow(basename(path));
+});
+it("aggregate quota refusal names damaged lifecycle intents", async () => {
+  const { root } = await fixture(), path = artifacts.lifecycle(root);
+  await fs.writeFile(path, "{broken", { mode: 0o600 }); await fs.chmod(path, 0o644);
+  const store = createDurableHistoryStore({ root, maxStoreBytes: 1, maxStagedBytes: 2 ** 40 });
+  await expect(store.append(sibling, message)).rejects.toThrow(basename(path));
+});
+for (const kind of ["active", "temporary"]) {
+  it.each([0, 5])(`SIGKILL after writing %s bytes of ${kind}: a fresh process owner accepts the next message`, async (written) => {
+    const { root } = await fixture();
+    const child = fork(new URL("./fixtures/torn-coordination-worker.mjs", import.meta.url), [root, owner, kind, String(written)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    let stderr = ""; child.stderr!.on("data", (bytes) => { stderr += String(bytes); });
+    const exited = once(child, "exit"), timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    try {
+      const [info] = await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Writer exited before barrier: ${stderr}`); })]);
+      const torn = (info as { path: string }).path;
+      expect((await fs.lstat(torn)).size).toBe(written);
+      child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
+      const fresh = createDurableHistoryStore({ root });
+      const turn = await fresh.beginProviderSessionTurn(owner, "fictional-next-message", { modelKey: "openai:fictional-model" });
+      await (await turn.prepareCommit(message, { providerSessionSynced: true })).commit();
+      expect((await fresh.load(owner)).at(-1)).toEqual(message[0]);
+      await expect(fs.lstat(torn)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; } }
+  }, 15_000);
+}
+
+it.each(["active", "temporary"] as const)("a live writer's torn %s stays protected and makes bootstrap busy, not damaged", async (kind) => {
+  const f = await bootstrapFixture(); await fs.rm(f.path);
+  const torn = artifacts[kind](f.root).replace(".1073741824.", `.${process.pid}.`); await fs.writeFile(torn, "{", { mode: 0o600 });
+  await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
+  expect(await fs.readFile(torn, "utf8")).toBe("{");
 });
