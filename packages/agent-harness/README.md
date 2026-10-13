@@ -195,6 +195,30 @@ A never-bound rollover child cannot be inferred from its hashed filename; exact
 reset clears those known physical coordinates. Discovery never guesses an owner. Post-rename cleanup failures remain
 visible in store diagnostics. Retention protects unsettled execution fences and
 clears generations only after authorized settlement/deletion.
+
+History admission, owned preparation and exclusive-history acquisition accept an
+optional `AbortSignal`. Request cancellation (including manual compaction) stops
+in-process queue waits and SQLite root, logical/exact-claim and legacy
+conversation-lock polling. A cancelled waiter cannot bypass a live predecessor;
+raced acquisitions release their locks/claims before rejecting. Harness capacity
+admission alone does not admit input to history: cancellation during binding or
+attachment preflight, or while acquiring history, returns `cancelled` without
+an input/account, any new history acquisition to publish one, or a provider/summary
+call. The caller can resend. Admitted history turns retain their cancellation and
+interruption accounts; custom uncoordinated stores admit at provider start.
+Once a transaction or publication
+starts it finishes or rolls back: cancellation does not interrupt the publication
+barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
+(including an admission-triggered drain) remain deliberately non-cancellable;
+this signal is not a transaction deadline.
+
+Owned coordination files must retain mode `0600`. Conventional umasks such as
+`0022` or `0077` are supported; an exotic umask that removes owner read/write
+permissions can leave an unverifiable marker/temp if the writer dies before
+permission normalization. Such evidence remains protected damage even with a
+dead filename PID; it is not reaped using PID evidence alone. Restore/repair it
+with all writers stopped rather than weakening secure-file validation.
+
 `drainPendingProviderSessionTurns()` visits at most 32 inactive physical owners
 per pass, oldest first, and returns a cursor for further passes. It tries owner
 claims without waiting for foreign ownership. Busy/unresolved owners remain
@@ -434,7 +458,7 @@ outcome-unknown tool effect from an earlier model, are carried into every new
 handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
 refuses rather than leaving them to prose.
 
-`beginProviderSessionPreparation(conversationId, runId)` is an additive,
+`beginProviderSessionPreparation(conversationId, runId, signal?)` is an additive,
 claim-only storage substrate used by the configured app's Web-only
 opt-in. It settles old
 work and returns detached history/source/native metadata without an incoming

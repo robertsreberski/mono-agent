@@ -302,9 +302,9 @@ export class MonoAgentHarness implements AgentHarness {
       try {
         providerTurn = await beginProviderSessionTurn(conversationId,
           historyStore?.providerSessionReconciliation === "v1" && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn !== undefined ? `synthetic:manual:${runId}` : runId,
-          ...(bound ? [{ modelKey, skipModelRotation: true,
+          bound ? { modelKey, skipModelRotation: true,
             ...(historyStore?.providerSessionReconciliation === "v1" && runtime.sessionTurnReconciliation === "v1" && runtime.reconcileSessionTurn !== undefined ? { reconciliation: {
-              purpose: "compaction" as const, ownerKey: this.options.toolHistory?.logicalConversationId(conversationId) ?? conversationId } } : {}) }] : []));
+              purpose: "compaction" as const, ownerKey: this.options.toolHistory?.logicalConversationId(conversationId) ?? conversationId } } : {}) } : undefined, controller.signal);
       } catch (error) {
         if (error instanceof ProviderSessionModelChangedError) {
           return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
@@ -680,7 +680,8 @@ export class MonoAgentHarness implements AgentHarness {
       try { request.onEvent?.(event); } catch { /* an event sink cannot block shutdown */ }
     };
     this.activeRunWarningSinks.add(emitShutdownWarning);
-    // Admitted: count this run as pending until it begins its provider call (via
+    // Capacity-admitted, not yet history-admitted: count this run as pending until
+    // it begins its provider call (via
     // leavePending, fired from runRuntime) or exits before getting there. `left`
     // makes the release idempotent so exactly one decrement happens per run, on
     // every exit path including a throw in applyAttachments/prepareContext.
@@ -794,6 +795,12 @@ export class MonoAgentHarness implements AgentHarness {
       const claim = continuityClaim;
       if (claim === undefined) throw new Error("Turn continuity publication has no terminal claim.");
       await historyMutation;
+      // Harness capacity admission is not history admission. Cancellation during
+      // preflight or acquisition must not acquire history just to publish input.
+      // Uncoordinated/custom stores admit at provider start; keep their accounts too.
+      if (request.abortSignal.aborted && !providerAttemptStarted && !conversationCommitStarted
+        && providerHistoryTurn === undefined && exclusiveHistoryTurn === undefined && p2Turn === undefined
+        && preparedNativeTurn === undefined && preparedHistoryAppend === undefined && !providerHistoryOwnershipTransferred) return;
       if (p2Turn !== undefined) {
         await p2Turn.claim(claim.outcome, { outcome: claim.outcome, text: claim.outcome === "cancelled"
           ? "The previous turn was cancelled. No tools were replayed." : "The previous turn failed. No tools were replayed.",
@@ -1212,19 +1219,19 @@ export class MonoAgentHarness implements AgentHarness {
             if (preparedNativeTurn) return;
             nativePreparationActive = false;
             if (deferredNativeContinuity && continuityClaim === undefined) {
-              // The claim wait selected the ordinary fallback, not native
-              // preparation. Restore its normal cancelled-turn publication.
+              // The ordinary fallback rejects an aborted acquisition without
+              // a history account; restore cancellation response finalization.
               const claim = deferredNativeContinuity; deferredNativeContinuity = undefined;
               terminalOwner = "running"; claimTurnContinuity(claim);
             }
           }
           providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
-            ...(historyStore?.readProviderSessionBinding !== undefined ? [{ modelKey: requestedModelKey,
+            historyStore?.readProviderSessionBinding !== undefined ? { modelKey: requestedModelKey,
               ...(this.nativeModelSwitch ? { unpreparedNativeDispatch: true as const } : {}),
               ...(reconcileTurn ? { reconciliation: { purpose: "execution" as const,
                 ownerKey: this.options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
                 initial: { persistText: persistUserMessage, timestamp: this.nowIso(),
-                  ...(canonicalSenderLabel(request.sender) === undefined ? {} : { senderLabel: canonicalSenderLabel(request.sender)! }) } } } : {}) }] : []));
+                  ...(canonicalSenderLabel(request.sender) === undefined ? {} : { senderLabel: canonicalSenderLabel(request.sender)! }) } } } : {}) } : undefined, request.abortSignal);
           p2Turn = providerHistoryTurn.reconciliation;
           if (reconcileTurn && p2Turn === undefined) throw new AgentHarnessError(
             "provider_session_reconciliation_mismatch", "Durable history did not acknowledge protected native turn admission.");
@@ -1256,7 +1263,7 @@ export class MonoAgentHarness implements AgentHarness {
         // the model call. Root transactions cover only history maintenance and
         // publication, never provider execution.
         const beginMutation = (async () => {
-          const acquired = await contextImportSupport.beginExclusiveTurn(request.conversationId);
+          const acquired = await contextImportSupport.beginExclusiveTurn(request.conversationId, request.abortSignal);
           try {
             assertConversationHistoryVersion(acquired.historyVersion);
           } catch (error) {

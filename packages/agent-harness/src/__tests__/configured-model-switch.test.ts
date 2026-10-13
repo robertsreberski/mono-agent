@@ -190,18 +190,16 @@ it.each(["reset", "retention"])("upgraded private-switch fixture %s destroys the
 });
 
 
-it("flag-on unbound claim-wait cancellation reclaims ordinary continuity just like OFF", async () => {
-  const outcomes = [];
-  for (const enabled of [false, true]) {
-    const f = await fixture(), held = await f.store.beginProviderSessionPreparation("fictional", "fictional-holder"), controller = new AbortController();
-    const waiting = vi.spyOn(f.store, enabled ? "beginProviderSessionPreparation" : "beginProviderSessionTurn");
-    const running = f.makeHarness("A", enabled).run(f.request("cancelled-wait", "Fictional cancelled input", { abortSignal: controller.signal }));
-    await vi.waitFor(() => expect(waiting).toHaveBeenCalledOnce()); controller.abort("Fictional claim-wait cancellation"); await held.abort();
-    const result = await running; expect(result.failure?.kind).toBe("cancelled"); expect(f.transport).not.toHaveBeenCalled();
-    const record = await f.canonical(); expect(record.lastCommit.turnId).toBe(result.metadata.runId);
-    outcomes.push({ outcome: record.lastCommit.outcome, messages: record.messages.map(({ role, content }: {role:string;content:string}) => ({role, content: content.replace(result.metadata.runId, "fictional-run").replace(/"cancelledAt":"[^"]+"/gu, '"cancelledAt":"fictional-time"')})) });
-  }
-  expect(outcomes[1]).toEqual(outcomes[0]);
+it.each([false, true])("unbound claim-wait cancellation with switching %s publishes no unadmitted input", async (enabled) => {
+  const f = await fixture(), held = await f.store.beginProviderSessionPreparation("fictional", "fictional-holder"), controller = new AbortController();
+  const waiting = vi.spyOn(f.store, enabled ? "beginProviderSessionPreparation" : "beginProviderSessionTurn");
+  const running = f.makeHarness("A", enabled).run(f.request("cancelled-wait", "Fictional cancelled input", { abortSignal: controller.signal }));
+  try {
+    await vi.waitFor(() => expect(waiting).toHaveBeenCalledOnce()); controller.abort("Fictional claim-wait cancellation");
+    expect((await running).failure?.kind).toBe("cancelled"); expect(f.transport).not.toHaveBeenCalled();
+    expect(await f.store.load("fictional")).toEqual([]);
+    await expect(f.canonical()).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await held.abort(); }
 });
 
 it.each(["typed", "spoofed", "old-spoofed"])("%s capture-capacity errors cannot be confused with generic custom failures", async (kind) => {
@@ -484,4 +482,35 @@ it("keyless native inheritance overrides a late sticky extension without copying
   expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined(); expect(prepared.options.effort).toBeUndefined();
   const after = await f.canonical(); expect(after.providerSession.modelKey).toBe("faux:B");
   expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
+});
+
+it("configured preparation cancels a contended claim before admission or any summary/provider call", async () => {
+  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+  const holder = await f.store.beginProviderSessionPreparation("fictional", "fictional-holder");
+  const begin = vi.spyOn(f.store, "beginProviderSessionPreparation"), harness = f.makeHarness("B", true), controller = new AbortController();
+  try {
+    const waiting = harness.run(f.request("fictional-cancelled", "Fictional cancelled input", { abortSignal: controller.signal }));
+    await vi.waitFor(() => expect(begin).toHaveBeenCalled()); controller.abort();
+    expect((await waiting).failure?.kind).toBe("cancelled");
+    expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before);
+    expect(f.prepareCalls).toHaveLength(0); expect(await f.changes()).toHaveLength(0);
+  } finally { await holder.abort(); }
+  f.faux.setResponses([text(summary), text("Fictional successor reply")]);
+  expect((await harness.run(f.request("fictional-successor"))).failure).toBeUndefined();
+  expect(f.transport).toHaveBeenCalledTimes(3);
+});
+
+it("cancellation during the binding preflight leaves no account and never waits for the held conversation", async () => {
+  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+  const holder = await f.store.beginProviderSessionPreparation("fictional", "fictional-holder"), controller = new AbortController();
+  const read = f.store.readProviderSessionBinding.bind(f.store);
+  vi.spyOn(f.store, "readProviderSessionBinding").mockImplementationOnce(async (...args) => { controller.abort(); return await read(...args); });
+  const append = vi.spyOn(f.store, "prepareAppend"), begin = vi.spyOn(f.store, "beginProviderSessionTurn"), harness = f.makeHarness("A", true);
+  let settled = false;
+  const pending = harness.run({ conversationId: "fictional", userMessage: "Fictional cancelled input", abortSignal: controller.signal }).then((result) => { settled = true; return result; });
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+    expect((await pending).failure?.kind).toBe("cancelled"); expect(append).not.toHaveBeenCalled(); expect(begin).not.toHaveBeenCalled();
+    expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); await holder.assertOwned();
+  } finally { await holder.abort(); await pending; }
 });
