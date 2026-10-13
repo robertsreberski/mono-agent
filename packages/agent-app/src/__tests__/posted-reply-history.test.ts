@@ -651,3 +651,21 @@ it.each(["exclusive", "provider"])("posted-reply %s acquisition cancels through 
     expect(runtime.calls).toHaveLength(0); expect(await store.load(id)).toEqual([]); await holder.assertOwned();
   } finally { await holder.abort(); await pending; await harness.dispose?.(); }
 });
+
+it.each([false, true])("delivery-load failure releases the exclusive owner and preserves the error (abort rejects=%s)", async (abortRejects) => {
+  const root = await mkdtemp(join(tmpdir(), "posted-exclusive-unwind-")); tempDirs.push(root);
+  const store = createDurableHistoryStore({ root: join(root, "history") }), failure = new Error("Fictional delivery read failure");
+  const load = store.load.bind(store), begin = store.contextImport!.beginExclusiveTurn.bind(store.contextImport);
+  let aborted = 0;
+  vi.spyOn(store, "load").mockImplementation(async (id) => { if (id === PHYSICAL) throw failure; return await load(id); });
+  vi.spyOn(store.contextImport!, "beginExclusiveTurn").mockImplementation(async (...args) => {
+    const turn = await begin(...args), abort = turn.abort.bind(turn);
+    turn.abort = async () => { aborted++; await abort(); if (abortRejects) throw new Error("Fictional cleanup failure"); };
+    return turn;
+  });
+  const bridge = createSlackPostedReplyHistory({ maxMessages: 64 }), wrapped = bridge.wrapHistoryStore(store);
+  const responder = bridge.wrapResponder({ respond: async (request) => { await wrapped.contextImport!.beginExclusiveTurn(request.conversationId); return { text: "Must not execute" }; } });
+  await expect(responder.respond(slackReplyRequest(), noopStream())).rejects.toBe(failure);
+  expect(aborted).toBe(1); expect((await store.stats()).activePreparedAppends).toBe(0);
+  const successor = await begin(PRODUCER); await successor.abort();
+});

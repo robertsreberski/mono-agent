@@ -38,11 +38,11 @@ for (const cancelAt of ["admission", "provider"] as const) {
     const store = createDurableHistoryStore({ root, retireProviderSession: async () => {} });
     const first = await store.beginProviderSessionTurn(firstId, "long-provider");
     const controller = new AbortController();
-    const begin = store.beginProviderSessionTurn.bind(store);
+    const begin = store.beginProviderSessionTurn.bind(store); let acquisitionSettled = false;
     vi.spyOn(store, "beginProviderSessionTurn").mockImplementation(async (...args) => {
-      // Abort at the acquisition boundary, not in a race against filesystem I/O.
+      const pending = begin(...args); // Real acquisition starts before synchronous cancellation.
       if (cancelAt === "admission") controller.abort(createChannelUserCancelReason("Web"));
-      return await begin(...args);
+      try { return await pending; } finally { acquisitionSettled = true; }
     });
     let calls = 0;
     let successorPrompt = "";
@@ -71,7 +71,7 @@ for (const cancelAt of ["admission", "provider"] as const) {
     let completed = false;
     const flow = (async () => {
       const cancelled = await harness.run({ conversationId: secondId, userMessage: "cancel this request", abortSignal: controller.signal });
-      expect(cancelled.failure?.kind).toBe("cancelled");
+      expect(cancelled.failure?.kind).toBe("cancelled"); expect(acquisitionSettled).toBe(true);
       const successor = await harness.run({ conversationId: secondId, userMessage: "continue", abortSignal: new AbortController().signal });
       expect(successor.failure).toBeUndefined();
       if (cancelAt === "provider") {

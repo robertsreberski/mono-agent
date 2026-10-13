@@ -230,20 +230,27 @@ it.each(["provider", "exclusive"])("cancellation during attachment preflight bef
     expect(await f.store.load(id)).toEqual([]); await holder.assertOwned();
   } finally { await holder.abort(); await pending; await harness.dispose(); }
 });
-it.each(["provider", "exclusive", "uncoordinated"])("an admitted %s turn retains its cancellation account", async (mode) => {
+it.each(["provider", "synchronous-provider", "exclusive", "uncoordinated"])("an admitted %s turn retains its cancellation account", async (mode) => {
   const f = await fixture(), identityPath = join(f.root, "..", "IDENTITY.md"), controller = new AbortController();
   await fs.writeFile(identityPath, "Fictional instructions");
   const store = mode === "uncoordinated" ? createInMemoryHistoryStore({ maxMessages: 64 }) : f.store;
   if (mode === "provider") {
     const begin = f.store.beginProviderSessionTurn.bind(f.store);
     vi.spyOn(f.store, "beginProviderSessionTurn").mockImplementation(async (...args) => { const turn = await begin(...args); controller.abort(); return turn; });
+  } else if (mode === "synchronous-provider") {
+    const begin = f.store.beginProviderSessionTurn.bind(f.store);
+    // A custom coordinator can cross admission while the synchronous abort
+    // callback still sees the previous historyMutation promise.
+    vi.spyOn(f.store, "beginProviderSessionTurn").mockImplementation((conversationId, runId, binding) => {
+      const pending = begin(conversationId, runId, binding); controller.abort(); return pending;
+    });
   } else if (mode === "exclusive") {
     const begin = f.store.contextImport!.beginExclusiveTurn.bind(f.store.contextImport);
     vi.spyOn(f.store.contextImport!, "beginExclusiveTurn").mockImplementation(async (...args) => { const turn = await begin(...args); controller.abort(); return turn; });
   }
   const run = vi.fn(async () => { controller.abort(); return { text: "Fictional late response" }; });
   const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
-    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { piSessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode.endsWith("provider") ? { piSessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
   try {
     expect((await harness.run({ conversationId: id, userMessage: "Fictional admitted input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
     const messages = await store.load(id); expect(messages.some((message) => message.role === "user" && message.content.includes("Fictional admitted input"))).toBe(true);
@@ -261,4 +268,16 @@ it.each(["valid", "torn"])("a concurrently reaped %s dead-owner fence temp does 
   });
   const owner = await f.store.beginProviderSessionPreparation("fictional-other", "fictional-successor"); await owner.abort();
   expect(reaped).toBe(true); await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("an uncoordinated store cancelled inside load before provider start keeps its original history", async () => {
+  const f = await fixture(), identityPath = join(f.root, "..", "IDENTITY.md"), controller = new AbortController(); await fs.writeFile(identityPath, "Fictional instructions");
+  const store = createInMemoryHistoryStore({ maxMessages: 64 }), before = [{ role: "user" as const, content: "Fictional earlier input" }]; await store.append(id, before);
+  const load = store.load.bind(store), run = vi.fn(async () => ({ text: "Must not execute" }));
+  vi.spyOn(store, "load").mockImplementationOnce(async (...args) => { controller.abort(); return await load(...args); });
+  const harness = new MonoAgentHarness({ identityPath, historyStore: store, runtime: { run }, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" } });
+  try {
+    expect((await harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
+    expect(run).not.toHaveBeenCalled(); expect(await store.load(id)).toEqual(before);
+  } finally { await harness.dispose(); }
 });

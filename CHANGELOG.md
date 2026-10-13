@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve admitted cancellation accounts when a history coordinator aborts
+  synchronously, while leaving custom-store cancellations before provider start
+  without an account. Release exclusive history ownership when posted-reply
+  delivery loading fails, preserving the original failure.
+
 - Cancel contended history admission, model-switch preparation, exclusive turns
   and manual compaction without admitting the waiting input or calling a provider.
   Include binding/attachment preflight cancellation and app history wrappers;

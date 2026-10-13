@@ -205,7 +205,10 @@ admission alone does not admit input to history: cancellation during binding or
 attachment preflight, or while acquiring history, returns `cancelled` without
 an input/account, any new history acquisition to publish one, or a provider/summary
 call. The caller can resend. Admitted history turns retain their cancellation and
-interruption accounts; custom uncoordinated stores admit at provider start.
+interruption accounts; custom uncoordinated stores admit at provider start:
+a cancel before the provider call leaves no account, including cancellation
+inside a custom store's `load`. Publication waits for acquisition to settle even
+when cancellation fires synchronously inside a coordinator.
 Once a transaction or publication
 starts it finishes or rolls back: cancellation does not interrupt the publication
 barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
