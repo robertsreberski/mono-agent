@@ -4,7 +4,9 @@
 
 - Refuse explicit reset of damaged canonical, coordination, pending recovery,
   native-journal or billing evidence with non-retryable, file-naming repair
-  guidance. Preserve the evidence and keep damaged billing redelivery blocked
+  guidance. Ignore recovery generations removed during unlocked preflight, and
+  preserve damaged rollover members identified by their healthy logical fences.
+  Preserve the evidence and keep damaged billing redelivery blocked
   before paid work. Document stopped-writer repair and its double-billing risk;
   reset does not attempt online repair or reconstruct lost native enrollment.
 

@@ -327,8 +327,7 @@ class HistoryOwnerBusyError extends Error {
 /** Only emitted after securely reading a marker/fence; never an I/O error. */
 class TornCoordinationFileError extends Error {}
 function rethrowResetAcquisition(error: unknown): never {
-  const name = String(error).match(/(?:root|logical-session-shard-[a-f0-9]{2}|[a-f0-9]{64})\.sqlite(?:-journal)?/u)?.[0];
-  if (error instanceof OwnedFileDamagedError && name) throw new HistoryResetDamagedError([name], error);
+  if (error instanceof OwnedFileDamagedError) throw new HistoryResetDamagedError([error.entryName], error);
   throw error;
 }
 class HistoryResetDamagedError extends Error {
@@ -1048,29 +1047,29 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const key = historyKey(id), switches = await this.modelSwitchPayloads(rootIdentity).inventory(id);
     if (switches.damaged.includes(key)) throw new HistoryResetDamagedError(switches.damagedFiles);
     try { await this.nativeHistoryRoot(rootIdentity).read(); }
-    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error); throw new HistoryResetDamagedError([NATIVE_HISTORY_ROOT_FILE], error); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error; throw new HistoryResetDamagedError([NATIVE_HISTORY_ROOT_FILE], error); }
     try {
       const markers = await this.scanActiveMarkers(false), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
       const names = markers.filter((entry) => entry.conversationKey === key && entry.damaged).map((entry) => entry.path);
       if (fences.damaged.has(key)) names.push(fences.damaged.get(key)!);
       if (names.length) throw new HistoryResetDamagedError(names);
     } catch (error) {
-      entryAbsentOrThrowOperational(error);
-      const shared = String(error).match(/(?:root|logical-session-shard-[a-f0-9]{2})\.sqlite(?:-journal)?|\.native-history-root\.json/u)?.[0];
+      if (entryAbsentOrThrowOperational(error)) throw error;
+      const shared = error instanceof OwnedFileDamagedError ? error.entryName : String(error).match(/(?:root|logical-session-shard-[a-f0-9]{2})\.sqlite(?:-journal)?|\.native-history-root\.json/u)?.[0];
       if (shared) throw new HistoryResetDamagedError([shared], error);
       throw error;
     }
     const payloads = this.pendingPayloads(rootIdentity);
     for (const entry of (await payloads.list()).filter((entry) => entry.conversationKey === key)) {
       try { if (entry.damaged) throw new OwnedFileDamagedError(entry.name); if (!entry.name.endsWith(".tmp")) await payloads.inspect(entry); }
-      catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error); throw new HistoryResetDamagedError([entry.name], error); }
+      catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) continue; throw new HistoryResetDamagedError([entry.name], error); }
     }
     try { await this.readNativeOperation(id, rootIdentity); }
-    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error); throw new HistoryResetDamagedError([basename(this.nativeOperationPath(id))], error); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error; throw new HistoryResetDamagedError([basename(this.nativeOperationPath(id))], error); }
     let record;
     try { record = await this.readRecord(id, rootIdentity, true); }
     catch (error) {
-      await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error);
+      await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error;
       throw new HistoryResetDamagedError([error instanceof NativeRootMarkerMissingError ? NATIVE_HISTORY_ROOT_FILE : basename(this.recordPath(id))], error);
     }
     if (record.native && this.nativeJournalStorage) {
@@ -1109,15 +1108,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const releaseDiscovery = await this.acquireRootTransaction(rootIdentity);
       try {
         const entries = await this.scanCommittedEntries(rootIdentity, true);
+        // A readable fence proves membership even when its child's canonical cannot.
+        const fencedKeys = new Set((await this.scanDirtyFences(await this.ensureLocksRoot(), false))
+          .filter((fence) => fence.logicalConversationKey === historyKey(logicalId)).map((fence) => fence.conversationKey));
         for (const entry of entries) {
           let record;
           try { record = await this.readCommittedEntryRecord(entry, rootIdentity); }
           catch (error) {
             // A damaged foreign record is preserved, never a reason to block this
-            // reset; the logical owner's own damaged record still refuses it.
+            // reset; a damaged base or fence-attested member still refuses it.
             if (!(error instanceof CanonicalParseFailure)) throw error;
-            entryAbsentOrThrowOperational(error);
-            if (entry.name === `${historyKey(logicalId)}${HISTORY_FILE_SUFFIX}`) throw new HistoryResetDamagedError([entry.name], error);
+            if (entryAbsentOrThrowOperational(error)) continue;
+            if (entry.name === `${historyKey(logicalId)}${HISTORY_FILE_SUFFIX}` || fencedKeys.has(entry.name.slice(0, -HISTORY_FILE_SUFFIX.length))) throw new HistoryResetDamagedError([entry.name], error);
             continue;
           }
           if (belongsToLogicalConversation(record.conversationId, logicalId)) {
@@ -4150,7 +4152,7 @@ async function acquireCrossProcessLock(
       } catch {
         // Closing a failed lock attempt is best-effort.
       }
-      if (isRecord(error) && (error.errcode === 11 || error.errcode === 26)) throw new OwnedFileDamagedError(basename(path), error);
+      if (isRecord(error) && typeof error.errcode === "number" && [11, 26].includes(error.errcode & 0xff)) throw new OwnedFileDamagedError(basename(path), error);
       if (!isSqliteBusy(error)) throw error;
       if (tryOnly) throw new HistoryOwnerBusyError("Legacy history owner is busy.");
       // There is deliberately no age timeout: a live provider turn owns this
@@ -4290,7 +4292,7 @@ async function acquireSessionClaim(
         try { database?.exec("ROLLBACK"); } catch { /* close releases the short transaction */ }
       }
       try { database?.close(); } catch { /* no reuse after a failed claim attempt */ }
-      if (isRecord(error) && (error.errcode === 11 || error.errcode === 26)) throw new OwnedFileDamagedError(basename(path), error);
+      if (isRecord(error) && typeof error.errcode === "number" && [11, 26].includes(error.errcode & 0xff)) throw new OwnedFileDamagedError(basename(path), error);
       if (!isSqliteBusy(error)) throw error;
       if (tryOnly) throw new HistoryOwnerBusyError("History claim shard is busy.");
       await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
