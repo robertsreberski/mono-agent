@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Let model-switch bootstrap recover from a torn root-marker proposal and from
+  unreadable sibling history, report another conversation's damaged recovery
+  data as non-retryable `native_switch_damaged` without a drain, and settle an
+  interrupted turn on a not-yet-imported legacy Pi journal instead of refusing
+  every later message. Keyless native wakes drop the sticky model's effort and
+  keep the thread's 1M context choice where the current model supports it.
+
 - Keep saved Web wake routes when model switching is off or history is ordinary;
   keyless native turns with switching enabled inherit their current durable model,
   not a different sticky selection or its context-window override. Avoid carrying
@@ -11,12 +18,6 @@
 - Report damaged pending recovery data with repair guidance instead of asking
   for another send, and reject invalid native mutation IDs through their
   promised asynchronous APIs.
-
-- Remove the redundant `runtime.session.modelSwitch.olderWritersStopped`
-  acknowledgement. Every durable-history user upgrades one way: the first
-  durable turn rewrites canonical history as v3, with or without native Pi
-  storage or model switching. Stop all writers and back up canonical history
-  and any native root first; rollback requires restoring the consistent backup.
 
 - Let background Web wakes inherit the current saved model after a refused
   switch. Report unreadable pending journals and completed handoffs clearly,
@@ -169,7 +170,10 @@
   `runtime.session.modelSwitch.enabled`, requiring explicit
   continuous sessions and durable Pi storage.
   Persisted Web message IDs bound summary billing; pending messages never replay.
-  Stop older writers before upgrade; rollback requires restoring a backup.
+  Every durable-history user upgrades one way: the first durable turn rewrites
+  canonical history as v3, with or without native Pi storage or model switching.
+  Stop all writers and back up canonical history and any native root first;
+  rollback requires restoring the consistent backup.
   Keep no-ID turns on never-upgraded conversations on the original cold-replay
   path; inherit the current model for declared no-ID turns on native conversations.
   Existing native conversations retain their durable model after `runtime.model`

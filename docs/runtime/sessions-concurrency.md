@@ -80,7 +80,8 @@ Slack, Telegram, TUI, ACP and Web wakes. They make only one cheap binding read t
 select that path, with no switch preparation, switch claim or authority bootstrap.
 On already-native conversations, every no-ID turn inherits the current durable
 model without rotation, even if sticky metadata declares a different model.
-Context-window flags for that different model do not carry into the native turn.
+That model's effort and context-window flags do not carry into the native turn;
+the thread's 1M choice applies to the current model only where it supports 1M.
 Changing `runtime.model` changes the default for ordinary conversations but does
 not move existing native conversations: they retain their durable model until a
 persisted Web message selects the new model. Prose keywords do not escalate models
@@ -255,8 +256,10 @@ Warnings and refusals:
 - `handoff_pending`, `handoff_budget_exceeded`,
   `native_cold_model_change_unavailable` (a native conversation cannot be
   served by an unprepared or no-ID model change), `native_journal_unreadable`,
-  `native_switch_format_unsupported` and retryable `native_switch_busy` are
-  refusals. The message was not admitted; send another message when ready.
+  `native_switch_format_unsupported`, non-retryable `native_switch_damaged`
+  (another conversation's recovery data needs repair or restore) and retryable
+  `native_switch_busy` are refusals. The message was not admitted; send another
+  message when ready.
 
 Limits:
 

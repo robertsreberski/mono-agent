@@ -182,10 +182,13 @@ export class OrdinaryNativeDispatchUnavailableError extends Error {
 export class ModelSwitchPendingError extends Error {
   constructor() { super("Model-switch storage pending; ordinary admission/mutation is unavailable until transaction settlement"); this.name = "ModelSwitchPendingError"; }
 }
+/** Damage is not contention: it is non-retryable and no drain can repair it. */
 export class NativeHistoryAuthorityBusyError extends Error {
-  readonly code = "ERR_NATIVE_HISTORY_AUTHORITY_BUSY";
-  readonly retryable = true;
-  constructor(damaged = false) { super(damaged ? "Saved conversation recovery data is damaged; repair or restore it before retrying." : "Another conversation is still running or awaiting recovery; send again when it finishes."); this.name = "NativeHistoryAuthorityBusyError"; }
+  readonly code: string; readonly retryable: boolean;
+  constructor(readonly damaged = false) {
+    super(damaged ? "Another conversation's saved recovery data is damaged; repair or restore it before retrying." : "Another conversation is still running or awaiting recovery; send again when it finishes.");
+    this.name = "NativeHistoryAuthorityBusyError"; this.code = damaged ? "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED" : "ERR_NATIVE_HISTORY_AUTHORITY_BUSY"; this.retryable = !damaged;
+  }
 }
 
 export interface ManagedProviderSessionPreparation {
@@ -320,6 +323,7 @@ interface HeldExactConversationClaim {
 }
 
 class HistoryOwnerBusyError extends Error {}
+class NativeRootMarkerMissingError extends TypeError { constructor() { super("Native canonical root authority marker is missing; restore consistent backup"); } }
 class CanonicalParseFailure extends Error { constructor(error: unknown) { super(error instanceof Error ? error.message : "Unreadable canonical history", { cause: error }); } }
 
 interface RootAccounting {
@@ -464,13 +468,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           let damaged = fences.damaged.size > 0 || pending.some((entry) => entry.damaged);
           for (const entry of pending.filter((entry) => !entry.name.endsWith(".tmp") && !entry.damaged && !active.some((marker) => marker.conversationKey === entry.conversationKey))) {
             try { await this.pendingPayloads(rootIdentity).inspect(entry); }
-            catch (error) { if (!(error instanceof OwnedFileDamagedError)) throw error; damaged = true; }
+            catch { await assertDirectoryIdentity(this.root, rootIdentity); damaged = true; }
           }
           if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || pending.length) {
             throw new NativeHistoryAuthorityBusyError(damaged);
           }
+          // A readable native record without the marker refuses; an unreadable sibling stays isolated to its owner.
           for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {
-            if ((await this.readCommittedEntryRecord(entry, rootIdentity)).native !== undefined) throw new Error("Native canonical root authority marker is missing; restore consistent backup");
+            try { await this.readCommittedEntryRecord(entry, rootIdentity); }
+            catch (error) { if (!(error instanceof CanonicalParseFailure) || error.cause instanceof NativeRootMarkerMissingError) throw error; }
           }
         }
         marker = await rootStore.ensure({ assertOwned, reserve: async (bytes) => {
@@ -3216,7 +3222,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async assertNativeRecordAuthority(record: LoadedHistoryRecord, rootIdentity: DirectoryIdentity): Promise<void> {
     if (record.native === undefined) return;
     const rootStore = this.nativeHistoryRoot(rootIdentity), marker = await rootStore.read();
-    if (!marker) throw new TypeError("Native canonical root authority marker is missing; restore consistent backup");
+    if (!marker) throw new NativeRootMarkerMissingError();
     if (switchDigest(record.native?.authority) !== switchDigest(rootStore.authority(marker, logicalConversationIdForFence(record.conversationId), record.conversationId))) {
       throw new TypeError("Canonical native authority does not match the managed root marker");
     }

@@ -12,6 +12,14 @@ it("preserves retryable busy when bounded drain fails, with no hidden run retry"
   expect(run).toHaveBeenCalledOnce();
 });
 
+it("does not drain after non-retryable bootstrap damage", async () => {
+  const failure = { kind: "native_switch_damaged", message: "Fictional damage", details: { retryable: false } };
+  const run = vi.fn(async () => ({ metadata: { runId: "fictional-run", conversationId: "fictional", contextSources: [], contextSectionIds: [] }, failure }));
+  const drain = vi.fn(async () => ({ settled: 0, busy: 0, unresolved: 0 })), store = { load: async () => [], append: async () => {}, drainPendingProviderSessionTurns: drain } as unknown as ConversationHistoryStore;
+  const request: AgentHarnessRequest = { conversationId: "fictional", userMessage: "Fictional input", abortSignal: new AbortController().signal };
+  expect((await serializeNativeSwitchHarness({ run }, "fictional-damage-root", store).run(request)).failure).toEqual(failure); expect(drain).not.toHaveBeenCalled();
+});
+
 it("disposal waits for active cleanup once and does not cancel an unrelated responder", async () => {
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; }), started = new Promise<void>((resolve) => { entered = resolve; });

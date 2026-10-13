@@ -188,10 +188,6 @@ export const RETIRED_CONFIG_FIELDS: readonly RetiredConfigField[] = [
     message: "`runtime.executionMode` was removed; mono-agent runs only the Pi runtime (SDK). Delete the key.",
   },
   {
-    path: "runtime.session.modelSwitch.olderWritersStopped",
-    message: "`runtime.session.modelSwitch.olderWritersStopped` was removed. Delete the key; stop older writers and back up durable history before upgrading.",
-  },
-  {
     path: "runtime.routeSafety",
     message: "`runtime.routeSafety` was removed; every route is Pi-native, so `per-route-native` has no meaning. Delete the key.",
   },

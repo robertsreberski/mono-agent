@@ -190,6 +190,14 @@ export function createRequestModelOverrideRuntimeExtension(
   };
 }
 
+/** Runtime options for a keyless native turn inherited onto `modelKey`: that
+ * model's endpoint/effort route plus the request's 1M choice, which the
+ * extension admits only where `modelKey` supports it. */
+export async function implicitModelRuntimeOptions(options: RequestModelOverrideOptions, metadata: Record<string, unknown> | undefined, modelKey: string) {
+  const { context1M } = readOverride(metadata);
+  return (await createRequestModelOverrideRuntimeExtension(options)({ request: { metadata: { web: { model: modelKey, context1M } } } })).runtimeOptions;
+}
+
 /**
  * Resolve a model-only request override against the configured route policy.
  * `undefined` means inherit the harness effort; `null` means provider default.

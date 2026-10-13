@@ -12,6 +12,7 @@ import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness"
 
 import {
   createRequestModelOverrideRuntimeExtension,
+  implicitModelRuntimeOptions,
   requestModelOverrideRoutesOnlyPiNative,
   requestModelOverrideTargetsPiNative,
 } from "../request-model-override.js";
@@ -734,6 +735,12 @@ describe("per-request 1M context", () => {
   it("uses exactly the selected metadata block, without model-only leakage", async () => {
     expect((await extension()({ request: { metadata: { webhook: { model: backup }, web: { context1M: true } } } })).runtimeOptions.context1MModels).toBeUndefined();
     expect((await extension()({ request: { metadata: { web: { model: backup } } } })).runtimeOptions.context1MModels).toBeUndefined();
+  });
+  it("keeps a keyless wake's 1M choice on the inherited model only where that model supports it", async () => {
+    const metadata = { web: { model: backup, context1M: true } }, spark = "openai-codex:gpt-5.3-codex-spark";
+    expect((await implicitModelRuntimeOptions({ baseModel: primary, context1MModels: { [backup]: false } }, metadata, primary.reference)).context1MModels)
+      .toEqual({ [primary.reference]: true, [backup]: false });
+    expect((await implicitModelRuntimeOptions({ baseModel: primary }, metadata, spark)).context1MModels).toBeUndefined();
   });
   it("validates against the accepted model, not a rejected raw model", async () => {
     const result = await extension()({ request: { metadata: { web: { model: "not-a-reference", context1M: true } } } });

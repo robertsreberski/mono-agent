@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
@@ -259,6 +259,45 @@ it("root authority contention is typed/retryable, preserves evidence and publish
   expect((await f.makeHarness("B", true).run(f.request("busy-delivery"))).failure).toBeUndefined(); expect(f.transport).toHaveBeenCalledTimes(3);
 });
 
+it("an interrupted turn on a legacy-only handle settles as interrupted without rerun, and the next turn runs", async () => {
+  const f = await fixture(); await f.seed();
+  const [journal] = await f.journals(), current = join(f.nativeRoot, journal!), id = JSON.parse((await readFile(current, "utf8")).split("\n")[0]!).id;
+  // The handle exists only as a not-yet-imported legacy Pi source (the shared harness fixture).
+  const legacy = (await readFile(new URL("../../../harness/src/__tests__/fixtures/legacy-v3.jsonl", import.meta.url), "utf8")).replace('"id":"fixture-session"', `"id":"${id}"`);
+  await rm(current); await mkdir(join(f.nativeRoot, "legacy"), { mode: 0o700 }); await writeFile(join(f.nativeRoot, "legacy", `1700000000000_${id}.jsonl`), legacy, { mode: 0o600 });
+  const abandoned = await f.store.beginProviderSessionTurn!("fictional", "fictional-killed-run", { modelKey: "faux:A",
+    reconciliation: { purpose: "execution", ownerKey: "fictional", initial: { persistText: "Fictional killed input", timestamp: "2000-01-01T00:00:00.000Z" } } });
+  expect(abandoned.providerSessionId).toBe(id); await abandoned.abort(); // Fence written; killed before the import.
+  const calls = f.transport.mock.calls.length; f.faux.setResponses([text("Fictional next answer")]);
+  const result = await f.makeHarness().run(f.request("next-delivery", "Fictional next input"));
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional next answer"); expect(f.transport).toHaveBeenCalledTimes(calls + 1);
+  const settled = f.inspect.mock.calls.findIndex(([request]) => request.descriptor.turnId === "fictional-killed-run");
+  expect(await f.inspect.mock.results[settled]!.value).toEqual({ status: "absent" });
+  const messages: { content: string }[] = (await f.canonical()).messages;
+  expect(messages.some((message) => message.content.includes("Fictional killed input"))).toBe(true);
+  expect(messages.some((message) => message.content.includes("interrupted"))).toBe(true);
+});
+
+it("an unreadable sibling canonical record on an unmarked root does not block the first switch", async () => {
+  const f = await fixture(); await f.seed();
+  const sibling = join(f.historyRoot, `${switchConversationKey("other-fictional")}.history.json`); await writeFile(sibling, "{", { mode: 0o600 });
+  f.faux.setResponses([text(summary), text("Fictional B answer")]);
+  const result = await f.makeHarness("B", true).run(f.request("first-switch-delivery"));
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional B answer"); expect(await f.changes()).toHaveLength(1);
+  expect(await readFile(sibling, "utf8")).toBe("{");
+});
+
+it("another conversation's damaged recovery data refuses bootstrap as non-retryable damage, not busy", async () => {
+  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+  const other = await f.store.beginProviderSessionTurn!("other-fictional", "other-damaged-run", { modelKey: "faux:A",
+    reconciliation: { purpose: "execution", ownerKey: "other-fictional", initial: { persistText: "Fictional other input", timestamp: "2000-01-01T00:00:00.000Z" } } });
+  await other.abort(); await rm(join(f.historyRoot, ".locks", `${switchConversationKey("other-fictional")}.dirty.json`));
+  const [name] = await readdir(join(f.historyRoot, ".pending-turns")); await writeFile(join(f.historyRoot, ".pending-turns", name!), '{"version":', { mode: 0o600 });
+  const result = await f.makeHarness("B", true).run(f.request("damaged-delivery"));
+  expect(result.failure).toMatchObject({ kind: "native_switch_damaged", message: expect.stringContaining("Another conversation's saved recovery data is damaged"), details: { retryable: false } });
+  expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); expect(await f.changes()).toHaveLength(0);
+});
+
 it("unguarded default and unguarded prepared turns emit no nativeProvenance; prepare-time flags/values are ignored", async () => {
   const f = await fixture(); await f.seed();
   const runtime = f.runtimeFor("A");
@@ -429,12 +468,12 @@ it("switches while an unrelated conversation is active after root bootstrap", as
 });
 
 
-it("keyless native inheritance overrides a late sticky extension without copying metadata identity or its 1M flag", async () => {
+it("keyless native inheritance overrides a late sticky extension without copying metadata identity, its effort or its 1M flag", async () => {
   const f = await fixture(); await f.seed();
   f.faux.setResponses([text(summary), text("Fictional switched B answer")]);
   await f.makeHarness("B", true).run(f.request("fictional-switch-id"));
   const before = await f.canonical(), cleanup = vi.fn(async () => {});
-  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), context1MModels: { "faux:A": true } }, cleanup }));
+  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), effort: "xhigh", context1MModels: { "faux:A": true } }, cleanup }));
   const wake = { ...f.request("not-a-host-delivery"), metadata: { source: "web", web: { model: "faux:A", context1M: true } } };
   f.faux.setResponses([text("Fictional inherited B answer")]);
   const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }, true).run(wake);
@@ -442,7 +481,7 @@ it("keyless native inheritance overrides a late sticky extension without copying
   expect(extension).toHaveBeenCalledOnce(); expect(extension.mock.calls[0]![0].request.metadata).toBe(wake.metadata); expect(cleanup).toHaveBeenCalledOnce();
   const prepared = f.prepareCalls.at(-1)!;
   expect(prepared.id).toBe("B"); expect(prepared.options.model).toMatchObject({ provider: "faux", model: "B" });
-  expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined();
+  expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined(); expect(prepared.options.effort).toBeUndefined();
   const after = await f.canonical(); expect(after.providerSession.modelKey).toBe("faux:B");
   expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
 });

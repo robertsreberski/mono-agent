@@ -769,7 +769,8 @@ export async function reconcileNativeSessionTurn(request) {
   let raw;
   try {
     const metadata = await repo.find(id);
-    if (!metadata) return { status: "absent" };
+    // A legacy source predates turn evidence; it is imported only when the runtime opens it.
+    if (!metadata || metadata.legacy) return { status: "absent" };
     raw = await repo.open(metadata, { repair: false, wait: false });
     const initial = await readTurnEvidence(raw, request.descriptor.turnId);
     const match = matchTurnEvidence(initial, request);

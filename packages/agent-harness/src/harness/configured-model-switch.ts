@@ -222,7 +222,7 @@ export async function prepareConfiguredModelSwitch(input: {
               assertCurrent: async (request: { handleId: string; sessionsRoot: string }) => { await turn.assertOwned(); if (request.handleId !== id || resolve(request.sessionsRoot) !== resolve(host.durablePiSessionsRoot)) throw new Error("Prepared native current authority changed"); } } } : {}) };
         }));
       }, close: async () => { try { await prepared.close(); } finally { await owner.abort(); } } };
-  } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError("native_switch_busy", error.message, { retryable: true }); throw error; }
+  } catch (error) { try { await incoming?.close(); } finally { await owner.abort(); } if (error instanceof NativeHistoryAuthorityBusyError) throw new AgentHarnessError(error.damaged ? "native_switch_damaged" : "native_switch_busy", error.message, { retryable: error.retryable }); throw error; }
   finally { await outgoing?.close().catch(() => {}); }
 }
 // Same epoch/handle identity as durable history; never a process/run identifier.

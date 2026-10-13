@@ -1,6 +1,6 @@
 import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
-import { createRequestModelOverrideRuntimeExtension } from "./request-model-override.js";
+import { implicitModelRuntimeOptions } from "./request-model-override.js";
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
@@ -1616,16 +1616,13 @@ async function createConfiguredAgentHarnessInternal(
         ...nativeModelSwitch,
         sessionsRoot: piSessionsRoot ?? "",
         deliveryId: persistedWebDeliveryId,
-        implicitModel: async (_request, modelKey) => {
-          const selected = parseMonoRuntimeModelReference(modelKey);
-          // Reuse endpoint/effort selection without changing request metadata
-          // identity (which carries out-of-band host capabilities).
-          const extension = createRequestModelOverrideRuntimeExtension({ baseModel: model,
-            ...(config.runtime.effort === undefined ? {} : { baseEffort: config.runtime.effort }),
-            ...(config.runtime.fallbacks === undefined ? {} : { fallbackRoutes: config.runtime.fallbacks }),
-            ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }) });
-          return { model: selected, runtimeOptions: (await extension({ request: { metadata: { web: { model: modelKey } } } })).runtimeOptions };
-        },
+        // Reuse endpoint/effort/1M selection without changing request metadata
+        // identity (which carries out-of-band host capabilities).
+        implicitModel: async (request, modelKey) => ({ model: parseMonoRuntimeModelReference(modelKey), runtimeOptions: await implicitModelRuntimeOptions({ baseModel: model,
+          ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
+          ...(config.runtime.effort === undefined ? {} : { baseEffort: config.runtime.effort }),
+          ...(config.runtime.fallbacks === undefined ? {} : { fallbackRoutes: config.runtime.fallbacks }),
+          ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }) }, request.metadata, modelKey) }),
       },
     });
     ownershipTransferred = true;
