@@ -395,3 +395,34 @@ it("a redelivered message whose abandoned switch already billed it makes no paid
   expect(fresh.failure).toBeUndefined(); expect(fresh.text).toBe("Fictional B reply");
   expect(f.transport).toHaveBeenCalledTimes(billed + 3); expect((await f.canonical()).lastSwitch.switchId).not.toBe(abandoned.identity.switchId);
 });
+
+
+it("unreadable capture during a pending switch is typed and bills nothing", async () => {
+  const f = await fixture(); await f.seed(); await pendingSwitch(f); const billed = f.transport.mock.calls.length;
+  const inspect = vi.spyOn(f.native as Required<Pick<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage, "inspectCurrentJournal">>, "inspectCurrentJournal").mockResolvedValue({ status: "unreadable", reason: "fictional-damage" });
+  const result = await f.makeHarness("B", true).run(f.request("fictional-retry"));
+  expect(result.failure?.kind).toBe("native_journal_unreadable"); expect(f.transport).toHaveBeenCalledTimes(billed); inspect.mockRestore();
+});
+
+it("a recovered ready handoff reports its completed model before refusing a different selection", async () => {
+  const f = await fixture(); await f.seed();
+  const roll = vi.spyOn(f.store, "beginProviderSessionPreparation"), original = f.store.beginProviderSessionPreparation.bind(f.store);
+  roll.mockImplementationOnce(async (...args) => {
+    const prep = await original(...args); prep.rollForwardModelSwitch = async () => { throw new Error("Fictional roll-forward interruption"); }; return prep;
+  });
+  f.faux.setResponses([text(summary)]); await f.makeHarness("B", true).run(f.request("fictional-ready")); roll.mockRestore();
+  const billed = f.transport.mock.calls.length;
+  const result = await f.makeHarness("A", true).run(f.request("fictional-back"));
+  expect(result.failure).toMatchObject({ kind: "handoff_pending", message: expect.stringContaining("handoff to faux:B completed") });
+  expect(f.transport).toHaveBeenCalledTimes(billed); expect((await f.canonical()).providerSession.modelKey).toBe("faux:B");
+});
+
+it("switches while an unrelated conversation is active after root bootstrap", async () => {
+  const f = await fixture(); await f.seed();
+  const root = await f.store.acquireNativeHistoryAuthority("fictional"); if (root.status !== "owned") throw new Error("fixture"); await root.release();
+  const active = await f.store.beginProviderSessionTurn("fictional-other", "fictional-active", { modelKey: "faux:A" });
+  f.faux.setResponses([text(summary), text("Fictional B reply")]);
+  try { expect((await f.makeHarness("B", true).run(f.request("fictional-concurrent-switch"))).failure).toBeUndefined(); }
+  finally { await active.abort(); }
+  expect((await f.canonical()).providerSession.modelKey).toBe("faux:B");
+});

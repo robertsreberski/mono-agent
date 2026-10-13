@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let background Web wakes inherit the current saved model after a refused
+  switch. Report unreadable pending journals and completed handoffs clearly,
+  preserve cancellation during detached history loading, and distinguish
+  own-journal damage from absence without scanning unrelated journals.
+
 - Keep checkpoint handoffs reusable across successive model switches, retaining
   earlier suffix evidence within the same frozen budget.
 

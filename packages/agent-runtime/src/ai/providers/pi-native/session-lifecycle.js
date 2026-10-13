@@ -773,8 +773,7 @@ export async function reconcileNativeSessionTurn(request) {
   const repo = resolveDurableNativeSessionRepo(request.sessionsRoot);
   let raw;
   try {
-    const records = await repo.listOwned({ wait: false });
-    const metadata = records.find((record) => record.id === id);
+    const metadata = await repo.find(id);
     if (!metadata) return { status: "absent" };
     raw = await repo.open(metadata, { repair: false, wait: false });
     const initial = await readTurnEvidence(raw, request.descriptor.turnId);

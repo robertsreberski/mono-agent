@@ -2253,6 +2253,19 @@ describe("protected native turn reconciliation", () => {
       expect(await reconcileNativeSessionTurn(request)).toEqual(matched); expect(faux.state.callCount).toBe(before);
     } finally { await disposeProviderSession(options.sessionId); rmSync(root, { recursive: true, force: true }); }
   });
+  it("reconciliation uses direct lookup and refuses damaged own-handle evidence instead of declaring absence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "reconcile-damage-")), id = "fictional-damaged-handle";
+    const repo = resolveDurableNativeSessionRepo(root), raw = await repo.create({ id }); await raw.close();
+    const descriptor = { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "fictional-turn", handleId: id, baseRevision: 0,
+      reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } };
+    const catalogue = vi.spyOn(repo, "listOwned").mockRejectedValue(new Error("Unexpected catalogue scan"));
+    try {
+      writeFileSync(raw.metadata.path, "{torn\n");
+      await expect(reconcileNativeSessionTurn({ sessionsRoot: root, descriptor, purpose: "execution", expectedInputs: [], expectedModel: { provider: "faux", id: "fixture" } })).rejects.toBeDefined();
+      expect(catalogue).not.toHaveBeenCalled(); expect(readFileSync(raw.metadata.path, "utf8")).toBe("{torn\n");
+    } finally { catalogue.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("returns absent/mismatch without native writes and refuses live local ownership", async () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "native-turn-match-")); const { options, request } = protectedOptions(model, root);
     try {

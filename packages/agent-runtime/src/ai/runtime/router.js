@@ -363,6 +363,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               }
             } catch {
               try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+              if (callOptions.abortSignal?.aborted) return {
+                ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [] }, !detachedAcknowledged), cancelled: true, failoverHistory,
+              };
               const warning = { warning_kind: "detached_context_unavailable", source: "router",
                 message: "Conversation history unavailable; no retry or backup model was started." };
               const failure = normalizeAttemptResult(lastResult || lastRouteSkip || { error: "Conversation history unavailable", failureKind: "provider_unavailable", events: [] }, !detachedAcknowledged);

@@ -2697,7 +2697,10 @@ export class WebService {
       const context1M = agent !== undefined && this.supportsContext1M(started.thread.sourceId, agent, started.thread.runState.model)
         ? started.thread.runState.context1M : undefined;
       const modelMetadata = {
-        ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
+        // Wakes have no explicit delivery identity and must inherit the host's
+        // current native model, not a sticky selection from a refused switch.
+        ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined && "userMessageId" in started && started.thread.runState.model !== undefined
+          ? { model: started.thread.runState.model } : {}),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
         ...(context1M === undefined ? {} : { context1M }),
       };

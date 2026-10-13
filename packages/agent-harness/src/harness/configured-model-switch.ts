@@ -35,7 +35,7 @@ const budgetFailure = (reason: string) => new AgentHarnessError("handoff_budget_
 const capacity = (error: unknown) => error instanceof ModelSwitchCapacityError || error instanceof NativeEvidenceCapacityError;
 const unreadableJournal = (reason: string) => new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason });
 // The presence probe reads only the header; record damage surfaces at the validating open.
-const journalCorruption = (error: unknown) => error instanceof SyntaxError || (error as { code?: unknown } | null)?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
+const journalCorruption = (error: unknown) => error instanceof SyntaxError || ["ERR_HARNESS_JOURNAL_CORRUPT", "ERR_NATIVE_JOURNAL_UNREADABLE"].includes(String((error as { code?: unknown } | null)?.code));
 
 /** Host path behind the private capability. Unsupported custom stores/runtimes
  * retain the original path without preparing resources or issuing authority. */
@@ -88,7 +88,8 @@ export async function prepareConfiguredModelSwitch(input: {
       const recovered = await recoverPreparedModelSwitch(owner);
       if (recovered.status === "ready") {
         snapshot = await owner.read(); switched = true;
-        if (recovered.modelKey !== host.routing.modelKey) throw pending(); // Finish recorded switch; never dispatch this message on a different target.
+        if (recovered.modelKey !== host.routing.modelKey) throw new AgentHarnessError("handoff_pending",
+          `The handoff to ${recovered.modelKey} completed; send again to switch models. This message was not admitted or queued.`); // Finish recorded switch; never dispatch this message on a different target.
         ready = recovered;
       } else if (messageId !== undefined && snapshot.pending.identity.fromModelKey === host.routing.modelKey) {
         // An explicit message back to the source model abandons the non-ready

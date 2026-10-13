@@ -1412,7 +1412,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             ...(record.native ? { journalId: currentJournal(id, source.sourceEpoch).journalId } : {}),
             ...(legacyProvenance ? { provenance: { ...structuredClone(legacyProvenance), account: null } } : {}) };
           const presence = native.inspectCurrentJournal ? await native.inspectCurrentJournal(coordinates) : { status: "present" as const };
-          if (presence.status === "unreadable") throw new Error("Native evidence source is unreadable");
+          if (presence.status === "unreadable") throw Object.assign(new Error("Native evidence source is unreadable"), { code: "ERR_NATIVE_JOURNAL_UNREADABLE" });
           // A definitively missing journal feeds canonical history through the same handoff order.
           const current = presence.status === "missing" ? null : await native.freeze(coordinates);
           if (current && `${current.provenance.provider}:${current.provenance.model}` !== source.fromModelKey) throw new Error("Captured source model disagrees with canonical binding");

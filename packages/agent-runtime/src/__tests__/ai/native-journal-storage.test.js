@@ -334,3 +334,15 @@ it("retention inventory and deletion ignore stray entries and unattributed damag
   for (const [name, text] of Object.entries(strays)) expect(await readFile(join(f.repo.directory, name), "utf8")).toBe(text);
   expect((await stat(join(f.repo.directory, "scratch"))).isDirectory()).toBe(true);
 });
+
+
+it("unknown-owner legacy damage does not block a missing current journal; named damage does", async () => {
+  const f = await fixture(), absent = { handleId: "a".repeat(64) };
+  const legacyDir = join(f.root, "fictional-legacy"); await mkdir(legacyDir, { mode: 0o700 });
+  const unknown = join(legacyDir, "damaged.jsonl"); await writeFile(unknown, "{torn", { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toEqual({ status: "missing" });
+  const named = join(legacyDir, `2000-01-01T00-00-00-000Z_${absent.handleId}.jsonl`);
+  await writeFile(named, "{torn", { mode: 0o600 });
+  expect(await f.bridge.inspectCurrentJournal(absent)).toMatchObject({ status: "unreadable" });
+  expect(await readFile(unknown, "utf8")).toBe("{torn");
+});
