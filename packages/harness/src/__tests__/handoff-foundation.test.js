@@ -280,3 +280,18 @@ it("A -> B -> C keeps A's outcome-unknown Write in the deterministic ledger on p
   const oversized = { ...ab.artifact, ledger: [...ab.artifact.ledger, { kind: "tool", journalId: "fictional-old", operationId: "big-op", callId: "big-call", arguments: { text: "x".repeat(300000) } }] };
   expect(buildHandoff(view([await segment("B-tight")], { prior: oversized }), { ...options, summary })).toMatchObject({ status: "budget_failure", reason: "mandatory_history" });
 });
+
+
+it("A -> B paid, B -> C free, C -> D free composes every prior suffix within one budget", async () => {
+  const a = await segment("A-source", [text("A fact")]);
+  const ab = buildHandoff(view([a]), { ...options, summary, target: { ...target, model: "B" } }); expect(ab.status).toBe("ready");
+  const b = await segment("B-source", [text("B suffix fact")]);
+  const bc = buildHandoff(view([b], { prior: ab.artifact }), { ...options, producer: "checkpoint", target: { ...target, model: "C" } }); expect(bc.status).toBe("ready");
+  const c = await segment("C-source", [text("C suffix fact")]);
+  const cd = buildHandoff(view([c], { prior: bc.artifact }), { ...options, producer: "checkpoint", target: { ...target, model: "D" } }); expect(cd.status).toBe("ready");
+  expect(cd.artifact.checkpoint.summary).toEqual(summary);
+  expect(cd.artifact.checkpoint.suffix.map((entry) => entry.id)).toEqual(["B-source-message-0", "C-source-message-0"]);
+  expect(JSON.stringify(cd.artifact)).toContain("B suffix fact"); expect(JSON.stringify(cd.artifact)).toContain("C suffix fact");
+  const huge = { ...bc.artifact, checkpoint: { ...bc.artifact.checkpoint, suffix: [{ data: [{ text: "x".repeat(300000) }] }] } };
+  expect(buildHandoff(view([c], { prior: huge }), { ...options, producer: "checkpoint" })).toMatchObject({ status: "budget_failure" });
+});

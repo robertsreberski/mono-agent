@@ -172,10 +172,11 @@ export function buildHandoff(view, options) {
   if (options.summary !== undefined) {
     try { summary = validateHandoffSummary(options.summary); } catch { return { status: "summary_rejected", reason: "malformed_summary" }; }
   } else {
-    if (!view.prior?.summary) return { status: "summary_required", prepared };
-    checkpoint = { summary: validateHandoffSummary(view.prior.summary), ledger: view.prior.ledger,
-      suffix: view.segments.flatMap((s) => s.entries.map((e) => ({ id: e.id, ...renderHandoffMessage(e.type === "message" ? e.message
-        : e.checkpoint?.summaryMessage ?? { role: "compactionSummary", summary: e.summary }) }))) };
+    const prior = view.prior, priorSummary = prior?.summary ?? prior?.checkpoint?.summary;
+    if (!priorSummary) return { status: "summary_required", prepared };
+    checkpoint = { summary: validateHandoffSummary(priorSummary), ledger: prior.ledger,
+      suffix: [...(prior.summary ? [] : prior.checkpoint.suffix), ...view.segments.flatMap((s) => s.entries.map((e) => ({ id: e.id, ...renderHandoffMessage(e.type === "message" ? e.message
+        : e.checkpoint?.summaryMessage ?? { role: "compactionSummary", summary: e.summary }) })))] };
     recent = recent.slice(-1); // the complete suffix already carries every earlier group
   }
   const artifact = { version: 1, policy: HANDOFF_POLICY, coverage: prepared.coverage, summary, checkpoint,

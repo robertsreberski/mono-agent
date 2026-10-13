@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep checkpoint handoffs reusable across successive model switches, retaining
+  earlier suffix evidence within the same frozen budget.
+
 - Fix durable turn settlement under small staging quotas, allow model switches
   alongside unrelated active conversations after root bootstrap, and isolate
   unreadable sibling history. Keep consumed-message guards while abandoned
