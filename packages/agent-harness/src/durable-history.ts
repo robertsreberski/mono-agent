@@ -184,7 +184,7 @@ export class ModelSwitchPendingError extends Error {
 export class NativeHistoryAuthorityBusyError extends Error {
   readonly code = "ERR_NATIVE_HISTORY_AUTHORITY_BUSY";
   readonly retryable = true;
-  constructor() { super("Native root authority requires drained host owners and settled fences"); this.name = "NativeHistoryAuthorityBusyError"; }
+  constructor() { super("Another conversation is still running or awaiting recovery; send again when it finishes."); this.name = "NativeHistoryAuthorityBusyError"; }
 }
 
 export interface ManagedProviderSessionPreparation {
@@ -456,14 +456,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       let marker;
       try {
         await assertOwned();
-        const active = await this.scanActiveMarkers(true);
-        if (active.some((entry) => entry.path !== held.marker.path)
-          || await this.scanDirtyFences(await this.ensureLocksRoot(), false).then((fences) => fences.length + fences.damaged.size)
-          || (await this.pendingPayloads(rootIdentity).list()).length) {
-          throw new NativeHistoryAuthorityBusyError();
-        }
         const rootStore = this.nativeHistoryRoot(rootIdentity);
         if (!await rootStore.read()) {
+          const active = await this.scanActiveMarkers(true);
+          if (active.some((entry) => entry.path !== held.marker.path)
+            || await this.scanDirtyFences(await this.ensureLocksRoot(), false).then((fences) => fences.length + fences.damaged.size)
+            || (await this.pendingPayloads(rootIdentity).list()).length) {
+            throw new NativeHistoryAuthorityBusyError();
+          }
           for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {
             if ((await this.readCommittedEntryRecord(entry, rootIdentity)).native !== undefined) throw new Error("Native canonical root authority marker is missing; restore consistent backup");
           }
@@ -1699,7 +1699,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             // Router detachment is also monotonic, but its final host candidate may update.
             const replacement = createPendingTurnPayload(current.identity, current.inputs,
               next === "cancelled" ? next : current.disposition === "detached" ? "detached" : next, retainedCandidate);
-            const replacementFence = await this.replacePendingPayload(fence, replacement, held);
+            const replacementFence = await this.replacePendingPayload(fence, replacement, held, true);
             payload = replacement; fence = replacementFence;
           }),
         } }),
@@ -1813,6 +1813,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let candidates;
     try {
       const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+      // The root transaction excludes new marker publication. Dead owners' torn
+      // temps carry no authoritative payload and need no parsed conversation ID.
+      await this.pendingPayloads(rootIdentity).collectInactiveTemps(new Set([...active, ...(excludedKey ? [excludedKey] : [])]), {
+        assertOwned: () => assertDirectoryIdentity(this.root, rootIdentity), reserve: async () => { throw new Error("Drain cannot publish payloads."); },
+      });
       const fences = new Map((await this.scanDirtyFences(locksIdentity, true)).map((fence) => [fence.conversationKey, fence]));
       const owners = new Map<string, { readonly conversationKey: string; mtimeMs: number; readonly entries: Array<{ readonly name: string; readonly mtimeMs: number }> }>();
       for (const entry of await this.pendingPayloads(rootIdentity).list()) {
@@ -1884,14 +1889,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     finally { await this.releaseConversation(held, held.rootIdentity); }
   }
 
-  private async replacePendingPayload(fence: DirtyFence, payload: PendingTurnPayload, held: HeldConversation): Promise<DirtyFence> {
+  private async replacePendingPayload(fence: DirtyFence, payload: PendingTurnPayload, held: HeldConversation, settlement = false): Promise<DirtyFence> {
     const releaseRoot = await this.acquireRootTransaction(held.rootIdentity);
     try {
       await held.assertOwned();
       const current = await this.findDirtyFence(fence.conversationKey, await this.ensureLocksRoot());
       if (!current || serializeDirtyFence(current).compare(serializeDirtyFence(fence)) !== 0) throw new Error("Pending fence changed during owner-held publication.");
       const pointer = await this.pendingPayloads(held.rootIdentity).publish(payload, {
-        assertOwned: () => held.assertOwned(), reserve: async (bytes) => this.admitPendingBytes(bytes),
+        assertOwned: () => held.assertOwned(), reserve: async (bytes) => { if (!settlement) this.admitPendingBytes(bytes); },
       });
       const replacement = await this.publishDirtyFence({ ...fence, payload: pointer }, await this.ensureLocksRoot());
       // After durable pointer replacement, old generations are no longer needed.
@@ -1966,7 +1971,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // rename can then recognize the receipt without inspecting native state again.
     if (projection.candidate !== undefined) {
       payload = createPendingTurnPayload(payload.identity, payload.inputs, payload.disposition, projection.candidate);
-      fence = await this.replacePendingPayload(fence, payload, held);
+      fence = await this.replacePendingPayload(fence, payload, held, true);
     }
     const lastCommit: DurableTurnReceipt = { version: 1, turnId: payload.identity.turnId, inputDigest: turnInputDigest(payload),
       candidateDigest: turnCandidateDigest(payload), journalId: projection.journalId, tipId: projection.tipId,
@@ -3161,8 +3166,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       let committedRecord: LoadedHistoryRecord | undefined;
       try { committedRecord = committedEntry === undefined ? undefined : await this.readCommittedEntryRecord(committedEntry, rootIdentity); }
       catch (error) {
-        if (await this.nativeHistoryRoot(rootIdentity).read() && (error instanceof CanonicalParseFailure || error instanceof TruncatedHistoryRecordError || error instanceof TypeError)) continue;
-        // Unmarked v1-v3 roots retain the original error and recovery behavior.
+        if (error instanceof CanonicalParseFailure || error instanceof TruncatedHistoryRecordError || error instanceof TypeError) continue;
         throw error instanceof CanonicalParseFailure ? error.cause : error;
       }
       const canonicalProvesCommit = committedRecord?.providerSession !== undefined

@@ -286,13 +286,12 @@ export class ModelSwitchPayloadStore {
     await this.owner(owner, state);
     return owner.withRootTransaction(async () => {
       await this.owner(owner, state);
-      const directory = await this.ensureDirectory(false), retained: string[] = [], own = `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.`;
+      const directory = await this.ensureDirectory(false), own = `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.`;
       if (directory) {
         for (const { name } of await this.entries(`${switchConversationKey(state.identity.historyBucket)}.`)) {
           if (name.endsWith(".fence.json") && name !== `${own}fence.json`) {
             throw new Error("Existing switch must roll forward and settle before a different intent");
           }
-          if (name.endsWith(".state.json") && !name.startsWith(own)) retained.push(name);
         }
       }
       const current = await this.read(state.identity.historyBucket, state.identity.switchId);
@@ -304,24 +303,31 @@ export class ModelSwitchPayloadStore {
         await this.reconcile(current.state, current.fence.payload, owner);
         return current.state; // never reverse/restart an admitted durable intent
       }
-      // A retained (e.g. abandoned) intent's billing state keeps the explicit
-      // messages it consumed: a redelivery of one never authorizes paid work again.
-      for (const name of state.initialMessageDigest === undefined ? [] : retained) {
-        const prior = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)); validateModelSwitchState(prior);
-        if ([prior.initialMessageDigest, ...prior.authorizations.map((entry) => entry.messageDigest)].includes(state.initialMessageDigest)) throw new ModelSwitchMessageConsumedError();
-      }
+      await this.assertMessageUnconsumed(state.identity.historyBucket, state.identity.switchId, state.initialMessageDigest);
       const serialized = serializeModelSwitchState(state);
       if (state.reservation.pendingBytes < serialized.byteLength + MAX_MODEL_SWITCH_FENCE_BYTES) throw new RangeError("Switch pending reservation is too small");
       await owner.reserve(reservationBytes(state.reservation)); await owner.onPhase?.("reserved");
       await this.publishState(state, owner); return structuredClone(state);
     });
   }
-  private async update(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, change: (state: ModelSwitchState) => ModelSwitchState): Promise<ModelSwitchState> {
+  /** Retained billing state is the redelivery guard, until a later completed
+   * switch garbage-collects it. No separate message ledger is maintained. */
+  private async assertMessageUnconsumed(bucket: string, switchId: string, digest: string | undefined): Promise<void> {
+    if (!digest || !await this.ensureDirectory(false)) return;
+    const own = `${this.coordinates(bucket, switchId)}.`;
+    for (const { name } of await this.entries(`${switchConversationKey(bucket)}.`)) {
+      if (!name.endsWith(".state.json") || name.startsWith(own)) continue;
+      const prior = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)); validateModelSwitchState(prior);
+      if ([prior.initialMessageDigest, ...prior.authorizations.map((entry) => entry.messageDigest)].includes(digest)) throw new ModelSwitchMessageConsumedError();
+    }
+  }
+  private async update(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, change: (state: ModelSwitchState) => ModelSwitchState, messageDigest?: string): Promise<ModelSwitchState> {
     await this.owner(owner);
     return owner.withRootTransaction(async () => {
       const current = await this.read(bucket, switchId); if (!current) throw new Error("Switch intent is absent"); await this.owner(owner, current.state);
       await this.reconcile(current.state, current.fence.payload, owner);
       if (current.state.phase !== "ready" && await this.cachedArtifact(current.state)) throw new Error("Cached handoff must roll forward before producer advancement");
+      await this.assertMessageUnconsumed(bucket, switchId, messageDigest);
       const next = change(current.state); validateModelSwitchState(next);
       if (canonicalSwitchJSON(next) === canonicalSwitchJSON(current.state)) return next;
       await owner.reserve(serializeModelSwitchState(next).byteLength + MAX_MODEL_SWITCH_FENCE_BYTES);
@@ -338,7 +344,7 @@ export class ModelSwitchPayloadStore {
     return this.update(bucket, switchId, owner, advanceUnfitProducer);
   }
   authorizeMessage(bucket: string, switchId: string, messageDigest: string, owner: ModelSwitchStorageOwner): Promise<ModelSwitchState> {
-    return this.update(bucket, switchId, owner, (state) => authorizeSummaryMessage(state, messageDigest));
+    return this.update(bucket, switchId, owner, (state) => authorizeSummaryMessage(state, messageDigest), messageDigest);
   }
   /** File publication is the ONLY content authority. Caller proposes already
    * validated/fitting P3a content; this layer checks identity/protocol and JSON

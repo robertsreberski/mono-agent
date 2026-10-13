@@ -15,7 +15,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 const source: CanonicalJournalDescriptor = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
   ownerKey: "fictional-owner", historyBucket: "fictional-conversation", sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64),
   provenance: { provider: "faux", api: "faux-api", model: "A", account: null } };
-const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
+const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
 const coordinates: Omit<ModelSwitchIdentity, "switchId"> = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, sourceCanonicalDigest: "4".repeat(64), sourceRevision: 2,
   sourceEpoch: source.epoch, source, fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },
   targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) };
@@ -316,4 +316,22 @@ it("returns absent inventory before root validation and follows win32 permission
     Object.defineProperty(process, "platform", { value: "win32" });
     expect(await store.inventory()).toEqual(before);
   } finally { Object.defineProperty(process, "platform", platform); }
+});
+
+
+it("retained M1 billing blocks redelivery as both a new intent and an authorization of pending M3", async () => {
+  const f = await fixture(); const m1 = createModelSwitchState(coordinates, f.state.reservation, budget, "a".repeat(64));
+  const exhaust = async (state: ModelSwitchState) => {
+    await f.store.begin(state, f.owner); await f.store.admit(source.historyBucket, state.identity.switchId, "outgoing", f.owner);
+    await f.store.finish(source.historyBucket, state.identity.switchId, "outgoing", "unknown", f.owner);
+    await f.store.advanceUnfit(source.historyBucket, state.identity.switchId, f.owner);
+    await f.store.admit(source.historyBucket, state.identity.switchId, "incoming", f.owner);
+    await f.store.finish(source.historyBucket, state.identity.switchId, "incoming", "unknown", f.owner);
+  };
+  await exhaust(m1); await f.store.abandon(source.historyBucket, m1.identity.switchId, f.owner); // M2 selects current A.
+  const c3 = { ...coordinates, timestamp: 18, targetEpoch: "6".repeat(64) };
+  await expect(f.store.begin(createModelSwitchState(c3, f.state.reservation, budget, "a".repeat(64)), f.owner)).rejects.toMatchObject({ code: "ERR_MODEL_SWITCH_MESSAGE_CONSUMED" });
+  const m3 = createModelSwitchState(c3, f.state.reservation, budget, "b".repeat(64)); await exhaust(m3);
+  await expect(f.store.authorizeMessage(source.historyBucket, m3.identity.switchId, "a".repeat(64), f.owner)).rejects.toMatchObject({ code: "ERR_MODEL_SWITCH_MESSAGE_CONSUMED" });
+  expect((await f.store.read(source.historyBucket, m3.identity.switchId))?.state.authorizationGeneration).toBe(0);
 });

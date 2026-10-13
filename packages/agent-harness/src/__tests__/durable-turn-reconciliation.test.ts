@@ -544,3 +544,30 @@ it("settles concurrent admissions whose pending payloads together exceed the sta
   // An ordinary append that would grow staging is still quota-checked.
   await expect(createDurableHistoryStore({ root: f.root, maxStagedBytes: 1 }).append("fictional-other", [{ role: "assistant", content: "Fictional" }])).rejects.toThrow("staging quota");
 });
+
+
+it("settles a large sealed answer under a small staging quota without redispatch", async () => {
+  const f = await fixture({ maxStagedBytes: 4000 }); const turn = await f.begin();
+  await turn.reconciliation!.admit(createPendingInitialInput({ id: turn.reconciliation!.descriptor.reconciliation!.initialInputId!, persistText: "Fictional redacted input.", timestamp }, "Fictional redacted input."));
+  await turn.abort();
+  f.inspect.mockImplementation(async (request) => {
+    const result = evidence(request); if (result.status !== "matched") throw new Error("fixture");
+    return { ...result, seal: { version: 1, outcome: "completed", result: { text: "x".repeat(8000), error: null, failureKind: null, cancelled: false, stopReason: "stop" } } };
+  });
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toMatchObject({ status: "recovered", outcome: "completed" });
+  expect((await f.store.load(bucket)).at(-1)?.content).toHaveLength(8000);
+  expect(await f.store.recoverProviderSessionTurn(bucket)).toEqual({ status: "clean" }); expect(f.inspect).toHaveBeenCalledOnce();
+});
+
+it("drain collects a dead owner's lone torn temp before root authority bootstrap", async () => {
+  const f = await fixture(); const turn = await f.begin(); await turn.abort();
+  const payloads = new PendingTurnPayloadStore(f.root, await lstat(f.root)); const [entry] = await payloads.list();
+  await rm(f.fencePath);
+  const path = join(f.root, ".pending-turns", entry!.name); await rename(path, `${path}.tmp`);
+  await writeFile(`${path}.tmp`, '{"version":', { mode: 0o600 });
+  await f.store.drainPendingProviderSessionTurns(); expect(await payloads.list()).toEqual([]);
+  const clean = await f.store.beginProviderSessionTurn(bucket, "fictional-clean", { modelKey });
+  await (await clean.prepareCommit([], { providerSessionSynced: true })).commit();
+  const lease = await f.store.acquireNativeHistoryAuthority(bucket); expect(lease.status).toBe("owned");
+  if (lease.status === "owned") await lease.release(); expect(f.inspect).not.toHaveBeenCalled();
+});

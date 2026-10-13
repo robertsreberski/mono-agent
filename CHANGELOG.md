@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix durable turn settlement under small staging quotas, allow model switches
+  alongside unrelated active conversations after root bootstrap, and isolate
+  unreadable sibling history. Keep consumed-message guards while abandoned
+  switch billing states remain retained; later completed switches collect them.
+
 - Keep long conversations switchable between models: switch evidence streams
   the journal and keeps only the work since its last compaction checkpoint plus
   genuinely unresolved work, so journal size alone no longer refuses a switch.

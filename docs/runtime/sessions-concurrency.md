@@ -759,3 +759,8 @@ re-writes, with an estimated 27% reduction in Anthropic input-equivalent cost.
 This is workload-specific evidence, not a billing guarantee. Agents that only
 chain turns within five minutes pay slightly more with long retention and can
 set `"short"` instead.
+
+Abandoned switch billing states reject redelivered messages both when starting
+a switch and when authorizing an existing pending switch. This guard lasts only
+while those states are retained: a later completed switch garbage-collects old
+billing states. Pending messages are never queued or replayed.

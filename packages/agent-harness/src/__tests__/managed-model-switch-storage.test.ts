@@ -244,3 +244,21 @@ it("ignores ENOENT when obsolete switch state disappears after owner preflight l
     await preparation.abort(); expect(removed).toBe(true);
   } finally { spy.mockRestore(); }
 });
+
+
+it("issued root authority does not require unrelated active turns to drain", async () => {
+  const f = await fixture(); const first = await f.store.acquireNativeHistoryAuthority(bucket);
+  if (first.status !== "owned") throw new Error("fixture"); await first.release();
+  const active = await f.store.beginProviderSessionTurn("fictional-sibling", "fictional-active", { modelKey: "faux:A" });
+  const lease = await f.store.acquireNativeHistoryAuthority(bucket); expect(lease.status).toBe("owned");
+  if (lease.status === "owned") await lease.release(); await active.abort();
+});
+
+it("an unmarked root isolates a malformed inactive sibling without retiring its fence", async () => {
+  const f = await fixture(); const active = await f.store.beginProviderSessionTurn(bucket, "fictional-crash", { modelKey: "faux:A" }); await active.abort();
+  const path = join(f.root, `${switchConversationKey(bucket)}.history.json`);
+  await writeFile(path, '{"version":', { mode: 0o600 }); const fence = await readFile(f.fencePath);
+  const other = await f.store.beginProviderSessionTurn("fictional-sibling", "fictional-next", { modelKey: "faux:A" }); await other.abort();
+  expect(await readFile(path, "utf8")).toBe('{"version":'); expect(await readFile(f.fencePath)).toEqual(fence);
+  expect(f.retire).not.toHaveBeenCalled();
+});
