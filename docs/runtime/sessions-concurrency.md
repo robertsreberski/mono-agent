@@ -216,9 +216,20 @@ those used by claim-aware older writers (0.20 or later).
 
 Damage to `.locks/root.sqlite`, logical-session shard databases and their claim
 journals, `.native-history-root.json`, or pinned root/subdirectory identities
-still stops the whole root. Cancelling a native turn stops its wait for a native
-session lock held by another process; host history-claim waits are not yet
-cancellable.
+still stops the whole root. Native-session lock waits and host history-acquisition
+waits are cancellable. Admission, model-switch preparation, exclusive host-only
+turns and manual compaction pass cancellation through in-process queues and
+SQLite root, logical/exact and legacy conversation-lock polling. A cancelled
+waiter neither bypasses a live owner nor admits its input; raced acquisitions
+release their ownership before rejecting. Started publication and storage-only
+recovery finish or roll back without interruption. Reset, drain (including an
+admission-triggered drain) and ownership cleanup remain non-cancellable.
+
+Use a conventional umask such as `0022` or `0077` that preserves owner read/write
+permissions at creation. A writer killed before permission normalization under
+an exotic owner-masking umask can leave an unverifiable marker/temp; its dead
+filename PID alone does not authorize deletion. This remains protected damage
+requiring stopped-writer repair.
 
 First native-root bootstrap is an exception to owner-local refusal: it cannot
 prove that earlier recovery owners are drained when another owner's marker,
