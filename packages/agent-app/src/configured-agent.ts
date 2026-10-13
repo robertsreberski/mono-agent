@@ -1,6 +1,6 @@
 import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
 import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
-import { createRequestModelOverrideRuntimeExtension, hasExplicitRequestModelOverride } from "./request-model-override.js";
+import { createRequestModelOverrideRuntimeExtension } from "./request-model-override.js";
 import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
@@ -1155,15 +1155,13 @@ async function createConfiguredAgentHarnessInternal(
   assertNoRetiredMonoAgentConfig(config);
   const switchConfig = config.runtime.session.modelSwitch;
   if (switchConfig?.enabled === true) {
-    if (switchConfig.olderWritersStopped !== true) throw new MonoAgentConfigError("invalid_json",
-      "Web model switching requires explicit acknowledgement that older writers are stopped.", { path: "runtime.session.modelSwitch.olderWritersStopped" });
     if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",
       "Web model switching requires continuous sessions.", { path: "runtime.session.mode" });
     if (!config.providers?.piNative?.piSessionsRoot) throw new MonoAgentConfigError("invalid_json",
       "Web model switching requires durable providers.piNative.piSessionsRoot.", { path: "providers.piNative.piSessionsRoot" });
   }
-  // The acknowledgement is a distinct operator statement, never inferred from
-  // runtime methods/capabilities. Storage authority remains lazy and owner-held.
+  // Config opt-in is not inferred from runtime capabilities; native storage
+  // authority remains lazy and owner-held.
   const nativeModelSwitch = switchConfig?.enabled === true
     ? { native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
     : undefined;
@@ -1618,8 +1616,7 @@ async function createConfiguredAgentHarnessInternal(
         ...nativeModelSwitch,
         sessionsRoot: piSessionsRoot ?? "",
         deliveryId: persistedWebDeliveryId,
-        implicitModel: async (request, modelKey) => {
-          if (hasExplicitRequestModelOverride(request.metadata)) return undefined;
+        implicitModel: async (_request, modelKey) => {
           const selected = parseMonoRuntimeModelReference(modelKey);
           // Reuse endpoint/effort selection without changing request metadata
           // identity (which carries out-of-band host capabilities).

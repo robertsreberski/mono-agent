@@ -92,6 +92,20 @@ export class PendingTurnPayloadStore {
     await this.assertDirectory(directory); await owner.assertOwned();
     return { generation, sha256: sha256(bytes) };
   }
+  /** Root-held drain only: active markers exclude live owners, and publication
+   * cannot enter while the caller holds the root transaction. Final generations
+   * and damaged temps remain untouched. No payload parsing grants authority. */
+  async collectInactiveTemps(active: ReadonlySet<string>, owner: PendingPayloadOwner): Promise<void> {
+    await owner.assertOwned(); const directory = await this.ensureDirectory(false); if (!directory) return;
+    const victims = (await listOwned(this.directory, ENTRY, MAX_PENDING_TURN_BYTES))
+      .filter(({ name, match, damaged }) => name.endsWith(".tmp") && !active.has(match[1]!) && !damaged);
+    for (const { name, stat } of victims) {
+      await this.assertDirectory(directory); await owner.assertOwned();
+      if (!unchanged(stat, await lstat(join(this.directory, name)))) unavailable();
+      await rm(join(this.directory, name));
+    }
+    if (victims.length) await syncDir(this.directory, directory, unavailable);
+  }
   /** Secure, read-only discovery of orphan identity for an explicit logical reset.
    * The filename must agree with the parsed payload; discovery grants no owner.
    * An unreadable or malformed generation is an OwnedFileDamagedError. */

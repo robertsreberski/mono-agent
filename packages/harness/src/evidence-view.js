@@ -36,8 +36,8 @@ function segmentScanner({ descriptor, header }, owner, maxBytes) {
     select() {
       if (descriptor.sourceDigest !== digest.update("]").digest("hex")) fail("identity/source");
       if (descriptor.sourceTipId !== validator.tip || descriptor.sourceSeq !== validator.seq) fail("tip");
-      for (let id = validator.tip; id !== null;) { const info = validator.contextInfo.get(id); if (!info) fail("ancestry"); chain.unshift(id); id = info.parentId; }
-      visible = new Set(chain);
+      for (let id = validator.tip; id !== null;) { const info = validator.contextInfo.get(id); if (!info) fail("ancestry"); chain.push(id); id = info.parentId; }
+      chain.reverse(); visible = new Set(chain);
       const checkpoint = chain.filter((id) => validator.contextInfo.get(id).kind === "compaction").at(-1);
       if (checkpoint !== undefined) from = validator.contextInfo.get(preserved.get(checkpoint).find((id) => visible.has(id)) ?? checkpoint).seq;
       // A completed model turn (a prompt operation), not an administrative write, resolves earlier work.

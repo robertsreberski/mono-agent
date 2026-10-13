@@ -35,12 +35,13 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
     runtime.prepareNativeDispatch = (prompt, options) => { prepareCalls.push({ id, options }); return prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
     runtimes.push(runtime); return runtime;
   };
-  const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}) => {
+  const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}, inheritModel = false) => {
     const primary = runtimeFor(model);
     const harness = new MonoAgentHarness({ runtime: primary, identityPath, cwd: base, piSessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
       model: { provider: "faux", model, reference: `faux:${model}` }, runtimeForModel: (ref) => runtimeFor(ref.model), runtimeOptionsForRequest: async ({ request }) => ({ runtimeOptions: typeof (request.metadata?.web as {model?: string})?.model === "string" ? { model: parseMonoRuntimeModelReference((request.metadata!.web as {model: string}).model) } : {} }), runtimeOptions: { piResolvedModels: models, allowedTools: [], compaction: { enabled: false } }, ...options },
     { ...(enabled ? { nativeModelSwitch: { native, sessionsRoot: nativeRoot,
-        deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined } } : {}) });
+        deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined,
+        ...(inheritModel ? { implicitModel: async (_request: AgentHarnessRequest, key: string) => ({ model: parseMonoRuntimeModelReference(key), runtimeOptions: {} }) } : {}) } } : {}) });
     closes.push(() => harness.dispose()); return harness;
   };
   const request = (delivery: string, message = "Fictional current input", extra: Partial<AgentHarnessRequest> = {}) => ({ conversationId: "fictional", userMessage: message,
@@ -394,4 +395,54 @@ it("a redelivered message whose abandoned switch already billed it makes no paid
   const fresh = await f.makeHarness("B", true).run(f.request("fictional-m3", "Fictional new switch request", { metadata: { web: { model: "faux:B" } } }));
   expect(fresh.failure).toBeUndefined(); expect(fresh.text).toBe("Fictional B reply");
   expect(f.transport).toHaveBeenCalledTimes(billed + 3); expect((await f.canonical()).lastSwitch.switchId).not.toBe(abandoned.identity.switchId);
+});
+
+
+it("unreadable capture during a pending switch is typed and bills nothing", async () => {
+  const f = await fixture(); await f.seed(); await pendingSwitch(f); const billed = f.transport.mock.calls.length;
+  const inspect = vi.spyOn(f.native as Required<Pick<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage, "inspectCurrentJournal">>, "inspectCurrentJournal").mockResolvedValue({ status: "unreadable", reason: "fictional-damage" });
+  const result = await f.makeHarness("B", true).run(f.request("fictional-retry"));
+  expect(result.failure?.kind).toBe("native_journal_unreadable"); expect(f.transport).toHaveBeenCalledTimes(billed); inspect.mockRestore();
+});
+
+it("a recovered ready handoff reports its completed model before refusing a different selection", async () => {
+  const f = await fixture(); await f.seed();
+  const roll = vi.spyOn(f.store, "beginProviderSessionPreparation"), original = f.store.beginProviderSessionPreparation.bind(f.store);
+  roll.mockImplementationOnce(async (...args) => {
+    const prep = await original(...args); prep.rollForwardModelSwitch = async () => { throw new Error("Fictional roll-forward interruption"); }; return prep;
+  });
+  f.faux.setResponses([text(summary)]); await f.makeHarness("B", true).run(f.request("fictional-ready")); roll.mockRestore();
+  const billed = f.transport.mock.calls.length;
+  const result = await f.makeHarness("A", true).run(f.request("fictional-back"));
+  expect(result.failure).toMatchObject({ kind: "handoff_pending", message: expect.stringContaining("handoff to faux:B completed") });
+  expect(f.transport).toHaveBeenCalledTimes(billed); expect((await f.canonical()).providerSession.modelKey).toBe("faux:B");
+});
+
+it("switches while an unrelated conversation is active after root bootstrap", async () => {
+  const f = await fixture(); await f.seed();
+  const root = await f.store.acquireNativeHistoryAuthority("fictional"); if (root.status !== "owned") throw new Error("fixture"); await root.release();
+  const active = await f.store.beginProviderSessionTurn("fictional-other", "fictional-active", { modelKey: "faux:A" });
+  f.faux.setResponses([text(summary), text("Fictional B reply")]);
+  try { expect((await f.makeHarness("B", true).run(f.request("fictional-concurrent-switch"))).failure).toBeUndefined(); }
+  finally { await active.abort(); }
+  expect((await f.canonical()).providerSession.modelKey).toBe("faux:B");
+});
+
+
+it("keyless native inheritance overrides a late sticky extension without copying metadata identity or its 1M flag", async () => {
+  const f = await fixture(); await f.seed();
+  f.faux.setResponses([text(summary), text("Fictional switched B answer")]);
+  await f.makeHarness("B", true).run(f.request("fictional-switch-id"));
+  const before = await f.canonical(), cleanup = vi.fn(async () => {});
+  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), context1MModels: { "faux:A": true } }, cleanup }));
+  const wake = { ...f.request("not-a-host-delivery"), metadata: { source: "web", web: { model: "faux:A", context1M: true } } };
+  f.faux.setResponses([text("Fictional inherited B answer")]);
+  const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }, true).run(wake);
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional inherited B answer");
+  expect(extension).toHaveBeenCalledOnce(); expect(extension.mock.calls[0]![0].request.metadata).toBe(wake.metadata); expect(cleanup).toHaveBeenCalledOnce();
+  const prepared = f.prepareCalls.at(-1)!;
+  expect(prepared.id).toBe("B"); expect(prepared.options.model).toMatchObject({ provider: "faux", model: "B" });
+  expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined();
+  const after = await f.canonical(); expect(after.providerSession.modelKey).toBe("faux:B");
+  expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
 });

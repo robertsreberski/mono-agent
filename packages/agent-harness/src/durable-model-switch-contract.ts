@@ -87,14 +87,14 @@ export interface ModelSwitchState {
   readonly reservation: ModelSwitchReservation;
   readonly billingPolicy: typeof MODEL_SWITCH_BILLING_POLICY;
   /** Stable explicit-message identity for generation zero; never its text. */
-  readonly initialMessageDigest?: string;
+  readonly initialMessageDigest: string;
   readonly authorizationGeneration: number;
   readonly authorizations: readonly SummaryAuthorization[];
   readonly attempts: readonly SummaryAttempt[];
   readonly phase: "outgoing" | "checkpoint" | "incoming" | "pending" | "ready";
   readonly artifact: HandoffReference | null;
-  /** Optional for legacy administrative plans; configured preparation persists it. */
-  readonly frozenBudget?: RuntimeHandoffBudget;
+  /** Frozen before producer admission. */
+  readonly frozenBudget: RuntimeHandoffBudget;
 }
 export interface ModelSwitchPointer { readonly generation: string; readonly sha256: string }
 export interface ModelSwitchFence {
@@ -185,10 +185,10 @@ export function validateFrozenHandoffBudget(value: unknown): asserts value is Ru
 
 export function validateModelSwitchState(value: unknown): asserts value is ModelSwitchState {
   switchObject(value);
-  switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"], ["frozenBudget", "initialMessageDigest"]);
+  switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact", "frozenBudget", "initialMessageDigest"]);
   if (value.version !== 2 || value.billingPolicy !== MODEL_SWITCH_BILLING_POLICY || !["outgoing", "checkpoint", "incoming", "pending", "ready"].includes(value.phase as string)) switchInvalid();
-  if (value.initialMessageDigest !== undefined) switchHash(value.initialMessageDigest);
-  if (value.frozenBudget !== undefined) { validateFrozenHandoffBudget(value.frozenBudget); if (switchDigest(value.frozenBudget) !== (value.identity as ModelSwitchIdentity).frozenBudgetDigest) switchInvalid(); }
+  switchHash(value.initialMessageDigest);
+  validateFrozenHandoffBudget(value.frozenBudget); if (switchDigest(value.frozenBudget) !== (value.identity as ModelSwitchIdentity).frozenBudgetDigest) switchInvalid();
   const identity = value.identity; switchObject(identity);
   switchKeys(identity, ["ownerKey", "historyBucket", "switchId", "sourceCanonicalDigest", "sourceRevision", "sourceEpoch", "source", "fromModelKey", "toModelKey", "targetProvenance", "targetEpoch", "projectionPolicy", "timestamp", "frozenBudgetDigest"]);
   text(identity.ownerKey); text(identity.historyBucket); text(identity.projectionPolicy); switchNumber(identity.timestamp);
@@ -201,7 +201,7 @@ export function validateModelSwitchState(value: unknown): asserts value is Model
   if (identity.sourceEpoch === identity.targetEpoch) switchInvalid();
   reservationBytes(value.reservation as unknown as ModelSwitchReservation); switchNumber(value.authorizationGeneration);
   if (!Array.isArray(value.authorizations) || !Array.isArray(value.attempts)) switchInvalid();
-  const messages = new Set<string>(value.initialMessageDigest === undefined ? [] : [value.initialMessageDigest as string]);
+  const messages = new Set<string>([value.initialMessageDigest as string]);
   for (let index = 0; index < value.authorizations.length; index++) {
     const authorization: unknown = value.authorizations[index]; switchObject(authorization); switchKeys(authorization, ["generation", "messageDigest"]);
     switchHash(authorization.messageDigest); if (authorization.generation !== index + 1 || messages.has(authorization.messageDigest)) switchInvalid(); messages.add(authorization.messageDigest);

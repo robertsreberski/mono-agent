@@ -23,7 +23,7 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
     await session.writeRecord("handle_binding", { handleId: turn.providerSessionId, baseRevision: 0, authoritative: true, model: { provider: "faux", id: "A", api: sourceProvenance?.api ?? "faux-api" } });
   }, "bind");
   if (sourceProvenance) {
-    await session.beginTurn("fixture-native-source");
+    await session.beginTurn("fixture-native-source", {}, "synthetic", undefined);
     await session.openOperation("fixture-native-source-op", { model: { provider: "faux", api: sourceProvenance?.api ?? "faux-api", id: "A" }, nativeProvenance: sourceProvenance });
   }
   await session.appendMessage({ role: "user", content: "Fictional source fact", timestamp: 17 }, "source-message");
@@ -36,12 +36,13 @@ export async function fixture(base, id = bucket, sourceProvenance = undefined) {
   const source = await store.modelSwitchStorageSource(bucket); if (source.status !== "supported") throw new Error("Expected supported source");
   const descriptor = await native.freeze({ epoch: source.sourceEpoch, handleId: turn.providerSessionId,
     ownerKey, historyBucket: bucket, provenance: sourceProvenance ?? { provider: "faux", api: "faux-api", model: "A", account: null } });
+  /** @type {import("@mono-agent/runtime-adapter").RuntimeHandoffBudget} */
   const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey, historyBucket: bucket, sourceCanonicalDigest: source.sourceCanonicalDigest,
     sourceRevision: source.sourceRevision, sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:A", toModelKey: "faux:B",
     targetProvenance: { provider: "faux", api: sourceProvenance?.api ?? "faux-api", model: "B", account: sourceProvenance?.account ?? null }, targetEpoch: "5".repeat(64),
     projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
-    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
+    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "a".repeat(64));
   const canonicalPath = join(base, "history", `${switchConversationKey(bucket)}.history.json`);
   return { base, store, native, state, budget, canonicalPath, nativePath: metadata.path, original: await readFile(metadata.path) };
 }

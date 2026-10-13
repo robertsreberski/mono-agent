@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork } from "node:child_process";
@@ -17,10 +17,10 @@ async function fixture() {
   return { root, path, retire, store };
 }
 
-it("requires explicit exclusive-writer acknowledgement and drained host ownership", async () => {
+it("requires drained host ownership only for authority bootstrap", async () => {
   const f = await fixture(), before = await readFile(f.path);
   const active = await f.store.beginProviderSessionTurn("fictional-active", "fictional-active-turn", { modelKey });
-  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("drained host owners");
+  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("Another conversation is still running");
   expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(await readFile(f.path)).toEqual(before); await active.abort();
 });
 
@@ -148,14 +148,45 @@ it("does not deserialize existing legacy canonicals on an under-quota append", a
   await f.store.append("fictional-next", [{ role: "assistant", content: "Next update" }]); expect(spy).not.toHaveBeenCalled();
 });
 
-it.each([false, true])("retains the previous unmanaged retirement-fence failure policy (managed=%s)", async (managed) => {
+it.each([false, true])("isolates malformed inactive siblings regardless of root marker (managed=%s)", async (managed) => {
   const f = await fixture();
   if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
   const interrupted = await f.store.beginProviderSessionTurn(bucket, "fictional-interrupted", { modelKey }); await interrupted.abort();
   await writeFile(f.path, "{");
   const append = f.store.append("fictional-independent", [{ role: "assistant", content: "Independent update" }]);
-  if (managed) await append;
-  else await expect(append).rejects.toThrow("not valid JSON");
+  await append;
   expect(f.retire).not.toHaveBeenCalled(); expect(await readFile(f.path, "utf8")).toBe("{");
   expect((await readdir(join(f.root, ".locks"))).some((name) => name.endsWith(".dirty.json"))).toBe(true);
+});
+
+
+it("publishes each root phase once and resumes a proposal without reserving or writing a second temp", async () => {
+  const f = await fixture(), { NativeHistoryRootStore } = await import("../native-history-root.js");
+  const store = new NativeHistoryRootStore(f.root, await lstat(f.root));
+  const phases: string[] = [], reserve = vi.fn(async () => {}), assertOwned = async () => {};
+  await store.ensure({ reserve, assertOwned, onPhase: async (phase) => { phases.push(phase); } });
+  for (const phase of ["root_marker_file_synced", "root_marker_renamed", "root_marker_directory_synced"]) expect(phases.filter((entry) => entry === phase)).toHaveLength(1);
+  const proposal = `.native-history-root.${"8".repeat(32)}.tmp`;
+  await rename(join(f.root, NATIVE_HISTORY_ROOT_FILE), join(f.root, proposal));
+  const proposed = await readFile(join(f.root, proposal)), identity = await lstat(join(f.root, proposal));
+  phases.length = 0; reserve.mockClear();
+  const resumed = await new NativeHistoryRootStore(f.root, await lstat(f.root)).ensure({ reserve, assertOwned, onPhase: async (phase) => { phases.push(phase); } });
+  expect(resumed).toEqual(JSON.parse(proposed.toString())); expect(reserve).not.toHaveBeenCalled();
+  expect((await lstat(join(f.root, NATIVE_HISTORY_ROOT_FILE))).ino).toBe(identity.ino);
+  for (const phase of ["root_marker_file_synced", "root_marker_renamed", "root_marker_directory_synced"]) expect(phases.filter((entry) => entry === phase)).toHaveLength(1);
+  expect((await readdir(f.root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+});
+
+
+it.each(["truncated", "permissions"])("bootstrap preserves %s pending recovery damage and asks for repair, not another send", async (damage) => {
+  const f = await fixture(), id = "fictional-damaged-pending";
+  const owner = createDurableHistoryStore({ root: f.root, retireProviderSession: f.retire, reconcileProviderSessionTurn: async () => ({ status: "absent" }) });
+  const turn = await owner.beginProviderSessionTurn(id, "fictional-damaged-turn", { modelKey, reconciliation: { purpose: "execution", ownerKey: id, initial: { persistText: "Fictional input", timestamp: "2000-01-01T00:00:00.000Z" } } });
+  await turn.abort(); await rm(join(f.root, ".locks", `${conversationKey(id)}.dirty.json`));
+  const directory = join(f.root, ".pending-turns"), [name] = await readdir(directory), path = join(directory, name!);
+  if (damage === "truncated") await writeFile(path, '{"version":', { mode: 0o600 });
+  else await chmod(path, 0o644);
+  const bytes = await readFile(path);
+  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("recovery data is damaged; repair or restore");
+  expect(await readFile(path)).toEqual(bytes); expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(f.retire).not.toHaveBeenCalled();
 });

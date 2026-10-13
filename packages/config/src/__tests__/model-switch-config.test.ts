@@ -9,11 +9,13 @@ it("keeps absent and explicit OFF resolved config byte-identical", () => {
   expect(JSON.stringify(resolve({ enabled: false }))).toBe(JSON.stringify(resolve()));
   expect(JSON.stringify(resolve({}))).toBe(JSON.stringify(resolve()));
 });
-it("requires a distinct explicit stopped-writer acknowledgement", () => {
-  expect(resolve({ enabled: true, olderWritersStopped: true }).runtime.session.modelSwitch).toEqual({ enabled: true, olderWritersStopped: true });
-  for (const value of [{ enabled: true }, { enabled: true, olderWritersStopped: false }, { enabled: true, olderWritersStopped: "true" }, { enabled: "true", olderWritersStopped: true }, null, []]) {
-    expect(() => resolve(value)).toThrow();
-  }
-  expect(() => resolve({ enabled: true, olderWritersStopped: true }, { mode: "per-message" })).toThrow("continuous");
-  expect(() => resolve({ enabled: true, olderWritersStopped: true }, {}, {})).toThrow("durable Pi");
+it("enables switching without an acknowledgement, with continuous durable Pi sessions", () => {
+  expect(resolve({ enabled: true }).runtime.session.modelSwitch).toEqual({ enabled: true });
+  for (const value of [{ enabled: "true" }, null, []]) expect(() => resolve(value)).toThrow();
+  expect(() => resolve({ enabled: true }, { mode: "per-message" })).toThrow("continuous");
+  expect(() => resolve({ enabled: true }, {}, {})).toThrow("durable Pi");
+});
+
+it.each([true, false])("rejects the removed olderWritersStopped key (%s) with migration guidance", (olderWritersStopped) => {
+  expect(() => resolve({ enabled: true, olderWritersStopped })).toThrow("olderWritersStopped` was removed");
 });

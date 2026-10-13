@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { AgentHarnessError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
+import { logicalConversationIdForFence, AgentHarnessError, type AgentHarness, type AgentHarnessRequest, type ConversationHistoryStore } from "@mono-agent/agent-harness";
 import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 
 /** APP-private identity seam. The host-stamped Web source carries its committed
@@ -60,13 +60,8 @@ export function serializeNativeSwitchHarness(harness: AgentHarness, root: string
   const lifetime = new AbortController();
   const pending = new Set<Promise<unknown>>(); // Admitted operations only.
   const turns = new Map<AbortController, string>();
-  // Match durable-history's fence: trim, strip its daily suffix regardless of
-  // configured rollover, and keep suffix-only IDs nonempty.
-  const keyFor = (id: string) => {
-    const trimmed = id.trim(), logical = trimmed.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
-    return JSON.stringify([root, logical.length === 0 ? trimmed : logical]);
-  };
-  const mutation = <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+  const keyFor = (id: string) => JSON.stringify([root, logicalConversationIdForFence(id)]);
+  const mutation = async <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
     const key = keyFor(id);
     if (disposed) return Promise.reject(cancelled());
     if (scopes.getStore()?.some((scope) => scope.active && scope.key === key)) return Promise.reject(new AgentHarnessError(

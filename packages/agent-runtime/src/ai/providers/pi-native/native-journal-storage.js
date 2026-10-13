@@ -102,8 +102,8 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       found.staged++;
     }
     const legacy = await listLegacySessions(root, { includeArchives: true });
-    // Damaged legacy entries named for this handle, or of unknown owner, could be ours.
-    found.unattributed += legacy.unattributed.filter((entry) => entry.id === undefined || entry.id === handleId).length;
+    // Only legacy damage named for this handle is attributable here.
+    found.unattributed += legacy.unattributed.filter((entry) => entry.id === handleId).length;
     for (const entry of legacy.sessions) {
       if (entry.id === handleId) { if (entry.path.endsWith(".migrated")) found.archived += 1; else found.legacy += 1; }
     }

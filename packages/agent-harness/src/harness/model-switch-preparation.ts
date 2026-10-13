@@ -91,7 +91,6 @@ function initialState(state: ModelSwitchState): ModelSwitchState {
   return createModelSwitchState(identity, state.reservation, state.frozenBudget, state.initialMessageDigest);
 }
 function options(state: ModelSwitchState): RuntimeHandoffOptions {
-  if (!state.frozenBudget) throw new Error("Prepared switch has no persisted frozen budget");
   // The persisted cap already reserves the complete host; prose/history selection
   // must not change with restart's new current input or instructions.
   return { target: state.identity.targetProvenance, budget: state.frozenBudget, timestamp: state.identity.timestamp, hostContext: {} };
@@ -193,11 +192,11 @@ export async function advancePreparedModelSwitch(input: {
     const cached = await lease.recoverArtifact();
     if (cached) return await ready(input.preparation, state, cached);
     let active = await current(lease);
-    if (!active.initialMessageDigest) throw new Error("Prepared producer requires durable initiating-message authority");
     const seen = active.initialMessageDigest === messageDigest || active.authorizations.some((entry) => entry.messageDigest === messageDigest);
     const currentMessage = active.authorizationGeneration === 0 ? active.initialMessageDigest : active.authorizations.at(-1)!.messageDigest;
     if (seen && messageDigest !== currentMessage) return { status: "pending", switchId: state.identity.switchId };
     if (messageDigest !== currentMessage) {
+      await lease.assertMessageUnconsumed(messageDigest);
       // New explicit delivery closes the old generation storage-only. Preserve
       // unknown calls and try its free checkpoint; never spend an old unused
       // slot under an unrecorded message identity. Then persist the new generation

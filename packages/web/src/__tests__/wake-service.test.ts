@@ -56,7 +56,7 @@ describe("scheduled wake dispatch through the fake operator", () => {
     } finally { await service.stop(); }
   });
 
-  it("launches one host-framed, keyless saved-route turn with a retained standalone transcript part and live events", async () => {
+  it("launches a keyless ordinary wake with its saved model, retaining transcript and live events", async () => {
     const root = await temporaryRoot(); roots.push(root);
     let now = Date.parse("2027-01-02T09:59:00Z");
     const delivered: Record<string, unknown>[] = [];
@@ -78,6 +78,8 @@ describe("scheduled wake dispatch through the fake operator", () => {
       expect(payload.processJobWakeDeliveryKey).toBeUndefined();
       const metadata = (payload.metadata as { web: Record<string, unknown> }).web;
       expect(metadata.model).toBe("provider/fallback");
+      expect(metadata.userMessageId).toBeUndefined();
+      expect((payload.metadata as { tui: Record<string, unknown> }).tui.model).toBe("provider/fallback");
       expect(metadata.effort).toBe("high");
       expect(metadata.consoleProjects).toEqual({ schema: 1 });
       expect(metadata.conversationTitle).toBeUndefined();

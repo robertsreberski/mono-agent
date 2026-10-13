@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, rename, rm } from "node:fs/promises";
-import { assertIdentity, isOwned, readOwned, syncDir, unchanged } from "@mono-agent/harness/owned-fs.js";
+import { assertIdentity, isOwned, publishAtomic, readOwned, syncDir, unchanged } from "@mono-agent/harness/owned-fs.js";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { boundedSwitchBytes, switchDigest, switchHash, switchKeys, switchObject } from "./durable-model-switch-contract.js";
@@ -69,21 +69,24 @@ export class NativeHistoryRootStore {
     marker ??= inspected[0]?.marker;
     if (!await this.read()) {
       marker ??= { version: 1, kind: "native-history", rootId: randomBytes(32).toString("hex") };
-      const bytes = boundedSwitchBytes(marker, MAX_NATIVE_HISTORY_ROOT_BYTES); await owner.reserve(inspected.length ? 0 : bytes.byteLength);
-      const name = inspected[0]?.name ?? `.native-history-root.${randomBytes(16).toString("hex")}.tmp`;
-      const temporary = join(this.root, name);
-      if (!inspected.length) {
-        const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
-        try { await handle.writeFile(bytes); await handle.sync(); }
+      const proposal = inspected[0];
+      if (proposal) {
+        // Resume the exact validated proposal: no second temp or reservation.
+        const temporary = join(this.root, proposal.name), handle = await open(temporary, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try { if (!unchanged(proposal.identity, await handle.stat())) unavailable(); await handle.sync(); }
         finally { await handle.close(); }
-      } else if (switchDigest(inspected[0]!.marker) !== switchDigest(marker)) unavailable();
-      await owner.onPhase?.("root_marker_file_synced"); await owner.assertOwned(); await this.assertRoot();
-      const prepared = await this.readFile(name); if (switchDigest(prepared.marker) !== switchDigest(marker)) unavailable();
-      if (await this.read()) unavailable(); // root transaction excludes legitimate competing issuers
-      await rename(temporary, join(this.root, NATIVE_HISTORY_ROOT_FILE));
-      await owner.onPhase?.("root_marker_renamed");
-    }
-    await this.syncRoot(); await owner.onPhase?.("root_marker_directory_synced");
+        await owner.onPhase?.("root_marker_file_synced"); await owner.assertOwned(); await this.assertRoot();
+        if (await this.read() || !unchanged(proposal.identity, await lstat(temporary))) unavailable();
+        await rename(temporary, join(this.root, NATIVE_HISTORY_ROOT_FILE)); await owner.onPhase?.("root_marker_renamed");
+        await this.syncRoot(); await owner.onPhase?.("root_marker_directory_synced");
+      } else {
+        const bytes = boundedSwitchBytes(marker, MAX_NATIVE_HISTORY_ROOT_BYTES); await owner.reserve(bytes.byteLength);
+        await publishAtomic({ path: join(this.root, NATIVE_HISTORY_ROOT_FILE),
+          temporary: join(this.root, `.native-history-root.${randomBytes(16).toString("hex")}.tmp`), bytes, fail: unavailable, sync: () => this.syncRoot(),
+          check: async () => { await owner.assertOwned(); await this.assertRoot(); if (await this.read()) unavailable(); },
+          phase: async (step) => { if (["file_synced", "renamed", "directory_synced"].includes(step)) await owner.onPhase?.(`root_marker_${step}`); } });
+      }
+    } else { await this.syncRoot(); await owner.onPhase?.("root_marker_directory_synced"); }
     const current = await this.read(); if (!current || current.rootId !== marker!.rootId) unavailable();
     // Only validated, identical proposals can be discarded after the winner's barrier.
     for (const entry of inspected) {

@@ -1114,18 +1114,29 @@ export class MonoAgentHarness implements AgentHarness {
     try {
       // One cheap binding read selects only already-native no-ID turns. Ordinary
       // conversations retain their original path, without a switch claim or scan.
+      requestedModelKey = modelReferenceKey(requestSessionModel(request, turnOptions.model));
       let nativeCurrent = false;
       if (this.nativeModelSwitch && this.nativeModelSwitch.deliveryId(request) === undefined) {
         const binding = await this.options.historyStore?.readProviderSessionBinding?.(request.conversationId);
         nativeCurrent = binding?.native === true;
-        if (nativeCurrent && this.nativeModelSwitch.implicitModel) {
+        if (nativeCurrent && binding?.modelKey !== requestedModelKey && this.nativeModelSwitch.implicitModel) {
           if (!binding?.modelKey) throw new AgentHarnessError("native_cold_model_change_unavailable", "Native conversation has no current model binding.");
           const implicit = await this.nativeModelSwitch.implicitModel(request, binding.modelKey);
-          if (implicit) turnOptions = { ...this.options, model: implicit.model,
-            runtimeOptions: mergeRuntimeOptions(this.options.runtimeOptions, implicit.runtimeOptions) };
+          if (implicit) {
+            requestedModelKey = modelReferenceKey(implicit.model);
+            // Keep request/metadata identity and host capabilities intact. A
+            // keyless native turn cannot override its current model, including
+            // late extensions or context-window flags for the sticky model.
+            turnOptions = { ...this.options, model: implicit.model,
+              runtimeOptions: mergeRuntimeOptions(this.options.runtimeOptions, implicit.runtimeOptions),
+              runtimeOptionsForRequest: async (input) => {
+                const extension = await this.options.runtimeOptionsForRequest?.(input);
+                const { context1MModels: _stickyContext, ...runtimeOptions } = extension?.runtimeOptions ?? {};
+                return { ...extension, runtimeOptions: { ...mergeRuntimeOptions(runtimeOptions, implicit.runtimeOptions), model: implicit.model } };
+              } };
+          }
         }
       }
-      requestedModelKey = modelReferenceKey(requestSessionModel(request, turnOptions.model));
       activeAttemptModelKey = requestedModelKey;
       // Resolve inside the guarded lifecycle, before any history is omitted.
       this.runtimeForSession(requestedModelKey);

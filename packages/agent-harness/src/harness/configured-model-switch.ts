@@ -18,7 +18,7 @@ export interface InternalNativeSwitchPolicy {
   /** Durable host delivery identity, never run ID or text hash. Undefined means
    * this is NOT an explicit-message authorization (cron/continuation/recovery). */
   readonly deliveryId: (request: AgentHarnessRequest) => string | undefined;
-  /** APP resolves undeclared no-ID wakes to the durable native model. Does not
+  /** APP resolves no-ID native turns to the durable current model. Does not
    * grant authority; the owned snapshot still rechecks the selected model. */
   readonly implicitModel?: (request: AgentHarnessRequest, modelKey: string) => Promise<{
     readonly model: RuntimeModelReference; readonly runtimeOptions: Record<string, unknown>;
@@ -35,7 +35,7 @@ const budgetFailure = (reason: string) => new AgentHarnessError("handoff_budget_
 const capacity = (error: unknown) => error instanceof ModelSwitchCapacityError || error instanceof NativeEvidenceCapacityError;
 const unreadableJournal = (reason: string) => new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason });
 // The presence probe reads only the header; record damage surfaces at the validating open.
-const journalCorruption = (error: unknown) => error instanceof SyntaxError || (error as { code?: unknown } | null)?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
+const journalCorruption = (error: unknown) => error instanceof SyntaxError || ["ERR_HARNESS_JOURNAL_CORRUPT", "ERR_NATIVE_JOURNAL_UNREADABLE"].includes(String((error as { code?: unknown } | null)?.code));
 
 /** Host path behind the private capability. Unsupported custom stores/runtimes
  * retain the original path without preparing resources or issuing authority. */
@@ -88,7 +88,8 @@ export async function prepareConfiguredModelSwitch(input: {
       const recovered = await recoverPreparedModelSwitch(owner);
       if (recovered.status === "ready") {
         snapshot = await owner.read(); switched = true;
-        if (recovered.modelKey !== host.routing.modelKey) throw pending(); // Finish recorded switch; never dispatch this message on a different target.
+        if (recovered.modelKey !== host.routing.modelKey) throw new AgentHarnessError("handoff_pending",
+          `The handoff to ${recovered.modelKey} completed; send again to switch models. This message was not admitted or queued.`); // Finish recorded switch; never dispatch this message on a different target.
         ready = recovered;
       } else if (messageId !== undefined && snapshot.pending.identity.fromModelKey === host.routing.modelKey) {
         // An explicit message back to the source model abandons the non-ready
@@ -144,7 +145,7 @@ export async function prepareConfiguredModelSwitch(input: {
           state = createPreparedModelSwitchState({ source: snapshot.source, historyBucket: host.request.conversationId, journal: captured.source,
             incoming: incoming.snapshot, native: policy.native, targetEpoch, timestamp: Date.now(), messageId, outputReserve: incoming.snapshot.model.maxTokens,
             reservation: { canonicalBytes: 0, artifactBytes: 0, nativeBytes: 0, pendingBytes: 0 } });
-          const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget!, timestamp: state.identity.timestamp, hostContext: {} };
+          const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget, timestamp: state.identity.timestamp, hostContext: {} };
           const prepared = policy.native.prepareHandoff(captured.view, handoffOptions);
           if (prepared.status !== "prepared") throw budgetFailure(prepared.reason);
           // Bound ANY subsequently accepted structured artifact, including a
@@ -152,7 +153,7 @@ export async function prepareConfiguredModelSwitch(input: {
           // historyAllowance. Add that cap to the real empty summary envelope.
           // Do not publish intent/authorize paid producers without proving
           // its worst-case inherited prefix is compactable.
-          const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget!.historyAllowance);
+          const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget.historyAllowance);
           if (capacityFit.status !== "ready") throw budgetFailure(capacityFit.reason);
           const proposal = policy.native.buildHandoff(captured.view, handoffOptions);
           // Prove the exact free projection's future compaction viability before
@@ -164,7 +165,7 @@ export async function prepareConfiguredModelSwitch(input: {
           const authority = await owner.acquireNativeHistoryAuthority();
           if (authority.status !== "owned") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
           const canonicalBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Buffer.byteLength(JSON.stringify(snapshot)) + 16384);
-          const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget!.historyAllowance * 3 + 4096));
+          const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget.historyAllowance * 3 + 4096));
           state = { ...state, reservation: { canonicalBytes, artifactBytes, nativeBytes: MAX_NATIVE_EPOCH_BYTES, pendingBytes: Buffer.byteLength(JSON.stringify(state)) * 3 + 65536 } };
         }
         const result = await advancePreparedModelSwitch({ preparation: owner, native: policy.native, incoming, state, view: captured.view, messageId,

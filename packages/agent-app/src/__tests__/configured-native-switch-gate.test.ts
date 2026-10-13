@@ -82,3 +82,14 @@ it("trimmed daily buckets share the durable logical fence even without rollover"
   await second.run(request("fictional-other#2000-01-02")); expect(run).toHaveBeenCalledOnce();
   lock.release(); await active; await next; expect(run).toHaveBeenCalledTimes(2);
 });
+
+
+it("invalid mutation IDs reject through the promised API instead of throwing synchronously", async () => {
+  const append = vi.fn(async () => {}), importContext = vi.fn(async () => ({ status: "appended" as const }));
+  const harness = serializeNativeSwitchHarness({ run: async () => response, appendVerbatimTurn: append, importContext }, "fictional-invalid-id-root", store);
+  let appended!: Promise<void>, imported!: ReturnType<NonNullable<AgentHarness["importContext"]>>;
+  expect(() => { appended = harness.appendVerbatimTurn!("", "Fictional text"); }).not.toThrow();
+  expect(() => { imported = harness.importContext!("", { text: "Fictional context", idempotencyKey: "fictional-key" }); }).not.toThrow();
+  await expect(appended).rejects.toThrow(); await expect(imported).rejects.toThrow();
+  expect(append).not.toHaveBeenCalled(); expect(importContext).not.toHaveBeenCalled();
+});

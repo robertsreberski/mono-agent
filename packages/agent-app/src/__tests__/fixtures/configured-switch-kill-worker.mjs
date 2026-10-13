@@ -1,5 +1,5 @@
 // Configured-host model-switch kill matrix worker. The real public config path
-// (runtime.session.modelSwitch enabled + olderWritersStopped), Web-shaped
+// (runtime.session.modelSwitch enabled), Web-shaped
 // persisted delivery IDs, faux providers only, no tools. One IPC job per process.
 import { appendFileSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
@@ -52,7 +52,7 @@ async function open(base = "A") {
   await writeFile(join(root, "IDENTITY.md"), "Fictional stable instructions");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
-      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: { enabled: true, olderWritersStopped: true } } },
+      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: { enabled: true } } },
     providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath: join(root, "IDENTITY.md"), selectedSkills: [] },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
@@ -61,11 +61,12 @@ async function open(base = "A") {
   const loaded = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
   // Only the provider transport is replaced; the switch policy comes from the validated config.
   const config = { ...loaded, runtime: { ...loaded.runtime, model: ref(base) } };
+  /** @type {import("@mono-agent/agent-harness").ConversationHistoryStore} */
   let store;
   const responder = await createConfiguredAgentResponderForApp({ config, cwd: root, runtime: runtimeFor(config, base),
     runtimeForModel: (selected) => runtimeFor(config, selected.model), runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: ref(base) }),
     runtimeOptions: { piResolvedModels: models, piMaxRetries: 0, compaction: { enabled: false } } }, { sessionRollover: "none", wrapHistoryStore: (value) => { store = value; return value; } });
-  return { responder, store };
+  return { responder: /** @type {import("@mono-agent/agent-contracts").AgentResponder & { dispose(): Promise<void>; startNewSession(id: string): Promise<unknown> }} */ (responder), store };
 }
 const request = (id, model, conversation = conversationId) => ({ conversationId: conversation, text: `Fictional input ${id}`, abortSignal: new AbortController().signal,
   metadata: { source: "web", web: { threadId: conversation.slice(4), model: `${provider}:${model}`, ...(id === undefined ? {} : { userMessageId: id }) }, tui: { requestId: randomUUID() } } });

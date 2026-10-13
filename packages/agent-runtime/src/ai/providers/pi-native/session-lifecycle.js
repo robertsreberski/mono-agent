@@ -204,13 +204,8 @@ function isSafeSessionId(id) {
 async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
   if (!isSafeSessionId(sessionId)) return { entry: null, uncertain: false };
   try {
-    const direct = typeof repo.find === "function";
-    const metadata = direct ? await repo.find(sessionId, context) : (await repo.list(undefined, context)).find((entry) => entry?.id === sessionId);
-    if (metadata) return { entry: { metadata, repo, durable: true, busy: false }, uncertain: false };
-    if (direct || typeof repo.catalogue !== "function") return { entry: null, uncertain: false };
-    const { unattributed } = await repo.catalogue({ signal: context.abortSignal });
-    return { entry: null, uncertain: unattributed.some((item) => item.id === undefined || item.id === sessionId),
-      owned: unattributed.some((item) => item.id === sessionId) };
+    const metadata = await repo.find(sessionId, context);
+    return { entry: metadata ? { metadata, repo, durable: true, busy: false } : null, uncertain: false };
   } catch (error) {
     // A failed lookup cannot authorize cold replay, but only attributed damage
     // can prohibit a new conversation. A live creator is busy, not damaged.
@@ -773,8 +768,7 @@ export async function reconcileNativeSessionTurn(request) {
   const repo = resolveDurableNativeSessionRepo(request.sessionsRoot);
   let raw;
   try {
-    const records = await repo.listOwned({ wait: false });
-    const metadata = records.find((record) => record.id === id);
+    const metadata = await repo.find(id);
     if (!metadata) return { status: "absent" };
     raw = await repo.open(metadata, { repair: false, wait: false });
     const initial = await readTurnEvidence(raw, request.descriptor.turnId);

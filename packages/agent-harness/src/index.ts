@@ -163,3 +163,5 @@ export { createSessionRuntimeResolver } from "./session-runtime.js";
 export type { ProviderSessionHandle, SessionRuntimeResolver } from "./session-runtime.js";
 
 export { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "./context/turn-envelope.js";
+
+export { logicalConversationIdForFence } from "./durable-history.js";

@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 
-it("does not announce failover when aborted during detached context loading", async () => {
+it.each([false, true])("reports cancellation without failover when aborted during detached context loading (throws=%s)", async (throws) => {
   const primary = { provider: "openai-codex", model: "fictional-primary", reference: "openai-codex:fictional-primary" };
   const backup = { provider: "anthropic", model: "fictional-backup", reference: "anthropic:fictional-backup" };
   const controller = new AbortController(), events = [];
@@ -10,6 +10,7 @@ it("does not announce failover when aborted during detached context loading", as
   const loader = vi.fn(async () => {
     await Promise.resolve();
     controller.abort(new Error("Fictional cancellation during history load"));
+    if (throws) throw controller.signal.reason;
     return [{ role: "user", content: "Fictional earlier history" }];
   });
   const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({
@@ -24,5 +25,5 @@ it("does not announce failover when aborted during detached context loading", as
   expect(result.cancelled).toBe(true);
   expect(loader).toHaveBeenCalledOnce(); expect(primaryRun).toHaveBeenCalledOnce();
   expect(backupRun).not.toHaveBeenCalled(); expect(cleanup).toHaveBeenCalledOnce();
-  expect(events.filter((event) => event.type === "provider_failover_started")).toEqual([]);
+  expect(events.filter((event) => event.type === "provider_failover_started" || event.warning_kind === "detached_context_unavailable")).toEqual([]);
 });

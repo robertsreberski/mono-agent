@@ -341,3 +341,20 @@ it("advances a pending switch with a legacy source account after upgrade to unkn
   expect(stored.artifact).toMatchObject({ coverage: [{ provenance: { provider: "faux", api: "faux-api", model: "A", account: null } }] });
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
 });
+
+
+it("reuses paid then free checkpoints for another free switch when outgoing producers are unavailable", async () => {
+  const f = await setup(true); expect((await f.advance()).status).toBe("ready"); await f.prep.abort();
+  for (const [model, epoch] of [["C", "6"], ["D", "7"]]) {
+    const prep = await f.store.beginProviderSessionPreparation(bucket, `message-${model}`);
+    const source = (await prep.read()).source; if (source.status !== "supported") throw new Error("fixture");
+    const captured = await prep.captureNativeEvidence({ provider: "faux", api: "faux-api", model: source.fromModelKey.split(":")[1]!, account: null });
+    const incoming = producer(model), state = createPreparedModelSwitchState({ source, historyBucket: bucket, journal: captured.source, incoming: incoming.snapshot,
+      native: f.native, targetEpoch: epoch!.repeat(64), reservation: f.state.reservation, timestamp: 18, messageId: `message-${model}`, outputReserve: 2000 });
+    const result = await advancePreparedModelSwitch({ preparation: prep, native: f.native, incoming, state, view: captured.view, messageId: `message-${model}` });
+    expect(result.status).toBe("ready"); expect(incoming.produceHandoffSummary).not.toHaveBeenCalled();
+    if (result.status === "ready") expect((await prep.readHandoff(result.switchId, result.artifact)).artifact.producer).toBe("checkpoint");
+    await prep.abort();
+  }
+  expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledOnce();
+});

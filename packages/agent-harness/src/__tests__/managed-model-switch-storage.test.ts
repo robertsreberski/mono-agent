@@ -21,12 +21,12 @@ async function fixture(maxStoreBytes = 1024 * 1024, maxStagedBytes = 1024 * 1024
   const sourceFence = JSON.parse(await readFile(fencePath, "utf8"));
   const prepared = await turn.prepareCommit([{ role: "user", content: "Fictional retained history", timestamp: "2000-01-01T00:00:00.000Z" }], { providerSessionSynced: true }); await prepared.commit();
   const source = await store.modelSwitchStorageSource(historyBucket); if (source.status !== "supported") throw new Error("Expected supported source");
-  const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
+  const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const descriptor = { journalId: "fictional-journal", epoch: source.sourceEpoch, handleId: turn.providerSessionId,
     ownerKey: source.ownerKey, historyBucket, sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64), provenance: { provider: "faux", api: "faux-api", model: "A", account: null } };
   const state = createModelSwitchState({ ownerKey: source.ownerKey, historyBucket, sourceCanonicalDigest: source.sourceCanonicalDigest, sourceRevision: source.sourceRevision, sourceEpoch: source.sourceEpoch, source: descriptor,
     fromModelKey: source.fromModelKey, toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null }, targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
-    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
+    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "a".repeat(64));
   return { root, store, retire, state, budget, sourceFence, fencePath };
 }
 function artifact(state: ModelSwitchState, budget: unknown) {
@@ -96,7 +96,7 @@ it("root enumeration accepts only private owned model storage and skips stray ev
 function withIdentity(state: ModelSwitchState, changes: Partial<ModelSwitchState["identity"]>) {
   const { switchId: _switchId, ...identity } = state.identity;
   const next = { ...identity, ...changes };
-  return createModelSwitchState({ ...next, source: next.source && { ...next.source, ownerKey: next.ownerKey, historyBucket: next.historyBucket } }, state.reservation);
+  return createModelSwitchState({ ...next, source: next.source && { ...next.source, ownerKey: next.ownerKey, historyBucket: next.historyBucket } }, state.reservation, state.frozenBudget, state.initialMessageDigest);
 }
 it("rejects unnormalized buckets and mismatched logical owners before acquiring or publishing", async () => {
   const { root, store, state, retire } = await fixture();
@@ -243,4 +243,22 @@ it("ignores ENOENT when obsolete switch state disappears after owner preflight l
     const preparation = await store.beginProviderSessionPreparation(bucket, "fictional-preflight");
     await preparation.abort(); expect(removed).toBe(true);
   } finally { spy.mockRestore(); }
+});
+
+
+it("issued root authority does not require unrelated active turns to drain", async () => {
+  const f = await fixture(); const first = await f.store.acquireNativeHistoryAuthority(bucket);
+  if (first.status !== "owned") throw new Error("fixture"); await first.release();
+  const active = await f.store.beginProviderSessionTurn("fictional-sibling", "fictional-active", { modelKey: "faux:A" });
+  const lease = await f.store.acquireNativeHistoryAuthority(bucket); expect(lease.status).toBe("owned");
+  if (lease.status === "owned") await lease.release(); await active.abort();
+});
+
+it("an unmarked root isolates a malformed inactive sibling without retiring its fence", async () => {
+  const f = await fixture(); const active = await f.store.beginProviderSessionTurn(bucket, "fictional-crash", { modelKey: "faux:A" }); await active.abort();
+  const path = join(f.root, `${switchConversationKey(bucket)}.history.json`);
+  await writeFile(path, '{"version":', { mode: 0o600 }); const fence = await readFile(f.fencePath);
+  const other = await f.store.beginProviderSessionTurn("fictional-sibling", "fictional-next", { modelKey: "faux:A" }); await other.abort();
+  expect(await readFile(path, "utf8")).toBe('{"version":'); expect(await readFile(f.fencePath)).toEqual(fence);
+  expect(f.retire).not.toHaveBeenCalled();
 });
