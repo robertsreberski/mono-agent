@@ -73,10 +73,10 @@ it("a failed Linux v2 boot read does not poison the unchanged app v1 boot cache"
   expect(await api.readHistoryProcessIncarnation(process.pid)).toBeUndefined(); denied = false;
   await expect(api.readProcessIncarnation(process.pid)).resolves.toMatchObject({ schema: api.PROCESS_INCARNATION_SCHEMA });
 });
-it.each(["permission", "malformed UUID", "empty start"])("unavailable %s evidence is not a v2 identity", async (reason) => {
+it.each(["permission", "malformed UUID", "empty start", "placeholder start"])("unavailable %s evidence is not a v2 identity", async (reason) => {
   mockExec((_file, args) => {
     if (reason === "permission") throw Object.assign(new Error("Fictional denied probe"), { code: "EACCES" });
-    return args.includes("kern.bootsessionuuid") ? reason === "malformed UUID" ? "not-a-uuid" : uuid : "";
+    return args.includes("kern.bootsessionuuid") ? reason === "malformed UUID" ? "not-a-uuid" : uuid : reason === "placeholder start" ? "-\n" : "";
   });
   const { readHistoryProcessIncarnation } = await import("../process-incarnation.js");
   expect(await readHistoryProcessIncarnation(process.pid)).toBeUndefined();

@@ -251,7 +251,9 @@ export async function readHistoryProcessIncarnation(pid: number): Promise<Histor
         historyExecFileText("/bin/ps", ["-p", String(pid), "-o", "lstart="]),
       ]);
       const uuid = boot.trim().toLowerCase(), normalized = start.trim().replace(/\s+/gu, " ");
-      if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(uuid) || !normalized) return undefined;
+      // Only a well-formed `ps` start time is identity; placeholders such as "-" are unavailable, never mismatch proof.
+      if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(uuid)
+        || !/^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/u.test(normalized)) return undefined;
       bootSessionId = `darwin-uuid:${uuid}`; processStartId = `posix-utc-lstart:${normalized}`;
     }
     return processStartId === undefined ? undefined : { schema: HISTORY_PROCESS_INCARNATION_SCHEMA, bootSessionId, processStartId };
