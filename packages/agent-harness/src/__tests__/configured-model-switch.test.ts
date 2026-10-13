@@ -468,12 +468,12 @@ it("switches while an unrelated conversation is active after root bootstrap", as
 });
 
 
-it("keyless native inheritance overrides a late sticky extension without copying metadata identity or its 1M flag", async () => {
+it("keyless native inheritance overrides a late sticky extension without copying metadata identity, its effort or its 1M flag", async () => {
   const f = await fixture(); await f.seed();
   f.faux.setResponses([text(summary), text("Fictional switched B answer")]);
   await f.makeHarness("B", true).run(f.request("fictional-switch-id"));
   const before = await f.canonical(), cleanup = vi.fn(async () => {});
-  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), context1MModels: { "faux:A": true } }, cleanup }));
+  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), effort: "xhigh", context1MModels: { "faux:A": true } }, cleanup }));
   const wake = { ...f.request("not-a-host-delivery"), metadata: { source: "web", web: { model: "faux:A", context1M: true } } };
   f.faux.setResponses([text("Fictional inherited B answer")]);
   const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }, true).run(wake);
@@ -481,7 +481,7 @@ it("keyless native inheritance overrides a late sticky extension without copying
   expect(extension).toHaveBeenCalledOnce(); expect(extension.mock.calls[0]![0].request.metadata).toBe(wake.metadata); expect(cleanup).toHaveBeenCalledOnce();
   const prepared = f.prepareCalls.at(-1)!;
   expect(prepared.id).toBe("B"); expect(prepared.options.model).toMatchObject({ provider: "faux", model: "B" });
-  expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined();
+  expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined(); expect(prepared.options.effort).toBeUndefined();
   const after = await f.canonical(); expect(after.providerSession.modelKey).toBe("faux:B");
   expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
 });

@@ -421,7 +421,7 @@ handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
 refuses rather than leaving them to prose.
 
 `beginProviderSessionPreparation(conversationId, runId)` is an additive,
-claim-only storage substrate used by the configured app's acknowledged Web-only
+claim-only storage substrate used by the configured app's Web-only
 opt-in. It settles old
 work and returns detached history/source/native metadata without an incoming
 execution fence. Its authority/switch/roll-forward methods borrow the same owner
@@ -550,7 +550,7 @@ creates missing native evidence.
 Physical native bytes replace provisional native credits without process-local
 refund counters; committed native bytes do not consume the unpublished-stage
 quota. The configured app supplies incoming dispatch and model-switch policy
-through its acknowledged Web-only opt-in. These storage APIs alone are not a
+through its Web-only opt-in. These storage APIs alone are not a
 standalone real-root rollout.
 
 Pending switching stays entirely in host intent/attempt storage: no incoming

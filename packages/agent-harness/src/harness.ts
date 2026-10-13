@@ -1126,12 +1126,12 @@ export class MonoAgentHarness implements AgentHarness {
             requestedModelKey = modelReferenceKey(implicit.model);
             // Keep request/metadata identity and host capabilities intact. A
             // keyless native turn cannot override its current model, including
-            // late extensions or context-window flags for the sticky model.
+            // late extensions or the sticky model's effort or context-window flags.
             turnOptions = { ...this.options, model: implicit.model,
               runtimeOptions: mergeRuntimeOptions(this.options.runtimeOptions, implicit.runtimeOptions),
               runtimeOptionsForRequest: async (input) => {
                 const extension = await this.options.runtimeOptionsForRequest?.(input);
-                const { context1MModels: _stickyContext, ...runtimeOptions } = extension?.runtimeOptions ?? {};
+                const { context1MModels: _stickyContext, effort: _stickyEffort, ...runtimeOptions } = extension?.runtimeOptions ?? {};
                 return { ...extension, runtimeOptions: { ...mergeRuntimeOptions(runtimeOptions, implicit.runtimeOptions), model: implicit.model } };
               } };
           }
