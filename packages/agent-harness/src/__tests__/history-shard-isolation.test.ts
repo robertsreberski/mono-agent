@@ -40,9 +40,9 @@ for (const cancelAt of ["admission", "provider"] as const) {
     const controller = new AbortController();
     const begin = store.beginProviderSessionTurn.bind(store);
     vi.spyOn(store, "beginProviderSessionTurn").mockImplementation(async (...args) => {
-      const pending = begin(...args);
-      if (cancelAt === "admission") setImmediate(() => controller.abort(createChannelUserCancelReason("Web")));
-      return await pending;
+      // Abort at the acquisition boundary, not in a race against filesystem I/O.
+      if (cancelAt === "admission") controller.abort(createChannelUserCancelReason("Web"));
+      return await begin(...args);
     });
     let calls = 0;
     let successorPrompt = "";

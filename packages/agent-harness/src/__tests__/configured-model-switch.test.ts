@@ -499,3 +499,18 @@ it("configured preparation cancels a contended claim before admission or any sum
   expect((await harness.run(f.request("fictional-successor"))).failure).toBeUndefined();
   expect(f.transport).toHaveBeenCalledTimes(3);
 });
+
+it("cancellation during the binding preflight leaves no account and never waits for the held conversation", async () => {
+  const f = await fixture(); await f.seed(); const before = await f.canonicalBytes();
+  const holder = await f.store.beginProviderSessionPreparation("fictional", "fictional-holder"), controller = new AbortController();
+  const read = f.store.readProviderSessionBinding.bind(f.store);
+  vi.spyOn(f.store, "readProviderSessionBinding").mockImplementationOnce(async (...args) => { controller.abort(); return await read(...args); });
+  const append = vi.spyOn(f.store, "prepareAppend"), begin = vi.spyOn(f.store, "beginProviderSessionTurn"), harness = f.makeHarness("A", true);
+  let settled = false;
+  const pending = harness.run({ conversationId: "fictional", userMessage: "Fictional cancelled input", abortSignal: controller.signal }).then((result) => { settled = true; return result; });
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+    expect((await pending).failure?.kind).toBe("cancelled"); expect(append).not.toHaveBeenCalled(); expect(begin).not.toHaveBeenCalled();
+    expect(f.transport).toHaveBeenCalledTimes(1); expect(await f.canonicalBytes()).toEqual(before); await holder.assertOwned();
+  } finally { await holder.abort(); await pending; }
+});

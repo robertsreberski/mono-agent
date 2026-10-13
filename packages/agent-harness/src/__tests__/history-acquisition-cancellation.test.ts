@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { MonoAgentHarness } from "../harness.js";
+import { createInMemoryHistoryStore } from "../history.js";
 
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof fs>() }));
 type Identity = { dev: number; ino: number };
@@ -207,4 +208,57 @@ it("finishes started marker publication and allows uncancellable cleanup after a
   const owner = await f.store.beginProviderSessionPreparation(id, "fictional-published", controller.signal);
   expect(controller.signal.aborted).toBe(true); expect((await markers(f.root)).length).toBe(1);
   await owner.abort(); expect(await claims(f.root)).toBe(0); expect(await markers(f.root)).toEqual([]);
+});
+
+it.each(["provider", "exclusive"])("cancellation during attachment preflight before %s acquisition publishes nothing behind a held owner", async (mode) => {
+  const f = await fixture(), identityPath = join(f.root, "..", "IDENTITY.md"), attachmentsDir = join(f.root, "..", "attachments");
+  await fs.writeFile(identityPath, "Fictional instructions");
+  const holder = await f.store.beginProviderSessionPreparation(id, "fictional-holder"), controller = new AbortController(), mkdir = fs.mkdir;
+  vi.spyOn(fs, "mkdir").mockImplementation(async (...args) => { if (args[0] === attachmentsDir) controller.abort(); return mkdir(...args); });
+  const append = vi.spyOn(f.store, "prepareAppend"), provider = vi.spyOn(f.store, "beginProviderSessionTurn"), exclusive = vi.spyOn(f.store.contextImport!, "beginExclusiveTurn");
+  const run = vi.fn(async () => ({ text: "Fictional response" }));
+  const harness = new MonoAgentHarness({ identityPath, attachmentsDir, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" },
+    historyStore: f.store, session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    ...(mode === "provider" ? { piSessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
+  let settled = false;
+  const pending = harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal,
+    attachments: [{ kind: "document", mimeType: "text/plain", name: "fictional.txt", data: Buffer.from("Fictional attachment").toString("base64") }] }).then((result) => { settled = true; return result; });
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+    expect((await pending).failure?.kind).toBe("cancelled"); expect(controller.signal.aborted).toBe(true);
+    expect(append).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled(); expect(exclusive).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    expect(await f.store.load(id)).toEqual([]); await holder.assertOwned();
+  } finally { await holder.abort(); await pending; await harness.dispose(); }
+});
+it.each(["provider", "exclusive", "uncoordinated"])("an admitted %s turn retains its cancellation account", async (mode) => {
+  const f = await fixture(), identityPath = join(f.root, "..", "IDENTITY.md"), controller = new AbortController();
+  await fs.writeFile(identityPath, "Fictional instructions");
+  const store = mode === "uncoordinated" ? createInMemoryHistoryStore({ maxMessages: 64 }) : f.store;
+  if (mode === "provider") {
+    const begin = f.store.beginProviderSessionTurn.bind(f.store);
+    vi.spyOn(f.store, "beginProviderSessionTurn").mockImplementation(async (...args) => { const turn = await begin(...args); controller.abort(); return turn; });
+  } else if (mode === "exclusive") {
+    const begin = f.store.contextImport!.beginExclusiveTurn.bind(f.store.contextImport);
+    vi.spyOn(f.store.contextImport!, "beginExclusiveTurn").mockImplementation(async (...args) => { const turn = await begin(...args); controller.abort(); return turn; });
+  }
+  const run = vi.fn(async () => { controller.abort(); return { text: "Fictional late response" }; });
+  const harness = new MonoAgentHarness({ identityPath, model: { provider: "openai", model: "fictional-model", reference: "openai:fictional-model" }, historyStore: store,
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { piSessionsRoot: join(f.root, "..", "native") } : {}), runtime: { run } });
+  try {
+    expect((await harness.run({ conversationId: id, userMessage: "Fictional admitted input", abortSignal: controller.signal })).failure?.kind).toBe("cancelled");
+    const messages = await store.load(id); expect(messages.some((message) => message.role === "user" && message.content.includes("Fictional admitted input"))).toBe(true);
+    expect(messages.some((message) => message.role === "assistant" && message.content.includes("cancelled"))).toBe(true);
+    expect(run).toHaveBeenCalledTimes(mode === "uncoordinated" ? 1 : 0);
+  } finally { await harness.dispose(); }
+});
+it.each(["valid", "torn"])("a concurrently reaped %s dead-owner fence temp does not fail acquisition", async (kind) => {
+  const f = await fixture(); await f.store.stats(); const path = join(f.root, ".locks", `.${hash}.1073741824.${"a".repeat(24)}.dirty.tmp`);
+  await fs.writeFile(path, kind === "torn" ? "{" : JSON.stringify({ version: 1, conversationKey: hash, epoch: "b".repeat(64), revision: 0, runIdDigest: "c".repeat(64) }), { mode: 0o600 });
+  const remove = fs.rm; let reaped = false;
+  vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+    if (args[0] === path && !reaped) { reaped = true; await remove(path); }
+    return remove(...args);
+  });
+  const owner = await f.store.beginProviderSessionPreparation("fictional-other", "fictional-successor"); await owner.abort();
+  expect(reaped).toBe(true); await expect(fs.lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
 });

@@ -680,7 +680,8 @@ export class MonoAgentHarness implements AgentHarness {
       try { request.onEvent?.(event); } catch { /* an event sink cannot block shutdown */ }
     };
     this.activeRunWarningSinks.add(emitShutdownWarning);
-    // Admitted: count this run as pending until it begins its provider call (via
+    // Capacity-admitted, not yet history-admitted: count this run as pending until
+    // it begins its provider call (via
     // leavePending, fired from runRuntime) or exits before getting there. `left`
     // makes the release idempotent so exactly one decrement happens per run, on
     // every exit path including a throw in applyAttachments/prepareContext.
@@ -696,7 +697,6 @@ export class MonoAgentHarness implements AgentHarness {
     let p2Turn: ConversationHistoryTurnReconciliation | undefined;
     let preparedNativeTurn: ConfiguredPreparedTurn | undefined;
     let nativePreparationActive = false;
-    let historyAcquisitionCancelled = false;
     let deferredNativeContinuity: ContinuityClaim | undefined;
     let exclusiveHistoryTurn: ConversationHistoryExclusiveTurn | undefined;
     let exclusiveCapturedHistory: readonly import("./context/index.js").HistoryMessage[] | undefined;
@@ -795,9 +795,12 @@ export class MonoAgentHarness implements AgentHarness {
       const claim = continuityClaim;
       if (claim === undefined) throw new Error("Turn continuity publication has no terminal claim.");
       await historyMutation;
-      // No ownership/admission was obtained: do not reacquire a contended history
-      // lock merely to append a cancellation account for this unadmitted message.
-      if (historyAcquisitionCancelled) return;
+      // Harness capacity admission is not history admission. Cancellation during
+      // preflight or acquisition must not acquire history just to publish input.
+      // Uncoordinated/custom stores admit at provider start; keep their accounts too.
+      if (request.abortSignal.aborted && !providerAttemptStarted && !conversationCommitStarted
+        && providerHistoryTurn === undefined && exclusiveHistoryTurn === undefined && p2Turn === undefined
+        && preparedNativeTurn === undefined && preparedHistoryAppend === undefined && !providerHistoryOwnershipTransferred) return;
       if (p2Turn !== undefined) {
         await p2Turn.claim(claim.outcome, { outcome: claim.outcome, text: claim.outcome === "cancelled"
           ? "The previous turn was cancelled. No tools were replayed." : "The previous turn failed. No tools were replayed.",
@@ -1216,8 +1219,8 @@ export class MonoAgentHarness implements AgentHarness {
             if (preparedNativeTurn) return;
             nativePreparationActive = false;
             if (deferredNativeContinuity && continuityClaim === undefined) {
-              // The claim wait selected the ordinary fallback, not native
-              // preparation. Restore its normal cancelled-turn publication.
+              // The ordinary fallback rejects an aborted acquisition without
+              // a history account; restore cancellation response finalization.
               const claim = deferredNativeContinuity; deferredNativeContinuity = undefined;
               terminalOwner = "running"; claimTurnContinuity(claim);
             }
@@ -1241,7 +1244,7 @@ export class MonoAgentHarness implements AgentHarness {
               "Durable history did not acknowledge the requested session model binding.");
           }
         })();
-        historyMutation = beginMutation.then(() => undefined, () => { historyAcquisitionCancelled = request.abortSignal.aborted && providerHistoryTurn === undefined; });
+        historyMutation = beginMutation.then(() => undefined, () => undefined);
         await beginMutation;
         throwIfCancellationOwned();
         const begunProviderHistoryTurn = providerHistoryTurn;
@@ -1270,7 +1273,7 @@ export class MonoAgentHarness implements AgentHarness {
           exclusiveHistoryTurn = acquired;
           exclusiveCapturedHistory = acquired.history;
         })();
-        historyMutation = beginMutation.then(() => undefined, () => { historyAcquisitionCancelled = request.abortSignal.aborted && exclusiveHistoryTurn === undefined; });
+        historyMutation = beginMutation.then(() => undefined, () => undefined);
         await beginMutation;
         throwIfCancellationOwned();
         if (

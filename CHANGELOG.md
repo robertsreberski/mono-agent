@@ -4,6 +4,8 @@
 
 - Cancel contended history admission, model-switch preparation, exclusive turns
   and manual compaction without admitting the waiting input or calling a provider.
+  Include binding/attachment preflight cancellation and app history wrappers;
+  preserve cancellation accounts for already-admitted turns.
   Preserve predecessor ordering, release raced ownership and keep started
   publication, reset and drain cleanup non-cancellable. Give incomplete writes
   stable retryable busy errors and preserve permission-denied temp cleanup errors.

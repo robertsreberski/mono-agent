@@ -44,6 +44,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   not recover or migrate. Interrupted work waits for the next explicit message;
   recovery never reruns a model or tool. Host cancellation wins over a completed
   native seal, and manual compaction changes metadata rather than answers.
+  Capacity admission alone does not admit input to history: cancellation during
+  binding/attachment preflight or history acquisition returns `cancelled` without
+  a history account, including through the posted-reply wrapper. The caller can
+  resend. Already-admitted turns retain cancellation/interruption reporting.
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
   The opt-in Web model-switch host preserves owned preparation through
   runtime/history decorators and serializes logical-conversation admission before claims. Web's

@@ -597,12 +597,12 @@ it("forwards provider-session binding capability arguments and returned ownershi
     providerSessionRetirement: "fail-closed", readProviderSessionBinding: async () => ({ modelKey: "faux:override", revision: 0 }), beginProviderSessionTurn: begin };
   const wrap = createSlackPostedReplyHistory({ maxMessages: 10 }).wrapHistoryStore;
   const wrapped = wrap(original);
-  const binding = { modelKey: "faux:override" };
+  const binding = { modelKey: "faux:override" }, signal = new AbortController().signal;
   expect(wrapped.readProviderSessionBinding).toBeTypeOf("function");
   expect(wrapped.readProviderSessionBinding).toBeTypeOf("function");
   expect(wrapped.providerSessionRetirement).toBe("fail-closed");
-  expect(await wrapped.beginProviderSessionTurn!("c", "run", binding)).toBe(turn);
-  expect(begin).toHaveBeenCalledWith("c", "run", binding);
+  expect(await wrapped.beginProviderSessionTurn!("c", "run", binding, signal)).toBe(turn);
+  expect(begin).toHaveBeenCalledWith("c", "run", binding, signal);
   expect(wrap({ load: original.load, append: original.append }).readProviderSessionBinding).toBeUndefined();
 });
 
@@ -621,12 +621,33 @@ it("posted-reply store returns all reconciliation capabilities and bound recover
 it("forwards real owned preparation through the posted-reply store with its receiver and abort intact", async () => {
   const root = await mkdtemp(join(tmpdir(), "posted-native-preparation-")); tempDirs.push(root);
   const store = createDurableHistoryStore({ root: join(root, "history") });
+  const begin = vi.spyOn(store, "beginProviderSessionPreparation"), signal = new AbortController().signal;
   const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
   expect(wrapped.beginProviderSessionPreparation).toBeTypeOf("function");
-  const owner = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-preparation");
+  const owner = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-preparation", signal);
+  expect(begin).toHaveBeenCalledWith("fictional-owner", "fictional-preparation", signal);
   try { expect((await owner.read()).source.status).toBe("unsupported"); await owner.assertOwned(); }
   finally { await owner.abort(); }
   const next = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-next-preparation"); await next.abort();
   const unsupported = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore({ load: async () => [], append: async () => {} });
   expect(unsupported.beginProviderSessionPreparation).toBeUndefined(); expect(unsupported.beginProviderSessionPreparation).toBeUndefined();
+});
+
+it.each(["exclusive", "provider"])("posted-reply %s acquisition cancels through the app wrapper while its predecessor is held", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "posted-cancel-acquisition-")); tempDirs.push(root);
+  const identityPath = join(root, "IDENTITY.md"); await writeFile(identityPath, "Fictional instructions");
+  const store = createDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async () => {} });
+  const id = "fictional-wrapped-owner", holder = await store.beginProviderSessionPreparation(id, "fictional-holder"), controller = new AbortController();
+  const begin = mode === "exclusive" ? vi.spyOn(store.contextImport!, "beginExclusiveTurn") : vi.spyOn(store, "beginProviderSessionTurn");
+  const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+  const runtime = observingRuntime(), harness = createAgentHarness({ identityPath, model: MODEL, runtime: runtime.runtime, historyStore: wrapped,
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { piSessionsRoot: join(root, "native") } : {}) });
+  let settled = false;
+  const pending = harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal }).then((result) => { settled = true; return result; });
+  try {
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce()); controller.abort();
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+    expect((await pending).failure?.kind).toBe("cancelled"); expect(begin.mock.calls[0]!.at(-1)).toBe(controller.signal);
+    expect(runtime.calls).toHaveLength(0); expect(await store.load(id)).toEqual([]); await holder.assertOwned();
+  } finally { await holder.abort(); await pending; await harness.dispose?.(); }
 });

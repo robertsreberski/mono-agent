@@ -137,8 +137,9 @@ function wrapHistoryStore(
           version: contextImport.version,
           maxTextBytes: contextImport.maxTextBytes,
           providerState: contextImport.providerState,
-          async beginExclusiveTurn(conversationId: string) {
-            const turn = await contextImport.beginExclusiveTurn(conversationId);
+          async beginExclusiveTurn(...args: Parameters<typeof contextImport.beginExclusiveTurn>) {
+            const [conversationId] = args;
+            const turn = await contextImport.beginExclusiveTurn(...args);
             const scope = scopes.getStore();
             if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
               return turn;

@@ -2829,7 +2829,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       await assertDirectoryIdentity(this.root, rootIdentity);
       const locksIdentity = await this.ensureLocksRoot();
       const lock = await acquireCrossProcessLock(join(this.root, LOCKS_DIRECTORY, ROOT_LOCK_FILE), locksIdentity, false, signal);
-      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
       const accounting: RootAccounting = { records: new Map(), damaged: new Set() };
       this.rootAccounting = accounting;
       let released = false;
@@ -2985,7 +2984,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         tryOnly,
         signal,
       );
-      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
       let released = false;
       return {
         logicalConversationId,
@@ -3026,7 +3024,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       tryOnly,
       signal,
     );
-    if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
     let released = false;
     return {
       conversationId,
@@ -3212,7 +3209,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const temporaryOwner = tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name);
         if (error instanceof TornCoordinationFileError && temporaryOwner && cleanDeadTemps
           && !isProcessAlive(Number.parseInt(temporaryOwner[2]!, 10))) {
-          await rm(path); removed = true; continue;
+          await rm(path, { force: true }); removed = true; continue;
         }
         if (error instanceof TornCoordinationFileError && temporaryOwner) {
           incomplete.set(temporaryOwner[1]!, name); bytes += info!.size; continue;
@@ -3223,7 +3220,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         bytes += info?.size ?? (legacy ? 64 * 1024 : ACTIVE_MARKER_PATTERN.test(name) ? MAX_ACTIVE_MARKER_BYTES : MAX_DIRTY_FENCE_BYTES);
         damaged.set(legacy ? name.slice(0, 64) : (fenceMatch ?? tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name))![1]!, name);
       }
-      if (remove) { await rm(path); removed = true; }
+      if (remove) { await rm(path, { force: true }); removed = true; }
       // Unrelated names are never read, charged or deleted.
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);

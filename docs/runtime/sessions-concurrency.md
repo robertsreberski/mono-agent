@@ -220,8 +220,13 @@ still stops the whole root. Native-session lock waits and host history-acquisiti
 waits are cancellable. Admission, model-switch preparation, exclusive host-only
 turns and manual compaction pass cancellation through in-process queues and
 SQLite root, logical/exact and legacy conversation-lock polling. A cancelled
-waiter neither bypasses a live owner nor admits its input; raced acquisitions
-release their ownership before rejecting. Started publication and storage-only
+waiter never bypasses a live owner; raced acquisitions release their ownership
+before rejecting. Harness capacity admission is not history admission. Cancellation
+during binding/attachment preflight or history acquisition returns `cancelled`
+without a history input/account or acquiring history to publish one; the caller
+can resend. Already-admitted history turns keep cancellation/interruption
+reporting, as do provider-started turns using custom uncoordinated stores.
+Started publication and storage-only
 recovery finish or roll back without interruption. Reset, drain (including an
 admission-triggered drain) and ownership cleanup remain non-cancellable.
 

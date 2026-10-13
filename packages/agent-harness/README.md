@@ -200,9 +200,13 @@ History admission, owned preparation and exclusive-history acquisition accept an
 optional `AbortSignal`. Request cancellation (including manual compaction) stops
 in-process queue waits and SQLite root, logical/exact-claim and legacy
 conversation-lock polling. A cancelled waiter cannot bypass a live predecessor;
-raced acquisitions release their locks/claims before rejecting. Before active
-marker publication, cancellation leaves no admitted input or cancellation
-account and makes no provider/summary call. Once a transaction or publication
+raced acquisitions release their locks/claims before rejecting. Harness capacity
+admission alone does not admit input to history: cancellation during binding or
+attachment preflight, or while acquiring history, returns `cancelled` without
+an input/account, any new history acquisition to publish one, or a provider/summary
+call. The caller can resend. Admitted history turns retain their cancellation and
+interruption accounts; custom uncoordinated stores admit at provider start.
+Once a transaction or publication
 starts it finishes or rolls back: cancellation does not interrupt the publication
 barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
 (including an admission-triggered drain) remain deliberately non-cancellable;
@@ -454,7 +458,7 @@ outcome-unknown tool effect from an earlier model, are carried into every new
 handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
 refuses rather than leaving them to prose.
 
-`beginProviderSessionPreparation(conversationId, runId)` is an additive,
+`beginProviderSessionPreparation(conversationId, runId, signal?)` is an additive,
 claim-only storage substrate used by the configured app's Web-only
 opt-in. It settles old
 work and returns detached history/source/native metadata without an incoming

@@ -81,8 +81,8 @@ export async function prepareConfiguredModelSwitch(input: {
     // non-switching, unguarded route as a same-model Web turn on v3. Other
     // unbound/unsupported records (legacy unbound history, long IDs) keep the original path.
     const fresh = snapshot.source.status === "unsupported" && snapshot.source.reason === "unbound" && snapshot.history.length === 0 && !snapshot.native && !snapshot.pending;
-    // A cancellation that arrived while waiting for the claim keeps the original
-    // path's ordinary cancelled-turn continuity, exactly as before this route.
+    // The ordinary fallback rejects cancelled acquisition without admitting the
+    // input or publishing a cancellation account.
     if (snapshot.source.status === "unsupported" && !snapshot.native && !snapshot.pending && (!fresh || host.request.abortSignal.aborted)) { await owner.abort(); return undefined; }
     if (snapshot.pending) {
       const recovered = await recoverPreparedModelSwitch(owner);
