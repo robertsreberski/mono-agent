@@ -224,8 +224,8 @@ native inventory. Retention may repeat planning after native-I/O windows.
 Configured quotas do not impose a fixed scan-time bound: large or heavily
 damaged roots can delay other conversations' publication.
 A local macOS arm64/Node 24 measurement with minimal records and real native
-epochs found managed commit lock-held time rising from 19 ms at one conversation
-to 8.4 s at 10,000 (13.7 s with one retention victim); these single warm-filesystem
+epochs found managed commit lock-held time rising from 21 ms at one conversation
+to 8.0 s at 10,000 (13.6 s with one retention victim); these single warm-filesystem
 samples are not latency guarantees (`scripts/measure-history-accounting.mjs`).
 
 ### Stopped-writer recovery of shared coordination

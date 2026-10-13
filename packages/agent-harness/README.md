@@ -131,8 +131,8 @@ Coordinated native turns use immutable `.pending-turns/` generations under the
 private history root, measured before publication and charged to staged-byte
 quota even after a crash. Admission does no whole-root accounting: it checks
 only the turn's own projected record and payload against the quotas and the
-in-flight fences/payloads, so its cost does not grow with the number of
-conversations. Aggregate history and staging quotas are enforced at commit and
+in-flight coordination artifacts/payloads, not the complete canonical/native
+inventory. Aggregate history and staging quotas are enforced at commit and
 retention. Settling a reconciled turn (commit, recovery or drain) releases its
 own payload, so the staging quota never refuses it; concurrent in-flight turns
 can therefore overshoot staging transiently, by at most one payload cap each.
