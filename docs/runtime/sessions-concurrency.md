@@ -206,10 +206,11 @@ a killed writer has no recoverable payload: it is reclaimed once its filename
 PID is dead. Torn files with live PIDs remain protected. Resource/device errors
 such as EMFILE or EIO propagate; they are not classified as owner damage. The diagnostic names the unavailable artifact;
 canonical records and legacy SQLite locks may report their underlying error.
-A canonical record that reads as truncated JSON is instead set aside unchanged
-as `<record>.damaged-<n>` beside it, under the conversation's lock; the conversation
-continues from empty history with a one-time `conversation_history_set_aside`
-warning. Set-aside files are not charged and are never read or deleted by
+Existing cold-history handling on ordinary admission can set aside unreadable
+JSON unchanged as `<record>.damaged-<n>`, when the other recovery gates permit,
+with a one-time `conversation_history_set_aside` warning. This is not a general
+repair mechanism: explicit reset refuses damaged canonical records, including
+truncated JSON. Set-aside files are not charged and are never read or deleted by
 mono-agent. New writers no longer create or validate redundant
 `conversation-shard-*.sqlite` files; existing inodes stay untouched, including
 those used by claim-aware older writers (0.20 or later).
@@ -252,6 +253,71 @@ A local macOS arm64/Node 24 measurement with minimal records and real native
 epochs found managed commit lock-held time rising from 21 ms at one conversation
 to 8.0 s at 10,000 (13.6 s with one retention victim); these single warm-filesystem
 samples are not latency guarantees (`scripts/measure-history-accounting.mjs`).
+
+### Offline repair of damaged conversations
+
+Explicit `reset` and logical reset are not online repair commands. Known damaged
+canonical records, coordination/recovery files, enrolled native journals and
+model-switch billing state refuse with `ERR_HISTORY_RESET_DAMAGED`,
+`retryable: false`, basenames and this repair reference. No damaged evidence is
+moved or cleared. An unrelated conversation remains available unless the damage
+is in shared coordination. Resource/device errors such as EIO and EMFILE still
+propagate as operational failures, not instructions to discard evidence.
+
+**Known limits:** a damaged conversation needs the offline procedure before
+reset. Removing its last damaged liveness marker could admit old history before
+reset finishes. An unreadable canonical can hide native journal enrollment;
+an unreadable native header cannot establish its owner or retained quota charge.
+Damaged billing cannot establish whether a summary was already paid for. Reset
+does not invent progress records, recover lost enrollment, or waive these guards.
+Do not repeatedly reset or redeliver input to try to bypass a refusal.
+
+For every procedure below, first **stop every writer** sharing either root,
+including older binaries and workers, and **back up canonical and native roots
+together**, preserving permissions and all evidence. Prefer restoring a
+consistent backup. Never follow symlinks, edit a hard-linked target, or recursively
+change permissions to force acceptance. Keep all set-asides until recovery is
+verified; they are outside managed accounting/retention, so offline review and
+removal are the operator's responsibility.
+
+- **Canonical history:** to intentionally discard a conversation after backup,
+  identify its exact physical bucket key from the diagnostic. Before restarting,
+  set aside its `<key>.history.json` and that bucket's `.locks/<key>.dirty.json`,
+  matching dirty temps/active markers, `.pending-turns/<key>.*` and
+  `.native-history-op.<key>.json`, using collision-free `.damaged-<n>` suffixes.
+  Do not leave an execution fence/payload that could recover old input into an
+  absent canonical. Do not guess unreadable rollover children's ownership.
+  Guarded native membership must be established from trusted backup before
+  discarding its journals; if it cannot be established, restore both roots from
+  a consistent backup instead. Billing evidence is a separate guard: apply the
+  billing procedure below before discarding any of it.
+- **Conversation coordination/recovery:** set aside the identified damaged
+  marker, fence/temp, pending payload or lifecycle intent, preserving its bytes.
+  If discarding canonical history as well, finish the whole canonical procedure
+  before restarting. For a damaged legacy `<key>.sqlite`, move its
+  `<key>.sqlite-journal` too, if present, with the same suffix. Shared databases,
+  root markers and directory identity failures require the shared-coordination
+  procedure below; never remove `.locks` wholesale.
+- **Native journals:** identify the exact enrolled journal ID from the diagnostic
+  or trusted backup, then set aside the damaged
+  `piSessionsRoot/mono-v2/journals/<id>.jsonl` with a collision-free suffix.
+  Preserve the canonical and root authority when they are readable. An absent
+  current journal can then take the existing cold-recovery/reset path; a damaged
+  one cannot. Do not fabricate headers, adopt an orphan, delete unrelated
+  journals, or regenerate `.native-history-root.json`. If canonical membership
+  is also unreadable, restore a consistent backup rather than guessing it.
+- **Billing/model-switch state:** after stopping every writer and backing up the
+  folder, set aside that conversation's `.model-switches/<key>*` files with
+  collision-free suffixes. **This removes the consumed-message/double-billing
+  guard. Do this only after excluding outstanding or unknown paid summaries:
+  redelivery could otherwise pay again.** Until then both reset and ordinary
+  turns remain refused, including a new message ID. Do not silently clear billing
+  as part of canonical, coordination or native-journal repair.
+
+Only after the selected offline procedure is complete should upgraded writers
+restart. Retry reset, verify empty/fresh history and an ordinary turn, and keep
+the backup. If another named blocker remains, stop writers again and inspect it;
+do not expand a rename into an indiscriminate directory cleanup.
 
 ### Stopped-writer recovery of shared coordination
 

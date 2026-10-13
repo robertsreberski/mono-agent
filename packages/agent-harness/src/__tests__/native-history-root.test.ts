@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
@@ -71,7 +71,9 @@ it.each(["append", "reset", "logical reset", "exclusive", "import", "admission"]
     : action === "logical reset" ? fresh.resetLogicalConversation(bucket) : action === "exclusive" ? fresh.contextImport!.beginExclusiveTurn(bucket)
     : action === "import" ? fresh.contextImport!.prepareImport(bucket, { text: "Fictional context.", idempotencyKey: "fictional-import", timestamp: "2000-01-01T00:00:00.000Z" })
     : fresh.beginProviderSessionTurn(bucket, "fictional-new-turn", { modelKey });
-  await expect(operation).rejects.toThrow("not valid JSON"); expect(await readFile(f.path)).toEqual(torn); expect(f.retire).not.toHaveBeenCalled();
+  if (action.endsWith("reset")) await expect(operation).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(basename(f.path)) });
+  else await expect(operation).rejects.toThrow("not valid JSON");
+  expect(await readFile(f.path)).toEqual(torn); expect(f.retire).not.toHaveBeenCalled();
   await fresh.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated work." }]);
   expect(await readFile(f.path)).toEqual(torn);
 });

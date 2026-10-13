@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Refuse explicit reset of damaged canonical, coordination, pending recovery,
+  native-journal or billing evidence with non-retryable, file-naming repair
+  guidance. Preserve the evidence and keep damaged billing redelivery blocked
+  before paid work. Document stopped-writer repair and its double-billing risk;
+  reset does not attempt online repair or reconstruct lost native enrollment.
+
 - Preserve admitted cancellation accounts when a history coordinator aborts
   synchronously, while leaving custom-store cancellations before provider start
   without an account. Release exclusive history ownership when posted-reply

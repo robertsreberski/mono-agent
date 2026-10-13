@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { promisify } from "node:util";
 import { chmod, lstat, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDurableHistoryStore } from "../durable-history.js";
 import { NATIVE_HISTORY_ROOT_FILE } from "../native-history-root.js";
@@ -514,4 +514,25 @@ it.each(["intent", "lock", "marker", "fence", "temporary"])("preserves native in
   expect(await readFile(intent)).toEqual(original); expect(await readFile(f.canonicalPath)).toEqual(canonical);
   await expect(f.store.append(bucket, [])).rejects.toThrow();
   expect(await journalNames(f)).toHaveLength(1);
+});
+
+it.each(["insecure", "malformed"])("explicit reset refuses a %s native journal without moving canonical, billing or journal bytes", async (damage) => {
+  const f = await setup(), name = `${journalOf(f.before.providerSession.epoch)}.jsonl`, path = join(f.base, "native", "mono-v2", "journals", name);
+  if (damage === "insecure") await chmod(path, 0o644); else await writeFile(path, "{fictional-damaged-journal}\n");
+  const canonical = await readFile(f.canonicalPath), journal = await readFile(path), billing = await readdir(join(f.base, "history", ".model-switches"));
+  await expect(f.store.reset(bucket)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(name) });
+  expect(await readFile(f.canonicalPath)).toEqual(canonical); expect(await readFile(path)).toEqual(journal);
+  expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual(billing);
+  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated input" }]);
+  expect(await readFile(path)).toEqual(journal);
+});
+
+it("combined canonical and native damage refuses reset even when inventory cannot enroll the journal", async () => {
+  const f = await setup(), name = `${journalOf(f.before.providerSession.epoch)}.jsonl`, path = join(f.base, "native", "mono-v2", "journals", name);
+  await chmod(path, 0o644); await writeFile(f.canonicalPath, "{fictional-damaged-canonical}\n");
+  const canonical = await readFile(f.canonicalPath), journal = await readFile(path), names = await readdir(join(f.base, "history"));
+  await expect(f.store.reset(bucket)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(basename(f.canonicalPath)) });
+  expect(await readFile(f.canonicalPath)).toEqual(canonical); expect(await readFile(path)).toEqual(journal);
+  expect(await readdir(join(f.base, "history"))).toEqual(names);
+  await f.store.append("fictional-unrelated", [{ role: "user", content: "Fictional unrelated input" }]); expect(await readFile(path)).toEqual(journal);
 });

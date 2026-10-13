@@ -55,6 +55,14 @@ for (const [kind, artifact] of Object.entries(artifacts)) {
       }
     }
     await expect(store.append(owner, message)).rejects.toThrow();
+    if (!(damage === "malformed" && (kind === "active" || kind === "temporary"))) {
+      const canonical = await fs.readFile(join(root, `${key(owner)}.history.json`));
+      for (const reset of [() => store.reset(owner), () => store.resetLogicalConversation(owner)]) {
+        await expect(reset()).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(basename(path)) });
+      }
+      expect(await store.load(owner)).toEqual(message);
+      expect(await fs.readFile(join(root, `${key(owner)}.history.json`))).toEqual(canonical);
+    }
     await store.append(sibling, message);
     expect(await store.load(sibling)).toEqual(message);
     expect(await store.load(owner)).toEqual(message);
@@ -81,7 +89,10 @@ it.each(["root.sqlite", "logical-session-shard-00.sqlite", ".native-history-root
   const { root, store } = await fixture(), path = join(root, name.endsWith(".sqlite") ? ".locks" : "", name);
   if (name.endsWith(".json")) await fs.writeFile(path, "{broken", { mode: 0o600 });
   else await fs.chmod(path, 0o644);
-  for (const id of [owner, sibling]) await expect(store.append(id, message)).rejects.toThrow();
+  for (const id of [owner, sibling]) {
+    await expect(store.append(id, message)).rejects.toThrow();
+    await expect(store.reset(id)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(name) });
+  }
 });
 
 it.each(["root", "locks"])("rechecks the pinned %s before classifying a marker read failure as local damage", async (directory) => {
@@ -230,4 +241,16 @@ it.each(["active", "temporary"] as const)("a live writer's torn %s stays protect
   const torn = artifacts[kind](f.root).replace(".1073741824.", `.${process.pid}.`); await fs.writeFile(torn, "{", { mode: 0o600 });
   await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
   expect(await fs.readFile(torn, "utf8")).toBe("{");
+});
+
+it.each(["root", "logical"])("malformed %s coordination names its database instead of blaming the conversation lock", async (kind) => {
+  const { root, store } = await fixture(), directory = join(root, ".locks");
+  const names = kind === "root" ? ["root.sqlite"] : (await fs.readdir(directory)).filter((name) => /^logical-session-shard-[a-f0-9]{2}\.sqlite$/u.test(name));
+  for (const name of names) await fs.writeFile(join(directory, name), "{fictional-damaged-database}");
+  for (const reset of [() => store.reset(owner), () => store.resetLogicalConversation(owner)]) {
+    const failure = await reset().catch((error: Error) => error);
+    expect(failure).toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false });
+    expect(names.some((name) => (failure as Error).message.includes(name))).toBe(true);
+  }
+  for (const name of names) expect(await fs.readFile(join(directory, name), "utf8")).toBe("{fictional-damaged-database}");
 });

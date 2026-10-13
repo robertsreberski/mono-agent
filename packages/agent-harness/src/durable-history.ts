@@ -326,6 +326,19 @@ class HistoryOwnerBusyError extends Error {
 }
 /** Only emitted after securely reading a marker/fence; never an I/O error. */
 class TornCoordinationFileError extends Error {}
+function rethrowResetAcquisition(error: unknown): never {
+  const name = String(error).match(/(?:root|logical-session-shard-[a-f0-9]{2}|[a-f0-9]{64})\.sqlite(?:-journal)?/u)?.[0];
+  if (error instanceof OwnedFileDamagedError && name) throw new HistoryResetDamagedError([name], error);
+  throw error;
+}
+class HistoryResetDamagedError extends Error {
+  readonly code = "ERR_HISTORY_RESET_DAMAGED";
+  readonly retryable = false;
+  constructor(names: readonly string[], cause?: unknown) {
+    super(`Reset refused: damaged ${names.map((name) => basename(name)).sort().join(", ")}. Stop every writer, back up, and follow docs/runtime/sessions-concurrency.md#offline-repair-of-damaged-conversations before retrying.`, { cause });
+    this.name = "HistoryResetDamagedError";
+  }
+}
 class NativeRootMarkerMissingError extends TypeError { constructor() { super("Native canonical root authority marker is missing; restore consistent backup"); } }
 class CanonicalParseFailure extends Error { constructor(error: unknown) { super(error instanceof Error ? error.message : "Unreadable canonical history", { cause: error }); } }
 
@@ -1031,14 +1044,53 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  private async assertResetReadable(id: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    const key = historyKey(id), switches = await this.modelSwitchPayloads(rootIdentity).inventory(id);
+    if (switches.damaged.includes(key)) throw new HistoryResetDamagedError(switches.damagedFiles);
+    try { await this.nativeHistoryRoot(rootIdentity).read(); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error); throw new HistoryResetDamagedError([NATIVE_HISTORY_ROOT_FILE], error); }
+    try {
+      const markers = await this.scanActiveMarkers(false), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+      const names = markers.filter((entry) => entry.conversationKey === key && entry.damaged).map((entry) => entry.path);
+      if (fences.damaged.has(key)) names.push(fences.damaged.get(key)!);
+      if (names.length) throw new HistoryResetDamagedError(names);
+    } catch (error) {
+      entryAbsentOrThrowOperational(error);
+      const shared = String(error).match(/(?:root|logical-session-shard-[a-f0-9]{2})\.sqlite(?:-journal)?|\.native-history-root\.json/u)?.[0];
+      if (shared) throw new HistoryResetDamagedError([shared], error);
+      throw error;
+    }
+    const payloads = this.pendingPayloads(rootIdentity);
+    for (const entry of (await payloads.list()).filter((entry) => entry.conversationKey === key)) {
+      try { if (entry.damaged) throw new OwnedFileDamagedError(entry.name); if (!entry.name.endsWith(".tmp")) await payloads.inspect(entry); }
+      catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error); throw new HistoryResetDamagedError([entry.name], error); }
+    }
+    try { await this.readNativeOperation(id, rootIdentity); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error); throw new HistoryResetDamagedError([basename(this.nativeOperationPath(id))], error); }
+    let record;
+    try { record = await this.readRecord(id, rootIdentity, true); }
+    catch (error) {
+      await assertDirectoryIdentity(this.root, rootIdentity); entryAbsentOrThrowOperational(error);
+      throw new HistoryResetDamagedError([error instanceof NativeRootMarkerMissingError ? NATIVE_HISTORY_ROOT_FILE : basename(this.recordPath(id))], error);
+    }
+    if (record.native && this.nativeJournalStorage) {
+      const journal = currentJournal(id, record.providerSession!.epoch);
+      const inventory = await this.nativeJournalStorage.inventory([journal.journalId]);
+      const presence = await this.nativeJournalStorage.inspectCurrentJournal?.(journal);
+      if (inventory.journals[journal.journalId]?.damaged || presence?.status === "unreadable") throw new HistoryResetDamagedError([`${journal.journalId}.jsonl`]);
+    }
+  }
+
   async reset(conversationId: string): Promise<void> {
     const normalizedId = normalizeConversationId(conversationId);
+    await this.assertResetReadable(normalizedId, await this.ensureRoot());
     await this.resetPhysicalConversation(normalizedId);
   }
 
   async resetLogicalConversation(logicalConversationId: string): Promise<void> {
     const logicalId = normalizeConversationId(logicalConversationId);
-    const heldLogical = await this.acquireLogicalConversation(logicalId);
+    await this.assertResetReadable(logicalId, await this.ensureRoot());
+    const heldLogical = await this.acquireLogicalConversation(logicalId).catch(rethrowResetAcquisition);
     let heldExact: HeldExactConversationClaim | undefined;
     try {
       const rootIdentity = heldLogical.rootIdentity;
@@ -1063,7 +1115,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           catch (error) {
             // A damaged foreign record is preserved, never a reason to block this
             // reset; the logical owner's own damaged record still refuses it.
-            if (!(error instanceof CanonicalParseFailure) || entry.name === `${historyKey(logicalId)}${HISTORY_FILE_SUFFIX}`) throw error;
+            if (!(error instanceof CanonicalParseFailure)) throw error;
+            entryAbsentOrThrowOperational(error);
+            if (entry.name === `${historyKey(logicalId)}${HISTORY_FILE_SUFFIX}`) throw new HistoryResetDamagedError([entry.name], error);
             continue;
           }
           if (belongsToLogicalConversation(record.conversationId, logicalId)) {
@@ -1094,7 +1148,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         orderedIds = [...conversationIds].sort();
         await heldLogical.assertOwned();
         // Fail before resetting any sibling, not midway through logical reset.
-        for (const id of orderedIds) await this.requireNoModelSwitch(id, rootIdentity);
+        for (const id of orderedIds) { await this.assertResetReadable(id, rootIdentity); await this.requireNoModelSwitch(id, rootIdentity); }
       } finally { await releaseDiscovery(); }
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
@@ -1111,7 +1165,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (preserved > 0) recordPostCommitMaintenanceFailure(this.root, new Error(
           `Logical reset preserved ${preserved} unattributable pending entries; exact-owner reset is required to clear unknown coordinates.`));
       } finally { await releaseDiagnostics(); }
-    } finally {
+    } catch (error) { rethrowResetAcquisition(error); }
+    finally {
       try {
         if (heldExact !== undefined) {
           await heldExact.release();
@@ -1166,7 +1221,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     logicalFence?: HeldLogicalConversation,
     exactFence?: HeldExactConversationClaim,
   ): Promise<void> {
-    const held = await this.acquireConversation(conversationId, logicalFence, exactFence);
+    const held = await this.acquireConversation(conversationId, logicalFence, exactFence).catch(rethrowResetAcquisition);
     await this.resetHeldPhysicalConversation(conversationId, held);
   }
 
@@ -1177,6 +1232,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const rootIdentity = held.rootIdentity;
     let prepared: PreparedHistoryAppend;
     try {
+      await this.assertResetReadable(conversationId, rootIdentity);
       const existing = await this.readRecord(conversationId, rootIdentity);
       this.requireNativeCapability(existing, "whole-conversation deletion", "reset");
       if (existing.native !== undefined) {
@@ -4094,6 +4150,7 @@ async function acquireCrossProcessLock(
       } catch {
         // Closing a failed lock attempt is best-effort.
       }
+      if (isRecord(error) && (error.errcode === 11 || error.errcode === 26)) throw new OwnedFileDamagedError(basename(path), error);
       if (!isSqliteBusy(error)) throw error;
       if (tryOnly) throw new HistoryOwnerBusyError("Legacy history owner is busy.");
       // There is deliberately no age timeout: a live provider turn owns this
@@ -4233,6 +4290,7 @@ async function acquireSessionClaim(
         try { database?.exec("ROLLBACK"); } catch { /* close releases the short transaction */ }
       }
       try { database?.close(); } catch { /* no reuse after a failed claim attempt */ }
+      if (isRecord(error) && (error.errcode === 11 || error.errcode === 26)) throw new OwnedFileDamagedError(basename(path), error);
       if (!isSqliteBusy(error)) throw error;
       if (tryOnly) throw new HistoryOwnerBusyError("History claim shard is busy.");
       await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
