@@ -13,8 +13,11 @@ import {
 
 describe("process incarnation", () => {
   it("preserves every app export as the shared lightweight implementation", () => {
-    expect(Object.keys(compatibility).sort()).toEqual(Object.keys(shared).sort());
-    for (const name of Object.keys(shared) as Array<keyof typeof shared>) expect(compatibility[name]).toBe(shared[name]);
+    expect(Object.keys(compatibility).sort()).toEqual([
+      "PROCESS_INCARNATION_SCHEMA", "currentProcessIncarnation", "isSameProcessIncarnation",
+      "processIncarnationFromJson", "processIncarnationsEqual", "readProcessIncarnation",
+    ]);
+    for (const name of Object.keys(compatibility) as Array<keyof typeof compatibility>) expect(compatibility[name]).toBe(shared[name]);
   });
   it("identifies the current PID by boot session and process birth", async () => {
     const current = await currentProcessIncarnation();

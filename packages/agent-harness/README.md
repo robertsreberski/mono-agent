@@ -143,10 +143,10 @@ Quotas are not fixed scan-time bounds: large or damaged roots can delay unrelate
 publication. See [shared-root limits and offline recovery](../../docs/runtime/sessions-concurrency.md#stopped-writer-recovery-of-shared-coordination).
 Damaged per-conversation locks, active markers, dirty fences/temps and lifecycle
 intents stay charged and protected and refuse only their owner. Owned, bounded
-torn markers and fence temps are reclaimed after their filename PID dies;
-filename-matching markers with readable incarnation evidence can also prove PID
-reuse. Truncated JSON and unchanged fence temps lack that evidence and remain
-PID-only. Unknown OS identity keeps a live PID protected. Stop every older binary
+torn markers and fence temps are reclaimed only after their filename PID dies;
+torn/schema-invalid markers never supply incarnation proof. Valid markers can
+prove PID reuse with v2 identity. Linux and macOS use stable incarnation;
+other platforms and unavailable reads are PID-only, treating a live PID as live. Stop every older binary
 before the upgraded writer runs: new marker contents are not old-reader compatible.
 Operational filesystem errors propagate rather than becoming damage. First
 native-root bootstrap still refuses damaged recovery evidence anywhere in the
@@ -821,8 +821,10 @@ DurableHistoryStoreOptions
 DurableHistoryStoreStats
 ExternalRunSummary
 FileContextInput
+HISTORY_PROCESS_INCARNATION_SCHEMA
 HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
+HistoryProcessIncarnation
 InMemoryHistoryStoreOptions
 LiveInputMailbox
 LiveSessionManager
@@ -908,6 +910,7 @@ createToolPolicy
 currentProcessIncarnation
 failClosedToolPolicy
 formatHostCapabilities
+historyProcessIncarnationFromJson
 isProcessAlive
 isReadSkillCompatibleName
 isSameProcessIncarnation
@@ -922,6 +925,7 @@ logicalConversationIdForFence
 normalizeInlineText
 processIncarnationFromJson
 processIncarnationsEqual
+readHistoryProcessIncarnation
 readProcessIncarnation
 renderSkillIndexEntries
 renderSkillIndexSection
@@ -935,13 +939,17 @@ toolPolicyToRuntimeOptions
 **`@mono-agent/agent-harness/process-incarnation`**
 
 ```text
+HISTORY_PROCESS_INCARNATION_SCHEMA
+HistoryProcessIncarnation
 PROCESS_INCARNATION_SCHEMA
 ProcessIncarnation
 SameProcessIncarnation
 currentProcessIncarnation
+historyProcessIncarnationFromJson
 isSameProcessIncarnation
 processIncarnationFromJson
 processIncarnationsEqual
+readHistoryProcessIncarnation
 readProcessIncarnation
 ```
 
@@ -1054,16 +1062,22 @@ Registry transactions are short and crash-journaled: the active `(digest, pid,
 incarnation, random token)` row, not the shard database, remains for the provider turn.
 Unrelated logical ids therefore proceed concurrently even when they map to the
 same shard. Normal release deletes the row; crash recovery replaces it only
-after its PID is dead or the recorded boot-session/process-start identity no
+after its PID is dead or the recorded v2 boot-session/process-start identity no
 longer matches, never because it merely looks old. The nullable incarnation column
-and optional marker field accept legacy PID-only evidence. An unreadable OS
+and optional marker field accept legacy PID-only evidence; v1/unknown schemas
+also remain PID-only. An unreadable OS
 identity keeps a live PID protected. At capacity, a bounded pass uses the same
 proof. This is read compatibility only: every older writer must be stopped before
 the upgrade, whose new coordination contents old binaries cannot parse.
 
 History caches its current incarnation once per process; a foreign owner is read
 once per claim wait or marker scan, with only `kill(0)` on subsequent polls.
-Darwin `sysctl`/`ps` calls are not repeated per poll. A PID reused after a matching
+Linux and macOS use stable v2 identity; other platforms and unavailable reads
+remain PID-only, treating a live PID as live. Darwin uses `kern.bootsessionuuid`
+and UTC `ps` start time, with a five-second kill deadline on each probe, rather
+than mutable calendar boottime/local-time evidence. Linux uses boot UUID/start
+ticks. Darwin `sysctl`/`ps` calls are not repeated per poll. App's persisted v1 API
+is unchanged and must not be silently upgraded in place. A PID reused after a matching
 snapshot during the same wait can remain busy until a fresh acquisition; legacy
 or unreadable identity also retains the PID-reuse limit. Doctor's PID-only view
 is diagnostic, not ownership authority. SQLite DELETE rollback journals are transient owner-only files,

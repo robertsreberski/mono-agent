@@ -3,8 +3,11 @@
 ## Unreleased
 
 - Reclaim history claims and active markers when their recorded process
-  incarnation no longer owns a reused PID. Cache identity probes per owner/wait,
-  keep legacy or unreadable identity PID-only, and preserve live ownership.
+  stable v2 incarnation no longer owns a reused PID. Use boot UUIDs and UTC
+  process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS
+  probes to five seconds. Keep v1, unknown, unavailable and other-platform
+  identity PID-only. Cache per owner/wait and preserve live ownership; torn
+  markers remain PID-only. Leave the existing app v1 identity API unchanged.
   Stop every older writer before upgrading; legacy coordination files remain
   readable, but pre-upgrade binaries cannot parse the new marker contents.
 

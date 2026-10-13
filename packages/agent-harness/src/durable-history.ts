@@ -45,7 +45,7 @@ import type {
 } from "./types.js";
 import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { currentHistoryProcessIncarnation, historyOwnerIncarnation, historyOwnerLiveness } from "./history-process-liveness.js";
-import { processIncarnationFromJson, type ProcessIncarnation } from "./process-incarnation.js";
+import { historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./process-incarnation.js";
 
 const LEGACY_STORE_VERSION = 1;
 const PROVIDER_STORE_VERSION = 2;
@@ -284,7 +284,7 @@ interface ActiveMarker {
   readonly pid: number;
   readonly token: string;
   readonly damaged?: true;
-  readonly incarnation?: ProcessIncarnation | undefined;
+  readonly incarnation?: HistoryProcessIncarnation | undefined;
 }
 
 interface DirtyFence {
@@ -327,9 +327,7 @@ class HistoryOwnerBusyError extends Error {
   readonly retryable = true;
 }
 /** Only emitted after securely reading a marker/fence; never an I/O error. */
-class TornCoordinationFileError extends Error {
-  constructor(message: string, options?: ErrorOptions, readonly incarnation?: ProcessIncarnation | undefined) { super(message, options); }
-}
+class TornCoordinationFileError extends Error {}
 function rethrowResetAcquisition(error: unknown): never {
   if (error instanceof OwnedFileDamagedError) throw new HistoryResetDamagedError([error.entryName], error);
   throw error;
@@ -3191,7 +3189,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (entryAbsentOrThrowOperational(error)) continue;
         // Only a successful owned-file read may prove a torn liveness marker.
         // A dead writer cannot finish it; there is no recoverable payload here.
-        if (error instanceof TornCoordinationFileError && cleanDead && !await ownerLive(marker.pid, error.incarnation)) {
+        if (error instanceof TornCoordinationFileError && cleanDead && !await ownerLive(marker.pid)) {
           await rm(path); removed = true; continue;
         }
         if (error instanceof TornCoordinationFileError) { markers.push(marker); continue; }
@@ -3271,7 +3269,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (entryAbsentOrThrowOperational(error)) continue;
         const temporaryOwner = tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name);
         if (error instanceof TornCoordinationFileError && temporaryOwner && cleanDeadTemps
-          && !await ownerLive(Number.parseInt(temporaryOwner[2]!, 10), error.incarnation)) {
+          && !await ownerLive(Number.parseInt(temporaryOwner[2]!, 10))) {
           await rm(path, { force: true }); removed = true; continue;
         }
         if (error instanceof TornCoordinationFileError && temporaryOwner) {
@@ -4369,7 +4367,7 @@ async function releaseSessionClaim(
 function parseSessionClaimOwner(
   row: Record<string, unknown>,
   path: string,
-): { readonly claimKey: string; readonly pid: number; readonly token: string; readonly incarnation?: ProcessIncarnation | undefined } {
+): { readonly claimKey: string; readonly pid: number; readonly token: string; readonly incarnation?: HistoryProcessIncarnation | undefined } {
   const claimKey = row.claim_key;
   const pid = Number(row.pid);
   const token = row.token;
@@ -4472,7 +4470,6 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
   assertSecureHistoryFile(before, path);
   if (before.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
   let handle, contentsRead = false;
-  let incarnation: ProcessIncarnation | undefined;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
     const opened = await handle.stat();
@@ -4488,11 +4485,6 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
       value = JSON.parse(bytes.toString("utf8"));
     } catch {
       throw new Error(`History active marker ${path} is not valid JSON.`);
-    }
-    // Only identity-bearing contents matching this securely read filename can
-    // supplement a torn marker's PID proof; truncated JSON has no such proof.
-    if (isRecord(value) && basename(path) === `${value.conversationKey}.${value.pid}.${value.token}.active`) {
-      incarnation = processIncarnationFromJson(value.incarnation);
     }
     if (
       !isRecord(value)
@@ -4512,10 +4504,10 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
       path,
       conversationKey: value.conversationKey,
       pid: value.pid as number,
-      token: value.token, incarnation,
+      token: value.token, incarnation: historyProcessIncarnationFromJson(value.incarnation),
     };
   } catch (error) {
-    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error }, incarnation);
+    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
     throw error;
   } finally {
     await handle?.close().catch(() => undefined);

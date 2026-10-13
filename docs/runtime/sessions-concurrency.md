@@ -203,10 +203,10 @@ intents. Insecure, oversized and unreadable owner artifacts are preserved too;
 damaged lifecycle contents are never executed. Only their owning conversation
 is refused until offline repair. An owned, bounded marker or fence temp torn by
 a killed writer has no recoverable payload: it is reclaimed once its filename
-PID is dead, or a securely read, filename-matching marker proves a different
-process incarnation (boot session plus process start identity). If that identity
-cannot be read, a live PID remains protected. Truncated JSON and unchanged
-fence-temp formats have no incarnation proof and remain PID-only. Stop every
+PID is dead. Torn or schema-invalid markers and unchanged fence temps are
+always PID-only; only valid markers supply incarnation proof. Linux and macOS
+use stable v2 boot/process identity; other platforms, v1/unknown schemas and
+unavailable reads use PID-only liveness, treating a live PID as live. Stop every
 older binary before the upgraded writer runs: its incarnation-bearing markers
 are not readable by pre-upgrade binaries, just like the one-way history upgrade. Resource/device errors
 such as EMFILE or EIO propagate; they are not classified as owner damage. The diagnostic names the unavailable artifact;
@@ -495,11 +495,11 @@ contain namespaced digests rather than conversation ids, and the shared SQLite
 transactions are short, so unrelated logical sessions remain concurrent even
 when they map to the same one of 16 fixed registry files. Normal settlement
 deletes each row; crash recovery replaces it only when the PID is dead or its
-recorded incarnation no longer matches. A nullable incarnation column preserves
-legacy rows written with named-column INSERTs: those rows remain PID-only.
-Unavailable OS identity evidence also falls back conservatively to PID liveness;
-a live owner is never reclaimed on an unreadable identity. A bounded capacity
-pass applies the same proof; the store never age-deletes a claim. This is legacy
+recorded v2 incarnation no longer matches. A nullable incarnation column preserves
+legacy rows written with named-column INSERTs; v1 and unknown identity schemas
+remain PID-only too. Linux and macOS use stable v2 identity; other platforms and
+unavailable reads use PID-only liveness, treating a live PID as live.
+A bounded capacity pass applies the same proof; the store never age-deletes a claim. This is legacy
 read compatibility, not concurrent old-binary support: stop every older writer
 before the upgraded version runs. Full-synchronous DELETE journals
 make interrupted row changes recoverable, while fixed file, row-count, and byte
@@ -507,7 +507,11 @@ ceilings prevent per-conversation lock-file growth.
 
 History captures its own process incarnation once per process. Each claim wait
 or marker scan resolves a foreign owner once, then polls only `kill(0)`; Darwin's
-`sysctl`/`ps` are not spawned on every poll. If a matched PID dies and is reused
+`sysctl`/`ps` are not spawned on every poll. Darwin uses `kern.bootsessionuuid`
+and UTC-formatted process start time, not calendar-clock-adjusted `kern.boottime`
+or local time; each history probe has a five-second kill deadline. Linux uses
+boot UUID and process start ticks. App's persisted v1 identity API is unchanged.
+If a matched PID dies and is reused
 during that same wait, the cached proof conservatively leaves it busy until a
 fresh acquisition. Legacy or unavailable identity evidence cannot distinguish
 PID reuse. Doctor's PID-only observation is diagnostic, not ownership proof.

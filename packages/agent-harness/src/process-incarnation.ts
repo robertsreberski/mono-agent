@@ -229,3 +229,50 @@ function execFileText(
 function isErrno(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === code;
 }
+
+// History uses a separate stable identity format. Keep the persisted app v1 API
+// unchanged: its Darwin calendar-clock/local-time identities need a migration.
+export const HISTORY_PROCESS_INCARNATION_SCHEMA = "mono-agent.process-incarnation.v2";
+export interface HistoryProcessIncarnation extends Omit<ProcessIncarnation, "schema"> {
+  readonly schema: typeof HISTORY_PROCESS_INCARNATION_SCHEMA;
+}
+
+/** Stable history-only evidence. Unavailable (including timeout) is not death proof. */
+export async function readHistoryProcessIncarnation(pid: number): Promise<HistoryProcessIncarnation | undefined> {
+  try {
+    assertPid(pid);
+    if ((process.platform !== "linux" && process.platform !== "darwin") || !processExists(pid)) return undefined;
+    let bootSessionId: string, processStartId: string | undefined;
+    if (process.platform === "linux") {
+      [bootSessionId, processStartId] = await Promise.all([readBootSessionId(), linuxProcessStartIdentifier(pid)]);
+    } else {
+      const [boot, start] = await Promise.all([
+        historyExecFileText("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"]),
+        historyExecFileText("/bin/ps", ["-p", String(pid), "-o", "lstart="]),
+      ]);
+      const uuid = boot.trim().toLowerCase(), normalized = start.trim().replace(/\s+/gu, " ");
+      if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(uuid) || !normalized) return undefined;
+      bootSessionId = `darwin-uuid:${uuid}`; processStartId = `posix-utc-lstart:${normalized}`;
+    }
+    return processStartId === undefined ? undefined : { schema: HISTORY_PROCESS_INCARNATION_SCHEMA, bootSessionId, processStartId };
+  } catch { return undefined; }
+}
+
+/** v1/unknown persisted identities must never be compared with stable v2 evidence. */
+export function historyProcessIncarnationFromJson(value: unknown): HistoryProcessIncarnation | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return record.schema === HISTORY_PROCESS_INCARNATION_SCHEMA
+    && typeof record.bootSessionId === "string" && record.bootSessionId.length > 0
+    && typeof record.processStartId === "string" && record.processStartId.length > 0
+    ? record as unknown as HistoryProcessIncarnation : undefined;
+}
+
+function historyExecFileText(executable: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(executable, [...args], {
+      encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
+      env: { ...posixEnvironment(), TZ: "UTC" },
+    }, (error, stdout) => { if (error !== null) reject(error); else resolvePromise(stdout); });
+  });
+}
