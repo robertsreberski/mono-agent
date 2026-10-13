@@ -205,12 +205,29 @@ admission alone does not admit input to history: cancellation during binding or
 attachment preflight, or while acquiring history, returns `cancelled` without
 an input/account, any new history acquisition to publish one, or a provider/summary
 call. The caller can resend. Admitted history turns retain their cancellation and
-interruption accounts; custom uncoordinated stores admit at provider start.
+interruption accounts; custom uncoordinated stores admit at provider start:
+a cancel before the provider call leaves no account, including cancellation
+inside a custom store's `load`. Publication waits for acquisition to settle even
+when cancellation fires synchronously inside a coordinator.
 Once a transaction or publication
 starts it finishes or rolls back: cancellation does not interrupt the publication
 barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
 (including an admission-triggered drain) remain deliberately non-cancellable;
 this signal is not a transaction deadline.
+
+Explicit reset is not online repair. Damaged canonical records (including
+truncated JSON), coordination/recovery files, enrolled native journals and
+switch billing state refuse with `ERR_HISTORY_RESET_DAMAGED`, `retryable: false`,
+artifact basenames and [offline repair guidance](../../docs/runtime/sessions-concurrency.md#offline-repair-of-damaged-conversations).
+Nothing damaged is moved or cleared. The same explicit-reset rule applies before
+and after native switching is enabled; existing ordinary-admission cold JSON
+handling is unchanged. A removed liveness blocker could expose old history before
+reset, unreadable canonical/native evidence can hide journal enrollment, and
+missing billing evidence could allow a paid summary to repeat. These cannot be
+repaired safely merely by renaming files online. Stop every writer and back up
+both roots before the documented per-class procedure. Never discard
+`.model-switches/<key>*` until outstanding/unknown paid summaries are excluded:
+that removes the double-billing guard and redelivery could pay again.
 
 Owned coordination files must retain mode `0600`. Conventional umasks such as
 `0022` or `0077` are supported; an exotic umask that removes owner read/write

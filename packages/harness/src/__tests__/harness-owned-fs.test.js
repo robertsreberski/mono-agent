@@ -21,7 +21,7 @@ it("lists only matching names and classifies wrong-mode, hard-linked and non-fil
   const entries = await listOwned(r, /^[a-d]\.json$/);
   expect(entries.map(({ name, damaged, bytes }) => ({ name, damaged, bytes: name === "d.json" ? "dir" : bytes })))
     .toEqual([{ name: "a.json", damaged: false, bytes: 2 }, { name: "b.json", damaged: true, bytes: 2 }, { name: "c.json", damaged: true, bytes: 2 }, { name: "d.json", damaged: true, bytes: "dir" }]);
-  await expect(readOwned(join(r, "b.json"))).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED" });
+  await expect(readOwned(join(r, "b.json"))).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED", entryName: "b.json" });
   await expect(readOwned(join(r, "missing.json"))).rejects.toMatchObject({ code: "ENOENT" });
   expect((await readOwned(join(r, "a.json"))).bytes.toString()).toBe("{}");
 });

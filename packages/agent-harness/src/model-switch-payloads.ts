@@ -139,12 +139,13 @@ export class ModelSwitchPayloadStore {
    * to read or validate marks only that conversation `damaged` (bytes still
    * charged, never pending, never removed). Root identity failures stay fatal. */
   async inventory(bucket?: string): Promise<{ readonly bytes: number; readonly pending: readonly { readonly state: ModelSwitchState; readonly remainingReservation: number; readonly remainingPendingBytes: number }[];
-    readonly damaged: readonly string[] }> {
-    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], damaged: [] };
+    readonly damaged: readonly string[]; readonly damagedFiles: readonly string[] }> {
+    const directory = await this.ensureDirectory(false); if (!directory) return { bytes: 0, pending: [], damaged: [], damagedFiles: [] };
     const entries = await this.entries(bucket === undefined ? undefined : `${switchConversationKey(bucket)}.`), key = (name: string) => name.slice(0, 64);
     const bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
     const pending: { state: ModelSwitchState; remainingReservation: number; remainingPendingBytes: number }[] = [];
-    const damaged = new Set(entries.filter((entry) => entry.damaged).map((entry) => key(entry.name)));
+    const damagedFiles = new Set(entries.filter((entry) => entry.damaged).map((entry) => entry.name));
+    const damaged = new Set([...damagedFiles].map(key));
     const isolate = async (name: string, action: () => Promise<void>) => {
       if (damaged.has(key(name))) return;
       try { await action(); } catch (error) {
@@ -155,7 +156,7 @@ export class ModelSwitchPayloadStore {
           try { await lstat(join(this.directory, name)); }
           catch (changed) { if (missing(changed)) return; throw changed; }
         }
-        damaged.add(key(name));
+        damaged.add(key(name)); damagedFiles.add(name);
       }
     };
     // Every final state and artifact (fenced, retained or orphan) must parse and
@@ -185,7 +186,7 @@ export class ModelSwitchPayloadStore {
       pending.push({ state: current.state, ...this.remainingReservation(decoded, payload.byteLength + fenceBytes.byteLength, !!cached) });
     });
     await this.assertDirectory(directory);
-    return { bytes, pending: pending.filter((entry) => !damaged.has(switchConversationKey(entry.state.identity.historyBucket))), damaged: [...damaged] };
+    return { bytes, pending: pending.filter((entry) => !damaged.has(switchConversationKey(entry.state.identity.historyBucket))), damaged: [...damaged], damagedFiles: [...damagedFiles] };
   }
   private remainingReservation(state: ModelSwitchState, publicationBytes: number, cached: boolean) {
     const remainingPendingBytes = Math.max(0, state.reservation.pendingBytes - publicationBytes);

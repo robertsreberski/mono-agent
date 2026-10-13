@@ -794,11 +794,12 @@ export class MonoAgentHarness implements AgentHarness {
     const publishTurnContinuity = async (): Promise<void> => {
       const claim = continuityClaim;
       if (claim === undefined) throw new Error("Turn continuity publication has no terminal claim.");
-      await historyMutation;
+      let mutation;
+      do { mutation = historyMutation; await mutation; } while (mutation !== historyMutation);
       // Harness capacity admission is not history admission. Cancellation during
       // preflight or acquisition must not acquire history just to publish input.
       // Uncoordinated/custom stores admit at provider start; keep their accounts too.
-      if (request.abortSignal.aborted && !providerAttemptStarted && !conversationCommitStarted
+      if (claim.outcome === "cancelled" && request.abortSignal.aborted && !providerAttemptStarted && !conversationCommitStarted
         && providerHistoryTurn === undefined && exclusiveHistoryTurn === undefined && p2Turn === undefined
         && preparedNativeTurn === undefined && preparedHistoryAppend === undefined && !providerHistoryOwnershipTransferred) return;
       if (p2Turn !== undefined) {

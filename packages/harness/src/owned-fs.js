@@ -17,6 +17,7 @@ export class OwnedFileDamagedError extends Error {
     super(`Owned storage entry unavailable: damaged identity, ownership or permissions (${name})`, { cause });
     this.name = "OwnedFileDamagedError";
     this.code = "ERR_OWNED_FILE_DAMAGED";
+    this.entryName = name;
   }
 }
 /** @param {Identity} a @param {Identity} b */

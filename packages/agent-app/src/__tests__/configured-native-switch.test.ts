@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, realpath, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -597,4 +597,33 @@ it.each([
   await expect(h.respond(f.request(await persistedId(f.root), "faux:A"), { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_switch_authority_unavailable" } });
   expect(deletion).not.toHaveBeenCalled(); expect(await nativeFiles(f.nativeRoot)).toEqual(files);
   expect(f.transport).toHaveBeenCalledTimes(calls); expect(await f.record()).toEqual(before);
+});
+
+it("damaged pending billing refuses reset and redelivery without paid work until explicit offline repair", async () => {
+  const f = await fixture(true); await f.seed(); const h = await f.make(true), request = f.request("fictional-billed-message", "faux:B");
+  vi.spyOn(f.native, "buildHandoff").mockReturnValue({ status: "budget_failure", reason: "fixture-forced-summary" });
+  f.faux.setResponses([reply("Fictional invalid outgoing summary"), reply("Fictional invalid incoming summary")]);
+  await expect(h.respond(request, { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  const directory = join(f.root, "history", ".model-switches"), names = await readdir(directory), fenceName = names.find((name) => name.endsWith(".fence.json"))!;
+  const fence = JSON.parse(await readFile(join(directory, fenceName), "utf8")), damagedName = `${fence.conversationKey}.${fence.switchId}.${fence.payload.generation}.state.json`;
+  const original = JSON.parse(await readFile(join(directory, damagedName), "utf8"));
+  // Offline repair below is permitted only after these outcomes are known, not unknown.
+  expect(original.attempts.every((attempt: { outcome: string }) => attempt.outcome === "rejected")).toBe(true);
+  await writeFile(join(directory, damagedName), "{fictional-damaged-billing}\n");
+  const snapshot = async () => {
+    const entries = await readdir(join(f.root, "history"), { recursive: true }), files: Record<string, string> = {};
+    for (const name of entries.sort()) { const path = join(f.root, "history", name); if ((await lstat(path)).isFile()) files[name] = (await readFile(path)).toString("base64"); }
+    return files;
+  };
+  const before = await snapshot(), calls = f.transport.mock.calls.length;
+  await expect(f.getStore().reset!(request.conversationId)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", retryable: false, message: expect.stringContaining(damagedName) });
+  expect(await snapshot()).toEqual(before);
+  for (const next of [request, f.request("fictional-new-message", "faux:B")]) await expect(h.respond(next, { append: async () => {} })).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  expect(f.transport).toHaveBeenCalledTimes(calls); expect(await snapshot()).toEqual(before);
+  await f.dispose(h); // All fixture writers are stopped before operator repair.
+  for (const name of names) if (name.startsWith(`${fence.conversationKey}.`)) await rename(join(directory, name), join(directory, `${name}.damaged-1`));
+  await f.getStore().reset!(request.conversationId); expect(await f.getStore().load(request.conversationId)).toEqual([]);
+  const ordinary = await f.make(false); f.faux.setResponses([reply("Fictional repaired ordinary reply")]);
+  expect((await ordinary.respond(f.request(undefined), { append: async () => {} })).text).toBe("Fictional repaired ordinary reply");
+  expect(f.transport).toHaveBeenCalledTimes(calls + 1);
 });

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Refuse explicit reset of damaged canonical, coordination, pending recovery,
+  native-journal or billing evidence with non-retryable, file-naming repair
+  guidance. Ignore recovery generations removed during unlocked preflight, and
+  preserve damaged rollover members identified by their healthy logical fences.
+  Preserve the evidence and keep damaged billing redelivery blocked
+  before paid work. Document stopped-writer repair and its double-billing risk;
+  reset does not attempt online repair or reconstruct lost native enrollment.
+
+- Preserve admitted cancellation accounts when a history coordinator aborts
+  synchronously, while leaving custom-store cancellations before provider start
+  without an account. Release exclusive history ownership when posted-reply
+  delivery loading fails, preserving the original failure.
+
 - Cancel contended history admission, model-switch preparation, exclusive turns
   and manual compaction without admitting the waiting input or calling a provider.
   Include binding/attachment preflight cancellation and app history wrappers;

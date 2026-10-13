@@ -140,22 +140,24 @@ function wrapHistoryStore(
           async beginExclusiveTurn(...args: Parameters<typeof contextImport.beginExclusiveTurn>) {
             const [conversationId] = args;
             const turn = await contextImport.beginExclusiveTurn(...args);
-            const scope = scopes.getStore();
-            if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
-              return turn;
-            }
-            const delivery = await loadExactDelivery(store, scope, conversationId, options);
-            const deliveryKey = delivery.find((message) => message.role === "assistant")?.idempotencyKey;
-            const history = delivery.length === 0
-              || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
-              ? turn.history
-              : mergeHistory(turn.history, delivery, options.maxMessages);
-            return {
-              history,
-              historyVersion: turn.historyVersion,
-              prepareCommit: turn.prepareCommit.bind(turn),
-              abort: turn.abort.bind(turn),
-            };
+            try {
+              const scope = scopes.getStore();
+              if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
+                return turn;
+              }
+              const delivery = await loadExactDelivery(store, scope, conversationId, options);
+              const deliveryKey = delivery.find((message) => message.role === "assistant")?.idempotencyKey;
+              const history = delivery.length === 0
+                || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
+                ? turn.history
+                : mergeHistory(turn.history, delivery, options.maxMessages);
+              return {
+                history,
+                historyVersion: turn.historyVersion,
+                prepareCommit: turn.prepareCommit.bind(turn),
+                abort: turn.abort.bind(turn),
+              };
+            } catch (error) { await turn.abort().catch(() => undefined); throw error; }
           },
           prepareImport: (conversationId, request) => contextImport.prepareImport(conversationId, request),
         },
