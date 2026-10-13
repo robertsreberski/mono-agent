@@ -1142,10 +1142,10 @@ describe("DurableConversationHistoryStore", () => {
     const initialSqliteLocks = (await readdir(locksRoot))
       .filter((name) => name.endsWith(".sqlite"))
       .sort();
-    expect(initialSqliteLocks).toHaveLength(33);
+    expect(initialSqliteLocks).toHaveLength(17);
     expect(initialSqliteLocks).toContain("root.sqlite");
     expect(initialSqliteLocks.filter((name) => /^conversation-shard-[a-f0-9]{2}\.sqlite$/u.test(name)))
-      .toHaveLength(16);
+      .toHaveLength(0);
     expect(initialSqliteLocks.filter((name) => /^logical-session-shard-[a-f0-9]{2}\.sqlite$/u.test(name)))
       .toHaveLength(16);
     expect(initialSqliteLocks.some((name) => /^[a-f0-9]{64}\.sqlite$/u.test(name))).toBe(false);
@@ -1347,9 +1347,11 @@ describe("DurableConversationHistoryStore", () => {
       await writeFile(workerPath, [
         'import { createDurableHistoryStore } from "./durable-history.mjs";',
         'import { DatabaseSync } from "node:sqlite";',
+        'import { writeFile } from "node:fs/promises";',
         'import { join } from "node:path";',
         'const [root, id, shard, legacy] = process.argv.slice(2);',
         'const turn = await createDurableHistoryStore({ root }).beginProviderSessionTurn(id, "held");',
+        'if (legacy === "true") await writeFile(join(root, ".locks", `conversation-shard-${shard}.sqlite`), "", { mode: 0o600 });',
         'const db = legacy === "true" ? new DatabaseSync(join(root, ".locks", `conversation-shard-${shard}.sqlite`)) : undefined;',
         'db?.exec("PRAGMA journal_mode=MEMORY; BEGIN IMMEDIATE");',
         'process.stdout.write(`HELD:${turn.providerSessionId}\\n`);',
@@ -1721,8 +1723,7 @@ describe("DurableConversationHistoryStore", () => {
     await chmod(join(root, fileName as string), 0o644);
     await expect(store.load("conversation")).rejects.toThrow(/0600/iu);
     await chmod(join(root, fileName), 0o600);
-    const conversationLock = (await readdir(join(root, ".locks")))
-      .find((name) => /^conversation-shard-[a-f0-9]{2}\.sqlite$/u.test(name)) as string;
+    const conversationLock = "root.sqlite";
     await chmod(join(root, ".locks", conversationLock), 0o644);
     await expect(store.append("conversation", [{ role: "assistant", content: "unsafe lock" }]))
       .rejects.toThrow(/0600/iu);

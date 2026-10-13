@@ -128,6 +128,12 @@ This is a composition excerpt, not a complete server: install matching package v
 
 The browser exposes model changes, tool activity and retained results. `RunHistory` reads settled runs; `SessionHistory` reads separately retained tool invocations and results. Curated memory is a different source.
 
+Durable-history preparation, commit and retention can scan the shared root while
+holding its publication lock; quotas do not guarantee scan latency. Damaged
+conversation-owned recovery files refuse only their owner and stay preserved;
+shared coordination damage still stops the root. See
+[history limits and stopped-writer recovery](./docs/runtime/sessions-concurrency.md#stopped-writer-recovery-of-shared-coordination).
+
 Records are bounded and can be incomplete. Inspecting an interrupted run does not automatically resume it, or prove a command is safe to repeat. See [Run artifacts & traces](./docs/observability/artifacts-and-traces.md) for retention and redaction limits.
 
 ## Safety and privacy
