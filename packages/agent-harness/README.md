@@ -250,6 +250,9 @@ outcome. The host surfaces `native_switch_busy` with `retryable: true` and relea
 its claim/resources. It never falls back or waits holding a claim: concurrent
 contenders could otherwise keep each other from draining. The caller must drain
 or serialize host owners and explicitly retry; no message is queued or billed.
+When bootstrap finds another conversation's recovery data damaged, the same error
+has `damaged: true` and `retryable: false`; the host surfaces non-retryable
+`native_switch_damaged` and no drain runs, because only repair or restore helps.
 
 Conversation IDs longer than 512 characters bypass switch preparation before
 any authority claim or switch intent. This preserves the original path, not a
@@ -524,8 +527,11 @@ The administrative `acquireNativeHistoryAuthority(id)`
 requires a bound source and
 drained host ownership. It issues a bounded, immutable private root marker and
 an owner-held authority lease; lease release releases ownership only. Marker
-proposals and the winner remain charged and crash recovery never erases unknown
-proposals. Managed-marker roots use strict canonical reads: torn files cannot
+proposals stay charged until the next issuance removes owned leftovers (even torn
+ones) under the root transaction and publishes a fresh marker; a proposal's root
+ID is never used before publication. A damaged published marker stays fatal for
+the root. Bootstrap isolates unreadable sibling canonical records; only a readable
+native record without the marker refuses. Managed-marker roots use strict canonical reads: torn files cannot
 lose native authority by being overwritten without native metadata. Unmarked legacy roots retain
 their existing torn-file policy. This API is not used by configured hosts and
 does not grant permission to migrate real roots.

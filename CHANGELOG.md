@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Let model-switch bootstrap recover from a torn root-marker proposal and from
+  unreadable sibling history, report another conversation's damaged recovery
+  data as non-retryable `native_switch_damaged` without a drain, and settle an
+  interrupted turn on a not-yet-imported legacy Pi journal instead of refusing
+  every later message.
+
 - Keep saved Web wake routes when model switching is off or history is ordinary;
   keyless native turns with switching enabled inherit their current durable model,
   not a different sticky selection or its context-window override. Avoid carrying
