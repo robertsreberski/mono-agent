@@ -127,7 +127,8 @@ export interface ConversationHistoryContextImport {
   readonly version: 1;
   readonly maxTextBytes: number;
   readonly providerState: "absent" | "retire-fail-closed";
-  beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn>;
+  /** Cancel ownership acquisition only; an already-started mutation finishes. */
+  beginExclusiveTurn(conversationId: string, signal?: AbortSignal): Promise<ConversationHistoryExclusiveTurn>;
   prepareImport(
     conversationId: string,
     request: AgentContextImportRequest & { readonly timestamp: string },
@@ -151,8 +152,9 @@ export interface ConversationHistoryTurnDrainResult {
 }
 
 export interface ConversationHistoryStore {
-  /** Positive owned preparation contract. Does not acknowledge stopped older writers. */
-  beginProviderSessionPreparation?(conversationId: string, runId: string): Promise<ManagedProviderSessionPreparation>;
+  /** Positive owned preparation contract; signal cancels acquisition only.
+   * Does not acknowledge stopped older writers. */
+  beginProviderSessionPreparation?(conversationId: string, runId: string, signal?: AbortSignal): Promise<ManagedProviderSessionPreparation>;
   /** Opted-in owner-held, storage-only native turn settlement. load() stays read-only. */
   readonly providerSessionReconciliation?: "v1" | undefined;
   recoverProviderSessionTurn?(conversationId: string): Promise<ConversationHistoryTurnRecovery>;
@@ -197,6 +199,8 @@ export interface ConversationHistoryStore {
     conversationId: string,
     runId: string,
     binding?: ProviderSessionTurnBinding,
+    /** Acquisition only; publication and cleanup are not interrupted. */
+    signal?: AbortSignal,
   ): Promise<ConversationHistoryProviderSessionTurn>;
   /**
    * Optional read-only view of the provider-session model binding, without

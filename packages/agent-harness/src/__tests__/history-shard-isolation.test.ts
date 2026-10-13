@@ -27,7 +27,7 @@ function collidingIds(): [string, string] {
 }
 
 for (const cancelAt of ["admission", "provider"] as const) {
-  it(`publishes cancellation at ${cancelAt} and admits a successor while a colliding provider stays open`, async () => {
+  it(`cancels at ${cancelAt} and admits a successor while a colliding provider stays open`, async () => {
     const dir = await mkdtemp(join(tmpdir(), "history-shard-isolation-"));
     const root = join(dir, "history");
     const identityPath = join(dir, "IDENTITY.md");
@@ -74,8 +74,14 @@ for (const cancelAt of ["admission", "provider"] as const) {
       expect(cancelled.failure?.kind).toBe("cancelled");
       const successor = await harness.run({ conversationId: secondId, userMessage: "continue", abortSignal: new AbortController().signal });
       expect(successor.failure).toBeUndefined();
-      expect(successorPrompt).toContain("cancel this request");
-      expect(successorPrompt).toContain("Run stopped by the operator.");
+      if (cancelAt === "provider") {
+        expect(successorPrompt).toContain("cancel this request");
+        expect(successorPrompt).toContain("Run stopped by the operator.");
+      } else {
+        // Acquisition cancelled before admission: no continuity account or replay.
+        expect(successorPrompt).not.toContain("cancel this request");
+        expect(successorPrompt).not.toContain("Run stopped by the operator.");
+      }
       expect((await store.load(secondId)).at(-1)?.content).toContain("successor answer");
       completed = true;
     })();

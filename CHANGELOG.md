@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Cancel contended history admission, model-switch preparation, exclusive turns
+  and manual compaction without admitting the waiting input or calling a provider.
+  Preserve predecessor ordering, release raced ownership and keep started
+  publication, reset and drain cleanup non-cancellable. Give incomplete writes
+  stable retryable busy errors and preserve permission-denied temp cleanup errors.
+
 - Keep damaged conversation locks, active markers, dirty fences and lifecycle
   intents charged and protected without refusing unrelated conversations.
   Stop creating redundant conversation-shard locks while preserving older

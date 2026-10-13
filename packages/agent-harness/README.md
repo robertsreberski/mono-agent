@@ -195,6 +195,26 @@ A never-bound rollover child cannot be inferred from its hashed filename; exact
 reset clears those known physical coordinates. Discovery never guesses an owner. Post-rename cleanup failures remain
 visible in store diagnostics. Retention protects unsettled execution fences and
 clears generations only after authorized settlement/deletion.
+
+History admission, owned preparation and exclusive-history acquisition accept an
+optional `AbortSignal`. Request cancellation (including manual compaction) stops
+in-process queue waits and SQLite root, logical/exact-claim and legacy
+conversation-lock polling. A cancelled waiter cannot bypass a live predecessor;
+raced acquisitions release their locks/claims before rejecting. Before active
+marker publication, cancellation leaves no admitted input or cancellation
+account and makes no provider/summary call. Once a transaction or publication
+starts it finishes or rolls back: cancellation does not interrupt the publication
+barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
+(including an admission-triggered drain) remain deliberately non-cancellable;
+this signal is not a transaction deadline.
+
+Owned coordination files must retain mode `0600`. Conventional umasks such as
+`0022` or `0077` are supported; an exotic umask that removes owner read/write
+permissions can leave an unverifiable marker/temp if the writer dies before
+permission normalization. Such evidence remains protected damage even with a
+dead filename PID; it is not reaped using PID evidence alone. Restore/repair it
+with all writers stopped rather than weakening secure-file validation.
+
 `drainPendingProviderSessionTurns()` visits at most 32 inactive physical owners
 per pass, oldest first, and returns a cursor for further passes. It tries owner
 claims without waiting for foreign ownership. Busy/unresolved owners remain

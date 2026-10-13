@@ -320,7 +320,10 @@ interface HeldExactConversationClaim {
   release(): Promise<void>;
 }
 
-class HistoryOwnerBusyError extends Error {}
+class HistoryOwnerBusyError extends Error {
+  readonly code = "ERR_HARNESS_WRITER_BUSY";
+  readonly retryable = true;
+}
 /** Only emitted after securely reading a marker/fence; never an I/O error. */
 class TornCoordinationFileError extends Error {}
 class NativeRootMarkerMissingError extends TypeError { constructor() { super("Native canonical root authority marker is missing; restore consistent backup"); } }
@@ -430,7 +433,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         version: AGENT_CONTEXT_IMPORT_VERSION,
         maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
         providerState: options.retireProviderSession === undefined ? "absent" : "retire-fail-closed",
-        beginExclusiveTurn: async (conversationId) => await this.beginExclusiveTurn(conversationId),
+        beginExclusiveTurn: async (conversationId, signal) => await this.beginExclusiveTurn(conversationId, signal),
         prepareImport: async (conversationId, request) => await this.prepareContextImport(conversationId, request),
       }
       : undefined;
@@ -1242,9 +1245,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn> {
+  private async beginExclusiveTurn(conversationId: string, signal?: AbortSignal): Promise<ConversationHistoryExclusiveTurn> {
+    signal?.throwIfAborted();
     const normalizedId = normalizeConversationId(conversationId);
-    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId));
+    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId), false, signal);
     let heldExact: HeldExactConversationClaim | undefined;
     let marker: ActiveMarker | undefined;
     let settled = false;
@@ -1279,21 +1283,23 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     };
     try {
       if (requiresExactConversationClaim(normalizedId)) {
-        heldExact = await this.acquireExactConversationClaim(normalizedId);
+        heldExact = await this.acquireExactConversationClaim(normalizedId, false, signal);
       }
       this.requireNativeCapability(await this.readRecord(normalizedId, heldLogical.rootIdentity), "native epoch transition", "exclusive host-only mutation");
-      const settlementOwner = await this.acquireConversation(normalizedId, heldLogical, heldExact);
+      const settlementOwner = await this.acquireConversation(normalizedId, heldLogical, heldExact, false, signal);
       try { await this.settleHeldTurn(normalizedId, settlementOwner); }
       finally { await this.releaseConversation(settlementOwner, settlementOwner.rootIdentity); }
       const locksIdentity = await this.ensureLocksRoot();
-      const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity);
+      const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity, signal);
       try {
+        signal?.throwIfAborted();
         await this.retireInactiveDirtyFences(
           heldLogical.rootIdentity,
           locksIdentity,
           historyKey(normalizedId),
         );
         requireSettledFence(await this.findDirtyFence(historyKey(normalizedId), locksIdentity));
+        signal?.throwIfAborted();
         marker = await this.createActiveMarker(historyKey(normalizedId), locksIdentity);
       } finally {
         await releaseRoot();
@@ -1407,12 +1413,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   /** Settle/capture under one owner before host preparation, without admitting
    * incoming execution. Default callers still use beginProviderSessionTurn. */
-  async beginProviderSessionPreparation(conversationId: string, runId: string): Promise<ManagedProviderSessionPreparation> {
+  async beginProviderSessionPreparation(conversationId: string, runId: string, signal?: AbortSignal): Promise<ManagedProviderSessionPreparation> {
+    signal?.throwIfAborted();
     const id = normalizeConversationId(conversationId), normalizedRunId = normalizeRunId(runId);
     // Read-only preflight before acquisition-time cleanup of unrelated fences;
     // settleHeldTurn rechecks under ownership.
     const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.assertSwitchOwnerReadable(id, preflightRoot);
-    const held = await this.acquireConversation(id);
+    const held = await this.acquireConversation(id, undefined, undefined, false, signal);
     let state: "prepared" | "transferred" | "closed" = "prepared";
     let queue = Promise.resolve();
     const children = new Set<() => Promise<void>>();
@@ -1556,13 +1563,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     conversationId: string,
     runId: string,
     binding?: ProviderSessionTurnBinding,
+    signal?: AbortSignal,
   ): Promise<ConversationHistoryProviderSessionTurn> {
+    signal?.throwIfAborted();
     if (binding !== undefined) assertSessionModelKey(binding.modelKey);
     const normalizedId = normalizeConversationId(conversationId);
     const normalizedRunId = normalizeRunId(runId);
     if (binding?.reconciliation && Buffer.byteLength(normalizedRunId) > 512) throw new TypeError("Reconciled turn id exceeds 512 bytes.");
-    if (binding?.reconciliation !== undefined) await this.drainBeforeAdmission(normalizedId, normalizedRunId, binding);
-    const held = await this.acquireConversation(normalizedId);
+    if (binding?.reconciliation !== undefined) await this.drainBeforeAdmission(normalizedId, normalizedRunId, binding, signal);
+    const held = await this.acquireConversation(normalizedId, undefined, undefined, false, signal);
     return await this.beginHeldProviderSessionTurn(normalizedId, normalizedRunId, binding, held);
   }
   private async beginHeldProviderSessionTurn(normalizedId: string, normalizedRunId: string, binding: ProviderSessionTurnBinding | undefined,
@@ -1814,7 +1823,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async drainBeforeAdmission(conversationId: string, runId: string, binding: ProviderSessionTurnBinding): Promise<void> {
+  private async drainBeforeAdmission(conversationId: string, runId: string, binding: ProviderSessionTurnBinding, signal?: AbortSignal): Promise<void> {
     if (!this.inspectProviderTurn || !binding.reconciliation) throw new Error("Native turn reconciliation is not configured.");
     const admission = binding.reconciliation;
     const inputs = admission.initial === undefined ? [] : [createPendingInitialInput({ id: `initial:${digestRunId(runId)}`,
@@ -1824,7 +1833,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       historyBucket: conversationId, turnId: runId, handleId: "0".repeat(64), modelKey: binding.modelKey,
       baseRevision: 0, fenceDigest: "0".repeat(64) }, inputs, "admitted")).byteLength;
     const rootIdentity = await this.ensureRoot(), locksIdentity = await this.ensureLocksRoot();
-    const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+    const releaseRoot = await this.acquireRootTransaction(rootIdentity, signal);
     let needsDrain;
     try {
       // Admission inspects only in-flight evidence (fences and pending payloads),
@@ -1836,6 +1845,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       needsDrain = physicalOwners.size >= this.maxConversations
         || pending.reduce((total, entry) => total + entry.bytes, 0) + projected > this.maxStagedBytes;
     } finally { await releaseRoot(); }
+    signal?.throwIfAborted();
     if (needsDrain) await this.drainInactiveTurns({}, historyKey(conversationId));
   }
 
@@ -2813,12 +2823,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return await this.locksRootReady;
   }
 
-  private async acquireRootTransaction(rootIdentity: DirectoryIdentity): Promise<() => Promise<void>> {
-    const releaseProcess = await acquireQueue(PROCESS_ROOT_QUEUES, this.root);
+  private async acquireRootTransaction(rootIdentity: DirectoryIdentity, signal?: AbortSignal): Promise<() => Promise<void>> {
+    const releaseProcess = await acquireQueue(PROCESS_ROOT_QUEUES, this.root, signal);
     try {
       await assertDirectoryIdentity(this.root, rootIdentity);
       const locksIdentity = await this.ensureLocksRoot();
-      const lock = await acquireCrossProcessLock(join(this.root, LOCKS_DIRECTORY, ROOT_LOCK_FILE), locksIdentity);
+      const lock = await acquireCrossProcessLock(join(this.root, LOCKS_DIRECTORY, ROOT_LOCK_FILE), locksIdentity, false, signal);
+      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
       const accounting: RootAccounting = { records: new Map(), damaged: new Set() };
       this.rootAccounting = accounting;
       let released = false;
@@ -2843,7 +2854,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     logicalFence?: HeldLogicalConversation,
     exactFence?: HeldExactConversationClaim,
     tryOnly = false,
+    signal?: AbortSignal,
   ): Promise<HeldConversation> {
+    signal?.throwIfAborted();
     const expectedLogicalId = logicalConversationIdForFence(conversationId);
     if (
       logicalFence !== undefined
@@ -2854,7 +2867,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (exactFence !== undefined && exactFence.conversationId !== conversationId) {
       throw new Error("Physical conversation does not belong to the held exact-conversation claim.");
     }
-    const heldLogical = logicalFence ?? await this.acquireLogicalConversation(expectedLogicalId, tryOnly);
+    const heldLogical = logicalFence ?? await this.acquireLogicalConversation(expectedLogicalId, tryOnly, signal);
     const ownsLogicalFence = logicalFence === undefined;
     const conversationKey = historyKey(conversationId);
     let heldExact = exactFence;
@@ -2864,12 +2877,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let marker: ActiveMarker | undefined;
     let rootIdentity: DirectoryIdentity | undefined;
     try {
+      signal?.throwIfAborted();
       if (requiresExactConversationClaim(conversationId) && heldExact === undefined) {
-        heldExact = await this.acquireExactConversationClaim(conversationId, tryOnly);
+        heldExact = await this.acquireExactConversationClaim(conversationId, tryOnly, signal);
         ownsExactFence = true;
       }
       if (tryOnly && PROCESS_APPEND_QUEUES.has(this.queueKey(conversationId))) throw new HistoryOwnerBusyError("Physical history owner is busy.");
-      releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId));
+      releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId), signal);
       rootIdentity = await this.ensureRoot();
       const locksIdentity = await this.ensureLocksRoot();
       // Logical/exact owner rows already serialize every physical mutation.
@@ -2883,11 +2897,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         join(this.root, LOCKS_DIRECTORY, `${conversationKey}.sqlite`),
         locksIdentity,
         tryOnly,
+        signal,
       );
-      const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+      const releaseRoot = await this.acquireRootTransaction(rootIdentity, signal);
       try {
+        signal?.throwIfAborted();
         await this.findDirtyFence(conversationKey, locksIdentity);
         await this.retireInactiveDirtyFences(rootIdentity, locksIdentity, conversationKey);
+        // Cancellation ends here: marker publication and recovery finish uncancelled.
+        signal?.throwIfAborted();
         marker = await this.createActiveMarker(conversationKey, locksIdentity);
       } finally {
         await releaseRoot();
@@ -2948,11 +2966,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async acquireLogicalConversation(
     logicalConversationId: string,
     tryOnly = false,
+    signal?: AbortSignal,
   ): Promise<HeldLogicalConversation> {
+    signal?.throwIfAborted();
     if (tryOnly && PROCESS_LOGICAL_SESSION_QUEUES.has(`${this.root}\0${historyKey(logicalConversationId)}`)) throw new HistoryOwnerBusyError("Logical history owner is busy.");
     const releaseProcess = await acquireQueue(
       PROCESS_LOGICAL_SESSION_QUEUES,
       `${this.root}\0${historyKey(logicalConversationId)}`,
+      signal,
     );
     try {
       const rootIdentity = await this.ensureRoot();
@@ -2962,7 +2983,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         locksIdentity,
         sessionClaimKey("logical", logicalConversationId),
         tryOnly,
+        signal,
       );
+      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
       let released = false;
       return {
         logicalConversationId,
@@ -2991,7 +3014,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async acquireExactConversationClaim(
     conversationId: string,
     tryOnly = false,
+    signal?: AbortSignal,
   ): Promise<HeldExactConversationClaim> {
+    signal?.throwIfAborted();
     const rootIdentity = await this.ensureRoot();
     const locksIdentity = await this.ensureLocksRoot();
     const lock = await acquireSessionClaim(
@@ -2999,7 +3024,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       locksIdentity,
       sessionClaimKey("exact", conversationId),
       tryOnly,
+      signal,
     );
+    if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
     let released = false;
     return {
       conversationId,
@@ -3165,7 +3192,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const fenceMatch = DIRTY_FENCE_PATTERN.exec(name), tempMatch = DIRTY_FENCE_TEMP_PATTERN.exec(name);
       const legacy = LEGACY_CONVERSATION_LOCK_PATTERN.test(name);
       if (!fenceMatch && !tempMatch && !legacy && !ACTIVE_MARKER_PATTERN.test(name)) continue;
-      let info: Stats | undefined;
+      let info: Stats | undefined, remove = false;
       try {
         info = await lstat(path);
         if (ACTIVE_MARKER_PATTERN.test(name)) { await readActiveMarker(path); continue; }
@@ -3177,7 +3204,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (fence.conversationKey !== key) throw new TornCoordinationFileError(`History dirty fence ${path} does not match its filename.`);
         if (fenceMatch) fences.push({ ...fence, mtimeMs: info.mtimeMs });
         else if (cleanDeadTemps && !isProcessAlive(Number.parseInt(tempMatch![2]!, 10))) {
-          await rm(path); removed = true;
+          remove = true;
         }
       } catch (error) {
         await this.assertLocksIdentity(locksIdentity);
@@ -3196,6 +3223,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         bytes += info?.size ?? (legacy ? 64 * 1024 : ACTIVE_MARKER_PATTERN.test(name) ? MAX_ACTIVE_MARKER_BYTES : MAX_DIRTY_FENCE_BYTES);
         damaged.set(legacy ? name.slice(0, 64) : (fenceMatch ?? tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name))![1]!, name);
       }
+      if (remove) { await rm(path); removed = true; }
       // Unrelated names are never read, charged or deleted.
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
@@ -3554,22 +3582,31 @@ function normalizeNonNegativeInteger(value: number, name: string): number {
   return value;
 }
 
-async function acquireQueue(queues: Map<string, Promise<void>>, key: string): Promise<() => void> {
-  const prior = queues.get(key) ?? Promise.resolve();
+async function acquireQueue(queues: Map<string, Promise<void>>, key: string, signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  const prior = (queues.get(key) ?? Promise.resolve()).catch(() => undefined);
   let releaseGate!: () => void;
-  const gate = new Promise<void>((resolveGate) => {
-    releaseGate = resolveGate;
-  });
-  const tail = prior.catch(() => undefined).then(async () => await gate);
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const tail = prior.then(() => gate);
   queues.set(key, tail);
-  await prior.catch(() => undefined);
-  let released = false;
-  return (): void => {
+  let released = false, onAbort: (() => void) | undefined;
+  const release = (): void => {
     if (released) return;
-    released = true;
-    releaseGate();
-    if (queues.get(key) === tail) queues.delete(key);
+    released = true; releaseGate();
+    // An aborted tail still depends on the live predecessor; successors cannot bypass it.
+    void prior.finally(() => { if (queues.get(key) === tail) queues.delete(key); });
   };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      onAbort = () => reject(signal!.reason);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      void prior.then(resolve);
+    });
+    signal?.throwIfAborted();
+    return release;
+  } catch (error) { release(); throw error; }
+  finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
 }
 
 function recordPostCommitMaintenanceFailure(root: string, error: unknown): void {
@@ -4015,20 +4052,25 @@ async function acquireCrossProcessLock(
   path: string,
   directoryIdentity: DirectoryIdentity,
   tryOnly = false,
+  signal?: AbortSignal,
 ): Promise<CrossProcessLock> {
+  signal?.throwIfAborted();
   const directory = dirname(path);
   await ensureOwnerOnlyLockFile(path, directoryIdentity);
   for (;;) {
+    signal?.throwIfAborted();
     await assertDirectoryIdentity(directory, directoryIdentity);
     assertSecureHistoryFile(await lstat(path), path);
     let database: DatabaseSync | undefined;
     try {
+      signal?.throwIfAborted();
       database = new DatabaseSync(path);
       // MEMORY avoids world-umask-dependent journal sidecars while retaining
       // SQLite's kernel-backed cross-process RESERVED lock semantics.
       database.exec("PRAGMA journal_mode=MEMORY");
       database.exec("BEGIN IMMEDIATE");
       assertSecureHistoryFile(await lstat(path), path);
+      signal?.throwIfAborted();
       let released = false;
       return {
         release: async (): Promise<void> => {
@@ -4060,7 +4102,7 @@ async function acquireCrossProcessLock(
       // There is deliberately no age timeout: a live provider turn owns this
       // conversation until it settles. On process death SQLite's OS lock is
       // released automatically, while the durable dirty bit remains.
-      await delay(8 + Math.floor(Math.random() * 17));
+      await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
     }
   }
 }
@@ -4070,7 +4112,9 @@ async function acquireSessionClaim(
   directoryIdentity: DirectoryIdentity,
   claimKey: string,
   tryOnly = false,
+  signal?: AbortSignal,
 ): Promise<CrossProcessLock> {
+  signal?.throwIfAborted();
   if (!/^[a-f0-9]{64}$/u.test(claimKey)) {
     throw new Error("History session claim key must be an opaque SHA-256 digest.");
   }
@@ -4083,12 +4127,14 @@ async function acquireSessionClaim(
     MAX_SESSION_CLAIM_FILE_BYTES,
   );
   for (;;) {
+    signal?.throwIfAborted();
     await assertDirectoryIdentity(directory, directoryIdentity);
     assertSecureHistoryFile(await lstat(path), path);
     await assertSessionClaimJournalIfPresent(`${path}-journal`);
     let database: DatabaseSync | undefined;
     let transactionOpen = false;
     try {
+      signal?.throwIfAborted();
       database = new DatabaseSync(path);
       database.exec("PRAGMA journal_mode=DELETE");
       database.exec("PRAGMA synchronous=FULL");
@@ -4121,7 +4167,7 @@ async function acquireSessionClaim(
           if (tryOnly) throw new HistoryOwnerBusyError("Exact history claim is busy.");
           // Ownership is explicit and exact-keyed. Polling only observes that
           // live owner; unrelated keys can claim the same database meanwhile.
-          await delay(8 + Math.floor(Math.random() * 17));
+          await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
           continue;
         }
         const removed = database.prepare(`
@@ -4171,7 +4217,7 @@ async function acquireSessionClaim(
       database.close();
       database = undefined;
       let released = false;
-      return {
+      const lock = {
         release: async (): Promise<void> => {
           if (released) return;
           await releaseSessionClaim(
@@ -4183,6 +4229,8 @@ async function acquireSessionClaim(
           released = true;
         },
       };
+      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
+      return lock;
     } catch (error) {
       if (transactionOpen) {
         try { database?.exec("ROLLBACK"); } catch { /* close releases the short transaction */ }
@@ -4190,7 +4238,7 @@ async function acquireSessionClaim(
       try { database?.close(); } catch { /* no reuse after a failed claim attempt */ }
       if (!isSqliteBusy(error)) throw error;
       if (tryOnly) throw new HistoryOwnerBusyError("History claim shard is busy.");
-      await delay(8 + Math.floor(Math.random() * 17));
+      await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
     }
   }
 }
@@ -4298,7 +4346,9 @@ async function acquireExistingCrossProcessLock(
   path: string,
   directoryIdentity: DirectoryIdentity,
   tryOnly = false,
+  signal?: AbortSignal,
 ): Promise<CrossProcessLock | undefined> {
+  signal?.throwIfAborted();
   try {
     const info = await lstat(path);
     assertSecureHistoryFile(info, path);
@@ -4306,7 +4356,7 @@ async function acquireExistingCrossProcessLock(
     if (isErrno(error, "ENOENT")) return undefined;
     throw error;
   }
-  return await acquireCrossProcessLock(path, directoryIdentity, tryOnly);
+  return await acquireCrossProcessLock(path, directoryIdentity, tryOnly, signal);
 }
 
 async function ensureOwnerOnlyLockFile(
