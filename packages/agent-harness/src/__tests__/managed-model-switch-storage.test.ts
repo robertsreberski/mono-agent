@@ -21,12 +21,12 @@ async function fixture(maxStoreBytes = 1024 * 1024, maxStagedBytes = 1024 * 1024
   const sourceFence = JSON.parse(await readFile(fencePath, "utf8"));
   const prepared = await turn.prepareCommit([{ role: "user", content: "Fictional retained history", timestamp: "2000-01-01T00:00:00.000Z" }], { providerSessionSynced: true }); await prepared.commit();
   const source = await store.modelSwitchStorageSource(historyBucket); if (source.status !== "supported") throw new Error("Expected supported source");
-  const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
+  const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const descriptor = { journalId: "fictional-journal", epoch: source.sourceEpoch, handleId: turn.providerSessionId,
     ownerKey: source.ownerKey, historyBucket, sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64), provenance: { provider: "faux", api: "faux-api", model: "A", account: null } };
   const state = createModelSwitchState({ ownerKey: source.ownerKey, historyBucket, sourceCanonicalDigest: source.sourceCanonicalDigest, sourceRevision: source.sourceRevision, sourceEpoch: source.sourceEpoch, source: descriptor,
     fromModelKey: source.fromModelKey, toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null }, targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
-    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
+    { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "a".repeat(64));
   return { root, store, retire, state, budget, sourceFence, fencePath };
 }
 function artifact(state: ModelSwitchState, budget: unknown) {
@@ -96,7 +96,7 @@ it("root enumeration accepts only private owned model storage and skips stray ev
 function withIdentity(state: ModelSwitchState, changes: Partial<ModelSwitchState["identity"]>) {
   const { switchId: _switchId, ...identity } = state.identity;
   const next = { ...identity, ...changes };
-  return createModelSwitchState({ ...next, source: next.source && { ...next.source, ownerKey: next.ownerKey, historyBucket: next.historyBucket } }, state.reservation);
+  return createModelSwitchState({ ...next, source: next.source && { ...next.source, ownerKey: next.ownerKey, historyBucket: next.historyBucket } }, state.reservation, state.frozenBudget, state.initialMessageDigest);
 }
 it("rejects unnormalized buckets and mismatched logical owners before acquiring or publishing", async () => {
   const { root, store, state, retire } = await fixture();

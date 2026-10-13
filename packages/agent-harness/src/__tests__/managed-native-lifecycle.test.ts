@@ -144,7 +144,7 @@ it("two switches keep exactly one current journal and one durable handoff; D cle
   const { switchId: _id, ...identity } = f.state.identity;
   const state = createModelSwitchState({ ...identity, sourceCanonicalDigest: source.sourceCanonicalDigest, sourceRevision: source.sourceRevision,
     sourceEpoch: source.sourceEpoch, source: descriptor, fromModelKey: "faux:B", toModelKey: "faux:A", targetEpoch: "d".repeat(64),
-    targetProvenance: { provider: "faux", api: "faux-api", model: "A", account: null }, timestamp: 23 }, f.state.reservation);
+    targetProvenance: { provider: "faux", api: "faux-api", model: "A", account: null }, timestamp: 23 }, f.state.reservation, f.state.frozenBudget, "b".repeat(64));
   const reference = await ready({ ...f, state }); await f.store.rollForwardModelSwitch(bucket, state.identity.switchId, { });
   const switched = JSON.parse(await readFile(f.canonicalPath, "utf8"));
   expect(switched).toMatchObject({ version: 3, providerSession: { epoch: "d".repeat(64), modelKey: "faux:A" }, native: { projection: reference } });

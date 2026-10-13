@@ -3636,7 +3636,8 @@ function belongsToLogicalConversation(conversationId: string, logicalConversatio
     || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
 }
 
-function logicalConversationIdForFence(conversationId: string): string {
+export function logicalConversationIdForFence(conversationId: string): string {
+  conversationId = normalizeConversationId(conversationId);
   const logicalId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
   return logicalId.length === 0 ? conversationId : logicalId;
 }

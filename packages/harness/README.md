@@ -141,11 +141,9 @@ are SHA-256 of JSON-serialized native content (plain strings normalize to a
 single text part); only original/live host inputs are consumed, not internal
 finalization prompts. Import and ordinary reopen share final-operation and
 suspension account selection, excluding administrative completion scopes.
-These native contracts do not change host history/fence formats or enable host
-adoption by themselves. P2 host dirty-turn adoption, P3 non-destructive model
-switch/handoffs, P4 further loop policy, P5 durable live queues and P6 delegation
-coordination remain separate work. Host model-change retirement is still
-  destructive; these additive projection APIs do not enable host switching.
+The host owns canonical history, dirty-turn adoption and model-switch policy.
+Configured Web switching publishes a structured handoff before admitting the
+incoming turn and retires only the outgoing journal after canonical publication.
 
 ### Opt-in evidence projection and handoffs
 
@@ -193,12 +191,12 @@ late host/input overruns refuse rather than repair a cached handoff.
 `projectInheritedContext` and the opt-in run-driver `inheritedProjection`
 compose a host-accepted prefix with the current journal's delta. The prefix is
 never seeded or copied into current evidence. Compaction sees the composed view
-and records v3 `inheritedCoverage`; reopening validates that coverage and does
+and records schema-2 `inheritedCoverage`; reopening validates that coverage and does
 not replay the prefix twice. The default guarded compaction hook clamps its cut
 and split-turn start beyond the entire inherited prefix before any summary call,
 even with a small current delta. A non-reducible inherited tail is refused before
 billing; the final publication guard also rejects copied inherited envelopes.
-The first projected turn durably records a v3 `projectionBinding` with artifact
+The first projected turn durably records a schema-2 `projectionBinding` with artifact
 id/hash, coverage and inherited-message digest, not another content copy. Until
 a composed checkpoint subsumes it, a runtime reopen cannot omit or change that
 projection. Afterward, supplied coverage must match the composed checkpoint,
@@ -275,7 +273,7 @@ grant replay permission.
 - `JournalValidator`: validate versioned journal records without stripping native metadata.
 - `projectContext`: the native request-context seam for journal entries;
   `buildHarnessSessionContext` remains a compatibility primitive.
-- `createEvidenceView`: validated read-only multi-journal evidence for handoffs.
+- `createEvidenceView`: validated read-only current-journal evidence and canonical gaps for handoffs.
 - `prepareHandoff` / `buildHandoff`: pure structured artifact proposals.
 - `createHandoffBudget` / `checkHandoffDispatch`: explicit fit/refusal contracts.
 - `inspectCurrentEvidence` / `inspectCurrentLifecycle`: unfiltered current-journal

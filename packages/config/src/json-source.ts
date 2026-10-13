@@ -156,7 +156,6 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly isolateProactive?: boolean;
       readonly modelSwitch?: {
         readonly enabled?: boolean;
-        readonly olderWritersStopped?: boolean;
       };
     };
   };

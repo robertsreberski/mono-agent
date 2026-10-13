@@ -537,7 +537,7 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
       } } } },
       then: { required: ["providers"], properties: {
         runtime: { properties: { session: { properties: {
-          mode: { const: "continuous" }, modelSwitch: { required: ["olderWritersStopped"] },
+          mode: { const: "continuous" },
         } } } },
         providers: { required: ["piNative"], properties: { piNative: { required: ["piSessionsRoot"], properties: { piSessionsRoot: { type: "string", minLength: 1, pattern: "\\S" } } } } },
       } },
@@ -1258,8 +1258,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.minLength = 1;
     schema.maxLength = 80;
     schema.pattern = "^[^\\u0000-\\u001f\\u007f]+$";
-  } else if (field.jsonPath === "runtime.session.modelSwitch.olderWritersStopped") {
-    schema.const = true;
+
   } else if (field.jsonPath === "runtime.effort") {
     schema.enum = EFFORT_LEVELS;
   } else if (field.jsonPath === "memory.backend") {
@@ -1412,7 +1411,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
-  if (id === "tools.conversationSearch.datedSnippets" || id === "runtime.session.modelSwitch.olderWritersStopped") return "boolean";
+  if (id === "tools.conversationSearch.datedSnippets") return "boolean";
   if (id === "runtime.model") return "string | object";
   if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
   if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
@@ -1704,9 +1703,9 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "runtime.session.mode") return "Conversation session mode. Every durable-history user upgrades one way: the first durable turn rewrites canonical history as v3, with or without piSessionsRoot or model switching. Stop all writers and back up canonical history and any native root first; rollback requires restoring the consistent backup.";
   if (id === "providers.piNative.piSessionsRoot") return "Durable Pi-native session root. The first durable turn after upgrading writes mono-v2 journals, .pending-turns and the new canonical history format. This is a one-way upgrade: older binaries must not run against this root; rollback requires restoring a backup.";
-  if (id === "runtime.session.modelSwitch.enabled") return "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot and explicit olderWritersStopped acknowledgement. Every model change, including a return to an earlier model, uses a structured handoff (outgoing summary, then the previously validated summary plus later history, then incoming summary); there is no summary-less model change and native session state is never reused across models. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); No-ID turns on non-native conversations keep the original cold-replay path; declared no-ID model changes refuse only on native conversations. Changing runtime.model does not move existing native conversations until a persisted Web message selects the new model. Pending messages are not queued or replayed. With this on, Web turns with a persisted message ID (including a new conversation's first message) and no-ID wakes on native conversations use the primary model only: no configured fallback-chain backup or router re-attempt. Prepared requests resolve ordinary provider authentication on each actual call, including OAuth refresh; credentials are not lease-pinned. Other turns keep fallbacks.";
-  if (id === "runtime.session.modelSwitch.olderWritersStopped") return "Explicit operator acknowledgement: stop all older writers and back up host/native roots before enabling model switching. Must be true when supplied and required when enabled. Older binaries refuse native conversations; mixed writers are prohibited. Rollback requires restoring a consistent backup, not disabling this flag.";
+  if (id === "runtime.session.modelSwitch.enabled") return "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot. Every model change, including a return to an earlier model, uses a structured handoff (outgoing summary, then the previously validated summary plus later history, then incoming summary); there is no summary-less model change and native session state is never reused across models. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); No-ID turns on non-native conversations keep the original cold-replay path; declared no-ID model changes refuse only on native conversations; Web wakes omit sticky model selections and inherit the current native model. Changing runtime.model does not move existing native conversations until a persisted Web message selects the new model. Pending messages are not queued or replayed. With this on, Web turns with a persisted message ID (including a new conversation's first message) and no-ID wakes on native conversations use the primary model only: no configured fallback-chain backup or router re-attempt. Prepared requests resolve ordinary provider authentication on each actual call, including OAuth refresh; credentials are not lease-pinned. Other turns keep fallbacks.";
   if (id === "memory.capture.intentLifecycle") return "BuJo capture-only, default-off owner-supported intention state and inclusive civil end proposals. Reuses note status and due=; state changes supersede, never infer completion from a date. Tasks stay authoritative in the task app.";
   if (id === "memory.recall.intentExpiry") return "BuJo-only, default-off: exclude all dated notes and done/dropped notes from automatic sections, including unexpired/ambiguous legacy dates. Deliberate recall interprets reviewed note due= as an inclusive civil end. Requires reviewed curate audit before enablement; independent of intentLifecycle; no backfill.";
   if (id === "memory.recall.recency") return "BuJo-only, default-off bounded secondary recency ranking for relevance-qualified deliberate event/unlabelled-note hits: at most 0.02, 30-day half-life. Facts/preferences never decay; base scores, floors and automatic retrieval are unchanged.";

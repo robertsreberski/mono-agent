@@ -301,7 +301,6 @@ export interface MonoAgentConfig {
       /** OFF-default Web-only durable model switching. Stop older writers first. */
       readonly modelSwitch?: {
         readonly enabled: boolean;
-        readonly olderWritersStopped?: true;
       };
     };
   };

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remove the redundant `runtime.session.modelSwitch.olderWritersStopped`
+  acknowledgement. Every durable-history user upgrades one way: the first
+  durable turn rewrites canonical history as v3, with or without native Pi
+  storage or model switching. Stop all writers and back up canonical history
+  and any native root first; rollback requires restoring the consistent backup.
+
 - Let background Web wakes inherit the current saved model after a refused
   switch. Report unreadable pending journals and completed handoffs clearly,
   preserve cancellation during detached history loading, and distinguish
@@ -151,7 +157,7 @@
 
 - Add OFF-default Web-only durable model switching through
   `runtime.session.modelSwitch.enabled`, requiring explicit
-  `olderWritersStopped: true`, continuous sessions and durable Pi storage.
+  continuous sessions and durable Pi storage.
   Persisted Web message IDs bound summary billing; pending messages never replay.
   Stop older writers before upgrade; rollback requires restoring a backup.
   Keep no-ID turns on never-upgraded conversations on the original cold-replay

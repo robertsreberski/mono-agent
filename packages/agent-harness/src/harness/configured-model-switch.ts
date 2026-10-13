@@ -145,7 +145,7 @@ export async function prepareConfiguredModelSwitch(input: {
           state = createPreparedModelSwitchState({ source: snapshot.source, historyBucket: host.request.conversationId, journal: captured.source,
             incoming: incoming.snapshot, native: policy.native, targetEpoch, timestamp: Date.now(), messageId, outputReserve: incoming.snapshot.model.maxTokens,
             reservation: { canonicalBytes: 0, artifactBytes: 0, nativeBytes: 0, pendingBytes: 0 } });
-          const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget!, timestamp: state.identity.timestamp, hostContext: {} };
+          const handoffOptions = { target: state.identity.targetProvenance, budget: state.frozenBudget, timestamp: state.identity.timestamp, hostContext: {} };
           const prepared = policy.native.prepareHandoff(captured.view, handoffOptions);
           if (prepared.status !== "prepared") throw budgetFailure(prepared.reason);
           // Bound ANY subsequently accepted structured artifact, including a
@@ -153,7 +153,7 @@ export async function prepareConfiguredModelSwitch(input: {
           // historyAllowance. Add that cap to the real empty summary envelope.
           // Do not publish intent/authorize paid producers without proving
           // its worst-case inherited prefix is compactable.
-          const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget!.historyAllowance);
+          const capacityFit = await checkInheritedPrefix([], incoming.snapshot.model, compaction, state.frozenBudget.historyAllowance);
           if (capacityFit.status !== "ready") throw budgetFailure(capacityFit.reason);
           const proposal = policy.native.buildHandoff(captured.view, handoffOptions);
           // Prove the exact free projection's future compaction viability before
@@ -165,7 +165,7 @@ export async function prepareConfiguredModelSwitch(input: {
           const authority = await owner.acquireNativeHistoryAuthority();
           if (authority.status !== "owned") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
           const canonicalBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Buffer.byteLength(JSON.stringify(snapshot)) + 16384);
-          const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget!.historyAllowance * 3 + 4096));
+          const artifactBytes = Math.min(MAX_MODEL_SWITCH_BYTES, Math.max(4096, state.frozenBudget.historyAllowance * 3 + 4096));
           state = { ...state, reservation: { canonicalBytes, artifactBytes, nativeBytes: MAX_NATIVE_EPOCH_BYTES, pendingBytes: Buffer.byteLength(JSON.stringify(state)) * 3 + 65536 } };
         }
         const result = await advancePreparedModelSwitch({ preparation: owner, native: policy.native, incoming, state, view: captured.view, messageId,

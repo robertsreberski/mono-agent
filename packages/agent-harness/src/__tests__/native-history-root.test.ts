@@ -17,10 +17,10 @@ async function fixture() {
   return { root, path, retire, store };
 }
 
-it("requires explicit exclusive-writer acknowledgement and drained host ownership", async () => {
+it("requires drained host ownership only for authority bootstrap", async () => {
   const f = await fixture(), before = await readFile(f.path);
   const active = await f.store.beginProviderSessionTurn("fictional-active", "fictional-active-turn", { modelKey });
-  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("drained host owners");
+  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("Another conversation is still running");
   expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(await readFile(f.path)).toEqual(before); await active.abort();
 });
 
@@ -148,14 +148,13 @@ it("does not deserialize existing legacy canonicals on an under-quota append", a
   await f.store.append("fictional-next", [{ role: "assistant", content: "Next update" }]); expect(spy).not.toHaveBeenCalled();
 });
 
-it.each([false, true])("retains the previous unmanaged retirement-fence failure policy (managed=%s)", async (managed) => {
+it.each([false, true])("isolates malformed inactive siblings regardless of root marker (managed=%s)", async (managed) => {
   const f = await fixture();
   if (managed) { const lease = await f.store.acquireNativeHistoryAuthority(bucket); if (lease.status !== "owned") throw new Error("Expected authority"); await lease.release(); }
   const interrupted = await f.store.beginProviderSessionTurn(bucket, "fictional-interrupted", { modelKey }); await interrupted.abort();
   await writeFile(f.path, "{");
   const append = f.store.append("fictional-independent", [{ role: "assistant", content: "Independent update" }]);
-  if (managed) await append;
-  else await expect(append).rejects.toThrow("not valid JSON");
+  await append;
   expect(f.retire).not.toHaveBeenCalled(); expect(await readFile(f.path, "utf8")).toBe("{");
   expect((await readdir(join(f.root, ".locks"))).some((name) => name.endsWith(".dirty.json"))).toBe(true);
 });

@@ -441,9 +441,9 @@ describe("pi-native sessions", () => {
       close: vi.fn(async () => undefined),
     };
     const repo = {
-      list: vi.fn()
-        .mockResolvedValueOnce([metadata])
-        .mockResolvedValueOnce([]),
+      find: vi.fn()
+        .mockResolvedValueOnce(metadata)
+        .mockResolvedValueOnce(undefined),
       open: vi.fn().mockRejectedValue(new Error("open failed")),
       create: vi.fn(async () => rawSession),
       delete: vi.fn(async () => undefined),
@@ -468,7 +468,7 @@ describe("pi-native sessions", () => {
 
     const retryState = {};
     await expect(resolveSession(retryState, params)).resolves.toEqual({ done: false });
-    expect(repo.list).toHaveBeenCalledTimes(2);
+    expect(repo.find).toHaveBeenCalledTimes(2);
     expect(repo.create).toHaveBeenCalledTimes(1);
     await cleanupSessionOnThrow(retryState, { durableRepo: repo });
   });

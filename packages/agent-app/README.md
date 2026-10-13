@@ -66,15 +66,14 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `native_switch_busy`; it never waits on its own claim. Retryable
   `native_switch_busy` drains only bounded inactive owners after claim release,
   never automatically replaying the message. Enable only with
-  `runtime.session.modelSwitch: { "enabled": true, "olderWritersStopped": true }`,
+  `runtime.session.modelSwitch: { "enabled": true }`,
   continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
-  existing roots acquire native authority lazily under ownership; method presence
-  is not acknowledgement. Back up host/native stores and stop every older writer
+  existing roots acquire native authority lazily under ownership. Back up host/native stores and stop every older writer
   first. Older binaries refuse native conversations and root scans, but this
   is not a universal old-writer admission barrier: mixed writers are prohibited.
   Rollback means stopping writers and restoring the consistent backup, not
   disabling the option or stripping format markers. Defaults and explicit OFF
-  leave existing behavior and on-disk bytes unchanged. Only Web persisted
+  leave model switching disabled, not the durable-history format upgrade. Only Web persisted
   `started.userMessageId` authorizes a switch/new summary generation: at most two
   billed summary calls per switch per generation, never an automatic repeat of
   an outcome-unknown call. Pending messages are not queued or replayed. Every

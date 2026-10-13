@@ -314,11 +314,16 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
             }
           };
-          let admission = admitAttempt();
-          if (admission) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            return admission;
-          }
+          // No yield on acceptance: the final fence must reach run synchronously.
+          const checkedAdmission = () => {
+            const admission = admitAttempt();
+            if (admission) return (async () => {
+              try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+              return admission;
+            })();
+          };
+          let admission = checkedAdmission();
+          if (admission) return admission;
 
           applyEntryEffort(callOptions, entry.effort);
           // Only the primary's first attempt may own a provider session. Retries
@@ -346,11 +351,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
                 retryable: false, failoverHistory };
             }
           }
-          admission = admitAttempt();
-          if (admission) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            return admission;
-          }
+          admission = checkedAdmission();
+          if (admission) return admission;
 
           // Host replay is private, lazy and shared across detached attempts.
           // Replace the prior prefix, rather than doubling cold-turn history.
@@ -374,11 +376,8 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             }
             callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
           }
-          admission = admitAttempt();
-          if (admission) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            return admission;
-          }
+          admission = checkedAdmission();
+          if (admission) return admission;
           let attemptSystemPrompt = promptBase;
           if (pendingSnapshot) {
             callOptions.diagnosticsSeed = {

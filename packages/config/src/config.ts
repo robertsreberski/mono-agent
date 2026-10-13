@@ -1633,20 +1633,14 @@ function readSessionConfig(value: unknown): MonoAgentConfig["runtime"]["session"
   // preserved byte-for-byte; only parse the boolean when an operator opts in.
   const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
   const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");
-  if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean", olderWritersStopped: "boolean" });
+  if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean" });
   const enabled = switchJson === undefined ? undefined : jsonOptionalBoolean(switchJson.enabled, "runtime.session.modelSwitch.enabled");
-  const acknowledged = switchJson === undefined ? undefined : jsonOptionalBoolean(switchJson.olderWritersStopped, "runtime.session.modelSwitch.olderWritersStopped");
-  if (enabled === true && acknowledged !== true) throw new MonoAgentConfigError(
-    "invalid_json", "Model switching requires explicit acknowledgement that older writers are stopped.",
-    { path: "runtime.session.modelSwitch.olderWritersStopped" });
-  if (acknowledged === false) throw new MonoAgentConfigError(
-    "invalid_json", "olderWritersStopped must be true when supplied.", { path: "runtime.session.modelSwitch.olderWritersStopped" });
   if (enabled === true && mode !== "continuous") throw new MonoAgentConfigError(
     "invalid_json", "Model switching requires continuous sessions.", { path: "runtime.session.mode" });
   return {
     mode,
     idleTimeoutMs,
-    ...(enabled === true ? { modelSwitch: { enabled, olderWritersStopped: true as const } } : {}),
+    ...(enabled === true ? { modelSwitch: { enabled } } : {}),
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
     ...(rolloverNotice === undefined ? {} : { rolloverNotice }),

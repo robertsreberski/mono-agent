@@ -239,11 +239,7 @@ comes from validated owned native binding bytes without resolving credentials;
 account identity remains unknown. Prepared requests use ordinary provider
 authentication on each actual call; no account provenance is recorded or matched.
 Canonical history uses a single version 3, with native metadata selecting the
-guarded shape. Pre-release development roots containing v5 records need a reset;
-those records are not supported read compatibility.
-Capture overflow throws the exported
-`NativeEvidenceCapacityError`; matching an error-code string is insufficient to
-classify it as capacity.
+guarded shape.
 
 `NativeHistoryAuthorityBusyError` is a typed retryable pre-intent root contention
 outcome. The host surfaces `native_switch_busy` with `retryable: true` and releases
@@ -834,6 +830,7 @@ loadSkillFilesFromDirectory
 loadSkillIndexFromDirectory
 loadToolPolicyFromJsonFile
 loadToolPolicyFromJsonFileSync
+logicalConversationIdForFence
 normalizeInlineText
 renderSkillIndexEntries
 renderSkillIndexSection

@@ -45,7 +45,7 @@ it("rolls ready content into the exact target journal, binding and receipt, then
 });
 it.each(["canonicalBytes", "nativeBytes"] as const)("refuses undersized measured %s before intent publication", async (field) => {
   const f = await setup(), { switchId: _switchId, ...identity } = f.state.identity;
-  const state = createModelSwitchState(identity, { ...f.state.reservation, [field]: 0 });
+  const state = createModelSwitchState(identity, { ...f.state.reservation, [field]: 0 }, f.state.frozenBudget, f.state.initialMessageDigest);
   await expect(f.store.beginModelSwitchStorage(state)).rejects.toThrow(/capacity/);
   expect(await readFile(f.nativePath)).toEqual(f.original);
   expect(await readdir(join(f.base, "history"))).not.toContain(".model-switches");

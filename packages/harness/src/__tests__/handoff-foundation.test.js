@@ -295,3 +295,14 @@ it("A -> B paid, B -> C free, C -> D free composes every prior suffix within one
   const huge = { ...bc.artifact, checkpoint: { ...bc.artifact.checkpoint, suffix: [{ data: [{ text: "x".repeat(300000) }] }] } };
   expect(buildHandoff(view([c], { prior: huge }), { ...options, producer: "checkpoint" })).toMatchObject({ status: "budget_failure" });
 });
+
+
+it("streams many small ancestry records in order without losing unresolved effects", async () => {
+  const s = await segment("long-ancestry");
+  await s.store.beginTurn("fictional-many-records");
+  for (let i = 0; i < 2000; i++) await s.store.appendMessage(text(`fictional-${i}`), `small-${i}`);
+  await s.store.endTurn("fictional-many-records", "interrupted");
+  const evidence = view([refreshed(s)]);
+  expect(evidence.segments[0].entries.slice(-2000).map((entry) => entry.id)).toEqual(Array.from({ length: 2000 }, (_, i) => `small-${i}`));
+  expect(buildOpenWorkLedger(evidence)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "turn", turnId: "fictional-many-records" })]));
+});

@@ -43,7 +43,7 @@ async function fixture(options: { enabled?: boolean; fallback?: boolean; runtime
   const configPath = join(root, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({
     runtime: { model: "pi:openai-codex:gpt-5.5", workspace: root, maxTurns: 4,
-      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: enabled ? { enabled: true, olderWritersStopped: true } : { enabled: false } } },
+      session: { mode: "continuous", idleTimeoutMs: 600000, rollover: "none", modelSwitch: enabled ? { enabled: true } : { enabled: false } } },
     providers: { piNative: { piSessionsRoot: nativeRoot } }, context: { identityPath, selectedSkills: [] }, tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(root, "artifacts") }, traceability: { registryDir: join(root, "trace") },
   }));

@@ -8,11 +8,12 @@ const [root, action, phase] = process.argv.slice(2);
 const source = { journalId: "fictional-journal", epoch: "1".repeat(64), handleId: "2".repeat(64),
   ownerKey: "fictional-owner", historyBucket: "fictional-conversation", sourceTipId: "fictional-tip", sourceSeq: 4, sourceDigest: "3".repeat(64),
   provenance: { provider: "faux", api: "faux-api", model: "A", account: null } };
+/** @type {import("@mono-agent/runtime-adapter").RuntimeHandoffBudget} */
 const budget = { policy: "mono-handoff-v1", contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
 const state = createModelSwitchState({ ownerKey: source.ownerKey, historyBucket: source.historyBucket, sourceCanonicalDigest: "4".repeat(64), sourceRevision: 2,
   sourceEpoch: source.epoch, source, fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },
   targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) },
-  { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
+  { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "0".repeat(64));
 const store = new ModelSwitchPayloadStore(root, await lstat(root)); let armed = action === "begin", artifactPublished = false;
 const owner = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, assertOwned: async () => {}, reserve: async () => {}, adjustReservation: async () => {},
   withRootTransaction: async (run) => {

@@ -40,6 +40,15 @@ Boundary rules:
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
 | `mono-agent web-control reset` | Validated idle host admission, cooldown and quota metadata under `~/.mono-agent/web-control`; active requests prevent reset | Conversations, artifacts, documents and account quota; ordinary session resets and restarts preserve web-control state | CLI operational metadata only |
 
+## Durable-history upgrade and rollback
+
+Every durable-history user upgrades one way, with or without `piSessionsRoot`
+or model switching. The first durable turn rewrites canonical conversation
+history as version 3; read-only loading does not. Before upgrading, stop all
+writers and back up the canonical history directory and any native Pi root as a
+consistent snapshot. Older binaries cannot read version 3. Rollback requires
+stopping writers and restoring the backup, not disabling model switching.
+
 ## Web-only durable model-switch opt-in
 
 Defaults retain cold model-change replay. After backing up consistent host history
@@ -50,16 +59,16 @@ and native Pi roots and stopping **every older writer**, opt in explicitly:
   "runtime": {
     "session": {
       "mode": "continuous",
-      "modelSwitch": { "enabled": true, "olderWritersStopped": true }
+      "modelSwitch": { "enabled": true }
     }
   },
   "providers": { "piNative": { "piSessionsRoot": ".mono-agent/pi-sessions" } }
 }
 ```
 
-This partial config requires the usual model and identity fields. Missing
-acknowledgement is a validation error, never inferred from runtime capabilities.
-Absent or explicit OFF produces unchanged behavior/files. Fresh and existing roots
+This partial config requires the usual model and identity fields. Absent or
+explicit OFF leaves model-switch behavior disabled, but does not prevent the
+one-way durable-history upgrade described below. Fresh and existing roots
 bootstrap authority lazily under conversation ownership, settling old turn fences
 before capturing evidence. Read-only history loading does not upgrade roots.
 
@@ -91,8 +100,7 @@ Prepared requests resolve ordinary provider authentication on each actual call,
 including OAuth refresh and credential persistence. Credentials are not pinned to
 leases, and account metadata is neither recorded nor used to match transfers.
 Canonical history uses a single version 3, with native metadata selecting the
-guarded shape. Pre-release development roots containing v5 records need a reset;
-those records are not supported read compatibility.
+guarded shape.
 
 
 Each switch permits at most two billed summary calls per explicit-message generation.
@@ -176,9 +184,9 @@ With or without the opt-in, unrelated entries in the native journals directory
 (for example `.DS_Store`, editor temp files or subdirectories) are ignored. A
 damaged journal-named file whose owner cannot be read is skipped and kept: it
 never blocks another conversation's journal, and retention never charges or
-deletes it. It refuses only a conversation whose own journal cannot be found, with
-`native_journal_unreadable`, because it might be that conversation's damaged
-journal. Losing the whole native root, for example after moving to another
+deletes it. Damage named for the current handle refuses that conversation with
+`native_journal_unreadable`; unknown-owner legacy damage is preserved but does
+not block missing-current-journal recovery. Losing the whole native root, for example after moving to another
 machine, recovers on the next message without a reset.
 
 The same rule covers the canonical history root, its `.locks`, `.pending-turns`
@@ -203,12 +211,11 @@ held by another process.
 To enable:
 
 1. Stop **every** writer for the agent root: the app service, CLI runs, managed
-   workers and any older binary. Nothing verifies this for you; the
-   acknowledgement is your statement that it is true.
+   workers and any older binary. Nothing verifies this for you.
 2. While stopped, back up the canonical history directory (beside
    `artifacts.dir`) and `piSessionsRoot` together, as one consistent snapshot.
 3. Set `runtime.session.modelSwitch` to
-   `{ "enabled": true, "olderWritersStopped": true }` with continuous sessions
+   `{ "enabled": true }` with continuous sessions
    and a durable `piSessionsRoot`, then start only upgraded binaries.
 
 Rollback: stop all writers, then restore **both** backups from step 2.
@@ -676,7 +683,8 @@ For retry behavior across *different* models (provider failover, not transport r
 The durable-history storage API can explicitly opt into canonical version 3
 single-journal records through `nativeJournalStorage`. This is not configured
 model switching or incoming dispatch. Root authority requires drained owner
-claims and stopped older writers; managed roots strictly preserve unreadable
+claims and stopped older writers only for bootstrap; later switches may run
+alongside unrelated conversations. Managed roots strictly preserve unreadable
 canonical evidence.
 
 Accepted switch content permits ready-only native/canonical roll-forward. Pending

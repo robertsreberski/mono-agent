@@ -1155,8 +1155,6 @@ async function createConfiguredAgentHarnessInternal(
   assertNoRetiredMonoAgentConfig(config);
   const switchConfig = config.runtime.session.modelSwitch;
   if (switchConfig?.enabled === true) {
-    if (switchConfig.olderWritersStopped !== true) throw new MonoAgentConfigError("invalid_json",
-      "Web model switching requires explicit acknowledgement that older writers are stopped.", { path: "runtime.session.modelSwitch.olderWritersStopped" });
     if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",
       "Web model switching requires continuous sessions.", { path: "runtime.session.mode" });
     if (!config.providers?.piNative?.piSessionsRoot) throw new MonoAgentConfigError("invalid_json",

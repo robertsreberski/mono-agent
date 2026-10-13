@@ -19,7 +19,7 @@ const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, host
 const coordinates: Omit<ModelSwitchIdentity, "switchId"> = { ownerKey: source.ownerKey, historyBucket: source.historyBucket, sourceCanonicalDigest: "4".repeat(64), sourceRevision: 2,
   sourceEpoch: source.epoch, source, fromModelKey: "faux:A", toModelKey: "faux:B", targetProvenance: { provider: "faux", api: "faux-api", model: "B", account: null },
   targetEpoch: "5".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 17, frozenBudgetDigest: switchDigest(budget) };
-function initial(): ModelSwitchState { return createModelSwitchState(coordinates, { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }); }
+function initial(): ModelSwitchState { return createModelSwitchState(coordinates, { canonicalBytes: 8192, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "0".repeat(64)); }
 function proposal(state: ModelSwitchState, producer = "outgoing"): Record<string, unknown> {
   return { version: 1, policy: "mono-handoff-v1", coverage: state.identity.source ? [(({ epoch: _epoch, ...entry }) => entry)(state.identity.source)] : [],
     summary: { intent: ["Fictional work"], constraints: ["No deployment approval"], decisions: [], completedWork: [], failures: [], openWork: ["Inspect result"], nextActions: ["Wait"], references: [] },
@@ -49,17 +49,21 @@ it("validates native canonical binding and receipts and rejects unknown state ve
     (copy: any) => { copy.lastSwitch = { version: 1, kind: "cold", switchId: "1".repeat(64), intentDigest: "1".repeat(64), fromEpoch: "1".repeat(64), toEpoch: "2".repeat(64), artifact: null, messageDigest: "3".repeat(64) }; },
     (copy: any) => { copy.deliveryKey = "private transport stand-in"; },
   ]) { const copy = structuredClone(value); mutation(copy); expect(() => validateNativeTurnHistory(copy, (message) => message as never)).toThrow(); }
+  for (const key of ["frozenBudget", "initialMessageDigest"] as const) {
+    const copy = { ...initial() } as Partial<ModelSwitchState>; delete copy[key];
+    expect(() => validateModelSwitchState(copy)).toThrow();
+  }
   expect(() => validateModelSwitchState({ ...initial(), version: 999 })).toThrow("Invalid model-switch storage contract");
 });
 
 it("binds switch identity to source revision/tips/target provenance and frozen budget", () => {
   const state = initial(); validateModelSwitchState(state);
-  const reordered = Object.fromEntries(Object.entries(coordinates).reverse()); expect(createModelSwitchState(reordered as typeof coordinates, state.reservation).identity.switchId).toBe(state.identity.switchId);
+  const reordered = Object.fromEntries(Object.entries(coordinates).reverse()); expect(createModelSwitchState(reordered as typeof coordinates, state.reservation, budget, "a".repeat(64)).identity.switchId).toBe(state.identity.switchId);
   for (const key of ["sourceRevision", "frozenBudgetDigest", "targetEpoch"] as const) {
     const copy = structuredClone(state) as any; copy.identity[key] = key === "sourceRevision" ? 3 : "9".repeat(64); expect(() => validateModelSwitchState(copy)).toThrow();
   }
   expect(() => canonicalSwitchJSON({ hidden: new AbortController() })).toThrow();
-  expect(() => createModelSwitchState({ ...coordinates, deliveryKey: "fictional private data" } as any, state.reservation)).toThrow();
+  expect(() => createModelSwitchState({ ...coordinates, deliveryKey: "fictional private data" } as any, state.reservation, budget, "a".repeat(64))).toThrow();
 });
 
 it("enforces two producers, never repeats an unknown admission, and records message generations idempotently", () => {
@@ -175,7 +179,7 @@ for (const phase of ["summary_started", "summary_returned", "artifact_file_synce
 
 it("cannot replace a pending switch with a newly requested target, even after artifact readiness", async () => {
   const { store, state, owner } = await fixture(); await store.begin(state, owner);
-  const other = createModelSwitchState({ ...coordinates, toModelKey: "faux:C", targetEpoch: "9".repeat(64), targetProvenance: { ...coordinates.targetProvenance, model: "C" } }, state.reservation);
+  const other = createModelSwitchState({ ...coordinates, toModelKey: "faux:C", targetEpoch: "9".repeat(64), targetProvenance: { ...coordinates.targetProvenance, model: "C" } }, state.reservation, budget, "a".repeat(64));
   await expect(store.begin(other, owner)).rejects.toThrow("roll forward");
   await store.admit(source.historyBucket, state.identity.switchId, "outgoing", owner);
   await store.accept(source.historyBucket, state.identity.switchId, proposal(state), owner);
@@ -217,7 +221,7 @@ it("stores an actual P3a checkpoint proposal, including optional ledger fields, 
   expect(built.status).toBe("ready");
   if (!("artifact" in built) || !built.artifact) throw new Error("Expected a ready P3a artifact");
   const { store, owner } = await fixture();
-  const state = createModelSwitchState({ ...coordinates, source: frozen, frozenBudgetDigest: switchDigest(actualBudget) }, initial().reservation);
+  const state = createModelSwitchState({ ...coordinates, source: frozen, frozenBudgetDigest: switchDigest(actualBudget) }, initial().reservation, actualBudget, "a".repeat(64));
   await store.begin(state, owner); await store.advanceUnfit(source.historyBucket, state.identity.switchId, owner);
   const reference = await store.accept(source.historyBucket, state.identity.switchId, built.artifact, owner);
   expect((await store.readArtifact(source.historyBucket, state.identity.switchId, reference)).artifact).toEqual(JSON.parse(JSON.stringify(built.artifact)));

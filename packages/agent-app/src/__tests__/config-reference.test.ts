@@ -46,7 +46,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "runtime.session.rolloverNotice": "boolean",
   "runtime.session.isolateProactive": "boolean",
   "runtime.session.modelSwitch.enabled": "boolean",
-  "runtime.session.modelSwitch.olderWritersStopped": "boolean",
   "concurrency.maxConcurrentRuns": "integer",
   "concurrency.maxPendingRuns": "integer",
   "context.identityPath": "string",
@@ -791,14 +790,10 @@ it("keeps the subagent maxTurns loader ceilings aligned with the generated schem
   );
 });
 
-it("publishes a stopped-writer acknowledgement distinct from runtime capabilities", () => {
+it("publishes switching prerequisites without a stopped-writer config acknowledgement", () => {
   const fields = allConfigReferenceFields();
   const enabled = fields.find((field) => field.jsonPath === "runtime.session.modelSwitch.enabled")!;
-  const acknowledgement = fields.find((field) => field.jsonPath === "runtime.session.modelSwitch.olderWritersStopped")!;
   expect(schemaForField(enabled)).toMatchObject({ type: "boolean", default: false });
-  expect(schemaForField(acknowledgement)).toMatchObject({ type: "boolean", const: true });
-  const schema = buildMonoAgentConfigSchema();
-  expect(JSON.stringify(schema.allOf)).toContain('"modelSwitch":{"required":["olderWritersStopped"]}');
+  expect(JSON.stringify(buildMonoAgentConfigSchema())).not.toContain("olderWritersStopped");
   expect(enabled.description).toContain("Web");
-  expect(acknowledgement.description).toContain("Rollback");
 });

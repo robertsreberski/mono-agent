@@ -52,7 +52,7 @@ async function fixture(publicConfig = false) {
     if (publicConfig || enabled) {
       const configPath = join(root, "mono-agent.config.json");
       await writeFile(configPath, JSON.stringify({ ...config, runtime: { ...config.runtime, model: "pi:openai-codex:gpt-5.5", session: {
-        ...config.runtime.session, modelSwitch: { enabled, ...(enabled ? { olderWritersStopped: true } : {}) },
+        ...config.runtime.session, modelSwitch: { enabled },
       } } }));
       // A real validated public config; the local faux transport is the only
       // provider replacement. No private native-switch capability is injected.
@@ -87,7 +87,7 @@ async function fixture(publicConfig = false) {
   const makePublic = async () => {
     const configPath = join(root, "mono-agent.config.json");
     await writeFile(configPath, JSON.stringify({ ...config, runtime: { ...config.runtime, model: "pi:openai-codex:gpt-5.5", session: {
-      ...config.runtime.session, modelSwitch: { enabled: true, olderWritersStopped: true },
+      ...config.runtime.session, modelSwitch: { enabled: true },
     } } }));
     const loaded = await loadAppCoreConfig({ cwd: root, configPath, env: {} });
     const resolved = { ...loaded, runtime: { ...loaded.runtime, model: config.runtime.model } };
@@ -411,13 +411,11 @@ it.each(["reset", "retention"])("public activation %s deletes the switched conve
   expect(await nativeFiles(f.nativeRoot)).toHaveLength(kind === "reset" ? 0 : 1);
 });
 
-it("public constructor rejects missing acknowledgement before acquiring or upgrading roots", async () => {
-  const f = await fixture();
-  await expect(createConfiguredAgentResponder({ cwd: f.root, config: { ...f.config, runtime: { ...f.config.runtime, session: {
-    ...f.config.runtime.session, modelSwitch: { enabled: true },
-  } } } })).rejects.toThrow("older writers are stopped");
-  expect(await readdir(f.root)).toEqual(["IDENTITY.md"]);
+it("public constructor enables switching without an acknowledgement or eager root upgrade", async () => {
+  const f = await fixture(); const responder = await f.makePublic();
+  expect(responder).toBeDefined();
   await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  await f.dispose(responder);
 });
 
 it("public upgrade settles a legacy pending turn storage-only, then switches from canonical history through the handoff", async () => {
@@ -441,11 +439,11 @@ it("public upgrade settles a legacy pending turn storage-only, then switches fro
   expect(record.messages.at(-2).content).toBe("Fictional new explicit input");
   expect(await nativeFiles(f.nativeRoot)).toHaveLength(1); expect(await modelChanges(f.nativeRoot)).toHaveLength(0);
 });
-it.each(["acknowledgement", "continuous", "piSessionsRoot"])("programmatic switch validation names the missing %s condition", async (missing) => {
+it.each(["continuous", "piSessionsRoot"])("programmatic switch validation names the missing %s condition", async (missing) => {
   const f = await fixture();
   const config = { ...f.config, runtime: { ...f.config.runtime, session: { ...f.config.runtime.session,
     ...(missing === "continuous" ? { mode: "per-message" as const } : {}),
-    modelSwitch: { enabled: true, ...(missing === "acknowledgement" ? {} : { olderWritersStopped: true as const }) },
+    modelSwitch: { enabled: true },
   } }, ...(missing === "piSessionsRoot" ? { providers: {} } : {}) };
   await expect(createConfiguredAgentResponder({ cwd: f.root, config })).rejects.toThrow(missing);
   await expect(lstat(f.nativeRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -550,11 +548,13 @@ it("guarded pending unknown billing is never bypassed by typed capture capacity"
   const prep = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-unknown-billing-owner");
   const source = await prep.read(); if (source.source.status !== "supported") throw new Error("Expected source");
   const captured = await prep.captureNativeEvidence(), { createModelSwitchState } = await import("../../../agent-harness/dist/model-switch-billing.js");
+  const { switchDigest } = await import("../../../agent-harness/dist/durable-model-switch-contract.js");
+  const budget = { policy: "mono-handoff-v1" as const, contextWindow: 100000, hostCap: 16384, inputTokens: 100, outputReserve: 2000, safety: 5000, historyAllowance: 76516, hostContextDigest: "4".repeat(64) };
   const state = createModelSwitchState({ ownerKey: source.source.ownerKey, historyBucket: "web:fictional-thread",
     sourceCanonicalDigest: source.source.sourceCanonicalDigest, sourceRevision: source.source.sourceRevision, sourceEpoch: source.source.sourceEpoch, source: captured.source,
     fromModelKey: "faux:B", toModelKey: "faux:A", targetProvenance: { provider: "faux", api: f.faux.getModel("A")!.api, model: "A", account: null },
-    targetEpoch: "8".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 0, frozenBudgetDigest: "9".repeat(64) },
-  { canonicalBytes: 32768, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 });
+    targetEpoch: "8".repeat(64), projectionPolicy: "mono-handoff-v1", timestamp: 0, frozenBudgetDigest: switchDigest(budget) },
+  { canonicalBytes: 32768, artifactBytes: 32768, nativeBytes: 8192, pendingBytes: 65536 }, budget, "0".repeat(64));
   const lease = await prep.beginModelSwitchStorage(state); if (lease.status !== "owned") throw new Error("Expected owned intent");
   await lease.admit("outgoing"); await lease.release(); await prep.abort();
   const { NativeEvidenceCapacityError } = await import("@mono-agent/runtime-adapter");
