@@ -144,7 +144,11 @@ publication. See [shared-root limits and offline recovery](../../docs/runtime/se
 Damaged per-conversation locks, active markers, dirty fences/temps and lifecycle
 intents stay charged and protected and refuse only their owner. Owned, bounded
 torn markers and fence temps are reclaimed after their filename PID dies;
-operational filesystem errors propagate rather than becoming damage. First
+filename-matching markers with readable incarnation evidence can also prove PID
+reuse. Truncated JSON and unchanged fence temps lack that evidence and remain
+PID-only. Unknown OS identity keeps a live PID protected. Stop every older binary
+before the upgraded writer runs: new marker contents are not old-reader compatible.
+Operational filesystem errors propagate rather than becoming damage. First
 native-root bootstrap still refuses damaged recovery evidence anywhere in the
 root when it cannot prove those owners drained. Shared root and
 logical-session coordination damage remains root-fatal. Redundant conversation
@@ -228,6 +232,11 @@ repaired safely merely by renaming files online. Stop every writer and back up
 both roots before the documented per-class procedure. Never discard
 `.model-switches/<key>*` until outstanding/unknown paid summaries are excluded:
 that removes the double-billing guard and redelivery could pay again.
+
+A healthy logical fence identifies a damaged rollover child for reset refusal.
+If both the child's canonical and fence are damaged, logical reset cannot
+attribute the child without guessing IDs. It can finish for known members while
+leaving that child's history and fence untouched; offline repair is required.
 
 Owned coordination files must retain mode `0600`. Conventional umasks such as
 `0022` or `0077` are supported; an exotic umask that removes owner read/write
@@ -362,9 +371,11 @@ The built-in history store persists `providerSession.modelKey` and a strict vers
 
 Durable provider turns hold exact-key logical/session claims rather than lifetime
 physical shard transactions, so an unrelated shard collision cannot block turn
-admission or cancellation publication. Concurrent history writers must be
-claim-aware (v0.20.0 or later); stop older writers before sharing the directory.
-This compatibility floor is not enforced against old binaries. Root maintenance
+admission or cancellation publication. Stop every older writer before running
+this upgraded version, including claim-aware v0.20–v0.25 writers. They cannot
+parse incarnation-bearing markers and upgraded history formats. This one-way
+boundary is not a universal old-binary admission barrier. Upgraded readers still
+accept legacy PID-only rows/markers left by stopped writers. Root maintenance
 and existing per-conversation legacy locks retain their safety boundaries.
 
 The harness is the request-to-runtime composition boundary:
@@ -731,7 +742,13 @@ permission to erase oversized evidence or cold-fallback after switch intent.
 | `CONVERSATION_HISTORY_VERSION_MAX_BYTES` | Maximum UTF-8 size of an opaque custom-store history version token (512 bytes) |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
+| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` | Share OS boot/start identity across ownership consumers; raw readers retain their existing unavailable/error behavior, while history adds conservative PID-only fallback |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
+
+Lightweight ownership/maintenance entrypoints can import the incarnation API
+from `@mono-agent/agent-harness/process-incarnation` without loading the runtime
+composition barrel. Agent-app retains its existing local re-exports through this
+subpath; there is one implementation and no new package dependency.
 
 The exhaustive inventory below is generated from the package entrypoint.
 
@@ -820,7 +837,9 @@ MarkdownContextBlock
 MemoryWriteMode
 NativeHistoryAuthorityBusyError
 NoopRunRecorder
+PROCESS_INCARNATION_SCHEMA
 PreparedHistoryAppend
+ProcessIncarnation
 ProviderSessionHandle
 ProviderSessionPreparationSnapshot
 ProviderSessionTurnBinding
@@ -830,6 +849,7 @@ RuntimeSessionRecord
 RuntimeSessionSnapshot
 RuntimeSessionStore
 RuntimeSessionStoreOptions
+SameProcessIncarnation
 SessionRuntimeResolver
 SkillActivationError
 SkillIndexEntry
@@ -885,10 +905,12 @@ createSessionRuntimeResolver
 createSkillsCache
 createToolHistoryArtifactSink
 createToolPolicy
+currentProcessIncarnation
 failClosedToolPolicy
 formatHostCapabilities
 isProcessAlive
 isReadSkillCompatibleName
+isSameProcessIncarnation
 isStdioMcpServerSpec
 loadContextFromFiles
 loadSelectedSkills
@@ -898,6 +920,9 @@ loadToolPolicyFromJsonFile
 loadToolPolicyFromJsonFileSync
 logicalConversationIdForFence
 normalizeInlineText
+processIncarnationFromJson
+processIncarnationsEqual
+readProcessIncarnation
 renderSkillIndexEntries
 renderSkillIndexSection
 skillInstructionsToContextBlocks
@@ -905,6 +930,19 @@ toolHistoryDiskUsage
 toolHistoryLogicalConversationId
 toolHistoryRecordId
 toolPolicyToRuntimeOptions
+```
+
+**`@mono-agent/agent-harness/process-incarnation`**
+
+```text
+PROCESS_INCARNATION_SCHEMA
+ProcessIncarnation
+SameProcessIncarnation
+currentProcessIncarnation
+isSameProcessIncarnation
+processIncarnationFromJson
+processIncarnationsEqual
+readProcessIncarnation
 ```
 
 <!-- public-api-inventory:end -->
@@ -1013,12 +1051,22 @@ anchors that same exact-id claim before discovery, preserving the contract for
 its exact physical bucket without touching sibling or deeper lookalikes.
 
 Registry transactions are short and crash-journaled: the active `(digest, pid,
-random token)` row, not the shared shard database, remains for the provider turn.
+incarnation, random token)` row, not the shard database, remains for the provider turn.
 Unrelated logical ids therefore proceed concurrently even when they map to the
 same shard. Normal release deletes the row; crash recovery replaces it only
-after its PID is proven dead, never because it merely looks old. At capacity, a
-bounded pass reclaims distinct rows under the same liveness rule before rejecting
-a new owner. SQLite DELETE rollback journals are transient owner-only files,
+after its PID is dead or the recorded boot-session/process-start identity no
+longer matches, never because it merely looks old. The nullable incarnation column
+and optional marker field accept legacy PID-only evidence. An unreadable OS
+identity keeps a live PID protected. At capacity, a bounded pass uses the same
+proof. This is read compatibility only: every older writer must be stopped before
+the upgrade, whose new coordination contents old binaries cannot parse.
+
+History caches its current incarnation once per process; a foreign owner is read
+once per claim wait or marker scan, with only `kill(0)` on subsequent polls.
+Darwin `sysctl`/`ps` calls are not repeated per poll. A PID reused after a matching
+snapshot during the same wait can remain busy until a fresh acquisition; legacy
+or unreadable identity also retains the PID-reuse limit. Doctor's PID-only view
+is diagnostic, not ownership authority. SQLite DELETE rollback journals are transient owner-only files,
 bounded at 2 MiB, and recovered by SQLite rather than age-deleted after a crash.
 Shard files are never unlinked, deleted row pages are reused, and each shard
 fails closed above 1,024 live or indeterminate claims or a 1 MiB file, bounding
@@ -1033,9 +1081,9 @@ directory/owner filename and never enumerate database journals or temp files.
 The content database uses SQLite `DELETE` journaling, `synchronous=FULL`, owner
 modes `0700`/`0600`, and fsync-per-record durability on a dedicated worker. One
 process-global handle owns each root and a held owner transaction excludes other
-processes. Acquisition retries for at most 10 seconds, reaps a proven-dead PID
-using the durable-history liveness pattern, succeeds when a normal old writer
-releases in time, and otherwise fails deterministically with
+processes. Acquisition retries for at most 10 seconds, relies on SQLite's kernel
+lock release after owner death (PID liveness is diagnostic only), succeeds when
+the previous writer releases in time, and otherwise fails deterministically with
 `history_writer_in_use`. Configured lazy acquisition permits that bounded
 restart-handoff wait once, then caches the failure for every already-created
 turn and for new turns during an initial 30-second failure backoff. Failed

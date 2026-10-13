@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./process-incarnation": {
+      "types": "./dist/process-incarnation.d.ts",
+      "import": "./dist/process-incarnation.js"
     }
   },
   "files": [

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reclaim history claims and active markers when their recorded process
+  incarnation no longer owns a reused PID. Cache identity probes per owner/wait,
+  keep legacy or unreadable identity PID-only, and preserve live ownership.
+  Stop every older writer before upgrading; legacy coordination files remain
+  readable, but pre-upgrade binaries cannot parse the new marker contents.
+
 - Refuse explicit reset of damaged canonical, coordination, pending recovery,
   native-journal or billing evidence with non-retryable, file-naming repair
   guidance. Ignore recovery generations removed during unlocked preflight, and

@@ -130,3 +130,21 @@ it("uses the structured entry name when acquisition error prose has no filename"
   });
   await expect(f.store.reset(id)).rejects.toMatchObject({ code: "ERR_HISTORY_RESET_DAMAGED", message: expect.stringContaining("root.sqlite"), cause: damaged });
 });
+
+it("logical reset leaves a child with both unreadable canonical and fence untouched because it cannot attribute it", async () => {
+  const f = await fixture(), child = `${id}#2030-01-02`, childKey = createHash("sha256").update("mono-agent-history-v1\0").update(child).digest("hex");
+  await f.store.append(child, input); const turn = await f.store.beginProviderSessionTurn(child, "fictional-child-turn"); await turn.abort();
+  const path = join(f.root, `${childKey}.history.json`), fence = join(f.root, ".locks", `${childKey}.dirty.json`);
+  await fs.writeFile(path, "{fictional-canonical-damage}"); await fs.writeFile(fence, "{fictional-fence-damage}");
+  const before = await Promise.all([path, fence].map((name) => fs.readFile(name)));
+  await f.store.resetLogicalConversation(id); expect(await f.store.load(id)).toEqual([]);
+  expect(await Promise.all([path, fence].map((name) => fs.readFile(name)))).toEqual(before);
+});
+it("ordinary and preparation billing refusals expose an actual damaged entry name", async () => {
+  const f = await fixture(), directory = join(f.root, ".model-switches"), name = `${key}.${"d".repeat(64)}.fence.json`;
+  await fs.mkdir(directory, { mode: 0o700 }); await fs.writeFile(join(directory, name), "{fictional-billing-damage}", { mode: 0o600 });
+  for (const attempt of [() => f.store.append(id, input), () => f.store.beginProviderSessionPreparation(id, "fictional-refused")]) {
+    await expect(attempt()).rejects.toMatchObject({ code: "ERR_OWNED_FILE_DAMAGED", entryName: name, message: expect.stringContaining(name) });
+  }
+  expect(await fs.readFile(join(directory, name), "utf8")).toBe("{fictional-billing-damage}");
+});

@@ -44,7 +44,8 @@ import type {
   ProviderSessionTurnBinding,
 } from "./types.js";
 import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
-import { isProcessAlive } from "./history-process-liveness.js";
+import { currentHistoryProcessIncarnation, historyOwnerIncarnation, historyOwnerLiveness } from "./history-process-liveness.js";
+import { processIncarnationFromJson, type ProcessIncarnation } from "./process-incarnation.js";
 
 const LEGACY_STORE_VERSION = 1;
 const PROVIDER_STORE_VERSION = 2;
@@ -283,6 +284,7 @@ interface ActiveMarker {
   readonly pid: number;
   readonly token: string;
   readonly damaged?: true;
+  readonly incarnation?: ProcessIncarnation | undefined;
 }
 
 interface DirtyFence {
@@ -325,7 +327,9 @@ class HistoryOwnerBusyError extends Error {
   readonly retryable = true;
 }
 /** Only emitted after securely reading a marker/fence; never an I/O error. */
-class TornCoordinationFileError extends Error {}
+class TornCoordinationFileError extends Error {
+  constructor(message: string, options?: ErrorOptions, readonly incarnation?: ProcessIncarnation | undefined) { super(message, options); }
+}
 function rethrowResetAcquisition(error: unknown): never {
   if (error instanceof OwnedFileDamagedError) throw new HistoryResetDamagedError([error.entryName], error);
   throw error;
@@ -596,11 +600,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   /** Owner-scoped, read-only: refuse only a conversation that has damaged switch data. */
   private async assertSwitchOwnerReadable(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
     const inventory = await this.modelSwitchPayloads(rootIdentity).inventory(conversationId), key = historyKey(conversationId);
-    if (inventory.damaged.includes(key)) throw new OwnedFileDamagedError(`${MODEL_SWITCH_DIRECTORY}/${key}`);
+    if (inventory.damaged.includes(key)) throw new OwnedFileDamagedError(inventory.damagedFiles[0]!);
   }
   private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
     const inventory = await this.modelSwitchPayloads(rootIdentity).inventory(conversationId);
-    if (inventory.damaged.includes(historyKey(conversationId))) throw new OwnedFileDamagedError(`${MODEL_SWITCH_DIRECTORY}/${historyKey(conversationId)}`);
+    if (inventory.damaged.includes(historyKey(conversationId))) throw new OwnedFileDamagedError(inventory.damagedFiles[0]!);
     if (inventory.pending.length) throw new ModelSwitchPendingError();
   }
   /** Read-only support probe. Long IDs continue today's ordinary cold replay:
@@ -3108,18 +3112,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     conversationKey: string,
     locksIdentity: DirectoryIdentity,
   ): Promise<ActiveMarker> {
-    const token = randomBytes(16).toString("hex");
+    const token = randomBytes(16).toString("hex"), incarnation = await currentHistoryProcessIncarnation();
     const marker: ActiveMarker = {
       path: join(this.root, LOCKS_DIRECTORY, `${conversationKey}.${process.pid}.${token}.active`),
       conversationKey,
       pid: process.pid,
-      token,
+      token, incarnation,
     };
     const body = Buffer.from(`${JSON.stringify({
       version: 1,
       conversationKey,
       pid: process.pid,
-      token,
+      token, incarnation,
     })}\n`, "utf8");
     let handle;
     let complete = false;
@@ -3159,7 +3163,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const locksRoot = join(this.root, LOCKS_DIRECTORY);
     const locksIdentity = await this.ensureLocksRoot();
     await assertDirectoryIdentity(locksRoot, locksIdentity);
-    const markers: ActiveMarker[] = [];
+    const markers: ActiveMarker[] = [], ownerLive = historyOwnerLiveness();
     let removed = false;
     for (const name of (await readdir(locksRoot)).sort()) {
       if (
@@ -3179,22 +3183,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const match = ACTIVE_MARKER_PATTERN.exec(name);
       if (match === null) continue; // unrelated names are never read or deleted
       const path = join(locksRoot, name);
-      const marker = { path, conversationKey: match[1]!, pid: Number.parseInt(match[2]!, 10), token: match[3]! };
+      let marker: ActiveMarker = { path, conversationKey: match[1]!, pid: Number.parseInt(match[2]!, 10), token: match[3]! };
       try {
-        await readActiveMarker(path);
+        marker = await readActiveMarker(path);
       } catch (error) {
         await this.assertLocksIdentity(locksIdentity);
         if (entryAbsentOrThrowOperational(error)) continue;
         // Only a successful owned-file read may prove a torn liveness marker.
         // A dead writer cannot finish it; there is no recoverable payload here.
-        if (error instanceof TornCoordinationFileError && cleanDead && !isProcessAlive(marker.pid)) {
+        if (error instanceof TornCoordinationFileError && cleanDead && !await ownerLive(marker.pid, error.incarnation)) {
           await rm(path); removed = true; continue;
         }
         if (error instanceof TornCoordinationFileError) { markers.push(marker); continue; }
         this.noteDamagedEntry(name); markers.push({ ...marker, damaged: true }); continue;
       }
       // Valid markers and owned torn markers are both reclaimable after owner death.
-      if (cleanDead && !isProcessAlive(marker.pid)) { await rm(path); removed = true; }
+      if (cleanDead && !await ownerLive(marker.pid, marker.incarnation)) { await rm(path); removed = true; }
       else markers.push(marker);
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
@@ -3231,6 +3235,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     await assertDirectoryIdentity(locksRoot, locksIdentity);
     const fences: DirtyFence[] = [], damaged = new Map<string, string>(), incomplete = new Map<string, string>();
     let removed = false, bytes = 0;
+    const ownerLive = historyOwnerLiveness();
     for (const name of (await readdir(locksRoot)).sort()) {
       const path = join(locksRoot, name);
       if (
@@ -3258,7 +3263,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const key = (fenceMatch ?? tempMatch)![1]!;
         if (fence.conversationKey !== key) throw new TornCoordinationFileError(`History dirty fence ${path} does not match its filename.`);
         if (fenceMatch) fences.push({ ...fence, mtimeMs: info.mtimeMs });
-        else if (cleanDeadTemps && !isProcessAlive(Number.parseInt(tempMatch![2]!, 10))) {
+        else if (cleanDeadTemps && !await ownerLive(Number.parseInt(tempMatch![2]!, 10))) {
           remove = true;
         }
       } catch (error) {
@@ -3266,7 +3271,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (entryAbsentOrThrowOperational(error)) continue;
         const temporaryOwner = tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name);
         if (error instanceof TornCoordinationFileError && temporaryOwner && cleanDeadTemps
-          && !isProcessAlive(Number.parseInt(temporaryOwner[2]!, 10))) {
+          && !await ownerLive(Number.parseInt(temporaryOwner[2]!, 10), error.incarnation)) {
           await rm(path, { force: true }); removed = true; continue;
         }
         if (error instanceof TornCoordinationFileError && temporaryOwner) {
@@ -4182,6 +4187,7 @@ async function acquireSessionClaim(
     true,
     MAX_SESSION_CLAIM_FILE_BYTES,
   );
+  const incarnation = await currentHistoryProcessIncarnation(), ownerLive = historyOwnerLiveness();
   for (;;) {
     signal?.throwIfAborted();
     await assertDirectoryIdentity(directory, directoryIdentity);
@@ -4200,13 +4206,21 @@ async function acquireSessionClaim(
           claim_key TEXT PRIMARY KEY,
           pid INTEGER NOT NULL,
           token TEXT NOT NULL,
-          acquired_at_ms INTEGER NOT NULL
+          acquired_at_ms INTEGER NOT NULL,
+          incarnation TEXT
         ) WITHOUT ROWID
       `);
       database.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
+      if (!database.prepare("PRAGMA table_info(session_claims)").all().some((column) => column.name === "incarnation")) {
+        database.exec("ALTER TABLE session_claims ADD COLUMN incarnation TEXT");
+        // Publish the additive schema even when a legacy owner is still live.
+        database.exec("COMMIT"); transactionOpen = false;
+        signal?.throwIfAborted();
+        database.exec("BEGIN IMMEDIATE"); transactionOpen = true;
+      }
       const prior = database.prepare(`
-        SELECT claim_key,pid,token,acquired_at_ms FROM session_claims WHERE claim_key=?
+        SELECT claim_key,pid,token,acquired_at_ms,incarnation FROM session_claims WHERE claim_key=?
       `).get(claimKey) as Record<string, unknown> | undefined;
       if (prior !== undefined) {
         const owner = parseSessionClaimOwner(prior, path);
@@ -4215,7 +4229,7 @@ async function acquireSessionClaim(
         }
         const priorPid = owner.pid;
         const priorToken = owner.token;
-        if (isProcessAlive(priorPid)) {
+        if (await ownerLive(priorPid, owner.incarnation)) {
           database.exec("ROLLBACK");
           transactionOpen = false;
           database.close();
@@ -4241,7 +4255,7 @@ async function acquireSessionClaim(
         }
         if (count === MAX_SESSION_CLAIMS_PER_SHARD) {
           const owners = database.prepare(`
-            SELECT claim_key,pid,token,acquired_at_ms FROM session_claims ORDER BY claim_key
+            SELECT claim_key,pid,token,acquired_at_ms,incarnation FROM session_claims ORDER BY claim_key
           `).all() as Record<string, unknown>[];
           if (owners.length !== count) {
             throw new Error(`History session claim registry ${path} changed during capacity recovery.`);
@@ -4251,7 +4265,7 @@ async function acquireSessionClaim(
           `);
           for (const row of owners) {
             const owner = parseSessionClaimOwner(row, path);
-            if (isProcessAlive(owner.pid)) continue;
+            if (await ownerLive(owner.pid, owner.incarnation)) continue;
             const removed = removeDead.run(owner.claimKey, owner.pid, owner.token);
             if (Number(removed.changes) !== 1) {
               throw new Error("History session claim changed during capacity recovery.");
@@ -4265,9 +4279,9 @@ async function acquireSessionClaim(
         }
       }
       database.prepare(`
-        INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms)
-        VALUES (?,?,?,?)
-      `).run(claimKey, process.pid, token, Date.now());
+        INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms,incarnation)
+        VALUES (?,?,?,?,?)
+      `).run(claimKey, process.pid, token, Date.now(), JSON.stringify(incarnation) ?? null);
       database.exec("COMMIT");
       transactionOpen = false;
       database.close();
@@ -4355,7 +4369,7 @@ async function releaseSessionClaim(
 function parseSessionClaimOwner(
   row: Record<string, unknown>,
   path: string,
-): { readonly claimKey: string; readonly pid: number; readonly token: string } {
+): { readonly claimKey: string; readonly pid: number; readonly token: string; readonly incarnation?: ProcessIncarnation | undefined } {
   const claimKey = row.claim_key;
   const pid = Number(row.pid);
   const token = row.token;
@@ -4372,7 +4386,7 @@ function parseSessionClaimOwner(
   ) {
     throw new Error(`History session claim ${path} has an invalid owner.`);
   }
-  return { claimKey, pid, token };
+  return { claimKey, pid, token, incarnation: historyOwnerIncarnation(row.incarnation) };
 }
 
 function sessionClaimCount(database: DatabaseSync, path: string): number {
@@ -4458,6 +4472,7 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
   assertSecureHistoryFile(before, path);
   if (before.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
   let handle, contentsRead = false;
+  let incarnation: ProcessIncarnation | undefined;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
     const opened = await handle.stat();
@@ -4474,9 +4489,14 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
     } catch {
       throw new Error(`History active marker ${path} is not valid JSON.`);
     }
+    // Only identity-bearing contents matching this securely read filename can
+    // supplement a torn marker's PID proof; truncated JSON has no such proof.
+    if (isRecord(value) && basename(path) === `${value.conversationKey}.${value.pid}.${value.token}.active`) {
+      incarnation = processIncarnationFromJson(value.incarnation);
+    }
     if (
       !isRecord(value)
-      || Object.keys(value).sort().join(",") !== "conversationKey,pid,token,version"
+      || !["conversationKey,pid,token,version", "conversationKey,incarnation,pid,token,version"].includes(Object.keys(value).sort().join(","))
       || value.version !== 1
       || typeof value.conversationKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.conversationKey)
@@ -4492,10 +4512,10 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
       path,
       conversationKey: value.conversationKey,
       pid: value.pid as number,
-      token: value.token,
+      token: value.token, incarnation,
     };
   } catch (error) {
-    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
+    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error }, incarnation);
     throw error;
   } finally {
     await handle?.close().catch(() => undefined);

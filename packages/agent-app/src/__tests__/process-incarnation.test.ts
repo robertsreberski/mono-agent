@@ -1,4 +1,6 @@
 import process from "node:process";
+import * as shared from "@mono-agent/agent-harness/process-incarnation";
+import * as compatibility from "../process-incarnation.js";
 
 import { describe, expect, it } from "vitest";
 
@@ -10,6 +12,10 @@ import {
 } from "../process-incarnation.js";
 
 describe("process incarnation", () => {
+  it("preserves every app export as the shared lightweight implementation", () => {
+    expect(Object.keys(compatibility).sort()).toEqual(Object.keys(shared).sort());
+    for (const name of Object.keys(shared) as Array<keyof typeof shared>) expect(compatibility[name]).toBe(shared[name]);
+  });
   it("identifies the current PID by boot session and process birth", async () => {
     const current = await currentProcessIncarnation();
 
