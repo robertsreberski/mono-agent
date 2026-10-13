@@ -76,6 +76,27 @@ it("persists opt-in composed coverage of the inherited prior handoff and never r
   expect(() => view([refreshed(c)])).toThrow("composed coverage");
   expect(() => view([refreshed(c)], { prior: { ...prior, coverage: [] } })).toThrow("composed coverage");
 });
+it("drops a covered free-checkpoint suffix after composed compaction and stays reusable", async () => {
+  const paid = await priorHandoff("Fictional A history"), b = await segment("free-B", [text("Fictional covered B suffix")]);
+  const prior = buildHandoff(view([b], { prior: paid }), options).artifact;
+  expect(prior.summary).toBeNull(); expect(JSON.stringify(prior.checkpoint.suffix)).toContain("Fictional covered B suffix");
+  const inheritedCoverage = { version: 1, sources: prior.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) };
+  const c = await segment("composed-C", [text("Fictional C suffix")], true);
+  await c.store.beginTurn("composed-C-turn");
+  await c.store.openOperation("composed-C-op", { model: { provider: provenance.provider, api: provenance.api, id: "C" }, nativeProvenance: provenance }, "compaction");
+  await c.store.appendCompaction({ summary: "Fictional exact composed checkpoint", tokensBefore: 100, retainedTail: [], tokensAfter: 20 }, inheritedCoverage, { sourceTipId: c.store.tip, sourceSeq: c.store.seq });
+  await c.store.closeOperation("composed-C-op", "completed"); await c.store.endTurn("composed-C-turn", "completed");
+  const result = buildHandoff(view([refreshed(c)], { prior }), options);
+  expect(result.status).toBe("ready"); expect(result.artifact.checkpoint.summary).toEqual(prior.checkpoint.summary);
+  expect(JSON.stringify(result.artifact.checkpoint.suffix)).not.toContain("Fictional covered B suffix");
+  expect(JSON.stringify(result.artifact.checkpoint.suffix)).toContain("Fictional exact composed checkpoint");
+  const d = await segment("reuse-D", [text("Fictional D suffix")]);
+  const reused = buildHandoff(view([d], { prior: result.artifact }), options);
+  expect(reused.status).toBe("ready"); expect(reused.artifact.checkpoint.summary).toEqual(prior.checkpoint.summary);
+  const checkpointId = c.store.records.find((record) => record.kind === "compaction").id;
+  expect(reused.artifact.checkpoint.suffix.filter((entry) => entry.id === checkpointId)).toHaveLength(1);
+  expect(JSON.stringify(reused.artifact.checkpoint.suffix)).toContain("Fictional D suffix");
+});
 it("keeps whole latest turns, visible text verbatim and historical calls as neutral data", async () => {
   const a = await segment("turn0", [text("verbatim-0")]);
   for (let i = 1; i < 5; i++) { await a.store.beginTurn(`turn${i}`); await a.store.appendMessage(text(`verbatim-${i}`)); await a.store.endTurn(`turn${i}`, "completed"); }

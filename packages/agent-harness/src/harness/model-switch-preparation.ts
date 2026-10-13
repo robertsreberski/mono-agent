@@ -196,6 +196,7 @@ export async function advancePreparedModelSwitch(input: {
     const currentMessage = active.authorizationGeneration === 0 ? active.initialMessageDigest : active.authorizations.at(-1)!.messageDigest;
     if (seen && messageDigest !== currentMessage) return { status: "pending", switchId: state.identity.switchId };
     if (messageDigest !== currentMessage) {
+      await lease.assertMessageUnconsumed(messageDigest);
       // New explicit delivery closes the old generation storage-only. Preserve
       // unknown calls and try its free checkpoint; never spend an old unused
       // slot under an unrecorded message identity. Then persist the new generation

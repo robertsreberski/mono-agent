@@ -185,7 +185,7 @@ export function validateFrozenHandoffBudget(value: unknown): asserts value is Ru
 
 export function validateModelSwitchState(value: unknown): asserts value is ModelSwitchState {
   switchObject(value);
-  switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact"], ["frozenBudget", "initialMessageDigest"]);
+  switchKeys(value, ["version", "identity", "reservation", "billingPolicy", "authorizationGeneration", "authorizations", "attempts", "phase", "artifact", "frozenBudget", "initialMessageDigest"]);
   if (value.version !== 2 || value.billingPolicy !== MODEL_SWITCH_BILLING_POLICY || !["outgoing", "checkpoint", "incoming", "pending", "ready"].includes(value.phase as string)) switchInvalid();
   switchHash(value.initialMessageDigest);
   validateFrozenHandoffBudget(value.frozenBudget); if (switchDigest(value.frozenBudget) !== (value.identity as ModelSwitchIdentity).frozenBudgetDigest) switchInvalid();

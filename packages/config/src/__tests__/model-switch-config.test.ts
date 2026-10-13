@@ -15,3 +15,7 @@ it("enables switching without an acknowledgement, with continuous durable Pi ses
   expect(() => resolve({ enabled: true }, { mode: "per-message" })).toThrow("continuous");
   expect(() => resolve({ enabled: true }, {}, {})).toThrow("durable Pi");
 });
+
+it.each([true, false])("rejects the removed olderWritersStopped key (%s) with migration guidance", (olderWritersStopped) => {
+  expect(() => resolve({ enabled: true, olderWritersStopped })).toThrow("olderWritersStopped` was removed");
+});

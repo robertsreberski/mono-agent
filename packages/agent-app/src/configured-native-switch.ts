@@ -61,7 +61,7 @@ export function serializeNativeSwitchHarness(harness: AgentHarness, root: string
   const pending = new Set<Promise<unknown>>(); // Admitted operations only.
   const turns = new Map<AbortController, string>();
   const keyFor = (id: string) => JSON.stringify([root, logicalConversationIdForFence(id)]);
-  const mutation = <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+  const mutation = async <T>(id: string, action: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
     const key = keyFor(id);
     if (disposed) return Promise.reject(cancelled());
     if (scopes.getStore()?.some((scope) => scope.active && scope.key === key)) return Promise.reject(new AgentHarnessError(

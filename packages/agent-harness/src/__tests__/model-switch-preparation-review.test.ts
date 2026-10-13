@@ -199,3 +199,24 @@ it("accepted cached bytes roll forward before a later message's budget refusal",
   expect(f.outgoing.produceHandoffSummary).toHaveBeenCalledTimes(1); expect(incoming.produceHandoffSummary).not.toHaveBeenCalled();
   expect(await retired(f.nativePath)).toBe(true); await f.prep.abort();
 });
+
+
+it("consumed redelivery leaves another active generation byte-for-byte unchanged", async () => {
+  const f = await setup(), messageId = "fictional-retained-consumed-delivery", digest = explicitSwitchMessageDigest(messageId);
+  const { switchId: _id, ...identity } = f.state.identity;
+  const old = createModelSwitchState({ ...identity, targetEpoch: "6".repeat(64) }, f.state.reservation, f.state.frozenBudget, digest);
+  const retained = await f.prep.beginModelSwitchStorage(old);
+  if (retained.status !== "owned") throw new Error("Expected retained lease");
+  await retained.admit("outgoing"); await retained.finish("outgoing", "unknown"); await retained.release();
+  await f.prep.abandonModelSwitch(old.identity.switchId);
+  const active = await f.prep.beginModelSwitchStorage(f.state);
+  if (active.status !== "owned") throw new Error("Expected active lease");
+  await active.admit("outgoing"); await active.release();
+  const before = (await f.prep.read()).pending;
+  const finish = vi.spyOn(ModelSwitchPayloadStore.prototype, "finish"), advance = vi.spyOn(ModelSwitchPayloadStore.prototype, "advanceUnfit");
+  await expect(advancePreparedModelSwitch({ ...f.input, messageId })).rejects.toMatchObject({ code: "ERR_MODEL_SWITCH_MESSAGE_CONSUMED" });
+  expect((await f.prep.read()).pending).toEqual(before);
+  expect(finish).not.toHaveBeenCalled(); expect(advance).not.toHaveBeenCalled();
+  expect(f.incoming.produceHandoffSummary).not.toHaveBeenCalled(); expect(f.outgoing.produceHandoffSummary).not.toHaveBeenCalled();
+  await f.prep.abort();
+});

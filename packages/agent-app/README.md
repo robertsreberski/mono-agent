@@ -54,7 +54,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   cold-replay model changes on cron, webhook, Slack, Telegram, TUI, ACP and Web
   wakes, without switch preparation or authority bootstrap. On already-native
   conversations, undeclared no-ID requests inherit the durable current model;
-  declared other-model no-ID requests refuse. Changing `runtime.model` does not
+  declared other-model no-ID requests also inherit it. Changing `runtime.model` does not
   move these native conversations until a persisted Web message selects it.
   Conversation IDs longer than 512 characters bypass switch preparation without
   native authority or intent. Their existing native host-contract rejection is

@@ -35,12 +35,13 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
     runtime.prepareNativeDispatch = (prompt, options) => { prepareCalls.push({ id, options }); return prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
     runtimes.push(runtime); return runtime;
   };
-  const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}) => {
+  const makeHarness = (model = "A", enabled = false, options: Partial<AgentHarnessOptions> = {}, inheritModel = false) => {
     const primary = runtimeFor(model);
     const harness = new MonoAgentHarness({ runtime: primary, identityPath, cwd: base, piSessionsRoot: nativeRoot, historyStore: store, session: { mode: "continuous", idleTimeoutMs: 600000 },
       model: { provider: "faux", model, reference: `faux:${model}` }, runtimeForModel: (ref) => runtimeFor(ref.model), runtimeOptionsForRequest: async ({ request }) => ({ runtimeOptions: typeof (request.metadata?.web as {model?: string})?.model === "string" ? { model: parseMonoRuntimeModelReference((request.metadata!.web as {model: string}).model) } : {} }), runtimeOptions: { piResolvedModels: models, allowedTools: [], compaction: { enabled: false } }, ...options },
     { ...(enabled ? { nativeModelSwitch: { native, sessionsRoot: nativeRoot,
-        deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined } } : {}) });
+        deliveryId: (request: AgentHarnessRequest) => request.metadata?.delivery as string | undefined,
+        ...(inheritModel ? { implicitModel: async (_request: AgentHarnessRequest, key: string) => ({ model: parseMonoRuntimeModelReference(key), runtimeOptions: {} }) } : {}) } } : {}) });
     closes.push(() => harness.dispose()); return harness;
   };
   const request = (delivery: string, message = "Fictional current input", extra: Partial<AgentHarnessRequest> = {}) => ({ conversationId: "fictional", userMessage: message,
@@ -425,4 +426,23 @@ it("switches while an unrelated conversation is active after root bootstrap", as
   try { expect((await f.makeHarness("B", true).run(f.request("fictional-concurrent-switch"))).failure).toBeUndefined(); }
   finally { await active.abort(); }
   expect((await f.canonical()).providerSession.modelKey).toBe("faux:B");
+});
+
+
+it("keyless native inheritance overrides a late sticky extension without copying metadata identity or its 1M flag", async () => {
+  const f = await fixture(); await f.seed();
+  f.faux.setResponses([text(summary), text("Fictional switched B answer")]);
+  await f.makeHarness("B", true).run(f.request("fictional-switch-id"));
+  const before = await f.canonical(), cleanup = vi.fn(async () => {});
+  const extension = vi.fn(async (_input: Parameters<NonNullable<AgentHarnessOptions["runtimeOptionsForRequest"]>>[0]) => ({ runtimeOptions: { model: parseMonoRuntimeModelReference("faux:A"), context1MModels: { "faux:A": true } }, cleanup }));
+  const wake = { ...f.request("not-a-host-delivery"), metadata: { source: "web", web: { model: "faux:A", context1M: true } } };
+  f.faux.setResponses([text("Fictional inherited B answer")]);
+  const result = await f.makeHarness("A", true, { runtimeOptionsForRequest: extension }, true).run(wake);
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional inherited B answer");
+  expect(extension).toHaveBeenCalledOnce(); expect(extension.mock.calls[0]![0].request.metadata).toBe(wake.metadata); expect(cleanup).toHaveBeenCalledOnce();
+  const prepared = f.prepareCalls.at(-1)!;
+  expect(prepared.id).toBe("B"); expect(prepared.options.model).toMatchObject({ provider: "faux", model: "B" });
+  expect(prepared.options.context1MModels?.["faux:A"]).toBeUndefined();
+  const after = await f.canonical(); expect(after.providerSession.modelKey).toBe("faux:B");
+  expect(after.providerSession.epoch).toBe(before.providerSession.epoch); expect(after.native).toEqual(before.native); expect(after.lastSwitch).toEqual(before.lastSwitch);
 });

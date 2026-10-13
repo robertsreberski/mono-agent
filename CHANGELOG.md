@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Keep saved Web wake routes when model switching is off or history is ordinary;
+  keyless native turns with switching enabled inherit their current durable model,
+  not a different sticky selection or its context-window override. Avoid carrying
+  checkpoint suffix evidence again after exact composed compaction, and reject
+  consumed switch redeliveries before advancing another message's billing state.
+
+- Report damaged pending recovery data with repair guidance instead of asking
+  for another send, and reject invalid native mutation IDs through their
+  promised asynchronous APIs.
+
 - Remove the redundant `runtime.session.modelSwitch.olderWritersStopped`
   acknowledgement. Every durable-history user upgrades one way: the first
   durable turn rewrites canonical history as v3, with or without native Pi
@@ -161,12 +171,12 @@
   Persisted Web message IDs bound summary billing; pending messages never replay.
   Stop older writers before upgrade; rollback requires restoring a backup.
   Keep no-ID turns on never-upgraded conversations on the original cold-replay
-  path; refuse declared other-model no-ID turns only on native conversations.
+  path; inherit the current model for declared no-ID turns on native conversations.
   Existing native conversations retain their durable model after `runtime.model`
   changes until a persisted Web message selects the new model.
 
 - Keep undeclared no-ID wakes on native conversations' durable current model,
-  not the base model; declared other-model no-ID requests there still refuse.
+  not the base or a different sticky model, including declared no-ID requests.
   The opt-in conversation gate
   can return retryable `native_switch_busy` for detached same-conversation work.
 
@@ -185,14 +195,14 @@
 
 - Add before-P2 host model-switch wiring with pending-message accounting,
   pre-intent capacity fallback and real inherited-prefix compaction preflight
-  under the acknowledged Web-only opt-in.
+  under the Web-only opt-in.
 
 - Fix prepared model-switch recovery after canonical publication and retain
   committed results across producer cleanup failures; refuse later-message
   budget overflow before further summary billing.
 
 - Add durable prepared model-switch producer orchestration with explicit-message
-  billing generations and ready-only incoming admission under the acknowledged
+  billing generations and ready-only incoming admission under the
   Web-only opt-in.
 
 - Fix routed prepared start allowances and post-admission reserves; refuse
@@ -265,7 +275,7 @@
   without freezing rejected tails, and make reset/retention cleanup restartable
   through native journals, handoffs and crash storage. Keep unrelated owners progressing and reserve
   capacity before mutation, including when native victims are busy. Keep
-  configured switching behind the acknowledged Web-only opt-in; older writers
+  configured switching behind the Web-only opt-in; older writers
   must stay stopped and rollback requires restoring consistent backups.
 
 - Fix managed switch-storage owner validation and transactional pending checks,
@@ -302,7 +312,7 @@
   explicit context budgets, no-tools summary production and preserving session
   detachment. Keep default session payloads and host switching policy unchanged;
   native switch reuse requires positive provider/API/account provenance. Require
-  explicit exclusive-upgraded-writer acknowledgement before opt-in v3 writes.
+  stopping older writers before opting into v3 writes.
 
 - Wire owner-held, storage-only recovery for coordinated native host turns and
   manual compaction. Durably admit canonical inputs before dispatch/steering,

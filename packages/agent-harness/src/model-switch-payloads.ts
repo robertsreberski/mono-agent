@@ -312,7 +312,7 @@ export class ModelSwitchPayloadStore {
   }
   /** Retained billing state is the redelivery guard, until a later completed
    * switch garbage-collects it. No separate message ledger is maintained. */
-  private async assertMessageUnconsumed(bucket: string, switchId: string, digest: string | undefined): Promise<void> {
+  async assertMessageUnconsumed(bucket: string, switchId: string, digest: string | undefined): Promise<void> {
     if (!digest || !await this.ensureDirectory(false)) return;
     const own = `${this.coordinates(bucket, switchId)}.`;
     for (const { name } of await this.entries(`${switchConversationKey(bucket)}.`)) {

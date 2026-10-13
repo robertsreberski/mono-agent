@@ -78,8 +78,9 @@ TUI/ACP IDs and background wakes do not. No-ID turns on never-upgraded conversat
 keep the original path, including cold-replay model changes for cron, webhook,
 Slack, Telegram, TUI, ACP and Web wakes. They make only one cheap binding read to
 select that path, with no switch preparation, switch claim or authority bootstrap.
-On already-native conversations, a no-ID undeclared wake inherits the current
-durable model; an explicit other-model no-ID request refuses without rotation.
+On already-native conversations, every no-ID turn inherits the current durable
+model without rotation, even if sticky metadata declares a different model.
+Context-window flags for that different model do not carry into the native turn.
 Changing `runtime.model` changes the default for ordinary conversations but does
 not move existing native conversations: they retain their durable model until a
 persisted Web message selects the new model. Prose keywords do not escalate models
@@ -608,6 +609,9 @@ Immutable private pending generations publish through temp write, file fsync,
 rename and directory fsync before fence replacement. They are capped at 16 MiB,
 with 1 KiB fences;
 old/new/orphan generations count toward staged bytes and physical-owner limits.
+Settlement (commit/recovery/drain) and terminal live `claim` candidate replacement
+reuse already-admitted inputs and bypass the staging quota, not the 16 MiB
+payload format limit. New input and canonical commit quotas still apply.
 `drainPendingProviderSessionTurns()` tries at most 32 inactive owners per pass,
 oldest first, and returns a continuation cursor. Poisoned owners count as
 unresolved without blocking later healthy owners; root/lock identity changes

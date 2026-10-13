@@ -174,8 +174,13 @@ export function buildHandoff(view, options) {
   } else {
     const prior = view.prior, priorSummary = prior?.summary ?? prior?.checkpoint?.summary;
     if (!priorSummary) return { status: "summary_required", prepared };
+    const priorCoverage = evidenceDigest({ version: 1, sources: prior.coverage.map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) });
+    const composed = view.segments.some((s) => s.entries.some((e) => e.checkpoint?.inheritedCoverage
+      && evidenceDigest(e.checkpoint.inheritedCoverage) === priorCoverage));
+    // Keep the bounded structured summary unchanged; only its growing suffix
+    // is dropped when a validated composed checkpoint covers it exactly.
     checkpoint = { summary: validateHandoffSummary(priorSummary), ledger: prior.ledger,
-      suffix: [...(prior.summary ? [] : prior.checkpoint.suffix), ...view.segments.flatMap((s) => s.entries.map((e) => ({ id: e.id, ...renderHandoffMessage(e.type === "message" ? e.message
+      suffix: [...(prior.summary || composed ? [] : prior.checkpoint.suffix), ...view.segments.flatMap((s) => s.entries.map((e) => ({ id: e.id, ...renderHandoffMessage(e.type === "message" ? e.message
         : e.checkpoint?.summaryMessage ?? { role: "compactionSummary", summary: e.summary }) })))] };
     recent = recent.slice(-1); // the complete suffix already carries every earlier group
   }

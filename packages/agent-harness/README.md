@@ -135,7 +135,11 @@ in-flight fences/payloads, so its cost does not grow with the number of
 conversations. Aggregate history and staging quotas are enforced at commit and
 retention. Settling a reconciled turn (commit, recovery or drain) releases its
 own payload, so the staging quota never refuses it; concurrent in-flight turns
-can therefore overshoot staging transiently, by at most one payload cap each. Payloads contain explicitly selected canonical input,
+can therefore overshoot staging transiently, by at most one payload cap each.
+Terminal live `claim` candidate replacement also reuses already-admitted inputs,
+so it is staging-exempt but remains bounded by the pending-payload format limit.
+New input admission and canonical commit quotas remain enforced.
+Payloads contain explicitly selected canonical input,
 identity and candidate fields, not `deliveryKey`, memory-only `ownerText`, private
 wake bodies or arbitrary controllers. Execution, compaction and retirement
 fences stay at 1 KiB; payload generations are bounded at 16 MiB.
@@ -434,11 +438,12 @@ returned turn's `assertOwned` proves storage ownership, not artifact readiness,
 account compatibility or native execution authority. Held child capabilities
 expire on transfer/abort. These APIs do not dispatch summaries, create a native
 projection or enable configuration. `read()` also returns detached pending state,
-including a persisted optional `frozenBudget`, never a budget inferred from its
-digest. `createModelSwitchState(coordinates, reservation, frozenBudget)` validates
-that exact budget/digest before publication; legacy administrative states omit
-it unchanged. `readHandoff(switchId, reference)` reads only the hash-validated
-accepted pending/current artifact and its actual budget under this same claim.
+including its required persisted `frozenBudget` and `initialMessageDigest`, never
+a budget inferred from its digest.
+`createModelSwitchState(coordinates, reservation, frozenBudget, initialMessageDigest)`
+validates that exact budget/digest and message identity before publication.
+`readHandoff(switchId, reference)` reads only the hash-validated accepted
+pending/current artifact and its actual budget under this same claim.
 
 `captureNativeEvidence(legacyProvenance)` freezes the settled current coordinate,
 then reads the current journal (or nothing, when it is definitively missing, so

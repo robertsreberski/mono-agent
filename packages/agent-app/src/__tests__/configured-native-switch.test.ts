@@ -36,11 +36,11 @@ async function fixture(publicConfig = false) {
     artifacts: { dir: join(root, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false }, memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false } },
     traceability: { registryDir: join(root, "trace") },
   };
-  const runtimes: MonoRuntimeLike[] = [];
+  const runtimes: MonoRuntimeLike[] = [], runOptions: Parameters<MonoRuntimeLike["run"]>[1][] = [];
   const runtimeFor = (id: string) => {
     const raw = createMonoRuntime({ workspace: root }), run = raw.run.bind(raw), prepare = raw.prepareNativeDispatch!.bind(raw);
-    raw.run = (prompt, options) => run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
-    raw.prepareNativeDispatch = (prompt, options) => prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models });
+    raw.run = (prompt, options) => { runOptions.push(options); return run(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
+    raw.prepareNativeDispatch = (prompt, options) => { runOptions.push(options); return prepare(prompt, { ...options, piResolvedModel: faux.getModel(id), piResolvedModels: models }); };
     const owned = wrapOwnedConfiguredRuntime(raw, config, root, undefined); runtimes.push(owned); cleanup.push(() => owned.disposeAllSessions!()); return owned;
   };
   let store: ConversationHistoryStore | undefined;
@@ -95,10 +95,10 @@ async function fixture(publicConfig = false) {
       runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: config.runtime.model }), runtimeOptions: { piResolvedModels: models, compaction: { enabled: false } } });
     cleanup.push(() => dispose(h)); return h;
   };
-  return { root, config, runtimes, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
+  return { root, config, runtimes, runOptions, get native() { return activeNative; }, nativeRoot, faux, transport, originalTransport, request, record, make, makePublic, seed, dispose, runtimeFor, getStore: () => store!, getPreparation: () => preparation, getBindingRead: () => bindingRead, getDraining: () => draining };
 }
 
-it("same-model no-ID wakes inherit the current journal; explicit no-ID changes refuse", async () => {
+it("no-ID native wakes inherit the current journal despite sticky model and context-window overrides", async () => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B reply")]);
   await h.respond(f.request("fictional-web-message", "faux:B"), { append: async () => {} });
@@ -117,11 +117,18 @@ it("same-model no-ID wakes inherit the current journal; explicit no-ID changes r
   const inspect = await f.getStore().beginProviderSessionPreparation!("web:fictional-thread", "fictional-wake-inspection");
   try { expect((await inspect.read()).pending).toBeUndefined(); } finally { await inspect.abort(); }
   for (const source of ["web", "tui", "acp"]) {
-    const refused = f.request(source === "web" ? undefined : "fictional-spoofed-web-id", "faux:A");
-    await expect(h.respond({ ...refused, metadata: { ...refused.metadata, source } }, { append: async () => {} }))
-      .rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+    const sticky = f.request(source === "web" ? undefined : "fictional-spoofed-web-id", "faux:A");
+    f.faux.setResponses([reply("Fictional inherited B reply")]);
+    await h.respond({ ...sticky, metadata: { ...sticky.metadata, source, web: { ...sticky.metadata?.web as object, context1M: true } } }, { append: async () => {} });
+    expect((await f.record()).providerSession.modelKey).toBe("faux:B");
+    expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("B");
+    expect(f.runOptions.at(-1)?.model).toMatchObject({ provider: "faux", model: "B" });
+    expect(f.runOptions.at(-1)?.context1MModels?.["faux:A"]).toBeUndefined();
   }
-  expect(await f.record()).toEqual(after); expect(f.transport).toHaveBeenCalledTimes(calls + 2);
+  const inherited = await f.record();
+  expect(inherited.native).toEqual(after.native); expect(inherited.lastSwitch).toEqual(after.lastSwitch);
+  expect(inherited.providerSession.epoch).toBe(after.providerSession.epoch); expect(f.transport).toHaveBeenCalledTimes(calls + 5);
+  expect(measure).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled();
 });
 
 it.each(["non-native", "routed"] as const)("ID-carrying %s fallback cannot serve a native-bound conversation", async (unsupported) => {
@@ -378,15 +385,15 @@ it.each([false, true])("Slack no-ID other-model turn keeps the original cold rep
   expect(JSON.stringify(f.transport.mock.calls.at(-1))).toContain("Fictional A reply"); // Canonical cold replay.
   expect((await readdir(join(f.root, "history"))).some((name) => name.includes("native-history-root") || name.includes("model-switch"))).toBe(false);
 });
-it("Slack no-ID other-model turn refuses only after native upgrade; keyword prose never escalates a wake", async () => {
+it("Slack no-ID sticky models inherit after native upgrade; keyword prose never escalates a wake", async () => {
   const f = await fixture(true); await f.seed(); const h = await f.make(true);
   f.faux.setResponses([reply(summary), reply("Fictional B answer")]);
   await h.respond(f.request("fictional-upgrade-id", "faux:B"), { append: async () => {} });
   const before = await f.record(), calls = f.transport.mock.calls.length;
   const binding = f.getBindingRead();
-  await expect(h.respond({ ...f.request(undefined), metadata: { source: "slack", slack: { channelId: "fictional-channel", threadTs: "fictional-thread", model: "faux:A" } } }, { append: async () => {} }))
-    .rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
-  expect(await f.record()).toEqual(before); expect(f.transport).toHaveBeenCalledTimes(calls); expect(binding).toHaveBeenCalledTimes(1);
+  f.faux.setResponses([reply("Fictional inherited Slack B answer")]);
+  await h.respond({ ...f.request(undefined), metadata: { source: "slack", slack: { channelId: "fictional-channel", threadTs: "fictional-thread", model: "faux:A" } } }, { append: async () => {} });
+  expect((await f.record()).providerSession.modelKey).toBe("faux:B"); expect(f.transport).toHaveBeenCalledTimes(calls + 1); expect(binding).toHaveBeenCalledTimes(1);
   binding.mockClear(); f.faux.setResponses([reply("Fictional inherited B answer")]);
   const wake = { ...f.request(undefined), text: "please think hard, ultra think, ultrathink", metadata: { source: "web", web: { trigger: "job" } } };
   expect((await h.respond(wake, { append: async () => {} })).text).toBe("Fictional inherited B answer");
@@ -514,14 +521,16 @@ async function switchedToB() {
   await h.respond(f.request("fictional-before-return", "faux:B"), { append: async () => {} });
   return { f, h };
 }
-it("A->B->A with a malformed outgoing summary returns through the validated checkpoint; no-ID or unpersisted changes refuse unchanged", async () => {
+it("A->B->A with a malformed outgoing summary returns through the validated checkpoint; non-Web identities inherit without authorizing a switch", async () => {
   const { f, h } = await switchedToB(), before = await f.record(); expect(before.version).toBe(3);
-  const canonicalPath = join(f.root, "history", (await readdir(join(f.root, "history"))).find((name) => name.endsWith(".history.json"))!);
-  const untouched = await readFile(canonicalPath), callsBeforeRefusal = f.transport.mock.calls.length, id = await persistedId(f.root);
-  for (const refused of [f.request(undefined, "faux:A"), { ...f.request(id, "faux:A"), metadata: { ...f.request(id, "faux:A").metadata, source: "tui" } }]) {
-    await expect(h.respond(refused, { append: async () => {} })).rejects.toMatchObject({ failure: { kind: "native_cold_model_change_unavailable" } });
+  const id = await persistedId(f.root);
+  for (const wake of [f.request(undefined, "faux:A"), { ...f.request(id, "faux:A"), metadata: { ...f.request(id, "faux:A").metadata, source: "tui" } }]) {
+    f.faux.setResponses([reply("Fictional inherited B wake")]);
+    await h.respond(wake, { append: async () => {} });
+    expect((await f.record()).providerSession.modelKey).toBe("faux:B");
+    expect((await f.record()).lastSwitch).toEqual(before.lastSwitch);
   }
-  expect(await readFile(canonicalPath)).toEqual(untouched); expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal);
+  const callsBeforeRefusal = f.transport.mock.calls.length;
   // The outgoing B summary is malformed (rejected, still billed once); the free
   // route is the exact previously validated A->B summary plus the B suffix.
   f.faux.setResponses([reply("Fictional malformed summary"), (context) => {
@@ -541,6 +550,14 @@ it("A->B->A with a malformed outgoing summary returns through the validated chec
   await f.dispose(h); const reopened = await f.make(true); f.faux.setResponses([reply("Fictional ordinary same-model answer")]);
   expect((await reopened.respond(f.request(id, "faux:A"), { append: async () => {} })).text).toBe("Fictional ordinary same-model answer");
   expect((await f.record()).lastSwitch).toEqual(after.lastSwitch); expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal + 3);
+  // Current A is also the app default; sticky B must not reapply through
+  // the late request extension.
+  f.faux.setResponses([reply("Fictional inherited default A answer")]);
+  const sticky = f.request(undefined, "faux:B");
+  await reopened.respond({ ...sticky, metadata: { ...sticky.metadata, web: { ...sticky.metadata?.web as object, context1M: true } } }, { append: async () => {} });
+  expect((await f.record()).providerSession.modelKey).toBe("faux:A"); expect((await f.record()).lastSwitch).toEqual(after.lastSwitch);
+  expect(f.transport.mock.calls.at(-1)?.[0].id).toBe("A"); expect(f.runOptions.at(-1)?.context1MModels?.["faux:B"]).toBeUndefined();
+  expect(f.transport).toHaveBeenCalledTimes(callsBeforeRefusal + 4);
 });
 
 it("guarded pending unknown billing is never bypassed by typed capture capacity", async () => {

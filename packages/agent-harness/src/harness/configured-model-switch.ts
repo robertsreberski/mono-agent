@@ -18,7 +18,7 @@ export interface InternalNativeSwitchPolicy {
   /** Durable host delivery identity, never run ID or text hash. Undefined means
    * this is NOT an explicit-message authorization (cron/continuation/recovery). */
   readonly deliveryId: (request: AgentHarnessRequest) => string | undefined;
-  /** APP resolves undeclared no-ID wakes to the durable native model. Does not
+  /** APP resolves no-ID native turns to the durable current model. Does not
    * grant authority; the owned snapshot still rechecks the selected model. */
   readonly implicitModel?: (request: AgentHarnessRequest, modelKey: string) => Promise<{
     readonly model: RuntimeModelReference; readonly runtimeOptions: Record<string, unknown>;

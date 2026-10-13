@@ -377,12 +377,6 @@ function applyLocalProviderBlock(
  * returns `{}`. Message-text effort/model keyword escalation is retired; prose
  * never declares or changes a route.
  */
-/** APP-private declaration check; use the same precedence as model resolution.
- * Invalid explicit strings still count as declarations, not implicit wakes. */
-export function hasExplicitRequestModelOverride(metadata: Record<string, unknown> | undefined): boolean {
-  return readOverride(metadata).model !== undefined;
-}
-
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;
   readonly effort?: string;
