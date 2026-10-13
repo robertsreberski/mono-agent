@@ -54,6 +54,9 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
       join(dir, "history-process-liveness.js"),
       transpileModule(livenessSource, { compilerOptions }).outputText,
     ),
+    writeFile(join(dir, "process-incarnation.js"), transpileModule(
+      await readFile(new URL("../process-incarnation.ts", import.meta.url), "utf8"), { compilerOptions },
+    ).outputText),
     writeFile(join(dir, "package.json"), '{"type":"module"}\n'),
   ]);
   return compiledPath;

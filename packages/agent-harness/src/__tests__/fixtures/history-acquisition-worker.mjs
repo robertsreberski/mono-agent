@@ -5,7 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createDurableHistoryStore } from "../../../dist/durable-history.js";
 const [root, id, mode] = process.argv.slice(2);
-const store = createDurableHistoryStore({ root });
+const store = createDurableHistoryStore({ root, ...(mode === "incarnation" ? { reconcileProviderSessionTurn: async () => ({ status: "absent" }), retireProviderSession: async () => { throw new Error("Unexpected retirement before kill"); } } : {}) });
 const alive = setInterval(() => {}, 60_000);
 if (mode === "cancel") {
   const controller = new AbortController(), acquire = store.acquireLogicalConversation.bind(store), rootTransaction = store.acquireRootTransaction.bind(store);
@@ -22,6 +22,11 @@ if (mode === "cancel") {
 let release;
 if (mode === "logical") {
   const owner = await store.beginProviderSessionPreparation(id, "fictional-holder"); release = () => owner.abort();
+} else if (mode === "incarnation") {
+  const owner = await store.beginProviderSessionTurn(id, "fictional-killed", { modelKey: "faux:fictional-model", reconciliation: {
+    purpose: "execution", ownerKey: id, initial: { persistText: "Fictional crash input", timestamp: new Date(0).toISOString() },
+  } });
+  release = () => owner.abort();
 } else if (mode === "exact") {
   const owner = await store.acquireExactConversationClaim(id); release = () => owner.release();
 } else {

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Reclaim history claims and active markers when their recorded process
+  stable v2 incarnation no longer owns a reused PID. Use boot UUIDs and UTC
+  process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS
+  probes to five seconds. Keep v1, unknown, unavailable and other-platform
+  identity PID-only. Cache per owner/wait and preserve live ownership; torn
+  markers remain PID-only. Leave the existing app v1 identity API unchanged.
+  Stop every older writer before upgrading; legacy coordination files remain
+  readable, but pre-upgrade binaries cannot parse the new marker contents.
+
 - Refuse explicit reset of damaged canonical, coordination, pending recovery,
   native-journal or billing evidence with non-retryable, file-naming repair
   guidance. Ignore recovery generations removed during unlocked preflight, and

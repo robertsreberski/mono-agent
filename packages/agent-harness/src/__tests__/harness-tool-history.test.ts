@@ -179,7 +179,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     { name: "keeps deferred cancelled tool evidence available for later projection", deferReceipt: true },
   ])("$name", async ({ deferReceipt }) => {
     const { identityPath, root } = await fixture();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 10_000 });
     if (deferReceipt) {
       const createSink = writer.createSink.bind(writer);
       writer.createSink = (binding) => { const sink = createSink(binding); return async (event) => {
@@ -237,9 +237,8 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     );
     // A bounded foreground wait may defer the receipt even though finishRun
     // later drains the write. Without an acknowledged ID, projection is valid.
-    expect(receipt!).toMatchObject({ persistence: expect.stringMatching(/^(persisted|deferred)$/u) });
-    if (deferReceipt) expect(receipt!?.persistence).toBe("deferred");
-    if (receipt!?.persistence === "deferred") expect(projection?.recordCount).toBe(1);
+    expect(receipt!?.persistence).toBe(deferReceipt ? "deferred" : "persisted");
+    if (deferReceipt) expect(projection?.recordCount).toBe(1);
     else expect(projection).toBeUndefined();
   });
 

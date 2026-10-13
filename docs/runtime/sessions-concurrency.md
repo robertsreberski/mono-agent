@@ -203,7 +203,12 @@ intents. Insecure, oversized and unreadable owner artifacts are preserved too;
 damaged lifecycle contents are never executed. Only their owning conversation
 is refused until offline repair. An owned, bounded marker or fence temp torn by
 a killed writer has no recoverable payload: it is reclaimed once its filename
-PID is dead. Torn files with live PIDs remain protected. Resource/device errors
+PID is dead. Torn or schema-invalid markers and unchanged fence temps are
+always PID-only; only valid markers supply incarnation proof. Linux and macOS
+use stable v2 boot/process identity; other platforms, v1/unknown schemas and
+unavailable reads use PID-only liveness, treating a live PID as live. Stop every
+older binary before the upgraded writer runs: its incarnation-bearing markers
+are not readable by pre-upgrade binaries, just like the one-way history upgrade. Resource/device errors
 such as EMFILE or EIO propagate; they are not classified as owner damage. The diagnostic names the unavailable artifact;
 canonical records and legacy SQLite locks may report their underlying error.
 Existing cold-history handling on ordinary admission can set aside unreadable
@@ -213,7 +218,7 @@ repair mechanism: explicit reset refuses damaged canonical records, including
 truncated JSON. Set-aside files are not charged and are never read or deleted by
 mono-agent. New writers no longer create or validate redundant
 `conversation-shard-*.sqlite` files; existing inodes stay untouched, including
-those used by claim-aware older writers (0.20 or later).
+those left by stopped claim-aware older writers (0.20 or later).
 
 Damage to `.locks/root.sqlite`, logical-session shard databases and their claim
 journals, `.native-history-root.json`, or pinned root/subdirectory identities
@@ -271,6 +276,12 @@ an unreadable native header cannot establish its owner or retained quota charge.
 Damaged billing cannot establish whether a summary was already paid for. Reset
 does not invent progress records, recover lost enrollment, or waive these guards.
 Do not repeatedly reset or redeliver input to try to bypass a refusal.
+
+A healthy logical fence can identify a damaged rollover child and refuse its
+logical reset. If **both the child's canonical and fence are damaged**, the
+child cannot be attributed to the logical session without guessing IDs. Logical
+reset may complete for the identifiable members while leaving that child's
+history and fence untouched. This residual case requires offline repair.
 
 For every procedure below, first **stop every writer** sharing either root,
 including older binaries and workers, and **back up canonical and native roots
@@ -483,11 +494,27 @@ reset, while a date-shaped exact bucket has a separate exact-id row. The rows
 contain namespaced digests rather than conversation ids, and the shared SQLite
 transactions are short, so unrelated logical sessions remain concurrent even
 when they map to the same one of 16 fixed registry files. Normal settlement
-deletes each row; crash recovery replaces it only after its owner PID is no
-longer live. A bounded capacity pass applies the same proof to distinct crashed
-owners; the store never age-deletes a claim. Full-synchronous DELETE journals
+deletes each row; crash recovery replaces it only when the PID is dead or its
+recorded v2 incarnation no longer matches. A nullable incarnation column preserves
+legacy rows written with named-column INSERTs; v1 and unknown identity schemas
+remain PID-only too. Linux and macOS use stable v2 identity; other platforms and
+unavailable reads use PID-only liveness, treating a live PID as live.
+A bounded capacity pass applies the same proof; the store never age-deletes a claim. This is legacy
+read compatibility, not concurrent old-binary support: stop every older writer
+before the upgraded version runs. Full-synchronous DELETE journals
 make interrupted row changes recoverable, while fixed file, row-count, and byte
 ceilings prevent per-conversation lock-file growth.
+
+History captures its own process incarnation once per process. Each claim wait
+or marker scan resolves a foreign owner once, then polls only `kill(0)`; Darwin's
+`sysctl`/`ps` are not spawned on every poll. Darwin uses `kern.bootsessionuuid`
+and UTC-formatted process start time, not calendar-clock-adjusted `kern.boottime`
+or local time; each history probe has a five-second kill deadline. Linux uses
+boot UUID and process start ticks. App's persisted v1 identity API is unchanged.
+If a matched PID dies and is reused
+during that same wait, the cached proof conservatively leaves it busy until a
+fresh acquisition. Legacy or unavailable identity evidence cannot distinguish
+PID reuse. Doctor's PID-only observation is diagnostic, not ownership proof.
 
 Rollover never applies to the console channel (the `gui` operator channel used
 by the web console; its stable protocol/source id remains `tui`). A console thread already carries an
@@ -628,21 +655,22 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 
 With the configured app's default history store, setting `piSessionsRoot` persists Pi sessions to JSONL and enables history-coordinated resume after restart. Before provider execution, the store publishes and fsyncs a separate owner-only dirty fence while holding cross-process logical/exact owner rows in the fixed 16-file claim registry. Physical shard collisions do not serialize unrelated provider turns or their cancellation publication; existing legacy per-conversation lock files are still honored in place. The fence does not replace, count as, or prune canonical history. A successful provider result is eligible for reuse only when it returns the exact epoch-derived id and the runtime affirmatively fsyncs both its JSONL file and parent directory. The history messages, clean provider epoch, and incremented transcript revision then publish in one atomic replacement before the fence is cleared.
 
-Concurrent writers sharing a history directory must use v0.20.0 or later and
-participate in the logical/exact claim protocol. Stop all pre-v0.20.0 writers
-before sharing that directory with an upgraded writer. This is a supported
-co-owner boundary, **not** a technical fence that rejects old binaries. Claim-aware
-older writers may still hold physical shard transactions; upgraded writers share
-their exact-key claims without waiting on unrelated shard transactions. Existing
-model-binding schema restrictions still apply independently.
+Stop **every older writer** before running the upgraded version against a
+history directory. Concurrent pre-upgrade binaries, including claim-aware
+v0.20–v0.25 writers, are unsupported: their strict readers cannot parse new
+incarnation-bearing markers or the upgraded history formats. This is the existing
+one-way upgrade boundary, **not** a universal technical admission barrier.
+Upgraded readers still tolerate legacy PID-only rows/markers and lock files left
+by stopped older writers. Claim transactions remain exact-keyed, so physical
+shard collisions do not serialize unrelated upgraded owners.
 
 The root SQLite lock still serializes retention accounting, active-marker and
 dirty-fence maintenance, and history publication; it is not held across provider
 execution. Fail-closed provider retirement during root maintenance can still delay
 other mutations. Claim rows are deleted on settlement or reclaimed only after
-owner death, never stolen on a timer. The fixed 16-file logical-session registry
+owner death/incarnation mismatch, never stolen on a timer. The fixed 16-file logical-session registry
 remains; redundant conversation-shard files are no longer created or validated,
-but older writers' existing files stay in place. No per-conversation lock files are
+but stopped older writers' existing files stay in place. No per-conversation lock files are
 created, and no possibly-open lock inode is unlinked. Storage growth and claim
 capacity limits are unchanged.
 

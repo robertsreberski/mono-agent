@@ -71,6 +71,7 @@ beforeAll(async () => {
     symlink(fileURLToPath(new URL("../../../runtime-adapter", import.meta.url)), join(fixtureScope, "runtime-adapter"), "dir"),
   ]);
   const sourceNames = [
+    "process-incarnation",
     "history-process-liveness",
     "tool-history-artifacts",
     "tool-history-persistence-coordinator",
