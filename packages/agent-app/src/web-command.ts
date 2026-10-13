@@ -1,3 +1,5 @@
+import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
+import type { ManagedBackgroundRuntimeInput } from "./background-runtime.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -183,10 +185,7 @@ export interface RunWebCommandDeps {
   readonly waitForShutdown?: () => Promise<void>;
   readonly healthcheck?: (url: string) => Promise<boolean>;
   readonly isAlive?: (pid: number) => boolean;
-  readonly ensureManagedRuntime?: (input: {
-    readonly currentCliPath: string;
-    readonly nodePath: string;
-  }) => Promise<ManagedRuntimeResult>;
+  readonly ensureManagedRuntime?: (input: ManagedBackgroundRuntimeInput) => Promise<ManagedRuntimeResult>;
   readonly verifyMaintenanceEntrypoint?: typeof verifyManagedRuntimeMaintenanceEntrypoint;
   readonly inspectMaintenanceService?: (
     runner: LaunchctlRunner,
@@ -633,6 +632,7 @@ async function startWebBackground(
           const runtime = await (deps.ensureManagedRuntime ?? ((input) => ensureManagedBackgroundRuntime(input)))({
             currentCliPath,
             nodePath: process.execPath,
+            onProgress: (progress) => stdout.write(ui.hint(formatManagedRuntimeProgress(progress))),
           });
           await publishHelperForExistingMain(
             paths,
@@ -749,6 +749,7 @@ async function startWebBackground(
       runtime = await (deps.ensureManagedRuntime ?? ((input) => ensureManagedBackgroundRuntime(input)))({
         currentCliPath,
         nodePath: process.execPath,
+        onProgress: (progress) => stdout.write(ui.hint(formatManagedRuntimeProgress(progress))),
       });
     } catch (error) {
       return await fail("Could not install the durable web runtime", error);

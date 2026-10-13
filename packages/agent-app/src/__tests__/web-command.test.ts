@@ -1,3 +1,4 @@
+import type { ManagedBackgroundRuntimeInput } from "../background-runtime.js";
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1184,6 +1185,41 @@ describe("runWebCommand", () => {
       paths.maintenancePlistPath,
       paths.launchd.plistPath,
     ]);
+  });
+
+  it("prints preparation progress for both fresh web start and missing-helper repair", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
+    const launchd = pairedLaunchctlFixture();
+    let output = "";
+    const deps = {
+      platform: "darwin" as const, homeDir: home, getuid: () => 501, prepareState,
+      acquireLifecycleLock: async () => async () => undefined, launchctl: launchd.runner,
+      tailscale: unavailableTailscaleRunner(), healthcheck: async () => true, isAlive: launchd.isAlive,
+      verifyMaintenanceEntrypoint: async () => undefined,
+      inspectMaintenanceService: async () => ({
+        loaded: launchd.loaded.get(WEB_MAINTENANCE_LAUNCHD_LABEL) === true,
+        definition: { plistPath: paths.maintenancePlistPath, nodePath: "/managed/node",
+          cliPath: "/managed/dist/launchd-maintenance-entry.js", cwd: paths.stateDir,
+          expectedManagedRuntimeLaunch: "cHJvb2Y", expectedWebPlistIdentity: await compositeIdentity(paths.launchd.plistPath) },
+      }),
+      ensureManagedRuntime: async (input: ManagedBackgroundRuntimeInput) => {
+        input.onProgress?.({ phase: "waiting", elapsedMs: 360_000, completed: 0, ownerPid: 1234 });
+        input.onProgress?.({ phase: "copy", elapsedMs: 362_000, completed: 8, total: 12 });
+        return { cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" };
+      },
+      stdout: { write: (text: string) => { output += text; } }, stderr: { write: (_text: string) => undefined },
+    };
+    expect(await runWebCommand({ positionals: ["start"], env: {}, loopback: true }, deps)).toBe(0);
+    expect(output).toContain("Waiting for another mono-agent process preparing the runtime (pid 1234)");
+    expect(output).toContain("8/12 packages copied");
+    await rm(paths.maintenancePlistPath);
+    launchd.loaded.delete(WEB_MAINTENANCE_LAUNCHD_LABEL);
+    output = "";
+    expect(await runWebCommand({ positionals: ["start"], env: {}, loopback: true }, deps)).toBe(0);
+    expect(output).toContain("8/12 packages copied");
+    expect(output).toContain("already managed by launchd");
   });
 
   it("regenerates the helper after a byte-identical main rewrite with a new inode identity", async () => {

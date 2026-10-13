@@ -1,22 +1,75 @@
-import { chmod, link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { chmod, cp, link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import process from "node:process";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   attestManagedBackgroundRuntime,
   defaultManagedBackgroundRuntimeDeps,
+  deduplicateSourceReuseProofLinks,
   ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
   inspectManagedRuntimeSourceIdentity,
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
   verifyManagedRuntimeLaunch,
 } from "../background-runtime.js";
-import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput } from "../background-runtime.js";
+import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput, ManagedRuntimeProgress } from "../background-runtime.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
+
+const io = vi.hoisted(() => ({
+  beforeCopy: undefined as undefined | ((source: string) => Promise<void>),
+  beforeLstat: undefined as undefined | ((path: string) => Promise<void>),
+  beforeRename: undefined as undefined | ((source: string, destination: string) => Promise<void>),
+  opened: [] as string[],
+  reads: 0,
+  peakReads: 0,
+  copies: 0,
+  peakCopies: 0,
+  stats: 0,
+  peakStats: 0,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  const trackStat = async <T>(work: () => Promise<T>): Promise<T> => {
+    io.stats += 1; io.peakStats = Math.max(io.peakStats, io.stats);
+    try { return await work(); } finally { io.stats -= 1; }
+  };
+  const trackedLstat = ((...args: Parameters<typeof fs.lstat>) => trackStat(async () => {
+    await io.beforeLstat?.(String(args[0]));
+    return await fs.lstat(...args);
+  })) as typeof fs.lstat;
+  return {
+    ...fs,
+    lstat: trackedLstat,
+    rename: async (...args: Parameters<typeof fs.rename>) => {
+      await io.beforeRename?.(String(args[0]), String(args[1]));
+      return await fs.rename(...args);
+    },
+    cp: async (...args: Parameters<typeof fs.cp>) => {
+      io.copies += 1;
+      io.peakCopies = Math.max(io.peakCopies, io.copies);
+      try {
+        await io.beforeCopy?.(String(args[0]));
+        return await fs.cp(...args);
+      } finally { io.copies -= 1; }
+    },
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const handle = await fs.open(...args);
+      io.opened.push(String(args[0]));
+      io.reads += 1;
+      io.peakReads = Math.max(io.peakReads, io.reads);
+      const stat = handle.stat.bind(handle);
+      handle.stat = ((...args: Parameters<typeof handle.stat>) => trackStat(() => stat(...args))) as typeof handle.stat;
+      const close = handle.close.bind(handle);
+      handle.close = async () => { try { await close(); } finally { io.reads -= 1; } };
+      return handle;
+    },
+  };
+});
 
 const roots: string[] = [];
 const TEST_PROCESS_INCARNATION: ProcessIncarnation = {
@@ -44,6 +97,16 @@ function incarnation(bootSessionId: string, processStartId: string): ProcessInca
 }
 
 afterEach(async () => {
+  io.beforeCopy = undefined;
+  io.beforeLstat = undefined;
+  io.beforeRename = undefined;
+  io.opened = [];
+  io.peakReads = 0;
+  io.peakCopies = 0;
+  io.peakStats = 0;
+  expect(io.stats).toBe(0);
+  expect(io.reads).toBe(0);
+  expect(io.copies).toBe(0);
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -52,6 +115,31 @@ it("inspects source version and CLI digest without executing source bytes", asyn
   await expect(inspectManagedRuntimeSourceIdentity(source.cliPath)).resolves.toEqual({
     packageVersion: "1.2.3",
     cliSha256: createHash("sha256").update(source.bytes).digest("hex"),
+  });
+});
+
+describe("deduplicateSourceReuseProofLinks", () => {
+  const link = {
+    path: "/fictional/node_modules/fixture-shared",
+    logicalPath: "fixture-shared",
+    proof: {
+      path: "fixture-shared", type: "directory" as const,
+      dev: "1", ino: "2", nlink: "1", mode: "16877", size: "64", mtimeNs: "3", ctimeNs: "4",
+    },
+  };
+
+  it("collapses identical records without changing their order", () => {
+    const other = { ...link, path: "/fictional/node_modules/fixture-other" };
+    expect(deduplicateSourceReuseProofLinks([link, other, { ...link, proof: { ...link.proof } }]))
+      .toEqual([link, other]);
+  });
+
+  it.each([
+    { ...link, logicalPath: "fixture-other" },
+    { ...link, proof: { ...link.proof, ino: "9" } },
+  ])("throws rather than choosing a conflicting record: %j", (conflict) => {
+    expect(() => deduplicateSourceReuseProofLinks([link, conflict]))
+      .toThrow(/Conflicting managed runtime source link proofs.*reinstall before starting/u);
   });
 });
 
@@ -117,6 +205,35 @@ async function workspaceFixture(): Promise<{
   return { root, cliPath, dependencyPath, dependencyContents };
 }
 
+async function hoistedPackageFixture(): Promise<{ cliPath: string; sharedPath: string }> {
+  const source = await fixturePackage();
+  const modules = join(source.root, "node_modules");
+  await writeFile(join(source.root, "package.json"), JSON.stringify({
+    name: "@mono-agent/agent-app",
+    version: "9.8.7",
+    type: "module",
+    dependencies: { "fixture-left": "1.0.0", "fixture-right": "1.0.0" },
+  }));
+  for (const name of ["fixture-left", "fixture-right", "fixture-shared"]) {
+    const packageRoot = join(modules, name);
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(join(packageRoot, "package.json"), JSON.stringify({
+      name,
+      version: "1.0.0",
+      type: "module",
+      exports: "./index.js",
+      ...(name === "fixture-shared" ? {} : { dependencies: { "fixture-shared": "1.0.0" } }),
+    }));
+    await writeFile(join(packageRoot, "index.js"), name === "fixture-shared"
+      ? "export const shared = 'hoisted';\n"
+      : "export { shared } from 'fixture-shared';\n");
+  }
+  await writeFile(source.cliPath,
+    "import { shared as left } from 'fixture-left';\n" +
+    "import { shared as right } from 'fixture-right';\nconsole.log(left, right);\n");
+  return { cliPath: source.cliPath, sharedPath: await realpath(join(modules, "fixture-shared")) };
+}
+
 async function additionalPackageFixture(packageName = "@fixture/configured-plugin"): Promise<{
   root: string;
   entryPath: string;
@@ -144,6 +261,282 @@ async function homeFixture(): Promise<string> {
 }
 
 describe("ensureManagedBackgroundRuntime", () => {
+  it("reuses freshly hashed source entries only within the default preparation invocation", async () => {
+    const source = await fixturePackage();
+    const asset = join(source.root, "dist", "asset.txt");
+    await writeFile(asset, "freshly hashed source bytes");
+    const canonicalAsset = await realpath(asset);
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir });
+    expect(io.opened.filter((path) => path === canonicalAsset)).toHaveLength(1);
+    io.opened = [];
+    const defaults = defaultManagedBackgroundRuntimeDeps();
+    const custom = fakeInstallerDeps((input) => defaults.installPackage(input));
+    await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() }, custom);
+    expect(io.opened.filter((path) => path === canonicalAsset)).toHaveLength(5);
+    io.opened = [];
+    await attestManagedBackgroundRuntime({ currentCliPath: source.cliPath,
+      runtimeCliPath: first.cliPath, homeDir });
+    expect(io.opened.filter((path) => path === canonicalAsset)).toHaveLength(2);
+  });
+
+  it("bounds descriptor reads across nested directories and copies across packages", async () => {
+    const source = await workspaceFixture();
+    const root = dirname(dirname(source.cliPath));
+    for (let dir = 0; dir < 8; dir += 1) {
+      await mkdir(join(root, "dist", `nested-${dir}`));
+      await Promise.all(Array.from({ length: 24 }, (_, index) =>
+        writeFile(join(root, "dist", `nested-${dir}`, `file-${index}.txt`), "bounded bytes")));
+    }
+    const runtime = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() });
+    expect(io.peakReads).toBeGreaterThan(1);
+    expect(io.peakReads).toBeLessThanOrEqual(16);
+    expect(io.peakCopies).toBe(2);
+    expect(io.peakStats).toBeGreaterThan(1);
+    expect(io.peakStats).toBeLessThanOrEqual(64);
+    const manifest = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-closure.json"), "utf8"));
+    const paths = manifest.entries.map((entry: { path: string }) => entry.path);
+    expect(paths).toEqual([...paths].sort());
+  });
+
+  it.each(["same-size overwrite", "same-size replacement"])("rejects %s after cached source validation", async (mutation) => {
+    const source = await fixturePackage();
+    const asset = join(source.root, "dist", "asset.txt");
+    await writeFile(asset, "original");
+    io.beforeCopy = async () => {
+      io.beforeCopy = undefined;
+      if (mutation === "same-size replacement") {
+        await writeFile(asset + ".replacement", "modified");
+        await rename(asset + ".replacement", asset);
+      } else await writeFile(asset, "modified");
+    };
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() })).rejects.toThrow(/changed while it was copied/);
+  });
+
+  it("re-resolves newly shadowing dependencies even when cached package bytes and old links are unchanged", async () => {
+    const source = await workspaceFixture();
+    const appRoot = dirname(dirname(source.cliPath));
+    const outerScope = join(source.root, "node_modules", "@fixture");
+    await mkdir(outerScope, { recursive: true });
+    await rename(join(appRoot, "node_modules", "@fixture", "workspace-dependency"), join(outerScope, "workspace-dependency"));
+    const shadow = join(appRoot, "node_modules", "@fixture", "workspace-dependency");
+    io.beforeCopy = async () => {
+      io.beforeCopy = undefined;
+      await mkdir(shadow);
+      await writeFile(join(shadow, "package.json"), await readFile(join(dirname(source.dependencyPath), "package.json")));
+      await writeFile(join(shadow, "index.js"), "export const preserved = 'shadowed';\n");
+    };
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() })).rejects.toThrow(/closure changed while it was staged/);
+  });
+
+  it("rejects dependency retargeting after source-content cache reuse", async () => {
+    const source = await workspaceFixture();
+    const replacement = await additionalPackageFixture("@fixture/workspace-dependency");
+    const appRoot = dirname(dirname(source.cliPath));
+    const linkPath = join(appRoot, "node_modules", "@fixture", "workspace-dependency");
+    io.beforeCopy = async () => {
+      io.beforeCopy = undefined;
+      await rm(linkPath);
+      await symlink(replacement.root, linkPath, "dir");
+    };
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir: await homeFixture() })).rejects.toThrow(/closure changed while it was staged/);
+  });
+
+  it("settles every started copy before rejecting and removing staging", async () => {
+    const source = await workspaceFixture();
+    const appRoot = dirname(dirname(source.cliPath));
+    const canonicalAppRoot = await realpath(appRoot);
+    let finished = false;
+    io.beforeCopy = async (path) => {
+      if (path !== canonicalAppRoot) throw new Error("fixture copy failure");
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+      finished = true;
+    };
+    const homeDir = await homeFixture();
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath,
+      homeDir })).rejects.toThrow("fixture copy failure");
+    expect(finished).toBe(true);
+    expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
+  it("reports path-free phases, throttled real work, and prompt warm reuse", async () => {
+    const source = await fixturePackage();
+    await Promise.all(Array.from({ length: 160 }, (_, index) =>
+      writeFile(join(source.root, "dist", `asset-${index}.txt`), "progress fixture")));
+    const homeDir = await homeFixture();
+    const progress: ManagedRuntimeProgress[] = [];
+    let now = 1_000_000;
+    const deps = { ...defaultManagedBackgroundRuntimeDeps(), now: () => now += 1,
+      sleep: async (ms: number) => { now += ms; } };
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event: ManagedRuntimeProgress) => progress.push(event) };
+    await ensureManagedBackgroundRuntime(input, deps);
+    expect(progress.map((event) => event.phase)).toEqual(expect.arrayContaining([
+      "reuse", "source", "copy", "staged-verification", "promotion", "proof-publication", "final-verification", "ready",
+    ]));
+    for (let index = 1; index < progress.length; index += 1) {
+      const current = progress[index]!;
+      const prior = progress[index - 1]!;
+      if (current.phase === prior.phase) expect(current.elapsedMs - prior.elapsedMs).toBeGreaterThanOrEqual(5_000);
+    }
+    expect(JSON.stringify(progress)).not.toContain(source.root);
+    expect(JSON.stringify(progress)).not.toContain(homeDir);
+    progress.length = 0;
+    await expect(ensureManagedBackgroundRuntime(input, deps)).resolves.toMatchObject({ verificationMode: "fast-reuse" });
+    expect([...new Set(progress.map((event) => event.phase))]).toEqual(["reuse", "ready"]);
+  });
+
+  it("settles work and removes staging when the progress consumer aborts staged verification", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    await expect(ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event) => { if (event.phase === "staged-verification") throw new Error("fixture progress abort"); },
+    })).rejects.toThrow("fixture progress abort");
+    expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
+  it("surfaces a progress observer failure without poisoning warm verification", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const runtime = await ensureManagedBackgroundRuntime(input);
+    const markerPath = join(runtime.installRoot, ".mono-agent-runtime.json");
+    const marker = await readFile(markerPath, "utf8");
+    io.opened = [];
+    let now = Date.now();
+    let failures = 0;
+    await expect(ensureManagedBackgroundRuntime({ ...input, onProgress: (event) => {
+      if (event.phase === "reuse" && event.completed > 0) {
+        failures += 1;
+        throw new Error("fixture observer failure");
+      }
+    } }, { ...defaultManagedBackgroundRuntimeDeps(), now: () => now += 1_000 }))
+      .rejects.toThrow("fixture observer failure");
+    expect(failures).toBe(1);
+    expect(io.opened).not.toContain(await realpath(source.cliPath));
+    expect(await readFile(markerPath, "utf8")).toBe(marker);
+    expect((await recursiveNames(homeDir)).some((name) => name.includes(".staging-"))).toBe(false);
+    await expect(ensureManagedBackgroundRuntime(input)).resolves.toMatchObject({ verificationMode: "fast-reuse" });
+  });
+
+  it("sweeps at most two same-closure private staging trees while retaining other closures and quarantine", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const parent = dirname(first.installRoot);
+    const prefix = `.${basename(first.installRoot)}.staging-`;
+    const stages = ["a", "b", "c"].map((name) => join(parent, prefix + name));
+    await cp(first.installRoot, stages[0]!, { recursive: true });
+    await mkdir(stages[1]!, { mode: 0o700 });
+    await mkdir(stages[2]!, { mode: 0o700 });
+    const other = join(parent, ".other-closure.staging-a");
+    await mkdir(other, { mode: 0o700 });
+    const history = join(parent, "quarantine", "retained-history");
+    await mkdir(history, { recursive: true, mode: 0o700 });
+    await writeFile(join(history, "retained.txt"), "retained");
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    const runtime = await ensureManagedBackgroundRuntime(input);
+    expect(runtime.verificationMode).toBe("repaired");
+    await expect(lstat(stages[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(stages[1]!)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(stages[2]!)).isDirectory()).toBe(true);
+    expect((await lstat(other)).isDirectory()).toBe(true);
+    expect(await readFile(join(history, "retained.txt"), "utf8")).toBe("retained");
+    expect(await readFile(runtime.cliPath, "utf8")).toBe(source.bytes);
+  });
+
+  it("leaves unsafe staging roots and symlink targets untouched with a bounded warning", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const progress: ManagedRuntimeProgress[] = [];
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event: ManagedRuntimeProgress) => progress.push(event) };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const prefix = join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-`);
+    const outside = await homeFixture();
+    await writeFile(join(outside, "keep.txt"), "keep");
+    await symlink(outside, prefix + "a");
+    await mkdir(prefix + "b", { mode: 0o700 });
+    await chmod(prefix + "b", 0o777);
+    const failed = prefix + "0-failed";
+    await mkdir(failed, { mode: 0o700 });
+    io.beforeLstat = async (path) => { if (path === failed) throw new Error("fixture inaccessible candidate"); };
+    const removable = ["c", "d", "e"].map((suffix) => prefix + suffix);
+    await Promise.all(removable.map((path) => mkdir(path, { mode: 0o700 })));
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    await ensureManagedBackgroundRuntime(input);
+    expect((await lstat(prefix + "a")).isSymbolicLink()).toBe(true);
+    expect((await lstat(prefix + "b")).isDirectory()).toBe(true);
+    expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep");
+    expect(progress.filter((event) => event.warning === "unsafe-staging")).toHaveLength(1);
+    expect(progress.filter((event) => event.warning === "staging-cleanup-failed")).toHaveLength(1);
+    io.beforeLstat = undefined;
+    expect((await lstat(failed)).isDirectory()).toBe(true);
+    await expect(lstat(removable[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(removable[1]!)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(removable[2]!)).isDirectory()).toBe(true);
+    const cleanup = progress.filter((event) => event.phase === "cleanup");
+    expect(Math.max(...cleanup.map((event) => event.completed))).toBe(2);
+    for (const event of cleanup) expect(event.completed).toBeLessThanOrEqual(event.total!);
+  });
+
+  it("retains an unknown replacement across staging cleanup rename", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const progress: ManagedRuntimeProgress[] = [];
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir,
+      onProgress: (event: ManagedRuntimeProgress) => progress.push(event) };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const stage = join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-abandoned`);
+    await mkdir(stage, { mode: 0o700 });
+    await writeFile(join(stage, "original.txt"), "original");
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    io.beforeRename = async (from, to) => {
+      if (!to.includes(".retained-") || basename(to) !== "abandoned") return;
+      io.beforeRename = undefined;
+      await rename(from, from + "-retained");
+      await mkdir(from, { mode: 0o700 });
+      await writeFile(join(from, "replacement.txt"), "unknown replacement");
+    };
+    await ensureManagedBackgroundRuntime(input);
+    expect(await readFile(join(stage + "-retained", "original.txt"), "utf8")).toBe("original");
+    const container = (await readdir(dirname(first.installRoot))).find((name) => name.includes(".retained-"));
+    expect(container).toBeDefined();
+    expect(await readFile(join(dirname(first.installRoot), container!, "abandoned", "replacement.txt"), "utf8"))
+      .toBe("unknown replacement");
+    expect(progress.some((event) => event.warning === "staging-changed")).toBe(true);
+    // Force another locked preparation, not the early fast-reuse return.
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    await ensureManagedBackgroundRuntime(input);
+    expect(await readFile(join(dirname(first.installRoot), container!, "abandoned", "replacement.txt"), "utf8"))
+      .toBe("unknown replacement");
+  });
+
+  it("preserves abandoned staging that contains the executing repair source", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({ currentCliPath: source.cliPath, nodePath: process.execPath, homeDir });
+    const stage = join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-source`);
+    await mkdir(stage, { mode: 0o700 });
+    const packageSource = join(stage, "package");
+    await rename(source.root, packageSource);
+    const eligible = ["zz-a", "zz-b"].map((suffix) =>
+      join(dirname(first.installRoot), `.${basename(first.installRoot)}.staging-${suffix}`));
+    await Promise.all(eligible.map((path) => mkdir(path, { mode: 0o700 })));
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    const repaired = await ensureManagedBackgroundRuntime({ currentCliPath: join(packageSource, "dist", "cli.js"),
+      nodePath: process.execPath, homeDir });
+    expect(repaired.verificationMode).toBe("repaired");
+    expect(await readFile(join(packageSource, "dist", "cli.js"), "utf8")).toBe(source.bytes);
+    for (const path of eligible) await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("copies an exact local package into a private immutable runtime that survives source deletion", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
@@ -890,6 +1283,51 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect(installs).toBe(1);
   });
 
+  it("publishes unique link paths for a flat hoisted closure and fast-reuses it", async () => {
+    const source = await hoistedPackageFixture();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const proofPath = join(dirname(first.installRoot), ".reuse-proofs", `${basename(first.installRoot)}.json`);
+    const proof = JSON.parse(await readFile(proofPath, "utf8")) as {
+      source: { links: { path: string }[] };
+    };
+
+    expect(first.verificationMode).toBe("installed");
+    expect(proof.source.links.filter((link) => link.path === source.sharedPath)).toHaveLength(1);
+    expect(new Set(proof.source.links.map((link) => link.path)).size).toBe(proof.source.links.length);
+    const second = await ensureManagedBackgroundRuntime(input);
+    expect(second).toEqual({ ...first, verificationMode: "fast-reuse" });
+  });
+
+  it.each([false, true])("rejects a stored duplicate link (conflicting: %s) and self-heals it", async (conflicting) => {
+    const source = await hoistedPackageFixture();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const proofPath = join(dirname(first.installRoot), ".reuse-proofs", `${basename(first.installRoot)}.json`);
+    const markerPath = join(first.installRoot, ".mono-agent-runtime.json");
+    const proof = JSON.parse(await readFile(proofPath, "utf8")) as {
+      source: { links: { path: string; logicalPath: string; proof: { path: string } }[] };
+    };
+    const original = proof.source.links.find((link) => link.path === source.sharedPath)!;
+    proof.source.links.push(conflicting
+      ? { ...original, logicalPath: "fixture-other", proof: { ...original.proof, path: "fixture-other" } }
+      : original);
+    const contents = `${JSON.stringify(proof)}\n`;
+    await writeFile(proofPath, contents, { mode: 0o600 });
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+    marker.reuseProofSha256 = createHash("sha256").update(contents).digest("hex");
+    await writeFile(markerPath, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+
+    const recovered = await ensureManagedBackgroundRuntime(input);
+    expect(recovered.installRoot).toBe(first.installRoot);
+    expect(recovered.verificationMode).toBe("full-reuse");
+    const refreshed = JSON.parse(await readFile(proofPath, "utf8")) as typeof proof;
+    expect(new Set(refreshed.source.links.map((link) => link.path)).size).toBe(refreshed.source.links.length);
+    expect((await ensureManagedBackgroundRuntime(input)).verificationMode).toBe("fast-reuse");
+  });
+
   it("upgrades a verified v4 marker once and then uses the warm stat proof", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
@@ -1002,7 +1440,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     ), "utf8")).toBe("tampered");
   });
 
-  it("does not steal an active install lock even after the stale-age threshold", async () => {
+  it("does not steal a live installer and reports the overall 30-minute wait cap", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     let unblock!: () => void;
@@ -1022,19 +1460,25 @@ describe("ensureManagedBackgroundRuntime", () => {
     await installStarted;
     let secondInstalls = 0;
     const secondDeps = fakeInstallerDeps(async () => { secondInstalls += 1; });
+    const progress: ManagedRuntimeProgress[] = [];
 
     await expect(ensureManagedBackgroundRuntime({
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
-    }, secondDeps)).rejects.toThrow("Timed out waiting for the managed runtime installation lock");
+      onProgress: (event) => progress.push(event),
+    }, secondDeps )).rejects.toThrow("after 30 minutes. The live owner was not interrupted");
     expect(secondInstalls).toBe(0);
+    const waiting = progress.filter((event) => event.phase === "waiting");
+    expect(waiting.length).toBeLessThanOrEqual(61);
+    for (let index = 1; index < waiting.length; index += 1)
+      expect(waiting[index]!.elapsedMs - waiting[index - 1]!.elapsedMs).toBeGreaterThanOrEqual(30_000);
 
     unblock();
     await expect(first).resolves.toMatchObject({ packageVersion: "9.8.7" });
   });
 
-  it("coalesces behind a shared installation that takes longer than the former 30 second wait", async () => {
+  it("coalesces behind a live installation taking longer than five minutes with visible waiter progress", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     let unblock!: () => void;
@@ -1072,6 +1516,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     });
     await installStarted;
 
+    const progress: ManagedRuntimeProgress[] = [];
     let elapsed = 0;
     let now = 1_000_000;
     let secondInstalls = 0;
@@ -1081,13 +1526,14 @@ describe("ensureManagedBackgroundRuntime", () => {
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
+      onProgress: (event) => progress.push(event),
     }, {
       ...secondBase,
       now: () => now,
       sleep: async (ms) => {
         elapsed += ms;
         now += ms;
-        if (elapsed < 90_000) {
+        if (elapsed < 390_000) {
           await Promise.resolve();
           return;
         }
@@ -1102,9 +1548,88 @@ describe("ensureManagedBackgroundRuntime", () => {
 
     await expect(first).resolves.toMatchObject({ verificationMode: "installed" });
     await expect(second).resolves.toMatchObject({ verificationMode: "fast-reuse" });
-    expect(elapsed).toBeGreaterThanOrEqual(90_000);
+    expect(elapsed).toBeGreaterThanOrEqual(390_000);
+    expect(progress.some((event) => event.phase === "waiting" && event.ownerPid === process.pid
+      && event.elapsedMs > 300_000)).toBe(true);
+    expect(progress.at(-1)?.phase).toBe("ready");
     expect(secondInstalls).toBe(0);
   });
+
+  it("keeps the stale-quarantine race loser waiting for the winner after five minutes", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const seed = await ensureManagedBackgroundRuntime(input);
+    await writeFile(join(seed.installRoot, ".mono-agent-runtime.json"), "{}\n");
+    const lockDir = join(dirname(seed.installRoot), `.${basename(seed.installRoot)}.lock`);
+    const ownerA = incarnation("boot-current", "owner-a");
+    const ownerB = incarnation("boot-current", "owner-b");
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.json"), JSON.stringify({ pid: 424242, incarnation: ownerA }), { mode: 0o600 });
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    const loserObservedDead = deferred(), winnerStarted = deferred(), releaseWinner = deferred(), published = deferred();
+    let alive = true, elapsed = 0, now = 1_000_000, releaseRequested = false, installed = false;
+    let winnerInstalls = 0, loserInstalls = 0;
+    const progress: ManagedRuntimeProgress[] = [];
+    let loserSettled: Promise<unknown> = Promise.resolve();
+    const loser = ensureManagedBackgroundRuntime({ ...input, onProgress: (event) => progress.push(event) }, {
+      ...fakeInstallerDeps(async () => { loserInstalls += 1; }),
+      now: () => now,
+      randomId: () => "loser",
+      isSameProcessIncarnation: async (_pid, expected) => {
+        if (expected.processStartId === ownerA.processStartId) {
+          if (alive) return true;
+          // The primitive has pinned A. B acquires before C compares that observation.
+          loserObservedDead.resolve();
+          await winnerStarted.promise;
+          return false;
+        }
+        return expected.processStartId === ownerB.processStartId;
+      },
+      sleep: async (ms) => {
+        elapsed += ms; now += ms;
+        if (elapsed >= 390_000) alive = false;
+        if (!alive && winnerInstalls > 0) {
+          if (!releaseRequested) { releaseRequested = true; releaseWinner.resolve(); }
+          await published.promise;
+        }
+      },
+    });
+    loserSettled = loser.then(() => undefined, () => undefined);
+    await loserObservedDead.promise;
+    const winner = ensureManagedBackgroundRuntime(input, {
+      ...fakeInstallerDeps(async (installInput) => {
+        winnerInstalls += 1; winnerStarted.resolve();
+        await releaseWinner.promise;
+        await materializeInstalledPackage(installInput, await readFile(source.cliPath));
+        installed = true;
+      }),
+      now: () => now,
+      randomId: () => "winner",
+      currentProcessIncarnation: async () => ownerB,
+      isSameProcessIncarnation: (_pid, expected) => expected.processStartId !== ownerA.processStartId,
+      sleep: async () => { if (installed) { published.resolve(); await loserSettled; } },
+    });
+    const [winningRuntime, reusedRuntime] = await Promise.all([winner, loser]);
+    expect(winningRuntime.verificationMode).toBe("repaired");
+    expect(reusedRuntime.verificationMode).toBe("fast-reuse");
+    expect(reusedRuntime.installRoot).toBe(winningRuntime.installRoot);
+    expect(winnerInstalls).toBe(1);
+    expect(loserInstalls).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(390_000);
+    const waiting = progress.filter((event) => event.phase === "waiting");
+    expect(waiting.some((event) => event.ownerPid === 424242)).toBe(true);
+    expect(waiting.some((event) => event.ownerPid === process.pid)).toBe(true);
+    for (let index = 1; index < waiting.length; index += 1) {
+      if (waiting[index]!.ownerPid === waiting[index - 1]!.ownerPid)
+        expect(waiting[index]!.elapsedMs - waiting[index - 1]!.elapsedMs).toBeGreaterThanOrEqual(30_000);
+    }
+    expect(waiting.length).toBeLessThanOrEqual(16);
+  }, 15_000);
 
   it("repairs an install lock whose PID was reused by a different process incarnation", async () => {
     await expectRepairFromStaleRuntimeLock(incarnation("boot-current", "start-old"));

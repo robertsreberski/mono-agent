@@ -362,6 +362,20 @@
   identity/state on mutations and roll resumed provider suspensions back as
   unreceipted failures.
 
+- Fix managed runtime reuse for flat npm installs with shared hoisted
+  dependencies, so subsequent starts use the warm verification path.
+
+- Fix newly initialized BuJo memory to start without a manual rebuild by
+  publishing its replay authority before the managed index. Keep incomplete
+  initialization and missing historical authority fail-closed.
+
+- Fix slow exact managed-runtime preparation with bounded filesystem work
+  and invocation-local source verification reuse. Show preparation progress
+  in `mono-agent start` and `mono-agent web start`, wait up to 30 minutes for
+  a proven live installer without interrupting it, and safely reclaim up to
+  two abandoned staging trees per preparation. Keep ownership handoffs waiting,
+  preserve changed cleanup containers across retries, and throttle long waits.
+
 - Fix fallback retries and backup models to run under a fresh provider
   attribution id instead of the primary's session (including the OpenCode
   `x-opencode-session` header), and withhold the provider session id and

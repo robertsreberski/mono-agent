@@ -61,7 +61,133 @@ function lmStudioPlan(options: { readonly apiKeyEnv?: string; readonly dimension
   };
 }
 
+function bujoPlan() {
+  return composeWizardPlan(presetAnswers(findPreset("telegram-assistant")!), {
+    dirBasename: "first-memory",
+    skillsRootExists: false,
+  });
+}
+
+async function openFirstRunBujo(root: string) {
+  const { createBujoMemoryStore, readManagedIndexManifest } = await import("@mono-agent/memory/bujo");
+  const active = readManagedIndexManifest(root)!.active;
+  return createBujoMemoryStore({
+    root,
+    tier: "bujo",
+    dim: active.dimension!,
+    embeddings: {
+      id: active.embeddingModel!,
+      embed: async (texts) => texts.map(() => new Array<number>(active.dimension!).fill(0.01)),
+    },
+    llm: {
+      id: "fictional-no-call-model",
+      complete: async () => { throw new Error("First-run startup must not call the LLM"); },
+    },
+  });
+}
+
+const REPLAY_AUTHORITY = ".replay-projection-v1.json";
+
 describe("initializeFirstRunManagedMemory", () => {
+  it("starts fresh wizard BuJo memory without a manual rebuild", async () => {
+    let stagingRoot = "";
+    const result = await initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: bujoPlan(),
+      hooks: {
+        beforePromotion: async (candidate) => {
+          stagingRoot = candidate;
+          await access(join(candidate, REPLAY_AUTHORITY));
+        },
+      },
+    });
+    const store = await openFirstRunBujo(result.root!);
+    await store.close();
+    await access(join(result.root!, REPLAY_AUTHORITY));
+    await expect(access(stagingRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("publishes BuJo authority before an interrupted manifest publication", async () => {
+    const finalRoot = join(await realpath(dir), ".mono-agent", "memory");
+    await expect(initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: bujoPlan(),
+      hooks: {
+        afterManifestLinked: async (root) => {
+          await access(join(root, REPLAY_AUTHORITY));
+          throw new Error("injected interruption after manifest publication");
+        },
+      },
+    })).rejects.toThrow("injected interruption after manifest publication");
+    // App readiness and the still-hard-linked manifest remain fail-closed.
+    // Even at that interruption point, the authority committed by the
+    // manifest is already durable in the destination, not stranded in staging.
+    await access(join(finalRoot, FIRST_RUN_MEMORY_INITIALIZING_MARKER));
+    const { readBujoCanonicalSourceFingerprint } = await import("@mono-agent/memory/bujo");
+    const manifest = JSON.parse(await readFile(join(finalRoot, ".index", "manifest.json"), "utf8"));
+    expect(readBujoCanonicalSourceFingerprint(finalRoot)).toBe(manifest.active.sourceFingerprint);
+    await expect(openFirstRunBujo(finalRoot)).rejects.toThrow(/single-link file/u);
+  });
+
+  it("still refuses a nonempty managed BuJo store whose authority is missing", async () => {
+    const result = await initializeFirstRunManagedMemory({ agentRoot: dir, plan: bujoPlan() });
+    const store = await openFirstRunBujo(result.root!);
+    await store.remember("fictional-thread", "The fictional observatory uses blue notebooks.");
+    await store.close();
+    await rm(join(result.root!, REPLAY_AUTHORITY));
+    await expect(openFirstRunBujo(result.root!)).rejects.toThrow(/managed source fingerprint is stale/u);
+    await expect(access(join(result.root!, REPLAY_AUTHORITY))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("never adopts unattested historical replay state in a managed BuJo store", async () => {
+    const result = await initializeFirstRunManagedMemory({ agentRoot: dir, plan: bujoPlan() });
+    const store = await openFirstRunBujo(result.root!);
+    const source = await store.remember("fictional-thread", "The fictional observatory uses blue notebooks.");
+    const target = await store.remember("fictional-thread", "The fictional observatory labels its telescopes.");
+    await store.close();
+    const { openMemoryDb } = await import("@mono-agent/memory/store");
+    const { resolveActiveMemoryDbPath } = await import("@mono-agent/memory/bujo");
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(result.root!), dim: 768 });
+    try {
+      db.addEdge(source.id, target.id, "thread", 0.8, new Date().toISOString());
+    } finally {
+      db.close();
+    }
+    await rm(join(result.root!, REPLAY_AUTHORITY));
+    await expect(openFirstRunBujo(result.root!)).rejects.toThrow(/historical replay state/u);
+    await expect(access(join(result.root!, REPLAY_AUTHORITY))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses a BuJo authority replaced in staging before promotion", async () => {
+    const finalRoot = join(dir, ".mono-agent", "memory");
+    await expect(initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: bujoPlan(),
+      hooks: {
+        beforePromotion: async (candidate) => {
+          const replacement = join(candidate, "replacement.json");
+          await writeFile(replacement, "{}\n");
+          await rename(replacement, join(candidate, REPLAY_AUTHORITY));
+        },
+      },
+    })).rejects.toThrow(/staged index changed concurrently/u);
+    await expect(access(join(finalRoot, ".index", "manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not overwrite BuJo authority raced into the claimed destination", async () => {
+    const finalRoot = join(dir, ".mono-agent", "memory");
+    await expect(initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: bujoPlan(),
+      hooks: {
+        beforePromotion: async (_candidate, destination) => {
+          await writeFile(join(destination, REPLAY_AUTHORITY), "external authority\n");
+        },
+      },
+    })).rejects.toThrow(/claimed root changed before publication/u);
+    expect(await readFile(join(finalRoot, REPLAY_AUTHORITY), "utf8")).toBe("external authority\n");
+    await expect(access(join(finalRoot, ".index", "manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("proves keyless LM Studio embeddings before publishing their exact managed identity", async () => {
     const calls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {

@@ -1,3 +1,4 @@
+import { formatManagedRuntimeProgress } from "./managed-runtime-progress.js";
 import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import {
   clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
@@ -851,6 +852,12 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       currentCliPath: target.cliPath,
       nodePath: target.nodePath,
       additionalPackages,
+      onProgress: (progress) => {
+        // The lifecycle wrapper already prints the initial hint and ready summary.
+        if (progress.phase !== "ready" && !(progress.phase === "reuse" && progress.completed === 0)) {
+          deps.stdout(ui.hint(formatManagedRuntimeProgress(progress)));
+        }
+      },
     });
     launchTarget = {
       ...target,
@@ -867,8 +874,8 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
     return { ok: false, action: "start", reason: "runtime" };
   }
 
-  // Runtime materialisation can involve npm/native installation. Recheck the
-  // approved files after that unbounded external work and before writing any
+  // Exact-closure copying and integrity verification can take time. Recheck the
+  // approved files after runtime preparation and before writing any
   // LaunchAgent state.
   if (!(await snapshotStillMatches(launchTarget, deps))) {
     reportSnapshotDrift(launchTarget, deps);

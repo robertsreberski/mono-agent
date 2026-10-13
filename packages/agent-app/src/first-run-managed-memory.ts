@@ -8,6 +8,7 @@ import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
 import type { WizardPlan } from "./wizard/answers.js";
 
 const DEFAULT_MANAGED_MEMORY_DIMENSION = 768;
+const BUJO_REPLAY_AUTHORITY_FILE = ".replay-projection-v1.json";
 const FIRST_RUN_EMBEDDING_PROBE_TIMEOUT_MS = 5_000;
 const FIRST_RUN_OPENAI_PROBE_TEXT = "mono-agent managed-memory first-run embedding readiness probe";
 export const FIRST_RUN_MEMORY_INITIALIZING_MARKER = ".first-run-memory-initializing";
@@ -300,6 +301,7 @@ async function promoteManagedIndex(options: {
   readonly stagingRoot: string;
   readonly finalRoot: string;
   readonly snapshot: readonly TreeEntrySnapshot[];
+  readonly replayAuthority?: TreeEntryIdentity;
   readonly onManifestPublished: () => void;
   readonly afterManifestLinked?: (finalRoot: string) => void | Promise<void>;
   readonly assertDestination: () => void | Promise<void>;
@@ -325,9 +327,13 @@ async function promoteManagedIndex(options: {
     throw new Error("Refusing first-run managed memory because the published index root is unsafe.");
   }
   const finalIndexIdentity = { dev: finalIndexStat.dev, ino: finalIndexStat.ino };
+  let replayAuthorityPublished = false;
   const publishedDirectories = new Map<string, ClaimedDirectoryIdentity>([["", finalIndexIdentity]]);
   const assertPublishedTree = async (): Promise<void> => {
     await options.assertDestination();
+    if (replayAuthorityPublished) {
+      await assertTreeEntry(join(options.finalRoot, BUJO_REPLAY_AUTHORITY_FILE), options.replayAuthority!);
+    }
     for (const [pathRelative, identity] of publishedDirectories) {
       await assertClaimedRoot(pathRelative.length === 0 ? finalIndex : join(finalIndex, pathRelative), identity);
     }
@@ -372,6 +378,21 @@ async function promoteManagedIndex(options: {
   }
   await assertPublishedTree();
   await fsyncPath(finalIndex);
+  // BuJo rebuild fingerprints this root-level canonical authority as well as
+  // the daily sources. Publish it durably before the manifest can advertise
+  // the generation; promoting only .index loses the authority on first start.
+  if (options.replayAuthority !== undefined) {
+    await linkStagedFile(
+      join(options.stagingRoot, BUJO_REPLAY_AUTHORITY_FILE),
+      join(options.finalRoot, BUJO_REPLAY_AUTHORITY_FILE),
+      options.replayAuthority,
+      {
+        assertDestination: assertPublishedTree,
+        onLinkCreated: () => { replayAuthorityPublished = true; },
+      },
+    );
+  }
+  await assertPublishedTree();
   await fsyncPath(options.finalRoot);
 
   // The manifest is the authority switch. Hard-linking it is atomic and
@@ -649,12 +670,21 @@ export async function initializeFirstRunManagedMemory(
     }
     const sourceIndex = join(stagingRoot, ".index");
     const stagedSnapshot = await snapshotTree(sourceIndex);
+    const replayAuthority = configured.mode === "bujo"
+      ? treeIdentity(await lstat(join(stagingRoot, BUJO_REPLAY_AUTHORITY_FILE)))
+      : undefined;
+    if (replayAuthority !== undefined && replayAuthority.kind !== "file") {
+      throw new Error("First-run BuJo memory staged authority is not a regular file.");
+    }
     await options.hooks?.beforePromotion?.(stagingRoot, root);
     throwIfAborted(options.abortSignal);
     await assertDestination();
     await assertClaimedRoot(stagingRoot, stagingIdentity);
     if (treeSignature(await snapshotTree(sourceIndex)) !== treeSignature(stagedSnapshot)) {
       throw new Error("Refusing first-run managed memory because the staged index changed concurrently.");
+    }
+    if (replayAuthority !== undefined) {
+      await assertTreeEntry(join(stagingRoot, BUJO_REPLAY_AUTHORITY_FILE), replayAuthority);
     }
     const finalEntries = (await readdir(root)).sort();
     if (finalEntries.length !== 1 || finalEntries[0] !== FIRST_RUN_MEMORY_INITIALIZING_MARKER) {
@@ -664,6 +694,7 @@ export async function initializeFirstRunManagedMemory(
       stagingRoot,
       finalRoot: root,
       snapshot: stagedSnapshot,
+      ...(replayAuthority === undefined ? {} : { replayAuthority }),
       onManifestPublished: () => { published = true; },
       assertDestination,
       ...(options.hooks?.afterManifestLinked === undefined

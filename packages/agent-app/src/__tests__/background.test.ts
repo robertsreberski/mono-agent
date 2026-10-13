@@ -1,3 +1,5 @@
+import { ensureManagedBackgroundRuntime, defaultManagedBackgroundRuntimeDeps, verifyManagedRuntimeLaunch } from "../background-runtime.js";
+import { runWebCommand } from "../web-command.js";
 import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
 import type { WorkerActivityProbe } from "../worker-activity-snapshot.js";
 import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
@@ -634,6 +636,101 @@ describe("startBackground", () => {
     expect(harness.removed).toContain(target.paths.plistPath);
     expect(harness.err.join("")).toContain("drifted LaunchAgent was stopped");
     expect(harness.written[0]?.data).toContain("--expected-background-snapshot");
+  });
+
+  it("prints runtime copy and live-installer wait progress before worker readiness", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const fallback = makeHarness({ runner, list: listReturning(() => [makeSource(target)]) }).deps.ensureManagedRuntime;
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]),
+      ensureManagedRuntime: async (input) => {
+        input.onProgress?.({ phase: "waiting", elapsedMs: 360_000, completed: 0, ownerPid: 1234 });
+        input.onProgress?.({ phase: "copy", elapsedMs: 362_000, completed: 8, total: 12 });
+        return await fallback(input);
+      },
+    });
+    expect(await startBackground(target, harness.deps, POLL)).toBe(0);
+    const output = harness.out.join("");
+    expect(output).toContain("Waiting for another mono-agent process preparing the runtime (pid 1234)");
+    expect(output).toContain("8/12 packages copied");
+    expect(output.indexOf("8/12 packages copied")).toBeLessThan(output.indexOf("Waiting for the worker to report ready"));
+  });
+
+  it("coalesces concurrent agent start and web start beyond five minutes on a cold runtime", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "mono-agent-concurrent-runtime-"));
+    try {
+      const packageSource = join(homeDir, "source");
+      const currentCliPath = join(packageSource, "dist", "cli.js");
+      await mkdir(join(packageSource, "dist"), { recursive: true, mode: 0o700 });
+      await writeFile(currentCliPath, "console.log('fictional runtime');\n");
+      await writeFile(join(packageSource, "dist", "launchd-maintenance-entry.js"), "export const fixture = true;\n");
+      await writeFile(join(packageSource, "package.json"), JSON.stringify({ name: "@mono-agent/agent-app", version: "9.8.7" }));
+      await mkdir(join(homeDir, "Library"), { mode: 0o700 });
+      const defaults = defaultManagedBackgroundRuntimeDeps();
+      let now = CLOCK_START;
+      let releaseInstall!: () => void;
+      let beganInstall!: () => void;
+      let runtimeFinished!: () => void;
+      const hold = new Promise<void>((resolvePromise) => { releaseInstall = resolvePromise; });
+      const started = new Promise<void>((resolvePromise) => { beganInstall = resolvePromise; });
+      const finished = new Promise<void>((resolvePromise) => { runtimeFinished = resolvePromise; });
+      let installs = 0;
+      const ownerIncarnation = processIncarnation("concurrent-runtime");
+      const firstRuntime = async (input: Parameters<typeof ensureManagedBackgroundRuntime>[0]) => {
+        const runtime = await ensureManagedBackgroundRuntime({ ...input, currentCliPath, packageSource, homeDir, nodePath: process.execPath }, {
+          ...defaults, now: () => now, sleep: async (ms) => { now += ms; },
+          currentProcessIncarnation: async () => ownerIncarnation, isSameProcessIncarnation: async () => true,
+          installPackage: async (install) => { installs += 1; beganInstall(); await hold; await defaults.installPackage(install); },
+        });
+        await verifyManagedRuntimeLaunch({ currentCliPath: runtime.cliPath, launchProof: runtime.launchProof, homeDir,
+          now: () => now, sleep: async (ms) => { now += ms; } });
+        runtimeFinished();
+        return runtime;
+      };
+      const { runner } = makeRunner({ loaded: false });
+      const target = makeTarget();
+      const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]), ensureManagedRuntime: firstRuntime });
+      const agentStart = startBackground(target, harness.deps, POLL);
+      await Promise.race([started, agentStart.then((code) => { throw new Error(`agent start exited ${code}: ${harness.err.join("")}`); })]);
+      let waited = 0;
+      let releaseRequested = false;
+      let webOutput = "";
+      let webErrors = "";
+      const loaded = new Map<string, boolean>();
+      const webRunner: LaunchctlRunner = async (args) => {
+        const label = args[0] === "bootstrap" ? args[2]!.split("/").at(-1)!.replace(/\.plist$/u, "") : args[1]!.split("/").at(-1)!;
+        if (args[0] === "bootstrap") loaded.set(label, true);
+        if (args[0] === "bootout") loaded.delete(label);
+        return { code: args[0] === "print" && !loaded.get(label) ? 113 : 0,
+          stdout: loaded.get(label) ? "pid = 4321\n" : "", stderr: "" };
+      };
+      const webStart = runWebCommand({ positionals: ["start"], env: {}, loopback: true }, {
+        platform: "darwin", homeDir, getuid: () => 501, prepareState: async () => undefined,
+        acquireLifecycleLock: async () => async () => undefined, launchctl: webRunner, healthcheck: async () => true,
+        isAlive: () => true, stdout: { write: (text) => { webOutput += text; } }, stderr: { write: (text) => { webErrors += text; } },
+        ensureManagedRuntime: async (input) => ensureManagedBackgroundRuntime({ ...input, currentCliPath, packageSource, homeDir, nodePath: process.execPath }, {
+          ...defaults, now: () => CLOCK_START + waited,
+          currentProcessIncarnation: async () => ownerIncarnation, isSameProcessIncarnation: async () => true,
+          installPackage: async () => { installs += 1; throw new Error("unexpected second install"); },
+          sleep: async (ms) => {
+            waited += ms;
+            if (waited < 390_000) return;
+            if (!releaseRequested) { releaseRequested = true; releaseInstall(); }
+            await finished;
+          },
+        }),
+      });
+      const checkedWeb = webStart.then((code) => {
+        if (code !== 0) releaseInstall();
+        return code;
+      });
+      expect(await agentStart, harness.err.join("")).toBe(0);
+      expect(await checkedWeb, webErrors).toBe(0);
+      expect(installs).toBe(1);
+      expect(waited).toBeGreaterThanOrEqual(390_000);
+      expect(webOutput).toContain("Waiting for another mono-agent process preparing the runtime");
+      expect(harness.out.join("")).toContain("Managed runtime ready");
+    } finally { await rm(homeDir, { recursive: true, force: true }); }
   });
 
   it("bootstraps a fresh instance, writes the plist, and prints its info", async () => {
