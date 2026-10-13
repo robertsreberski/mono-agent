@@ -208,7 +208,8 @@ Producer input is captured synchronously. Run refuses while production is active
 without consuming dispatch; close/abort retain resources until it settles.
 
 Managed storage exposes typed read-only evidence capture of the single current
-journal plus the prior accepted handoff, and pure budget and handoff/checkpoint
+journal (streamed; only the tail after its last checkpoint and records cited by
+unresolved work are retained, up to 16 MiB) plus the prior accepted handoff, and pure budget and handoff/checkpoint
 preparation. It never projects native envelopes across a model change. Composed
 compaction coverage must equal the inherited prior handoff exactly;
 changed/missing coverage fails.
@@ -294,10 +295,12 @@ prove the ready canonical binding/artifact and current creation eligibility. A r
 runtime opens without authority fail before native repair, including stale warm
 metadata. The runtime pin checks normalized path equality, not a host-owned
 filesystem inode identity; `assertCurrent` must prove any stronger root identity.
-`inspectCurrentJournal` is a read-only presence probe for the host-held current
-journal: `missing` only for definitive absence (handle-only lookups are
-read-only and stage-aware), `unreadable` for any damaged complete line,
-staged-only bytes or catalogue failure; a torn final line is left to the
+`inspectCurrentJournal` is a read-only O(1) presence probe for the host-held
+current journal: `missing` only for definitive absence (handle-only lookups are
+read-only and stage-aware), `unreadable` for a damaged header or identity,
+staged-only bytes or catalogue failure. It reads only the header; damaged
+records are refused by the validating open with the same
+`native_journal_unreadable` failure, and a torn final line is left to the
 ordinary open/repair path.
 Prepared leases are primary-only: no routed retry or backup, and producers and
 manual compaction stay primary-only too.

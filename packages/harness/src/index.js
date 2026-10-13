@@ -11,7 +11,7 @@ export { NativeSuspendedError, recordInterruption, repairInterruptedSession, pro
 
 export { digestTurnInput, createTurnBinding, selectTurnInterruptionAccounts, readTurnEvidence, matchTurnEvidence } from "./turn-evidence.js";
 
-export { createEvidenceView, evidenceDigest } from "./evidence-view.js";
+export { createEvidenceView, evidenceDigest, scanEvidenceSegment } from "./evidence-view.js";
 export { HANDOFF_POLICY, HANDOFF_SUMMARY_FIELDS, estimateHandoffTokens, createHandoffBudget, checkHandoffDispatch, validateHandoffSummary, renderHandoffMessage, buildOpenWorkLedger, prepareHandoff, buildHandoff } from "./handoff.js";
 
 export { managedJournalId } from "./managed-journal.js";

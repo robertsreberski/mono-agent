@@ -129,7 +129,13 @@ history format. Ordinary turn options receive the same validated policy.
 
 Coordinated native turns use immutable `.pending-turns/` generations under the
 private history root, measured before publication and charged to staged-byte
-quota even after a crash. Payloads contain explicitly selected canonical input,
+quota even after a crash. Admission does no whole-root accounting: it checks
+only the turn's own projected record and payload against the quotas and the
+in-flight fences/payloads, so its cost does not grow with the number of
+conversations. Aggregate history and staging quotas are enforced at commit and
+retention. Settling a reconciled turn (commit, recovery or drain) releases its
+own payload, so the staging quota never refuses it; concurrent in-flight turns
+can therefore overshoot staging transiently, by at most one payload cap each. Payloads contain explicitly selected canonical input,
 identity and candidate fields, not `deliveryKey`, memory-only `ownerText`, private
 wake bodies or arbitrary controllers. Execution, compaction and retirement
 fences stay at 1 KiB; payload generations are bounded at 16 MiB.
@@ -541,7 +547,15 @@ through its acknowledged Web-only opt-in. These storage APIs alone are not a
 standalone real-root rollout.
 
 Pending switching stays entirely in host intent/attempt storage: no incoming
-binding is published before accepted handoff content exists. Native journals
+binding is published before accepted handoff content exists. An explicit message
+for the intent's source model abandons a non-ready intent storage-only
+(`abandonModelSwitch`): only its fence is removed, its authorizations and
+attempts stay retained and charged until a later completed switch or deletion
+collects them, and the turn runs on the current journal without a paid call.
+A new intent whose initiating message a retained intent already consumed is
+refused (`ModelSwitchMessageConsumedError`) before any paid call.
+Explicit-message authorizations have no lifetime count cap; the serialized state
+limit bounds them. Native journals
 carry no `model_change` frames; the canonical receipt is the only switch record.
 
 Its native version 3 canonical validators bind single-journal ownership/provenance
@@ -634,12 +648,11 @@ cancellation signal or `close()` is not proof of provider termination. Default
 execution retains ordinary R10; configured preparation is limited to persisted
 Web deliveries and already-native current-journal turns under the explicit opt-in.
 
-Read-only materialized native evidence is limited to the single current journal
-of at most 16 MiB raw bytes. Capacity refusal is
-explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. Preflight and
-secure-reader scan-start checks bound parsing even if a journal grows between
-checks; validation/cloning may use bounded multiples of those raw bytes. Streaming
-inspection retains its uncapped behavior. These are preparation limits, not
+Read-only native evidence is streamed from the single current journal of any
+physical size; at most 16 MiB of it (the effective tail after the last
+checkpoint plus records cited by unresolved work) is retained. Capacity refusal
+is explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. A journal that
+changes between the two streamed passes is refused. These are preparation limits, not
 permission to erase oversized evidence or cold-fallback after switch intent.
 
 ## Public API
@@ -873,7 +886,9 @@ durable C intent), the turn dispatches once on canonical replay and reports `deg
 A switch request with a lost journal records a canonical `journal_missing` gap
 and summarizes canonical history through the same handoff order; it is never a
 summary-less change. Unreadable bytes, staged-only bytes or catalogue failure
-refuse with `native_journal_unreadable` and preserve evidence.
+refuse with `native_journal_unreadable` and preserve evidence. The probe reads
+only the journal header; record damage is refused the same way when the journal
+is opened or captured.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next

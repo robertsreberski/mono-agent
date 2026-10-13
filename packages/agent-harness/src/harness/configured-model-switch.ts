@@ -2,11 +2,11 @@ import { randomBytes, createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { NativeEvidenceCapacityError, parseMonoRuntimeModelReference, type RuntimeNativePreparationStorage, type RuntimeRunOptions, type RuntimeModelReference, type RuntimeResult } from "@mono-agent/runtime-adapter";
 import { NativeHistoryAuthorityBusyError, type ManagedProviderSessionPreparation } from "../durable-history.js";
-import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError } from "../durable-model-switch-contract.js";
+import { MAX_MODEL_SWITCH_BYTES, MAX_NATIVE_EPOCH_BYTES, ModelSwitchCapacityError, ModelSwitchMessageConsumedError } from "../durable-model-switch-contract.js";
 import type { AgentHarnessRequest, ProviderSessionTurnBinding } from "../types.js";
 import { AgentHarnessError } from "./error.js";
 import { prepareHarnessRuntime, type HarnessRuntimePreparationInput } from "./runtime-execution.js";
-import { advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, type PreparedSwitchProducer } from "./model-switch-preparation.js";
+import { PreparedSwitchTargetMismatchError, advancePreparedModelSwitch, createPreparedModelSwitchState, recoverPreparedModelSwitch, runPreparedModelSwitch, type PreparedSwitchProducer } from "./model-switch-preparation.js";
 
 /** @internal
  * @unstable Constructor capability supplied by the configured host,
@@ -33,6 +33,9 @@ export interface ConfiguredPreparedTurn {
 const pending = () => new AgentHarnessError("handoff_pending", "Model handoff is pending. This message was not admitted or queued; send another explicit message to authorize further summary work.");
 const budgetFailure = (reason: string) => new AgentHarnessError("handoff_budget_exceeded", `Model handoff cannot fit: ${reason}. No incoming turn was admitted or queued.`);
 const capacity = (error: unknown) => error instanceof ModelSwitchCapacityError || error instanceof NativeEvidenceCapacityError;
+const unreadableJournal = (reason: string) => new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason });
+// The presence probe reads only the header; record damage surfaces at the validating open.
+const journalCorruption = (error: unknown) => error instanceof SyntaxError || (error as { code?: unknown } | null)?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
 
 /** Host path behind the private capability. Unsupported custom stores/runtimes
  * retain the original path without preparing resources or issuing authority. */
@@ -87,6 +90,12 @@ export async function prepareConfiguredModelSwitch(input: {
         snapshot = await owner.read(); switched = true;
         if (recovered.modelKey !== host.routing.modelKey) throw pending(); // Finish recorded switch; never dispatch this message on a different target.
         ready = recovered;
+      } else if (messageId !== undefined && snapshot.pending.identity.fromModelKey === host.routing.modelKey) {
+        // An explicit message back to the source model abandons the non-ready
+        // intent storage-only (no target journal exists yet; its billing state
+        // stays charged) and runs on the current journal without a paid call.
+        // Requesting the target again later is a new switch and explicit message.
+        await owner.abandonModelSwitch(snapshot.pending.identity.switchId); snapshot = await owner.read();
       }
     }
     // Probe under the held owner before capture, producers, P2 admission or the
@@ -94,7 +103,7 @@ export async function prepareConfiguredModelSwitch(input: {
     // definitive absence counts as missing.
     if (!snapshot.pending && owner.inspectCurrentJournal) {
       const presence = await owner.inspectCurrentJournal();
-      if (presence.status === "unreadable") throw new AgentHarnessError("native_journal_unreadable", "This conversation's saved model session could not be read. It was preserved unchanged; this message was not admitted or queued.", { reason: presence.reason });
+      if (presence.status === "unreadable") throw unreadableJournal(presence.reason);
       if (presence.status === "missing") { missingEpoch = presence.epoch; ready = undefined; switched = false; }
     }
     incoming = await prepareHarnessRuntime({ ...host, assertOwned: () => assertOwned(), prepareContext: input.prepareContext });
@@ -107,7 +116,7 @@ export async function prepareConfiguredModelSwitch(input: {
         // Capture owned bytes (or canonical history for a missing journal) without
         // old auth/provider availability. Resolve the outgoing no-tools lease
         // lazily at its unbilled producer slot.
-        const captured = await owner.captureNativeEvidence();
+        const captured = await owner.captureNativeEvidence().catch((error: unknown) => { throw journalCorruption(error) ? unreadableJournal("malformed") : error; });
         const prepareOutgoing = async (): Promise<PreparedSwitchProducer | undefined> => {
           try {
             const outgoingRuntime = host.routing.runtimeForSession(from);
@@ -166,6 +175,10 @@ export async function prepareConfiguredModelSwitch(input: {
         if (result.status === "unsupported") throw new AgentHarnessError("native_switch_authority_unavailable", "Native switch storage is unavailable for this conversation.");
         ready = result; switched = true; snapshot = await owner.read();
       } catch (error) {
+        if (error instanceof ModelSwitchMessageConsumedError) throw new AgentHarnessError("handoff_pending",
+          "This message already authorized an earlier model handoff. It was not admitted or queued and nothing was billed; send a new message to switch models.");
+        if (error instanceof PreparedSwitchTargetMismatchError && snapshot.pending) throw new AgentHarnessError("handoff_pending",
+          `A model handoff to ${snapshot.pending.identity.toModelKey} is pending. This message was not admitted or queued; request ${snapshot.pending.identity.toModelKey} to continue it or ${snapshot.pending.identity.fromModelKey} to cancel it.`);
         // Typed PRE-INTENT capacity/size refusal is a refusal, never a cold model
         // change. Never disguise corruption, lost ownership, unknown paid work or pending.
         if (!snapshot.pending && capacity(error) && !(await owner.read()).pending) throw budgetFailure("capacity");

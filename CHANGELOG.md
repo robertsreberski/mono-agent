@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep long conversations switchable between models: switch evidence streams
+  the journal and keeps only the work since its last compaction checkpoint plus
+  genuinely unresolved work, so journal size alone no longer refuses a switch.
+  Outcome-unknown tool calls always stay in the handoff ledger.
+
+- Let an explicit Web message for the source model cancel a stuck pending model
+  switch without a summary call, and remove the 32-message limit on retrying a
+  pending switch. Requesting a third model while a switch is pending is refused
+  as `handoff_pending`.
+
+- Keep durable turn admission independent of the number of stored
+  conversations: aggregate history and staging quotas are checked at commit and
+  retention, and the current-journal probe reads only the journal header.
+
 - Treat transiently missing native journals as absence and writer-owned creation
   stages as busy, while preserving refusal of genuine owner damage.
 

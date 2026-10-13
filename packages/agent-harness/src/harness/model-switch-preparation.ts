@@ -45,6 +45,12 @@ function checkPreparedFit(snapshot: RuntimeNativeDispatchSnapshot, budget: Runti
   return undefined;
 }
 
+/** The requested model or its limits disagree with the pending intent's frozen
+ * target/budget. The intent is untouched; nothing was billed or admitted. */
+export class PreparedSwitchTargetMismatchError extends Error {
+  readonly code = "ERR_MODEL_SWITCH_TARGET_MISMATCH";
+  constructor() { super("Prepared incoming model disagrees with recorded target/budget"); this.name = "PreparedSwitchTargetMismatchError"; }
+}
 // Optional recorded account metadata never selects auth
 // or gates a structured transfer. Only the resolved model must match.
 function sameTarget(a: RuntimeNativeDispatchSnapshot["provenance"], b: unknown): boolean {
@@ -171,7 +177,7 @@ export async function advancePreparedModelSwitch(input: {
   validateFrozenHandoffBudget(state.frozenBudget);
   if (!sameTarget(input.incoming.snapshot.provenance, state.identity.targetProvenance)
     || input.incoming.snapshot.model.contextWindow < state.frozenBudget.contextWindow
-    || input.incoming.snapshot.model.maxTokens < state.frozenBudget.outputReserve) throw new Error("Prepared incoming model disagrees with recorded target/budget");
+    || input.incoming.snapshot.model.maxTokens < state.frozenBudget.outputReserve) throw new PreparedSwitchTargetMismatchError();
   const fit = checkPreparedFit(input.incoming.snapshot, state.frozenBudget);
   if (fit) return fit;
   // The view is validated by the native helper, and must be this intent's exact

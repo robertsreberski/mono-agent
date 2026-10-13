@@ -2,7 +2,7 @@ import { lstat, mkdir, rm } from "node:fs/promises";
 import { OwnedFileDamagedError, assertIdentity, isOwned, listOwned, publishAtomic, readOwned, sameIdentity as same, syncDir, unchanged } from "@mono-agent/harness/owned-fs.js";
 import { randomBytes, createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
-import { MODEL_SWITCH_DIRECTORY, MAX_MODEL_SWITCH_BYTES, MAX_MODEL_SWITCH_FENCE_BYTES, boundedSwitchBytes, canonicalSwitchJSON,
+import { MODEL_SWITCH_DIRECTORY, MAX_MODEL_SWITCH_BYTES, ModelSwitchMessageConsumedError, MAX_MODEL_SWITCH_FENCE_BYTES, boundedSwitchBytes, canonicalSwitchJSON,
   reservationBytes, serializeModelSwitchState, switchConversationKey, switchDigest, switchCoverageDigest, switchHash, switchKeys, switchObject,
   validateModelSwitchFence, validateModelSwitchState, validateSwitchReference } from "./durable-model-switch-contract.js";
 import type { HandoffReference, ModelSwitchFence, ModelSwitchPointer, ModelSwitchState } from "./durable-model-switch-contract.js";
@@ -82,7 +82,7 @@ export class ModelSwitchPayloadStore {
   }
   /** Artifact-named entries only; strays are skipped, damage is returned flagged. */
   private entries(prefix = "") {
-    return listOwned(this.directory, filePattern, MAX_MODEL_SWITCH_BYTES).then((all) => all.filter((entry) => entry.name.startsWith(prefix)));
+    return listOwned(this.directory, filePattern, MAX_MODEL_SWITCH_BYTES, prefix);
   }
   private coordinates(bucket: string, switchId: string): string { switchHash(switchId); return `${switchConversationKey(bucket)}.${switchId}`; }
   private async readBytes(name: string, maximum: number): Promise<Buffer> {
@@ -286,12 +286,13 @@ export class ModelSwitchPayloadStore {
     await this.owner(owner, state);
     return owner.withRootTransaction(async () => {
       await this.owner(owner, state);
-      const directory = await this.ensureDirectory(false);
+      const directory = await this.ensureDirectory(false), retained: string[] = [], own = `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.`;
       if (directory) {
         for (const { name } of await this.entries(`${switchConversationKey(state.identity.historyBucket)}.`)) {
-          if (name.endsWith(".fence.json") && name !== `${this.coordinates(state.identity.historyBucket, state.identity.switchId)}.fence.json`) {
+          if (name.endsWith(".fence.json") && name !== `${own}fence.json`) {
             throw new Error("Existing switch must roll forward and settle before a different intent");
           }
+          if (name.endsWith(".state.json") && !name.startsWith(own)) retained.push(name);
         }
       }
       const current = await this.read(state.identity.historyBucket, state.identity.switchId);
@@ -302,6 +303,12 @@ export class ModelSwitchPayloadStore {
         await this.syncDirectory(this.directory, directory); await this.owner(owner, current.state);
         await this.reconcile(current.state, current.fence.payload, owner);
         return current.state; // never reverse/restart an admitted durable intent
+      }
+      // A retained (e.g. abandoned) intent's billing state keeps the explicit
+      // messages it consumed: a redelivery of one never authorizes paid work again.
+      for (const name of state.initialMessageDigest === undefined ? [] : retained) {
+        const prior = decode(await this.readBytes(name, MAX_MODEL_SWITCH_BYTES)); validateModelSwitchState(prior);
+        if ([prior.initialMessageDigest, ...prior.authorizations.map((entry) => entry.messageDigest)].includes(state.initialMessageDigest)) throw new ModelSwitchMessageConsumedError();
       }
       const serialized = serializeModelSwitchState(state);
       if (state.reservation.pendingBytes < serialized.byteLength + MAX_MODEL_SWITCH_FENCE_BYTES) throw new RangeError("Switch pending reservation is too small");
@@ -407,19 +414,30 @@ export class ModelSwitchPayloadStore {
   }
   /** Canonical/native publication precedes fence release. Retain the winning
    * ready attempt/content for reference lifetime and D deletion. */
-  async complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
+  complete(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, assertCanonicalReady: () => Promise<void>): Promise<void> {
+    return this.releaseIntent(bucket, switchId, owner, true, assertCanonicalReady);
+  }
+  /** Storage-only abandonment of a non-ready intent, which has no target journal
+   * yet. Only its fence is released: the billing state (every authorization and
+   * attempt, including outcome-unknown ones) and any artifacts stay retained and
+   * charged until a later completed switch or D deletion collects them. */
+  abandon(bucket: string, switchId: string, owner: ModelSwitchStorageOwner): Promise<void> {
+    return this.releaseIntent(bucket, switchId, owner, false, async () => {});
+  }
+  private async releaseIntent(bucket: string, switchId: string, owner: ModelSwitchStorageOwner, ready: boolean, assertCanonical: () => Promise<void>): Promise<void> {
     await owner.withRootTransaction(async () => {
       await this.owner(owner); const current = await this.read(bucket, switchId);
-      await assertCanonicalReady();
+      await assertCanonical();
       if (!current) { await this.syncPublication(); return; }
-      if (current.state.phase !== "ready") throw new Error("Pending switch cannot release its intent fence");
+      if ((current.state.phase === "ready") !== ready) throw new Error(ready ? "Pending switch cannot release its intent fence" : "A ready switch must roll forward, never be abandoned");
       await this.owner(owner, current.state); await this.reconcile(current.state, current.fence.payload, owner);
+      if (!ready && await this.cachedArtifact(current.state)) throw new Error("A cached handoff must roll forward, never be abandoned");
       const name = `${this.coordinates(bucket, switchId)}.fence.json`, directory = await this.ensureDirectory(false); if (!directory) unavailable();
-      const before = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES);
-      await this.owner(owner, current.state); await assertCanonicalReady();
+      const before = await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES), label = ready ? "switch_fence" : "switch_abandon";
+      await this.owner(owner, current.state); await assertCanonical();
       if (!(await this.readBytes(name, MAX_MODEL_SWITCH_FENCE_BYTES)).equals(before)) unavailable();
-      await rm(join(this.directory, name)); await owner.onPhase?.("switch_fence_removed");
-      await this.syncDirectory(this.directory, directory); await owner.onPhase?.("switch_fence_directory_synced");
+      await rm(join(this.directory, name)); await owner.onPhase?.(`${label}_removed`);
+      await this.syncDirectory(this.directory, directory); await owner.onPhase?.(`${label}_directory_synced`);
       await this.owner(owner, current.state); await owner.adjustReservation(0);
     });
   }

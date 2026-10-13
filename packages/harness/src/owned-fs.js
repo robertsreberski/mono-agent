@@ -71,11 +71,12 @@ export async function readOwned(path, maxBytes = Infinity) {
  * skipped: never read, charged or deleted. Matching entries that fail the owned
  * rule are returned `damaged` with their bytes so callers charge them and refuse
  * only their owner. A missing or unreadable directory is the caller's concern.
- * @param {string} directory @param {RegExp} pattern @param {number} [maxBytes] */
-export async function listOwned(directory, pattern, maxBytes = Infinity) {
+ * `prefix` scopes the listing to one owner before any entry is stat'ed.
+ * @param {string} directory @param {RegExp} pattern @param {number} [maxBytes] @param {string} [prefix] */
+export async function listOwned(directory, pattern, maxBytes = Infinity, prefix = "") {
   const entries = [];
   for (const name of (await readdir(directory)).sort()) {
-    const match = pattern.exec(name); if (!match) continue;
+    const match = name.startsWith(prefix) ? pattern.exec(name) : null; if (!match) continue;
     let stat;
     try { stat = await lstat(join(directory, name)); }
     catch (error) { if (/** @type {any} */ (error)?.code === "ENOENT") continue; throw error; }

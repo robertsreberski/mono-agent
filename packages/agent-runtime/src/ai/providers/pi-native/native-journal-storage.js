@@ -1,7 +1,7 @@
 // @ts-check
 import { checkNativeInheritedPrefix } from "./handoff-producer.js";
 // Private storage-only bridge: no provider dispatch, repair accounting or tools.
-import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, managedJournalId } from "@mono-agent/harness";
+import { createEvidenceView, createHandoffBudget, prepareHandoff, buildHandoff, managedJournalId, scanEvidenceSegment } from "@mono-agent/harness";
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -14,8 +14,8 @@ import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 /** @returns {never} */
 function fail() { throw new Error("Managed native journal evidence changed or is unavailable"); }
 const ordered = (v) => Array.isArray(v) ? v.map(ordered) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordered(v[k])])) : v;
-// Matches the host's 16 MiB switch-payload ceiling. Raw capture is bounded
-// separately from streaming inspection; never clip evidence.
+// Matches the host's 16 MiB switch-payload ceiling. It bounds the evidence
+// retained from the streamed journal, not its physical size; never clip evidence.
 export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 export class NativeEvidenceCapacityError extends RangeError {
   constructor() {
@@ -35,37 +35,33 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
   const root = normalizeDurableSessionsRoot(sessionsRoot), repo = resolveDurableNativeSessionRepo(root);
   const phase = async (name) => { await onPhase(name); };
   const path = (id) => { if (!/^[A-Za-z0-9_-]+$/.test(id)) fail(); return join(root, "mono-v2", "journals", `${id}.jsonl`); };
-  /** Streaming digest of one exact journal; records are retained only for capture.
+  /** Streaming digest of one exact journal; no record is retained.
    * @param {any} coordinate */
-  const snapshot = async (coordinate, capture = 0) => {
+  const snapshot = async (coordinate) => {
     const journalId = managedJournalId(coordinate.handleId);
     if (coordinate.journalId && coordinate.journalId !== journalId) fail();
     const meta = { id: coordinate.handleId, journalId, path: path(journalId) }, reader = await JournalReader.open(meta.path, root);
     try {
-      if (capture && reader.identity.size > capture) captureLimit();
       /** @type {any} */ let header;
       /** @type {any} */ let handleBinding;
       const validator = new JournalValidator(), full = createHash("sha256").update("[");
       let first = true;
-      const records = [];
       const evidence = await reader.scan((record) => {
         if (!header) { validateJournalHeader(record); header = record; return; }
-        if (capture) records.push(record);
         if (!first) full.update(","); full.update(JSON.stringify(record)); first = false;
         validator.apply(record);
         if (record.kind === "handle_binding") handleBinding = record.payload;
         const binding = record.kind === "owner_binding" ? record.payload : record.payload.binding;
         if (binding && binding.kind !== "unbound" && (binding.ownerKey !== coordinate.ownerKey || binding.historyBucket !== coordinate.historyBucket)) fail();
         if (record.kind === "turn_start" && record.payload.binding && record.payload.binding.handleId !== coordinate.handleId) fail();
-      }, capture ? { maxBytes: capture } : undefined);
+      });
       if (!header || header.id !== coordinate.handleId || header.journalId !== meta.journalId) fail();
       if (evidence.torn || validator.openTurns.size || validator.openOperations.size) fail();
       const current = await reader.assertIdentity();
       if (current.nlink !== 1 || current.size !== evidence.identity.size || current.mtimeMs !== evidence.identity.mtimeMs || current.ctimeMs !== evidence.identity.ctimeMs) fail();
-      return { metadata: meta, header, records, handleBinding,
-        owner: validator.owner, bytes: current.size,
+      return { metadata: meta, header, handleBinding, owner: validator.owner,
         descriptor: { ...coordinate, journalId: meta.journalId, sourceTipId: validator.tip, sourceSeq: validator.seq, sourceDigest: full.update("]").digest("hex") } };
-    } catch (error) { if (capture && error?.code === "ERR_JOURNAL_READ_LIMIT") captureLimit(); throw error; } finally { await reader.close(); }
+    } finally { await reader.close(); }
   };
   // Definitive absence of every published/staged member of one exact journal.
   const journalAbsent = async (journalId) => {
@@ -156,17 +152,22 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
       await context.assertOwned();
       const segments = [];
       if (source) {
-        if (source.ownerKey !== context.ownerKey || source.historyBucket !== context.historyBucket) fail();
-        // Stat the exact published path before allocating records or parsing even
-        // the first header. Rechecked by the secure reader and its identity CAS.
-        let stat; try { stat = await lstat(path(source.journalId)); } catch { fail(); }
-        if (stat.size > MAX_CAPTURE_BYTES) captureLimit();
-        let captured;
-        try { captured = await snapshot(source, MAX_CAPTURE_BYTES); }
-        catch (error) { if (error instanceof NativeEvidenceCapacityError) throw error; fail(); }
-        if (!same(captured.descriptor, source) || captured.header.hostAuthority !== undefined && !same(captured.header.hostAuthority, context.hostAuthority)) fail();
+        if (source.ownerKey !== context.ownerKey || source.historyBucket !== context.historyBucket || source.journalId !== managedJournalId(source.handleId)) fail();
+        // Two streamed passes of any physical size: only the effective tail and
+        // records cited by unresolved work are retained, up to the capture limit.
         const { epoch: _epoch, ...descriptor } = source;
-        segments.push({ descriptor, header: captured.header, records: captured.records });
+        let reader; try { reader = await JournalReader.open(path(source.journalId), root); } catch { fail(); }
+        try {
+          const header = await reader.readHeader();
+          if (header?.hostAuthority !== undefined && !same(header.hostAuthority, context.hostAuthority)) fail();
+          /** @type {any} */ let identity;
+          segments.push(await scanEvidenceSegment({ descriptor, header }, context, async (visit) => {
+            let first = true;
+            const scan = await reader.scan((record, address) => { if (first) first = false; else visit(record, address.length); });
+            if (scan.torn || identity && (scan.identity.size !== identity.size || scan.identity.mtimeMs !== identity.mtimeMs || scan.identity.ctimeMs !== identity.ctimeMs)) fail();
+            identity = scan.identity;
+          }, MAX_CAPTURE_BYTES));
+        } catch (error) { if (error?.code === "ERR_JOURNAL_READ_LIMIT") captureLimit(); fail(); } finally { await reader.close(); }
       }
       await context.assertOwned();
       return createEvidenceView({ ownerKey: context.ownerKey, historyBucket: context.historyBucket, segments, gaps: context.gaps ?? [], prior: context.prior ?? null });
@@ -232,12 +233,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
         } finally { for (const writer of writers) writer.release(); }
       }, { wait: false }); } catch (error) { if (error?.code === "ERR_HARNESS_WRITER_BUSY") return true; throw error; }
     },
-    /** Read-only presence probe under the held host claim. Never opens for
+    /** Read-only O(1) presence probe under the held host claim. Never opens for
      * writing, repairs, imports, creates or deletes. `missing` requires a
      * definitive absence: no published/staged file for an exact journal ID, or
      * no catalogue entry (owned or legacy) for the handle. Any other doubt is
-     * `unreadable`, never cold authority. A torn final line is left to the
-     * existing open/repair path; every complete line must parse and validate.
+     * `unreadable`, never cold authority. Only the header is read here; record
+     * damage is refused by the existing open/repair path.
      * @param {{handleId:string, journalId?:string}} coordinates */
     async inspectCurrentJournal(coordinates) {
       const { handleId, journalId } = coordinates ?? {};
@@ -260,11 +261,12 @@ export function createManagedNativeJournalStorage({ sessionsRoot, onPhase = asyn
           else if (found.unattributed) return unreadable("unattributed");
           else return { status: "missing" };
         }
+        // O(1) presence probe: secure open plus header identity. Body damage is
+        // refused when the ordinary open path validates the journal.
         const reader = await JournalReader.open(meta.path, root);
         try {
-          /** @type {any} */ let header; const validator = new JournalValidator();
-          await reader.scan((record) => { if (!header) { validateJournalHeader(record); header = record; } else validator.apply(record); });
-          if (!header || header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
+          const header = await reader.readHeader(); validateJournalHeader(header);
+          if (header.id !== handleId || journalId !== undefined && header.journalId !== journalId) return unreadable("identity");
         } finally { await reader.close(); }
         return { status: "present" };
       } catch (error) {

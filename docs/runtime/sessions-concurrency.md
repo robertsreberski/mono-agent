@@ -98,7 +98,14 @@ those records are not supported read compatibility.
 Each switch permits at most two billed summary calls per explicit-message generation.
 An outcome-unknown call never auto-repeats. Retries/reopening with the same persisted
 ID grant no new generation; the next explicit message permits one attempt per
-producer. Pending messages are **not queued or replayed**. Interrupted turns are
+producer, without a lifetime cap on such messages. While a switch is pending, an
+explicit message for the source model cancels it storage-only: the turn runs on
+the current journal with no summary call, and the intent's billing record stays
+charged. Requesting the target again with a new message starts a new switch; a
+redelivery of a message that the cancelled switch already used is refused
+without a summary call. A different
+third model is refused as `handoff_pending`.
+Pending messages are **not queued or replayed**. Interrupted turns are
 reported; tools never rerun. Detached same-conversation work may receive retryable
 `native_switch_busy` rather than waiting on its own claim. Reset and retention
 delete the conversation's native journal and handoff artifacts. A capacity or

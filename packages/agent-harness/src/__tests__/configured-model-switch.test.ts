@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
@@ -17,7 +17,7 @@ async function fixture(limits: Record<string, unknown> = {}, targetWindow = 1000
   const base = await mkdtemp(join(tmpdir(), "configured-native-switch-")); closes.push(() => rm(base, { recursive: true, force: true }));
   const identityPath = join(base, "IDENTITY.md"), nativeRoot = join(base, "native"), historyRoot = join(base, "history");
   await writeFile(identityPath, "Fictional stable instructions");
-  const faux = fauxProvider({ models: [{ id: "A", contextWindow: 1000000, maxTokens: 4096 }, { id: "B", contextWindow: targetWindow, maxTokens: 4096 }], tokensPerSecond: 1000000 });
+  const faux = fauxProvider({ models: [{ id: "A", contextWindow: 1000000, maxTokens: 4096 }, { id: "B", contextWindow: targetWindow, maxTokens: 4096 }, { id: "C", contextWindow: targetWindow, maxTokens: 4096 }], tokensPerSecond: 1000000 });
   const models = createModels(); models.setProvider(faux.provider);
   const transport = vi.spyOn(faux.provider, "streamSimple"), native = createManagedNativeJournalStorage({ sessionsRoot: nativeRoot });
   const inspector = createMonoRuntime({ workspace: base }); closes.push(() => inspector.disposeAllSessions!());
@@ -283,4 +283,115 @@ it("strips static detached replay from outgoing handoff and incoming preparation
   expect(result.failure).toBeUndefined(); expect(f.prepareCalls.map((call) => call.id)).toContain("A"); expect(f.prepareCalls.map((call) => call.id)).toContain("B");
   for (const call of f.prepareCalls) expect(call.options).not.toHaveProperty("detachedContext");
   expect(detachedContext).not.toHaveBeenCalled();
+});
+
+/** Both producers reject: no prior summary makes the free checkpoint unfit, so the intent ends pending. */
+async function pendingSwitch(f: Awaited<ReturnType<typeof fixture>>, delivery = "switch-to-B") {
+  f.faux.setResponses([text("Fictional malformed summary"), text("Fictional malformed summary")]);
+  const result = await f.makeHarness("B", true).run(f.request(delivery, "Fictional switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(result.failure?.kind).toBe("handoff_pending");
+  const owner = await f.store.beginProviderSessionPreparation("fictional", `inspect-${delivery}`); const pending = (await owner.read()).pending; await owner.abort();
+  return pending!;
+}
+const switchFiles = async (f: Awaited<ReturnType<typeof fixture>>) => (await readdir(join(f.historyRoot, ".model-switches"))).sort();
+
+it("an explicit message back to the source model abandons a pending switch storage-only, then a later switch is a new id", async () => {
+  const f = await fixture(); await f.seed();
+  const sourceJournals = await f.journals(), pending = await pendingSwitch(f);
+  expect(pending).toMatchObject({ phase: "pending", identity: { fromModelKey: "faux:A", toModelKey: "faux:B" } });
+  expect(pending.attempts.map(({ producer, outcome }) => ({ producer, outcome }))).toEqual([{ producer: "outgoing", outcome: "rejected" }, { producer: "incoming", outcome: "rejected" }]);
+  const billed = f.transport.mock.calls.length; expect(billed).toBe(3);
+  f.faux.setResponses([text("Fictional A reply after cancelling")]);
+  const back = await f.makeHarness("A", true).run(f.request("back-to-A", "Fictional return to the source model", { metadata: { web: { model: "faux:A" } } }));
+  expect(back.failure).toBeUndefined(); expect(back.text).toBe("Fictional A reply after cancelling");
+  // One ordinary turn on the current source journal; no summary producer ran.
+  expect(f.transport).toHaveBeenCalledTimes(billed + 1); expect(f.transport.mock.calls.at(-1)![0].id).toBe("A");
+  expect(await f.journals()).toEqual(sourceJournals); expect((await f.canonical()).providerSession.modelKey).toBe("faux:A"); expect(await f.changes()).toHaveLength(0);
+  // Only the intent fence is gone: the billing state with both charged attempts is retained.
+  const files = await switchFiles(f); expect(files.filter((name) => name.endsWith(".fence.json"))).toEqual([]);
+  const retained = await Promise.all(files.filter((name) => name.endsWith(".state.json")).map(async (name) => JSON.parse(await readFile(join(f.historyRoot, ".model-switches", name), "utf8"))));
+  expect(retained.at(-1)).toMatchObject({ identity: { switchId: pending.identity.switchId }, attempts: pending.attempts });
+  expect((await f.store.stats()).reservedBytes).toBe(0);
+  // Redelivery of the abandoning message stays an ordinary source-model turn.
+  f.faux.setResponses([text("Fictional second A reply")]);
+  expect((await f.makeHarness("A", true).run(f.request("back-to-A", "Fictional return to the source model", { metadata: { web: { model: "faux:A" } } }))).failure).toBeUndefined();
+  expect(f.transport).toHaveBeenCalledTimes(billed + 2);
+  // Requesting the target again is a new explicit message and a new switch id.
+  f.faux.setResponses([text(summary), text("Fictional B reply")]);
+  const again = await f.makeHarness("B", true).run(f.request("switch-to-B-again", "Fictional second switch", { metadata: { web: { model: "faux:B" } } }));
+  expect(again.failure).toBeUndefined(); expect(again.text).toBe("Fictional B reply"); expect(f.transport).toHaveBeenCalledTimes(billed + 4);
+  const switched = await f.canonical(); expect(switched.providerSession.modelKey).toBe("faux:B");
+  expect(switched.lastSwitch.switchId).not.toBe(pending.identity.switchId);
+});
+
+it("a pending switch keeps accepting explicit messages beyond 32 authorizations", async () => {
+  const f = await fixture(); await f.seed(); await pendingSwitch(f, "authorization-0");
+  for (let index = 1; index <= 32; index++) await pendingSwitch(f, `authorization-${index}`);
+  f.faux.setResponses([text(summary), text("Fictional B reply after many messages")]);
+  const result = await f.makeHarness("B", true).run(f.request("authorization-33", "Fictional switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional B reply after many messages");
+  // Two billed producers per explicit message, never more; 67 durable attempts.
+  expect(f.transport).toHaveBeenCalledTimes(1 + 33 * 2 + 2);
+  const state = JSON.parse(await readFile(join(f.historyRoot, ".model-switches", (await switchFiles(f)).find((name) => name.endsWith(".state.json"))!), "utf8"));
+  expect(state).toMatchObject({ phase: "ready", authorizationGeneration: 33 }); expect(state.attempts).toHaveLength(67);
+}, 60_000);
+
+it("a third model requested while a switch is pending is a typed pending refusal that bills nothing", async () => {
+  const f = await fixture(); await f.seed(); const pending = await pendingSwitch(f), billed = f.transport.mock.calls.length;
+  const result = await f.makeHarness("C", true).run(f.request("third-model", "Fictional third model request", { metadata: { web: { model: "faux:C" } } }));
+  expect(result.failure).toMatchObject({ kind: "handoff_pending", message: expect.stringContaining("faux:A to cancel") });
+  expect(f.transport).toHaveBeenCalledTimes(billed);
+  const owner = await f.store.beginProviderSessionPreparation("fictional", "inspect-third"); expect((await owner.read()).pending).toEqual(pending); await owner.abort();
+});
+
+it("a native journal well over 16 MiB with a small effective tail switches, keeping a far-back outcome-unknown call in the ledger", async () => {
+  const f = await fixture(); await f.seed();
+  // Grow the source journal directly: an early crashed Write (outcome unknown),
+  // then many large completed turns, a compaction checkpoint and a small tail.
+  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: f.nativeRoot });
+  const [metadata] = await repo.list(), store = await repo.open(metadata!), model = { provider: "faux", api: "faux-api", id: "A" };
+  await store.beginTurn("fictional-far-turn", {}, "host", undefined); await store.openOperation("fictional-far-op", { model });
+  await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fictional-far-write", name: "Write", arguments: { file_path: "/fictional/far" } }], stopReason: "toolUse", timestamp: 1 } as never, "fictional-far-message");
+  for (const admission of ["observed", "admitted", "started"]) await store.write("tool_call", { callId: "fictional-far-write", name: "Write", messageId: "fictional-far-message", admission }, { operationId: "fictional-far-op" });
+  await store.write("interruption", { cause: "crashed", operationIds: ["fictional-far-op"], tipId: store.tip, calls: [] });
+  await store.closeOperation("fictional-far-op", "interrupted"); await store.endTurn("fictional-far-turn", "interrupted");
+  for (let index = 0; index < 24; index++) {
+    await store.beginTurn(`fictional-large-${index}`, {}, "host", undefined); await store.openOperation(`fictional-large-op-${index}`, { model });
+    await store.appendMessage({ role: "user", content: `Fictional large turn ${index} `.repeat(40000), timestamp: 1 } as never, `fictional-large-message-${index}`);
+    await store.closeOperation(`fictional-large-op-${index}`, "completed"); await store.endTurn(`fictional-large-${index}`, "completed");
+  }
+  await store.appendCompaction({ summary: "Fictional checkpoint of the large turns", tokensBefore: 10, retainedTail: [] });
+  await store.beginTurn("fictional-tail", {}, "host", undefined); await store.openOperation("fictional-tail-op", { model });
+  await store.appendMessage({ role: "user", content: "Fictional small tail fact", timestamp: 1 } as never, "fictional-tail-message");
+  await store.closeOperation("fictional-tail-op", "completed"); await store.endTurn("fictional-tail", "completed"); await store.sync(); await store.close(); await repo.close();
+  const [journal] = await f.journals(); expect((await stat(join(f.nativeRoot, journal!))).size).toBeGreaterThan(20 * 1024 * 1024);
+  f.faux.setResponses([text(summary), text("Fictional B reply after a long conversation")]);
+  const result = await f.makeHarness("B", true).run(f.request("long-switch", "Fictional switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("Fictional B reply after a long conversation");
+  expect((await f.canonical()).providerSession.modelKey).toBe("faux:B"); expect(f.transport).toHaveBeenCalledTimes(3);
+  // The producer saw the checkpoint and tail, not the 24 large turns.
+  expect(JSON.stringify(f.transport.mock.calls[1]![1])).toContain("Fictional checkpoint of the large turns");
+  expect(JSON.stringify(f.transport.mock.calls[1]![1])).not.toContain("Fictional large turn 0");
+  const name = (await switchFiles(f)).find((entry) => entry.endsWith(".handoff.json"))!;
+  const artifact = JSON.parse(await readFile(join(f.historyRoot, ".model-switches", name), "utf8")).artifact;
+  expect(artifact.ledger.filter((entry: { callId?: string }) => entry.callId === "fictional-far-write")).toEqual([expect.objectContaining({ outcome: "unknown", admission: "started", arguments: { file_path: "/fictional/far" } })]);
+}, 60_000);
+
+it("a redelivered message whose abandoned switch already billed it makes no paid call; a new message starts a fresh switch", async () => {
+  const f = await fixture(); await f.seed();
+  const abandoned = await pendingSwitch(f, "fictional-m1"); const billed = f.transport.mock.calls.length;
+  f.faux.setResponses([text("Fictional A reply after cancelling")]);
+  expect((await f.makeHarness("A", true).run(f.request("fictional-m2", "Fictional back to A", { metadata: { web: { model: "faux:A" } } }))).failure).toBeUndefined();
+  expect(f.transport).toHaveBeenCalledTimes(billed + 1);
+  // M1 redelivered for B: its retained billing state already consumed it.
+  f.faux.setResponses([text(summary), text("Fictional must not run")]);
+  const redelivered = await f.makeHarness("B", true).run(f.request("fictional-m1", "Fictional switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(redelivered.failure).toMatchObject({ kind: "handoff_pending", message: expect.stringContaining("send a new message") });
+  expect(f.transport).toHaveBeenCalledTimes(billed + 1); expect((await f.canonical()).providerSession.modelKey).toBe("faux:A");
+  expect((await switchFiles(f)).filter((name) => name.endsWith(".fence.json"))).toEqual([]);
+  // A genuinely new explicit message starts a fresh switch.
+  f.faux.setResponses([text(summary), text("Fictional B reply")]);
+  const fresh = await f.makeHarness("B", true).run(f.request("fictional-m3", "Fictional new switch request", { metadata: { web: { model: "faux:B" } } }));
+  expect(fresh.failure).toBeUndefined(); expect(fresh.text).toBe("Fictional B reply");
+  expect(f.transport).toHaveBeenCalledTimes(billed + 3); expect((await f.canonical()).lastSwitch.switchId).not.toBe(abandoned.identity.switchId);
 });

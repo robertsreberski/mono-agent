@@ -52,11 +52,13 @@ export function renderHandoffMessage(message) {
         : { label: "opaque_native_reference", type: part.type, digest: evidenceDigest(part) }) };
 }
 
-/** @param {any} view */
+/** Genuinely unresolved work only: outcome-unknown or unplaced calls from the
+ * whole epoch (never dropped), turns/calls interrupted since the last completed
+ * turn and unconsumed inputs. Failures the model already saw are history.
+ * @param {any} view */
 export function buildOpenWorkLedger(view) {
   assertEvidenceView(view); const ledger = view.gaps.map((gap) => ({ kind: "coverage_gap", reference: gap.reference, reason: gap.reason, afterJournalId: gap.afterJournalId, data: gap.messages.map(renderHandoffMessage) }));
   for (const segment of view.segments) {
-    const visible = new Set(segment.entries.map((e) => e.id));
     const messages = new Map(segment.records.filter((r) => r.kind === "message").map((r) => [r.id, r.payload.message]));
     const returnedByCall = new Map(segment.records.filter((r) => r.kind === "tool_result" && r.payload.phase === "returned")
       .map((r) => [`${r.operationId}\0${r.payload.callId}`, r]));
@@ -64,28 +66,27 @@ export function buildOpenWorkLedger(view) {
     const causeFor = (turnId, operationId = undefined) => interruptions.filter((r) => r.turnId === turnId
       && (operationId === undefined || r.payload.operationIds.includes(operationId))).at(-1)?.payload.cause ?? null;
     const reference = { journalId: segment.descriptor.journalId, sourceTipId: segment.descriptor.sourceTipId };
-    for (const turn of segment.turns) if (!turn.end || turn.end.payload.status !== "completed") ledger.push({ kind: "turn", ...reference, turnId: turn.id,
-      outcome: turn.end?.payload.status ?? "unknown", cause: causeFor(turn.id) });
-    for (const call of segment.allCalls) {
-      // Keep failed and returned-but-unplaced operations too: placement is not outcome.
-      const rewound = !visible.has(call.messageId);
-      if (!rewound && call.placed && call.outcome === "success") continue;
+    for (const turn of segment.openTurns) ledger.push({ kind: "turn", ...reference, turnId: turn.id, outcome: turn.end?.payload.status ?? "unknown", cause: causeFor(turn.id) });
+    for (const call of segment.openCalls) {
       const envelope = messages.get(call.messageId);
       const args = envelope?.content?.find((part) => part.type === "toolCall" && part.id === call.callId)?.arguments ?? null;
       const returned = returnedByCall.get(`${call.operationId}\0${call.callId}`);
       ledger.push({ kind: "tool", ...reference, turnId: call.turnId, operationId: call.operationId, callId: call.callId, name: call.name, arguments: args,
         admission: call.admission, returned: Boolean(returned), placed: Boolean(call.placed), outcome: call.result ? call.outcome : call.admission === "started" ? "unknown" : "not_executed",
-        rewound, cause: causeFor(call.turnId, call.operationId),
+        rewound: call.rewound, cause: causeFor(call.turnId, call.operationId),
         messageId: call.messageId, resultId: returned?.id ?? null, ...(returned ? { result: renderHandoffMessage(returned.payload.message) } : {}) });
     }
-    for (const input of segment.inputs) if (input.state === "queued") ledger.push({ kind: "input", ...reference, ...input, outcome: "not_consumed" });
+    for (const input of segment.queuedInputs) ledger.push({ kind: "input", ...reference, ...input, outcome: "not_consumed" });
   }
-  // Unresolved inherited entries (e.g. an outcome-unknown effect from an earlier
-  // model) stay deterministic evidence on every route; prose never replaces them.
-  // Later journals cannot resolve an earlier journal's operation, so all carry.
-  const seen = new Set(ledger.map(ledgerIdentity));
+  // Inherited outcome-unknown/unplaced effects, inputs and anything not provably
+  // resolved always carry: later journals cannot resolve an earlier journal's
+  // operation. Resolved turns, failures and gaps carry only until a turn completes.
+  const settled = view.segments.some((segment) => segment.settled), seen = new Set(ledger.map(ledgerIdentity));
+  const resolved = (entry) => ["turn", "coverage_gap"].includes(entry.kind) || (entry.kind === "tool" && !(entry.returned && !entry.placed)
+    && ["success", "error", "cancelled", "skipped", "not_executed"].includes(entry.outcome));
   for (const entry of view.prior?.ledger ?? []) {
     const identity = ledgerIdentity(entry);
+    if (settled && resolved(entry)) continue;
     if (!seen.has(identity)) { seen.add(identity); ledger.push(structuredClone(entry)); }
   }
   return ledger;

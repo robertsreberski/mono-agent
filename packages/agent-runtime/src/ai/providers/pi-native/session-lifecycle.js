@@ -220,6 +220,9 @@ async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CON
   }
 }
 
+/** @param {any} error */
+const isJournalCorruption = (error) => error instanceof SyntaxError || error?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
+
 function sessionUnavailableResult({
   resolved,
   options,
@@ -315,13 +318,13 @@ export async function resolveSession(runState, {
         if (remaining) coldOpenCounts.set(requestedSessionId, remaining); else coldOpenCounts.delete(requestedSessionId);
       }
     }
+    const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+      sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
+      failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
     if (!entry) {
       if (busy) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
         sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is busy`,
         failureKind: "session_busy", piErrorCode: "pi_session_busy", piTransport }) };
-      const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
-        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
-        failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
       if (durableRepo && options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision > 0) {
         // P2 canonical revision proves an earlier native turn existed. Missing
         // bytes cannot become an empty warm transcript. Fail before dispatch;
@@ -474,6 +477,9 @@ export async function resolveSession(runState, {
         // reopen/recovery attempt.
         liveness.release(requestedSessionId);
         runState.sessionEntry = null;
+        // Journal damage found by the validating open (the presence probe reads
+        // only the header) is the same typed, evidence-preserving refusal.
+        if (claimed.entry.durable && isJournalCorruption(error)) return unreadable();
         throw error;
       }
     }

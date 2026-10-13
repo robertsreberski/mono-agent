@@ -8,6 +8,11 @@ import type { RuntimeNativeJournalAuthority, RuntimeHandoffBudget } from "@mono-
 export class ModelSwitchCapacityError extends Error {
   readonly code = "ERR_MODEL_SWITCH_CAPACITY";
 }
+/** The explicit message already authorized a retained switch intent's billing. */
+export class ModelSwitchMessageConsumedError extends Error {
+  readonly code = "ERR_MODEL_SWITCH_MESSAGE_CONSUMED";
+  constructor() { super("This explicit message already authorized a model switch; it never authorizes paid work again"); this.name = "ModelSwitchMessageConsumedError"; }
+}
 export const MODEL_SWITCH_DIRECTORY = ".model-switches";
 export const MAX_MODEL_SWITCH_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SWITCH_FENCE_BYTES = 1024;
@@ -195,7 +200,7 @@ export function validateModelSwitchState(value: unknown): asserts value is Model
   if (identity.source !== null) validateJournalDescriptor(identity.source, identity.ownerKey, identity.historyBucket, identity.sourceEpoch as string);
   if (identity.sourceEpoch === identity.targetEpoch) switchInvalid();
   reservationBytes(value.reservation as unknown as ModelSwitchReservation); switchNumber(value.authorizationGeneration);
-  if (!Array.isArray(value.authorizations) || value.authorizations.length > 32 || !Array.isArray(value.attempts) || value.attempts.length > 66) switchInvalid();
+  if (!Array.isArray(value.authorizations) || !Array.isArray(value.attempts)) switchInvalid();
   const messages = new Set<string>(value.initialMessageDigest === undefined ? [] : [value.initialMessageDigest as string]);
   for (let index = 0; index < value.authorizations.length; index++) {
     const authorization: unknown = value.authorizations[index]; switchObject(authorization); switchKeys(authorization, ["generation", "messageDigest"]);
