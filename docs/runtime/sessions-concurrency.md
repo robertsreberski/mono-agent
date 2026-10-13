@@ -197,18 +197,60 @@ ignored. A damaged entry of one conversation (empty, malformed, not exactly
 owner-only `0600`, or hard-linked) stays on disk, still counts toward storage
 limits and is never deleted or evicted. This applies to pending-turn
 generations, model-switch states and handoffs (fenced or not), canonical
-records and stages, and conversation-keyed dirty fences in `.locks`. Only that
-conversation is refused, with `ERR_OWNED_FILE_DAMAGED` (an insecure canonical
-record refuses with its permission error), until the file is repaired or
-removed by hand. A canonical record that reads as truncated JSON is instead set
-aside unchanged as `<record>.damaged-<n>` beside it, under the conversation's
-lock; the conversation continues from empty history with a one-time
-`conversation_history_set_aside` warning. Set-aside files are not charged and
-are never read or deleted by mono-agent. Shared lock files in `.locks` (the root
-lock, conversation and session shard locks, claim journals and active markers),
-native lifecycle intents and a replaced or insecure root directory still stop
-the whole root. Cancelling a native turn also stops its wait for a session lock
-held by another process.
+records and stages, per-conversation lock files, active markers, dirty fences
+and fence temps in `.locks`, and `.native-history-op.<hash>.json` lifecycle
+intents. Insecure, oversized and unreadable owner artifacts are preserved too;
+damaged lifecycle contents are never executed. Only their owning conversation
+is refused until offline repair. The diagnostic names the unavailable artifact;
+canonical records and legacy SQLite locks may report their underlying error.
+A canonical record that reads as truncated JSON is instead set aside unchanged
+as `<record>.damaged-<n>` beside it, under the conversation's lock; the conversation
+continues from empty history with a one-time `conversation_history_set_aside`
+warning. Set-aside files are not charged and are never read or deleted by
+mono-agent. New writers no longer create or validate redundant
+`conversation-shard-*.sqlite` files; existing inodes stay untouched, including
+those used by claim-aware older writers (0.20 or later).
+
+Damage to `.locks/root.sqlite`, logical-session shard databases and their claim
+journals, `.native-history-root.json`, or pinned root/subdirectory identities
+still stops the whole root. Cancelling a native turn stops its wait for a native
+session lock held by another process; host history-claim waits are not yet
+cancellable.
+
+Admission avoids a root-wide history inventory, but preparation, commit and
+retention may scan all recognized history and recovery artifacts while holding
+the shared root lock. Managed roots also inspect retained canonical records and
+native inventory. Retention may repeat planning after native-I/O windows.
+Configured quotas do not impose a fixed scan-time bound: large or heavily
+damaged roots can delay other conversations' publication.
+A local macOS arm64/Node 24 measurement with minimal records and real native
+epochs found managed commit lock-held time rising from 19 ms at one conversation
+to 8.4 s at 10,000 (13.7 s with one retention victim); these single warm-filesystem
+samples are not latency guarantees (`scripts/measure-history-accounting.mjs`).
+
+### Stopped-writer recovery of shared coordination
+
+1. Stop **every** process sharing the canonical history and native roots,
+   including services, CLI runs, workers and older binaries. Never replace a
+   lock inode while any writer can still hold it.
+2. Back up both roots together, preserving modes and all recovery evidence.
+   Identify the exact failed artifact from the diagnostic; do not guess from
+   another conversation's symptoms.
+3. Rename only that identified file to a collision-free `<name>.damaged-<n>`
+   beside it. For a SQLite database with an associated recovery journal, preserve
+   the corresponding journal alongside that database before rebuilding it. Do
+   **not** remove `.locks` wholesale, or move fences, payloads or lifecycle intents
+   as part of shared-lock recovery.
+4. An empty shared coordination database can be recreated at restart. A damaged
+   `.native-history-root.json` cannot: restore that exact authority marker from
+   the consistent backup before restarting. Never generate new authority over
+   existing guarded native journals. Likewise, do not rebuild the native
+   `mono-v2/locks/catalog.sqlite` or journal locks while any native writer lives.
+5. Restart upgraded writers and verify ordinary storage-only interruption
+   recovery. Recovery reports interrupted turns and waits; it does not rerun
+   providers, tools or paid summary calls. Keep the backed-up/damaged files until
+   recovery is verified. A replaced or insecure directory needs its original
+   identity/permissions restored with all writers stopped, not a live workaround.
 
 To enable:
 

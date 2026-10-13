@@ -192,6 +192,6 @@ it.each(["truncated", "permissions", "identity"])("bootstrap preserves %s pendin
   if (damage === "truncated") await writeFile(path, '{"version":', { mode: 0o600 });
   if (damage === "permissions") await chmod(path, 0o644);
   const bytes = await readFile(path);
-  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow("recovery data is damaged; repair or restore");
+  await expect(f.store.acquireNativeHistoryAuthority(bucket)).rejects.toThrow(/recovery data is damaged \(.+\); repair or restore/);
   expect(await readFile(path)).toEqual(bytes); expect(await readdir(f.root)).not.toContain(NATIVE_HISTORY_ROOT_FILE); expect(f.retire).not.toHaveBeenCalled();
 });

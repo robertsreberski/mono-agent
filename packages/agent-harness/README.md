@@ -136,6 +136,16 @@ conversations. Aggregate history and staging quotas are enforced at commit and
 retention. Settling a reconciled turn (commit, recovery or drain) releases its
 own payload, so the staging quota never refuses it; concurrent in-flight turns
 can therefore overshoot staging transiently, by at most one payload cap each.
+Preparation, commit and retention may scan all recognized history/recovery
+artifacts under the shared root lock; managed roots also read canonical records
+and native inventory. Retention can repeat planning after native-I/O windows.
+Quotas are not fixed scan-time bounds: large or damaged roots can delay unrelated
+publication. See [shared-root limits and offline recovery](../../docs/runtime/sessions-concurrency.md#stopped-writer-recovery-of-shared-coordination).
+Damaged per-conversation locks, active markers, dirty fences/temps and lifecycle
+intents stay charged and protected and refuse only their owner. Shared root and
+logical-session coordination damage remains root-fatal. Redundant conversation
+shard locks are no longer created or validated; older writers' files stay intact.
+
 Terminal live `claim` candidate replacement also reuses already-admitted inputs,
 so it is staging-exempt but remains bounded by the pending-payload format limit.
 New input admission and canonical commit quotas remain enforced.

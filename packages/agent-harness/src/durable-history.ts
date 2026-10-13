@@ -15,7 +15,7 @@ import { PENDING_TURN_DIRECTORY, DurableTurnAlreadyCommittedError, validateDurab
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 
@@ -62,7 +62,6 @@ const DEFAULT_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
 const HISTORY_FILE_SUFFIX = ".history.json";
 const LOCKS_DIRECTORY = ".locks";
 const TOOL_HISTORY_DIRECTORY = "tool-history";
-const TOOL_HISTORY_OWNER_FILE = "tool-lifecycles-owner.sqlite";
 const ROOT_LOCK_FILE = "root.sqlite";
 const NATIVE_OPERATION_PATTERN = /^\.native-history-op\.([a-f0-9]{64})\.json$/u;
 const MAX_NATIVE_OPERATION_BYTES = 2 * MAX_STORE_FILE_BYTES + 4096;
@@ -76,12 +75,10 @@ interface NativeHistoryOperation {
   readonly source: NativeTurnHistory; readonly next: CanonicalHistoryFile | null;
   readonly timestamp: number;
 }
-const CONVERSATION_LOCK_SHARDS = 16;
 const LOGICAL_SESSION_LOCK_SHARDS = 16;
 const MAX_SESSION_CLAIMS_PER_SHARD = 1_024;
 const MAX_SESSION_CLAIM_FILE_BYTES = 1024 * 1024;
 const MAX_SESSION_CLAIM_JOURNAL_BYTES = 2 * MAX_SESSION_CLAIM_FILE_BYTES;
-const CONVERSATION_SHARD_LOCK_PATTERN = /^conversation-shard-([a-f0-9]{2})\.sqlite$/u;
 const LOGICAL_SESSION_SHARD_LOCK_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite$/u;
 const LOGICAL_SESSION_SHARD_JOURNAL_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite-journal$/u;
 const TEMP_FILE_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.[a-f0-9]{24}\.tmp$/u;
@@ -185,8 +182,8 @@ export class ModelSwitchPendingError extends Error {
 /** Damage is not contention: it is non-retryable and no drain can repair it. */
 export class NativeHistoryAuthorityBusyError extends Error {
   readonly code: string; readonly retryable: boolean;
-  constructor(readonly damaged = false) {
-    super(damaged ? "Another conversation's saved recovery data is damaged; repair or restore it before retrying." : "Another conversation is still running or awaiting recovery; send again when it finishes.");
+  constructor(readonly damaged = false, artifact?: string) {
+    super(damaged ? `Another conversation's saved recovery data is damaged${artifact ? ` (${basename(artifact)})` : ""}; repair or restore it before retrying.` : "Another conversation is still running or awaiting recovery; send again when it finishes.");
     this.name = "NativeHistoryAuthorityBusyError"; this.code = damaged ? "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED" : "ERR_NATIVE_HISTORY_AUTHORITY_BUSY"; this.retryable = !damaged;
   }
 }
@@ -285,6 +282,7 @@ interface ActiveMarker {
   readonly conversationKey: string;
   readonly pid: number;
   readonly token: string;
+  readonly damaged?: true;
 }
 
 interface DirtyFence {
@@ -464,14 +462,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const rootStore = this.nativeHistoryRoot(rootIdentity);
         if (!await rootStore.read()) {
           const active = await this.scanActiveMarkers(true), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
-          const pending = await this.pendingPayloads(rootIdentity).list();
-          let damaged = fences.damaged.size > 0 || pending.some((entry) => entry.damaged);
-          for (const entry of pending.filter((entry) => !entry.name.endsWith(".tmp") && !entry.damaged && !active.some((marker) => marker.conversationKey === entry.conversationKey))) {
+          const pending = new Map((await this.pendingPayloads(rootIdentity).list()).map((entry) => [entry.name, entry]));
+          let damaged = fences.damaged.values().next().value ?? [...pending.values()].find((entry) => entry.damaged)?.name
+            ?? active.find((entry) => entry.damaged)?.path;
+          for (const entry of [...pending.values()].filter((entry) => !entry.name.endsWith(".tmp") && !entry.damaged && !active.some((marker) => marker.conversationKey === entry.conversationKey))) {
             try { await this.pendingPayloads(rootIdentity).inspect(entry); }
-            catch { await assertDirectoryIdentity(this.root, rootIdentity); damaged = true; }
+            catch (error) {
+              await assertDirectoryIdentity(this.root, rootIdentity);
+              await this.pendingPayloads(rootIdentity).list(); // recheck the pinned subdirectory before isolating damage
+              const code = causedErrno(error);
+              if (code === "ENOENT") { pending.delete(entry.name); continue; }
+              if (code && !["EACCES", "EPERM", "ELOOP"].includes(code)) throw error;
+              damaged = entry.name;
+            }
           }
-          if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || pending.length) {
-            throw new NativeHistoryAuthorityBusyError(damaged);
+          if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || pending.size) {
+            throw new NativeHistoryAuthorityBusyError(damaged !== undefined, damaged);
           }
           // A readable native record without the marker refuses; an unreadable sibling stays isolated to its owner.
           for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {
@@ -532,9 +538,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (state.identity.source) ids.add(state.identity.source.journalId);
         ids.add(currentJournal(state.identity.historyBucket, state.identity.targetEpoch).journalId);
       }
-      // A damaged switch hides its journals: charge that owner's attested journals too.
+      // Damaged switch/canonical/intent evidence can hide journals: charge the owner's attested inventory too.
       const unknownKeys = [...[...(records?.entries() ?? [])].filter(([, record]) => record === undefined)
-        .map(([name]) => name.slice(0, -HISTORY_FILE_SUFFIX.length)), ...(await this.switchInventory(rootIdentity)).damaged];
+        .map(([name]) => name.slice(0, -HISTORY_FILE_SUFFIX.length)), ...(await this.switchInventory(rootIdentity)).damaged,
+        ...(await readdir(this.root)).flatMap((name) => NATIVE_OPERATION_PATTERN.exec(name)?.[1] ?? [])];
       const marker = unknownKeys.length === 0 ? undefined : await this.nativeHistoryRoot(rootIdentity).read();
       return this.nativeJournalStorage!.inventory([...ids], marker ? { rootId: marker.rootId, conversationKeys: unknownKeys } : undefined);
     };
@@ -800,7 +807,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
   private async readNativeOperation(id: string, rootIdentity: DirectoryIdentity): Promise<NativeHistoryOperation | undefined> {
     let bytes; try { bytes = await this.readNativeOperationBytes(`.native-history-op.${historyKey(id)}.json`, rootIdentity); }
-    catch (error) { if (isErrno(error, "ENOENT")) return undefined; throw error; }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (isErrno(error, "ENOENT")) return undefined; throw error; }
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); this.validateNativeOperation(value);
     if (value.source.conversationId !== id) throw new TypeError("Native lifecycle filename/owner mismatch");
     await this.assertNativeRecordAuthority({ ...value.source, sourceVersion: STORE_VERSION }, rootIdentity); return value;
@@ -811,8 +818,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const physical = this.nativeJournalStorage ? native ?? await this.managedNativeInventory(rootIdentity) : undefined;
       for (const name of await readdir(this.root)) {
         const match = NATIVE_OPERATION_PATTERN.exec(name); if (!match) continue;
-        const path = join(this.root, name), info = await lstat(path); assertSecureHistoryFile(info, path);
-        if (info.size > MAX_NATIVE_OPERATION_BYTES) throw new Error("Native lifecycle intent exceeds its limit"); bytes += info.size; keys.add(match[1]!);
+        keys.add(match[1]!);
+        try { bytes += (await lstat(join(this.root, name))).size; }
+        catch (error) {
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          if (isErrno(error, "ENOENT")) { keys.delete(match[1]!); continue; }
+          bytes += MAX_NATIVE_OPERATION_BYTES; continue;
+        }
         // Accounting does not need dispatchable membership. Invalid owner evidence
         // remains charged and protected rather than blocking unrelated mutation.
         try {
@@ -821,7 +833,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (raw.disposition === "C" && raw.next) {
             reserved += Math.max(0, MAX_NATIVE_EPOCH_BYTES - (physical?.journals[currentJournal(raw.next.conversationId, raw.next.providerSession.epoch).journalId]?.retainedBytes ?? 0));
           }
-        } catch (error) { if (!(error instanceof TypeError || error instanceof SyntaxError)) throw error; }
+        } catch { await assertDirectoryIdentity(this.root, rootIdentity); }
       }
       await assertDirectoryIdentity(this.root, rootIdentity); return { bytes, reserved, keys };
     };
@@ -919,13 +931,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const operations: NativeHistoryOperation[] = [];
     for (const name of await readdir(this.root)) {
       if (!NATIVE_OPERATION_PATTERN.test(name)) continue;
-      const path = join(this.root, name), info = await lstat(path); assertSecureHistoryFile(info, path);
-      if (info.size > MAX_NATIVE_OPERATION_BYTES) throw new Error("Native lifecycle intent exceeds its limit");
+      const path = join(this.root, name);
       try {
         const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readNativeOperationBytes(name, rootIdentity))); this.validateNativeOperation(raw);
         const operation = await this.readNativeOperation(raw.source.conversationId, rootIdentity);
         if (!operation || this.nativeOperationPath(raw.source.conversationId) !== path) throw new TypeError("Native lifecycle filename changed"); operations.push(operation);
-      } catch (error) { if (!(error instanceof TypeError || error instanceof SyntaxError)) throw error; }
+      } catch { await assertDirectoryIdentity(this.root, rootIdentity); await this.nativeHistoryRoot(rootIdentity).read(); }
     }
     return operations;
   }
@@ -948,6 +959,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     committingOwner: HeldLogicalConversation, phase: "prepare" | "maintenance"): Promise<void> {
     if (!this.nativeJournalStorage) return;
     const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    for (const key of (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).damaged.keys()) active.add(key);
     for (const operation of await this.nativeOperationOwners(rootIdentity)) {
       const id = operation.source.conversationId, logicalId = logicalConversationIdForFence(id);
       if (operation.disposition !== "D" || active.has(historyKey(id))
@@ -957,6 +969,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         try {
           owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.acquireLogicalConversation(logicalId, true);
           if (requiresExactConversationClaim(id)) exact = await this.acquireExactConversationClaim(id, true);
+          if (!await this.legacyLockAvailable(historyKey(id))) continue;
           await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
         } finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
       } catch (error) {
@@ -1803,7 +1816,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // never whole-root history/journal accounting; aggregate quotas are
       // enforced at commit and retention.
       const fences = await this.scanDirtyFences(locksIdentity, true), pending = await this.pendingPayloads(rootIdentity).list();
-      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged, ...pending.map((entry) => entry.conversationKey)]);
+      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...pending.map((entry) => entry.conversationKey)]);
       physicalOwners.delete(historyKey(conversationId));
       needsDrain = physicalOwners.size >= this.maxConversations
         || pending.reduce((total, entry) => total + entry.bytes, 0) + projected > this.maxStagedBytes;
@@ -2071,7 +2084,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const operations = await this.nativeOperationFootprint(rootIdentity);
       return {
         conversations: entries.length,
-        bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + await this.nativeHistoryRoot(rootIdentity).bytes(),
+        bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + await this.nativeHistoryRoot(rootIdentity).bytes(),
         reservedBytes: switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0) + operations.reserved,
         activePreparedAppends: active.length,
         postCommitMaintenanceFailures: maintenance?.count ?? 0,
@@ -2197,7 +2210,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     locksIdentity: DirectoryIdentity,
   ): Promise<DirtyFence | undefined> {
     const fences = await this.scanDirtyFences(locksIdentity, true);
-    if (fences.damaged.has(conversationKey)) throw new OwnedFileDamagedError(`${LOCKS_DIRECTORY}/${conversationKey}.dirty.json`);
+    if (fences.damaged.has(conversationKey)) throw new OwnedFileDamagedError(fences.damaged.get(conversationKey)!);
     return fences.find((fence) => fence.conversationKey === conversationKey);
   }
 
@@ -2208,7 +2221,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<void> {
     let fences = await this.scanDirtyFences(locksIdentity, true);
     const pendingKeys = new Set((await this.pendingPayloads(rootIdentity).list()).map((entry) => entry.conversationKey));
-    const targetCount = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged, ...pendingKeys, conversationKey]).size;
+    const targetCount = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...pendingKeys, conversationKey]).size;
     if (targetCount <= this.maxConversations) return;
 
     const committedKeys = new Set(
@@ -2246,7 +2259,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       throw new Error(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`);
     }
     fences = await this.scanDirtyFences(locksIdentity, false);
-    if (new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged, ...pendingKeys, conversationKey]).size
+    if (new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...pendingKeys, conversationKey]).size
       > this.maxConversations) {
       throw new Error(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`);
     }
@@ -2588,7 +2601,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const fence of fences) {
       if (fence.kind === "execution" || fence.kind === "compaction") protectedNames.add(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
     }
-    for (const key of fences.damaged) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    for (const key of fences.damaged.keys()) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     const managedRoot = await this.nativeHistoryRoot(rootIdentity).read() !== undefined;
     let records = new Map<string, LoadedHistoryRecord | undefined>();
     const wantsPruning = entries.length + projectedStages.filter((stage) => !entries.some((entry) => entry.name === stage.destinationName)).length > this.maxConversations
@@ -2607,7 +2620,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const key of operations.keys) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
     for (const [name, record] of records) if (record?.native !== undefined && !this.nativeJournalStorage) protectedNames.add(name);
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
-    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + operations.reserved + await this.nativeHistoryRoot(rootIdentity).bytes()
+    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + operations.reserved + fences.bytes + await this.nativeHistoryRoot(rootIdentity).bytes()
       + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let projectedCount = entries.length;
     for (const active of projectedStages) {
@@ -2630,6 +2643,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // actually needed. Stop as soon as both quota excess and age are covered.
       if (projectedCount - candidates.length <= this.maxConversations && projectedBytes - removableBytes <= this.maxStoreBytes
         && this.now() - entry.mtimeMs <= this.maxAgeMs) break;
+      if (!await this.legacyLockAvailable(entry.name.slice(0, 64))) continue;
       const record = records.get(entry.name);
       if (record?.native !== undefined && requiresExactConversationClaim(record.conversationId)) {
         let exact: HeldExactConversationClaim | undefined;
@@ -2671,7 +2685,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     // They are not abandoned canonical staging and require owner-held recovery.
     const switches = await this.modelSwitchFootprint(rootIdentity);
     const operations = await this.nativeOperationFootprint(rootIdentity);
-    let bytes = operations.bytes + operations.reserved + (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0) + switches.bytes + switches.nativeStagedBytes + await this.nativeHistoryRoot(rootIdentity).bytes()
+    let bytes = operations.bytes + operations.reserved + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + (await this.pendingPayloads(rootIdentity).list()).reduce((total, entry) => total + entry.bytes, 0) + switches.bytes + switches.nativeStagedBytes + await this.nativeHistoryRoot(rootIdentity).bytes()
       + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let removed = false;
     for (const name of (await readdir(this.root)).sort()) {
@@ -2713,11 +2727,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         assertSecureHistoryDirectory(info, path);
         continue;
       }
-      if (NATIVE_OPERATION_PATTERN.test(name)) {
-        const info = await lstat(path); assertSecureHistoryFile(info, path);
-        if (info.size > MAX_NATIVE_OPERATION_BYTES) throw new Error("Native lifecycle intent exceeds its limit");
-        continue;
-      }
+      if (NATIVE_OPERATION_PATTERN.test(name)) continue; // owner-scoped; charged by nativeOperationFootprint
       if (name === NATIVE_HISTORY_ROOT_FILE || NATIVE_HISTORY_ROOT_TEMP.test(name)) {
         const stat = await lstat(join(this.root, name)); assertSecureHistoryFile(stat, join(this.root, name));
         if (stat.size > MAX_NATIVE_HISTORY_ROOT_BYTES) throw new Error("Native root marker exceeds its serialized limit");
@@ -2852,6 +2862,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       );
       const releaseRoot = await this.acquireRootTransaction(rootIdentity);
       try {
+        await this.findDirtyFence(conversationKey, locksIdentity);
         await this.retireInactiveDirtyFences(rootIdentity, locksIdentity, conversationKey);
         marker = await this.createActiveMarker(conversationKey, locksIdentity);
       } finally {
@@ -3047,9 +3058,6 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const name of (await readdir(locksRoot)).sort()) {
       if (
         name === ROOT_LOCK_FILE
-        || name === TOOL_HISTORY_OWNER_FILE
-        || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
-        || isConversationShardLockName(name)
         || isLogicalSessionShardLockName(name)
       ) {
         const path = join(locksRoot, name);
@@ -3065,29 +3073,34 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const match = ACTIVE_MARKER_PATTERN.exec(name);
       if (match === null) continue; // unrelated names are never read or deleted
       const path = join(locksRoot, name);
-      const info = await lstat(path);
-      assertSecureHistoryFile(info, path);
-      if (info.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
-      const markerPid = Number.parseInt(match[2] as string, 10);
-      // A crashed writer may leave a partial marker. The unique filename is
-      // enough to safely reap it once its owner PID is no longer live.
-      if (cleanDead && !isProcessAlive(markerPid)) {
-        await rm(path);
-        removed = true;
-        continue;
+      const marker = { path, conversationKey: match[1]!, pid: Number.parseInt(match[2]!, 10), token: match[3]! };
+      try {
+        await readActiveMarker(path);
+      } catch (error) {
+        await this.assertLocksIdentity(locksIdentity);
+        if (isErrno(error, "ENOENT")) continue;
+        markers.push({ ...marker, damaged: true }); continue;
       }
-      const marker = await readActiveMarker(path);
-      if (
-        marker.conversationKey !== match[1]
-        || marker.pid !== markerPid
-        || marker.token !== match[3]
-      ) {
-        throw new Error(`History active marker ${path} does not match its filename.`);
-      }
-      markers.push(marker);
+      // Only validated evidence may be reclaimed, even when its filename PID is dead.
+      if (cleanDead && !isProcessAlive(marker.pid)) { await rm(path); removed = true; }
+      else markers.push(marker);
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
     return markers;
+  }
+
+  /** Probe only a needed recovery/retention owner through SQLite, never raw
+   * open/close: closing a raw fd can release this process's fcntl locks. */
+  private async legacyLockAvailable(key: string): Promise<boolean> {
+    const identity = await this.ensureLocksRoot(); let lock: CrossProcessLock | undefined;
+    try { lock = await acquireExistingCrossProcessLock(join(this.root, LOCKS_DIRECTORY, `${key}.sqlite`), identity, true); return true; }
+    catch { await this.assertLocksIdentity(identity); return false; }
+    finally { await lock?.release(); }
+  }
+
+  private async assertLocksIdentity(identity: DirectoryIdentity): Promise<void> {
+    await assertDirectoryIdentity(this.root, await this.ensureRoot());
+    await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), identity);
   }
 
   /** A malformed or insecure conversation-keyed fence is that owner's damage:
@@ -3096,20 +3109,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async scanDirtyFences(
     locksIdentity: DirectoryIdentity,
     cleanDeadTemps: boolean,
-  ): Promise<readonly DirtyFence[] & { readonly damaged: ReadonlySet<string> }> {
+  ): Promise<readonly DirtyFence[] & { readonly damaged: ReadonlyMap<string, string>; readonly bytes: number }> {
     const locksRoot = join(this.root, LOCKS_DIRECTORY);
     await assertDirectoryIdentity(locksRoot, locksIdentity);
-    const fences: DirtyFence[] = [], damaged = new Set<string>();
-    let removed = false;
+    const fences: DirtyFence[] = [], damaged = new Map<string, string>();
+    let removed = false, bytes = 0;
     for (const name of (await readdir(locksRoot)).sort()) {
       const path = join(locksRoot, name);
       if (
         name === ROOT_LOCK_FILE
-        || name === TOOL_HISTORY_OWNER_FILE
-        || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
-        || isConversationShardLockName(name)
         || isLogicalSessionShardLockName(name)
-        || ACTIVE_MARKER_PATTERN.test(name)
       ) {
         assertSecureHistoryFile(await lstat(path), path);
         continue;
@@ -3118,34 +3127,35 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await assertSessionClaimJournalIfPresent(path);
         continue;
       }
-      const fenceMatch = DIRTY_FENCE_PATTERN.exec(name);
-      if (fenceMatch !== null) {
-        try {
-          const info = await lstat(path), fence = await readDirtyFence(path);
-          if (fence.conversationKey !== fenceMatch[1]) throw new Error(`History dirty fence ${path} does not match its filename.`);
-          fences.push({ ...fence, mtimeMs: info.mtimeMs });
-        } catch (error) {
-          if (isErrno(error, "ENOENT")) continue;
-          await assertDirectoryIdentity(locksRoot, locksIdentity);
-          damaged.add(fenceMatch[1] as string);
+      const fenceMatch = DIRTY_FENCE_PATTERN.exec(name), tempMatch = DIRTY_FENCE_TEMP_PATTERN.exec(name);
+      const legacy = LEGACY_CONVERSATION_LOCK_PATTERN.test(name);
+      if (!fenceMatch && !tempMatch && !legacy && !ACTIVE_MARKER_PATTERN.test(name)) continue;
+      let info: Stats | undefined;
+      try {
+        info = await lstat(path);
+        if (ACTIVE_MARKER_PATTERN.test(name)) { await readActiveMarker(path); continue; }
+        assertSecureHistoryFile(info, path);
+        if (info.size > (legacy ? 64 * 1024 : MAX_DIRTY_FENCE_BYTES)) throw new Error(`History coordination entry ${name} is too large.`);
+        if (legacy) { bytes += info.size; continue; } // SQLite content is checked only by its owning connection
+        const fence = await readDirtyFence(path);
+        const key = (fenceMatch ?? tempMatch)![1]!;
+        if (fence.conversationKey !== key) throw new Error(`History dirty fence ${path} does not match its filename.`);
+        if (fenceMatch) fences.push({ ...fence, mtimeMs: info.mtimeMs });
+        else if (cleanDeadTemps && !isProcessAlive(Number.parseInt(tempMatch![2]!, 10))) {
+          await rm(path); removed = true;
         }
-        continue;
-      }
-      const tempMatch = DIRTY_FENCE_TEMP_PATTERN.exec(name);
-      if (tempMatch !== null) {
-        const info = await lstat(path);
-        if (!isOwned(info) || info.size > MAX_DIRTY_FENCE_BYTES) continue; // a damaged fence temp is kept, never reclaimed
-        const ownerPid = Number.parseInt(tempMatch[2] as string, 10);
-        if (cleanDeadTemps && !isProcessAlive(ownerPid)) {
-          await rm(path);
-          removed = true;
-        }
-        continue;
+      } catch (error) {
+        await this.assertLocksIdentity(locksIdentity);
+        if (isErrno(error, "ENOENT")) continue;
+        // Healthy markers/fences are coordination overhead; damage stays charged.
+        // If metadata itself is unreadable, reserve the format cap, never zero.
+        bytes += info?.size ?? (legacy ? 64 * 1024 : ACTIVE_MARKER_PATTERN.test(name) ? MAX_ACTIVE_MARKER_BYTES : MAX_DIRTY_FENCE_BYTES);
+        damaged.set(legacy ? name.slice(0, 64) : (fenceMatch ?? tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name))![1]!, name);
       }
       // Unrelated names are never read, charged or deleted.
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
-    return Object.assign(fences, { damaged });
+    return Object.assign(fences, { damaged, bytes });
   }
 
   private async retireInactiveDirtyFences(
@@ -3168,7 +3178,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (
         fence.conversationKey === excludedConversationKey
         || fence.kind === "execution" || fence.kind === "compaction"
-        || activeKeys.has(fence.conversationKey)
+        || activeKeys.has(fence.conversationKey) || fences.damaged.has(fence.conversationKey)
         || switchingKeys.has(fence.conversationKey)
         || fence.providerSessionId === undefined
       ) {
@@ -3688,11 +3698,6 @@ function sessionClaimKey(kind: "exact" | "logical", conversationId: string): str
 function logicalSessionShardLockName(logicalConversationKey: string): string {
   const shard = Number.parseInt(logicalConversationKey.slice(0, 8), 16) % LOGICAL_SESSION_LOCK_SHARDS;
   return `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
-}
-
-function isConversationShardLockName(name: string): boolean {
-  const match = CONVERSATION_SHARD_LOCK_PATTERN.exec(name);
-  return match !== null && Number.parseInt(match[1] as string, 16) < CONVERSATION_LOCK_SHARDS;
 }
 
 function isLogicalSessionShardLockName(name: string): boolean {
@@ -4330,6 +4335,7 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
     ) {
       throw new Error(`History active marker ${path} has an unsupported schema.`);
     }
+    if (basename(path) !== `${value.conversationKey}.${value.pid}.${value.token}.active`) throw new Error(`History active marker ${path} does not match its filename.`);
     return {
       path,
       conversationKey: value.conversationKey,
@@ -4429,10 +4435,6 @@ async function createAndVerifyRoot(root: string): Promise<DirectoryIdentity> {
 
 async function createAndVerifyLocksRoot(root: string): Promise<DirectoryIdentity> {
   const identity = await createAndVerifyRoot(root);
-  for (let shard = 0; shard < CONVERSATION_LOCK_SHARDS; shard += 1) {
-    const name = `conversation-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
-    await ensureOwnerOnlyLockFile(join(root, name), identity, false);
-  }
   for (let shard = 0; shard < LOGICAL_SESSION_LOCK_SHARDS; shard += 1) {
     const name = `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
     await ensureOwnerOnlyLockFile(
@@ -4604,4 +4606,15 @@ function switchCanonicalRecord(existing: LoadedHistoryRecord, state: ModelSwitch
     native: { authority, projection: state.artifact! }, ...lastCommitBinding(existing),
     lastSwitch: { version: 1, switchId: state.identity.switchId, intentDigest: switchDigest(state.identity), fromEpoch: state.identity.sourceEpoch,
       toEpoch: state.identity.targetEpoch, artifact: state.artifact! } };
+}
+
+/** Owned-file readers may wrap OS failures; preserve operational errors at bootstrap. */
+function causedErrno(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  while (error && typeof error === "object" && !seen.has(error)) {
+    seen.add(error);
+    if ("code" in error && typeof error.code === "string" && /^E[A-Z]+$/u.test(error.code)) return error.code;
+    error = "cause" in error ? error.cause : undefined;
+  }
+  return undefined;
 }

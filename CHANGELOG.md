@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Keep damaged conversation locks, active markers, dirty fences and lifecycle
+  intents charged and protected without refusing unrelated conversations.
+  Stop creating redundant conversation-shard locks while preserving older
+  writers' files. Document stopped-writer recovery for shared coordination.
+- Fix native-authority bootstrap to drop vanished pending entries, name damaged
+  artifacts and preserve operational filesystem errors and their causes.
+
 - Let model-switch bootstrap recover from a torn root-marker proposal and from
   unreadable sibling history, report another conversation's damaged recovery
   data as non-retryable `native_switch_damaged` without a drain, and settle an
