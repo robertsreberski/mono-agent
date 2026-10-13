@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
-import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult, RuntimeToolLifecyclePersistence } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -174,15 +174,25 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await harness.dispose?.();
   });
 
-  it("keeps cancelled dangling tool evidence while the canonical account prevents duplicate projection", async () => {
+  it.each([
+    { name: "keeps cancelled dangling tool evidence while the canonical account prevents duplicate projection", deferReceipt: false },
+    { name: "keeps deferred cancelled tool evidence available for later projection", deferReceipt: true },
+  ])("$name", async ({ deferReceipt }) => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
+    if (deferReceipt) {
+      const createSink = writer.createSink.bind(writer);
+      writer.createSink = (binding) => { const sink = createSink(binding); return async (event) => {
+        const receipt = await sink(event); return receipt?.persistence === "persisted" ? { persistence: "deferred" as const } : receipt;
+      }; };
+    }
+    let receipt: RuntimeToolLifecyclePersistence | void;
     const reader = new ToolHistoryReader(root);
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const abort = new AbortController();
     const runtime = {
       async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        await options.toolLifecycleSink?.({
+        receipt = await options.toolLifecycleSink?.({
           phase: "invocation",
           toolCallId: "cancelled-call",
           toolName: "Bash",
@@ -218,13 +228,19 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       toolCallId: "cancelled-call",
       state: "cancelled",
     }]);
-    expect(buildToolHistoryProjection(
+    const projection = buildToolHistoryProjection(
       reader,
       "chat:42",
       "chat:42#2026-08-14",
       "later-run",
       representedContinuityToolRecordIds(history),
-    )).toBeUndefined();
+    );
+    // A bounded foreground wait may defer the receipt even though finishRun
+    // later drains the write. Without an acknowledged ID, projection is valid.
+    expect(receipt!).toMatchObject({ persistence: expect.stringMatching(/^(persisted|deferred)$/u) });
+    if (deferReceipt) expect(receipt!?.persistence).toBe("deferred");
+    if (receipt!?.persistence === "deferred") expect(projection?.recordCount).toBe(1);
+    else expect(projection).toBeUndefined();
   });
 
   it("keeps failed tool evidence searchable while the failed account prevents duplicate projection", async () => {
