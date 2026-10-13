@@ -224,8 +224,8 @@ administrative storage capability, not a `MonoRuntimeLike` dispatch capability o
 model-facing run option. Its caller must hold host root/conversation authority,
 validate accepted content and coordinate canonical publication/deletion. It
 forwards only journal storage operations. The configured app creates it only
-with the OFF-default Web model-switch opt-in and explicit stopped-writer
-acknowledgement; runtime capability presence alone does not enable switching.
+with the OFF-default Web model-switch opt-in; runtime capability presence alone
+does not enable switching.
 `createEpoch` publishes the deterministic guarded journal for a switch target or
 same-model cold rotation; it never changes a conversation's model by itself.
 Reference-checked C and D native deletion are restartable storage primitives,

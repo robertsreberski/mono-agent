@@ -215,8 +215,8 @@ preserves the pending intent and its charged attempts, not cold-replay success.
 Ready storage-only roll-forward is never blocked by the next message's size;
 normalized dispatch remains the final bound and late refusal never rebills a
 summary or automatically replays an admitted message. The configured app enables
-this path only through its OFF-default Web model-switch option, explicit stopped-
-older-writers acknowledgement and activation-critical lifecycle forwarding.
+this path only through its OFF-default Web model-switch option and
+activation-critical lifecycle forwarding.
 
 The internal constructor path prepares the complete host context,
 request extensions and permit before P2 under the same conversation claim. It
