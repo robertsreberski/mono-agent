@@ -284,7 +284,7 @@ host's explicit C/D disposition and ownership assertion. The optional third
 retirement; the ordinary two-argument call keeps its existing behavior.
 No default runtime
 creates guarded journals or enables switching; see the
-[harness guarded journal contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).
+[engine guarded journal contract](../engine/README.md#opt-in-evidence-projection-and-handoffs).
 
 Opt-in `nativeSessionAuthority` requires a protected reconciled host turn,
 kept-alive durable root, matching guarded header and exact current handle. Its
@@ -348,8 +348,11 @@ normalized-event evidence retained for other backends. Prepared native dispatch
 remains primary-only.
 
 The provider bridge imports the model-run loop, native journal/storage and
-compaction kit from `@mono-agent/harness`. The separate `agent-harness` host
-package owns conversation/history orchestration.
+compaction kit from `@mono-agent/engine`. The separate `agent-harness` host
+package owns conversation/history orchestration. Native session lifecycle,
+authority, registry factories and recovery are engine storage contracts; runtime
+keeps thin façades, result/warning construction, prefix preflight and process-wide
+registry fan-out.
 
 The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
 HTML engine) with per-request policy/admission and fail-closed robots. No

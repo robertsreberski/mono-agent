@@ -9,6 +9,7 @@ import {
   packageCatalog,
   packageRelativePath,
 } from "./package-catalog.mjs";
+import { activeStaleReferenceLines, engineRuntimeImports } from "./lib/engine-boundary.mjs";
 import { findAdapterNeutralityErrors } from "./lib/adapter-neutrality.mjs";
 import { findPackagePublicApiDocErrors } from "./lib/public-api-docs.mjs";
 import {
@@ -156,6 +157,8 @@ for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
 }
 
 const staleReferences = [
+  `${packageScope}${"harness"}`,
+  `packages/${"harness"}`,
   `@mono-agent/${"comm"}/`,
   `${packageScope}${"context"}`,
   `${packageScope}${"skills"}`,
@@ -178,9 +181,16 @@ const staleReferences = [
 for (const staleReference of staleReferences) {
   for (const file of walkTextFiles(root)) {
     const text = readFileSync(file, "utf8");
-    if (text.includes(staleReference)) {
+    if (activeStaleReferenceLines(relative(root, file), text, staleReference).length) {
       errors.push(`${relative(root, file)} still references ${staleReference}.`);
     }
+  }
+}
+
+for (const file of walkTextFiles(join(root, "packages/engine/src"))) {
+  if (file.includes("/__tests__/")) continue;
+  for (const specifier of engineRuntimeImports(root, file, readFileSync(file, "utf8"))) {
+    errors.push(`${relative(root, file)} must not import runtime storage/policy via ${specifier}.`);
   }
 }
 

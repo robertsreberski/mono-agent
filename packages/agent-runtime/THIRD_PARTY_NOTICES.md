@@ -96,5 +96,5 @@ SOFTWARE.
 
 ## Mono-agent harness
 
-The attributed compaction kit is shipped by `@mono-agent/harness`; see its
-[third-party notices](../harness/THIRD_PARTY_NOTICES.md).
+The attributed compaction kit is shipped by `@mono-agent/engine`; see its
+[third-party notices](../engine/THIRD_PARTY_NOTICES.md).

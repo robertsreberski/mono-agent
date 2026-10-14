@@ -56,8 +56,8 @@ if (packageNames.includes("@mono-agent/agent-runtime")) {
   );
 }
 
-if (packageNames.includes("@mono-agent/harness")) {
-  await verifyHarnessRoundTrip();
+if (packageNames.includes("@mono-agent/engine")) {
+  await verifyEngineRoundTrip();
 }
 
 if (packageNames.includes("@mono-agent/observability")) {
@@ -329,9 +329,73 @@ async function runCapturedCli(command, args, cwd) {
   });
 }
 
-async function verifyHarnessRoundTrip() {
-  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/harness");
-  const sessionsRoot = await mkdtemp(join(tmpdir(), "harness-packed-"));
+async function verifyEngineRoundTrip() {
+  const entrypoints = {
+    "@mono-agent/engine": [
+      "JsonlSessionRepo",
+      "MemorySessionRepo",
+      "createRunDriver",
+      "projectContext",
+      "projectInheritedContext",
+      "digestTurnInput",
+      "HANDOFF_SUMMARY_FIELDS",
+      "estimateHandoffTokens",
+      "validateHandoffSummary",
+      "ENGINE_CONTEXT",
+      "calculateContextTokens",
+      "compact",
+      "estimateContextTokens",
+      "estimateTokens",
+      "getLastAssistantUsage",
+      "prepareCompaction",
+      "shouldCompact",
+      "generateSummaryWithRequest"
+    ],
+    "@mono-agent/engine/sessions.js": [
+      "resolveDurableNativeSessionRepo",
+      "resolveSession",
+      "discardUncommittedSession",
+      "commitSession",
+      "rollbackAbortedTurn",
+      "cleanupSessionOnThrow",
+      "captureSessionRecovery",
+      "recoverDurableNativeSession",
+      "reconcileNativeSessionTurn",
+      "retireDurableNativeSession",
+      "salvageDurableNativeSession",
+      "detachDurableNativeSession",
+      "createManagedNativeJournalStorage",
+      "NativeEvidenceCapacityError",
+      "assertNativeSessionAccess",
+      "normalizeDurableSessionsRoot",
+      "validateSessionTurn",
+      "isJournalStorageError",
+      "NativeSuspendedError",
+      "settleNativeSession",
+      "createSessionRegistry",
+      "nativeSessionRegistry"
+    ],
+    "@mono-agent/engine/owned-fs.js": [
+      "OwnedFileDamagedError",
+      "assertIdentity",
+      "isOwned",
+      "listOwned",
+      "publishAtomic",
+      "readOwned",
+      "sameIdentity",
+      "syncDir",
+      "unchanged"
+    ]
+  };
+  for (const [specifier, expected] of Object.entries(entrypoints)) {
+    const actual = Object.keys(await import(specifier)).sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error(`Unexpected engine exports from ${specifier}: ${actual}`);
+  }
+  for (const removed of ["session-store.js", "legacy-import.js", "journal-types.js", "journal-schema.js", "run-driver.js", "retry-stream.js", "session-context.js", "context.js", "compaction-kit/compaction.js", "journal-reader.js"]) {
+    await assertRemovedImport(`@mono-agent/engine/${removed}`, "ERR_PACKAGE_PATH_NOT_EXPORTED");
+  }
+  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/engine");
+  const sessionsRoot = await mkdtemp(join(tmpdir(), "engine-packed-"));
   const repo = new JsonlSessionRepo({ sessionsRoot });
   try {
     const session = await repo.create({ id: "packed-session" });
@@ -344,7 +408,7 @@ async function verifyHarnessRoundTrip() {
     const reopened = await repo.open((await repo.list())[0]);
     const context = projectContext(await reopened.getEntries());
     if (context.messages.length !== 1 || context.messages[0].content !== "Fictional packed request."
-      || reopened.metadata.journalId !== session.metadata.journalId) throw new Error("Packed harness round trip failed.");
+      || reopened.metadata.journalId !== session.metadata.journalId) throw new Error("Packed engine round trip failed.");
     await reopened.close();
   } finally { await repo.close(); await rm(sessionsRoot, { recursive: true, force: true }); }
 }

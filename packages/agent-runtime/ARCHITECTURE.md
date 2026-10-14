@@ -308,11 +308,13 @@ in-flight turn and clears that conversation's queue.
 **Honest per-provider session behavior** — parity is *behavioral* (every
 provider exposes queue-after-turn), not durability/cost:
 
-The Pi provider integration uses `@mono-agent/harness` for model-run admission,
+The Pi provider integration uses `@mono-agent/engine` for model-run admission,
 native journals, storage, retry and compaction. Pi Agent Core supplies the
 unforked `runAgentLoop`; Pi AI supplies models and provider requests. The
 separate `@mono-agent/agent-harness` host package owns conversation/history
-orchestration. The provider glue arms checkpoint compaction for the main prompt. Its guarded
+orchestration. Native lifecycle and journal settlement live in the engine; runtime
+façades build results/warnings and retain run-option policy, prefix preflight and
+process-wide registry fan-out. The provider glue arms checkpoint compaction for the main prompt. Its guarded
 `session_before_compact` hook enforces policy before each turn and between
 completed model/tool rounds. Mid-run summaries are separate paid provider
 requests inside the same agent run; savings and growth guards limit attempts.

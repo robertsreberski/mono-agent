@@ -53,7 +53,7 @@ flowchart TB
 
   subgraph P_category_runtime["runtime"]
     P_mono_agent_agent_runtime["@mono-agent/agent-runtime"]
-    P_mono_agent_harness["@mono-agent/harness"]
+    P_mono_agent_engine["@mono-agent/engine"]
     P_mono_agent_runtime_adapter["@mono-agent/runtime-adapter"]
   end
 
@@ -73,11 +73,11 @@ flowchart TB
   P_mono_agent_agent_app --> P_mono_agent_web
   P_mono_agent_agent_app --> P_mono_agent_webhook_adapter
   P_mono_agent_agent_harness --> P_mono_agent_agent_contracts
-  P_mono_agent_agent_harness --> P_mono_agent_harness
+  P_mono_agent_agent_harness --> P_mono_agent_engine
   P_mono_agent_agent_harness --> P_mono_agent_observability
   P_mono_agent_agent_harness --> P_mono_agent_runtime_adapter
   P_mono_agent_agent_orchestrator --> P_mono_agent_agent_contracts
-  P_mono_agent_agent_runtime --> P_mono_agent_harness
+  P_mono_agent_agent_runtime --> P_mono_agent_engine
   P_mono_agent_config --> P_mono_agent_agent_contracts
   P_mono_agent_config --> P_mono_agent_runtime_adapter
   P_mono_agent_cron_adapter --> P_mono_agent_agent_contracts
@@ -115,15 +115,15 @@ flowchart TB
 | `@mono-agent/telegram-adapter` | `@mono-agent/agent-contracts` |
 | `@mono-agent/webhook-adapter` | `@mono-agent/agent-contracts` |
 | `@mono-agent/whatsapp-adapter` | `@mono-agent/agent-contracts` |
-| `@mono-agent/agent-harness` | `@mono-agent/agent-contracts`, `@mono-agent/harness`, `@mono-agent/observability`, `@mono-agent/runtime-adapter` |
+| `@mono-agent/agent-harness` | `@mono-agent/agent-contracts`, `@mono-agent/engine`, `@mono-agent/observability`, `@mono-agent/runtime-adapter` |
 | `@mono-agent/agent-orchestrator` | `@mono-agent/agent-contracts` |
 | `@mono-agent/docs-mcp` | None |
 | `@mono-agent/memory` | `@mono-agent/agent-contracts` |
 | `@mono-agent/observability` | `@mono-agent/agent-contracts` |
 | `@mono-agent/agent-contracts` | None |
 | `@mono-agent/config` | `@mono-agent/agent-contracts`, `@mono-agent/runtime-adapter` |
-| `@mono-agent/agent-runtime` | `@mono-agent/harness` |
-| `@mono-agent/harness` | None |
+| `@mono-agent/agent-runtime` | `@mono-agent/engine` |
+| `@mono-agent/engine` | None |
 | `@mono-agent/runtime-adapter` | `@mono-agent/agent-contracts`, `@mono-agent/agent-runtime` |
 
 <!-- package-dependency-graph:end -->
@@ -164,7 +164,7 @@ Open a package README for its config-first usage, internal data flow and source 
 | `@mono-agent/agent-contracts` | `core` / `core` | Defines shared structural request/response contracts plus adapter-neutral settings JSON, env, safe-bind, and bearer helpers. | [README for @mono-agent/agent-contracts](./packages/agent-contracts/README.md) · [npm for @mono-agent/agent-contracts](https://www.npmjs.com/package/@mono-agent/agent-contracts) |
 | `@mono-agent/config` | `core` / `core` | Loads adapter-neutral runtime, context, memory, tool, and artifact settings. | [README for @mono-agent/config](./packages/config/README.md) · [npm for @mono-agent/config](https://www.npmjs.com/package/@mono-agent/config) |
 | `@mono-agent/agent-runtime` | `core` / `runtime` | Provides the Pi SDK runtime bridge with native tools, MCP, sessions, compaction, and provider-catalog integration. | [README for @mono-agent/agent-runtime](./packages/agent-runtime/README.md) · [npm for @mono-agent/agent-runtime](https://www.npmjs.com/package/@mono-agent/agent-runtime) |
-| `@mono-agent/harness` | `core` / `runtime` | Owns the model-run loop, native journal, storage and compaction kit over Pi model dependencies. | [README for @mono-agent/harness](./packages/harness/README.md) · [npm for @mono-agent/harness](https://www.npmjs.com/package/@mono-agent/harness) |
+| `@mono-agent/engine` | `core` / `runtime` | Owns the model-run loop, native journal, storage and compaction kit over Pi model dependencies. | [README for @mono-agent/engine](./packages/engine/README.md) · [npm for @mono-agent/engine](https://www.npmjs.com/package/@mono-agent/engine) |
 | `@mono-agent/runtime-adapter` | `core` / `runtime` | Wraps @mono-agent/agent-runtime behind runtime contracts and owns sandbox policy/process wrapping. | [README for @mono-agent/runtime-adapter](./packages/runtime-adapter/README.md) · [npm for @mono-agent/runtime-adapter](https://www.npmjs.com/package/@mono-agent/runtime-adapter) |
 
 <!-- package-directory:end -->

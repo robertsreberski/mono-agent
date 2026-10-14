@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+- Rename the unreleased execution/storage package to `@mono-agent/engine`,
+  with three focused entrypoints: root, `sessions.js` and `owned-fs.js`. Keep
+  published runtime storage capabilities and journal formats compatible.
+
 - Remove the unused direct Pi Agent Core dependency from
-  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/harness`.
+  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/engine`.
 
 - Reclaim history claims and active markers when their recorded process
   stable v2 incarnation no longer owns a reused PID. Use boot UUIDs and UTC
