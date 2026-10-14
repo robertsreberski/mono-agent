@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
 import { createMonoRuntime, type RuntimeNativePreparationStorage } from "@mono-agent/runtime-adapter";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { fixture, ready, bucket } from "./fixtures/managed-native-switch-fixture.mjs";

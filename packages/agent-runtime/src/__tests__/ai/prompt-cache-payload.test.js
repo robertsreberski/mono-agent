@@ -125,8 +125,8 @@ describe('built provider prompt prefix', () => {
 
 it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered native tool prefix through %s without failed reasoning', async (api) => {
   const { fauxAssistantMessage, fauxThinking, fauxToolCall } = await import('@earendil-works/pi-ai');
-  const { buildHarnessSessionContext } = await import('../../ai/providers/pi-native/harness-adapter.js');
-  const { validRecoveryProjection } = await import('../../ai/providers/pi-native/terminal-recovery.js');
+  const { buildHarnessSessionContext } = await import('../../../../engine/dist/session-context.js');
+  const { validRecoveryProjection } = await import('../../../../engine/dist/terminal-recovery.js');
   const send = api === 'anthropic-messages'
     ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture', reasoning: true }] }).getModel();
@@ -220,7 +220,7 @@ it.each([
 ])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
   vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
   const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
-  const driverModule = await import('@mono-agent/harness/run-driver.js');
+  const driverModule = await import('../../../../engine/dist/run-driver.js');
   const create = vi.spyOn(driverModule, 'createRunDriver');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });

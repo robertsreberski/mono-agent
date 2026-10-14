@@ -12,7 +12,7 @@ try {
   await writeFile(join(scratch, "package.json"), '{"type":"module"}');
   for (const name of ["harness", "agent-runtime"]) {
     const directory = join(scratch, "packages", name);
-    await symlink(relative(directory, join(root, "packages", name, "node_modules")), join(directory, "node_modules"), "dir");
+    await symlink(relative(directory, join(root, "packages", name === "harness" ? "engine" : name, "node_modules")), join(directory, "node_modules"), "dir");
   }
   for (const version of [3, 4]) {
     const storage = join(scratch, `storage-${version}`);

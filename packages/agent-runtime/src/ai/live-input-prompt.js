@@ -1,5 +1,5 @@
 // Public host admission gateway to the exact native content digest.
-export { digestTurnInput as digestNativeTurnInput } from "@mono-agent/harness";
+export { digestTurnInput as digestNativeTurnInput } from "@mono-agent/engine";
 
 // Live-input prompt fragment used by AI providers when injecting human
 // guidance mid-run. Lives in src/ai/ because providers are the only

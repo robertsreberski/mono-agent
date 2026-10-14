@@ -3,15 +3,17 @@ import { mkdtemp, rm, readFile, readdir, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { createHandoffBudget, digestTurnInput } from "@mono-agent/harness";
-import { assertNativeProjectionBinding } from "../../ai/providers/pi-native/session-authority.js";
+import { digestTurnInput } from "@mono-agent/engine";
+import { createHandoffBudget } from "../../../../engine/dist/handoff.js";
+import { assertNativeProjectionBinding } from "../../../../engine/dist/session-authority.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
-import { createPiSessionAdapter, createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
+import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
+import { createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
 import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/pi-native/compaction-driver.js";
 import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo,
   discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/pi-native/session-lifecycle.js";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
 
 const roots = [];
 afterEach(async () => { await refreshProviderSession(handle); for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });

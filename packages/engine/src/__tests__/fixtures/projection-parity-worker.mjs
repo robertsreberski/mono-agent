@@ -1,6 +1,7 @@
 // Compare byte strings with identical time/UUID inputs, never normalize output.
 import crypto from "node:crypto";
 import { registerHooks, syncBuiltinESMExports } from "node:module";
+import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFile, rm, rename } from "node:fs/promises";
@@ -12,9 +13,10 @@ syncBuiltinESMExports(); Math.random = () => 0.125;
 let clock = 1700000000000; Date.now = () => clock;
 Object.defineProperty(performance, "now", { value: () => 0 });
 const [source, runtimeSource, root, legacy] = process.argv.slice(2);
+const historicPackage = "@mono-agent/harness"; // Archived P2b imports only.
 registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === "@mono-agent/harness" || specifier.startsWith("@mono-agent/harness/")) return {
-    url: pathToFileURL(`${source}/${specifier === "@mono-agent/harness" ? "index.js" : specifier.slice("@mono-agent/harness/".length)}`).href, shortCircuit: true,
+  for (const name of ["@mono-agent/engine", historicPackage]) if (specifier === name || specifier.startsWith(`${name}/`)) return {
+    url: pathToFileURL(`${source}/${specifier === name ? "index.js" : specifier.slice(name.length + 1)}`).href, shortCircuit: true,
   };
   return nextResolve(specifier, context);
 } });
@@ -105,7 +107,8 @@ async function captureRepairs(repo) {
 }
 async function captureRuntime(session) {
   const pn = (name) => import(pathToFileURL(`${runtimeSource}/ai/providers/pi-native/${name}.js`));
-  const { createPiSessionAdapter } = await pn("harness-adapter");
+  const { createPiSessionAdapter } = existsSync(`${source}/session-adapter.js`)
+    ? await import(pathToFileURL(`${source}/session-adapter.js`)) : await pn("harness-adapter");
   const { estimateCurrentContextTokens, estimateSessionMessageTokens } = await pn("compaction-driver");
   const adapter = createPiSessionAdapter(session);
   const context = await adapter.buildContext();

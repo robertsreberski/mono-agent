@@ -15,7 +15,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { salvageDurableNativeSession } from "../../ai/providers/pi-native/session-salvage.js";
+import { salvageDurableNativeSession } from "../session-salvage.js";
 
 const roots = [];
 afterEach(async () => { swapRead.handler = null; await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });

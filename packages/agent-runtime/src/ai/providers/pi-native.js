@@ -1,5 +1,5 @@
 import { createDispatchProgress, withDispatchProgress } from "./pi-native/dispatch-progress.js";
-import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, repairInterruptedSession } from "@mono-agent/harness";
+import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, settleNativeSession } from "@mono-agent/engine/sessions.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -955,7 +955,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         },
       });
       if (promptResult.suspended) {
-        await runState.session.rawSession.sync();
+        await settleNativeSession(runState, { action: "sync" });
         throw new NativeSuspendedError();
       }
       runError = promptResult.runError;
@@ -1268,7 +1268,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
     if (runState.preserveTurnEvidence) {
       try {
-        if (err instanceof NativeSuspendedError) await repairInterruptedSession(runState.session.rawSession);
+        if (err instanceof NativeSuspendedError) await settleNativeSession(runState, { action: "repair-interrupted" });
         else await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed", {
           text: runState.assistantTexts.join("") || null, error: runState.externalAbort ? null : normalizePiErrorMessage(err?.message || String(err)),
           failureKind: runState.externalAbort ? null : isJournalStorageError(err) ? "safety_journal_storage_failed"
@@ -1289,12 +1289,7 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
         if (runState.sessionEntry) {
           // A resumed suspension is a failed unreceipted host turn: seal it
           // without projecting completion, then let normal commit roll back.
-          runState.retainRecoveryTail = false;
-          runState.sessionEntry.recoveryPending = false; delete runState.sessionEntry.recovery;
-          const raw = runState.session.rawSession;
-          for (const operation of (await raw.getOpenOperations()).reverse()) await raw.closeOperation(operation.operationId, "failed");
-          for (const turn of await raw.getOpenTurns()) await raw.endTurn(turn.turnId, "failed");
-          await raw.sync();
+          await settleNativeSession(runState, { action: "fail-suspended" });
         }
         await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
           externalAbort: false, errorMessage: runState.sessionEntry ? "Native provider suspended without a recovery receipt" : undefined, onEvent });

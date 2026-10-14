@@ -1,4 +1,5 @@
-import { SessionStore, createTurnBinding } from "@mono-agent/harness";
+import { SessionStore } from "../../../../engine/dist/session-store.js";
+import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { it, expect, vi, afterEach } from "vitest";

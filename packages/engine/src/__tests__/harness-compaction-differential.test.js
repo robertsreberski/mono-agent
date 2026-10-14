@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { compact, compactWithRequest, prepareCompaction } from "../compaction-kit/compaction.js";
-import { HARNESS_CONTEXT } from "../context.js";
+import { ENGINE_CONTEXT } from "../context.js";
 import { formatFileOperations } from "../compaction-kit/utils.js";
 
 // Captured before the pin bump using the published 0.99.2 helpers, not generated
@@ -19,7 +19,7 @@ describe("owned compaction kit vs 0.99.2 baseline", () => {
     } };
     const result = await compact(prepared.value, models,
       { id: "fixture-model", provider: "faux", maxTokens: 4096, reasoning: false },
-      "Keep queue details.", "off", undefined, undefined, HARNESS_CONTEXT);
+      "Keep queue details.", "off", undefined, undefined, ENGINE_CONTEXT);
     expect(requests).toEqual(baseline.requests);
     expect(result).toEqual(baseline.result);
   });
@@ -44,7 +44,7 @@ it.each(["none", "read", "modified", "both"])("retains prior prose and one file-
     { model: { maxTokens: 4096, reasoning: false } }, async () => {
       requests++;
       return { stopReason: "stop", content: [{ type: "text", text: "Prefix summary" }], usage: {} };
-    }, HARNESS_CONTEXT);
+    }, ENGINE_CONTEXT);
   expect(requests).toBe(1);
   expect(result.value.summary).toContain("Keep the fictional constraint.");
   expect(result.value.summary).toContain("Prefix summary");
