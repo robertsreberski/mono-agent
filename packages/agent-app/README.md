@@ -505,6 +505,45 @@ name the canonical config. Readiness requires one live launchd-owned trace PID a
 the exact durable snapshot.
 Stop succeeds only after both launchd unload and worker death are proven.
 
+### macOS process identity: upgrade and rollback
+
+Locks, leases, process jobs and subagent ownership record which process owns
+them. On macOS, new records use stable evidence: the boot-session UUID plus the
+UTC process start time. A calendar-clock step or a timezone change therefore
+never makes a live owner look dead, and a reused PID is still detected. Linux,
+Windows and other platforms keep writing exactly the same records as before.
+
+A lock or lease is reclaimed only when the owner's PID is gone (`ESRCH`) or
+comparable evidence proves the PID now belongs to a different process. A live
+PID whose identity cannot be read (for example, a probe timeout) stays owned.
+Signals, releases and cleanup still require an exact identity match.
+
+What older binaries see after an upgrade:
+
+- Lock records and web-control leases keep the old `incarnation` field and add
+  a `stableIncarnation` field on macOS. Older binaries ignore the new field and
+  behave as before, so they never treat a new owner as ownerless. They also
+  keep their existing clock and timezone weakness and can still reclaim a live
+  owner after a clock step or timezone change, so stop every older agent and
+  CLI before or while you upgrade on macOS.
+- Process-job state, subagent execution ownership and worker activity snapshots
+  only carry the new evidence on macOS. Older binaries fail closed on them:
+  they report activity as unknown and refuse to open the process-job store.
+- A live owner recorded by an older binary on macOS is held by PID alone, since
+  its identity can no longer be compared. If the refusal names a lock path and a
+  PID that is not a mono-agent process (for example, a reboot reused the PID),
+  confirm no mono-agent process uses that lock, then remove the named path by
+  hand and retry.
+
+Rolling back to an older binary on macOS: stop every upgraded agent first. An
+older binary quarantines a pending process-job transaction that carries new
+evidence and then refuses to open that store. Remove the process-job
+`stateDir` only if you accept discarding its job records and output.
+Web-control state is shared by every agent on the account, so mixed versions
+are normal there. If an agent reports web coordination as unavailable, run
+`mono-agent web-control reset` from the upgraded CLI once no web request is
+active; it clears leases and cooldowns.
+
 ### Validation, recovery, and managed logs
 
 `mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI

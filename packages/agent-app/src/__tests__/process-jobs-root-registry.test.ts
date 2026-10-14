@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import type { BigIntStats } from "node:fs";
 import {
   chmod,
@@ -133,6 +135,38 @@ describe("durable monotonic process-job root registry", () => {
       coordinator: ownership.coordinator,
     })).rejects.toThrow(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
     await expect(lstat(processJobsRootRegistryPaths(fixture.root).manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the mutation lock of a live legacy macOS owner and reclaims it only after ESRCH", async () => {
+    // O3 of #1264: this lock uses acquireOwnerPrivateLock's default identity check.
+    const fixture = await registryFixture("legacy-owner");
+    const ownership = await acquireRegistryOwnership(fixture, fixture.workspace);
+    const paths = processJobsRootRegistryPaths(fixture.root);
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+    await once(child, "spawn");
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const previous = processIdentity.current;
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+    try {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      processIdentity.current = { schema: "mono-agent.process-incarnation.v2", bootSessionId: "darwin-uuid:fictional", processStartId: "posix-utc-lstart:Mon Jan 5 12:34:56 2026" } as never;
+      await mkdir(dirname(paths.mutationLockPath), { recursive: true, mode: 0o700 });
+      await mkdir(paths.mutationLockPath, { mode: 0o700 });
+      const owner = `${JSON.stringify({ schema: "mono-agent.process-jobs-roots-lock.v1", pid: child.pid, token: "fictional-token",
+        createdAt: "2026-01-05T12:34:56.000Z", incarnation: { schema: "mono-agent.process-incarnation.v1", bootSessionId: "darwin:1700000000:0", processStartId: "posix-lstart:Mon Jan 5 13:34:56 2026" } })}\n`;
+      await writeFile(join(paths.mutationLockPath, "owner.json"), owner, { mode: 0o600 });
+      const register = () => registerProcessJobsRoot({ agentRoot: fixture.root, workspace: fixture.workspace,
+        stateDir: join(fixture.root, ".state", "legacy"), coordinator: ownership.coordinator });
+      await expect(register()).rejects.toThrow(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+      await expect(readFile(join(paths.mutationLockPath, "owner.json"), "utf8")).resolves.toBe(owner);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain(`${paths.mutationLockPath} is held by live PID ${child.pid}`);
+      const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+      await expect(register()).resolves.toMatchObject({ snapshot: { generation: { rootKeys: [".state/legacy"] } } });
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+      processIdentity.current = previous;
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
   });
 
   it("is absent only while empty, then retains sorted A-to-B roots across disable and restart", async () => {

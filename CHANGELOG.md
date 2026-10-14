@@ -8,6 +8,20 @@
   identity-preserving aliases without runtime warnings; dispatch stays lazy
   and retains model-reference validation.
 
+- Keep live macOS owners of locks, leases, process jobs and subagents after a
+  calendar-clock step or a timezone change. Record the boot-session UUID and
+  UTC process start on macOS, bound its probes to five seconds, and reclaim
+  only on `ESRCH` or proven PID reuse; signals still need an exact match.
+  Keep writing unchanged v1 records on Linux, Windows and other platforms.
+  Add `isProcessIncarnationLive()` and accept v1 and v2 in
+  `processIncarnationFromJson()`. Lock records and web-control leases keep the
+  old `incarnation` beside a new `stableIncarnation`, so older binaries never
+  treat new owners as ownerless; they keep their own clock and timezone
+  weakness, so stop older agents and CLIs while upgrading on macOS.
+  Process-job state fails closed for older binaries, so stop upgraded agents
+  before rolling back. Hold live owners recorded by older
+  macOS binaries by PID, and name the lock path and PID when one blocks.
+
 - Publish the new execution and storage package as `@mono-agent/engine`, with
   three focused entrypoints: root, `sessions.js` and `owned-fs.js`. Published
   runtime storage capabilities and journal formats stay compatible.
@@ -277,7 +291,7 @@
   process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS
   probes to five seconds. Keep v1, unknown, unavailable and other-platform
   identity PID-only. Cache per owner/wait and preserve live ownership; torn
-  markers remain PID-only. Leave the existing app v1 identity API unchanged.
+  markers remain PID-only.
   Stop every older writer before upgrading; legacy coordination files remain
   readable, but pre-upgrade binaries cannot parse the new marker contents.
 

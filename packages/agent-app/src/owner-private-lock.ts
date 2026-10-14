@@ -5,8 +5,10 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 
 import {
+  HISTORY_PROCESS_INCARNATION_SCHEMA,
+  PROCESS_INCARNATION_SCHEMA,
   currentProcessIncarnation,
-  isSameProcessIncarnation as matchesProcessIncarnation,
+  isProcessIncarnationLive,
   processIncarnationFromJson,
 } from "./process-incarnation.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
@@ -19,7 +21,11 @@ const OWNER_PUBLICATION_IN_PROGRESS = Symbol("owner-publication-in-progress");
 interface Identity { readonly dev: bigint; readonly ino: bigint }
 interface BaseOwner {
   readonly schema: string; readonly pid: number; readonly token: string;
-  readonly createdAt: string; readonly incarnation: ProcessIncarnation;
+  readonly createdAt: string;
+  /** Always the v1 value older readers compare against. */
+  readonly incarnation: ProcessIncarnation;
+  /** Darwin-only stable v2 sibling; older readers ignore it, new readers prefer it. */
+  readonly stableIncarnation?: ProcessIncarnation;
 }
 interface Owner {
   readonly pid: number; readonly incarnation?: ProcessIncarnation;
@@ -47,9 +53,19 @@ export interface OwnerPrivateLockOptions {
   readonly pid?: number;
   readonly now?: () => number;
   readonly randomToken?: () => string;
+  /** This owner's primary evidence: stable v2 on Darwin, v1 elsewhere. */
   readonly processIncarnation?: ProcessIncarnation;
+  /** v1 value written beside a v2 `processIncarnation` so older readers keep their exact comparison. */
+  readonly legacyProcessIncarnation?: ProcessIncarnation;
+  /** Reclaim check; defaults to liveness, which keeps live PIDs with unavailable or legacy evidence. */
   readonly isSameProcessIncarnation?: SameProcessIncarnation;
   readonly isLegacyProcessAlive?: (pid: number) => boolean | Promise<boolean>;
+  /**
+   * Called when acquisition gives up behind a live owner whose only evidence is
+   * legacy v1 identity that this platform cannot compare. Without it, a
+   * process warning names the lock path and PID once per process.
+   */
+  readonly onLegacyOwnerHeld?: (holder: LegacyLockHolder) => void;
   /** Platform and directory-sync seams for filesystems which cannot fsync directories. */
   readonly platform?: NodeJS.Platform;
   readonly syncDirectoryHandle?: (handle: FileHandle) => Promise<void>;
@@ -75,6 +91,22 @@ export interface OwnerPrivateLockOptions {
   readonly unsafeError?: (cause: string, details?: Readonly<Record<string, unknown>>) => Error;
 }
 
+export interface LegacyLockHolder {
+  readonly label: string;
+  readonly path: string;
+  readonly pid: number;
+}
+
+/** Operator guidance for a lock held by a live PID with unverifiable legacy identity. */
+export function legacyLockHolderMessage(holder: LegacyLockHolder): string {
+  return `${holder.label} ${holder.path} is held by live PID ${holder.pid}, recorded by an older mono-agent `
+    + "whose process identity this macOS host cannot verify, so it is never reclaimed automatically. "
+    + `If PID ${holder.pid} is not that mono-agent process (for example after a reboot reused the PID), `
+    + `confirm no mono-agent process uses this lock, then remove ${holder.path} by hand and retry.`;
+}
+
+const warnedLegacyHolders = new Set<string>();
+
 export interface OwnerPrivateLock {
   readonly path: string;
   readonly ownerPid: number;
@@ -95,7 +127,13 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
   const now = options.now ?? Date.now;
   const randomToken = options.randomToken ?? randomUUID;
   const incarnation = options.processIncarnation ?? await currentProcessIncarnation();
-  const sameProcess = options.isSameProcessIncarnation ?? matchesProcessIncarnation;
+  // Darwin writes stable v2 evidence beside the unchanged v1 field. Linux,
+  // win32 and other platforms write exactly the v1 bytes they always did.
+  const legacyIncarnation = incarnation.schema === PROCESS_INCARNATION_SCHEMA
+    ? undefined
+    : options.legacyProcessIncarnation ?? await currentProcessIncarnation(PROCESS_INCARNATION_SCHEMA);
+  const sameProcess = options.isSameProcessIncarnation ?? isProcessIncarnationLive;
+  let legacyHolder: LegacyLockHolder | undefined;
   const timeout = options.waitTimeoutMs ?? 0;
   const deadline = now() + timeout;
   let attempts = 0;
@@ -117,7 +155,9 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
         pid,
         token,
         createdAt: new Date(now()).toISOString(),
-        incarnation,
+        ...(legacyIncarnation === undefined
+          ? { incarnation }
+          : { incarnation: legacyIncarnation, stableIncarnation: incarnation }),
       };
       const record = { ...options.ownerFields?.(base), ...base };
       const owner = await publishOwner(options, created, record);
@@ -155,6 +195,7 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
       await options.afterInspected?.(observed);
       let stale = observed.kind === "ownerless"
         && now() - observed.mtimeMs >= options.ownerlessGraceMs;
+      legacyHolder = undefined;
       if (observed.kind === "owned") {
         try {
           stale = !(observed.owner.incarnation === undefined
@@ -166,6 +207,10 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
           if (decision !== "assume-live") throw error;
           stale = false;
         }
+        if (!stale && legacyIncarnation !== undefined
+          && observed.owner.incarnation?.schema === PROCESS_INCARNATION_SCHEMA) {
+          legacyHolder = { label: options.label, path: options.path, pid: observed.owner.pid };
+        }
       }
       if (stale) {
         if (await quarantine(options, observed, pid, now, randomToken) === "retry") continue;
@@ -173,6 +218,7 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
       }
       if ((options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts)
         || timeout === 0 || now() >= deadline) {
+        if (legacyHolder !== undefined) reportLegacyHolder(options, legacyHolder);
         const error = options.timeoutError?.(observed);
         if (error !== undefined) throw error;
         return undefined;
@@ -185,6 +231,23 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
       await closeObserved(observed);
     }
   }
+}
+
+function reportLegacyHolder(options: OwnerPrivateLockOptions, holder: LegacyLockHolder): void {
+  if (options.onLegacyOwnerHeld !== undefined) {
+    options.onLegacyOwnerHeld(holder);
+    return;
+  }
+  const key = `${holder.path}\0${holder.pid}`;
+  if (warnedLegacyHolders.has(key)) return;
+  warnedLegacyHolders.add(key);
+  process.emitWarning(legacyLockHolderMessage(holder), "LegacyLockOwnerWarning");
+}
+
+/** A sidecar is only ever stable v2; anything else falls back to the v1 field. */
+function stableIncarnation(value: unknown): ProcessIncarnation | undefined {
+  const parsed = processIncarnationFromJson(value);
+  return parsed?.schema === HISTORY_PROCESS_INCARNATION_SCHEMA ? parsed : undefined;
 }
 
 function makeHeld(
@@ -337,7 +400,7 @@ async function readOwner(path: string, options: OwnerPrivateLockOptions): Promis
       if (options.invalidOwner === "ownerless") return undefined;
       throw unsafe(options, `${options.label} owner record JSON is malformed: ${message(error)}`);
     }
-    const incarnation = processIncarnationFromJson(record.incarnation);
+    const incarnation = stableIncarnation(record.stableIncarnation) ?? processIncarnationFromJson(record.incarnation);
     if (record.schema === options.schemaTag && positivePid(record.pid)
       && typeof record.token === "string" && record.token.length > 0 && record.token.length <= 256
       && typeof record.createdAt === "string" && Number.isFinite(Date.parse(record.createdAt))
