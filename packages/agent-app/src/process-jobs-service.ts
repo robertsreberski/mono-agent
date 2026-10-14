@@ -39,7 +39,7 @@ import type { NotifyDeliveryResult } from "./channels.js";
 import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
 import { ProcessJobOutputTail } from "./process-job-output-tail.js";
 import { consumeSilentProcessJobWake } from "./process-jobs-context.js";
-import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder, type OwnerPrivateLock } from "./owner-private-lock.js";
 import {
   attestProcessJobsRootRegistration,
   type ProcessJobsRootRegistrationProof,
@@ -255,17 +255,20 @@ export async function openProcessJobsService(
   const normalizedOptions: OpenProcessJobsServiceOptions = stateDir === options.settings.stateDir
     ? options
     : { ...options, settings: { ...options.settings, stateDir } };
+  let legacyHolder: LegacyLockHolder | undefined;
   const lock = await (options.acquireLock?.() ?? acquireOwnerPrivateLock({
     path: join(stateDir, ".process-jobs-owner"),
     label: "Process-job state",
     schemaTag: PROCESS_JOB_OWNER_SCHEMA,
     ownerlessGraceMs: 1_000,
     invalidOwner: "error",
+    onLegacyOwnerHeld: (holder) => { legacyHolder = holder; },
   }));
   if (lock === undefined) {
     throw new ProcessJobServiceError(
       "process_job_controller_unavailable",
-      "Process-job state is owned by another live agent process.",
+      "Process-job state is owned by another live agent process."
+        + (legacyHolder === undefined ? "" : ` ${legacyLockHolderMessage(legacyHolder)}`),
     );
   }
   let store: ProcessJobStore;

@@ -1,7 +1,7 @@
 import type { InstanceUsage } from "./subagent-instances.js";
 import type { SubagentDisposition } from "./subagent-managed-turn.js";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import type { ProcessIncarnation } from "./process-incarnation.js";
+import { processIncarnationFromJson, type ProcessIncarnation } from "./process-incarnation.js";
 
 /** App-private, bounded evidence. Reporting terminality never discharges ownership. */
 export interface SubagentExecutionOwnership {
@@ -119,7 +119,7 @@ export function isSubagentOwnedCommand(value: unknown): value is SubagentOwnedCo
 
 function incarnation(value: unknown): value is ProcessIncarnation {
   return object(value) && exact(value, ["schema", "bootSessionId", "processStartId"])
-    && value.schema === "mono-agent.process-incarnation.v1" && text(value.bootSessionId, 256) && text(value.processStartId, 256);
+    && processIncarnationFromJson(value) !== undefined && text(value.bootSessionId, 256) && text(value.processStartId, 256);
 }
 function canonicalPath(value: unknown): value is string {
   return text(value, 2048) && !value.includes("\0") && isAbsolute(value) && resolve(value) === value;

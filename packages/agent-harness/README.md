@@ -742,7 +742,7 @@ permission to erase oversized evidence or cold-fallback after switch intent.
 | `CONVERSATION_HISTORY_VERSION_MAX_BYTES` | Maximum UTF-8 size of an opaque custom-store history version token (512 bytes) |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
-| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` | Share OS boot/start identity across agent-app ownership consumers; raw readers retain their existing unavailable/error behavior. Durable history does not use these v1 readers: it uses `readHistoryProcessIncarnation()` (v2) with a conservative PID-only fallback |
+| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` / `isProcessIncarnationLive()` | Share OS boot/start identity across agent-app ownership consumers. macOS writes stable v2 evidence (boot-session UUID plus UTC process start), so calendar-clock steps and timezone changes never change a live owner's identity; Linux, Windows and other platforms keep writing v1 unchanged. Readers return `undefined` only when `ESRCH` proves the PID absent and throw on every other failure; macOS probes are bounded to five seconds. `isSameProcessIncarnation()` is the strict authorization check. `isProcessIncarnationLive()` is the reclaim check: a live PID with unavailable or incomparable evidence (including a macOS v1 record) stays live. `processIncarnationFromJson()` accepts v1 and v2. Durable history uses `readHistoryProcessIncarnation()` (v2) with a conservative PID-only fallback |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
 
 Lightweight ownership/maintenance entrypoints can import the incarnation API
@@ -912,6 +912,7 @@ failClosedToolPolicy
 formatHostCapabilities
 historyProcessIncarnationFromJson
 isProcessAlive
+isProcessIncarnationLive
 isReadSkillCompatibleName
 isSameProcessIncarnation
 isStdioMcpServerSpec
@@ -946,6 +947,7 @@ ProcessIncarnation
 SameProcessIncarnation
 currentProcessIncarnation
 historyProcessIncarnationFromJson
+isProcessIncarnationLive
 isSameProcessIncarnation
 processIncarnationFromJson
 processIncarnationsEqual

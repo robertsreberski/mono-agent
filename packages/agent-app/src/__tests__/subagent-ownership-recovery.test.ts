@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { reconcileSubagentExecutionOwnership, type SubagentOwnershipRecoveryCapabilities } from "../subagent-ownership-recovery.js";
 import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "../subagent-execution-ownership.js";
-const incarnation = { schema: "mono-agent.process-incarnation.v1" as const, bootSessionId: "boot", processStartId: "birth" };
+import type { ProcessIncarnation } from "../process-incarnation.js";
+const incarnation: ProcessIncarnation = { schema: "mono-agent.process-incarnation.v1", bootSessionId: "boot", processStartId: "birth" };
 function fixture() {
   const owner: SubagentExecutionOwnership = { schemaVersion: 1, instanceIncarnation: randomUUID(), turnToken: randomUUID(),
     owner: { pid: 123, incarnation, settlement: "running" }, revoked: false, publication: { sequence: 1, state: "confirmed" }, seenCalls: ["attempt:call"],
@@ -65,5 +66,47 @@ describe("one bounded subagent owner reconciliation pass", () => {
     const { owner, capabilities } = fixture(); capabilities.waitForGroupExit.mockResolvedValue(false);
     const result = await reconcileSubagentExecutionOwnership(owner, capabilities);
     expect(result.command?.state).toBe("cleanup_unknown"); expect(capabilities.cleanup).not.toHaveBeenCalled();
+  });
+});
+
+describe("Darwin stable-incarnation transition (#1264)", () => {
+  const stable = { schema: "mono-agent.process-incarnation.v2" as const, bootSessionId: "darwin-uuid:fictional-boot", processStartId: "posix-utc-lstart:Mon Jan 5 12:34:56 2026" };
+  it("a probe timeout leaves a v2 provider unknown, never dead", async () => {
+    const { owner, capabilities } = fixture(); owner.owner.incarnation = stable; capabilities.currentIncarnation = stable;
+    capabilities.readIncarnation.mockRejectedValue(Object.assign(new Error("Fictional probe timeout"), { killed: true, signal: "SIGKILL" }));
+    const result = await reconcileSubagentExecutionOwnership(owner, capabilities);
+    expect(result.owner.settlement).toBe("unknown");
+    expect(capabilities.signalGroup).not.toHaveBeenCalled(); expect(capabilities.cleanup).not.toHaveBeenCalled();
+    expect(result.command?.state).toBe("running");
+  });
+  it("a live legacy v1 provider is unknown: its calendar boot id is never compared with a v2 boot-session id", async () => {
+    const { owner, capabilities } = fixture(); capabilities.currentIncarnation = stable;
+    capabilities.readIncarnation.mockResolvedValue({ ...stable, processStartId: "posix-utc-lstart:Tue Jan 6 08:00:00 2026" });
+    const result = await reconcileSubagentExecutionOwnership(owner, capabilities);
+    expect(result.owner.settlement).toBe("unknown");
+    expect(capabilities.readIncarnation).toHaveBeenCalledWith(123);
+    expect(capabilities.signalGroup).not.toHaveBeenCalled(); expect(result.command?.state).toBe("running");
+  });
+  it("a dead legacy provider (ESRCH) is still dead, but its v1 command is never certified released by a cross-schema boot id", async () => {
+    const { owner, capabilities } = fixture(); capabilities.currentIncarnation = stable; capabilities.sameIncarnation.mockResolvedValue(false);
+    const result = await reconcileSubagentExecutionOwnership(owner, capabilities);
+    expect(result.owner.settlement).toBe("dead");
+    expect(result.command?.state).toBe("cleanup_unknown");
+    expect(capabilities.signalGroup).not.toHaveBeenCalled(); expect(capabilities.cleanup).not.toHaveBeenCalled();
+  });
+  it("same-schema v2 evidence still proves reboot and PID reuse", async () => {
+    const rebooted = fixture(); rebooted.owner.owner.incarnation = stable; rebooted.owner.command!.incarnation = stable;
+    rebooted.capabilities.currentIncarnation = { ...stable, bootSessionId: "darwin-uuid:fictional-next-boot" };
+    expect(await reconcileSubagentExecutionOwnership(rebooted.owner, rebooted.capabilities)).toMatchObject({ owner: { settlement: "dead" }, command: { state: "released" } });
+    expect(rebooted.capabilities.signalGroup).not.toHaveBeenCalled();
+    const reused = fixture(); reused.owner.owner.incarnation = stable; reused.capabilities.currentIncarnation = stable;
+    reused.capabilities.readIncarnation.mockResolvedValue({ ...stable, processStartId: "posix-utc-lstart:Tue Jan 6 08:00:00 2026" });
+    expect((await reconcileSubagentExecutionOwnership(reused.owner, reused.capabilities)).owner.settlement).toBe("dead");
+  });
+  it("ownership records accept v2 evidence with the same exact keys and bounds", () => {
+    const { owner } = fixture(); owner.owner.incarnation = stable; owner.command!.incarnation = stable;
+    expect(isSubagentExecutionOwnership(owner)).toBe(true);
+    expect(isSubagentExecutionOwnership({ ...owner, owner: { ...owner.owner, incarnation: { ...stable, extra: 1 } } })).toBe(false);
+    expect(isSubagentExecutionOwnership({ ...owner, owner: { ...owner.owner, incarnation: { ...stable, schema: "mono-agent.process-incarnation.v3" } } })).toBe(false);
   });
 });
