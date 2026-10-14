@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Remove the unused direct Pi Agent Core dependency from
+  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/harness`.
+
 - Reclaim history claims and active markers when their recorded process
   stable v2 incarnation no longer owns a reused PID. Use boot UUIDs and UTC
   process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS

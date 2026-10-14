@@ -29,7 +29,7 @@ sed -n '1,60p' "$PIAI/dist/types.d.ts"
 D=$(dirname $(find node_modules/.pnpm -name "agent-harness.d.ts" -path "*pi-agent-core*" | head -1))
 grep -rn "<symbol>" "$D"
 # packages also nest their own copy:
-grep -rn "<symbol>" packages/agent-runtime/node_modules/@earendil-works/pi-agent-core
+grep -rn "<symbol>" packages/harness/node_modules/@earendil-works/pi-agent-core
 ```
 
 Check what upstream has published:
@@ -41,14 +41,14 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` at `1.0.1`; `pi-agent-core` at `1.0.1`.
-  Pi 1.x removed the experimental upstream harness. The runtime-owned harness
-  migration permits lifting the former Renovate `<1.0.0` cap; future updates
-  still require the exact-pin and packed-consumer resolution checks.
-  Pi 0.85 replaces the old constructor/session surface with
-  `AgentHarness.create()`, explicit operation `Context` arguments, and
-  lane-scoped prompt, navigation, compaction, and event APIs. Keep that
-  translation inside `src/ai/providers/pi-native/harness-adapter.js`.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `1.0.1`.
+- `packages/harness`: `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`
+  at `1.0.1`.
+  Pi 1.x removed the experimental upstream harness and session repository.
+  The mono-agent harness owns admission, steering and storage over the installed
+  `runAgentLoop`; the runtime adapter owns provider and tool integration.
+  Future updates require exact-pin and packed-consumer resolution checks, plus
+  the real-loop contract in `packages/harness/src/__tests__/loop-contract.test.js`.
   Pi 0.86 folds request prompts and tool declarations into the transcript's
   leading system message: provider-facing code (including faux response
   factories in tests) sees a `TranscriptContext` and must replay tools/prompt
@@ -57,9 +57,9 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   natively (the mono-agent catalog backfill is removed) and adds static `meta`
   and `radius` provider catalogs (41 static ids). Pi 0.87.0 removes
   `shouldStopAfterTurn` from the low-level `AgentLoopConfig`, replaced by
-  `finishTurn` — but NEITHER hook is surfaced on `AgentHarnessOptions`
-  (`dist/harness/agent-harness.d.ts`), so the pi-native bridge keeps enforcing
-  the maxTurns ceiling locally in `stream-subscriber.js`. Pi 0.87.0 also stops
+  `finishTurn`. The mono-agent driver does not expose that hook to the runtime,
+  so the pi-native adapter keeps enforcing the maxTurns ceiling locally in
+  `stream-subscriber.js`. Pi 0.87.0 also stops
   sending strict tool schemas to unknown OpenAI-compatible Chat Completions
   endpoints (`supportsStrictMode` defaults false; capable built-ins keep strict
   tools via catalog `compat`): mono-agent's custom-provider `compat` never
@@ -85,8 +85,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   its display name becomes "OpenAI Codex (legacy)". The new `openai` ChatGPT
   OAuth flow needs a stable installation device ID; mono-agent's app-owned
   Pi-auth-directory identity supplies it to the runtime auth facade and onboarding.
-  API keys and Codex OAuth retain their separate paths. AgentHarness's public
-  create/prompt/compaction/abort/wait surface is unchanged; Agent Core adds
+  API keys and Codex OAuth retain their separate paths. Agent Core supports
   optional provider stream events and assistant `thinkingLevel` metadata.
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
@@ -99,7 +98,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact Pi AI `1.0.1` and Pi Agent Core `1.0.1`
+  fixture or the runtime/harness exact Pi AI `1.0.1` and Pi Agent Core `1.0.1`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
@@ -110,8 +109,8 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   idle legacy v3/v4 main context with source-bound restartable staging, fsync the
   new transcript/publication before archiving the source, and cold-replay legacy files
   with open operations. Never test migration against real session directories.
-- A packed consumer should resolve Pi AI `1.0.1` from both the runtime and Pi
-  Agent Core. The release guard verifies both resolution paths independently so
+- A packed consumer should resolve Pi AI `1.0.1` from the runtime, the mono-agent
+  harness and Pi Agent Core. The release guard verifies these resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.
 
 Pi AI's transitive provider SDK versions are upstream-owned. Do not force
@@ -121,9 +120,9 @@ by hand.
 ## Bump procedure
 
 1. Edit the pins in the package manifests → `pnpm install`.
-2. Read the new `.d.ts` diff for the surfaces we bridge (Session, AgentHarness,
-   compaction, auth, provider registration) — pi minor bumps HAVE shipped
-   behavior changes: 0.79.1 had no built-in compaction (bridge drives
+2. Read the new `.d.ts` diff for the surfaces we bridge (`runAgentLoop`, tool
+   hooks, steering, events, auth, provider registration) — pi minor bumps HAVE
+   shipped behavior changes: 0.79.1 had no built-in compaction (bridge drives
    `harness.compact()`); 0.80 changed Models-auth and reports provider failures
    as a terse "Connection error." during failover.
 3. Targeted tests first:
@@ -177,7 +176,7 @@ pnpm config get minimumReleaseAgeExclude   # `undefined` while no exclusions are
 - When behavior differs from types, read the shipped implementation:
 
 ```bash
-JS=$(find node_modules/.pnpm -name "agent-harness.js" -path "*pi-agent-core*" | head -1); sed -n '1,40p' "$JS"
+sed -n '1,200p' packages/harness/node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js
 ```
 
 - Record any new gotcha in a memory note; pi surprises recur.
