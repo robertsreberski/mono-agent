@@ -650,7 +650,7 @@ describe("current launch manifest", () => {
       `The runtime exact-pins Pi AI at \`${piAi}\`; \`@mono-agent/engine\` exact-pins Pi AI and Pi Agent Core at \`${piCore}\``,
     );
     expect(migration).toContain(
-      `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime and its harness dependency`,
+      `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime and its engine dependency`,
     );
     expect(migration).not.toContain("`^0.80.x`");
   });

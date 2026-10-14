@@ -16,7 +16,7 @@ the configuration schema.
 
 ---
 
-## Unreleased mono-agent harness
+## Unreleased mono-agent engine
 
 The runtime exact-pins Pi AI at `1.0.1`; `@mono-agent/engine` exact-pins
 Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI renderer is retired, so no
@@ -881,7 +881,7 @@ Worklab's runtime fork:
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
    exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins inside the
-   runtime and its harness dependency. OAuth login adapters
+   runtime and its engine dependency. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

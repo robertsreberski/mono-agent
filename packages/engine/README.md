@@ -133,9 +133,10 @@ requires a host-owned input ID; compaction requires null and cannot start a prom
 operation. The first durable start carries the owner/bucket/handle/revision/model
 binding; later binding records remain. Opted-in ends carry a versioned minimal
 runtime-result seal, or an unavailable-result interruption account, never success
-inferred from an earlier operation. `readTurnEvidence` reads ordered per-turn
-references and `matchTurnEvidence` checks ownership, purpose, model, fence,
-baseline and exact consumed input digests before callers repair. Repositories
+inferred from an earlier operation. The `sessions.js` entrypoint exposes
+`reconcileNativeSessionTurn`, which uses the internal `readTurnEvidence` and
+`matchTurnEvidence` helpers to check ordered references, ownership, purpose,
+model, fence, baseline and exact consumed input digests before storage repair. Repositories
 support `open(metadata, { repair: false })` for matched-owner inspection without
 accounting or torn-tail truncation; after a match, `prepareReconciliation()`
 syncs the validated prefix and permits storage-only repair. Mismatches close
@@ -150,7 +151,9 @@ incoming turn and retires only the outgoing journal after canonical publication.
 
 ### Opt-in evidence projection and handoffs
 
-`createEvidenceView` validates at most one host-supplied current-journal
+`createManagedNativeJournalStorage` from `sessions.js` returns the managed-storage
+capability object. Its `captureEvidence` method uses the internal
+`createEvidenceView` helper to validate at most one host-supplied current-journal
 descriptor (header, frozen record digest/tip, ownership binding), explicit
 canonical-only gaps and the prior accepted handoff. Composed compaction coverage
 must equal the prior handoff's coverage exactly. It does not authorize ancestry:
@@ -161,16 +164,19 @@ resume.
 native journal entries. A validated view feeds handoffs only: native envelopes
 are never projected across a model change, including a return to an earlier model.
 
-`scanEvidenceSegment` streams a frozen journal twice with the secure reader:
+The internal `scanEvidenceSegment` helper streams a frozen journal twice with
+the secure reader:
 every record is validated and digested, but only the effective tail (from the
 last compaction checkpoint's kept messages, or the whole epoch, which starts
 after the prior handoff) and the records cited by unresolved work are retained.
-`prepareHandoff` selects up to three whole recent logical turns of that tail
+The capability object's `prepareHandoff` method selects up to three whole recent
+logical turns of that tail
 and a mechanical ledger of genuinely unresolved work: outcome-unknown or
 unplaced calls from the whole epoch (including started rewound effects; never
 dropped), turns and calls interrupted since the last completed model turn, and
 unconsumed inputs. Failures the model already saw before a later completed turn
-are history, not ledger entries. `buildHandoff` accepts a strict
+are history, not ledger entries. The capability object's `buildHandoff` method
+accepts a strict
 structured summary, or the prior handoff's previously validated structured
 summary plus the complete suffix after the last checkpoint. A suffix without a validated prior
 summary is text-only replay and returns `summary_required`; a compaction
@@ -184,12 +190,16 @@ summaries and unfit mandatory history fail explicitly; there is no
 chunked summarization or clipping. Returned artifacts are proposals: the host
 publishes the sole immutable content authority and caches its exact bytes/hash.
 
-`createHandoffBudget` reserves `max(16384, estimated host tokens + 4096)` for the
+The capability object's `createBudget` method wraps the internal
+`createHandoffBudget` helper, reserving `max(16384, estimated host tokens + 4096)`
+for the
 frozen host context (including resolved tool declarations), current input,
 output and `max(4096, 5% of the target window)` safety. The deterministic estimate
-is conservative, not a provider-tokenizer guarantee. Hosts must call
-`checkHandoffDispatch` on the complete normalized request before dispatch;
-late host/input overruns refuse rather than repair a cached handoff.
+is conservative, not a provider-tokenizer guarantee. Pass the frozen budget as
+the run driver's `handoffDispatchBudget` option. The driver uses the internal
+`checkHandoffDispatch` helper to validate the complete normalized request before
+dispatch; late host/input overruns refuse rather than repair a cached handoff.
+These evidence/handoff helpers are private modules, not additional root exports.
 
 `projectInheritedContext` and the opt-in run-driver `inheritedProjection`
 compose a host-accepted prefix with the current journal's delta. The prefix is
