@@ -6,7 +6,7 @@ import { lstat, mkdir, open, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
-import { assertIdentity, isOwned, sameIdentity as same, syncDir } from "./owned-fs.js";
+import { assertIdentity, isOwned, sameIdentity as same, syncDir } from "./owned-fs-impl.js";
 
 /** @returns {never} */
 const fail = () => { throw new Error("Harness journal ownership unavailable"); };

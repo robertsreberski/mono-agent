@@ -261,7 +261,7 @@ it("an interrupted turn on a legacy-only handle settles as interrupted without r
   const f = await fixture(); await f.seed();
   const [journal] = await f.journals(), current = join(f.nativeRoot, journal!), id = JSON.parse((await readFile(current, "utf8")).split("\n")[0]!).id;
   // The handle exists only as a not-yet-imported legacy Pi source (the shared harness fixture).
-  const legacy = (await readFile(new URL("../../../harness/src/__tests__/fixtures/legacy-v3.jsonl", import.meta.url), "utf8")).replace('"id":"fixture-session"', `"id":"${id}"`);
+  const legacy = (await readFile(new URL("../../../engine/src/__tests__/fixtures/legacy-v3.jsonl", import.meta.url), "utf8")).replace('"id":"fixture-session"', `"id":"${id}"`);
   await rm(current); await mkdir(join(f.nativeRoot, "legacy"), { mode: 0o700 }); await writeFile(join(f.nativeRoot, "legacy", `1700000000000_${id}.jsonl`), legacy, { mode: 0o600 });
   const abandoned = await f.store.beginProviderSessionTurn!("fictional", "fictional-killed-run", { modelKey: "faux:A",
     reconciliation: { purpose: "execution", ownerKey: "fictional", initial: { persistText: "Fictional killed input", timestamp: "2000-01-01T00:00:00.000Z" } } });
@@ -386,7 +386,7 @@ it("a native journal well over 16 MiB with a small effective tail switches, keep
   const f = await fixture(); await f.seed();
   // Grow the source journal directly: an early crashed Write (outcome unknown),
   // then many large completed turns, a compaction checkpoint and a small tail.
-  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: f.nativeRoot });
+  const { JsonlSessionRepo } = await import("../../../engine/dist/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: f.nativeRoot });
   const [metadata] = await repo.list(), store = await repo.open(metadata!), model = { provider: "faux", api: "faux-api", id: "A" };
   await store.beginTurn("fictional-far-turn", {}, "host", undefined); await store.openOperation("fictional-far-op", { model });
   await store.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fictional-far-write", name: "Write", arguments: { file_path: "/fictional/far" } }], stopReason: "toolUse", timestamp: 1 } as never, "fictional-far-message");

@@ -29,8 +29,8 @@ first if local Git history no longer contains it, install dependencies, then
 run from the repository root:
 
 ```bash
-node packages/harness/src/__tests__/fixtures/regenerate-projection-goldens.mjs
-pnpm --filter @mono-agent/harness exec vitest run \
+node packages/engine/src/__tests__/fixtures/regenerate-projection-goldens.mjs
+pnpm --filter @mono-agent/engine exec vitest run \
   src/__tests__/projection-default-parity.test.js
 ```
 

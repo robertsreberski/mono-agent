@@ -26,7 +26,7 @@ import {
   fauxToolCall,
   getCurrentTools,
 } from "@earendil-works/pi-ai";
-import { MemorySessionRepo } from "@mono-agent/harness/session-store.js";
+import { MemorySessionRepo } from "../../../../engine/dist/session-store.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -35,11 +35,9 @@ import {
   resolvePiToolExecutionMode,
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
-import {
-  createHarnessAdapter,
-  createPiSessionAdapter,
-  HARNESS_CONTEXT,
-} from "../../ai/providers/pi-native/harness-adapter.js";
+import { createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
+import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
+import { ENGINE_CONTEXT } from "@mono-agent/engine";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
 import {
   createLiveInputPromptEpoch,
@@ -948,7 +946,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("closes a partially constructed harness when adapter setup fails", async () => {
     const model = setup();
     const repo = new MemorySessionRepo();
-    const rawSession = await repo.create({ id: "adapter-setup-failure" }, HARNESS_CONTEXT);
+    const rawSession = await repo.create({ id: "adapter-setup-failure" }, ENGINE_CONTEXT);
     const metadata = rawSession.metadata;
     const session = createPiSessionAdapter(rawSession);
     const attach = session.attach.bind(session);
@@ -968,9 +966,9 @@ describe("pi-native AgentHarness bridge", () => {
       followUpMode: "one-at-a-time",
     })).rejects.toThrow("attach failed");
 
-    const reopened = await repo.open(metadata, HARNESS_CONTEXT);
-    await reopened.close(HARNESS_CONTEXT);
-    await repo.close(HARNESS_CONTEXT);
+    const reopened = await repo.open(metadata, ENGINE_CONTEXT);
+    await reopened.close(ENGINE_CONTEXT);
+    await repo.close(ENGINE_CONTEXT);
   });
 
   it("forwards the requested transport to Pi and reports it in diagnostics", async () => {

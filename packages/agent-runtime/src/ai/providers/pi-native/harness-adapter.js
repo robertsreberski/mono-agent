@@ -2,42 +2,10 @@
 // Compatibility boundary between mono-agent's Pi-native bridge and the
 // mono-owned harness built on the pinned Pi agent loop.
 
-import { createRunDriver, projectContext, projectInheritedContext, inspectCurrentEvidence } from "@mono-agent/harness";
-import { HARNESS_CONTEXT } from "@mono-agent/harness/context.js";
+import { createRunDriver } from "@mono-agent/engine";
 
 import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 import { createToolExecutionGate, isSharedTool } from "./tool-execution-gate.js";
-export { HARNESS_CONTEXT, projectContext };
-export { buildHarnessSessionContext } from "@mono-agent/harness/session-context.js";
-
-/** @param {any} rawSession */
-export function createPiSessionAdapter(rawSession) {
-  let driver = null;
-  let inherited;
-  let closePromise = null;
-  return {
-    rawSession,
-    get metadata() { return rawSession.metadata; },
-    attach(nextDriver) { driver = nextDriver; },
-    setInheritedProjection(projection) { inherited = structuredClone(projection); },
-    async buildContext() {
-      const entries = await rawSession.getEntries(), options = { includeFailed: true, repairs: await rawSession.getRepairEntries() };
-      return inherited === undefined ? projectContext(entries, options) : projectInheritedContext(entries, inherited, options);
-    },
-    getEntries: async () => (await inspectCurrentEvidence(rawSession)).entries,
-    getLeafId: () => rawSession.getLeafId(),
-    appendMessage: (message) => rawSession.appendMessage(message),
-    moveTo: (targetId) => rawSession.moveTo(targetId),
-    getMetadata: () => Promise.resolve(rawSession.metadata),
-    close() {
-      if (!closePromise) closePromise = (async () => {
-        if (driver) { await driver.abort(); await driver.waitForIdle(); }
-        await rawSession.close();
-      })();
-      return closePromise;
-    },
-  };
-}
 
 /** @param {any} session @param {any} options */
 export async function createHarnessAdapter(session, options) {

@@ -12,7 +12,7 @@ import type { ConversationHistoryStore } from "@mono-agent/agent-harness";
 import { createMonoRuntime, type MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import { createConfiguredAgentResponderForApp, wrapOwnedConfiguredRuntime } from "../configured-agent.js";
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
-import { JsonlSessionRepo } from "../../../harness/dist/session-store.js";
+import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
 import { loadAppCoreConfig } from "../app-config.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];

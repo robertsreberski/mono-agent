@@ -5,7 +5,7 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { JournalReader } from "@mono-agent/harness/journal-reader.js";
+import { JournalReader } from "../../../../engine/dist/journal-reader.js";
 import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/pi-native/session-salvage.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";

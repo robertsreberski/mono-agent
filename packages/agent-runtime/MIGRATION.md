@@ -16,12 +16,12 @@ the configuration schema.
 
 ---
 
-## Unreleased mono-agent harness
+## Unreleased mono-agent engine
 
-The runtime exact-pins Pi AI at `1.0.1`; `@mono-agent/harness` exact-pins
+The runtime exact-pins Pi AI at `1.0.1`; `@mono-agent/engine` exact-pins
 Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI renderer is retired, so no
 Pi TUI pin remains). Pi Core removed its high-level
-harness. The Pi provider glue now uses `@mono-agent/harness` for model-run admission,
+harness. The Pi provider glue now uses `@mono-agent/engine` for model-run admission,
 steering, journal/storage and compaction over upstream `runAgentLoop`; provider
 code remains Pi-owned. The existing `@mono-agent/agent-harness` package still
 owns host conversation/history orchestration.
@@ -881,7 +881,7 @@ Worklab's runtime fork:
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the
    exact Pi AI `1.0.1` and Pi Agent Core `1.0.1` compatibility pins inside the
-   runtime and its harness dependency. OAuth login adapters
+   runtime and its engine dependency. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

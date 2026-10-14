@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createSessionRegistry } from "../../ai/runtime/sessions.js";
-import { createSessionLiveness } from "../../ai/runtime/session-liveness.js";
+import { createSessionRegistry } from "../sessions.js";
+import { createSessionLiveness } from "../session-liveness.js";
 
 // Build a registry + liveness pair with a controllable clock and a fake repo so
 // idle-TTL eviction and onEvict fan-out are observable.

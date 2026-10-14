@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { JournalReader } from "./journal-reader.js";
 import { projectContext } from "./request-projection.js";
-import { syncDir } from "./owned-fs.js";
+import { syncDir } from "./owned-fs-impl.js";
 
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 /** @returns {never} */

@@ -643,14 +643,14 @@ describe("current launch manifest", () => {
       `packages/agent-runtime\`: \`@earendil-works/pi-ai\` at \`${piAi}\``,
     );
     expect(guidance).toContain(
-      `packages/harness\`: \`@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` at \`${piCore}\``,
+      `packages/engine\`: \`@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` at \`${piCore}\``,
     );
     expect(guidance).not.toContain("pi-tui");
     expect(migration).toContain(
-      `The runtime exact-pins Pi AI at \`${piAi}\`; \`@mono-agent/harness\` exact-pins Pi AI and Pi Agent Core at \`${piCore}\``,
+      `The runtime exact-pins Pi AI at \`${piAi}\`; \`@mono-agent/engine\` exact-pins Pi AI and Pi Agent Core at \`${piCore}\``,
     );
     expect(migration).toContain(
-      `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime and its harness dependency`,
+      `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime and its engine dependency`,
     );
     expect(migration).not.toContain("`^0.80.x`");
   });

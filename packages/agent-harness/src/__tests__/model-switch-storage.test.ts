@@ -204,7 +204,9 @@ it("rejects hard-linked or symlinked fences and replaced storage directories wit
 });
 
 it("stores an actual P3a checkpoint proposal, including optional ledger fields, without a producer call", async () => {
-  const { MemorySessionRepo, createEvidenceView, buildHandoff, createHandoffBudget } = await import("@mono-agent/harness");
+  const { MemorySessionRepo } = await import("@mono-agent/engine");
+  const { createEvidenceView } = await import("../../../engine/dist/evidence-view.js");
+  const { buildHandoff, createHandoffBudget } = await import("../../../engine/dist/handoff.js");
   const repository = new MemorySessionRepo(), native = await repository.create({ id: source.handleId, cwd: "/fictional" });
   await native.beginTurn("fictional-open-turn", {}, "synthetic", undefined);
   await native.appendMessage({ role: "user", content: "Fictional interrupted request", timestamp: 17 }, "00000000-0000-4000-8000-000000000007");

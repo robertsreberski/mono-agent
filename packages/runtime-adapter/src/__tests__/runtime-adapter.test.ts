@@ -744,7 +744,7 @@ describe("explicit native reconciliation ownership", () => {
 });
 
 it.each([false, true])("forwards host-only guarded retirement authority without dispatch (routed=%s)", async (routed) => {
-  const { JsonlSessionRepo } = await import("@mono-agent/harness");
+  const { JsonlSessionRepo } = await import("@mono-agent/engine");
   const { readFile } = await import("node:fs/promises");
   const root = await mkdtemp(join(tmpdir(), "adapter-guarded-retire-"));
   try {

@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { isOwned, sameIdentity as same } from "./owned-fs.js";
+import { isOwned, sameIdentity as same } from "./owned-fs-impl.js";
 /** @returns {never} */
 const fail = () => { throw new Error("Harness journal read unavailable"); };
 const decoder = new TextDecoder("utf-8", { fatal: true });

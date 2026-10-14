@@ -284,7 +284,7 @@ it("captures and hands off composed checkpoints covering exactly the inherited p
   await prep.rollForwardModelSwitch(f.state.identity.switchId, { });
   const snapshot = await prep.read(), { createHash } = await import("node:crypto");
   const handleId = createHash("sha256").update("mono-agent-provider-session-v2\0").update(bucket).update("\0").update(f.state.identity.targetEpoch).digest("hex");
-  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
+  const { JsonlSessionRepo } = await import("../../../engine/dist/session-store.js"), repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
   const metadata = (await repo.list()).find((entry) => entry.id === handleId)!;
   const current = await repo.open(metadata); await current.appendCompaction({ summary: "Fictional inherited checkpoint", tokensBefore: 10, retainedTail: [] }, { version: 1,
     sources: [f.state.identity.source!].map(({ journalId, sourceTipId, sourceSeq, sourceDigest }) => ({ journalId, sourceTipId, sourceSeq, sourceDigest })) }, { sourceTipId: current.tip, sourceSeq: current.seq });
@@ -294,7 +294,7 @@ it("captures and hands off composed checkpoints covering exactly the inherited p
   const options = { target: f.state.identity.targetProvenance, budget: frozenBudget(f), timestamp: 17, hostContext: { systemPrompt: "Fictional rules", tools: [] }, summary: {
     intent: ["Fictional objective"], constraints: [], decisions: [], completedWork: [], failures: [], openWork: [], nextActions: [], references: [] } };
   expect(f.native.buildHandoff(captured.view, options).status).toBe("ready");
-  const { createEvidenceView, evidenceDigest } = await import("@mono-agent/harness");
+  const { createEvidenceView, evidenceDigest } = await import("../../../engine/dist/evidence-view.js");
   // The view retains only the suffix after that checkpoint; forge the complete raw journal instead.
   const [header, ...records] = (await readFile(metadata.path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   records.find((record: { kind: string }) => record.kind === "compaction").payload.compaction.checkpoint.inheritedCoverage.sources[0].sourceDigest = "0".repeat(64);
@@ -311,7 +311,7 @@ it("capture streams journals of any physical size; damage or growth between its 
   await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
   await expect(f.native.captureEvidence(source, context)).rejects.toThrow("Managed native journal evidence changed or is unavailable");
   await writeFile(f.nativePath, f.original);
-  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js"), original = JournalReader.prototype.scan; let passes = 0;
+  const { JournalReader } = await import("../../../engine/dist/journal-reader.js"), original = JournalReader.prototype.scan; let passes = 0;
   const growing = vi.spyOn(JournalReader.prototype, "scan").mockImplementation(async function (this: typeof JournalReader.prototype, visit: Parameters<typeof original>[0]) {
     if (++passes === 2) await truncate(f.nativePath, 16 * 1024 * 1024 + 1);
     return original.call(this, visit);
@@ -330,7 +330,7 @@ it("capture maps missing and other filesystem errors to generic unavailable with
   };
   await check({ ...source, journalId: "fictional-missing" }); // lstat ENOENT
   await check({ ...source, journalId: "j".repeat(4096) }); // other preflight filesystem failure
-  const { JournalReader } = await import("@mono-agent/harness/journal-reader.js");
+  const { JournalReader } = await import("../../../engine/dist/journal-reader.js");
   const scan = vi.spyOn(JournalReader.prototype, "scan").mockRejectedValueOnce(Object.assign(new Error(`EACCES: ${f.nativePath}`), { code: "EACCES", path: f.nativePath }));
   await check(source); scan.mockRestore(); await prep.abort();
 });

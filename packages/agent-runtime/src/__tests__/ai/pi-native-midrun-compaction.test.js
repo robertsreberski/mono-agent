@@ -21,7 +21,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { shouldCompact } from "@mono-agent/harness/compaction-kit/compaction.js";
+import { shouldCompact } from "../../../../engine/dist/compaction-kit/compaction.js";
 import { runReactiveCompaction } from "../../ai/providers/pi-native/compaction-driver.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import {
@@ -29,7 +29,7 @@ import {
   midRunBaselineAdjustment,
   midRunReserveTokens,
 } from "../../ai/providers/pi-native/mid-run-compaction.js";
-import { buildHarnessSessionContext } from "../../ai/providers/pi-native/harness-adapter.js";
+import { buildHarnessSessionContext } from "../../../../engine/dist/session-context.js";
 
 // 30k characters ≈ 7.5k estimated tokens: two of these cross a 14k trigger, and
 // neither one alone is large enough to make the retained tail unsummarizable.
