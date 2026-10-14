@@ -1562,7 +1562,10 @@ describe("managed detached production execution", () => {
       expect(run).toHaveBeenCalledTimes(2); expect(sessions).toEqual([sessions[0], sessions[0]]);
       expect((await f.service.get(original.details.jobId))?.state).toBe("timed_out"); expect(f.wake).toHaveBeenCalledTimes(admissionRejected ? 3 : 2);
     } finally { release.resolve(); }
-  }, 30_000);
+  // Inner waits: the 12s timeout-certificate wait plus three durable
+  // deliveries (original, queue holder, continuation) of up to
+  // DURABLE_DELIVERY_TIMEOUT_MS each. The enclosing budget must exceed them.
+  }, 12_000 + 3 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
   it("restores a continuing instance's acknowledgement and route when cancellation follows begin but precedes provider admission", async () => {
     const f = await managedFixture(undefined, { maxRuntimeMs: 3_000 });
     const releasePublication = deferred<void>(); let delayed = false;
