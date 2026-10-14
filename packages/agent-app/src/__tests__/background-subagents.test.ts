@@ -2230,7 +2230,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
         ? await agent.execute("start", { persist: true, background: true, id: "helper", prompt: "remember original context" })
         : await send.execute("continue", { id: "helper", background: true, message: "second tool-bearing turn" });
       await entered.promise;
-      const result = await send.execute("stop", { id: "helper", stop: true });
+      const result = await stopObservingDurableSettlement(f.store, started.details.jobId, () => send.execute("stop", { id: "helper", stop: true }));
       expect(result.details.stop).toMatchObject({ status: "stopped", resumable: true, childStillBusy: false, disposition: "cancelled", turns: turn + 1 });
       await done(f.service, started.details.jobId);
     }
@@ -2249,7 +2249,9 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
     await send.execute("close", { id: "helper", close: true });
     expect((await f.instances.get("helper"))?.status).toBe("closed");
   } finally { await owner.disposeAllSessions?.(); }
-}, 25_000);
+  // Inner waits per turn: the durable settlement observed by the stop and the
+  // wake delivery; then the resumed turn's delivery.
+}, 5 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
 it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-session disposal", async () => {
   const owner = createMonoRuntime(); const releaseConfirmation = deferred<void>(); let delayed = false;
