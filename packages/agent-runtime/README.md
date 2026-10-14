@@ -374,9 +374,9 @@ The package validates each model reference and lazily loads the sole Pi bridge:
 ### Data flow
 
 1. `createRuntime()` binds host callbacks and creates an isolated tool context.
-2. Runtime lazily loads `engineTurnAdapter` and validates the model reference
-   directly; `resolveEngineTurnAdapter()` exposes the same optional lookup.
-3. The resolver directly imports the Pi implementation.
+2. Runtime validates the model reference before loading provider code.
+3. Runtime lazily imports `engineTurnAdapter` directly; the optional
+   `resolveEngineTurnAdapter()` lookup is not part of dispatch.
 4. The bridge prepares the runtime inputs it supports, including managed or MCP
    tools only where that bridge can represent them, and streams normalized
    events through the lifecycle gate.
@@ -949,7 +949,7 @@ createRuntime({
   persistArtifact,         // ({ filename, buffer, toolName, toolUseId }) => path | null
   onCompactionRecorded,    // (compactionRow) => void — fired when the pi bridge
                            // runs an automatic compaction (proactive or reactive
-                           // recovery) via engine driver compact()
+                           // recovery) via compact() (formerly AgentHarness.compact())
 
   // -- tool runtime context (process-level config for the tool kernel) --
   workspace,               // primary allowed root for path-based tools
@@ -1477,13 +1477,14 @@ are evidence of payload changes, not proof of cache misses; delta/unsupported
 prefix comparisons remain unknown. Pi summary requests retain their existing
 `cacheRetention: "none"` behavior.
 
-The sole pi bridge runs on pi-agent-core's native `engine run driver`. Mono-agent
-keeps Pi's native overflow recovery disabled but arms its checkpoint compaction
-for the main prompt. The bridge's guarded `session_before_compact` hook decides
-whether to compact before each turn and between completed model/tool rounds,
-using Pi's public `prepareCompaction()` and `compact()` primitives. Pi still owns
-phase changes, persistence, and events. Before the prompt, the bridge invokes
-`engine driver compact()`; mid-run, Pi schedules the hook inside the same agent run.
+Pi's historical `AgentHarness` owned scheduling. The current adapter uses the
+mono-agent engine over the pinned Pi loop. Runtime disables automatic overflow
+recovery and arms engine checkpoint compaction for the main prompt. Its guarded
+`session_before_compact` hook decides whether to compact before each turn and
+between completed model/tool rounds, using the engine's `prepareCompaction()`
+and `compact()` helpers. The engine owns phase changes, persistence and events.
+Before the prompt, runtime invokes `compact()` (formerly `AgentHarness.compact()`);
+mid-run, the engine schedules the hook inside the same agent run.
 Each summary is a separate paid provider request, guarded by projected savings,
 fresh assistant progress and meaningful growth between mid-run attempts.
 Non-reducing previews and proactive savings below policy are cancelled before

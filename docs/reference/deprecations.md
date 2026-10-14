@@ -16,6 +16,10 @@ documentation together, then remove the completed row from this table.
 
 ## Scheduled removals
 
+No deprecated surface currently has a scheduled removal.
+
+## Deprecations without scheduled removal
+
 The runtime retains these identity-preserving aliases without runtime warnings
 or a scheduled removal. New integrations should use the canonical names.
 

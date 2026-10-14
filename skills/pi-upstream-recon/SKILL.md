@@ -102,7 +102,7 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
-- Pi Core 1.0 removes engine run driver and SessionRepo. The Pi-native adapter now
+- Pi Core 1.0 removes AgentHarness and SessionRepo. The Pi-native adapter now
   uses the mono-agent engine over the pinned `runAgentLoop`, not a fork of that loop.
   Compaction helpers retain the attributed old cut/estimator for parity.
   The mono-agent engine in `@mono-agent/engine` uses `mono-v2/journals`: import
@@ -128,7 +128,7 @@ by hand.
 3. Targeted tests first:
 
 ```bash
-pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/pi-native.test.js \
+pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/engine-turn.test.js \
   src/__tests__/pi-auth.test.js src/__tests__/ai/failure.test.js \
   src/__tests__/ai/router.test.js --runInBand
 ```
