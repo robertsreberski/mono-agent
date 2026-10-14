@@ -178,7 +178,8 @@ export class JournalValidator {
             && p.input.requestDigest === digestTurnInput(p.message.content)
             && ["initial", "live", "replay"].includes(p.input.placement));
         } else {
-          // Legacy v2 cuts remain readable; new cuts additionally carry an exact
+          // The merged P1a v2 writer omitted checkpoints; those cuts remain
+          // readable. New cuts additionally carry an exact
           // checkpoint envelope and positively validated ordered coverage.
           requireValue(object(p.compaction) && typeof p.compaction.summary === "string"
             && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i, index) => this.contextInfo.get(i)?.kind === "message"
