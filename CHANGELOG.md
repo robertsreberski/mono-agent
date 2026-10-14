@@ -119,9 +119,9 @@
   unattributable remnants instead of silently claiming complete cleanup. Report
   damaged pending recovery data with repair guidance, not another-send advice,
   and reject invalid native mutation IDs asynchronously. Store durable markers
-  for interrupted `AskUser` questions, not quoted notice text; the restart Web
-  wake omits `AskUser` and includes interrupted-question and unapplied-message
-  notes. Answer interrupted questions in a new message, never by reviving or
+  for interrupted `AskUser` questions, not quoted notice text; the next explicit
+  Web user turn includes interrupted-question and unapplied-message notes.
+  Answer interrupted questions in a new message, never by reviving or
   replaying the tool. Report admitted messages not confirmed as applied once on
   recovery; do not replay them, and resend them if still needed.
 

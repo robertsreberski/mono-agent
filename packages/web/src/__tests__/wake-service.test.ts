@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebService } from "../service.js";
-import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
+import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot, pendingParentInterruptions } from "./helpers.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -219,4 +219,35 @@ it("defers a compact-first wake across disconnection and never duplicates it on 
     await waitFor(() => turns === 1 && service.store.getThread(thread.id)?.runState.status === "complete");
     dispatch(service); expect(turns).toBe(1); expect(compactions).toBe(2);
   } finally { release(); await service.stop(); }
+});
+
+it.each(["scheduled", "process-job"] as const)("leaves pending interruption context for explicit input when a %s wake runs first", async (trigger) => {
+  const root = await temporaryRoot(); roots.push(root);
+  let now = Date.parse("2027-01-02T09:59:00Z"); const delivered: Record<string, unknown>[] = [];
+  const service = await WebService.create({ stateDir: join(root, "state"), clock: () => new Date(now),
+    discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()],
+    fetchImpl: operatorFetch({ onTurn: (body) => delivered.push(body) }) });
+  try {
+    const thread = service.createThread("agent-one");
+    const old = service.store.beginTurn({ threadId: thread.id, text: "Fictional old request", attachmentIds: [] });
+    service.store.markTurnDispatchStarted(old.turnId, "fictional-old-generation");
+    service.store.failTurn(old.turnId, { message: "Fictional process loss", code: "agent_connection_lost" });
+    service.store.reconcileParentInterruptions("agent-one", "fictional-current-generation");
+    if (trigger === "scheduled") {
+      service.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00" });
+      now += 60_000; (service as unknown as { dispatchWakes(): void }).dispatchWakes();
+    } else {
+      const processJob = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      await service.deliverNotification({ sourceId: "agent-one", triggerKind: "job", threadId: thread.id,
+        deliveryKey: processJob.wake.deliveryKey, processJob, wakePrompt: "Inspect the fictional completed worker result" });
+    }
+    await waitFor(() => delivered.length === 1 && service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(delivered[0]!.text).not.toContain("The turn was not replayed");
+    expect(pendingParentInterruptions(service.store, "agent-one")).toHaveLength(1);
+    await service.startTurn(thread.id, { text: "Fictional explicit next request" });
+    await waitFor(() => delivered.length === 2 && service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(delivered[1]!.text).toContain("The turn was not replayed");
+    expect(delivered[1]!.text).not.toContain("Some messages sent during the previous turn");
+    expect(pendingParentInterruptions(service.store, "agent-one")).toHaveLength(0);
+  } finally { await service.stop(); }
 });

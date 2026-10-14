@@ -32,7 +32,7 @@ import {
 } from "../store.js";
 import { WebConsoleError } from "../errors.js";
 import { WEB_STORAGE_SCHEMA_VERSION } from "../store-migrations.js";
-import { fakeProcessJob, temporaryRoot } from "./helpers.js";
+import { fakeProcessJob, temporaryRoot, pendingParentInterruptions } from "./helpers.js";
 // The console replays these same vectors, so they live where both suites can
 // take them verbatim rather than each inventing its own reading of an op.
 import { MESSAGE_DELTA_VECTORS } from "../../webapp/src/test/message-delta-vectors.js";
@@ -7319,23 +7319,23 @@ describe("parent turn interruption ledger", () => {
     raw.close();
     const migrated = await WebStore.open({ stateDir });
     try {
-      expect(migrated.pendingParentInterruptions("agent-one")).toEqual([]);
+      expect(pendingParentInterruptions(migrated, "agent-one")).toEqual([]);
       migrated.markTurnDispatchStarted(interrupted.turnId, "old-generation");
       migrated.markTurnDispatchStarted(failed.turnId, "old-generation");
       migrated.markTurnDispatchStarted(cancelled.turnId, "old-generation");
       expect(migrated.reconcileParentInterruptions("agent-one", "new-generation")).toHaveLength(2);
       expect(migrated.reconcileParentInterruptions("agent-one", "new-generation")).toEqual([]);
-      expect(migrated.pendingParentInterruptions("agent-one").map((row) => row.turnId))
+      expect(pendingParentInterruptions(migrated, "agent-one").map((row) => row.turnId))
         .toEqual(expect.arrayContaining([
           interrupted.turnId, failed.turnId,
         ]));
       expect(migrated.getThreadDetail(running.id)?.messages.at(-1)?.parts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("AgentManage inspect") })]));
-      expect(migrated.pendingParentInterruptions("agent-one")).toHaveLength(2);
+      expect(pendingParentInterruptions(migrated, "agent-one")).toHaveLength(2);
       const next = migrated.beginTurn({ threadId: failedThread.id, text: "Fictional explicit request", attachmentIds: [] });
       expect(migrated.markTurnDispatchStarted(next.turnId, "new-generation", true)).toContain("The turn was not replayed");
       expect(migrated.markTurnDispatchStarted(next.turnId, "new-generation", true)).toBe("");
-      expect(migrated.pendingParentInterruptions("agent-one")).toHaveLength(1);
+      expect(pendingParentInterruptions(migrated, "agent-one")).toHaveLength(1);
       expect(migrated.getThreadDetail(legacyThread.id)?.messages).toHaveLength(2);
     } finally { migrated.close(); }
   });
@@ -7357,13 +7357,13 @@ describe("persisted interruption advisory boundary", () => {
     try {
       expect(reopened.reconcileParentInterruptions("agent-one", "generation-b")).toHaveLength(1);
       expect(reopened.reconcileParentInterruptions("agent-one", "generation-c")).toEqual([]);
-      expect(reopened.pendingParentInterruptions("agent-one")).toHaveLength(1);
+      expect(pendingParentInterruptions(reopened, "agent-one")).toHaveLength(1);
       now = new Date(now.getTime() + 24 * 60 * 60_000);
-      expect(reopened.pendingParentInterruptions("agent-one")).toHaveLength(1);
+      expect(pendingParentInterruptions(reopened, "agent-one")).toHaveLength(1);
       const next = reopened.beginTurn({ threadId: thread.id, text: "Fictional next request", attachmentIds: [] });
       expect(reopened.markTurnDispatchStarted(next.turnId, "generation-c", true)).toContain("The turn was not replayed");
       expect(reopened.markTurnDispatchStarted(next.turnId, "generation-c", true)).toBe("");
-      expect(reopened.pendingParentInterruptions("agent-one")).toEqual([]);
+      expect(pendingParentInterruptions(reopened, "agent-one")).toEqual([]);
     } finally { reopened.close(); }
   });
 });
@@ -7501,4 +7501,35 @@ it("uses stored interruption markers, not quoted notice text, including user Sto
     expect(store.parentInterruptionNotes(interrupted.turnId).questionInterrupted).toBe(true);
     expect(store.parentInterruptionNotes(quoted.turnId).questionInterrupted).toBe(false);
   } finally { store.close(); }
+});
+
+it("opens shipped interruption rows without repeating attempted wakes, and carries expired context once", async () => {
+  const root = await temporaryRoot(); cleanup.push(root); const stateDir = join(root, "state");
+  const store = await WebStore.open({ stateDir }); store.replaceAgents([agent()]);
+  const rows = ["attempted", "expired"].map((state) => {
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Fictional interrupted request", attachmentIds: [] });
+    store.markTurnDispatchStarted(turn.turnId, "fictional-old-generation");
+    store.failTurn(turn.turnId, { message: "Fictional process loss", code: "agent_connection_lost" });
+    return { state, thread, turn };
+  });
+  store.reconcileParentInterruptions("agent-one", "fictional-new-generation");
+  const path = store.paths.database; store.close();
+  const legacy = new DatabaseSync(path);
+  for (const row of rows) legacy.prepare("UPDATE parent_turn_interruptions SET state = ?, deadline = '2000-01-01T00:00:00.000Z' WHERE turn_id = ?").run(row.state, row.turn.turnId);
+  legacy.close();
+  const reopened = await WebStore.open({ stateDir });
+  try {
+    expect(reopened.reconcileParentInterruptions("agent-one", "fictional-new-generation")).toEqual([]);
+    expect(pendingParentInterruptions(reopened, "agent-one")).toHaveLength(1);
+    for (const row of rows) {
+      const next = reopened.beginTurn({ threadId: row.thread.id, text: "Fictional explicit answer", attachmentIds: [] });
+      const context = reopened.markTurnDispatchStarted(next.turnId, "fictional-new-generation", true);
+      if (row.state === "expired") expect(context).toContain("The turn was not replayed"); else expect(context).toBe("");
+      expect(reopened.markTurnDispatchStarted(next.turnId, "fictional-new-generation", true)).toBe("");
+    }
+    const database = new DatabaseSync(path, { readOnly: true });
+    try { expect(database.prepare("SELECT state FROM parent_turn_interruptions ORDER BY state").all()).toEqual([{ state: "attempted" }, { state: "completed" }]); }
+    finally { database.close(); }
+  } finally { reopened.close(); }
 });

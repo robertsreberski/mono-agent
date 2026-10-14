@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { WebService } from "../service.js";
 import { INTERRUPTED_QUESTION_NOTE } from "../store.js";
-import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
+import { fakeDiscoveredAgent, temporaryRoot, pendingParentInterruptions } from "./helpers.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(async (root) => rm(root, { recursive: true, force: true }))); });
@@ -67,7 +67,7 @@ it("reports a crash without a turn or model call, then carries interruption cont
     expect(next.metadata.web.ownerText).toBe("Fictional next explicit request");
     expect(next.text).toContain("Inspect background jobs and subagents with AgentManage inspect");
     expect(next.text).toContain(INTERRUPTED_QUESTION_NOTE);
-    expect(next.text).toContain("Do not re-ask the interrupted question; the user will answer in a new message.");
+    expect(next.text).toContain("The user's message may answer the interrupted question; do not re-ask it.");
     expect(next.text).toContain("Some messages sent during the previous turn (1 total) were not confirmed as applied and were not replayed.");
     await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
     await service.startTurn(thread.id, { text: "Fictional second explicit request" });
@@ -119,7 +119,7 @@ it("does not steer an already active human turn with a newly discovered interrup
     await service.refreshAgents();
     expect(wakes).toHaveLength(0);
     expect(turns).toHaveLength(1); expect(turns[0]!.metadata.web.suppressInteractionTools).toBeUndefined();
-    expect(service.store.pendingParentInterruptions("agent-one")).toHaveLength(1);
+    expect(pendingParentInterruptions(service.store, "agent-one")).toHaveLength(1);
     stream.enqueue(new TextEncoder().encode(JSON.stringify({ kind: "finish", finalText: "Fictional current reply" }) + "\n")); stream.close();
     await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
   } finally { await service.stop(); }

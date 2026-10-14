@@ -4126,15 +4126,6 @@ export class WebStore {
     return { questionInterrupted, unconfirmedLiveInputs: uncertain + inFlight };
   }
 
-  pendingParentInterruptions(sourceId: string): ReadonlyArray<{
-    readonly sourceId: string; readonly threadId: string; readonly turnId: string;
-  }> {
-    return this.database.prepare(`SELECT source_id AS sourceId, thread_id AS threadId,
-      turn_id AS turnId FROM parent_turn_interruptions
-      WHERE source_id = ? AND state IN ('pending', 'expired') ORDER BY created_at`).all(sourceId) as
-      Array<{ sourceId: string; threadId: string; turnId: string }>;
-  }
-
   /** Called in the dispatch transaction. Consume advisory context, never dispatch
    * a wake or replay a turn. Legacy attempted/completed wakes stay consumed:
    * their delivery is ambiguous or already confirmed, not permission to repeat. */
@@ -4150,8 +4141,8 @@ export class WebStore {
     return [
       "The agent process ended during a previous turn. The turn was not replayed. Inspect background jobs and subagents with AgentManage inspect before relying on them; this notice does not establish their outcomes.",
       ...(notes.some((note) => note.questionInterrupted)
-        ? [INTERRUPTED_QUESTION_NOTE, "Do not re-ask the interrupted question; the user will answer in a new message."] : []),
-      `Some messages sent during the previous turn (${String(unconfirmed)} total) were not confirmed as applied and were not replayed. Resend them if still needed.`,
+        ? [INTERRUPTED_QUESTION_NOTE, "The user's message may answer the interrupted question; do not re-ask it."] : []),
+      ...(unconfirmed > 0 ? [`Some messages sent during the previous turn (${String(unconfirmed)} total) were not confirmed as applied and were not replayed. Resend them if still needed.`] : []),
     ].join("\n\n");
   }
 
