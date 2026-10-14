@@ -9,7 +9,7 @@ import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(async (root) => rm(root, { recursive: true, force: true }))); });
 
-it("a parent-interruption wake after an interrupted AskUser suppresses interaction tools and carries the notes", async () => {
+it("reports a crash without a turn or model call, then carries interruption context once on the next explicit user turn", async () => {
   const root = await temporaryRoot(); roots.push(root);
   const encoder = new TextEncoder();
   let discovered = fakeDiscoveredAgent({ apiKey: "fixture-key" });
@@ -54,17 +54,26 @@ it("a parent-interruption wake after an interrupted AskUser suppresses interacti
 
     discovered = { ...discovered, source: { ...discovered.source, pid: 456, startedAt: "2026-07-17T10:00:00.000Z" } };
     await service.refreshAgents();
-    await vi.waitFor(() => expect(turnBodies).toHaveLength(2));
-    const wake = turnBodies[1]!;
-    expect(wake.metadata.web.suppressInteractionTools).toBe(true);
-    expect(turnBodies[0]!.metadata.web.suppressInteractionTools).toBeUndefined();
-    expect(wake.text).toContain("Inspect background jobs and subagents with AgentManage inspect");
-    expect(wake.text).toContain(INTERRUPTED_QUESTION_NOTE);
-    expect(wake.text).toContain("Do not re-ask the interrupted question; the user will answer in a new message.");
-    expect(wake.text).toContain("Some messages sent during the previous turn (1 total) were not confirmed as applied and were not replayed.");
-    await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
     await service.refreshAgents();
-    expect(turnBodies).toHaveLength(2);
+    expect(turnBodies).toHaveLength(1);
+    expect(service.store.activeTurn(thread.id)).toBeUndefined();
+    expect(service.thread(thread.id).messages.filter((message) => message.parts.some((part) =>
+      part.type === "text" && part.text.includes("The agent process ended during a previous turn")))).toHaveLength(1);
+    // No automatic /v1/turns request means no model call, including after rediscovery.
+    await service.startTurn(thread.id, { text: "Fictional next explicit request" });
+    await vi.waitFor(() => expect(turnBodies).toHaveLength(2));
+    const next = turnBodies[1]!;
+    expect(next.metadata.web.suppressInteractionTools).toBeUndefined();
+    expect(next.metadata.web.ownerText).toBe("Fictional next explicit request");
+    expect(next.text).toContain("Inspect background jobs and subagents with AgentManage inspect");
+    expect(next.text).toContain(INTERRUPTED_QUESTION_NOTE);
+    expect(next.text).toContain("Do not re-ask the interrupted question; the user will answer in a new message.");
+    expect(next.text).toContain("Some messages sent during the previous turn (1 total) were not confirmed as applied and were not replayed.");
+    await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
+    await service.startTurn(thread.id, { text: "Fictional second explicit request" });
+    await vi.waitFor(() => expect(turnBodies).toHaveLength(3));
+    expect(turnBodies[2]!.text).not.toContain("The turn was not replayed");
+    await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
     const notes = service.thread(thread.id).messages.flatMap((message) => message.parts)
       .filter((part) => part.type === "text" && part.text === INTERRUPTED_QUESTION_NOTE);
     expect(notes).toHaveLength(1);
@@ -74,7 +83,7 @@ it("a parent-interruption wake after an interrupted AskUser suppresses interacti
   } finally { await service.stop(); }
 });
 
-it("steers an active human turn with the interrupted-question guard without disabling its interactions", async () => {
+it("does not steer an already active human turn with a newly discovered interruption", async () => {
   const root = await temporaryRoot(); roots.push(root);
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   const turns: Array<{ metadata: { web: Record<string, unknown> } }> = [];
@@ -108,10 +117,9 @@ it("steers an active human turn with the interrupted-question guard without disa
     await service.startTurn(thread.id, { text: "Fictional unrelated human task" });
     await vi.waitFor(() => expect(stream).toBeDefined());
     await service.refreshAgents();
-    await vi.waitFor(() => expect(wakes).toHaveLength(1));
+    expect(wakes).toHaveLength(0);
     expect(turns).toHaveLength(1); expect(turns[0]!.metadata.web.suppressInteractionTools).toBeUndefined();
-    expect(wakes[0]!.text).toContain("Do not re-ask the interrupted question; the user will answer in a new message.");
-    expect(wakes[0]!.text).toContain("no tool was replayed");
+    expect(service.store.pendingParentInterruptions("agent-one")).toHaveLength(1);
     stream.enqueue(new TextEncoder().encode(JSON.stringify({ kind: "finish", finalText: "Fictional current reply" }) + "\n")); stream.close();
     await vi.waitFor(() => expect(service.store.activeTurn(thread.id)).toBeUndefined());
   } finally { await service.stop(); }

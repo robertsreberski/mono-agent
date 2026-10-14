@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Report interrupted Web turns and wait for the user instead of starting an
+  automatic paid turn. Carry recovery advisories once into the next explicit
+  user turn; leave background-job completion delivery unchanged.
+
 - Bound each assistant request to one retry layer sized by `piMaxRetries`,
   with failed-response usage recorded and transport retries disabled. Keep
   provider checks and summaries single-shot.

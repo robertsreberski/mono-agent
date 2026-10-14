@@ -7325,30 +7325,24 @@ describe("parent turn interruption ledger", () => {
       migrated.markTurnDispatchStarted(cancelled.turnId, "old-generation");
       expect(migrated.reconcileParentInterruptions("agent-one", "new-generation")).toHaveLength(2);
       expect(migrated.reconcileParentInterruptions("agent-one", "new-generation")).toEqual([]);
-      expect(migrated.pendingParentInterruptions("agent-one").map((row) => row.wakeKey))
+      expect(migrated.pendingParentInterruptions("agent-one").map((row) => row.turnId))
         .toEqual(expect.arrayContaining([
-          `parent-interruption:agent-one:${interrupted.turnId}`,
-          `parent-interruption:agent-one:${failed.turnId}`,
+          interrupted.turnId, failed.turnId,
         ]));
       expect(migrated.getThreadDetail(running.id)?.messages.at(-1)?.parts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("AgentManage inspect") })]));
       expect(migrated.pendingParentInterruptions("agent-one")).toHaveLength(2);
-      expect(migrated.claimParentInterruptionWake("agent-one", failed.turnId)).toBe(true);
-      expect(migrated.claimParentInterruptionWake("agent-one", failed.turnId)).toBe(false);
-      // An attempted dispatch with no confirmation is ambiguous after a crash.
-      const afterAttempt = new DatabaseSync(migrated.paths.database);
-      expect(afterAttempt.prepare("SELECT state FROM parent_turn_interruptions WHERE turn_id = ?")
-        .get(failed.turnId)).toMatchObject({ state: "attempted" });
-      afterAttempt.close();
-      migrated.completeParentInterruptionWake("agent-one", failed.turnId, interrupted.turnId);
+      const next = migrated.beginTurn({ threadId: failedThread.id, text: "Fictional explicit request", attachmentIds: [] });
+      expect(migrated.markTurnDispatchStarted(next.turnId, "new-generation", true)).toContain("The turn was not replayed");
+      expect(migrated.markTurnDispatchStarted(next.turnId, "new-generation", true)).toBe("");
       expect(migrated.pendingParentInterruptions("agent-one")).toHaveLength(1);
       expect(migrated.getThreadDetail(legacyThread.id)?.messages).toHaveLength(2);
     } finally { migrated.close(); }
   });
 });
 
-describe("persisted interruption wake boundary", () => {
-  it("retains only one notice after reopen and expires an unattempted wake", async () => {
+describe("persisted interruption advisory boundary", () => {
+  it("retains one notice after reopen and carries advisory context without expiry", async () => {
     const root = await temporaryRoot(); cleanup.push(root);
     const stateDir = join(root, "state");
     let now = new Date("2026-09-01T09:00:00.000Z");
@@ -7364,12 +7358,11 @@ describe("persisted interruption wake boundary", () => {
       expect(reopened.reconcileParentInterruptions("agent-one", "generation-b")).toHaveLength(1);
       expect(reopened.reconcileParentInterruptions("agent-one", "generation-c")).toEqual([]);
       expect(reopened.pendingParentInterruptions("agent-one")).toHaveLength(1);
-      expect(reopened.claimParentInterruptionWake("agent-one", turn.turnId, turn.turnId)).toBe(true);
-      reopened.deferParentInterruptionWake("agent-one", turn.turnId, turn.turnId);
+      now = new Date(now.getTime() + 24 * 60 * 60_000);
       expect(reopened.pendingParentInterruptions("agent-one")).toHaveLength(1);
-      now = new Date(now.getTime() + 11 * 60_000);
-      reopened.expireParentInterruptionWake("agent-one", turn.turnId);
-      expect(reopened.claimParentInterruptionWake("agent-one", turn.turnId)).toBe(false);
+      const next = reopened.beginTurn({ threadId: thread.id, text: "Fictional next request", attachmentIds: [] });
+      expect(reopened.markTurnDispatchStarted(next.turnId, "generation-c", true)).toContain("The turn was not replayed");
+      expect(reopened.markTurnDispatchStarted(next.turnId, "generation-c", true)).toBe("");
       expect(reopened.pendingParentInterruptions("agent-one")).toEqual([]);
     } finally { reopened.close(); }
   });

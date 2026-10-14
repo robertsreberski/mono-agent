@@ -4049,10 +4049,14 @@ export class WebStore {
     return markers.filter(isConversationMarker);
   }
 
-  markTurnDispatchStarted(turnId: string, generation?: string): void {
-    this.database.prepare(`UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?),
-      dispatch_generation = COALESCE(dispatch_generation, ?) WHERE id = ?`)
-      .run(this.now(), generation ?? null, turnId);
+  markTurnDispatchStarted(turnId: string, generation?: string, includeInterruptionContext = false): string {
+    return this.transaction(() => {
+      const context = includeInterruptionContext ? this.consumeParentInterruptionContext(turnId) : "";
+      this.database.prepare(`UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?),
+        dispatch_generation = COALESCE(dispatch_generation, ?) WHERE id = ?`)
+        .run(this.now(), generation ?? null, turnId);
+      return context;
+    });
   }
 
   /** A generation change is evidence of process loss, not evidence that a child settled. */
@@ -4089,11 +4093,13 @@ export class WebStore {
           (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
           VALUES (?, ?, NULL, 'assistant', ?, ?, ?, 'complete')`)
           .run(messageId, turn.thread_id, serializeParts([{ type: "text", text: notice }]), now, now);
+        // wake_key/deadline are retained only for the shipped SQLite schema;
+        // pending now means advisory context, with no expiry or automatic wake.
         this.database.prepare(`INSERT INTO parent_turn_interruptions
           (source_id, turn_id, thread_id, message_id, wake_key, state, created_at, deadline)
           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`)
           .run(sourceId, turn.id, turn.thread_id, messageId,
-            `parent-interruption:${sourceId}:${turn.id}`, now, new Date(Date.parse(now) + 10 * 60_000).toISOString());
+            `parent-interruption:${sourceId}:${turn.id}`, now, now);
         this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
           .run(now, turn.thread_id);
         this.recordThreadRevision(turn.thread_id, "parent_turn_interrupted", now);
@@ -4103,7 +4109,7 @@ export class WebStore {
     return created;
   }
 
-  /** Interruption notes the Web recorded for a turn, so a parent-interruption wake can carry them. */
+  /** Structured interruption evidence carried into the next explicit user turn. */
   parentInterruptionNotes(turnId: string): { readonly questionInterrupted: boolean; readonly unconfirmedLiveInputs: number } {
     const turn = this.database.prepare(`SELECT t.thread_id AS threadId, t.started_at AS startedAt, t.assistant_message_id AS messageId,
       n.created_at AS noticedAt FROM turns t LEFT JOIN parent_turn_interruptions n ON n.turn_id = t.id WHERE t.id = ?`)
@@ -4121,38 +4127,32 @@ export class WebStore {
   }
 
   pendingParentInterruptions(sourceId: string): ReadonlyArray<{
-    readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string;
+    readonly sourceId: string; readonly threadId: string; readonly turnId: string;
   }> {
     return this.database.prepare(`SELECT source_id AS sourceId, thread_id AS threadId,
-      turn_id AS turnId, wake_key AS wakeKey FROM parent_turn_interruptions
-      WHERE source_id = ? AND state = 'pending' ORDER BY created_at`).all(sourceId) as
-      Array<{ sourceId: string; threadId: string; turnId: string; wakeKey: string }>;
+      turn_id AS turnId FROM parent_turn_interruptions
+      WHERE source_id = ? AND state IN ('pending', 'expired') ORDER BY created_at`).all(sourceId) as
+      Array<{ sourceId: string; threadId: string; turnId: string }>;
   }
 
-  /** Once an operator request may have crossed the boundary, never redeliver it. */
-  claimParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId?: string): boolean {
-    return this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'attempted', associated_turn_id = ?
-      WHERE source_id = ? AND turn_id = ? AND state = 'pending' AND deadline > ?`)
-      .run(associatedTurnId ?? null, sourceId, turnId, this.now()).changes === 1;
-  }
-
-  /** Only an explicit pre-dispatch refusal proves this attempt never entered a turn. */
-  deferParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId: string): void {
-    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'pending', associated_turn_id = NULL
-      WHERE source_id = ? AND turn_id = ? AND state = 'attempted' AND associated_turn_id = ?`)
-      .run(sourceId, turnId, associatedTurnId);
-  }
-
-  expireParentInterruptionWake(sourceId: string, turnId: string): void {
-    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'expired'
-      WHERE source_id = ? AND turn_id = ? AND state = 'pending' AND deadline <= ?`)
-      .run(sourceId, turnId, this.now());
-  }
-
-  completeParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId: string): void {
+  /** Called in the dispatch transaction. Consume advisory context, never dispatch
+   * a wake or replay a turn. Legacy attempted/completed wakes stay consumed:
+   * their delivery is ambiguous or already confirmed, not permission to repeat. */
+  private consumeParentInterruptionContext(turnId: string): string {
+    const turn = this.database.prepare("SELECT thread_id FROM turns WHERE id = ?").get(turnId) as { thread_id: string };
+    const pending = this.database.prepare(`SELECT turn_id FROM parent_turn_interruptions
+      WHERE thread_id = ? AND state IN ('pending', 'expired') ORDER BY created_at`).all(turn.thread_id) as Array<{ turn_id: string }>;
+    if (!pending.length) return "";
+    const notes = pending.map((entry) => this.parentInterruptionNotes(entry.turn_id));
+    const unconfirmed = notes.reduce((total, note) => total + note.unconfirmedLiveInputs, 0);
     this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'completed', associated_turn_id = ?
-      WHERE source_id = ? AND turn_id = ? AND state = 'attempted'`)
-      .run(associatedTurnId, sourceId, turnId);
+      WHERE thread_id = ? AND state IN ('pending', 'expired')`).run(turnId, turn.thread_id);
+    return [
+      "The agent process ended during a previous turn. The turn was not replayed. Inspect background jobs and subagents with AgentManage inspect before relying on them; this notice does not establish their outcomes.",
+      ...(notes.some((note) => note.questionInterrupted)
+        ? [INTERRUPTED_QUESTION_NOTE, "Do not re-ask the interrupted question; the user will answer in a new message."] : []),
+      `Some messages sent during the previous turn (${String(unconfirmed)} total) were not confirmed as applied and were not replayed. Resend them if still needed.`,
+    ].join("\n\n");
   }
 
   /** Observers run only after the outer transaction commits and its depth clears. */
