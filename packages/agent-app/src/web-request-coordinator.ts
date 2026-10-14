@@ -5,11 +5,16 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
-import { currentProcessIncarnation, isSameProcessIncarnation, processIncarnationFromJson, type ProcessIncarnation } from "./process-incarnation.js";
+import {
+  HISTORY_PROCESS_INCARNATION_SCHEMA, PROCESS_INCARNATION_SCHEMA, currentProcessIncarnation, isProcessIncarnationLive,
+  processIncarnationFromJson, type ProcessIncarnation,
+} from "./process-incarnation.js";
 import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
 type Coordinator = NonNullable<RuntimeRunOptions["webRequestCoordinator"]>;
-type Lease = { id: string; pid: number; incarnation: ProcessIncarnation; expiresAt: number };
+// `incarnation` keeps the v1 value older runtimes compare; Darwin adds the stable v2 sibling.
+type LeaseOwner = { incarnation: ProcessIncarnation; stableIncarnation?: ProcessIncarnation };
+type Lease = LeaseOwner & { id: string; pid: number; expiresAt: number };
 type Bucket = { nextAt: number; cooldownUntil: number; strikes: number; failures: number; leases: Lease[] };
 type State = { schema: "mono-agent.web-control.v1"; buckets: Record<string, Bucket>; quota?: { checkedAt: number; value: unknown } };
 const MAX_STATE_BYTES = 256 * 1024;
@@ -27,7 +32,7 @@ export function createHostWebRequestCoordinator(options: {
   const directory = options.directory ?? webControlDirectory();
   const now = options.now ?? Date.now;
   const statePath = join(directory, "state.json");
-  let incarnation: Promise<ProcessIncarnation> | undefined;
+  let incarnation: Promise<LeaseOwner> | undefined;
 
   async function prepare(): Promise<void> {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -88,9 +93,12 @@ export function createHostWebRequestCoordinator(options: {
       const retained: Lease[] = [];
       for (const lease of bucket.leases) {
         if (lease.expiresAt <= now()) continue;
-        const ownerKey = JSON.stringify([lease.pid, lease.incarnation]);
+        const evidence = lease.stableIncarnation ?? lease.incarnation;
+        const ownerKey = JSON.stringify([lease.pid, evidence]);
         let alive = owners.get(ownerKey);
-        if (!alive) { alive = isSameProcessIncarnation(lease.pid, lease.incarnation); owners.set(ownerKey, alive); }
+        // Expiry above stays independent of identity. Liveness only drops a lease
+        // whose PID is absent or provably reused; unavailable evidence keeps it.
+        if (!alive) { alive = isProcessIncarnationLive(lease.pid, evidence); owners.set(ownerKey, alive); }
         if (await alive) retained.push(lease);
       }
       bucket.leases = retained;
@@ -106,7 +114,10 @@ export function createHostWebRequestCoordinator(options: {
       if (!/^[a-z][a-z0-9-]{0,63}$/u.test(kind)) throw unavailable();
       const [max, spacing] = Object.hasOwn(defaults, kind) ? defaults[kind]! : [1, 2000];
       const key = `${kind}:${createHash("sha256").update(request.key).digest("hex")}`;
-      const owner = await (incarnation ??= currentProcessIncarnation());
+      const capture = incarnation ??= currentLeaseOwner();
+      // A bounded probe can time out; never cache that failure for this coordinator's lifetime.
+      capture.catch(() => { if (incarnation === capture) incarnation = undefined; });
+      const owner = await capture;
       while (true) {
         request.signal?.throwIfAborted();
         if (now() >= request.deadlineMs) throw Object.assign(new Error("Web request deadline exceeded."), { code: "deadline_exceeded" });
@@ -125,7 +136,7 @@ export function createHostWebRequestCoordinator(options: {
           if (bucket.leases.length >= capacity || bucket.nextAt > now()) return undefined;
           request.signal?.throwIfAborted();
           const id = randomUUID();
-          bucket.leases.push({ id, pid: process.pid, incarnation: owner, expiresAt: request.deadlineMs + 5000 });
+          bucket.leases.push({ id, pid: process.pid, ...owner, expiresAt: request.deadlineMs + 5000 });
           bucket.nextAt = now() + spacing * (options.spacingScale ?? 1);
           return id;
         });
@@ -199,6 +210,12 @@ export async function inspectWebControl(directory = webControlDirectory()): Prom
   }
 }
 
+async function currentLeaseOwner(): Promise<LeaseOwner> {
+  const primary = await currentProcessIncarnation();
+  return primary.schema === PROCESS_INCARNATION_SCHEMA
+    ? { incarnation: primary }
+    : { incarnation: await currentProcessIncarnation(PROCESS_INCARNATION_SCHEMA), stableIncarnation: primary };
+}
 function emptyState(): State { return { schema: "mono-agent.web-control.v1", buckets: {} }; }
 function unavailable(): Error { return Object.assign(new Error("Web request coordination state is unavailable or unsafe."), { code: "coordination_unavailable" }); }
 function parseState(text: string): State {
@@ -212,7 +229,9 @@ function parseState(text: string): State {
       || !Array.isArray(bucket.leases) || bucket.leases.length > 2) throw unavailable();
     for (const lease of bucket.leases) {
       if (!lease || typeof lease.id !== "string" || !Number.isSafeInteger(lease.pid) || lease.pid <= 0
-        || !Number.isSafeInteger(lease.expiresAt) || !processIncarnationFromJson(lease.incarnation)) throw unavailable();
+        || !Number.isSafeInteger(lease.expiresAt) || !processIncarnationFromJson(lease.incarnation)
+        || (lease.stableIncarnation !== undefined
+          && processIncarnationFromJson(lease.stableIncarnation)?.schema !== HISTORY_PROCESS_INCARNATION_SCHEMA)) throw unavailable();
     }
   }
   if (value.quota && (!Number.isSafeInteger(value.quota.checkedAt) || value.quota.checkedAt < 0)) throw unavailable();

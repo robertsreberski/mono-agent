@@ -24,17 +24,18 @@ it("a calendar-clock step changes v1 boot evidence but not the same live process
   mockExec((_file, args) => args.includes("kern.boottime") ? `{ sec = ${calendarBoot}, usec = 0 }`
     : args.includes("kern.bootsessionuuid") ? uuid.toUpperCase() : start);
   const before = await import("../process-incarnation.js");
-  const oldBefore = await before.readProcessIncarnation(process.pid), stableBefore = await before.readHistoryProcessIncarnation(process.pid);
+  const oldBefore = await before.readProcessIncarnation(process.pid, before.PROCESS_INCARNATION_SCHEMA), stableBefore = await before.readHistoryProcessIncarnation(process.pid);
   calendarBoot += 3_600; vi.resetModules(); // A fresh observer after a clock step, not the first observer's cached v1 boot time.
   const after = await import("../process-incarnation.js");
-  const oldAfter = await after.readProcessIncarnation(process.pid), stableAfter = await after.readHistoryProcessIncarnation(process.pid);
+  const oldAfter = await after.readProcessIncarnation(process.pid, after.PROCESS_INCARNATION_SCHEMA), stableAfter = await after.readHistoryProcessIncarnation(process.pid);
   expect(oldBefore!.bootSessionId).not.toBe(oldAfter!.bootSessionId);
   expect(stableAfter).toEqual(stableBefore);
   expect(stableAfter).toEqual({ schema: "mono-agent.process-incarnation.v2", bootSessionId: `darwin-uuid:${uuid}`, processStartId: "posix-utc-lstart:Mon Jan 5 12:34:56 2026" });
   const { historyOwnerLiveness } = await import("../history-process-liveness.js");
   expect(await historyOwnerLiveness()(process.pid, stableBefore)).toBe(true);
   for (const [, args, options] of vi.mocked(execFile).mock.calls) {
-    if ((args as string[]).includes("kern.boottime")) expect(options).not.toHaveProperty("timeout"); // v1 remains unchanged.
+    // Darwin v1 keeps its values (no TZ pin) for legacy readers, but its probes are now bounded too.
+    if ((args as string[]).includes("kern.boottime")) { expect(options).toMatchObject({ timeout: 5_000, killSignal: "SIGKILL" }); expect(options!.env).not.toHaveProperty("TZ"); }
   }
 });
 

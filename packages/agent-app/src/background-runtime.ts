@@ -27,11 +27,11 @@ import {
 export { MANAGED_BACKGROUND_WORKER_ENV } from "./background-environment.js";
 import {
   currentProcessIncarnation,
-  isSameProcessIncarnation as matchesProcessIncarnation,
+  isProcessIncarnationLive,
   processIncarnationFromJson,
 } from "./process-incarnation.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
-import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
+import { acquireOwnerPrivateLock, legacyLockHolderMessage, type LegacyLockHolder } from "./owner-private-lock.js";
 import type { OwnerPrivateLock } from "./owner-private-lock.js";
 import {
   decodeManagedRuntimeLaunchProof,
@@ -455,7 +455,7 @@ export function defaultManagedBackgroundRuntimeDeps(): ManagedBackgroundRuntimeD
     randomId: () => randomUUID(),
     installPackage: materializeExactExecutionClosure,
     currentProcessIncarnation,
-    isSameProcessIncarnation: matchesProcessIncarnation,
+    isSameProcessIncarnation: isProcessIncarnationLive,
   };
 }
 
@@ -2703,7 +2703,9 @@ async function acquireRuntimeLock(
   isSatisfied: () => Promise<boolean> = () => verifyRuntime(layout, identity, additionalPackages),
 ): Promise<OwnerPrivateLock | undefined> {
   const incarnation = await (deps.currentProcessIncarnation ?? currentProcessIncarnation)();
-  const sameProcess = deps.isSameProcessIncarnation ?? matchesProcessIncarnation;
+  // Liveness, not authorization: a live owner with unavailable or legacy
+  // Darwin evidence keeps the lock; only ESRCH or proven reuse reclaims it.
+  const sameProcess = deps.isSameProcessIncarnation ?? isProcessIncarnationLive;
   const startedAt = deps.now();
   const deadline = startedAt + LOCK_WAIT_TIMEOUT_MS;
   // Initially ownerless/invalid publication keeps the old wait bound. Once an
@@ -2711,10 +2713,12 @@ async function acquireRuntimeLock(
   // timeout: keep retrying until the overall cap without stealing a live owner.
   const ownerlessDeadline = startedAt + LOCK_STALE_AFTER_MS;
   let lastOwnerPid: number | undefined;
+  let legacyHolder: LegacyLockHolder | undefined;
   let observedOwner = false;
   for (;;) {
     let satisfied = false;
     runtimePreparationProgress.getStore()?.checkFailure();
+    legacyHolder = undefined;
     const held = await acquireOwnerPrivateLock({
       path: layout.lockDir,
       label: "Managed runtime lock",
@@ -2724,6 +2728,7 @@ async function acquireRuntimeLock(
       pollIntervalMs: LOCK_POLL_INTERVAL_MS,
       now: deps.now,
       processIncarnation: incarnation,
+      onLegacyOwnerHeld: (holder) => { legacyHolder = holder; },
       afterInspected: (observed) => { if (observed.kind === "owned") observedOwner = true; },
       isSameProcessIncarnation: async (pid, expected) => {
         const live = await sameProcess(pid, expected);
@@ -2758,7 +2763,8 @@ async function acquireRuntimeLock(
     if (deps.now() >= deadline) {
       throw new Error("Managed runtime preparation is still owned by another mono-agent process"
         + (lastOwnerPid === undefined ? "" : ` (pid ${lastOwnerPid})`)
-        + " after 30 minutes. The live owner was not interrupted; check that process, then retry start.");
+        + " after 30 minutes. The live owner was not interrupted; check that process, then retry start."
+        + (legacyHolder === undefined ? "" : ` ${legacyLockHolderMessage(legacyHolder)}`));
     }
     if (!observedOwner && deps.now() >= ownerlessDeadline) return undefined;
     // A dead owner may have just been quarantined. Retry acquisition, rather

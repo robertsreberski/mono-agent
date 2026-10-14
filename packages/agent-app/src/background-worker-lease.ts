@@ -13,6 +13,7 @@ import process from "node:process";
 import {
   acquireOwnerPrivateLock,
   validateOwnerPrivateLockInputs,
+  type LegacyLockHolder,
 } from "./owner-private-lock.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
 
@@ -38,6 +39,8 @@ export interface BackgroundWorkerLeaseOptions {
   readonly isSameProcessIncarnation?: SameProcessIncarnation;
   readonly randomToken?: () => string;
   readonly ownerlessGraceMs?: number;
+  /** Reports a live owner held only on unverifiable legacy macOS identity (lease path and PID). */
+  readonly onLegacyOwnerHeld?: (holder: LegacyLockHolder) => void;
   /** Narrow deterministic seams for filesystem-race tests. */
   readonly hooks?: {
     readonly afterLeaseDirectoryCreated?: () => Promise<void>;
@@ -97,6 +100,7 @@ export async function acquireBackgroundWorkerLease(
     ...(options.isSameProcessIncarnation === undefined
       ? {}
       : { isSameProcessIncarnation: options.isSameProcessIncarnation }),
+    ...(options.onLegacyOwnerHeld === undefined ? {} : { onLegacyOwnerHeld: options.onLegacyOwnerHeld }),
     ownerFields: () => ({ configPath: resolvedConfig }),
     validateOwnerFields: (record) => record.configPath === resolvedConfig,
     invalidOwner: "ownerless",

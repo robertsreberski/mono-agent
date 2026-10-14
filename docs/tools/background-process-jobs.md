@@ -576,6 +576,30 @@ remove that directory without signalling. Every path marks the job
 owned-group termination could not be proven. Process jobs never claim to
 survive an agent restart.
 
+On macOS, process incarnation uses the boot-session UUID plus the UTC process
+start time, so a calendar-clock step or a timezone change never makes a live
+leader look dead or a live state owner look reclaimable. Linux and other
+platforms record the same evidence as before. A stored leader recorded by an
+older mono-agent on macOS cannot be compared any more: recovery never signals
+it, and marks the job `process_job_cleanup_incomplete` instead. A probe that
+times out also withholds signals and cleanup rather than treating the leader as
+gone.
+
+Upgrade and rollback on macOS:
+
+- The process-job state lock keeps its old `incarnation` field and adds a
+  `stableIncarnation` field, so an older binary still sees a live upgraded
+  owner and refuses to take over.
+- Job records written by an upgraded agent carry only the new evidence. An
+  older binary quarantines a pending transaction it cannot replay and then
+  refuses to open the store. To roll back, stop the upgraded agent first, and
+  delete the configured `stateDir` only if you accept discarding its records
+  and output.
+- If the state lock is held by a live PID recorded by an older binary, the
+  refusal names the lock path and the PID. When that PID is not a mono-agent
+  process (for example, after a reboot reused it), confirm no agent uses this
+  `stateDir`, then remove the named lock directory by hand and retry.
+
 `mono-agent restart --clear-sessions` does not delete process-job records or
 artifacts. Stop the agent and remove the configured `stateDir` only when you
 explicitly intend to discard that audit/output state; there is no process-job
