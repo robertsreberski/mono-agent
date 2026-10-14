@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep history owners protected on inconclusive process probes, and retry
+  transient self-identity failures.
+
 - Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
   `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
   `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,

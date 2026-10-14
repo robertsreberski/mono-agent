@@ -3,7 +3,7 @@ import { readHistoryProcessIncarnation, historyProcessIncarnationFromJson, type 
 let current: Promise<HistoryProcessIncarnation | undefined> | undefined;
 /** History alone falls back to PID-only when OS identity evidence is unavailable. */
 export function currentHistoryProcessIncarnation(): Promise<HistoryProcessIncarnation | undefined> {
-  return current ??= readHistoryProcessIncarnation(process.pid).catch(() => undefined);
+  return current ??= readHistoryProcessIncarnation(process.pid).catch(() => { current = undefined; return undefined; });
 }
 
 /** A nullable SQLite JSON value or an optional marker object; unknown identity is never death proof. */
@@ -30,13 +30,13 @@ export function historyOwnerLiveness(): (pid: number, incarnation?: HistoryProce
   };
 }
 
-/** True when a PID is currently alive or exists but is not signalable by this user. */
+/** Only ESRCH proves absence; inconclusive probes must retain ownership. */
 export function isProcessAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException)?.code === "EPERM";
+    return (error as NodeJS.ErrnoException)?.code !== "ESRCH";
   }
 }
