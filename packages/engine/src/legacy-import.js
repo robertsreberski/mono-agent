@@ -15,9 +15,9 @@ const fail = () => { throw new Error("Invalid legacy Pi session"); };
  * malformed or of unknown format). Damage is never imported, archived or
  * deleted. Pi names sources `<time>_<id>.jsonl`, which attributes damage to that
  * handle; an entry without that shape (or an unreadable directory) has no owner.
- * @param {string} root @param {{includeArchives?:boolean, id?:string, sourcePath?:string}} [options]
+ * @param {string} root @param {{includeArchives?:boolean, id?:string}} [options]
  * @returns {Promise<{sessions:any[], unattributed:{name:string, id?:string}[]}>} */
-export async function listLegacySessions(root, { includeArchives = false, id: requestedId, sourcePath } = {}) {
+export async function listLegacySessions(root, { includeArchives = false, id: requestedId } = {}) {
   const sessions = [], unattributed = [];
   let dirs;
   try { dirs = await readdir(root, { withFileTypes: true }); }
@@ -30,9 +30,9 @@ export async function listLegacySessions(root, { includeArchives = false, id: re
     for (const file of files) {
       if (!(includeArchives ? /\.jsonl(?:\.migrated)?$/ : /\.jsonl$/).test(file.name)) continue;
       const path = join(root, dir.name, file.name), id = /^[^_]*_(.+)\.jsonl(?:\.migrated)?$/.exec(file.name)?.[1];
-      // An explicit import may name a previously listed non-Pi-shaped source.
-      // Validate that exact path too, without opening unrelated files.
-      if (requestedId !== undefined && id !== requestedId && path !== sourcePath) continue;
+      // Only an attributable different filename can be skipped. Renamed Pi
+      // sources still need a header read to discover their owner.
+      if (requestedId !== undefined && id !== undefined && id !== requestedId) continue;
       let h;
       try {
         const reader = await JournalReader.open(path, root, { ownerOnly: false });

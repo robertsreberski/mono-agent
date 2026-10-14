@@ -761,7 +761,7 @@ export class JsonlSessionRepo {
       await locks.withCatalog(async () => {
         await this.assertDirectory();
         // Native ownership is deterministic; only legacy source discovery walks.
-        const legacy = await listLegacySessions(this.root, { id: metadata.id, sourcePath: metadata.path });
+        const legacy = await listLegacySessions(this.root, { id: metadata.id });
         this.assertNotDamaged(legacy.unattributed, metadata.id);
         if (!await absent(`${publishedPath}.upgrading`)) this.assertNotDamaged([{ id: metadata.id }], metadata.id);
         const sources = legacy.sessions.filter((m) => m.id === metadata.id);
