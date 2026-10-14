@@ -116,6 +116,24 @@ const SLOW_REGISTRY_WRITE_MS = 150;
 // About forty registry transactions at that latency, with headroom for load.
 const SLOW_REGISTRY_TIMEOUT_MS = 45_000;
 
+/**
+ * Starts one job with the product's runtime clocks frozen and waits in real
+ * time for its durable wake delivery, so a test-configured short runtime limit
+ * meant for an earlier job cannot expire this one under load.
+ */
+async function deliverWithFrozenClocks(service: ProcessJobsServiceHandle, start: () => Promise<any>): Promise<any> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    const started = await start();
+    const deadline = performance.now() + DURABLE_DELIVERY_TIMEOUT_MS;
+    for (;;) {
+      if ((await service.get(started.details.jobId))?.wake.state === "delivered") return started;
+      if (performance.now() >= deadline) throw new Error(`Process job ${started.details.jobId} was not delivered within ${DURABLE_DELIVERY_TIMEOUT_MS}ms.`);
+      await realDelay(STOP_PROOF_POLL_MS);
+    }
+  } finally { vi.useRealTimers(); }
+}
+
 function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string): Promise<void> {
   const settlement = (service as unknown as { readonly settlements: ReadonlyMap<string, Promise<void>> })
     .settlements.get(jobId);
@@ -2301,7 +2319,11 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     let input: any;
     faux.setResponses([(value: any) => { input = value; return fauxAssistantMessage([fauxText("acknowledged continuation retained")]); }]);
     const request = { id: "helper", ack: inspected.details.recovery.ack, message: "explicit parent acknowledgement and new instructions", background: true };
-    const resumed = await send.execute("ack", request); expect((await done(f.service, resumed.details.jobId)).state).toBe("succeeded");
+    // The 3s runtime limit exists to time the first job out; the acknowledged
+    // continuation (cold JSONL reopen plus durable publication) shares it and
+    // overran it under package load. Run it on frozen clocks instead.
+    const resumed = await deliverWithFrozenClocks(f.service, () => send.execute("ack", request));
+    expect((await done(f.service, resumed.details.jobId)).state).toBe("succeeded");
     expect(calls).toHaveLength(2); expect(calls[1].sessionId).toBe(calls[0].sessionId); expect(calls[1].piSessionsRoot).toBe(record.sessionsRoot);
     expect((await readdir(record.sessionsRoot, { recursive: true })).filter((file) => file.endsWith(".jsonl"))).toEqual(files);
     const after = await readFile(transcriptPath, "utf8"); expect(after.startsWith(before)).toBe(true);
@@ -2313,7 +2335,8 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     expect(calls).toHaveLength(2); expect(await readFile(transcriptPath, "utf8")).toBe(after); expect(f.wake).toHaveBeenCalledTimes(2);
     await send.execute("close", { id: "helper", close: true });
   } finally { releaseConfirmation.resolve(); await f.service.stop(); await owner.disposeAllSessions?.(); }
-}, 20_000);
+  // Inner waits: the 12s timeout-certificate wait and three durable waits.
+}, 12_000 + 3 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
 it.each([false, true])("real Pi fake transport: detached AskParent and background reply resume one JSONL, then close (managed=%s)", async (managed) => {
   const owner = createMonoRuntime();
