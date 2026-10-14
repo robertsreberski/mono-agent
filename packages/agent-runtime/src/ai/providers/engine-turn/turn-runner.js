@@ -2,7 +2,7 @@ import { assertNativeSessionAccess } from "./session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
 //
-// Pure moves out of pi-native.js: effort→thinkingLevel mapping, harness
+// Pure moves out of engine-turn.js: effort→thinkingLevel mapping, harness
 // construction + stream-subscriber wiring + abort wiring, the live-input
 // steering consumer, and the prompt/waitForIdle run. No module-level mutable
 // state; run state (harness, removeAbortHandler, externalAbort) lives on the
@@ -17,7 +17,7 @@ import {
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
-import { createHarnessAdapter } from "./harness-adapter.js";
+import { createHarnessAdapter } from "./engine-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { createStreamSubscriber } from "./stream-subscriber.js";
 
@@ -254,7 +254,7 @@ export function thinkingLevelForEffort(effort, capabilities) {
 }
 
 /**
- * Construct the AgentHarness for this turn, subscribe the stream-subscriber, and
+ * Construct the engine adapter for this turn, subscribe the stream-subscriber, and
  * wire the external abort handler. Sets runState.harness and
  * runState.removeAbortHandler; the abort handler sets runState.externalAbort and
  * aborts the harness. Returns the harness.
@@ -686,7 +686,7 @@ export async function runHarnessPrompt(harness, promptText, promptImages, hooks)
   let operationId, suspended = false;
   try {
     // Pass structured images (when present) so multimodal input reaches the
-    // model as image blocks rather than stringified text. AgentHarness.prompt
+    // model as image blocks rather than stringified text. The engine adapter prompt
     // takes them under an options object (`{ images }`); a bare array would be
     // read as `options` and silently dropped (options?.images === undefined).
     const promptOptions = {

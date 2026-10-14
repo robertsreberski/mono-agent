@@ -1,7 +1,7 @@
 // @ts-check
 // Result assembly for the pi-native bridge.
 //
-// Pure moves out of pi-native.js: usage aggregation, the usage/cost/capabilities
+// Pure moves out of engine-turn.js: usage aggregation, the usage/cost/capabilities
 // event emission, the failure-kind classifier, and the success / error / aborted
 // result-object factories. No session or run state lives here — every builder
 // takes its inputs explicitly and returns the verbatim runtime-result contract

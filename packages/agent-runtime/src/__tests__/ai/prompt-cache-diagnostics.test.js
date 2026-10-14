@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { installPromptCacheDiagnostics } from "../../ai/providers/pi-native/prompt-cache-diagnostics.js";
+import { installPromptCacheDiagnostics } from "../../ai/providers/engine-turn/prompt-cache-diagnostics.js";
 
 function fixture(options = {}) {
   let hook;

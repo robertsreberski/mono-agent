@@ -6,14 +6,15 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCal
 import { digestTurnInput } from "@mono-agent/engine";
 import { createHandoffBudget } from "../../../../engine/dist/handoff.js";
 import { assertNativeProjectionBinding } from "../../../../engine/dist/session-authority.js";
-import * as turnRunner from "../../ai/providers/pi-native/turn-runner.js";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { createRuntime } from "../../runtime.js";
+import * as turnRunner from "../../ai/providers/engine-turn/turn-runner.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
 import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
-import { createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
-import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/pi-native/compaction-driver.js";
+import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
+import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/engine-turn/compaction-driver.js";
 import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo,
-  discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/pi-native/session-lifecycle.js";
+  discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/engine-turn/session-lifecycle.js";
 import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
 
 const roots = [];
@@ -50,7 +51,7 @@ it("creates only an authorized current guarded handle and dispatches inherited +
   }));
   for (let turn = 1; turn <= 3; turn++) {
     if (turn === 3) await refreshProviderSession(handle);
-    const result = await generatePiNativeResponse("Current fictional rules", f.options(turn));
+    const result = await generateEngineTurnResponse("Current fictional rules", f.options(turn));
     expect(result.error).toBeNull(); expect(result.text).toBe(`reply-${turn}`);
   }
   expect(requests).toHaveLength(3);
@@ -67,6 +68,30 @@ it("creates only an authorized current guarded handle and dispatches inherited +
   expect(f.assertCurrent.mock.calls.some(([request]) => request.action === "create")).toBe(true);
 });
 
+it("direct dispatch cold-reopens twice without repeating a tool effect or the accepted handoff prefix", async () => {
+  const f = await setup(), requests = [], effect = vi.fn(async () => ({ content: [{ type: "text", text: "Fictional completed effect" }] }));
+  f.faux.setResponses([
+    (context) => { requests.push(structuredClone(context)); return fauxAssistantMessage([fauxToolCall("FictionalEffect", {}, { id: "direct-effect" })]); },
+    ...Array.from({ length: 3 }, (_, index) => (context) => { requests.push(structuredClone(context)); return fauxAssistantMessage([fauxText(`direct-${index + 1}`)]); }),
+  ]);
+  const tools = vi.spyOn(turnRunner, "buildTurnTools").mockResolvedValue({
+    tools: [{ name: "FictionalEffect", description: "Fictional effect", parameters: { type: "object", properties: {} }, execute: effect }],
+    structuredTool: null, mcpClients: [], closeRunTools: async () => {},
+  });
+  try {
+    const runtime = createRuntime();
+    for (let turn = 1; turn <= 3; turn++) {
+      if (turn > 1) await refreshProviderSession(handle);
+      const result = await runtime.run("Current fictional rules", f.options(turn));
+      expect(result.error).toBeNull(); expect(result.text).toBe(`direct-${turn}`);
+      expect(effect).toHaveBeenCalledOnce();
+    }
+    expect(requests).toHaveLength(4);
+    for (const request of requests) expect(JSON.stringify(request).match(/Morgan chose amber/g)).toHaveLength(1);
+    expect((await journal(f.root)).filter((record) => record.kind === "message" && record.payload.message.role === "toolResult")).toHaveLength(1);
+  } finally { tools.mockRestore(); }
+});
+
 it.each(["predecessor", "lost-claim", "projection-without-authority", "foreign-header"])("refuses %s before provider dispatch or mutation", async (variant) => {
   const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
   let opts = f.options();
@@ -78,7 +103,7 @@ it.each(["predecessor", "lost-claim", "projection-without-authority", "foreign-h
     const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.create({ id: handle, hostAuthority: { ...hostAuthority, authorityId: "9".repeat(64) }, assertOwned: async () => {} });
     await raw.close(); before = await journal(f.root);
   }
-  const result = await generatePiNativeResponse("Current fictional rules", opts);
+  const result = await generateEngineTurnResponse("Current fictional rules", opts);
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false); expect(provider).not.toHaveBeenCalled();
   if (before) expect(await journal(f.root)).toEqual(before);
 });
@@ -97,7 +122,7 @@ it("rechecks authority at dispatch after resolve-time open succeeds, before any 
     structuredTool: null, mcpClients: [], closeRunTools: async () => {},
   });
   try {
-    const result = await generatePiNativeResponse("Current fictional rules", f.options());
+    const result = await generateEngineTurnResponse("Current fictional rules", f.options());
     expect(result.failureKind).toBe("safety_native_session_authority");
     expect(openChecks).toBe(2);
     expect(f.faux.state.callCount).toBe(0);
@@ -113,7 +138,7 @@ it.each(["host_cap", "input_allowance", "mandatory_history"])("fails frozen %s w
   if (reason === "host_cap") systemPrompt = "x".repeat(60000);
   if (reason === "input_allowance") opts.messages = [{ role: "user", content: "x".repeat(600) }];
   if (reason === "mandatory_history") opts.nativeSessionProjection.inherited = { ...inherited, messages: [{ role: "user", content: "x".repeat(250000), timestamp: 1 }] };
-  const result = await generatePiNativeResponse(systemPrompt, opts);
+  const result = await generateEngineTurnResponse(systemPrompt, opts);
   expect(result.error).toContain(`Handoff dispatch budget exceeded: ${reason}`);
   expect(result.failureKind).toBe("safety_handoff_dispatch_budget"); expect(provider).not.toHaveBeenCalled();
   expect((await journal(f.root)).filter((record) => record.kind === "compaction")).toHaveLength(0);
@@ -124,7 +149,7 @@ it("checks fitting normalized dispatch and pins the frozen output reserve", asyn
   f.faux.setResponses([(context, options) => { requests.push({ context, options }); return fauxAssistantMessage([fauxText("accepted")]); }]);
   const budget = createHandoffBudget({ contextWindow: 100000, outputReserve: 2000, inputTokens: 100, hostContext: { systemPrompt: "Short rules", tools: [] } });
   const opts = f.options(); opts.nativeSessionProjection.dispatchBudget = budget;
-  expect((await generatePiNativeResponse("Short rules", opts)).text).toBe("accepted");
+  expect((await generateEngineTurnResponse("Short rules", opts)).text).toBe("accepted");
   expect(requests[0].options.maxTokens).toBe(2000);
 });
 
@@ -165,7 +190,7 @@ it("refuses a composed cut retaining predecessor envelopes rather than copying t
 it("denies current-handle creation before publishing a guarded header", async () => {
   const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("not admitted")])); f.faux.setResponses([provider]);
   f.assertCurrent.mockImplementation(async ({ action }) => { if (action === "create") throw new Error("Creation is not authorized"); });
-  const result = await generatePiNativeResponse("Rules", f.options());
+  const result = await generateEngineTurnResponse("Rules", f.options());
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(provider).not.toHaveBeenCalled();
   const names = await readdir(join(f.root, "mono-v2/journals")).catch((error) => { if (error.code !== "ENOENT") throw error; return []; });
   expect(names.filter((name) => name.endsWith(".jsonl"))).toEqual([]);
@@ -206,7 +231,7 @@ it("rejects an invalid inherited cut before the guarded summarizer is called", a
 
 it.each(["omitted", "id", "hash", "coverage", "messages"])("durably binds the accepted artifact and refuses %s projection before any checkpoint", async (variant) => {
   const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("first reply")])); f.faux.setResponses([provider, provider]);
-  expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull();
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull();
   await refreshProviderSession(handle);
   const records = await journal(f.root), bound = records.find((record) => record.kind === "turn_start" && record.payload.projectionBinding);
   expect(bound.schemaVersion).toBe(2);
@@ -221,33 +246,33 @@ it.each(["omitted", "id", "hash", "coverage", "messages"])("durably binds the ac
   if (variant === "hash") opts.nativeSessionProjection.artifact.hash = "8".repeat(64);
   if (variant === "coverage") opts.nativeSessionProjection.inherited.coverage.sources[0].sourceDigest = "8".repeat(64);
   if (variant === "messages") opts.nativeSessionProjection.inherited.messages[0].content = "Changed content with spoofed unchanged artifact reference";
-  const result = await generatePiNativeResponse("Rules", opts);
+  const result = await generateEngineTurnResponse("Rules", opts);
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
   expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(records);
 });
 
 it("permits projection omission after a composed checkpoint and validates supplied coverage", async () => {
   const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("after checkpoint")])]);
-  expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
   const repo = new JsonlSessionRepo({ sessionsRoot: f.root }), raw = await repo.open((await repo.list())[0]);
   await raw.appendCompaction({ summary: "Accepted inherited context was consumed", tokensBefore: 100, retainedTail: [] }, coverage,
     { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
   const omitted = f.options(2); delete omitted.nativeSessionProjection;
-  expect((await generatePiNativeResponse("Rules", omitted)).text).toBe("after checkpoint"); await refreshProviderSession(handle);
+  expect((await generateEngineTurnResponse("Rules", omitted)).text).toBe("after checkpoint"); await refreshProviderSession(handle);
   const before = await journal(f.root), changed = f.options(3);
   changed.nativeSessionProjection = structuredClone(changed.nativeSessionProjection);
   changed.nativeSessionProjection.inherited.coverage.sources[0].sourceDigest = "8".repeat(64);
-  expect((await generatePiNativeResponse("Rules", changed)).failureKind).toBe("safety_native_session_authority");
+  expect((await generateEngineTurnResponse("Rules", changed)).failureKind).toBe("safety_native_session_authority");
   expect(await journal(f.root)).toEqual(before);
 });
 
 it("pins the native root in authority and passes the actual root to the held owner's assertion", async () => {
   const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("first")])); f.faux.setResponses([provider]);
-  expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull();
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull();
   expect(f.assertCurrent.mock.calls.every(([request]) => request.sessionsRoot === f.root)).toBe(true);
   const before = await journal(f.root), opts = f.options(2);
   opts.nativeSessionAuthority.sessionsRoot = f.root + "-other";
-  expect((await generatePiNativeResponse("Rules", opts)).failureKind).toBe("safety_native_session_authority");
+  expect((await generateEngineTurnResponse("Rules", opts)).failureKind).toBe("safety_native_session_authority");
   expect(provider).toHaveBeenCalledOnce(); expect(await journal(f.root)).toEqual(before);
 });
 
@@ -263,7 +288,7 @@ it("refuses an inherited envelope in a guarded retained tail before any paid sum
 
 it("allows the intended host-owned P2 matcher to inspect a guarded bound projection without dispatch authority", async () => {
   const f = await setup(), provider = vi.fn(() => fauxAssistantMessage([fauxText("reconciled reply")])); f.faux.setResponses([provider]);
-  const options = f.options(); expect((await generatePiNativeResponse("Rules", options)).error).toBeNull();
+  const options = f.options(); expect((await generateEngineTurnResponse("Rules", options)).error).toBeNull();
   const before = await journal(f.root);
   const result = await reconcileNativeSessionTurn({ sessionsRoot: f.root, descriptor: options.sessionTurn, purpose: "execution",
     expectedModel: { provider: f.model.provider, id: f.model.id, api: f.model.api },
@@ -277,13 +302,13 @@ it.each([false, true])("carries composed coverage through omitted-projection com
   const final = vi.fn((context) => { expect(JSON.stringify(context)).not.toContain(inherited.messages[0].content); return fauxAssistantMessage([fauxText("reopened reply")]); });
   const summary = vi.fn(() => fauxAssistantMessage([fauxText("## Goal\nContinue fictional work.\n## Progress\nInherited work covered; current work compacted.\n## Next Steps\nWait for instruction.")]));
   f.faux.setResponses([fauxAssistantMessage([fauxText("initial reply")]), fauxAssistantMessage([fauxText("growth one")]), fauxAssistantMessage([fauxText("growth two")]), summary, final]);
-  expect((await generatePiNativeResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
+  expect((await generateEngineTurnResponse("Rules", f.options())).error).toBeNull(); await refreshProviderSession(handle);
   const repo = new JsonlSessionRepo({ sessionsRoot: f.root });
   let raw = await repo.open((await repo.list())[0]); await raw.appendCompaction({ summary: "Inherited work consumed", tokensBefore: 100, retainedTail: [] }, coverage, { sourceTipId: raw.tip, sourceSeq: raw.seq }); await raw.close();
   for (const turn of [2, 3]) {
     const opts = f.options(turn); delete opts.nativeSessionProjection;
     opts.messages = [{ role: "user", content: `growth-${turn} ` + "x".repeat(80000) }];
-    expect((await generatePiNativeResponse("Rules", opts)).error).toBeNull();
+    expect((await generateEngineTurnResponse("Rules", opts)).error).toBeNull();
   }
   await refreshProviderSession(handle);
   raw = await repo.open((await repo.list())[0]); const session = createPiSessionAdapter(raw), driver = await createHarnessAdapter(session, { model: f.model, models: f.models, systemPrompt: "Rules", tools: [] });
@@ -295,7 +320,7 @@ it.each([false, true])("carries composed coverage through omitted-projection com
   for (const checkpoint of checkpoints) { expect(checkpoint.schemaVersion).toBe(2); expect(checkpoint.payload.compaction.checkpoint.inheritedCoverage).toEqual(coverage); }
   await refreshProviderSession(handle);
   const reopened = f.options(4); if (!restore) delete reopened.nativeSessionProjection;
-  const result = await generatePiNativeResponse("Rules", reopened);
+  const result = await generateEngineTurnResponse("Rules", reopened);
   expect(result.error).toBeNull(); expect(result.text).toBe("reopened reply"); expect(final).toHaveBeenCalledOnce();
 });
 
@@ -314,7 +339,7 @@ it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "ar
   if (variant === "long-journal-id") projection.inherited.coverage.sources[0].journalId = "j".repeat(513);
   if (variant === "long-tip-id") projection.inherited.coverage.sources[0].sourceTipId = "t".repeat(513);
   if (variant === "artifact-extra") projection.artifact.extra = "not allowed";
-  const result = await generatePiNativeResponse("Rules", opts);
+  const result = await generateEngineTurnResponse("Rules", opts);
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false);
   expect(provider).not.toHaveBeenCalled(); expect(f.assertCurrent).not.toHaveBeenCalled();
   expect(await readdir(f.root)).not.toContain("mono-v2");
@@ -323,7 +348,7 @@ it.each(["coverage-extra", "source-extra", "long-journal-id", "long-tip-id", "ar
 it.each([discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow].map((cleanup) => [cleanup.name, cleanup]))(
   "P preserves guarded bytes without rewind or delete through %s, including poisoned evidence", async (_name, cleanup) => {
     const f = await setup(); f.faux.setResponses([fauxAssistantMessage([fauxText("Fictional durable evidence")])]);
-    await generatePiNativeResponse("Fictional stable instructions", f.options());
+    await generateEngineTurnResponse("Fictional stable instructions", f.options());
     const repo = resolveDurableNativeSessionRepo(f.root), metadata = (await repo.listOwned()).find((entry) => entry.id === handle);
     const bytes = await readFile(metadata.path), raw = await repo.open(metadata, { repair: false, wait: false });
     const deletion = vi.spyOn(repo, "delete"), close = vi.spyOn(raw, "close"), rewind = vi.fn(); raw.moveTo = rewind;

@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   isOpenCodeModel,
   withOpenCodeSessionHeaders,
-} from "../../ai/providers/pi-native/provider-attribution.js";
+} from "../../ai/providers/engine-turn/provider-attribution.js";
 
 const CONTEXT = { messages: [{ role: "user", content: "hello", timestamp: 1 }] };
 

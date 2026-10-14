@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
-const resolveRuntimeBridgeMock = vi.fn();
+const assertEngineTurnModelRefMock = vi.fn();
 
-vi.mock("../ai/runtime/registry.js", () => ({
-  resolveRuntimeBridge: (...args) => resolveRuntimeBridgeMock(...args),
-}));
+vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); },
+    engineTurnAdapter: { id: "stub", execute: (...args) => executeMock(...args) },
+  };
+});
 
 const { createRuntime } = await import("../runtime.js");
 const { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } = await import("../runtime-brand.js");
@@ -15,8 +20,7 @@ const TEST_MODEL = { provider: "anthropic", model: "x", reference: "anthropic:x"
 
 beforeEach(() => {
   executeMock.mockReset();
-  resolveRuntimeBridgeMock.mockReset();
-  resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
+  assertEngineTurnModelRefMock.mockReset();
 });
 
 

@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("@mono-agent/engine/sessions.js", { spy: true });
 import * as storage from "@mono-agent/engine/sessions.js";
-import { resolveSession, commitSession, captureSessionRecovery } from "../../ai/providers/pi-native/session-lifecycle.js";
-import { createManagedNativeJournalStorage } from "../../ai/providers/pi-native/native-journal-storage.js";
-import { checkNativeInheritedPrefix } from "../../ai/providers/pi-native/handoff-producer.js";
+import { resolveSession, commitSession, captureSessionRecovery } from "../../ai/providers/engine-turn/session-lifecycle.js";
+import { createManagedNativeJournalStorage } from "../../ai/providers/engine-turn/native-journal-storage.js";
+import { checkNativeInheritedPrefix } from "../../ai/providers/engine-turn/handoff-producer.js";
 import { createSessionRegistry, syncProviderSession, refreshProviderSession, disposeProviderSession } from "../../ai/runtime/sessions.js";
 afterEach(() => vi.restoreAllMocks());
 

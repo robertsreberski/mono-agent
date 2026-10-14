@@ -3,10 +3,8 @@
 // Node's fetch (undici) reports a cut response body as `TypeError: terminated`
 // with the actual reason — UND_ERR_BODY_TIMEOUT, ECONNRESET, "other side
 // closed" — only on `error.cause`. Several layers between the socket and us
-// flatten errors to `error.message`, most notably pi-agent-core's
-// `handleRunFailure`, which stores `error.message` and drops the cause before
-// any mono-agent code sees the Error object. The result is a run that fails
-// with the single uninformative word "terminated".
+// may retain only error.message. Runtime preserves the original cause where
+// available and reports process-wide transport correlation as uncertain.
 //
 // Two recovery paths, in order of trustworthiness:
 //

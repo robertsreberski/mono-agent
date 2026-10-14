@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,6 +51,17 @@ if (packageNames.includes("@mono-agent/agent-app")) {
 }
 
 if (packageNames.includes("@mono-agent/agent-runtime")) {
+  for (const entry of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai"]) {
+    const api = await import(entry);
+    assert.equal(api.resolveRuntimeBridge, api.resolveEngineTurnAdapter);
+    assert.equal(api.generatePiNativeResponse, api.generateEngineTurnResponse);
+    assert.equal(api.piNativeRuntimeBridge, api.engineTurnAdapter);
+    assert.equal(typeof api.generateEngineTurnResponse, "function");
+    assert.equal(api.engineTurnAdapter.execute, api.generateEngineTurnResponse);
+    assert.equal(api.engineTurnAdapter.id, "pi");
+    assert.equal("assertEngineTurnModelRef" in api, false);
+    assert.equal(await api.resolveEngineTurnAdapter({ provider: "fictional", model: "fixture", reference: "fictional:fixture" }), api.engineTurnAdapter);
+  }
   await assertRemovedImport(
     "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js",
     "ERR_PACKAGE_PATH_NOT_EXPORTED",

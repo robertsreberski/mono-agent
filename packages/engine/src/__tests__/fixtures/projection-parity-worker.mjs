@@ -13,6 +13,7 @@ syncBuiltinESMExports(); Math.random = () => 0.125;
 let clock = 1700000000000; Date.now = () => clock;
 Object.defineProperty(performance, "now", { value: () => 0 });
 const [source, runtimeSource, root, legacy] = process.argv.slice(2);
+const providerAdapter = existsSync(`${runtimeSource}/ai/providers/engine-turn.js`) ? "engine-turn" : ["pi", "native"].join("-");
 const historicPackage = "@mono-agent/harness"; // Archived P2b imports only.
 registerHooks({ resolve(specifier, context, nextResolve) {
   for (const name of ["@mono-agent/engine", historicPackage]) if (specifier === name || specifier.startsWith(`${name}/`)) return {
@@ -106,7 +107,7 @@ async function captureRepairs(repo) {
     compactedContext: JSON.stringify(buildHarnessSessionContext(await session.getEntries(), { repairs: await session.getRepairEntries() })), bytes: await readFile(session.metadata.path, "utf8") } };
 }
 async function captureRuntime(session) {
-  const pn = (name) => import(pathToFileURL(`${runtimeSource}/ai/providers/pi-native/${name}.js`));
+  const pn = (name) => import(pathToFileURL(`${runtimeSource}/ai/providers/${providerAdapter}/${name}.js`));
   const { createPiSessionAdapter } = existsSync(`${source}/session-adapter.js`)
     ? await import(pathToFileURL(`${source}/session-adapter.js`)) : await pn("harness-adapter");
   const { estimateCurrentContextTokens, estimateSessionMessageTokens } = await pn("compaction-driver");
@@ -138,7 +139,8 @@ async function captureMidRun(pn) {
   return { armed, decision, settings, requests, events, warnings, state };
 }
 async function captureRecovery(pn) {
-  const { generatePiNativeResponse } = await import(pathToFileURL(`${runtimeSource}/ai/providers/pi-native.js`));
+  const adapter = await import(pathToFileURL(`${runtimeSource}/ai/providers/${providerAdapter}.js`));
+  const generateEngineTurnResponse = adapter.generateEngineTurnResponse ?? adapter.generatePiNativeResponse;
   const { recoverDurableNativeSession, resolveDurableNativeSessionRepo } = await pn("session-lifecycle");
   clock = 1700000000000;
   const faux = fauxProvider({ provider: "recovery-fixture", models: [{ id: "A" }] }); const models = createModels(); models.setProvider(faux.provider);
@@ -146,9 +148,9 @@ async function captureRecovery(pn) {
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional warm reply")]), () => { controller.abort(); return fauxAssistantMessage([fauxText("Fictional cancelled draft")], { stopReason: "aborted" }); }]);
   const options = { model: { provider: "recovery-fixture", model: "A", reference: "recovery-fixture:A" }, piResolvedModel: faux.getModel(), piResolvedModels: models,
     cwd: "/fictional", piSessionsRoot: `${root}-recovery`, sessionId: "recovery-fixture", sessionKeepAlive: true, effort: "none", allowedTools: [], compaction: { enabled: false } };
-  const warm = await generatePiNativeResponse("Fictional rules", { ...options, messages: [{ role: "user", content: "Fictional warm request" }] });
+  const warm = await generateEngineTurnResponse("Fictional rules", { ...options, messages: [{ role: "user", content: "Fictional warm request" }] });
   if (warm.error) throw new Error("Fixture warm dispatch failed");
-  const cancelled = await generatePiNativeResponse("Fictional rules", { ...options, sessionRecovery: { runId: "fixture-recovery-turn", revision: 1 }, abortSignal: controller.signal, messages: [{ role: "user", content: "Fictional interrupted request" }] });
+  const cancelled = await generateEngineTurnResponse("Fictional rules", { ...options, sessionRecovery: { runId: "fixture-recovery-turn", revision: 1 }, abortSignal: controller.signal, messages: [{ role: "user", content: "Fictional interrupted request" }] });
   const receipt = cancelled.providerSessionRecovery;
   if (!receipt) throw new Error("Fixture recovery receipt missing");
   const repo = resolveDurableNativeSessionRepo(`${root}-recovery`); const metadata = (await repo.list())[0];

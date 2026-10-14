@@ -8,7 +8,7 @@ import { formatLiveInputGuidance } from "../../ai/live-input-prompt.js";
 import {
   appendStructuredOutputInstruction,
   structuredOutputFinalizationPrompt,
-} from "../../ai/providers/pi-native/structured-output.js";
+} from "../../ai/providers/engine-turn/structured-output.js";
 
 describe("appendStructuredOutputInstruction", () => {
   it("returns the prompt unchanged when there is no output schema (no override consulted)", () => {

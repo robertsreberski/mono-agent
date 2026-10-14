@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
-import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
+import { resolveDurableNativeSessionRepo } from "../../ai/providers/engine-turn/session-lifecycle.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
 
 let faux, fauxModels;
@@ -26,7 +26,7 @@ it.each(["find"])("refuses cold reopen when the native %s throws", async (method
   const failure = vi.spyOn(repo, method).mockRejectedValue(new Error("Fictional catalogue read failure"));
   const create = vi.spyOn(repo, "create");
   try {
-    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+    const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
       sessionId: "catalogue-failure", piSessionsRoot: root, sessionKeepAlive: true,
       sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket",
         turnId: "catalogue-turn", handleId: "catalogue-failure", baseRevision: 1,
@@ -54,7 +54,7 @@ it.each([0, undefined])("piMaxRetries=%s controls both request retry layers and 
     stopReason: "error", errorMessage: "503 service unavailable",
   })));
   try {
-    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+    const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
       piMaxRetries, messages: [{ role: "user", content: "Fictional request" }],
     }));
     expect(result.error).toContain("503");
@@ -70,7 +70,7 @@ it.each([null, "", "   ", Infinity, "not-a-number"])("treats an unset/invalid di
     requests.push(options); return faux.provider.streamSimple(model, context, options);
   } });
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
-  const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+  const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
     piMaxRetries, messages: [{ role: "user", content: "Fictional request" }],
   }));
   expect(result.text).toBe("Fictional answer");
@@ -86,7 +86,7 @@ it("creates a new conversation despite id-less legacy damage", async () => {
   writeFileSync(stray, bytes);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
   try {
-    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+    const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
       sessionId, piSessionsRoot: root, sessionKeepAlive: true,
       messages: [{ role: "user", content: "Fictional request" }],
     }));
@@ -103,7 +103,7 @@ it.each(["ERR_HARNESS_WRITER_BUSY", "ERR_HARNESS_JOURNAL_UNREADABLE"])("classifi
   vi.spyOn(repo, "find").mockRejectedValue(Object.assign(new Error("Fictional lookup failure"), { code, sessionId }));
   const create = vi.spyOn(repo, "create");
   try {
-    const result = await generatePiNativeResponse("Fictional rules", runOptions(model, {
+    const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, {
       sessionId, piSessionsRoot: root, sessionKeepAlive: true,
       messages: [{ role: "user", content: "Fictional request" }],
     }));

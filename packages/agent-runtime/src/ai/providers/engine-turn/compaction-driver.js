@@ -1,20 +1,8 @@
 // @ts-check
-// Context auto-compaction for the pi-native bridge.
-//
-// Pi supports checkpoint/overflow compaction. Mono-agent keeps Pi's overflow
-// recovery disabled and owns the decision itself: guarded proactive compaction
-// before the request and one overflow recovery here, plus the mid-run
-// checkpoint path in mid-run-compaction.js, which reuses this module's guarded
-// hook while Pi's own threshold scheduling is armed for one prompt.
-// Pi owns preparation, cut rules, prompts and context token estimation.
-// The bridge owns policy, fixed overhead and persistence/savings guards.
-//
-// Pure moves out of pi-native.js: the discovered-window cache (kept at MODULE
-// scope, matching its bridge-level scope before the split), context estimation,
-// the guarded tryCompact, the reactive candidate test, the live compaction
-// policy resolution, and the proactive+reactive hooks. Per-run compaction state
-// (applied / reactiveAttempted / compactedThisRun / policy / diagnostics) lives
-// on the caller-owned runState.compaction.
+// Runtime compaction policy and guards for the engine turn adapter.
+// The engine owns preparation, cut rules, summary projection and persistence;
+// runtime owns triggers, fixed overhead, savings and one overflow-recovery attempt.
+// Mid-run compaction reuses these guards at completed model/tool boundaries.
 
 import {
   calculateContextTokens,
@@ -528,10 +516,7 @@ export function reportGuardedCompactionOutcome({
   return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
 }
 
-// Run a single guarded compaction. Requires the harness idle (callers
-// waitForIdle first). Never throws — classifies AgentHarnessError into a warning
-// and reports back whether anything was compacted. Fires onCompactionRecorded on
-// success so a host can persist the compaction row.
+// Guard the engine compaction cut before summary generation.
 export async function tryCompact(harness, {
   trigger,
   onEvent,
@@ -626,9 +611,7 @@ export async function tryCompact(harness, {
           model: model || null,
           tokens_before: tokensBefore,
           summary: result?.summary || "",
-          // Pi 0.85 returns retained messages rather than their entry ids. The
-          // preparation still retains object identity, so preserve this legacy
-          // diagnostic when its first retained message came from a real entry.
+          // Retained message identity preserves the first-kept-entry diagnostic.
           first_kept_entry_id: hookDecision?.firstKeptEntryId || null,
           status: "succeeded",
           created_at: Date.now(),

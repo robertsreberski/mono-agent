@@ -8,7 +8,7 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
 import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
-import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
+import { generateEngineTurnResponse } from '../../ai/providers/engine-turn.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
@@ -69,7 +69,7 @@ function host(fixture, continuous) {
     ...(continuous ? { session: { mode: 'continuous', supportsResume: true, idleTimeoutMs: 60000 } } : {}),
     runtime: {
       run: async (system, options) => {
-        const result = await generatePiNativeResponse(system, { ...options, piResolvedModel: fixture.model, piResolvedModels: fixture.models, effort: 'none' });
+        const result = await generateEngineTurnResponse(system, { ...options, piResolvedModel: fixture.model, piResolvedModels: fixture.models, effort: 'none' });
         if (result.providerSessionId) sessions.add(result.providerSessionId);
         return result;
       },
@@ -235,7 +235,7 @@ it.each([
       },
     });
   } });
-  await generatePiNativeResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
+  await generateEngineTurnResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
     piResolvedModel: model, piResolvedModels: models, messages: [{ role: 'user', content: 'test' }], allowedTools: ['Read'],
     cacheRetention: resolvedRetention, promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
   });

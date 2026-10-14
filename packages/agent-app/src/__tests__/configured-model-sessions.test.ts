@@ -8,7 +8,7 @@ import type { RuntimeRunOptions, RuntimeModelReference } from "@mono-agent/runti
 const execute = vi.hoisted(() => vi.fn());
 vi.mock("@mono-agent/agent-runtime/ai/runtime/registry.js", async (original) => ({
   ...await original<typeof import("@mono-agent/agent-runtime/ai/runtime/registry.js")>(),
-  resolveRuntimeBridge: async () => ({ id: "session-attribution-test", execute }),
+  resolveEngineTurnAdapter: async () => ({ id: "session-attribution-test", execute }),
 }));
 const { createRequestModelOverrideRuntimeExtension } = await import("../request-model-override.js");
 const { createConfiguredAgentHarness, createConfiguredAgentRuntime } = await import("../index.js");

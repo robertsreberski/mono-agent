@@ -22,13 +22,13 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { shouldCompact } from "../../../../engine/dist/compaction-kit/compaction.js";
-import { runReactiveCompaction } from "../../ai/providers/pi-native/compaction-driver.js";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { runReactiveCompaction } from "../../ai/providers/engine-turn/compaction-driver.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import {
   createMidRunCompaction,
   midRunBaselineAdjustment,
   midRunReserveTokens,
-} from "../../ai/providers/pi-native/mid-run-compaction.js";
+} from "../../ai/providers/engine-turn/mid-run-compaction.js";
 import { buildHarnessSessionContext } from "../../../../engine/dist/session-context.js";
 
 // 30k characters ≈ 7.5k estimated tokens: two of these cross a 14k trigger, and
@@ -76,7 +76,7 @@ describe("pi-native mid-run compaction (real harness)", () => {
       const events = [];
       const recorded = [];
 
-      const result = await generatePiNativeResponse("system", runOptions(setup, {
+      const result = await generateEngineTurnResponse("system", runOptions(setup, {
         cwd: root,
         allowedTools: ["Read"],
         messages: [{ role: "user", content: "read the notes twice" }],
@@ -128,7 +128,7 @@ describe("pi-native mid-run compaction (real harness)", () => {
     ]);
     const events = [];
 
-    const result = await generatePiNativeResponse("system", runOptions(setup, {
+    const result = await generateEngineTurnResponse("system", runOptions(setup, {
       messages: [{ role: "user", content: "hello" }],
       onEvent: (event) => events.push(event),
     }));
@@ -159,7 +159,7 @@ describe("pi-native mid-run compaction (real harness)", () => {
       ]);
       const events = [];
 
-      const result = await generatePiNativeResponse("system", runOptions(setup, {
+      const result = await generateEngineTurnResponse("system", runOptions(setup, {
         cwd: root,
         allowedTools: ["Read"],
         messages: [{ role: "user", content: "read the notes twice" }],

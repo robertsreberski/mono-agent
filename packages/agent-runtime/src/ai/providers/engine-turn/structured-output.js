@@ -1,7 +1,7 @@
 // @ts-check
 // Structured-output enforcement for the pi-native bridge.
 //
-// Pure moves out of pi-native.js: the system-prompt instruction append, the
+// Pure moves out of engine-turn.js: the system-prompt instruction append, the
 // finalization re-prompt text, the retry predicate, the retry diagnostics, and
 // the single-re-prompt finalization executor. No session or run state lives
 // here — the executor takes its harness/tool/warnings deps explicitly and the
