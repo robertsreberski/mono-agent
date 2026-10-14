@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { JournalValidator, validateJournalHeader } from "../journal-schema.js";
 import { JOURNAL_KINDS } from "../journal-types.js";
-import { buildHarnessSessionContext } from "../session-context.js";
 import { MemorySessionRepo } from "../session-store.js";
 
 const header = { format: "mono-harness", version: 2, journalId: "journal-fictional",
@@ -37,8 +36,11 @@ function allKindsFixture() {
     const result = append("message", { message: { role: "toolResult", toolCallId: "call-one", toolName: "Read", isError: false },
       contextParentId: message.id, provenance: { provider: "faux", api: "faux", model: "fictional" }, input: { id: null, complete: true } }, "operation-one");
     append("tool_result", { callId: "call-one", name: "Read", messageId: result.id, outcome: "success" }, "operation-one");
-    const checkpoint = append("compaction", { compaction: { summary: "Fictional summary." }, contextParentId: result.id,
-      preservedMessageIds: [message.id, result.id], derivedMessages: [], coverageVersion: 1 }, "operation-one");
+    const checkpoint = append("compaction", { compaction: { summary: "Fictional summary.", checkpoint: {
+      version: 1, projectionVersion: 1, summaryMessage: { role: "compactionSummary", summary: "Fictional summary.", timestamp: 1 },
+      preservedMessageIds: [message.id, result.id], derivedMessages: [], tokensBefore: null, tokensAfter: null, model: null,
+      coverage: { version: 1, sourceTipId: result.id, sourceEntryCount: 3 },
+    } }, contextParentId: result.id, preservedMessageIds: [message.id, result.id], derivedMessages: [], coverageVersion: 1 }, "operation-one");
     append("operation_end", { status: "completed", tipId: checkpoint.id }, "operation-one");
     append("rewind", { tipId: result.id });
     append("interruption", { cause: "explicit-account", operationIds: ["operation-one"] });
@@ -168,12 +170,10 @@ it("rejects malformed protected descriptors independently of recovery capability
   }
 });
 
-it("keeps merged P1a v2 compactions without checkpoints readable", () => {
-  const { append } = fixture();
-  const tail = { role: "user", content: "Fictional retained input", timestamp: 1 };
-  const record = append("compaction", { compaction: { summary: "Fictional P1a summary", tokensBefore: 100, retainedTail: [tail] },
-    contextParentId: null, preservedMessageIds: [], derivedMessages: [tail], coverageVersion: 1 });
-  const messages = buildHarnessSessionContext([{ type: "compaction", timestamp: record.timestamp, ...record.payload.compaction }]);
-  expect(messages[0]).toMatchObject({ role: "compactionSummary", summary: "Fictional P1a summary", tokensBefore: 100, timestamp: 1 });
-  expect(messages[1]).toEqual(tail);
+it("rejects current-format compactions without a checkpoint without advancing the validator", () => {
+  const { append, validator } = fixture();
+  const seq = validator.seq, tip = validator.tip;
+  expect(() => append("compaction", { compaction: { summary: "Fictional summary", tokensBefore: 100, retainedTail: [] },
+    contextParentId: null, preservedMessageIds: [], derivedMessages: [], coverageVersion: 1 })).toThrow("Invalid");
+  expect(validator.seq).toBe(seq); expect(validator.tip).toBe(tip);
 });

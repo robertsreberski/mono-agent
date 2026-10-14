@@ -178,9 +178,8 @@ export class JournalValidator {
             && p.input.requestDigest === digestTurnInput(p.message.content)
             && ["initial", "live", "replay"].includes(p.input.placement));
         } else {
-          // The merged P1a v2 writer omitted checkpoints; those cuts remain
-          // readable. New cuts additionally carry an exact
-          // checkpoint envelope and positively validated ordered coverage.
+          // Every released/current-format writer records an exact checkpoint
+          // envelope with positively validated ordered coverage.
           requireValue(object(p.compaction) && typeof p.compaction.summary === "string"
             && ids(p.preservedMessageIds) && p.preservedMessageIds.every((i, index) => this.contextInfo.get(i)?.kind === "message"
               && (index === 0 || this.contextInfo.get(p.preservedMessageIds[index - 1]).seq < this.contextInfo.get(i).seq))
@@ -192,7 +191,7 @@ export class JournalValidator {
               && inherited.sources.every((s) => id(s.journalId) && (s.sourceTipId === null || id(s.sourceTipId)) && time(s.sourceSeq) && digest(s.sourceDigest))
               && new Set(inherited.sources.map((s) => s.journalId)).size === inherited.sources.length);
           }
-          if (checkpoint !== undefined) requireValue(object(checkpoint) && checkpoint.version === 1
+          requireValue(object(checkpoint) && checkpoint.version === 1
             && checkpoint.projectionVersion === 1 && checkpoint.summaryMessage?.role === "compactionSummary"
             && checkpoint.summaryMessage.summary === p.compaction.summary && time(checkpoint.summaryMessage.timestamp)
             && checkpoint.summaryMessage.tokensBefore === p.compaction.tokensBefore

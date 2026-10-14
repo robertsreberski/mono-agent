@@ -4,6 +4,7 @@ import { lstat, readdir, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { JournalReader } from "./journal-reader.js";
+import { createCompactionSummaryMessage } from "./compaction-kit/messages.js";
 import { projectContext } from "./request-projection.js";
 import { syncDir } from "./owned-fs-impl.js";
 
@@ -47,6 +48,14 @@ export async function listLegacySessions(root, { includeArchives = false, id: re
   return { sessions, unattributed };
 }
 
+// Legacy Pi compactions become messages during import, never current-format
+// compaction records. Supply their summary envelope at this conversion boundary.
+function projectLegacyContext(entries) {
+  return projectContext(entries.map((entry) => entry.type === "compaction" ? { ...entry,
+    checkpoint: { summaryMessage: createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp) },
+  } : entry));
+}
+
 export async function readLegacySession(metadata, root) {
   const reader = await JournalReader.open(metadata.path, root, { ownerOnly: false });
   let evidence;
@@ -74,7 +83,7 @@ export async function readLegacySession(metadata, root) {
         while (id !== null) {
           const ancestor = entries.get(id); if (!ancestor) fail();
           // A previous compaction contributes its summary, not its own tail.
-          const messages = projectContext([{ ...ancestor, retainedTail: [] }]).messages;
+          const messages = projectLegacyContext([{ ...ancestor, retainedTail: [] }]).messages;
           if (messages[0]) tail.push(messages[0]);
           if (id === entry.firstKeptEntryId) { found = true; break; }
           id = ancestor.parentId;
@@ -124,7 +133,7 @@ export async function readLegacySession(metadata, root) {
     branch.push(entry); id = entry.parentId;
   }
   branch.reverse();
-  return { status: "import", messages: projectContext(branch).messages, evidence };
+  return { status: "import", messages: projectLegacyContext(branch).messages, evidence };
 }
 
 export function legacyJournalId(metadata, root) {

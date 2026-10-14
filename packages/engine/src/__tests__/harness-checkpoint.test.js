@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fork } from "node:child_process";
@@ -31,4 +31,25 @@ it.each([false, true])("replays the exact checkpoint after process reopen includ
   try { const [reopened] = await once(child, "message"); await once(child, "exit"); expect(reopened).toEqual({ messages, checkpoint }); }
   finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   expect((await readFile(session.metadata.path)).equals(bytes)).toBe(true); // no fresh timestamp, summary or repair call
+});
+
+it("scopes a missing checkpoint error to its journal and still opens an unrelated session", async () => {
+  const root = await mkdtemp(join(tmpdir(), "checkpoint-scope-")); roots.push(root);
+  const repo = new JsonlSessionRepo({ sessionsRoot: root });
+  const damaged = await repo.create({ id: "fictional-damaged-cut" });
+  await damaged.appendCompaction({ summary: "Fictional summary", retainedTail: [] });
+  const metadata = damaged.metadata; await damaged.close();
+  const peer = await repo.create({ id: "fictional-peer" }); await peer.appendMessage({ role: "user", content: "Fictional peer input", timestamp: 1 });
+  const peerMetadata = peer.metadata; await peer.close();
+  const withoutCheckpoint = (record) => {
+    if (Array.isArray(record)) return record.map(withoutCheckpoint);
+    if (record.kind === "compaction") delete record.payload.compaction.checkpoint;
+    return record;
+  };
+  const lines = (await readFile(metadata.path, "utf8")).trimEnd().split("\n").map((line) => JSON.stringify(withoutCheckpoint(JSON.parse(line))));
+  await writeFile(metadata.path, lines.join("\n") + "\n", { mode: 0o600 });
+  const reopened = new JsonlSessionRepo({ sessionsRoot: root });
+  await expect(reopened.open(metadata)).rejects.toMatchObject({ code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+  const healthy = await reopened.open(peerMetadata);
+  try { expect(await healthy.getEntries()).toHaveLength(1); } finally { await healthy.close(); }
 });
