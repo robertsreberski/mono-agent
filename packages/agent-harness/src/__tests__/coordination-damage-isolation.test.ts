@@ -254,3 +254,14 @@ it("bootstrap refuses its own damaged orphan by basename", async () => {
   await fs.rename(f.path, join(f.directory, name));
   await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED", message: expect.stringContaining(`(${name})`) });
 });
+
+it("bootstrap treats its own pending temp as retryable contention rather than permanent damage", async () => {
+  const f = await bootstrapFixture();
+  const name = f.name.replace(key("fictional-orphan"), key(sibling)) + ".tmp";
+  const path = join(f.directory, name); await fs.rename(f.path, path);
+  await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
+  expect(await fs.readFile(path, "utf8")).toBe("{broken");
+  await fs.rm(path);
+  const lease = await f.store.acquireNativeHistoryAuthority(sibling);
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
+});

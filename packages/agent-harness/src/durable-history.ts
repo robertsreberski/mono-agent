@@ -485,7 +485,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           // or rebind other owners. This owner's claim and settlement above
           // suffice. Retention still protects and charges unrelated evidence.
           for (const entry of (await this.pendingPayloads(rootIdentity).list()).filter((entry) => entry.conversationKey === historyKey(id))) {
-            if (entry.damaged || entry.name.endsWith(".tmp")) throw new NativeHistoryAuthorityBusyError(true, entry.name);
+            if (entry.name.endsWith(".tmp")) throw new NativeHistoryAuthorityBusyError(false, entry.name);
+            if (entry.damaged) throw new NativeHistoryAuthorityBusyError(true, entry.name);
             try { await this.pendingPayloads(rootIdentity).inspect(entry); }
             catch (error) {
               await assertDirectoryIdentity(this.root, rootIdentity);
