@@ -19,7 +19,8 @@ import { acquireContinuationStoreLock, writeJsonAtomic } from "../continuation-s
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
-import { openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
+import { isTerminalProcessJobState, openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
+import { hasSubagentObligation } from "../subagent-execution-ownership.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
 // @ts-expect-error Private kernel test seam.
 import { createAgentTool, subagentUsageForRun } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
@@ -69,6 +70,46 @@ const done = async (service: ProcessJobsServiceHandle, id: string) => {
   if (job.kind !== "internal") throw new Error("Expected an internal subagent job");
   return job;
 };
+
+// Captured before any case fakes timers: these waits measure real durable I/O.
+const realSetTimeout = globalThis.setTimeout;
+const realDelay = (ms: number) => new Promise<void>((done) => { realSetTimeout(done, ms); });
+// The parent-stop proof polls the store every 20ms for at most 4s.
+const STOP_PROOF_POLL_MS = 20;
+const STOP_PROOF_WINDOW_MS = 4_000;
+/**
+ * A settled parent-stop receipt exists only when durable settlement beats the
+ * product's bounded stop window: a 4s proof poll inside the 6s tool deadline.
+ * Under package load the same settlement has taken longer, and the product then
+ * honestly answers with an incomplete receipt. Cases asserting the settled
+ * receipt freeze the stop clocks, wait in real time for the exact durable state
+ * the proof polls for, and only then let the proof observe it. The product
+ * deadline is unchanged, and the receipt must still arrive inside its window.
+ */
+async function stopObservingDurableSettlement(store: Awaited<ReturnType<typeof openProcessJobStore>>, jobId: string,
+  stop: () => Promise<any>): Promise<any> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const frozenAt = Date.now();
+  try {
+    let answered = false;
+    const stopping = stop().finally(() => { answered = true; });
+    const deadline = performance.now() + DURABLE_DELIVERY_TIMEOUT_MS;
+    for (;;) {
+      const record = await store.get(jobId);
+      if (record && isTerminalProcessJobState(record.state) && !hasSubagentObligation(record)) break;
+      if (performance.now() >= deadline) throw new Error(`Process job ${jobId} did not settle durably within ${DURABLE_DELIVERY_TIMEOUT_MS}ms.`);
+      await realDelay(STOP_PROOF_POLL_MS);
+    }
+    while (!answered) {
+      // With only the 6s tool deadline pending, the proof is in real I/O: advance nothing.
+      if (vi.getTimerCount() > 1) await vi.advanceTimersByTimeAsync(STOP_PROOF_POLL_MS);
+      await realDelay(STOP_PROOF_POLL_MS);
+    }
+    const receipt = await stopping;
+    expect(Date.now() - frozenAt).toBeLessThan(STOP_PROOF_WINDOW_MS);
+    return receipt;
+  } finally { vi.useRealTimers(); }
+}
 
 function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string): Promise<void> {
   const settlement = (service as unknown as { readonly settlements: ReadonlyMap<string, Promise<void>> })
@@ -340,9 +381,12 @@ describe("parent stop", () => {
     const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
     await vi.waitFor(() => expect(request).toBeDefined(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await f.service.cancel(started.details.jobId);
-    const stopping = send.execute("stop", { id: "helper", stop: true });
-    gate.resolve({ text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
-    expect((await stopping).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: false });
+    const receipt = await stopObservingDurableSettlement(f.store, started.details.jobId, () => {
+      const stopping = send.execute("stop", { id: "helper", stop: true });
+      gate.resolve({ text: "partial", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+      return stopping;
+    });
+    expect(receipt.details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: false });
     expect((await f.store.get(started.details.jobId))?.subagentOwnership?.parentStopRequested).not.toBe(true);
     await expect(send.execute("resume", { id: "helper", message: "no" })).rejects.toThrow("subagent_recovery_required");
   }, 30_000);
@@ -360,10 +404,11 @@ describe("parent stop", () => {
   it.each([undefined, { turnToken: "wrong", state: "retained" }])("missing/mismatched recovery evidence never authorizes resume: %j", async (continuity) => {
     const f = await managedFixture(); const entered = deferred<void>();
     const { agent, send } = tools(f, async (request: any) => { entered.resolve(); await new Promise<void>((resolve) => request.abortSignal.addEventListener("abort", () => resolve(), { once: true })); return { cancelled: true, subagentContinuity: continuity }; });
-    await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
-    expect((await send.execute("stop", { id: "helper", stop: true })).details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: true });
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" }); await entered.promise;
+    const receipt = await stopObservingDurableSettlement(f.store, started.details.jobId, () => send.execute("stop", { id: "helper", stop: true }));
+    expect(receipt.details.stop).toMatchObject({ code: "subagent_stop_recovery_required", stopRequested: true });
     await expect(send.execute("resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
-  }, 15_000);
+  }, 30_000);
 });
 
 describe("parent steer", () => {
