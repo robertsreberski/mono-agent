@@ -27,6 +27,7 @@ import {
   resolveCronControlPaths,
   type CronControlInitializationCheckpoint,
   type CronControlStore,
+  type OpenCronControlStoreOptions,
 } from "../cron-control-store.js";
 
 const roots: string[] = [];
@@ -39,13 +40,13 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(async (root) => await rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(now: () => Date = () => new Date("2026-08-14T10:00:00.000Z")) {
+async function fixture(now: () => Date = () => new Date("2026-08-14T10:00:00.000Z"), options: Omit<OpenCronControlStoreOptions, "now"> = {}) {
   // Keep the lexical mkdtemp path: on macOS tmpdir() is normally below /var,
   // whose canonical spelling is /private/var. Keep that lexical product path
   // instead of hiding it with realpath().
   const cwd = await mkdtemp(join(tmpdir(), "mono-agent-cron-control-"));
   roots.push(cwd);
-  const store = await openCronControlStore(cwd, { now });
+  const store = await openCronControlStore(cwd, { ...options, now });
   stores.push(store);
   return { cwd, store };
 }
@@ -1043,7 +1044,11 @@ describe("cron control store", () => {
   });
 
   it("reopens and replays an evicted manual run from a rollback-safe receipt without admitting it twice", async () => {
-    const { cwd, store } = await fixture();
+    // Evicting by count against the production cap takes ~1,000 fsynced SQLite
+    // transactions, which overran this case's budget under package load. A small
+    // cap exercises the same retention query, eviction and replay path.
+    const runCap = 5;
+    const { cwd, store } = await fixture(undefined, { maxRunsPerJob: runCap });
     const requestHash = cronActionRequestHash({ action: "run_now", jobId: "digest" });
     const manual = store.runNowAction({
       jobId: "digest",
@@ -1063,7 +1068,7 @@ describe("cron control store", () => {
       replyPartOutcomes: replayOutcomes,
     } as CronJobResult);
 
-    for (let index = 1; index <= 500; index += 1) {
+    for (let index = 1; index <= runCap; index += 1) {
       const at = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index * 1_000).toISOString();
       const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
       store.recordResult(succeeded(firing));
@@ -1096,7 +1101,7 @@ describe("cron control store", () => {
     }), "manual-evicted");
     database.close();
 
-    const reopened = await openCronControlStore(cwd);
+    const reopened = await openCronControlStore(cwd, { maxRunsPerJob: runCap });
     stores.push(reopened);
     expect(reopened.getRun(manual.firing.runId)).toBeUndefined();
     const replay = reopened.replayRunNowAction({
@@ -1122,7 +1127,7 @@ describe("cron control store", () => {
       firing: { runId: manual.firing.runId },
       run: { replyPartOutcomes: replayOutcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES) },
     });
-    expect(reopened.runs("digest", 500).runs).toHaveLength(500);
+    expect(reopened.runs("digest", runCap).runs).toHaveLength(runCap);
   }, 60_000);
 
   it("retains same-timestamp idempotency receipts deterministically by key", async () => {

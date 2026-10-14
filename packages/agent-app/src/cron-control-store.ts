@@ -108,6 +108,11 @@ export interface OpenCronControlStoreOptions {
   readonly onInitializationCheckpoint?: (
     checkpoint: CronControlInitializationCheckpoint,
   ) => void | Promise<void>;
+  /**
+   * Test seam for a smaller per-job run-retention cap, so eviction can be
+   * exercised without hundreds of durable firings. Defaults to 500.
+   */
+  readonly maxRunsPerJob?: number;
 }
 
 export class CronControlStoreError extends Error {
@@ -269,7 +274,9 @@ export async function openCronControlStore(
     throw error;
   }
   const now = options.now ?? (() => new Date());
+  const maxRunsPerJob = options.maxRunsPerJob ?? MAX_RUNS_PER_JOB;
   try {
+    if (!Number.isSafeInteger(maxRunsPerJob) || maxRunsPerJob < 1) throw new TypeError("maxRunsPerJob must be a positive integer.");
     database.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE;");
     // This is intentionally the only O(database) health check in the normal
     // inspect -> open lifecycle. It runs after exclusive ownership is proven
@@ -416,7 +423,7 @@ export async function openCronControlStore(
           detail: { runId: firing.runId },
           createdAt: input.observedAt,
         });
-        applyRetention(database, now());
+        applyRetention(database, now(), maxRunsPerJob);
         return { firing, run, replayed: false };
       });
     },
@@ -461,7 +468,7 @@ export async function openCronControlStore(
           detail: { effectiveEnabled: input.enabled },
           createdAt: timestamp,
         });
-        applyRetention(database, now());
+        applyRetention(database, now(), maxRunsPerJob);
         return { enabled: input.enabled, replayed: false };
       });
     },
@@ -553,7 +560,7 @@ export async function openCronControlStore(
           throw new CronControlStoreError("corrupt", `Updated cron run is missing: ${result.cronRunId}`);
         }
         updateRunNowReceipt(database, completed);
-        if (fields.completedAt !== undefined) applyRetention(database, now());
+        if (fields.completedAt !== undefined) applyRetention(database, now(), maxRunsPerJob);
       });
     },
     getRun(runId) {
@@ -588,7 +595,7 @@ export async function openCronControlStore(
     audit(input) {
       withTransaction(() => {
         insertAudit(database, { ...input, createdAt: now().toISOString() });
-        applyRetention(database, now());
+        applyRetention(database, now(), maxRunsPerJob);
       });
     },
     async close() {
@@ -1531,7 +1538,7 @@ function insertAudit(database: DatabaseSync, input: {
   );
 }
 
-function applyRetention(database: DatabaseSync, date: Date): void {
+function applyRetention(database: DatabaseSync, date: Date, maxRunsPerJob: number): void {
   const runCutoff = new Date(date.getTime() - RUN_RETENTION_MS).toISOString();
   database.prepare(`
     DELETE FROM cron_runs WHERE run_id IN (
@@ -1541,7 +1548,7 @@ function applyRetention(database: DatabaseSync, date: Date): void {
         FROM cron_runs WHERE status NOT IN ('admitted', 'running', 'queued')
       ) WHERE rank > ? OR ordered_at < ?
     )
-  `).run(MAX_RUNS_PER_JOB, runCutoff);
+  `).run(maxRunsPerJob, runCutoff);
   const idempotencyCutoff = new Date(date.getTime() - IDEMPOTENCY_RETENTION_MS).toISOString();
   database.prepare(`
     DELETE FROM action_idempotency WHERE created_at < ? OR idempotency_key IN (
