@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { setImmediate } from "node:timers";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
 import type { EmbeddingProvider } from "../../search/index.js";
@@ -23,8 +24,13 @@ const DIM = 64;
 const FIXED = new Date("2026-06-15T12:00:00.000Z");
 
 const openDbs: MemoryDb[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const db of openDbs.splice(0)) db.close();
+  // Synchronous SQLite/filesystem work and immediately resolved provider doubles
+  // can keep this entire file in microtasks. Under load, worker RPC replies were
+  // delayed over 60s even though the parent acknowledged them immediately.
+  // Yield between cases so IPC progresses; a resolved promise is not enough.
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });
 
 function newRoot(): string {
@@ -126,6 +132,23 @@ function makeDeps(
 function dailyContent(root: string): string {
   return readFileSync(dailyFilePath(root, FIXED), "utf8");
 }
+
+// Keep these cases synchronous: resolved promises alone do not let the worker
+// process IPC replies between tests.
+describe.sequential("reconcile worker event-loop fairness", { shuffle: false }, () => {
+  let immediateProcessed = false;
+
+  it("queues work on the worker event loop", () => {
+    setImmediate(() => {
+      immediateProcessed = true;
+    });
+    expect(immediateProcessed).toBe(false);
+  });
+
+  it("processes queued work before the next synchronous test", () => {
+    expect(immediateProcessed).toBe(true);
+  });
+});
 
 describe("reconcile", () => {
   it.each(["update", "supersede", "noop"] as const)("does not retire a newer intention from a delayed %s with the default capture policy", async (action) => {
