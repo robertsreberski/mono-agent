@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Limit legacy session header reads to matching filenames for individual
+  session creation, lookup, import and retirement.
+
 - Keep history owners protected on inconclusive process probes, and retry
   transient self-identity failures.
 
