@@ -65,3 +65,19 @@ export function baselineWebLeaseAccepted(lease: Readonly<Record<string, unknown>
 function positivePid(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
+
+/** The incarnation fields of the ProcessJobs record check, packages/agent-app/src/process-jobs-store.ts:1301-1302 at a3cb9a611. */
+export function baselineProcessJobIncarnationsAccepted(value: Readonly<Record<string, unknown>>): boolean {
+  return !(baselineProcessIncarnationFromJson(value.agentIncarnation) === undefined
+    || (value.processIncarnation !== undefined && baselineProcessIncarnationFromJson(value.processIncarnation) === undefined));
+}
+
+/** `incarnation()` in packages/agent-app/src/subagent-execution-ownership.ts:120-122 at a3cb9a611. */
+export function baselineSubagentIncarnationAccepted(value: unknown): boolean {
+  return object(value) && exact(value, ["schema", "bootSessionId", "processStartId"])
+    && value.schema === "mono-agent.process-incarnation.v1" && text(value.bootSessionId, 256) && text(value.processStartId, 256);
+}
+
+function text(value: unknown, bytes: number): value is string { return typeof value === "string" && value.trim().length > 0 && Buffer.byteLength(value, "utf8") <= bytes; }
+function object(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function exact(value: Record<string, unknown>, keys: readonly string[]): boolean { return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }

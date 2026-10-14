@@ -166,6 +166,64 @@ describe("other platforms keep v1", () => {
   });
 });
 
+describe("review regressions", () => {
+  it("Linux procfs ENOENT while kill(0) still succeeds keeps the owner live", async () => {
+    platform("linux"); linuxProcfs();
+    const api = await import("../process-incarnation.js");
+    const owner = await api.currentProcessIncarnation();
+    vi.mocked(fs.readFile).mockImplementation((async (path: unknown) => {
+      if (String(path).endsWith("boot_id")) return `${uuid}\n`;
+      throw Object.assign(new Error("Fictional procfs race"), { code: "ENOENT" });
+    }) as unknown as typeof fs.readFile);
+    await expect(api.readProcessIncarnation(process.pid)).resolves.toBeUndefined(); // raw v1 reader unchanged
+    await expect(api.isSameProcessIncarnation(process.pid, owner)).resolves.toBe(false); // strict unchanged
+    await expect(api.isProcessIncarnationLive(process.pid, owner)).resolves.toBe(true);
+    const kill = vi.spyOn(process, "kill").mockImplementationOnce(() => true).mockImplementation(() => {
+      throw Object.assign(new Error("Fictional ESRCH"), { code: "ESRCH" });
+    });
+    await expect(api.isProcessIncarnationLive(4242, owner)).resolves.toBe(false); // ESRCH on the re-check
+    expect(kill).toHaveBeenCalled();
+  });
+
+  it("a rejected Darwin boot-session UUID capture is retried, not cached", async () => {
+    let fail = true;
+    mockExec((_file, args) => {
+      if (args.includes("kern.bootsessionuuid")) { if (fail) { fail = false; throw new Error("Fictional sysctl failure"); } return uuid; }
+      return start;
+    });
+    const api = await import("../process-incarnation.js");
+    await expect(api.readProcessIncarnation(process.pid)).rejects.toThrow("Fictional sysctl failure");
+    await expect(api.readProcessIncarnation(process.pid)).resolves.toMatchObject({ bootSessionId: `darwin-uuid:${uuid}` });
+  });
+
+  it("a rejected current-process v2 capture is retried, then cached", async () => {
+    let failures = 1;
+    mockExec((_file, args) => {
+      if (args.includes("kern.bootsessionuuid")) return uuid;
+      if (failures > 0) { failures -= 1; throw new Error("Fictional ps timeout"); }
+      return start;
+    });
+    const api = await import("../process-incarnation.js");
+    await expect(api.currentProcessIncarnation()).rejects.toThrow("Fictional ps timeout");
+    const owner = await api.currentProcessIncarnation();
+    expect(owner.schema).toBe(V2);
+    const calls = vi.mocked(execFile).mock.calls.length;
+    await expect(api.currentProcessIncarnation()).resolves.toBe(owner);
+    expect(vi.mocked(execFile).mock.calls.length).toBe(calls);
+  });
+
+  it("a rejected v1 calendar boot capture is retried, not cached", async () => {
+    let fail = true;
+    mockExec((_file, args) => {
+      if (args.includes("kern.boottime")) { if (fail) { fail = false; throw new Error("Fictional boottime failure"); } return "{ sec = 1700000000, usec = 0 }"; }
+      return start;
+    });
+    const api = await import("../process-incarnation.js");
+    await expect(api.currentProcessIncarnation(api.PROCESS_INCARNATION_SCHEMA)).rejects.toThrow("Fictional boottime failure");
+    await expect(api.currentProcessIncarnation(api.PROCESS_INCARNATION_SCHEMA)).resolves.toMatchObject({ schema: V1, bootSessionId: "darwin:1700000000:0" });
+  });
+});
+
 it("the persisted parser accepts v1 and v2 and rejects everything else", async () => {
   const api = await import("../process-incarnation.js");
   for (const schema of [V1, V2]) expect(api.processIncarnationFromJson({ schema, bootSessionId: "b", processStartId: "s" })).toBeDefined();

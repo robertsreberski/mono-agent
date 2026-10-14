@@ -588,8 +588,11 @@ gone.
 Upgrade and rollback on macOS:
 
 - The process-job state lock keeps its old `incarnation` field and adds a
-  `stableIncarnation` field, so an older binary still sees a live upgraded
-  owner and refuses to take over.
+  `stableIncarnation` field, so an older binary never mistakes it for an
+  ownerless lock. Older binaries still compare the old field with their own
+  clock- and timezone-sensitive reading, so they can still reclaim a live owner
+  after a clock step or timezone change: stop every older agent and CLI before
+  or while you upgrade on macOS.
 - Job records written by an upgraded agent carry only the new evidence. An
   older binary quarantines a pending transaction it cannot replay and then
   refuses to open the store. To roll back, stop the upgraded agent first, and

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   baselineOwnerRecord,
   baselineOwnerRecordBytes,
+  baselineProcessJobIncarnationsAccepted,
+  baselineSubagentIncarnationAccepted,
   baselineWebLeaseAccepted,
 } from "./fixtures/baseline-a3cb9a611-incarnation-readers.js";
 
@@ -27,6 +30,8 @@ vi.mock("../process-incarnation.js", async (original) => {
 
 import { acquireOwnerPrivateLock, type LegacyLockHolder } from "../owner-private-lock.js";
 import { createHostWebRequestCoordinator } from "../web-request-coordinator.js";
+import { openProcessJobStore, type DurableProcessJobRecord } from "../process-jobs-store.js";
+import { isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "../subagent-execution-ownership.js";
 
 const hostPlatform = process.platform, platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 const V1 = { schema: "mono-agent.process-incarnation.v1", bootSessionId: "darwin:1700000000:0", processStartId: "posix-lstart:Mon Jan 5 13:34:56 2026" } as const;
@@ -201,5 +206,52 @@ describe("web-control lease sidecar", () => {
     await stop(owner);
     await coordinator.acquire({ kind: "fetch", key: "third", deadlineMs: Date.now() + 60_000 } as Parameters<typeof coordinator.acquire>[0]);
     expect(await active()).toBe(0);
+  });
+});
+
+describe("review regressions", () => {
+  it("a rejected web-control owner capture is retried by the same coordinator", async () => {
+    let failures = 1;
+    identity.override = (schema) => {
+      if (failures > 0) { failures -= 1; throw new Error("Fictional probe timeout"); }
+      return schema === "mono-agent.process-incarnation.v1" ? V1 : V2;
+    };
+    const directory = join(await temporary(), "web-control");
+    const coordinator = createHostWebRequestCoordinator({ directory });
+    const request = { kind: "fetch", key: "fictional", deadlineMs: Date.now() + 60_000 } as Parameters<typeof coordinator.acquire>[0];
+    await expect(coordinator.acquire(request)).rejects.toThrow("Fictional probe timeout");
+    await expect(coordinator.acquire(request)).resolves.toBeDefined();
+  });
+
+  it("an old exact-key reader rejects new Darwin ProcessJobs records, which new binaries persist and reopen", async () => {
+    const root = await temporary();
+    const state = join(root, "jobs");
+    const store = await openProcessJobStore(root, state);
+    const id = randomUUID();
+    const record: DurableProcessJobRecord = {
+      schemaVersion: 1, generation: randomUUID(), jobId: id, tool: "Exec", state: "queued", summary: "fictional", agentIncarnation: V2,
+      pid: null, pgid: null, sandboxSettingsPath: null, argvSummary: "exec", cwd: root, envKeys: [],
+      origin: { conversationId: "web:fictional", baseConversationId: "web:fictional", bucket: null, replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional", runId: "test", historyBoundary: "test", channel: "web" },
+      chainDepth: 0, maxRuntimeMs: 1000, maxOutputBytes: 1024, previewChars: 100,
+      admittedAt: "2026-01-01T00:00:00.000Z", queueDeadlineAt: "2026-01-01T00:01:00.000Z",
+      startedAt: null, runtimeDeadlineAt: null, completedAt: null, exitCode: null, signal: null, durationMs: null,
+      stdoutBytes: 0, stderrBytes: 0, truncated: false, preview: "", stdoutRef: `artifacts/${id}/stdout.log`, stderrRef: `artifacts/${id}/stderr.log`,
+      cancelRequested: false, wake: { state: "pending", attempts: 0, deliveryKey: `process-job:${id}`, lastAttemptAt: null }, lastError: null,
+    };
+    await store.mutate((draft) => { draft.set(id, record); });
+    await store.ensureArtifacts(id);
+    const persisted = JSON.parse(await readFile(join(store.recordsDir, `${id}.json`), "utf8")) as Record<string, unknown>;
+    expect(persisted.agentIncarnation).toEqual(V2);
+    expect(baselineProcessJobIncarnationsAccepted(persisted)).toBe(false);
+    expect(baselineProcessJobIncarnationsAccepted({ ...persisted, agentIncarnation: V1 })).toBe(true);
+    await expect((await openProcessJobStore(root, state)).get(id)).resolves.toMatchObject({ agentIncarnation: V2 });
+  });
+
+  it("an old exact-key reader rejects new Darwin subagent ownership evidence that new binaries accept", () => {
+    const ownership: SubagentExecutionOwnership = { schemaVersion: 1, instanceIncarnation: randomUUID(), turnToken: randomUUID(),
+      owner: { pid: 123, incarnation: V2, settlement: "running" }, revoked: false, publication: { sequence: 1, state: "confirmed" }, seenCalls: [] };
+    expect(isSubagentExecutionOwnership(ownership)).toBe(true);
+    expect(baselineSubagentIncarnationAccepted(ownership.owner.incarnation)).toBe(false);
+    expect(baselineSubagentIncarnationAccepted(V1)).toBe(true);
   });
 });

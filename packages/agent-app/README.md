@@ -522,7 +522,10 @@ What older binaries see after an upgrade:
 
 - Lock records and web-control leases keep the old `incarnation` field and add
   a `stableIncarnation` field on macOS. Older binaries ignore the new field and
-  behave as before, so they never treat a new owner as ownerless.
+  behave as before, so they never treat a new owner as ownerless. They also
+  keep their existing clock and timezone weakness and can still reclaim a live
+  owner after a clock step or timezone change, so stop every older agent and
+  CLI before or while you upgrade on macOS.
 - Process-job state, subagent execution ownership and worker activity snapshots
   only carry the new evidence on macOS. Older binaries fail closed on them:
   they report activity as unknown and refuse to open the process-job store.

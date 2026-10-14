@@ -10,8 +10,10 @@
   Add `isProcessIncarnationLive()` and accept v1 and v2 in
   `processIncarnationFromJson()`. Lock records and web-control leases keep the
   old `incarnation` beside a new `stableIncarnation`, so older binaries never
-  treat new owners as ownerless; process-job state fails closed for them, so
-  stop upgraded agents before rolling back. Hold live owners recorded by older
+  treat new owners as ownerless; they keep their own clock and timezone
+  weakness, so stop older agents and CLIs while upgrading on macOS.
+  Process-job state fails closed for older binaries, so stop upgraded agents
+  before rolling back. Hold live owners recorded by older
   macOS binaries by PID, and name the lock path and PID when one blocks.
 
 - Keep Pi-native execution on Pi 1.x through the new `@mono-agent/harness`, with

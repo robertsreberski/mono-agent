@@ -119,9 +119,21 @@ export async function isProcessIncarnationLive(
   try {
     actual = await readProcessIncarnation(pid);
   } catch {
-    return processExists(pid);
+    return stillPresent(pid);
   }
-  return actual !== undefined && processIncarnationsEqual(actual, expected);
+  // A reader can report absence from evidence other than ESRCH (Linux procfs
+  // ENOENT); only a fresh ESRCH proves the owner gone.
+  if (actual === undefined) return stillPresent(pid);
+  return processIncarnationsEqual(actual, expected);
+}
+
+/** False only on ESRCH; EPERM or an unexpected kill error keeps the owner. */
+function stillPresent(pid: number): boolean {
+  try {
+    return processExists(pid);
+  } catch {
+    return true;
+  }
 }
 
 export function processIncarnationsEqual(
@@ -379,10 +391,5 @@ async function darwinBootSessionUuid(): Promise<string> {
 }
 
 function stableExecFileText(executable: string, args: readonly string[]): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    execFile(executable, [...args], {
-      encoding: "utf8", timeout: PROBE_TIMEOUT_MS, killSignal: "SIGKILL",
-      env: { ...posixEnvironment(), TZ: "UTC" },
-    }, (error, stdout) => { if (error !== null) reject(error); else resolvePromise(stdout); });
-  });
+  return execFileText(executable, args, { ...posixEnvironment(), TZ: "UTC" }, true);
 }
