@@ -9,6 +9,10 @@
   stuck this way. Late results without proven context still require recovery,
   and no tool is ever re-run.
 
+- Fix concurrent durable A2A record reads during acceptance and expiry
+  compaction. Keep active dispatches in doubt and expired keys permanently
+  bound without rejecting safe atomic replacements as unsafe state.
+
 - Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
   `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
   `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,

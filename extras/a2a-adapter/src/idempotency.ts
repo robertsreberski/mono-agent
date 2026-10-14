@@ -132,6 +132,10 @@ interface FileIdempotencyStoreHooks {
   readonly beforeAdmissionPublish?: () => Promise<void>;
   /** Deterministic test seam after publication but before the staging link is removed. */
   readonly afterAdmissionPublish?: () => Promise<void>;
+  /** Deterministic test seam after scanning the admission staging link. */
+  readonly afterRecordLinkScan?: () => Promise<void>;
+  /** Deterministic test seam after reading bytes but before final inode validation. */
+  readonly afterRecordRead?: () => Promise<void>;
   /** Deterministic test seam after opening a canonical record but before pathname revalidation. */
   readonly afterRecordOpen?: (input: { readonly keyHash: string; readonly attempt: number }) => Promise<void>;
 }
@@ -1862,7 +1866,11 @@ async function secureReadPublishedRecord(
         // The publisher may unlink its staging name while the directory is
         // scanned. Re-read the opened inode before deciding whether its second
         // link is the one expected from atomic publication.
+        await hooks.afterRecordLinkScan?.();
         details = await handle.stat();
+        // Replacement can unlink this inode during the scan. Classify the
+        // pathname change before rejecting its now-zero link count.
+        await assertCurrentRecordPath(path, details);
         assertSafeOpenedRecord(details, uid);
         if (details.nlink !== 1 && (details.nlink !== 2 || matchingTemporaryLinks !== 1)) {
           throw new Error("record identity or permissions are unsafe");
@@ -1871,7 +1879,12 @@ async function secureReadPublishedRecord(
       }
       await assertCurrentRecordPath(path, details);
       const raw = await readFile(handle);
+      await hooks.afterRecordRead?.();
       const finalDetails = await handle.stat();
+      // A concurrent acceptance save or expiry compaction may have replaced
+      // the canonical name after the read. Reopen through the existing bounded
+      // path-change loop, never accept the retired inode or relax link checks.
+      await assertCurrentRecordPath(path, finalDetails);
       assertSafeOpenedRecord(finalDetails, uid);
       if (
         finalDetails.dev !== details.dev
@@ -1881,7 +1894,6 @@ async function secureReadPublishedRecord(
       ) {
         throw new Error("record identity or permissions are unsafe");
       }
-      await assertCurrentRecordPath(path, finalDetails);
       return raw;
     } catch (error) {
       if (!(error instanceof RecordPathChangedError)) {
