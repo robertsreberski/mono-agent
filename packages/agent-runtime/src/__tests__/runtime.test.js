@@ -1,13 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
-const resolveRuntimeBridgeMock = vi.fn();
+const adapterLoadMock = vi.fn();
+const assertEngineTurnModelRefMock = vi.fn();
 
+vi.mock("../ai/providers/engine-turn/model-ref.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
+});
+
+vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
+  adapterLoadMock();
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    engineTurnAdapter: { id: "stub", execute: (...args) => executeMock(...args) },
+  };
+});
+
+const resolverMock = vi.fn(() => { throw new Error("Runtime must not dispatch through a resolver"); });
 vi.mock("../ai/runtime/registry.js", () => ({
-  resolveRuntimeBridge: (...args) => resolveRuntimeBridgeMock(...args),
+  resolveEngineTurnAdapter: (...args) => resolverMock(...args),
+  resolveRuntimeBridge: (...args) => resolverMock(...args),
 }));
 
 const { createRuntime } = await import("../runtime.js");
+const adapterLoadsAtRuntimeImport = adapterLoadMock.mock.calls.length;
 
 function modelRef(provider, model) {
   return { provider, model, reference: `${provider}:${model}` };
@@ -15,12 +33,20 @@ function modelRef(provider, model) {
 
 beforeEach(() => {
   executeMock.mockReset();
-  resolveRuntimeBridgeMock.mockReset();
-  resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
+  resolverMock.mockClear();
+  assertEngineTurnModelRefMock.mockReset();
 });
 
 
 describe("createRuntime", () => {
+  it("rejects malformed references without importing the engine adapter", async () => {
+    await expect(createRuntime().run("Fictional rules", { model: {} })).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+    expect(adapterLoadMock).not.toHaveBeenCalled();
+  });
+
+  it("does not eagerly import the engine adapter", () => {
+    expect(adapterLoadsAtRuntimeImport).toBe(0);
+  });
   it("exposes run() and configureTools() and threads a per-instance tool context to bridge.execute", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({
@@ -72,7 +98,7 @@ describe("createRuntime", () => {
     const runtime = createRuntime();
     await expect(runtime.run("sys", { model: modelRef("faux", "x"), settings: {} }))
       .rejects.toThrow("runOptions.settings was removed");
-    expect(resolveRuntimeBridgeMock).not.toHaveBeenCalled();
+    expect(assertEngineTurnModelRefMock).not.toHaveBeenCalled();
   });
 
   it("run() throws without a model", async () => {
@@ -80,19 +106,21 @@ describe("createRuntime", () => {
     await expect(runtime.run("sys", {})).rejects.toThrow(/requires options.model/);
   });
 
-  it("run() resolves the bridge with the supplied model", async () => {
+  it("run() dispatches directly with the supplied model, bypassing both resolvers", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
     const model = modelRef("anthropic", "claude-sonnet-4-6");
     await runtime.run("sys", { model, liveInput: false });
-    expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(model);
+    expect(assertEngineTurnModelRefMock).toHaveBeenCalledWith(model);
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(resolverMock).not.toHaveBeenCalled();
   });
 
   it("run() defaults liveInput to false when omitted", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
-    expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(
+    expect(assertEngineTurnModelRefMock).toHaveBeenCalledWith(
       modelRef("anthropic", "x"),
     );
   });
@@ -516,4 +544,17 @@ describe("createRuntime subagent seam", () => {
     expect(executeMock.mock.calls[0][1]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
   });
 });
+});
+
+it.each([
+  {}, { provider: "", model: "x", reference: ":x" },
+  { provider: "faux", model: "", reference: "faux:" },
+  { provider: 1, model: "x", reference: "1:x" },
+  { provider: "faux", model: 1, reference: "faux:1" },
+  { provider: "faux", model: "x", reference: "different:x" },
+])("direct dispatch retains malformed-reference rejection (%j)", async (model) => {
+  await expect(createRuntime().run("Fictional rules", { model }))
+    .rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+  expect(executeMock).not.toHaveBeenCalled();
+  expect(resolverMock).not.toHaveBeenCalled();
 });

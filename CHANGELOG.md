@@ -2,6 +2,366 @@
 
 ## Unreleased
 
+- Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
+  `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
+  `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,
+  identity-preserving aliases without runtime warnings; dispatch stays lazy
+  and retains model-reference validation.
+
+- Keep live macOS owners of locks, leases, process jobs and subagents after a
+  calendar-clock step or a timezone change. Record the boot-session UUID and
+  UTC process start on macOS, bound its probes to five seconds, and reclaim
+  only on `ESRCH` or proven PID reuse; signals still need an exact match.
+  Keep writing unchanged v1 records on Linux, Windows and other platforms.
+  Add `isProcessIncarnationLive()` and accept v1 and v2 in
+  `processIncarnationFromJson()`. Lock records and web-control leases keep the
+  old `incarnation` beside a new `stableIncarnation`, so older binaries never
+  treat new owners as ownerless; they keep their own clock and timezone
+  weakness, so stop older agents and CLIs while upgrading on macOS.
+  Process-job state fails closed for older binaries, so stop upgraded agents
+  before rolling back. Hold live owners recorded by older
+  macOS binaries by PID, and name the lock path and PID when one blocks.
+
+- Publish the new execution and storage package as `@mono-agent/engine`, with
+  three focused entrypoints: root, `sessions.js` and `owned-fs.js`. Published
+  runtime storage capabilities and journal formats stay compatible.
+
+- Remove the unused direct Pi Agent Core dependency from
+  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/engine`.
+
+- Keep Pi-native execution on Pi 1.x through the new `@mono-agent/engine`, with
+  versioned native journals and distinct logical turns/execution operations.
+  Import idle legacy Pi main-branch context; reopen still aborts old operations
+  and model-change retirement remains destructive outside durable model
+  switching. Support large native records and journals with kernel-backed writer
+  exclusion and safe retired-lock cleanup. Resume interrupted idle legacy
+  imports without deleting published context when source archival fails. Adopt
+  owned legacy 0755 roots safely, retain only selected v3 parent context, and
+  retire matching archived evidence. Reclaim crashed native creations and warn
+  once when legacy root access is tightened; fail closed rather than salvage
+  stale legacy evidence behind unreadable native state. Treat transiently
+  missing journals as absence and writer-owned creation stages as busy. Refuse
+  unreadable native catalogues without retiring or cold-replaying a turn. Freeze
+  storage formats and deterministic journal identities: the first durable turn
+  writes `mono-v2` journals, `.pending-turns` and the new canonical history
+  format. Older binaries must not run against that root; rollback requires
+  restoring a backup.
+
+- Add protected host and persistent-subagent native turn descriptors; bind
+  journal ownership append-only for opted-in coordinated native recovery. Fsync
+  native admission/outcome boundaries before effects, fail terminally on
+  poisoned storage, project idempotent interruption evidence without tool
+  replay, and replay exact durable compaction checkpoints without new summary
+  calls. Exclude aborted draft calls from provider repair pairs, account
+  interruptions per operation and suspended work without resuming it, preserve
+  validation/host contract classification, and cache repair projection for long
+  sessions. Preserve every file-fsync effect barrier while avoiding repeated
+  directory fsyncs, immutable-envelope reads and unchanged-journal scans;
+  invalidate cached identity/state on mutations and roll resumed provider
+  suspensions back as unreceipted failures.
+
+- Add explicitly opted-in native turn bindings, minimal final-result seals and
+  indexed evidence matching for host reconciliation, without changing legacy
+  host history policy. Share import/reopen interruption accounting so suspended
+  and last-closed operations retain accurate evidence without replay. Preserve
+  opted-in failed/cancelled/limited native turns without destructive rollback;
+  expose storage-only reconciliation through owned runtime wrappers and require
+  protected host acknowledgement before routed stateless detachment. Canonical
+  dirty-turn adoption uses the owner-held host transaction for coordinated
+  native recovery; custom runtime owners opt in through an explicit
+  reconciliation capability. Private per-run memory completion runtimes expose
+  neither recovery seam.
+
+- Fix public `createConfiguredAgentRuntime` to forward optional legacy
+  `recoverSession` under its ownership lease, enabling existing receipt recovery
+  for embedders.
+
+- Add owner-held, storage-only recovery for coordinated native host turns and
+  manual compaction. Durably admit canonical inputs before dispatch/steering,
+  preserve cancellation and detached-attempt claims, and commit whole matched
+  native turns once through bounded canonical v3 receipts. Read v1/v2 histories
+  without migrating on load. Report interrupted work and wait for a new message;
+  recovery never calls a model, tool, summary or continuation. Bound and drain
+  inactive pending owners without deleting unresolved evidence. Keep private
+  wake bodies, delivery keys and memory-only owner text out of pending inputs;
+  reset and authorized retention clear matching generations. Older binaries must
+  not share upgraded roots; rollback restores a pre-upgrade backup. Keep host
+  enrichment, silent-completion annotations and capture times on live commits.
+  Require explicit runtime ownership before enabling reconciliation, preserve
+  pre-dispatch failure categories and rotate overridden native success to a cold
+  epoch. Publish pending inputs atomically and let poisoned owners remain
+  protected without blocking unrelated draining or reset. Clear torn pending
+  input at known logical reset coordinates and report the count of
+  unattributable remnants instead of silently claiming complete cleanup. Report
+  damaged pending recovery data with repair guidance, not another-send advice,
+  and reject invalid native mutation IDs asynchronously. Store durable markers
+  for interrupted `AskUser` questions, not quoted notice text; the restart Web
+  wake omits `AskUser` and includes interrupted-question and unapplied-message
+  notes. Answer interrupted questions in a new message, never by reviving or
+  replaying the tool. Report admitted messages not confirmed as applied once on
+  recovery; do not replay them, and resend them if still needed.
+
+- Add owner-held canonical native history, strict managed-root authority and
+  ready-only native model-switch publication with measured retained-evidence
+  quotas. Keep pending switches host-only. Publish exact cold replacement epochs
+  without freezing rejected tails,
+  and make reset/retention cleanup restartable through native journals, handoffs
+  and crash storage. Keep unrelated owners progressing and reserve capacity
+  before mutation, including when native victims are busy. Keep configured
+  switching behind the Web-only opt-in; older writers must stay stopped and
+  rollback requires restoring consistent backups. Bootstrap drops vanished
+  pending entries, names damaged artifacts and preserves operational filesystem
+  errors and causes. After root bootstrap, switches can run alongside unrelated
+  active conversations and isolate unreadable sibling history. Settle durable
+  turns under small staging quotas. Admission checks only the current journal
+  header, independently of stored conversation count; aggregate history and
+  staging quotas are checked at commit and retention. Unowned legacy damage does
+  not block new durable conversations, and removed obsolete switch state is not
+  owner damage. Reject guarded projection data without journal host authority
+  and native replacements in deletion intents. Stop retention maintenance if
+  native cleanup cannot regain the root lock; retain failed deletion intents for
+  recovery and prune later free victims only while root ownership remains
+  intact. Isolate pre-publication cleanup to the committing owner and keep
+  foreign cleanup failures diagnostic. Replan around busy victims, keeping
+  markerless ready switches fenced without blocking authority issuance or
+  recovery. Keep daily rollover live at capacity by reusing the held logical
+  claim for older inactive days and preserving mixed-history LRU order; resume
+  interrupted same-owner daily deletion before reserving new history. Share
+  capacity footprints within each root transaction, avoid sibling-claim probes
+  within quotas, and refresh footprints after canonical changes or unlocked
+  native I/O. Finish already-started accepted native references during
+  owner-held recovery without initiating an unstarted switch. Preserve legacy
+  retirement-fence failures on unmarked roots. Ignore unrelated names in
+  pending-turn and model-switch folders; keep damaged entries charged and never
+  delete or evict them, refusing only their owner with `ERR_OWNED_FILE_DAMAGED`.
+  Keep damaged lifecycle intents charged and protected without refusing
+  unrelated conversations.
+
+- Require a host-authorized guarded native header before opt-in v3 writes.
+  Reject old native readers and deletion before torn-tail repair on guarded
+  journals; preserve record bytes, paths and standalone defaults. Canonicalize
+  authority bytes. Validate explicit C/D deletion dispositions on all journals
+  and prevent memory metadata from forging or demoting header authority. Fail
+  older catalogue listing and legacy import closed for roots containing a
+  guarded journal. Require explicit host C/D authority for guarded deletion,
+  separate cancellation context from authority in deletion overloads, and
+  forward guarded retirement options. Keep default session payloads unchanged;
+  require stopped older binaries and backup restoration for rollback.
+
+- Add opt-in native evidence projection, structured handoff proposals, explicit
+  context budgets, no-tools summary production and preserving session
+  detachment. Keep default session payloads unchanged; native session state is
+  not reused across models. Require stopping older writers before opting into v3
+  writes.
+
+- Add opt-in native current-handle authority and inherited request projections,
+  preserving predecessor evidence through composed compaction and refusing
+  cached-handoff budget overruns without re-summarizing. Keep checkpoint
+  handoffs reusable across successive switches within the same frozen budget,
+  without carrying suffix evidence again after exact composed compaction. Pin
+  accepted handoff identity and the native root; summarize inherited prefixes
+  before retaining current context and keep inherited coverage through later
+  compactions without a projection. Reject malformed projection identities
+  before admission and uncoordinated terminal recovery before journal repair.
+  Let detached route resolvers select their own native roots. Existing
+  configured hosts remain unchanged unless opted in.
+
+- Add claim-only provider preparation leases that retain one conversation owner
+  through native switch storage and transfer it once to ready turn admission.
+  Keep preparation owned when reconciliation is unavailable, allowing validation
+  failures to be corrected before incoming admission. Existing configured
+  execution remains unchanged.
+
+- Add opt-in native dispatch preparation with resolved tool declarations and
+  single-use resource leases, without changing existing session paths. Keep
+  preparation inert and direct/routed preparation reusable after invalid
+  binding; normalize routed authentication failures and settle cleanup after
+  rejection. Prepared dispatches remain valid while their abort signal and owner
+  remain valid, requiring explicit unused-lease cleanup. Use ordinary provider
+  authentication on each actual call, including OAuth refresh and credential
+  persistence through the original shared store; do not pin accounts or record
+  account provenance. Refuse non-persisting refresh, preserve late-bound
+  OpenCode session attribution, reserve start time before admission and honor
+  routed start allowances and post-admission reserves. Keep evidence filesystem
+  failures generic and materialized chain capture bounded. Default runs are
+  unchanged.
+
+- Add reusable claim-and-permit-held host preparation, pinned no-tools
+  producers, complete read-only chain capture and persisted
+  frozen-budget/artifact access. Keep preparation inert and existing
+  configurations unchanged unless opted in.
+
+- Prepare bounded, ownership-checked model-switch payloads, immutable handoff
+  artifacts and durable summary-attempt admission without migrating managed
+  histories during preparation.
+
+- Account model-switch storage and durable capacity plans in managed-history
+  quotas under real conversation ownership. Protect pending switch evidence from
+  ordinary mutation/retention and report long conversation IDs as unsupported
+  switch storage without changing existing cold replay behavior. Validate
+  storage owners and pending checks transactionally; preserve switching owners
+  during logical reset and inactive fence cleanup. Avoid charging published
+  state, fence bytes or accepted artifact capacity twice, reconcile provisional
+  reservations, and report physical history bytes separately. Retain Windows
+  mode exemptions. Forward guarded retirement authority through chained
+  runtimes, fail closed when pinned switch storage disappears, and reclaim
+  superseded states after durable replacement. Reuse canonical snapshots and
+  durable cold reservations on retry; protect unreadable and same-owner
+  retention victims and replan after unlocked native I/O. Charge only enrolled
+  journals, preserve switched-away references and unknown header copies, verify
+  torn bytes under writer ownership, and normalize runtime/bridge session roots.
+
+- Add durable prepared model-switch producer orchestration with explicit-message
+  billing generations, pending-message accounting and ready-only incoming
+  admission under the Web-only opt-in. Preflight inherited-prefix compaction and
+  capacity before intent publication. Preserve ordinary cancellation continuity
+  after preparation selects fallback; skip unavailable outgoing producers
+  without billing and distinguish native capture capacity and retryable root
+  contention from generic failures. Recover after canonical publication and
+  retain committed results across producer cleanup failures; refuse
+  later-message budget overflow before further summary billing. Preserve
+  consumed-message guards while abandoned switch billing states remain retained;
+  later completed switches collect them, and consumed redeliveries are rejected
+  before advancing another message's billing state.
+
+- Store opt-in Web model-switch conversations in a single-journal format: one
+  current native journal, one durable handoff and the latest switch receipt,
+  with no epoch chain. Create the target journal, publish the binding, handoff
+  and receipt, then retire the outgoing journal; consecutive same-model turns
+  keep the current journal and forget only the advisory warm mapping until owned
+  admission. Every model change, including returns, capacity and lost-journal
+  cases, needs a structured handoff: outgoing summary, then the previously
+  validated summary plus later history, then incoming summary. Later history
+  alone is not a handoff, and native session state is never reused across
+  models. Stream switch evidence from the journal, retaining work since the last
+  compaction checkpoint and genuinely unresolved work; journal size alone does
+  not refuse a switch, and outcome-unknown tool calls always stay in the ledger.
+  Let an explicit source-model Web message cancel a pending switch storage-only,
+  without a summary call; retrying a pending switch with new messages has no
+  lifetime message-count limit. Refuse a third model as `handoff_pending`.
+  Recover deleted, moved or partially restored current journals through the
+  durable cold path, answer once from conversation history, warn
+  `degraded_native_context` once and continue warm. Losing the whole session
+  folder recovers on the next message; switches with lost journals use the usual
+  summary handoff. Preserve unreadable journals and refuse them as
+  `native_journal_unreadable`, never as missing. Read pending switches
+  containing earlier source account metadata.
+
+- Add OFF-default Web-only durable model switching through
+  `runtime.session.modelSwitch.enabled`, requiring explicit continuous sessions
+  and durable Pi storage. Persisted Web message IDs bound summary billing;
+  pending messages never replay, and wrappers preserve identities across
+  redelivery and forward owned preparation. Guarded model changes without
+  persisted identities fail closed, and delivery identities require the Web
+  source. Every durable-history user upgrades one way: the first durable turn
+  rewrites canonical history as v3, with or without native Pi storage or
+  switching. Stop all writers and back up canonical history and any native root
+  first; rollback requires restoring the consistent backup. Keep no-ID turns on
+  never-upgraded conversations on the original cold-replay path. Native no-ID
+  wakes inherit the current durable model, not a different base or sticky
+  selection, including declared no-ID requests and wakes after refused switches;
+  drop sticky effort and context overrides, retaining the thread's 1M choice
+  only where the current model supports it. Existing native conversations retain
+  their durable model after `runtime.model` changes until a persisted Web
+  message selects the new model. Keep saved Web wake routes when switching is
+  off or history is ordinary. Persisted-ID Web turns from the first message and
+  no-ID native wakes stay primary-only: a failure waits for the next message
+  rather than starting a backup. Non-Web and no-ID turns without native state
+  keep fallbacks; ordinary billing caps and recovery are unchanged. Same-model
+  wakes use the current journal without switch billing; refuse unsupported
+  native dispatch fallbacks. Cancel conversation-gate waiters without root-wide
+  blocking or nested self-waits; detached same-conversation work may receive
+  retryable `native_switch_busy`. Bootstrap recovers torn root-marker proposals
+  and unreadable sibling history, settles interrupted not-yet-imported legacy Pi
+  turns, and reports another owner's damaged recovery data as non-retryable
+  `native_switch_damaged` without a drain. Report unreadable pending journals
+  and completed handoffs clearly; preserve detached-load cancellation and
+  distinguish own-journal damage from absence without scanning unrelated
+  journals. Show plain-language `degraded_native_context` warnings in Web
+  activity only on the recovering turn. Include an operator guide with
+  enablement, restore-backup rollback, A1–A4 observable acceptance evidence,
+  warning/refusal semantics and limits. Preserve native evidence during
+  manual-compaction stale-map cleanup; only owned current-epoch, reset or
+  retention operations physically delete it. IDs over 512 characters bypass
+  switch preparation, including with the option OFF, without changing the native
+  host-contract rejection.
+
+- Reclaim history claims and active markers when their recorded process
+  stable v2 incarnation no longer owns a reused PID. Use boot UUIDs and UTC
+  process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS
+  probes to five seconds. Keep v1, unknown, unavailable and other-platform
+  identity PID-only. Cache per owner/wait and preserve live ownership; torn
+  markers remain PID-only.
+  Stop every older writer before upgrading; legacy coordination files remain
+  readable, but pre-upgrade binaries cannot parse the new marker contents.
+
+- Refuse explicit reset of damaged canonical, coordination, pending recovery,
+  native-journal or billing evidence with non-retryable, file-naming repair
+  guidance. Ignore recovery generations removed during unlocked preflight, and
+  preserve damaged rollover members identified by their healthy logical fences.
+  Preserve the evidence and keep damaged billing redelivery blocked
+  before paid work. Document stopped-writer repair and its double-billing risk;
+  reset does not attempt online repair or reconstruct lost native enrollment.
+
+- Fix admitted cancellation accounting when a history coordinator aborts
+  synchronously, while leaving custom-store cancellations before provider start
+  without an account. Release exclusive history ownership when posted-reply
+  delivery loading fails, preserving the original failure.
+
+- Fix cancellation of contended history admission, exclusive turns and manual
+  compaction without admitting the waiting input or calling a provider. Include
+  binding/attachment preflight cancellation and app history wrappers; preserve
+  cancellation accounts for already-admitted turns. Preserve predecessor
+  ordering, release raced ownership and keep started publication, reset and
+  drain cleanup non-cancellable. Give incomplete writes stable retryable busy
+  errors and preserve permission-denied temp cleanup errors.
+
+- Fix isolation of damaged conversation locks, active markers and dirty fences,
+  keeping them charged and protected without refusing unrelated conversations. Stop creating redundant conversation-shard locks
+  while preserving older writers' files. Reclaim owned torn markers and fence
+  temps after writer death, preserve operational filesystem errors, and name
+  damaged quota blockers. Document stopped-writer recovery for shared
+  coordination.
+
+- Fix duplicate file-operation lists when reusing a split-turn compaction
+  summary.
+
+- Fix empty Pi request-retry budgets to retain the default retries.
+
+- Fix `piMaxRetries: 0` to disable both automatic request-retry layers, while
+  preserving the default request retry budget.
+
+- Fix loss of the previous compaction summary when splitting the first retained
+  turn.
+
+- Fix one stray file (for example `.DS_Store`) or one damaged file in the Pi
+  session folder breaking every conversation. Unrelated entries are ignored and
+  never deleted; a damaged file of unknown ownership blocks only a conversation
+  whose own session file is missing, with `native_journal_unreadable`.
+
+- Fix one stray or damaged file in the conversation history or legacy Pi session
+  folder stopping every conversation. Ignore unrelated names and preserve
+  damaged entries (empty, malformed, wrong permissions or hard-linked), charging
+  them against storage limits and refusing only their own conversation.
+  Cancelling a native turn also stops its wait for a session lock held by
+  another process. Set aside truncated conversation history unchanged as
+  `<file>.damaged-<n>` instead of overwriting it, with a
+  `conversation_history_set_aside` warning.
+
+- Fix Pi dispatch evidence to stay monotonic for tool admission and live input,
+  including prepared turns, early failures and thrown cleanup errors. Stop
+  ordinary retries and backups once Pi yields a live input, even if it is later
+  removed unconsumed; only never-yielded input transfers. Count a tool reaching
+  admission conservatively even when a hook blocks its execution.
+
+- Fix loss of earlier conversation and bounded tool history in ordinary
+  warm-turn retries and backups. Stop failover with
+  `detached_context_unavailable` if canonical history cannot be loaded, and keep
+  detached identities private even when side effects settle during detachment.
+  Configuring a fallback consents to history sharing; prepared native dispatch
+  stays primary-only. Do not announce failover when cancellation settles during
+  detached history loading.
+
 - Fix managed runtime reuse for flat npm installs with shared hoisted
   dependencies, so subsequent starts use the warm verification path.
 
@@ -46,55 +406,54 @@
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
 
-- Keep private memory judging bounded with concurrent, deduplicated calls,
-  transient-only retries and numeric judging progress. Refuse unsafe Pi auth
-  files and writable/foreign auth parents, and preserve budget-exhaustion codes
-  when recall wrappers swallow reservation failures.
-
-- Fix private memory judges to use an explicitly selected Pi auth store and
-  owner-private workspace; check hosted credential availability before snapshot
-  indexing and report distinct code-only setup, auth, runtime and output errors.
-
-- Keep private BuJo retrieval replay bounded by reusing conservative UTC-day
-  snapshots and volatile shared embedding results; meter only real embedding
-  calls, count cache hits separately, and expose content-free private progress
-  with a specific budget-exhaustion code. Preserve cold replay service state
-  across store rebuilds and leave present diagnostics/capture chronology intact.
-
-- Fix intention-policy boundary validation and
-  deliberate fact-sheet currentness; preserve supported ends when omitted and
-  deny recency to invalid recording instants.
+- Fix provider readiness probes accepting premature or context-limited output
+  as successful.
 
 - Add independent default-off BuJo intention capture, conservative automatic
-  expiry, and bounded deliberate recency flags. Keep supported state changes
-  as superseded history; exclude all dated and completed/abandoned notes from
+  expiry and bounded deliberate recency flags. Keep supported state changes as
+  superseded history; exclude all dated and completed/abandoned notes from
   automatic context after reviewed enablement, without a schema migration.
+  Validate intention-policy boundaries, preserve supported ends when omitted,
+  keep deliberate fact sheets current and deny recency to invalid recording
+  instants.
 
 - Add explicit BuJo `memory curate prepare --semantic-review` for reviewed
   legacy note/event and label retyping with backup/restore, without invented
   attribution or dates.
 
-- Add an opt-in private BuJo evaluation mode with external owner-only inputs
-  and disposable replay stores, blinded label-only review, aggregate paired
-  confidence intervals, and code-only failures; keep fictional benchmarks
+- Add an opt-in private BuJo evaluation mode with external owner-only inputs and
+  disposable replay stores, blinded label-only review, aggregate paired
+  confidence intervals and code-only failures. Keep fictional benchmarks
   unchanged and refuse private evaluation in CI. Refuse SDK logging controls,
-  embedding redirects and replaced/untrusted ancestors, including ACL grants
-  or unknown ACL metadata across the full canonical ancestry; retain harmless
+  embedding redirects and replaced/untrusted ancestors, including ACL grants or
+  unknown ACL metadata across the full canonical ancestry; retain harmless
   verified deny-only ACLs on higher ancestors and report daily yields as point
-  estimates without confidence intervals.
+  estimates without confidence intervals. Use an explicitly selected Pi auth
+  store and owner-private workspace for private judges; check hosted credential
+  availability before snapshot indexing and report distinct code-only setup,
+  auth, runtime and output errors. Bound judging with concurrent, deduplicated
+  calls, transient-only retries and numeric progress. Refuse unsafe Pi auth
+  files and writable/foreign auth parents, preserving budget-exhaustion codes
+  when recall wrappers swallow reservation failures. Bound retrieval replay with
+  conservative UTC-day snapshots and volatile shared embedding results; meter
+  only real embedding calls, count cache hits separately and expose content-free
+  private progress with a specific budget-exhaustion code. Preserve cold replay
+  service state across rebuilds and leave present diagnostics/capture chronology
+  intact.
 
-- Keep graph-expanded recall fresh after memory writes, even when a pre-write
-  search finishes afterward, without discarding pending invocation receipts.
+- Fix stale graph-expanded recall after memory writes, including when a
+  pre-write search finishes afterward, without discarding pending invocation
+  receipts.
 
 - Add default-off BuJo `memory.profile.enabled` for an embedding-independent,
-  600-code-point owner profile. Suppress unchanged
-  automatic context on retained sessions using invocation receipts; add the
-  read-only `memory profile show` inspection view.
+  600-code-point owner profile. Suppress unchanged automatic context on retained
+  sessions using invocation receipts across isolated triggers, continuations and
+  Remember writes; honor instant-aware profile expiry. Add the read-only
+  `memory profile show` inspection view. Finish shutdown even when a
+  recall-context reset hook fails.
+
 - Keep memory recall and consolidation failure warnings content-free with
   stable codes instead of exception text, including when memory opt-ins are off.
-- Fix owner recall receipts across isolated triggers, continuations and
-  Remember writes; honor instant-aware profile expiry and finish shutdown when
-  a memory reset hook fails.
 
 - Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
   `SearchConversations` message-date and role filters, bounded dated evidence
@@ -128,11 +487,10 @@
 - Fix the web model picker to fit the available screen space, with denser
   provider and thinking controls and always-visible context and close actions.
 
-- Update Pi to 0.99.2: Anthropic requests no longer fail on strict tool
-  schemas that use keywords such as `minimum`/`maximum`, and providers back off
-  instead of retrying immediately on an unparseable `Retry-After` date.
-  Anthropic workload identity federation settings are reported as ambient
-  evidence, not a verified credential.
+- Keep Anthropic requests working with strict tool schemas using keywords such
+  as `minimum`/`maximum`, and make providers back off rather than retry
+  immediately on an unparseable `Retry-After` date. Report Anthropic workload
+  identity federation settings as ambient evidence, not a verified credential.
 
 - Let authenticated console restarts validate and apply edited startup inputs
   on supervised workers, keeping the old worker online on invalid inputs or

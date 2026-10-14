@@ -92,12 +92,53 @@ be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.providerAttributionSessionId` is a host-owned continuity key
 for provider attribution, not permission to resume provider transcript state.
+`MonoRuntimeLike.sessionTurnReconciliation: "v1"` explicitly certifies native
+evidence ownership; a `reconcileSessionTurn` method alone does not. Custom
+`resolveAttempt` routers are uncertified by default. Hosts whose resolver only
+changes endpoint options and preserves the native owner may explicitly set
+`CreateMonoRuntimeOptions.sessionTurnReconciliation: "v1"`. The configured host
+sets this assertion for its native options-only router. A different custom
+session owner must implement both the capability and the matching method.
+
+The optional `prepareNativeDispatch(systemPrompt, options)` method exposes
+native preparation without an extra capability marker. Unsupported backends
+refuse the request. The facade applies the same sandbox/process-controller
+protection as ordinary runs and forwards the exact single-use lease.
+`RuntimeNativeDispatchSnapshot` carries frozen actual tool/MCP/StructuredOutput
+declarations, augmented instructions, input, model limits and nonsecret selected
+provider/API/model metadata (account unknown). `RuntimeNativeDispatchBinding` allows only late session and
+protected native-authority/projection decisions, not a root/model/input rewrite.
+Authentication uses ordinary provider resolution on each actual request,
+including OAuth refresh; no credentials are retained in the prepared lease.
+No native session opens during preparation. Always close the lease, and retain
+the host concurrency permit through its settlement; abort via the original
+signal. Prepared routed execution is one primary attempt with no automatic
+router-level replay or backup (native transport retry policy is unchanged).
+`assertReady()` checks lifetime without consuming the lease before incoming P2.
+The typed lease optionally forwards pure `checkHandoffSummary` and one ordinary-auth
+`produceHandoffSummary` request/result; producers have no tools, router retry,
+provider/auth override or native persistence. Host durable admission owns billing.
+`createManagedNativeJournalStorage` additionally returns typed complete read-only
+evidence capture and pure budget/handoff helpers. The validated
+view is immutable and identity-bound: cloned raw JSON is not a validated view.
+This additive API does not enable configured host switching.
+
 `MonoRuntimeLike.recoverSession(receipt, { appliedInputIds })` forwards optional
 host-coordinated durable terminal recovery. `RuntimeRunOptions.sessionRecovery`
 opts in with run id and canonical revision; `RuntimeResult.providerSessionRecovery`
 proves the exact session/model/tip after successful native close. Recovery appends
 nothing and returns false when the tail cannot be proven safe. It does not change
 the durable history record format.
+
+`RuntimeRunOptions.sessionTurn` is an additive, protected host-owned descriptor
+with `kind` (`host` or `instance`), `ownerKey`, `historyBucket` (physical history
+bucket for hosts, null for instances), `turnId`, `handleId` and `baseRevision`
+(number or null). It binds native ownership append-only without changing journal
+identity or rewriting the unbound header. It does **not** enable terminal recovery
+or host crash adoption. The handle must match the actual primary session; resolver
+plugins cannot override it, and every retry/backup drops it. Hosts use their run
+ID; persistent subagents use their turn token. Manual execution is explicitly
+synthetic. Uncoordinated callers may omit it; their ownership remains unbound.
 
 The agent harness supplies the active provider-session epoch automatically for
 continuous conversations and protects it from route-attempt overrides. Direct
@@ -123,6 +164,79 @@ The facade re-exports `CONTEXT_1M_TOKENS` and `supportsPiContext1M()`.
 `RuntimeRunOptions.context1MModels` is the optional normalized per-reference
 boolean policy; omitted entries are off. Hosts should derive it from validated
 model declarations, not use it to override custom-provider metadata.
+
+Protected `sessionTurn.reconciliation` opt-in preserves native terminal evidence
+separately from legacy `sessionRecovery` receipts. `reconcileSessionTurn(request)`
+acquires native ownership without waiting on a live writer, validates the exact
+owner/bucket/handle/revision/model/fence/purpose and input digests before repair,
+and returns matched ordered operations, an absent result, or a mismatch. Busy
+ownership, corruption and I/O errors reject rather than becoming provider failures.
+No model, tool or deferred continuation runs during reconciliation. Only a sealed
+completed execution may return a minimal `commitCandidate`; compaction cannot
+produce an execution-history answer. This capability does not enable canonical
+host adoption or change history/fence formats by itself.
+
+For execution reconciliation, `expectedInputs` must contain exactly one
+`initial` entry for the descriptor's original input, even when it was never
+consumed. Include **every native live admission** for this turn: queued,
+cancelled (including end-of-turn cancellation), and consumed. Omitting a
+cancelled/unconsumed native admission is an `admitted_inputs` mismatch. A host
+may also list durably fenced offers not yet admitted by native storage; those
+extra expectations do not prove native consumption, dispatch or completion.
+Digests cover the exact serialized native content: original prompt content and,
+for live input, `formatLiveInputGuidance(body, prompts)` content, not the raw
+follow-up body. Expected placement for the original input remains `initial`
+even when its first durable consumption is in a native `replay` operation;
+matching still requires the bound original ID and exact content digest. Live
+inputs must match `live` placement exactly. `endTurn` durably cancels remaining
+unconsumed native offers before sealing; none carries into the next turn.
+
+Hosts preparing durable admissions can use `digestNativeTurnInput` and
+`formatLiveInputGuidance` from this facade. They delegate to the same native
+codec/formatter used by Pi. Hash actual decorated original content; live input
+hashes the formatted guidance (including prompt overrides), not raw body.
+Canonical payload builders must keep runtime-only decoration out of persisted
+input text; digests do not grant native execution or canonical adoption.
+
+Routed opted-in requests must provide the protected awaited
+`onSessionTurnDetached` host hook before any stateless retry/backup. It receives
+primary attempt evidence; failure to acknowledge is terminal. Neither that hook
+nor the turn descriptor is forwarded to detached attempts; private attempt
+resolvers cannot replace them. Backup success never certifies primary success.
+
+`RuntimeRunOptions.nativeSessionAuthority` and `nativeSessionProjection` are
+protected host-only opt-ins forwarded unchanged by the facade. The authority's
+`sessionsRoot` pins the dedicated native root; the resolver cannot replace
+`piSessionsRoot` on the session-eligible attempt while authority is present.
+Detached retry/backup resolvers may choose their own roots. `assertCurrent`
+receives the actual normalized path (not an inode attestation) and must prove
+the held owner's ready binding/artifact and creation eligibility; an artifact reference alone grants no execution. Projection
+content stays in host artifacts, not the current native journal.
+Hosts must preserve accepted message/coverage object key order on reconstruction:
+the binding's digest is JSON-byte based, not semantic canonicalization.
+Its optional frozen dispatch budget refuses overruns without cached-handoff
+repair. Private route resolution cannot replace either field; stateless retries
+and backups strip both. Configured hosts supply them only on the validated
+OFF-default Web model-switch path.
+
+The separately exported `createManagedNativeJournalStorage` provides a typed
+administrative storage capability, not a `MonoRuntimeLike` dispatch capability or
+model-facing run option. Its caller must hold host root/conversation authority,
+validate accepted content and coordinate canonical publication/deletion. It
+forwards only journal storage operations. The configured app creates it only
+with the OFF-default Web model-switch opt-in; runtime capability presence alone
+does not enable switching.
+`createEpoch` publishes the deterministic guarded journal for a switch target or
+same-model cold rotation; it never changes a conversation's model by itself.
+Reference-checked C and D native deletion are restartable storage primitives,
+not host reset/retention transactions. Callers must durably retain the exact
+epoch plan, receipt or deletion intent until all physical files and publication
+barriers have completed. Preserving disposal (P) does not grant deletion
+authority. Generic retirement without C/D host authority cannot remove a guarded
+host journal; rejection is not cleanup success.
+Stateless and subagent cleanup retain their isolated ownership boundaries.
+Native ownership IDs remain bounded to 512 characters; bypassing host switch
+preparation for longer IDs does not make the original native dispatch eligible.
 
 ## Architecture
 
@@ -241,6 +355,7 @@ MonoRuntimePricing
 MonoRuntimeRetryPolicy
 MonoRuntimeSandboxEngine
 MonoRuntimeSupportDescription
+NativeEvidenceCapacityError
 NormalizedMcpServer
 NormalizedMcpTransport
 OwnedForegroundProcessController
@@ -261,7 +376,15 @@ RuntimeAdapterError
 RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
+RuntimeDispatchProgress
 RuntimeEventLike
+RuntimeHandoffBudget
+RuntimeHandoffFit
+RuntimeHandoffOptions
+RuntimeHandoffProducerRequest
+RuntimeHandoffProducerResult
+RuntimeHandoffProposal
+RuntimeHandoffSummary
 RuntimeLiveInputCallbackDisposition
 RuntimeLiveInputEvidence
 RuntimeLiveInputMessage
@@ -271,9 +394,28 @@ RuntimeMcpAppHost
 RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
+RuntimeNativeDispatchBinding
+RuntimeNativeDispatchSnapshot
+RuntimeNativeEpochContext
+RuntimeNativeEvidenceView
+RuntimeNativeJournalAuthority
+RuntimeNativeJournalDeletion
+RuntimeNativeJournalDescriptor
+RuntimeNativeJournalRef
+RuntimeNativeJournalStorage
+RuntimeNativePreparationStorage
+RuntimeNativePreparedDispatch
+RuntimeNativeSessionAuthority
+RuntimeNativeSessionProjection
+RuntimePreparedHandoff
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
+RuntimeSessionTurnDescriptor
+RuntimeSessionTurnDetachedAttempt
+RuntimeSessionTurnReconciliationRequest
+RuntimeSessionTurnReconciliationResult
+RuntimeSessionTurnResultSeal
 RuntimeSubagentActivityEvent
 RuntimeSubagentActivityPhase
 RuntimeSubagentIdentity
@@ -314,6 +456,7 @@ SrtSettings
 assertParsedRuntimeModelReference
 bridgeOwnedForegroundProcesses
 bridgeProcessJobsController
+createManagedNativeJournalStorage
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
@@ -321,9 +464,11 @@ createSrtSandboxEngine
 describeMonoRuntimeSupport
 describePiBuiltinProvider
 describeSandboxEffectiveState
+digestNativeTurnInput
 discoverLocalProviderModels
 discoverLocalProviders
 failClosedSandboxPolicy
+formatLiveInputGuidance
 inspectCodexSubscriptionSearch
 isAutodiscoverableProviderId
 isCodedError

@@ -5,14 +5,14 @@
 import { describe, expect, it } from "vitest";
 import {
   listRuntimeBridges,
-  resolveRuntimeBridge,
+  resolveEngineTurnAdapter,
   runtimeCapabilities,
 } from "../../ai/runtime/registry.js";
 
 describe("runtime smoke matrix", () => {
   it("loads every registered bridge through the public resolver", async () => {
     const descriptors = listRuntimeBridges();
-    const resolved = await Promise.all(descriptors.map((descriptor) => resolveRuntimeBridge({
+    const resolved = await Promise.all(descriptors.map((descriptor) => resolveEngineTurnAdapter({
       provider: "openai",
       model: "gpt-5.5",
       reference: "openai:gpt-5.5",
@@ -31,7 +31,7 @@ describe("runtime smoke matrix", () => {
   });
 
   it("cannot load a malformed reference", async () => {
-    await expect(resolveRuntimeBridge({ provider: "", model: "x", reference: ":x" }))
+    await expect(resolveEngineTurnAdapter({ provider: "", model: "x", reference: ":x" }))
       .rejects.toThrow("unsupported model reference: expected <provider>:<model>");
   });
 });

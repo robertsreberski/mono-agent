@@ -8,7 +8,7 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentHarness, createInMemoryHistoryStore, createToolPolicy } from '../../../../agent-harness/src/index.ts';
 import { resolveJsonMonoAgentConfig } from '../../../../config/src/index.ts';
-import { generatePiNativeResponse } from '../../ai/providers/pi-native.js';
+import { generateEngineTurnResponse } from '../../ai/providers/engine-turn.js';
 import { disposeProviderSession } from '../../ai/runtime/sessions.js';
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
@@ -69,7 +69,7 @@ function host(fixture, continuous) {
     ...(continuous ? { session: { mode: 'continuous', supportsResume: true, idleTimeoutMs: 60000 } } : {}),
     runtime: {
       run: async (system, options) => {
-        const result = await generatePiNativeResponse(system, { ...options, piResolvedModel: fixture.model, piResolvedModels: fixture.models, effort: 'none' });
+        const result = await generateEngineTurnResponse(system, { ...options, piResolvedModel: fixture.model, piResolvedModels: fixture.models, effort: 'none' });
         if (result.providerSessionId) sessions.add(result.providerSessionId);
         return result;
       },
@@ -125,8 +125,8 @@ describe('built provider prompt prefix', () => {
 
 it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered native tool prefix through %s without failed reasoning', async (api) => {
   const { fauxAssistantMessage, fauxThinking, fauxToolCall } = await import('@earendil-works/pi-ai');
-  const { buildPiSessionContext } = await import('../../ai/providers/pi-native/harness-adapter.js');
-  const { validRecoveryProjection } = await import('../../ai/providers/pi-native/terminal-recovery.js');
+  const { buildHarnessSessionContext } = await import('../../../../engine/dist/session-context.js');
+  const { validRecoveryProjection } = await import('../../../../engine/dist/terminal-recovery.js');
   const send = api === 'anthropic-messages'
     ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'wire-fixture', models: [{ id: 'fixture', reasoning: true }] }).getModel();
@@ -134,7 +134,7 @@ it.each(['anthropic-messages', 'openai-responses'])('serializes a recovered nati
   const signature = api === 'anthropic-messages' ? 'faux-signature'
     : JSON.stringify({ type: 'reasoning', id: 'rs_fixture', summary: [], encrypted_content: 'faux-signature' });
   const assistant = (content, stopReason) => ({ ...fauxAssistantMessage(content, { stopReason }), api, provider: model.provider, model: model.id });
-  const messages = buildPiSessionContext([
+  const messages = buildHarnessSessionContext([
     { type: 'message', message: { role: 'user', content: 'cancelled ask', timestamp: 1 } },
     { type: 'message', message: assistant([{ ...fauxThinking('completed'), thinkingSignature: signature }, fauxToolCall('Read', { file_path: 'file' }, { id: 'call_fixture' })], 'toolUse') },
     // A surviving orphan call is paired by Pi's serializer, without a host append.
@@ -220,8 +220,8 @@ it.each([
 ])('retention %s/%s (supported=%s) preserves Pi compatibility and stream-option boundaries', async (api, cacheRetention, supported, ttl) => {
   vi.stubEnv('PI_CACHE_RETENTION', cacheRetention === 'short' ? 'long' : 'short');
   const resolvedRetention = resolveJsonMonoAgentConfig({ cwd: '/repo', json: { runtime: { model: 'anthropic:claude-sonnet-4-6' }, context: { identityPath: 'IDENTITY.md' }, providers: { piNative: { ...(cacheRetention === undefined ? {} : { cacheRetention }) } } } }).providers.piNative.cacheRetention;
-  const { AgentHarness } = await import('@earendil-works/pi-agent-core');
-  const create = vi.spyOn(AgentHarness, 'create');
+  const driverModule = await import('../../../../engine/dist/run-driver.js');
+  const create = vi.spyOn(driverModule, 'createRunDriver');
   const send = api === 'anthropic-messages' ? (await import('@earendil-works/pi-ai/api/anthropic-messages')).streamSimple : streamSimple;
   const base = fauxProvider({ provider: 'retention-fixture', models: [{ id: 'fixture' }] });
   const model = { ...base.getModel(), api, baseUrl: 'https://fixture.invalid/v1', compat: { supportsLongCacheRetention: supported } };
@@ -235,14 +235,14 @@ it.each([
       },
     });
   } });
-  await generatePiNativeResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
+  await generateEngineTurnResponse('stable', { model: { provider: 'retention-fixture', model: 'fixture', reference: 'retention-fixture:fixture' },
     piResolvedModel: model, piResolvedModels: models, messages: [{ role: 'user', content: 'test' }], allowedTools: ['Read'],
     cacheRetention: resolvedRetention, promptCacheDiagnostics: true, onEvent: (event) => events.push(event),
   });
   expect(payloads).toHaveLength(1);
   if (api === 'anthropic-messages') expect(streamOptions[0].cacheRetention).toBe(resolvedRetention);
   else {
-    expect(create.mock.calls[0][0].streamOptions).not.toHaveProperty('cacheRetention');
+    expect(create.mock.calls[0][1].streamOptions).not.toHaveProperty('cacheRetention');
     // Pi itself materializes an undefined option in its downstream projection.
     expect(streamOptions[0].cacheRetention).toBeUndefined();
   }

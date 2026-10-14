@@ -5,7 +5,8 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/pi-native/session-salvage.js";
+import { JournalReader } from "../../../../engine/dist/journal-reader.js";
+import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/engine-turn/session-salvage.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
@@ -19,8 +20,7 @@ import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { readProcessIncarnation, processIncarnationsEqual } from "../../../dist/process-incarnation.js";
 import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent-tool.js";
-import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
-import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
+import { createRuntime } from "../../../../agent-runtime/src/runtime.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 
@@ -70,12 +70,12 @@ async function open(root, options = {}) {
         || phase === "acknowledge" && options.certificateBoundary === "certificate-after-ack";
       if (pauseBefore) {
         certificate = publication;
-        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+        await new Promise(() => { setInterval(() => {}, 1_000); }); // Only the proof parent may SIGKILL this owner.
       }
       await instances.publishOwned(phase, publication);
       if (pauseAfter) {
         certificate = publication;
-        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+        await new Promise(() => { setInterval(() => {}, 1_000); }); // Only the proof parent may SIGKILL this owner.
       }
     },
   });
@@ -85,11 +85,16 @@ async function open(root, options = {}) {
 }
 async function sessionFile(instances) {
   const instance = await instances.get("proof");
-  const directories = await readdir(instance.sessionsRoot, { withFileTypes: true });
+  const directory = resolve(instance.sessionsRoot, "mono-v2", "journals");
   const paths = [];
-  for (const directory of directories) if (directory.isDirectory()) {
-    const parent = resolve(instance.sessionsRoot, directory.name);
-    for (const file of await readdir(parent)) if (file.endsWith(`_${instance.sessionId}.jsonl`)) paths.push(resolve(parent, file));
+  for (const file of await readdir(directory, { withFileTypes: true })) {
+    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+    const path = resolve(directory, file.name);
+    const reader = await JournalReader.open(path, instance.sessionsRoot);
+    try {
+      const header = await reader.readHeader();
+      if (header.format === "mono-harness" && header.version === 2 && header.id === instance.sessionId) paths.push(path);
+    } finally { await reader.close(); }
   }
   assert.equal(paths.length, 1);
   return { path: paths[0], instance };
@@ -107,7 +112,7 @@ async function owner(root, scenario) {
     const mutate = f.store.mutate.bind(f.store);
     f.store.mutate = async (...args) => {
       const result = await mutate(...args);
-      if ((await f.store.list()).some((record) => record.subagentOwnership?.command?.state === phase)) await new Promise(() => {});
+      if ((await f.store.list()).some((record) => record.subagentOwnership?.command?.state === phase)) await new Promise(() => { setInterval(() => {}, 1_000); });
       return result;
     };
   }
@@ -126,11 +131,10 @@ async function owner(root, scenario) {
   const config = await loadMonoAgentConfig({ cwd: root, jsonPath: configPath });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
-  // The driver owns one explicit tool context for this fixture run: the retired
-  // process-global configuration seam is gone, so tools read the workspace from it.
-  const toolContext = createToolContext({ workspace: root });
-  const driver = { configureTools: (next) => updateToolContext(toolContext, { ...next, workspace: root }),
-    run: (prompt, options) => generatePiNativeResponse(prompt, { ...options, toolContext, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
+  // Dispatch through createRuntime; configureTools owns the per-instance workspace.
+  const engine = createRuntime({ workspace: root });
+  const driver = { configureTools: (next) => engine.configureTools({ ...next, workspace: root }),
+    run: (prompt, options) => engine.run(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
   };
   const runtime = createMonoRuntime({ fallbackChain: [{ model: config.runtime.model }], resolveAttempt: () => ({ runtime: driver }) });
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "crash", instances: f.instances }).subagents;
@@ -188,7 +192,7 @@ async function owner(root, scenario) {
   await writeFile(resolve(root, "proof.json"), JSON.stringify(evidence));
   process.send({ ready: true });
   // Kept alive only until the foreground proof parent sends physical SIGKILL.
-  await new Promise(() => {});
+  await new Promise(() => { setInterval(() => {}, 1_000); });
 }
 async function recover(root, expectedWakes, attempt) {
   const proof = JSON.parse(await readFile(resolve(root, "proof.json"), "utf8"));

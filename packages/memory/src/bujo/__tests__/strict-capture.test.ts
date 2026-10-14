@@ -362,7 +362,7 @@ describe("strict completed-turn extraction", () => {
 
   it("splits complete sentences without treating initials or decimals as boundaries", async () => {
     const first = "M. Morgan planned a fictional archive visit on Maple Road for 3.5 hours.";
-    const second = "Morgan also documented the fictional archive's 1990-05-17 opening date, e.g. in its catalog.";
+    const second = "Morgan also documented the fictional archive's 2000-01-01 opening date, e.g. in its catalog.";
     const plan = await extractCapturePlanStrict("completed turn", { id: "split-sentences",
       complete: async () => planWithMemoryTexts([`${first} ${second}`]),
     });

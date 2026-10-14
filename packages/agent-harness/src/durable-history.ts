@@ -1,7 +1,21 @@
+import type { RuntimeNativeJournalAuthority, RuntimeNativeJournalStorage, RuntimeNativeEpochContext, RuntimeNativeJournalRef } from "@mono-agent/runtime-adapter";
+import { NativeHistoryRootStore, NATIVE_HISTORY_ROOT_FILE, NATIVE_HISTORY_ROOT_TEMP, MAX_NATIVE_HISTORY_ROOT_BYTES } from "./native-history-root.js";
+import { ModelSwitchPayloadStore } from "./model-switch-payloads.js";
+import type { ModelSwitchStorageOwner } from "./model-switch-payloads.js";
+import { MODEL_SWITCH_DIRECTORY, ModelSwitchCapacityError, switchDigest, validateModelSwitchState, validateNativeTurnHistory, recognizesModelSwitchBinding, MAX_NATIVE_EPOCH_BYTES, validateFrozenHandoffBudget, switchHash, validateSwitchReference } from "./durable-model-switch-contract.js";
+import type { ModelSwitchState, HandoffReference, SummaryAttempt, NativeTurnHistory, CanonicalJournalDescriptor } from "./durable-model-switch-contract.js";
+import { pendingTurnDescriptor, turnInputDigest, turnCandidateDigest, projectTurnSettlement } from "./durable-turn-settlement.js";
+import { recognizesTurnCommit, validateTurnHistoryV3 } from "./durable-turn-history.js";
+import type { TurnHistoryV3 } from "./durable-turn-history.js";
+import type { DurableTurnReceipt, PendingTurnPointer, PendingTurnPayload, PendingTurnInput, PendingTurnCandidate, DurableTurnFence } from "./durable-turn-contract.js";
+import { PendingTurnPayloadStore } from "./durable-turn-payloads.js";
+import type { PendingPayloadEntry } from "./durable-turn-payloads.js";
+import { OwnedFileDamagedError, isOwned } from "@mono-agent/engine/owned-fs.js";
+import { PENDING_TURN_DIRECTORY, DurableTurnAlreadyCommittedError, validateDurableTurnFence, serializeDurableTurnFence, createPendingTurnPayload, createPendingInitialInput, durableTurnFenceDigest, pendingPayloadName, serializePendingTurnPayload } from "./durable-turn-contract.js";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 
@@ -21,15 +35,21 @@ import type {
   ConversationHistoryExclusiveTurn,
   ConversationHistoryContextImport,
   ConversationHistoryStore,
+  ConversationHistoryTurnInspector,
+  ConversationHistoryTurnRecovery,
+  ConversationHistoryTurnDrainOptions,
+  ConversationHistoryTurnDrainResult,
   PreparedHistoryAppend,
   ProviderSessionTurnCommitOptions,
   ProviderSessionTurnBinding,
 } from "./types.js";
 import { assertSessionModelKey, ProviderSessionModelChangedError, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
-import { isProcessAlive } from "./history-process-liveness.js";
+import { currentHistoryProcessIncarnation, historyOwnerIncarnation, historyOwnerLiveness } from "./history-process-liveness.js";
+import { historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./process-incarnation.js";
 
 const LEGACY_STORE_VERSION = 1;
-const STORE_VERSION = 2;
+const PROVIDER_STORE_VERSION = 2;
+const STORE_VERSION = 3;
 const DEFAULT_MAX_MESSAGES = 64;
 const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
 const MAX_MESSAGE_ENVELOPE_BYTES = 16 * 1024;
@@ -43,18 +63,29 @@ const DEFAULT_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
 const HISTORY_FILE_SUFFIX = ".history.json";
 const LOCKS_DIRECTORY = ".locks";
 const TOOL_HISTORY_DIRECTORY = "tool-history";
-const TOOL_HISTORY_OWNER_FILE = "tool-lifecycles-owner.sqlite";
 const ROOT_LOCK_FILE = "root.sqlite";
-const CONVERSATION_LOCK_SHARDS = 16;
+const NATIVE_OPERATION_PATTERN = /^\.native-history-op\.([a-f0-9]{64})\.json$/u;
+const MAX_NATIVE_OPERATION_BYTES = 2 * MAX_STORE_FILE_BYTES + 4096;
+type NativeHistoryIo = {
+  <T>(action: () => Promise<T>): Promise<T>;
+  isRootHeld(): boolean;
+};
+/** C replaces the current guarded journal (same model); D deletes the conversation. */
+interface NativeHistoryOperation {
+  readonly version: 3; readonly disposition: "C" | "D";
+  readonly source: NativeTurnHistory; readonly next: CanonicalHistoryFile | null;
+  readonly timestamp: number;
+}
 const LOGICAL_SESSION_LOCK_SHARDS = 16;
 const MAX_SESSION_CLAIMS_PER_SHARD = 1_024;
 const MAX_SESSION_CLAIM_FILE_BYTES = 1024 * 1024;
 const MAX_SESSION_CLAIM_JOURNAL_BYTES = 2 * MAX_SESSION_CLAIM_FILE_BYTES;
-const CONVERSATION_SHARD_LOCK_PATTERN = /^conversation-shard-([a-f0-9]{2})\.sqlite$/u;
 const LOGICAL_SESSION_SHARD_LOCK_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite$/u;
 const LOGICAL_SESSION_SHARD_JOURNAL_PATTERN = /^logical-session-shard-([a-f0-9]{2})\.sqlite-journal$/u;
 const TEMP_FILE_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.[a-f0-9]{24}\.tmp$/u;
 const HISTORY_FILE_PATTERN = /^[a-f0-9]{64}\.history\.json$/u;
+/** One rule for canonical stages: a damaged one is charged and kept, never reclaimed. */
+const damagedStage = (info: Stats): boolean => !isOwned(info) || info.size > MAX_STORE_FILE_BYTES;
 const LEGACY_CONVERSATION_LOCK_PATTERN = /^[a-f0-9]{64}\.sqlite$/u;
 const ACTIVE_MARKER_PATTERN = /^([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{32})\.active$/u;
 const DIRTY_FENCE_PATTERN = /^([a-f0-9]{64})\.dirty\.json$/u;
@@ -79,8 +110,14 @@ const PROCESS_ROOT_QUEUES = new Map<string, Promise<void>>();
 const PROCESS_POST_COMMIT_FAILURES = new Map<string, { count: number; lastError?: string }>();
 
 export interface DurableHistoryStoreOptions {
+  /** Storage-only native matcher; never dispatches a provider, tool or continuation. */
+  readonly reconcileProviderSessionTurn?: ConversationHistoryTurnInspector;
   /** Owner-only directory containing one content-addressed file per conversation. */
   readonly root: string;
+  /** Administrative opt-in only; configured hosts do not create this capability. */
+  readonly nativeJournalStorage?: RuntimeNativeJournalStorage;
+  /** Storage-boundary verification hook; never a provider or host policy. */
+  readonly onNativeHistoryPhase?: (phase: string) => Promise<void>;
   /** Retained messages per conversation. Defaults to, and may not exceed, 64. */
   readonly maxMessages?: number;
   /** Aggregate committed-history quota. Defaults to 256 MiB. */
@@ -101,9 +138,102 @@ export interface DurableHistoryStoreOptions {
   readonly retireProviderSession?: (providerSessionId: string, modelKey?: string) => Promise<void>;
 }
 
+/** Administrative authority only; does not upgrade native headers or enable dispatch. */
+export interface NativeHistoryAuthorityLease {
+  readonly status: "owned";
+  readonly authority: RuntimeNativeJournalAuthority;
+  assertOwned(): Promise<void>;
+  release(): Promise<void>;
+}
+
+/** Administrative storage only; never a dispatch/capability advertisement. */
+export interface ManagedModelSwitchStorageLease {
+  readonly status: "owned";
+  read(): ReturnType<ModelSwitchPayloadStore["read"]>;
+  admit(producer: SummaryAttempt["producer"]): Promise<ModelSwitchState>;
+  finish(producer: SummaryAttempt["producer"], outcome: "unknown" | "rejected"): Promise<ModelSwitchState>;
+  advanceUnfit(): Promise<ModelSwitchState>;
+  assertMessageUnconsumed(messageDigest: string): Promise<void>;
+  authorizeMessage(messageDigest: string): Promise<ModelSwitchState>;
+  accept(artifact: Record<string, unknown>): Promise<HandoffReference>;
+  recoverArtifact(): Promise<HandoffReference | undefined>;
+  /** Releases the claim, never the durable fence or evidence. */
+  release(): Promise<void>;
+}
+/** Claim-only host preparation. No incoming fence/admission or configured opt-in.
+ * Child leases borrow this owner; releasing one never releases the preparation.
+ * Admission consumes the preparation only after the canonical model is ready.
+ * Inside phase/native callbacks, only assertOwned may be called: all other
+ * preparation/child methods serialize behind the running action. Do not call
+ * same-conversation standalone store APIs while this preparation is held; they
+ * acquire its claim and cannot proceed until admission or abort releases it. */
+/** Pre-intent contention, not unsupported storage or permission to cold replay.
+ * Never wait holding a conversation claim: two contenders can pin each other. */
+/** @internal Ordinary host admission cannot borrow prepared native authority. */
+export class OrdinaryNativeDispatchUnavailableError extends Error {
+  constructor() {
+    super("Ordinary admission on a guarded native conversation requires owned native preparation; native evidence was preserved.");
+    this.name = "OrdinaryNativeDispatchUnavailableError";
+  }
+}
+/** @internal A pending switch is a pre-admission refusal, not a failed turn. */
+export class ModelSwitchPendingError extends Error {
+  constructor() { super("Model-switch storage pending; ordinary admission/mutation is unavailable until transaction settlement"); this.name = "ModelSwitchPendingError"; }
+}
+/** Damage is not contention: it is non-retryable and no drain can repair it. */
+export class NativeHistoryAuthorityBusyError extends Error {
+  readonly code: string; readonly retryable: boolean;
+  constructor(readonly damaged = false, artifact?: string) {
+    super(damaged ? `Another conversation's saved recovery data is damaged${artifact ? ` (${basename(artifact)})` : ""}; repair or restore it before retrying.` : "Another conversation is still running or awaiting recovery; send again when it finishes.");
+    this.name = "NativeHistoryAuthorityBusyError"; this.code = damaged ? "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED" : "ERR_NATIVE_HISTORY_AUTHORITY_BUSY"; this.retryable = !damaged;
+  }
+}
+
+export interface ManagedProviderSessionPreparation {
+  readonly recovery: ConversationHistoryTurnRecovery;
+  read(): Promise<ProviderSessionPreparationSnapshot>;
+  /** Caller-supplied provenance is used only for a legacy source's API/model;
+   * its account is explicitly null, never inferred from current credentials.
+   * A definitively missing current journal captures canonical history instead. */
+  captureNativeEvidence(legacyProvenance?: import("@mono-agent/runtime-adapter").RuntimeNativeJournalDescriptor["provenance"]): Promise<{
+    readonly source: CanonicalJournalDescriptor | null; readonly view: import("@mono-agent/runtime-adapter").RuntimeNativeEvidenceView;
+  }>;
+  readHandoff(switchId: string, reference: HandoffReference): Promise<{ readonly artifact: Readonly<Record<string, unknown>>;
+    readonly budget: import("@mono-agent/runtime-adapter").RuntimeHandoffBudget }>;
+  assertOwned(): Promise<void>;
+  acquireNativeHistoryAuthority(): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease>;
+  beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease>;
+  rollForwardModelSwitch(switchId: string, options?: { readonly onPhase?: (phase: string) => Promise<void> }): Promise<{ readonly status: "pending" | "committed" | "absent" }>;
+  /** Storage-only release of a non-ready intent (no target journal exists yet).
+   * Its billing state stays retained and charged; no producer or provider runs. */
+  abandonModelSwitch(switchId: string): Promise<void>;
+  /** missingCurrentEpoch is owner-approved recovery of an externally missing current
+   * journal: when that exact epoch is still canonical, admission first rotates it
+   * through the existing same-model cold path (v3 retire/new epoch, v5 durable C).
+   * Every model change goes through the structured switch; there is no cold one. */
+  admit(binding: ProviderSessionTurnBinding, options?: { readonly missingCurrentEpoch?: string }): Promise<ConversationHistoryProviderSessionTurn & { readonly native?: NativeTurnHistory["native"]; assertOwned(): Promise<void> }>;
+  /** @internal Read-only probe of the canonical current journal under this owner.
+   * `absent` means no current journal is expected yet (or no probe capability). */
+  inspectCurrentJournal?(): Promise<CurrentJournalPresence>;
+  abort(): Promise<void>;
+}
+export type CurrentJournalPresence = { readonly status: "absent" | "present" }
+  | { readonly status: "missing"; readonly epoch: string }
+  | { readonly status: "unreadable"; readonly reason: string };
+export interface ProviderSessionPreparationSnapshot {
+  readonly history: readonly HistoryMessage[];
+  readonly source: Awaited<ReturnType<DurableConversationHistoryStore["modelSwitchStorageSource"]>>;
+  readonly native?: NativeTurnHistory["native"];
+  readonly lastSwitch?: NativeTurnHistory["lastSwitch"];
+  readonly pending?: ModelSwitchState;
+}
+export type ModelSwitchStorageSupport = { readonly status: "unsupported"; readonly reason: "id_limit" | "unbound" };
+
 export interface DurableHistoryStoreStats {
   readonly conversations: number;
+  /** Physical canonical, switch-storage and root-authority bytes, excluding plans. */
   readonly bytes: number;
+  readonly reservedBytes: number;
   readonly activePreparedAppends: number;
   readonly postCommitMaintenanceFailures: number;
   readonly lastPostCommitMaintenanceError?: string;
@@ -123,15 +253,13 @@ interface ProviderSessionState {
   readonly dirtyRunId?: string;
 }
 
-interface HistoryFileV2 {
-  readonly version: typeof STORE_VERSION;
-  readonly conversationId: string;
-  readonly messages: readonly HistoryMessage[];
-  readonly providerSession: ProviderSessionState;
-}
+type CanonicalHistoryFile = TurnHistoryV3 | NativeTurnHistory;
 
 interface LoadedHistoryRecord {
-  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof STORE_VERSION;
+  readonly lastCommit?: DurableTurnReceipt;
+  readonly sourceVersion: 0 | typeof LEGACY_STORE_VERSION | typeof PROVIDER_STORE_VERSION | typeof STORE_VERSION;
+  readonly native?: NativeTurnHistory["native"];
+  readonly lastSwitch?: NonNullable<NativeTurnHistory["lastSwitch"]>;
   readonly conversationId: string;
   readonly messages: readonly HistoryMessage[];
   readonly providerSession?: ProviderSessionState;
@@ -143,6 +271,7 @@ interface DirectoryIdentity {
 }
 
 interface ActiveStage {
+  readonly logicalConversationKey?: string;
   readonly conversationKey: string;
   readonly destinationName: string;
   readonly temporaryPath: string;
@@ -154,9 +283,13 @@ interface ActiveMarker {
   readonly conversationKey: string;
   readonly pid: number;
   readonly token: string;
+  readonly damaged?: true;
+  readonly incarnation?: HistoryProcessIncarnation | undefined;
 }
 
 interface DirtyFence {
+  readonly kind?: "execution" | "compaction" | "retirement";
+  readonly payload?: PendingTurnPointer;
   readonly modelKey?: string;
   readonly path: string;
   readonly conversationKey: string;
@@ -169,12 +302,15 @@ interface DirtyFence {
 }
 
 interface HeldConversation {
+  readonly logical: HeldLogicalConversation;
+  assertOwned(): Promise<void>;
   readonly marker: ActiveMarker;
   readonly rootIdentity: DirectoryIdentity;
   release(): Promise<void>;
 }
 
 interface HeldLogicalConversation {
+  assertOwned(): Promise<void>;
   readonly logicalConversationId: string;
   readonly rootIdentity: DirectoryIdentity;
   release(): Promise<void>;
@@ -184,6 +320,36 @@ interface HeldExactConversationClaim {
   readonly conversationId: string;
   readonly rootIdentity: DirectoryIdentity;
   release(): Promise<void>;
+}
+
+class HistoryOwnerBusyError extends Error {
+  readonly code = "ERR_HARNESS_WRITER_BUSY";
+  readonly retryable = true;
+}
+/** Only emitted after securely reading a marker/fence; never an I/O error. */
+class TornCoordinationFileError extends Error {}
+function rethrowResetAcquisition(error: unknown): never {
+  if (error instanceof OwnedFileDamagedError) throw new HistoryResetDamagedError([error.entryName], error);
+  throw error;
+}
+class HistoryResetDamagedError extends Error {
+  readonly code = "ERR_HISTORY_RESET_DAMAGED";
+  readonly retryable = false;
+  constructor(names: readonly string[], cause?: unknown) {
+    super(`Reset refused: damaged ${names.map((name) => basename(name)).sort().join(", ")}. Stop every writer, back up, and follow docs/runtime/sessions-concurrency.md#offline-repair-of-damaged-conversations before retrying.`, { cause });
+    this.name = "HistoryResetDamagedError";
+  }
+}
+class NativeRootMarkerMissingError extends TypeError { constructor() { super("Native canonical root authority marker is missing; restore consistent backup"); } }
+class CanonicalParseFailure extends Error { constructor(error: unknown) { super(error instanceof Error ? error.message : "Unreadable canonical history", { cause: error }); } }
+
+interface RootAccounting {
+  readonly damaged: Set<string>;
+  readonly records: Map<string, LoadedHistoryRecord | undefined>;
+  rawSwitches?: Promise<Awaited<ReturnType<ModelSwitchPayloadStore["inventory"]>>>;
+  native?: Promise<Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>>;
+  switches?: Promise<Awaited<ReturnType<ModelSwitchPayloadStore["inventory"]>> & { nativeBytes: number; nativeStagedBytes: number }>;
+  operations?: Promise<{ bytes: number; reserved: number; keys: Set<string> }>;
 }
 
 interface CrossProcessLock {
@@ -207,8 +373,8 @@ interface CommittedEntry {
  * root retention across both store instances and independent processes.
  */
 export class DurableConversationHistoryStore implements ConversationHistoryStore {
-  readonly providerSessionModelBinding = "v1" as const;
-  readonly providerSessionRecovery = "v1" as const;
+  readonly providerSessionReconciliation: "v1" | undefined;
+  private readonly inspectProviderTurn: ConversationHistoryTurnInspector | undefined;
   readonly providerSessionRetirement: "fail-closed" | undefined;
   readonly contextImport: ConversationHistoryContextImport | undefined;
   private readonly root: string;
@@ -221,6 +387,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private readonly retireProviderSession: ((providerSessionId: string, modelKey?: string) => Promise<void>) | undefined;
   private rootReady: Promise<DirectoryIdentity> | undefined;
   private locksRootReady: Promise<DirectoryIdentity> | undefined;
+  private pendingPayloadStore: PendingTurnPayloadStore | undefined;
+  private pendingPayloads(rootIdentity: DirectoryIdentity): PendingTurnPayloadStore {
+    return this.pendingPayloadStore ??= new PendingTurnPayloadStore(this.root, rootIdentity);
+  }
 
   constructor(options: DurableHistoryStoreOptions) {
     if (typeof options?.root !== "string" || options.root.trim().length === 0) {
@@ -253,6 +423,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (options.retireProviderSession !== undefined && typeof options.retireProviderSession !== "function") {
       throw new TypeError("retireProviderSession must be a function when present.");
     }
+    if (options.reconcileProviderSessionTurn !== undefined && (typeof options.reconcileProviderSessionTurn !== "function" || options.retireProviderSession === undefined)) {
+      throw new TypeError("Native turn reconciliation requires an inspector and fail-closed retirement.");
+    }
+    this.nativeJournalStorage = options.nativeJournalStorage;
+    this.nativePhase = options.onNativeHistoryPhase ?? (async () => {});
+    this.inspectProviderTurn = options.reconcileProviderSessionTurn;
+    this.providerSessionReconciliation = this.inspectProviderTurn === undefined ? undefined : "v1";
     this.root = root;
     this.maxMessages = maxMessages;
     this.maxStoreBytes = maxStoreBytes;
@@ -270,10 +447,576 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         version: AGENT_CONTEXT_IMPORT_VERSION,
         maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
         providerState: options.retireProviderSession === undefined ? "absent" : "retire-fail-closed",
-        beginExclusiveTurn: async (conversationId) => await this.beginExclusiveTurn(conversationId),
+        beginExclusiveTurn: async (conversationId, signal) => await this.beginExclusiveTurn(conversationId, signal),
         prepareImport: async (conversationId, request) => await this.prepareContextImport(conversationId, request),
       }
       : undefined;
+  }
+
+  private readonly nativeJournalStorage: RuntimeNativeJournalStorage | undefined;
+  private readonly nativePhase: (phase: string) => Promise<void>;
+  private nativeHistoryRootStore: NativeHistoryRootStore | undefined;
+  private nativeHistoryRoot(rootIdentity: DirectoryIdentity): NativeHistoryRootStore {
+    return this.nativeHistoryRootStore ??= new NativeHistoryRootStore(this.root, rootIdentity);
+  }
+  /** Borrow host-owned native-root authority while holding the conversation claim. */
+  async acquireNativeHistoryAuthority(conversationId: string): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease> {
+    const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
+    if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
+    const held = await this.acquireConversation(id);
+    return await this.acquireHeldNativeHistoryAuthority(id, held, true);
+  }
+  private async acquireHeldNativeHistoryAuthority(id: string, held: HeldConversation, releaseOwner: boolean): Promise<ModelSwitchStorageSupport | NativeHistoryAuthorityLease> {
+    const ownerKey = logicalConversationIdForFence(id), rootIdentity = held.rootIdentity;
+    let released = false;
+    const release = async () => { if (released) return; released = true; if (releaseOwner) await this.releaseConversation(held, rootIdentity); };
+    const assertOwned = async () => { if (released) throw new Error("Native history authority lease released"); await held.assertOwned(); };
+    try {
+      await this.settleHeldTurn(id, held);
+      const source = await this.modelSwitchStorageSource(id);
+      if (source.status === "unsupported") { await release(); return source; }
+      const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+      let marker;
+      try {
+        await assertOwned();
+        const rootStore = this.nativeHistoryRoot(rootIdentity);
+        if (!await rootStore.read()) {
+          const active = await this.scanActiveMarkers(true), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+          const pending = new Map((await this.pendingPayloads(rootIdentity).list()).map((entry) => [entry.name, entry]));
+          let damaged = fences.damaged.values().next().value ?? [...pending.values()].find((entry) => entry.damaged)?.name
+            ?? active.find((entry) => entry.damaged)?.path;
+          for (const entry of [...pending.values()].filter((entry) => !entry.name.endsWith(".tmp") && !entry.damaged && !active.some((marker) => marker.conversationKey === entry.conversationKey))) {
+            try { await this.pendingPayloads(rootIdentity).inspect(entry); }
+            catch (error) {
+              await assertDirectoryIdentity(this.root, rootIdentity);
+              await this.pendingPayloads(rootIdentity).list(); // recheck the pinned subdirectory before isolating damage
+              if (entryAbsentOrThrowOperational(error)) { pending.delete(entry.name); continue; }
+              damaged = entry.name;
+            }
+          }
+          if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || fences.incomplete.size || pending.size) {
+            throw new NativeHistoryAuthorityBusyError(damaged !== undefined, damaged);
+          }
+          // A readable native record without the marker refuses; an unreadable sibling stays isolated to its owner.
+          for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {
+            try { await this.readCommittedEntryRecord(entry, rootIdentity); }
+            catch (error) { if (!(error instanceof CanonicalParseFailure) || error.cause instanceof NativeRootMarkerMissingError) throw error; }
+          }
+        }
+        marker = await rootStore.ensure({ assertOwned, reserve: async (bytes) => {
+          const plan = await this.retentionPlan(rootIdentity, []);
+          if (plan.projectedBytes + bytes > this.maxStoreBytes || await this.scanStagedBytes(rootIdentity) + bytes > this.maxStagedBytes) {
+            throw new ModelSwitchCapacityError(this.quotaDiagnostic("Native root authority capacity unavailable"));
+          }
+        } });
+      } finally { await releaseRoot(); }
+      const authority = Object.freeze(this.nativeHistoryRoot(rootIdentity).authority(marker, ownerKey, id));
+      return { status: "owned", authority, assertOwned: async () => {
+        await assertOwned(); const current = await this.nativeHistoryRoot(rootIdentity).read();
+        if (current?.rootId !== authority.rootId) throw new Error("Native history root authority changed");
+      }, release };
+    } catch (error) { await release().catch(() => undefined); throw error; }
+  }
+
+  private modelSwitchPayloadStore: ModelSwitchPayloadStore | undefined;
+  private modelSwitchPayloads(rootIdentity: DirectoryIdentity): ModelSwitchPayloadStore {
+    this.modelSwitchPayloadStore ??= new ModelSwitchPayloadStore(this.root, rootIdentity); return this.modelSwitchPayloadStore;
+  }
+  private rootAccounting: RootAccounting | undefined;
+  private noteDamagedEntry(name: string): void { this.rootAccounting?.damaged.add(name); }
+  private quotaDiagnostic(message: string): string {
+    const names = [...this.rootAccounting?.damaged ?? []].sort();
+    return names.length ? `${message} Protected damaged entries: ${names.slice(0, 8).join(", ")}${names.length > 8 ? ` (+${names.length - 8} more)` : ""}.` : message;
+  }
+  private invalidateCanonicalAccounting(name: string): void {
+    if (!this.rootAccounting) return;
+    this.rootAccounting.records.delete(name); this.rootAccounting.damaged.delete(name);
+    delete this.rootAccounting.rawSwitches; delete this.rootAccounting.switches;
+    delete this.rootAccounting.native; delete this.rootAccounting.operations;
+  }
+  private switchInventory(rootIdentity: DirectoryIdentity) {
+    const compute = () => this.modelSwitchPayloads(rootIdentity).inventory();
+    return this.rootAccounting ? this.rootAccounting.rawSwitches ??= compute() : compute();
+  }
+  private async accountingRecords(rootIdentity: DirectoryIdentity, entries: readonly CommittedEntry[]) {
+    const cached = this.rootAccounting?.records ?? new Map<string, LoadedHistoryRecord | undefined>();
+    for (const entry of entries) if (!cached.has(entry.name)) {
+      try { cached.set(entry.name, await this.readCommittedEntryRecord(entry, rootIdentity)); }
+      catch (error) { if (!(error instanceof CanonicalParseFailure)) throw error; this.noteDamagedEntry(entry.name); cached.set(entry.name, undefined); }
+    }
+    return new Map(entries.map((entry) => [entry.name, cached.get(entry.name)]));
+  }
+  private async managedNativeInventory(rootIdentity: DirectoryIdentity, records?: ReadonlyMap<string, LoadedHistoryRecord | undefined>) {
+    const compute = async () => {
+      const ids = new Set<string>();
+      if (records === undefined && await this.nativeHistoryRoot(rootIdentity).read()) {
+        records = await this.accountingRecords(rootIdentity, await this.scanCommittedEntries(rootIdentity, false));
+      }
+      for (const record of records?.values() ?? []) if (record?.native !== undefined) ids.add(currentJournal(record.conversationId, record.providerSession!.epoch).journalId);
+      for (const operation of await this.nativeOperationOwners(rootIdentity)) {
+        ids.add(currentJournal(operation.source.conversationId, operation.source.providerSession.epoch).journalId);
+        if (operation.next?.native !== undefined) ids.add(currentJournal(operation.next.conversationId, operation.next.providerSession.epoch).journalId);
+      }
+      for (const { state } of (await this.switchInventory(rootIdentity)).pending) {
+        if (state.identity.source) ids.add(state.identity.source.journalId);
+        ids.add(currentJournal(state.identity.historyBucket, state.identity.targetEpoch).journalId);
+      }
+      // Damaged switch/canonical/intent evidence can hide journals: charge the owner's attested inventory too.
+      const unknownKeys = [...[...(records?.entries() ?? [])].filter(([, record]) => record === undefined)
+        .map(([name]) => name.slice(0, -HISTORY_FILE_SUFFIX.length)), ...(await this.switchInventory(rootIdentity)).damaged,
+        ...(await readdir(this.root)).flatMap((name) => NATIVE_OPERATION_PATTERN.exec(name)?.[1] ?? [])];
+      const marker = unknownKeys.length === 0 ? undefined : await this.nativeHistoryRoot(rootIdentity).read();
+      return this.nativeJournalStorage!.inventory([...ids], marker ? { rootId: marker.rootId, conversationKeys: unknownKeys } : undefined);
+    };
+    return this.rootAccounting ? this.rootAccounting.native ??= compute() : compute();
+  }
+  private async modelSwitchFootprint(rootIdentity: DirectoryIdentity, records?: ReadonlyMap<string, LoadedHistoryRecord | undefined>, native?: Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>) {
+    const compute = async () => {
+      const footprint = await this.switchInventory(rootIdentity);
+      for (const key of footprint.damaged) this.noteDamagedEntry(`${MODEL_SWITCH_DIRECTORY}/${key}.*`);
+      if (!this.nativeJournalStorage) return { ...footprint, nativeBytes: 0, nativeStagedBytes: 0 };
+      const physical = native ?? await this.managedNativeInventory(rootIdentity, records);
+      let nativeStagedBytes = physical.stagedBytes;
+      const pending = [];
+      for (const entry of footprint.pending) {
+        const state = entry.state, record = records === undefined ? await this.readRecord(state.identity.historyBucket, rootIdentity) : records.get(`${historyKey(state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
+        const committed = record?.native !== undefined && recognizesModelSwitchBinding(record, state.identity);
+        const target = physical.journals[currentJournal(state.identity.historyBucket, state.identity.targetEpoch).journalId];
+        if (!committed) nativeStagedBytes += Math.max(0, (target?.retainedBytes ?? 0) - (target?.stagedBytes ?? 0));
+        const canonicalCredit = committed ? (await lstat(join(this.root, `${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}`))).size : 0;
+        pending.push({ ...entry, remainingReservation: Math.max(0, entry.remainingReservation
+          - Math.min(state.reservation.nativeBytes, target?.retainedBytes ?? 0)
+          - Math.min(state.reservation.canonicalBytes, canonicalCredit)) });
+      }
+      return { ...footprint, pending, nativeBytes: physical.bytes, nativeStagedBytes };
+    };
+    return this.rootAccounting ? this.rootAccounting.switches ??= compute() : compute();
+  }
+  private epochContext(id: string, epoch: string, authority: RuntimeNativeJournalAuthority, assertOwned: () => Promise<void>, timestamp = 0): RuntimeNativeEpochContext {
+    return { hostAuthority: authority, assertOwned, targetHandleId: deriveProviderSessionId(id, epoch), timestamp };
+  }
+  /** Owner-scoped, read-only: refuse only a conversation that has damaged switch data. */
+  private async assertSwitchOwnerReadable(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    const inventory = await this.modelSwitchPayloads(rootIdentity).inventory(conversationId), key = historyKey(conversationId);
+    if (inventory.damaged.includes(key)) throw new OwnedFileDamagedError(inventory.damagedFiles[0]!);
+  }
+  private async requireNoModelSwitch(conversationId: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    const inventory = await this.modelSwitchPayloads(rootIdentity).inventory(conversationId);
+    if (inventory.damaged.includes(historyKey(conversationId))) throw new OwnedFileDamagedError(inventory.damagedFiles[0]!);
+    if (inventory.pending.length) throw new ModelSwitchPendingError();
+  }
+  /** Read-only support probe. Long IDs continue today's ordinary cold replay:
+   * unsupported storage is a result, not a switch-time contract error. */
+  async modelSwitchStorageSource(conversationId: string): Promise<ModelSwitchStorageSupport | {
+    readonly status: "supported"; readonly sourceCanonicalDigest: string; readonly sourceRevision: number;
+    readonly fromModelKey: string; readonly sourceEpoch: string; readonly ownerKey: string;
+  }> {
+    const id = normalizeConversationId(conversationId), ownerKey = logicalConversationIdForFence(id);
+    if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
+    const rootIdentity = await this.ensureRoot(), record = await this.readRecord(id, rootIdentity);
+    await this.assertSwitchOwnerReadable(id, rootIdentity);
+    if (!record.providerSession?.modelKey || record.providerSession.revision === undefined || record.sourceVersion !== STORE_VERSION) return { status: "unsupported", reason: "unbound" };
+    return { status: "supported", sourceCanonicalDigest: switchDigest({ version: record.sourceVersion, conversationId: id, messages: record.messages,
+      providerSession: record.providerSession, ...lastCommitBinding(record), ...nativeExtension(record) }), sourceRevision: record.providerSession.revision,
+      fromModelKey: record.providerSession.modelKey, sourceEpoch: record.providerSession.epoch, ownerKey };
+  }
+  /** Host-only storage lease. Holds the real logical/physical claim while each
+   * durable operation borrows only a short root transaction; production is
+   * outside those transactions. Native validation/migration is not enabled. */
+  async beginModelSwitchStorage(state: ModelSwitchState): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease> {
+    const id = normalizeConversationId(state.identity.historyBucket), ownerKey = logicalConversationIdForFence(id);
+    if (id.length > 512 || ownerKey.length > 512) return { status: "unsupported", reason: "id_limit" };
+    if (state.identity.historyBucket !== id || state.identity.ownerKey !== ownerKey) throw new Error("Model-switch bucket must be normalized and belong to the managed owner");
+    validateModelSwitchState(state); state = structuredClone(state);
+    const held = await this.acquireConversation(id);
+    return await this.beginHeldModelSwitchStorage(state, held, true);
+  }
+  private async beginHeldModelSwitchStorage(state: ModelSwitchState, held: HeldConversation, releaseOwner: boolean): Promise<ModelSwitchStorageSupport | ManagedModelSwitchStorageLease> {
+    const id = state.identity.historyBucket, ownerKey = logicalConversationIdForFence(id), rootIdentity = held.rootIdentity;
+    let released = false;
+    const assertOwned = async () => { if (released) throw new Error("Model-switch storage lease released"); await held.assertOwned(); };
+    const release = async () => { if (released) return; released = true; if (releaseOwner) await this.releaseConversation(held, rootIdentity); };
+    try {
+      await this.settleHeldTurn(id, held);
+      const source = await this.modelSwitchStorageSource(id);
+      if (source.status === "unsupported") { await release(); return source; }
+      if (state.identity.ownerKey !== source.ownerKey || state.identity.sourceCanonicalDigest !== source.sourceCanonicalDigest
+        || state.identity.sourceRevision !== source.sourceRevision || state.identity.fromModelKey !== source.fromModelKey
+        || state.identity.sourceEpoch !== source.sourceEpoch) throw new Error("Model-switch source changed or does not belong to the managed owner");
+      const payloads = this.modelSwitchPayloads(rootIdentity), bucket = state.identity.historyBucket, switchId = state.identity.switchId;
+      if (this.nativeJournalStorage && !await payloads.read(bucket, switchId)) {
+        const marker = await this.nativeHistoryRoot(rootIdentity).read();
+        if (!marker) throw new Error("Issue drained native root authority before publishing a switch intent");
+        if (state.identity.source && state.identity.source.handleId !== deriveProviderSessionId(id, source.sourceEpoch)) throw new Error("Native switch source handle conflicts");
+        const authority = this.nativeHistoryRoot(rootIdentity).authority(marker, ownerKey, id);
+        const previewState = { ...state, artifact: { id: "0".repeat(64), hash: "0".repeat(64) } };
+        if (serializeHistoryFile(switchCanonicalRecord(await this.readRecord(id, rootIdentity), previewState, authority)).byteLength > state.reservation.canonicalBytes) throw new ModelSwitchCapacityError("Canonical switch capacity unavailable before intent publication");
+        if (state.reservation.nativeBytes < MAX_NATIVE_EPOCH_BYTES) throw new ModelSwitchCapacityError("Native switch target capacity exceeds the frozen plan");
+      }
+      const validateSpace = async (additional: number) => {
+        await assertOwned();
+        const footprint = await this.modelSwitchFootprint(rootIdentity);
+        const pending = footprint.pending.find((entry) => entry.state.identity.switchId === switchId);
+        // The pending plan already covers publication space. Only a physical
+        // peak beyond its unused portion requires additional capacity.
+        if (pending) additional = Math.max(0, additional - pending.remainingPendingBytes);
+        const plan = await this.retentionPlan(rootIdentity, []);
+        // Storage admission never deletes unrelated owners merely to reserve a
+        // switch; failure precedes publication/provider work.
+        if (plan.projectedBytes + additional > this.maxStoreBytes || plan.projectedCount > this.maxConversations) throw new ModelSwitchCapacityError(this.quotaDiagnostic("Model-switch aggregate history capacity unavailable"));
+        if (await this.scanStagedBytes(rootIdentity) + additional > this.maxStagedBytes) throw new ModelSwitchCapacityError(this.quotaDiagnostic("Model-switch staged capacity unavailable"));
+      };
+      const owner: ModelSwitchStorageOwner = { ownerKey, historyBucket: bucket, assertOwned,
+        withRootTransaction: async (action) => { await assertOwned(); const unlock = await this.acquireRootTransaction(rootIdentity); try {
+          requireSettledFence(await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot()));
+          return await action();
+        } finally { await unlock(); } },
+        reserve: validateSpace,
+        // Durable inventory is the absolute ledger; never increment a process
+        // counter or grant credits from a caller's requested adjustment.
+        adjustReservation: async (_remaining) => {
+          // Publication/enrollment changes the absolute ledger, not just a
+          // counter. Keep record reads, but invalidate affected footprints.
+          if (this.rootAccounting) {
+            delete this.rootAccounting.rawSwitches; delete this.rootAccounting.switches;
+            delete this.rootAccounting.native; delete this.rootAccounting.operations;
+          }
+          await validateSpace(0);
+        } };
+      await payloads.begin(state, owner);
+      return { status: "owned", read: async () => { await assertOwned(); return payloads.read(bucket, switchId); },
+        admit: (producer) => payloads.admit(bucket, switchId, producer, owner),
+        finish: (producer, outcome) => payloads.finish(bucket, switchId, producer, outcome, owner),
+        advanceUnfit: () => payloads.advanceUnfit(bucket, switchId, owner),
+        assertMessageUnconsumed: async (digest) => { await assertOwned(); await payloads.assertMessageUnconsumed(bucket, switchId, digest); await assertOwned(); },
+        authorizeMessage: (digest) => payloads.authorizeMessage(bucket, switchId, digest, owner),
+        accept: (artifact) => payloads.accept(bucket, switchId, artifact, owner),
+        recoverArtifact: () => payloads.recoverArtifact(bucket, switchId, owner), release };
+    } catch (error) { await release().catch(() => undefined); throw error; }
+  }
+
+  /** Restartable ready-only storage transaction; never runs a producer or provider.
+   * Pending stays fenced with its source binding. No configured host calls this. */
+  async rollForwardModelSwitch(conversationId: string, switchId: string, options: {
+     readonly onPhase?: (phase: string) => Promise<void>;
+  } = {}): Promise<{ readonly status: "pending" | "committed" | "absent" }> {
+    if (!this.nativeJournalStorage) throw new Error("Managed native switch capability required");
+    const id = normalizeConversationId(conversationId), held = await this.acquireConversation(id);
+    try { return await this.rollForwardHeldModelSwitch(id, switchId, held, options?.onPhase); }
+    finally { await this.releaseConversation(held, held.rootIdentity); }
+  }
+  private async rollForwardHeldModelSwitch(id: string, switchId: string, held: HeldConversation,
+    phase: (phase: string) => Promise<void> = async () => {}): Promise<{ readonly status: "pending" | "committed" | "absent" }> {
+    const rootIdentity = held.rootIdentity, native = this.nativeJournalStorage;
+    if (!native) throw new Error("Managed native switch capability required");
+    const payloads = this.modelSwitchPayloads(rootIdentity);
+    const assertOwned = async () => { await held.assertOwned(); const marker = await this.nativeHistoryRoot(rootIdentity).read(); if (!marker) throw new Error("Native root authority missing"); };
+    const withRootTransaction = async <T>(action: () => Promise<T>): Promise<T> => { const unlock = await this.acquireRootTransaction(rootIdentity); try { await assertOwned(); return await action(); } finally { await unlock(); } };
+    await assertOwned();
+    const current = await payloads.read(id, switchId), existing = await this.readRecord(id, rootIdentity);
+    if (!current) {
+      if (existing.lastSwitch?.switchId !== switchId) return { status: "absent" };
+      await withRootTransaction(async () => { await this.syncManagedCanonical(id, rootIdentity); await payloads.syncPublication(); });
+      return { status: "committed" };
+    }
+    if (current.state.phase !== "ready") return { status: "pending" };
+    const state = current.state;
+    if (state.identity.ownerKey !== logicalConversationIdForFence(id)) throw new Error("Switch does not belong to the managed owner");
+    const marker = (await this.nativeHistoryRoot(rootIdentity).read())!;
+    const authority = this.nativeHistoryRoot(rootIdentity).authority(marker, state.identity.ownerKey, id);
+    if (!(existing.native !== undefined && recognizesModelSwitchBinding(existing, state.identity))) {
+      requireSettledFence(await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot()));
+      const source = await this.modelSwitchStorageSource(id);
+      if (source.status !== "supported" || source.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest
+        || source.sourceRevision !== state.identity.sourceRevision || source.fromModelKey !== state.identity.fromModelKey
+        || source.sourceEpoch !== state.identity.sourceEpoch) throw new Error("Switch source changed before native roll-forward");
+      // Deterministic target first; all potentially long native I/O is outside
+      // the short host root transaction. The outgoing journal is not touched yet.
+      await native.createEpoch(this.epochContext(id, state.identity.targetEpoch, authority, assertOwned, state.identity.timestamp)); await phase("switch_target_created");
+      const record = switchCanonicalRecord(existing, state, authority);
+      if (serializeHistoryFile(record).byteLength > state.reservation.canonicalBytes) throw new Error("Canonical switch exceeds frozen publication capacity");
+      await withRootTransaction(async () => {
+        const latest = await this.modelSwitchStorageSource(id);
+        if (latest.status !== "supported" || latest.sourceCanonicalDigest !== state.identity.sourceCanonicalDigest) throw new Error("Canonical source changed during native publication");
+        // The durable plan already reserved this peak before native side effects;
+        // double-charging it here could strand an admitted intent after recovery.
+        const stage = await this.writeStage(record, rootIdentity); await phase("switch_canonical_stage_synced");
+        await assertOwned(); await rename(stage.temporaryPath, join(this.root, stage.destinationName)); this.invalidateCanonicalAccounting(stage.destinationName); await phase("switch_canonical_renamed");
+        await fsyncDirectory(this.root, rootIdentity); await phase("switch_canonical_directory_synced");
+      });
+    }
+    // Every later step is checked against the durable receipt: only then is the
+    // outgoing journal superseded, so retirement can never delete the current one.
+    const proveReceipt = async () => {
+      await assertOwned();
+      const canonical = await this.readRecord(id, rootIdentity);
+      // A later same-model cold rotation may have replaced the target epoch; the
+      // receipt still proves the outgoing journal is superseded.
+      if (canonical.native === undefined || !recognizesModelSwitchBinding(canonical, state.identity)
+        || switchDigest(canonical.lastSwitch?.artifact) !== switchDigest(state.artifact)
+        || canonical.providerSession?.epoch === state.identity.targetEpoch && (canonical.providerSession.modelKey !== state.identity.toModelKey
+          || switchDigest(canonical.native?.projection) !== switchDigest(state.artifact))) throw new Error("Canonical ready binding conflicts with accepted intent");
+    };
+    // Durable receipt before any deletion, on fresh AND recognized-receipt recovery:
+    // a recovered rename may not have had its directory fsync yet.
+    await withRootTransaction(async () => { await proveReceipt(); await this.syncManagedCanonical(id, rootIdentity); });
+    await phase("switch_canonical_synced");
+    const outgoing = state.identity.source;
+    if (outgoing) await native.deleteJournals([{ handleId: outgoing.handleId, journalId: outgoing.journalId }], { disposition: "C", hostAuthority: authority, assertOwned: proveReceipt });
+    await phase("switch_source_retired");
+    // One durable handoff: earlier switch storage is no longer referenced.
+    await withRootTransaction(async () => { await proveReceipt(); await payloads.removeConversation(id, state.identity.ownerKey, proveReceipt, phase, switchId); });
+    await payloads.complete(id, switchId, { ownerKey: state.identity.ownerKey, historyBucket: id, assertOwned, withRootTransaction,
+      reserve: async () => { throw new Error("Completed switch cannot reserve anew"); }, adjustReservation: async () => {}, onPhase: phase },
+      async () => { await proveReceipt(); await this.syncManagedCanonical(id, rootIdentity); });
+    return { status: "committed" };
+  }
+  private async syncManagedCanonical(id: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    await assertDirectoryIdentity(this.root, rootIdentity);
+    const path = join(this.root, `${historyKey(id)}${HISTORY_FILE_SUFFIX}`), before = await lstat(path); assertSecureHistoryFile(before, path);
+    const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try { const opened = await handle.stat(); if (!(before.dev === opened.dev && before.ino === opened.ino && before.size === opened.size && before.ctimeMs === opened.ctimeMs)) throw new Error("Canonical receipt identity changed"); await handle.sync(); }
+    finally { await handle.close(); }
+    await fsyncDirectory(this.root, rootIdentity);
+  }
+
+  private requireNativeCapability(record: LoadedHistoryRecord | CanonicalHistoryFile, capability: "native epoch transition" | "whole-conversation deletion", operation: string): void {
+    if (record.native !== undefined && !this.nativeJournalStorage) {
+      throw new Error(`Native canonical ${operation} requires managed ${capability} capability`);
+    }
+  }
+  private nativeCanonical(record: LoadedHistoryRecord): NativeTurnHistory {
+    if (record.native === undefined || !record.providerSession?.modelKey || record.providerSession.revision === undefined) throw new Error("Native canonical membership unavailable");
+    const value = { version: 3 as const, conversationId: record.conversationId, messages: record.messages,
+      providerSession: { epoch: record.providerSession.epoch, revision: record.providerSession.revision, modelKey: record.providerSession.modelKey },
+      ...lastCommitBinding(record), ...nativeExtension(record) };
+    validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage)); return value;
+  }
+  /** Same-model cold rotation: a fresh guarded epoch replays canonical history, so
+   * the old inherited handoff no longer applies. The switch receipt is retained. */
+  private coldRecord(source: NativeTurnHistory, next: CanonicalHistoryFile): NativeTurnHistory {
+    if (next.providerSession.modelKey !== source.providerSession.modelKey) throw new ProviderSessionModelChangedError();
+    const value = { ...next, version: 3 as const, native: { authority: source.native.authority, projection: null },
+      ...(source.lastSwitch ? { lastSwitch: structuredClone(source.lastSwitch) } : {}) };
+    validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage)); return value;
+  }
+  private nativeOperationPath(id: string): string { return join(this.root, `.native-history-op.${historyKey(id)}.json`); }
+  private validateNativeOperation(value: unknown): asserts value is NativeHistoryOperation {
+    if (!isRecord(value) || Object.keys(value).sort().join(",") !== "disposition,next,source,timestamp,version"
+      || value.version !== 3 || !["C", "D"].includes(value.disposition as string) || value.timestamp !== 0) throw new TypeError("Invalid native history lifecycle intent");
+    validateNativeTurnHistory(value.source, (message) => validateAndCloneMessage(message as HistoryMessage));
+    if (value.next !== null) {
+      if (isRecord(value.next) && value.next.native !== undefined) validateNativeTurnHistory(value.next, (message) => validateAndCloneMessage(message as HistoryMessage));
+      else validateTurnHistoryV3(value.next, (message) => validateAndCloneMessage(message as HistoryMessage));
+      if (value.next.conversationId !== value.source.conversationId) throw new TypeError("Native lifecycle owner changed");
+    }
+    if (value.disposition === "C") {
+      if (!value.next || value.next.native === undefined || value.next.providerSession.modelKey !== value.source.providerSession.modelKey || switchDigest(this.coldRecord(value.source, value.next)) !== switchDigest(value.next)) throw new TypeError("Native cold plan changed");
+    } else if (value.next && (value.next.version !== 3 || value.next.native !== undefined || value.next.messages.length || value.next.lastCommit)) throw new TypeError("Invalid native deletion replacement");
+  }
+  private async readNativeOperationBytes(name: string, rootIdentity: DirectoryIdentity): Promise<Buffer> {
+    if (!NATIVE_OPERATION_PATTERN.test(name)) throw new TypeError("Invalid native lifecycle filename");
+    const path = join(this.root, name); await assertDirectoryIdentity(this.root, rootIdentity);
+    const before = await lstat(path); assertSecureHistoryFile(before, path);
+    if (before.size > MAX_NATIVE_OPERATION_BYTES) throw new Error("Native lifecycle intent exceeds its limit");
+    const handle = await open(path, fsConstants.O_RDONLY | noFollowFlag());
+    try {
+      const opened = await handle.stat(); assertSecureHistoryFile(opened, path); assertSameIdentity(before, opened, path);
+      if (opened.size > MAX_NATIVE_OPERATION_BYTES) throw new Error("Native lifecycle intent exceeds its limit");
+      const bytes = await handle.readFile(), after = await handle.stat(), named = await lstat(path);
+      assertSecureHistoryFile(after, path); assertSecureHistoryFile(named, path); assertSameIdentity(opened, after, path); assertSameIdentity(after, named, path);
+      if (opened.size !== after.size || opened.ctimeMs !== after.ctimeMs || after.ctimeMs !== named.ctimeMs || bytes.length !== after.size) throw new Error("Native lifecycle intent changed");
+      await assertDirectoryIdentity(this.root, rootIdentity); return bytes;
+    } finally { await handle.close(); }
+  }
+  private async readNativeOperation(id: string, rootIdentity: DirectoryIdentity): Promise<NativeHistoryOperation | undefined> {
+    let bytes; try { bytes = await this.readNativeOperationBytes(`.native-history-op.${historyKey(id)}.json`, rootIdentity); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (isErrno(error, "ENOENT")) return undefined; throw error; }
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); this.validateNativeOperation(value);
+    if (value.source.conversationId !== id) throw new TypeError("Native lifecycle filename/owner mismatch");
+    await this.assertNativeRecordAuthority({ ...value.source, sourceVersion: STORE_VERSION }, rootIdentity); return value;
+  }
+  private async nativeOperationFootprint(rootIdentity: DirectoryIdentity, native?: Awaited<ReturnType<RuntimeNativeJournalStorage["inventory"]>>): Promise<{ bytes: number; reserved: number; keys: Set<string> }> {
+    const compute = async () => {
+      let bytes = 0, reserved = 0; const keys = new Set<string>();
+      const physical = this.nativeJournalStorage ? native ?? await this.managedNativeInventory(rootIdentity) : undefined;
+      for (const name of await readdir(this.root)) {
+        const match = NATIVE_OPERATION_PATTERN.exec(name); if (!match) continue;
+        keys.add(match[1]!); let size = 0;
+        try { size = (await lstat(join(this.root, name))).size; bytes += size; }
+        catch (error) {
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          if (entryAbsentOrThrowOperational(error)) { keys.delete(match[1]!); continue; }
+          this.noteDamagedEntry(name); bytes += MAX_NATIVE_OPERATION_BYTES; continue;
+        }
+        // Accounting does not need dispatchable membership. Invalid owner evidence
+        // remains charged and protected rather than blocking unrelated mutation.
+        try {
+          const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readNativeOperationBytes(name, rootIdentity))); this.validateNativeOperation(raw);
+          if (historyKey(raw.source.conversationId) !== match[1]) throw new TypeError("Native lifecycle coordinates changed");
+          if (raw.disposition === "C" && raw.next) {
+            reserved += Math.max(0, MAX_NATIVE_EPOCH_BYTES - (physical?.journals[currentJournal(raw.next.conversationId, raw.next.providerSession.epoch).journalId]?.retainedBytes ?? 0));
+          }
+        } catch (error) {
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          if (entryAbsentOrThrowOperational(error)) { keys.delete(match[1]!); bytes -= size; continue; }
+          this.noteDamagedEntry(name);
+        }
+      }
+      await assertDirectoryIdentity(this.root, rootIdentity); return { bytes, reserved, keys };
+    };
+    return this.rootAccounting ? this.rootAccounting.operations ??= compute() : compute();
+  }
+  /** Called under a root transaction; native side effects begin only after this
+   * exact intent and its directory are durable. A killed unpublished stage has
+   * no effect and follows the existing abandoned-stage cleanup policy. */
+  private async publishNativeOperation(operation: NativeHistoryOperation, rootIdentity: DirectoryIdentity): Promise<void> {
+    this.validateNativeOperation(operation);
+    const id = operation.source.conversationId, current = await this.readNativeOperation(id, rootIdentity);
+    if (current) { if (switchDigest(current) !== switchDigest(operation)) throw new Error("Conflicting native lifecycle intent"); return; }
+    const bytes = Buffer.from(`${JSON.stringify(operation)}\n`); if (bytes.length > MAX_NATIVE_OPERATION_BYTES) throw new Error("Native lifecycle intent exceeds its limit");
+    const temporary = join(this.root, `.${historyKey(id)}.${process.pid}.${randomBytes(12).toString("hex")}.tmp`);
+    await writePreparedFile(temporary, bytes, this.root, rootIdentity); await this.nativePhase("lifecycle_intent_stage_synced");
+    await rename(temporary, this.nativeOperationPath(id)); await this.nativePhase("lifecycle_intent_renamed");
+    await fsyncDirectory(this.root, rootIdentity); await this.nativePhase("lifecycle_intent_directory_synced");
+  }
+  private nativeIoOutsideRoot(rootIdentity: DirectoryIdentity, release: () => Promise<void>, replace: (unlock: () => Promise<void>) => void): NativeHistoryIo {
+    let rootHeld = true;
+    const run = async <T>(action: () => Promise<T>): Promise<T> => {
+      // A failed release/reacquisition is not an owner-local action failure.
+      // Keep the flag false until the caller has a real root unlock again.
+      rootHeld = false;
+      await release(); replace(async () => {});
+      try { return await action(); }
+      finally { replace(await this.acquireRootTransaction(rootIdentity)); rootHeld = true; }
+    };
+    return Object.assign(run, { isRootHeld: () => rootHeld });
+  }
+  /** The caller holds both the exact/logical owner and a root transaction.
+   * Canonical membership survives native deletion, including every unlink crash. */
+  private async finishNativeOperation(operation: NativeHistoryOperation, rootIdentity: DirectoryIdentity, assertOwned: () => Promise<void>, nativeIo: NativeHistoryIo): Promise<void> {
+    if (!this.nativeJournalStorage) throw new Error("Managed native lifecycle capability required");
+    const id = operation.source.conversationId;
+    const owned = async () => {
+      await assertOwned(); await this.assertNativeRecordAuthority({ ...operation.source, sourceVersion: STORE_VERSION }, rootIdentity);
+      const latest = await this.readRecord(id, rootIdentity, true);
+      const sourceMatches = latest.native !== undefined && switchDigest(this.nativeCanonical(latest)) === switchDigest(operation.source);
+      const nextMatches = operation.next === null ? latest.sourceVersion === 0 : latest.sourceVersion === operation.next.version
+        && switchDigest({ version: latest.sourceVersion, conversationId: id, messages: latest.messages, providerSession: latest.providerSession,
+          ...lastCommitBinding(latest), ...nativeExtension(latest) }) === switchDigest(operation.next);
+      if (!sourceMatches && !nextMatches) throw new Error("Canonical membership changed during native lifecycle transaction");
+    };
+    await owned();
+    // A recovered rename must regain the intent's file/directory barriers before
+    // it can authorize physical mutation in this process.
+    const intentPath = this.nativeOperationPath(id), beforeIntent = await lstat(intentPath);
+    const intentHandle = await open(intentPath, fsConstants.O_RDONLY | noFollowFlag());
+    try { assertSameIdentity(beforeIntent, await intentHandle.stat(), intentPath); await intentHandle.sync(); }
+    finally { await intentHandle.close(); }
+    await fsyncDirectory(this.root, rootIdentity);
+    const source = operation.source, sourceJournal = currentJournal(id, source.providerSession.epoch);
+    const current = await this.readRecord(id, rootIdentity, true);
+    const sourceMatches = current.native !== undefined && switchDigest(this.nativeCanonical(current)) === switchDigest(source);
+    // A published canonical next proves its epoch was created first.
+    if (operation.disposition === "C" && sourceMatches) {
+      await nativeIo(() => this.nativeJournalStorage!.createEpoch(this.epochContext(id, operation.next!.providerSession.epoch, source.native.authority, owned)));
+    }
+    if (operation.disposition === "D") {
+      await nativeIo(() => this.nativeJournalStorage!.deleteJournals([sourceJournal], { disposition: "D", hostAuthority: source.native.authority, assertOwned: owned }));
+      await this.nativePhase("lifecycle_native_deleted");
+      await this.modelSwitchPayloads(rootIdentity).removeConversation(id, source.native.authority.ownerKey, owned, this.nativePhase);
+      await this.nativePhase("lifecycle_switch_storage_deleted");
+      await this.removePendingConversation(historyKey(id), rootIdentity, owned);
+      await this.nativePhase("lifecycle_pending_deleted");
+    }
+    if (sourceMatches) {
+      if (operation.next) {
+        const stage = await this.writeStage(operation.next, rootIdentity); await this.nativePhase("lifecycle_canonical_stage_synced");
+        await owned(); await rename(stage.temporaryPath, this.recordPath(id));
+      } else { await owned(); await rm(this.recordPath(id)); }
+      this.invalidateCanonicalAccounting(`${historyKey(id)}${HISTORY_FILE_SUFFIX}`);
+      await this.nativePhase("lifecycle_canonical_published");
+    }
+    await this.syncLifecycleCanonical(id, operation.next !== null, rootIdentity); await this.nativePhase("lifecycle_canonical_directory_synced");
+    if (operation.disposition === "C") {
+      await nativeIo(() => this.nativeJournalStorage!.deleteJournals([sourceJournal], { disposition: "C",
+        hostAuthority: source.native.authority, assertOwned: owned })); await this.nativePhase("lifecycle_native_deleted");
+    }
+    const fence = await this.findDirtyFence(historyKey(id), await this.ensureLocksRoot());
+    if (fence) {
+      const handle = fence.providerSessionId ?? deriveProviderSessionId(id, fence.epoch);
+      if (handle !== sourceJournal.handleId) throw new Error("Native lifecycle fence is outside the authorized journal");
+      await this.removeDirtyFenceAfterCommit(fence);
+    }
+    await this.removePendingConversation(historyKey(id), rootIdentity, owned); await this.nativePhase("lifecycle_fence_cleaned");
+    await owned(); await rm(this.nativeOperationPath(id)); await this.nativePhase("lifecycle_intent_removed");
+    await fsyncDirectory(this.root, rootIdentity); await this.nativePhase("lifecycle_intent_removal_synced");
+  }
+  private async syncLifecycleCanonical(id: string, present: boolean, rootIdentity: DirectoryIdentity): Promise<void> {
+    if (present) await this.syncManagedCanonical(id, rootIdentity); else await fsyncDirectory(this.root, rootIdentity);
+  }
+  private async nativeOperationOwners(rootIdentity: DirectoryIdentity): Promise<NativeHistoryOperation[]> {
+    const operations: NativeHistoryOperation[] = [];
+    for (const name of await readdir(this.root)) {
+      if (!NATIVE_OPERATION_PATTERN.test(name)) continue;
+      const path = join(this.root, name);
+      try {
+        const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await this.readNativeOperationBytes(name, rootIdentity))); this.validateNativeOperation(raw);
+        const operation = await this.readNativeOperation(raw.source.conversationId, rootIdentity);
+        if (!operation || this.nativeOperationPath(raw.source.conversationId) !== path) throw new TypeError("Native lifecycle filename changed"); operations.push(operation);
+      } catch (error) {
+        await assertDirectoryIdentity(this.root, rootIdentity); await this.nativeHistoryRoot(rootIdentity).read();
+        if (!entryAbsentOrThrowOperational(error)) this.noteDamagedEntry(name);
+      }
+    }
+    return operations;
+  }
+  /** Cleanup invariants:
+   * - prepareRecord/provider admission: only our logical D may run before
+   *   reservation; a foreign failure cannot block an unrelated owner.
+   * - resumeInactiveNativeDeletions: borrowed ownership prevents same-owner
+   *   stranding; without native capability do nothing. Foreign D runs only as
+   *   post-commit maintenance; owner/native failures are diagnostic only while
+   *   the root is held. Failed root reacquisition aborts maintenance.
+   * - retentionPlan: protect persisted/busy evidence, preserve LRU, probe only
+   *   needed victims and never grant capacity credit from an excluded victim.
+   * - applyRetention: exclude busy or failed-intent victims and replan so a
+   *   free victim can restore quotas; never continue after losing the root lock.
+   * Accepted limits: a v5 logical owner busy in another process can be admitted
+   * for credit and leave maintenance pending. The replan bound is fixed at the
+   * start-of-maintenance entry count (+ one final plan), not extended by arrivals.
+   */
+  private async resumeInactiveNativeDeletions(rootIdentity: DirectoryIdentity, nativeIo: NativeHistoryIo,
+    committingOwner: HeldLogicalConversation, phase: "prepare" | "maintenance"): Promise<void> {
+    if (!this.nativeJournalStorage) return;
+    const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    const fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+    for (const key of [...fences.damaged.keys(), ...fences.incomplete.keys()]) active.add(key);
+    for (const operation of await this.nativeOperationOwners(rootIdentity)) {
+      const id = operation.source.conversationId, logicalId = logicalConversationIdForFence(id);
+      if (operation.disposition !== "D" || active.has(historyKey(id))
+        || phase === "prepare" && logicalId !== committingOwner.logicalConversationId) continue;
+      let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined;
+      try {
+        try {
+          owner = committingOwner.logicalConversationId === logicalId ? committingOwner : await this.acquireLogicalConversation(logicalId, true);
+          if (requiresExactConversationClaim(id)) exact = await this.acquireExactConversationClaim(id, true);
+          if (!await this.legacyLockAvailable(historyKey(id))) continue;
+          await this.finishNativeOperation(operation, rootIdentity, () => owner!.assertOwned(), nativeIo);
+        } finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
+      } catch (error) {
+        if (!nativeIo.isRootHeld()) throw error;
+        if (error instanceof HistoryOwnerBusyError) continue;
+        if (phase === "prepare") throw error;
+        recordPostCommitMaintenanceFailure(this.root, error);
+      }
+    }
+  }
+  private async recoverNativeOperation(id: string, held: HeldConversation): Promise<void> {
+    let releaseRoot = await this.acquireRootTransaction(held.rootIdentity);
+    const nativeIo = this.nativeIoOutsideRoot(held.rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
+    try { const operation = await this.readNativeOperation(id, held.rootIdentity); if (operation) await this.finishNativeOperation(operation, held.rootIdentity, () => held.assertOwned(), nativeIo); }
+    finally { await releaseRoot(); }
   }
 
   async load(conversationId: string): Promise<readonly HistoryMessage[]> {
@@ -284,12 +1027,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return retained.map(cloneMessage);
   }
 
-  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined> {
+  async readProviderSessionBinding(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number; readonly native?: true } | undefined> {
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
-    const provider = record.sourceVersion === STORE_VERSION ? record.providerSession : undefined;
-    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0 };
+    const provider = record.providerSession;
+    return provider === undefined ? undefined : { ...modelBinding(provider.modelKey), revision: provider.revision ?? 0, ...(record.native !== undefined ? { native: true as const } : {}) };
   }
 
   async append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
@@ -302,14 +1045,53 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  private async assertResetReadable(id: string, rootIdentity: DirectoryIdentity): Promise<void> {
+    const key = historyKey(id), switches = await this.modelSwitchPayloads(rootIdentity).inventory(id);
+    if (switches.damaged.includes(key)) throw new HistoryResetDamagedError(switches.damagedFiles);
+    try { await this.nativeHistoryRoot(rootIdentity).read(); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error; throw new HistoryResetDamagedError([NATIVE_HISTORY_ROOT_FILE], error); }
+    try {
+      const markers = await this.scanActiveMarkers(false), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+      const names = markers.filter((entry) => entry.conversationKey === key && entry.damaged).map((entry) => entry.path);
+      if (fences.damaged.has(key)) names.push(fences.damaged.get(key)!);
+      if (names.length) throw new HistoryResetDamagedError(names);
+    } catch (error) {
+      if (entryAbsentOrThrowOperational(error)) throw error;
+      const shared = error instanceof OwnedFileDamagedError ? error.entryName : String(error).match(/(?:root|logical-session-shard-[a-f0-9]{2})\.sqlite(?:-journal)?|\.native-history-root\.json/u)?.[0];
+      if (shared) throw new HistoryResetDamagedError([shared], error);
+      throw error;
+    }
+    const payloads = this.pendingPayloads(rootIdentity);
+    for (const entry of (await payloads.list()).filter((entry) => entry.conversationKey === key)) {
+      try { if (entry.damaged) throw new OwnedFileDamagedError(entry.name); if (!entry.name.endsWith(".tmp")) await payloads.inspect(entry); }
+      catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) continue; throw new HistoryResetDamagedError([entry.name], error); }
+    }
+    try { await this.readNativeOperation(id, rootIdentity); }
+    catch (error) { await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error; throw new HistoryResetDamagedError([basename(this.nativeOperationPath(id))], error); }
+    let record;
+    try { record = await this.readRecord(id, rootIdentity, true); }
+    catch (error) {
+      await assertDirectoryIdentity(this.root, rootIdentity); if (entryAbsentOrThrowOperational(error)) throw error;
+      throw new HistoryResetDamagedError([error instanceof NativeRootMarkerMissingError ? NATIVE_HISTORY_ROOT_FILE : basename(this.recordPath(id))], error);
+    }
+    if (record.native && this.nativeJournalStorage) {
+      const journal = currentJournal(id, record.providerSession!.epoch);
+      const inventory = await this.nativeJournalStorage.inventory([journal.journalId]);
+      const presence = await this.nativeJournalStorage.inspectCurrentJournal?.(journal);
+      if (inventory.journals[journal.journalId]?.damaged || presence?.status === "unreadable") throw new HistoryResetDamagedError([`${journal.journalId}.jsonl`]);
+    }
+  }
+
   async reset(conversationId: string): Promise<void> {
     const normalizedId = normalizeConversationId(conversationId);
+    await this.assertResetReadable(normalizedId, await this.ensureRoot());
     await this.resetPhysicalConversation(normalizedId);
   }
 
   async resetLogicalConversation(logicalConversationId: string): Promise<void> {
     const logicalId = normalizeConversationId(logicalConversationId);
-    const heldLogical = await this.acquireLogicalConversation(logicalId);
+    await this.assertResetReadable(logicalId, await this.ensureRoot());
+    const heldLogical = await this.acquireLogicalConversation(logicalId).catch(rethrowResetAcquisition);
     let heldExact: HeldExactConversationClaim | undefined;
     try {
       const rootIdentity = heldLogical.rootIdentity;
@@ -322,15 +1104,56 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (requiresExactConversationClaim(logicalId)) {
         heldExact = await this.acquireExactConversationClaim(logicalId);
       }
-      const entries = await this.scanCommittedEntries(rootIdentity, true);
-      const conversationIds: string[] = [];
-      for (const entry of entries) {
-        const record = await this.readCommittedEntryRecord(entry, rootIdentity);
-        if (belongsToLogicalConversation(record.conversationId, logicalId)) {
-          conversationIds.push(record.conversationId);
+      const conversationIds = new Set<string>();
+      const unattributableNames = new Set<string>();
+      let orderedIds: string[];
+      const releaseDiscovery = await this.acquireRootTransaction(rootIdentity);
+      try {
+        const entries = await this.scanCommittedEntries(rootIdentity, true);
+        // A readable fence proves membership even when its child's canonical cannot.
+        const fencedKeys = new Set((await this.scanDirtyFences(await this.ensureLocksRoot(), false))
+          .filter((fence) => fence.logicalConversationKey === historyKey(logicalId)).map((fence) => fence.conversationKey));
+        for (const entry of entries) {
+          let record;
+          try { record = await this.readCommittedEntryRecord(entry, rootIdentity); }
+          catch (error) {
+            // A damaged foreign record is preserved, never a reason to block this
+            // reset; a damaged base or fence-attested member still refuses it.
+            if (!(error instanceof CanonicalParseFailure)) throw error;
+            if (entryAbsentOrThrowOperational(error)) continue;
+            if (entry.name === `${historyKey(logicalId)}${HISTORY_FILE_SUFFIX}` || fencedKeys.has(entry.name.slice(0, -HISTORY_FILE_SUFFIX.length))) throw new HistoryResetDamagedError([entry.name], error);
+            continue;
+          }
+          if (belongsToLogicalConversation(record.conversationId, logicalId)) {
+            this.requireNativeCapability(record, "whole-conversation deletion", "logical reset");
+            conversationIds.add(record.conversationId);
+          }
         }
-      }
-      const orderedIds = conversationIds.sort();
+        for (const entry of await this.pendingPayloads(rootIdentity).list()) {
+          try {
+            const { payload } = await this.pendingPayloads(rootIdentity).inspect(entry);
+            if (belongsToLogicalConversation(payload.identity.historyBucket, logicalId)) conversationIds.add(payload.identity.historyBucket);
+          } catch {
+            // Unattributable generations are preserved and charged, not a reason
+            // to prevent resetting an unrelated logical session. Exact reset and
+            // validated logical fence coordinates can still clear known owners.
+            await assertDirectoryIdentity(this.root, rootIdentity);
+            await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), await this.ensureLocksRoot());
+            unattributableNames.add(entry.name);
+            // Filename coordinates are sufficient for the exact logical base.
+            // Validated child identities below are reset under their own claims,
+            // which also clear every torn generation at those known coordinates.
+            if (entry.conversationKey === historyKey(logicalId)) conversationIds.add(logicalId);
+          }
+        }
+        for (const operation of await this.nativeOperationOwners(rootIdentity)) {
+          if (belongsToLogicalConversation(operation.source.conversationId, logicalId)) conversationIds.add(operation.source.conversationId);
+        }
+        orderedIds = [...conversationIds].sort();
+        await heldLogical.assertOwned();
+        // Fail before resetting any sibling, not midway through logical reset.
+        for (const id of orderedIds) { await this.assertResetReadable(id, rootIdentity); await this.requireNoModelSwitch(id, rootIdentity); }
+      } finally { await releaseDiscovery(); }
       if (orderedIds.includes(logicalId)) {
         await this.resetPhysicalConversation(logicalId, heldLogical, heldExact);
       }
@@ -338,8 +1161,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (conversationId === logicalId) continue;
         await this.resetPhysicalConversation(conversationId, heldLogical);
       }
-      await this.resetDirtyFencesForLogicalConversation(logicalId);
-    } finally {
+      await this.resetDirtyFencesForLogicalConversation(logicalId, heldLogical);
+      const releaseDiagnostics = await this.acquireRootTransaction(rootIdentity);
+      try {
+        await heldLogical.assertOwned();
+        const preserved = (await this.pendingPayloads(rootIdentity).list()).filter((entry) => unattributableNames.has(entry.name)).length;
+        if (preserved > 0) recordPostCommitMaintenanceFailure(this.root, new Error(
+          `Logical reset preserved ${preserved} unattributable pending entries; exact-owner reset is required to clear unknown coordinates.`));
+      } finally { await releaseDiagnostics(); }
+    } catch (error) { rethrowResetAcquisition(error); }
+    finally {
       try {
         if (heldExact !== undefined) {
           await heldExact.release();
@@ -350,7 +1181,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async resetDirtyFencesForLogicalConversation(logicalConversationId: string): Promise<void> {
+  private async resetDirtyFencesForLogicalConversation(logicalConversationId: string, held: HeldLogicalConversation): Promise<void> {
     const rootIdentity = await this.ensureRoot();
     const locksIdentity = await this.ensureLocksRoot();
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
@@ -368,7 +1199,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             ? deriveProviderSessionId(logicalConversationId, fence.epoch)
             : undefined);
         if (providerSessionId === undefined) continue;
-        matching.push({ fence, providerSessionId });
+        if (fence.kind !== undefined && this.retireProviderSession === undefined) {
+          throw new Error("Reset of a pending native turn requires fail-closed provider retirement.");
+        }
+        matching.push({ fence: await this.authorizeFenceReset(fence, locksIdentity), providerSessionId });
       }
       // Every fence remains a crash-recovery journal until all matching provider
       // retirements succeed. A failure therefore leaves the reset retryable and
@@ -377,6 +1211,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // so an unrelated maintenance sweep cannot consume the same journal.
       await this.retireProviderSessions(matching.map((entry) => ({ providerSessionId: entry.providerSessionId, ...modelBinding(entry.fence.modelKey) })));
       for (const { fence } of matching) {
+        await this.removePendingConversation(fence.conversationKey, rootIdentity, () => held.assertOwned());
         await rm(fence.path);
       }
       if (matching.length > 0) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
@@ -390,7 +1225,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     logicalFence?: HeldLogicalConversation,
     exactFence?: HeldExactConversationClaim,
   ): Promise<void> {
-    const held = await this.acquireConversation(conversationId, logicalFence, exactFence);
+    const held = await this.acquireConversation(conversationId, logicalFence, exactFence).catch(rethrowResetAcquisition);
     await this.resetHeldPhysicalConversation(conversationId, held);
   }
 
@@ -401,14 +1236,31 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const rootIdentity = held.rootIdentity;
     let prepared: PreparedHistoryAppend;
     try {
+      await this.assertResetReadable(conversationId, rootIdentity);
       const existing = await this.readRecord(conversationId, rootIdentity);
-      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
+      this.requireNativeCapability(existing, "whole-conversation deletion", "reset");
+      if (existing.native !== undefined) {
+        const source = this.nativeCanonical(existing);
+        const operation: NativeHistoryOperation = { version: 3, disposition: "D", source, timestamp: 0,
+          next: { version: 3, conversationId, messages: [], providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) } } };
+        let releaseRoot = await this.acquireRootTransaction(rootIdentity);
+        const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
+        try { await this.requireNoModelSwitch(conversationId, rootIdentity); await this.publishNativeOperation(operation, rootIdentity); await this.finishNativeOperation(operation, rootIdentity, () => held.assertOwned(), nativeIo); }
+        finally { await releaseRoot(); }
+        await this.releaseConversation(held, rootIdentity); return;
+      }
+      if (this.retireProviderSession === undefined
+        && (await this.pendingPayloads(rootIdentity).list()).some((entry) => entry.conversationKey === historyKey(conversationId))) {
+        throw new Error("Reset of pending turn payloads requires fail-closed provider retirement.");
+      }
+      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity, true);
       prepared = await this.prepareRecord({
         version: STORE_VERSION,
         conversationId,
         messages: [],
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
-      }, held, rootIdentity, undefined, retirementFence);
+      }, held, rootIdentity, undefined, retirementFence,
+      async () => await this.removePendingConversation(historyKey(conversationId), rootIdentity, () => held.assertOwned()));
     } catch (error) {
       await this.releaseConversation(held, rootIdentity).catch(() => undefined);
       throw error;
@@ -430,14 +1282,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
+      const current = await this.readRecord(normalizedId, rootIdentity); await this.assertSwitchOwnerReadable(normalizedId, rootIdentity);
+      this.requireNativeCapability(current, "native epoch transition", "host-only append");
+      await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity);
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
       const combined = [...existing.messages, ...admitted];
       const retained = retainHistoryMessages(combined, this.maxMessages);
-      const record: HistoryFileV2 = {
+      const record: CanonicalHistoryFile = {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: retained,
+        ...lastCommitBinding(existing),
         // Host-only history is not present in a provider transcript. Rotate on
         // every ordinary append so no old provider cache can be resumed.
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
@@ -449,9 +1305,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn> {
+  private async beginExclusiveTurn(conversationId: string, signal?: AbortSignal): Promise<ConversationHistoryExclusiveTurn> {
+    signal?.throwIfAborted();
     const normalizedId = normalizeConversationId(conversationId);
-    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId));
+    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId), false, signal);
     let heldExact: HeldExactConversationClaim | undefined;
     let marker: ActiveMarker | undefined;
     let settled = false;
@@ -486,16 +1343,23 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     };
     try {
       if (requiresExactConversationClaim(normalizedId)) {
-        heldExact = await this.acquireExactConversationClaim(normalizedId);
+        heldExact = await this.acquireExactConversationClaim(normalizedId, false, signal);
       }
+      this.requireNativeCapability(await this.readRecord(normalizedId, heldLogical.rootIdentity), "native epoch transition", "exclusive host-only mutation");
+      const settlementOwner = await this.acquireConversation(normalizedId, heldLogical, heldExact, false, signal);
+      try { await this.settleHeldTurn(normalizedId, settlementOwner); }
+      finally { await this.releaseConversation(settlementOwner, settlementOwner.rootIdentity); }
       const locksIdentity = await this.ensureLocksRoot();
-      const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity);
+      const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity, signal);
       try {
+        signal?.throwIfAborted();
         await this.retireInactiveDirtyFences(
           heldLogical.rootIdentity,
           locksIdentity,
           historyKey(normalizedId),
         );
+        requireSettledFence(await this.findDirtyFence(historyKey(normalizedId), locksIdentity));
+        signal?.throwIfAborted();
         marker = await this.createActiveMarker(historyKey(normalizedId), locksIdentity);
       } finally {
         await releaseRoot();
@@ -519,10 +1383,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             }
             const retirementFence = await this.prepareProviderRetirement(current, held.rootIdentity);
             const retained = retainHistoryMessages([...current.messages, ...admitted], this.maxMessages);
-            const record: HistoryFileV2 = {
+            const record: CanonicalHistoryFile = {
               version: STORE_VERSION,
               conversationId: normalizedId,
               messages: retained,
+              ...lastCommitBinding(current),
               providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(current.providerSession?.modelKey) },
             };
             const inner = await this.prepareRecord(record, held, held.rootIdentity, undefined, retirementFence);
@@ -571,6 +1436,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const held = await this.acquireConversation(normalizedId);
     const rootIdentity = held.rootIdentity;
     try {
+      this.requireNativeCapability(await this.readRecord(normalizedId, rootIdentity), "native epoch transition", "context import");
+      await this.settleHeldTurn(normalizedId, held);
       const existing = await this.readRecord(normalizedId, rootIdentity, true);
       const exactPair = findContextImportPair(existing.messages, normalized.idempotencyKey);
       if (exactPair !== undefined) {
@@ -587,10 +1454,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         { role: "system", name: "context-import-provenance", content: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, timestamp: normalized.timestamp },
         { role: "assistant", name: "context-import", content: normalized.text, timestamp: normalized.timestamp, idempotencyKey: normalized.idempotencyKey },
       ];
-      const record: HistoryFileV2 = {
+      const record: CanonicalHistoryFile = {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages,
+        ...lastCommitBinding(existing),
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
       };
       return {
@@ -603,18 +1471,177 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  /** Settle/capture under one owner before host preparation, without admitting
+   * incoming execution. Default callers still use beginProviderSessionTurn. */
+  async beginProviderSessionPreparation(conversationId: string, runId: string, signal?: AbortSignal): Promise<ManagedProviderSessionPreparation> {
+    signal?.throwIfAborted();
+    const id = normalizeConversationId(conversationId), normalizedRunId = normalizeRunId(runId);
+    // Read-only preflight before acquisition-time cleanup of unrelated fences;
+    // settleHeldTurn rechecks under ownership.
+    const preflightRoot = await this.ensureRoot(); await this.readRecord(id, preflightRoot); await this.assertSwitchOwnerReadable(id, preflightRoot);
+    const held = await this.acquireConversation(id, undefined, undefined, false, signal);
+    let state: "prepared" | "transferred" | "closed" = "prepared";
+    let queue = Promise.resolve();
+    const children = new Set<() => Promise<void>>();
+    const assertOwned = async () => {
+      if (state !== "prepared") throw new Error("Provider preparation is no longer owned");
+      await held.assertOwned();
+      if (state !== "prepared") throw new Error("Provider preparation is no longer owned");
+    };
+    const serialize = <T>(action: () => Promise<T>): Promise<T> => {
+      const current = queue.then(action, action); queue = current.then(() => undefined, () => undefined); return current;
+    };
+    const owned = <T>(action: () => Promise<T>) => serialize(async () => { await assertOwned(); return await action(); });
+    const borrowed = { ...held, assertOwned };
+    const closeChildren = async () => { for (const release of children) await release(); children.clear(); };
+    try {
+      const recovery = await this.settleHeldTurn(id, held);
+      return {
+        recovery,
+        assertOwned,
+        read: () => owned(async () => {
+          const record = await this.readRecord(id, held.rootIdentity);
+          const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory(id)).pending.filter((entry) => entry.state.identity.historyBucket === id);
+          if (pending.length > 1) throw new Error("Conflicting pending model switches");
+          return structuredClone({ ...(pending[0] ? { pending: pending[0].state } : {}), history: record.messages, source: await this.modelSwitchStorageSource(id),
+            ...(record.native ? { native: record.native } : {}), ...(record.lastSwitch ? { lastSwitch: record.lastSwitch } : {}) });
+        }),
+        captureNativeEvidence: (legacyProvenance) => owned(async () => {
+          const native = this.nativeJournalStorage as Partial<import("@mono-agent/runtime-adapter").RuntimeNativePreparationStorage> | undefined;
+          if (!native?.captureEvidence || !native.freeze) throw new Error("Native evidence capture capability unavailable");
+          const source = await this.modelSwitchStorageSource(id), record = await this.readRecord(id, held.rootIdentity);
+          if (source.status !== "supported") throw new Error("Native evidence source unavailable");
+          if (legacyProvenance && `${legacyProvenance.provider}:${legacyProvenance.model}` !== source.fromModelKey) throw new Error("Legacy source model disagrees with canonical binding");
+          // The inherited prior handoff is the current journal's exact prefix.
+          const prior = record.native?.projection && record.lastSwitch?.toEpoch === source.sourceEpoch
+            ? (await this.modelSwitchPayloads(held.rootIdentity).readArtifact(id, record.lastSwitch.switchId, record.native.projection)).artifact : null;
+          const coordinates = { epoch: source.sourceEpoch, handleId: deriveProviderSessionId(id, source.sourceEpoch), ownerKey: source.ownerKey, historyBucket: id,
+            ...(record.native ? { journalId: currentJournal(id, source.sourceEpoch).journalId } : {}),
+            ...(legacyProvenance ? { provenance: { ...structuredClone(legacyProvenance), account: null } } : {}) };
+          const presence = native.inspectCurrentJournal ? await native.inspectCurrentJournal(coordinates) : { status: "present" as const };
+          if (presence.status === "unreadable") throw Object.assign(new Error("Native evidence source is unreadable"), { code: "ERR_NATIVE_JOURNAL_UNREADABLE" });
+          // A definitively missing journal feeds canonical history through the same handoff order.
+          const current = presence.status === "missing" ? null : await native.freeze(coordinates);
+          if (current && `${current.provenance.provider}:${current.provenance.model}` !== source.fromModelKey) throw new Error("Captured source model disagrees with canonical binding");
+          const view = await native.captureEvidence(current, { ownerKey: source.ownerKey, historyBucket: id, prior,
+            ...(current ? {} : { gaps: [{ reference: `canonical:${historyKey(id)}`, reason: "journal_missing", afterJournalId: null, messages: structuredClone(record.messages) }] }),
+            ...(record.native ? { hostAuthority: record.native.authority } : {}), assertOwned });
+          await assertOwned(); return { source: structuredClone(current), view };
+        }),
+        readHandoff: (switchId, reference) => owned(async () => {
+          switchHash(switchId); validateSwitchReference(reference);
+          const payloads = this.modelSwitchPayloads(held.rootIdentity), record = await this.readRecord(id, held.rootIdentity);
+          const pending = await payloads.read(id, switchId);
+          const ready = pending?.state.phase === "ready" ? pending.state.artifact : undefined;
+          const canonical = record.lastSwitch?.switchId === switchId ? record.native?.projection : undefined;
+          if (switchDigest(reference) !== switchDigest(ready ?? canonical ?? null)) throw new Error("Handoff is not the accepted current or pending projection");
+          const cached = await payloads.readArtifact(id, switchId, reference);
+          validateFrozenHandoffBudget(cached.artifact.budget);
+          await assertOwned(); return { artifact: structuredClone(cached.artifact), budget: structuredClone(cached.artifact.budget) };
+        }),
+        acquireNativeHistoryAuthority: () => owned(async () => {
+          if (id.length > 512 || held.logical.logicalConversationId.length > 512) return { status: "unsupported" as const, reason: "id_limit" as const };
+          const lease = await this.acquireHeldNativeHistoryAuthority(id, borrowed, false);
+          if (lease.status === "unsupported") return lease;
+          children.add(lease.release);
+          return { status: "owned" as const, authority: lease.authority,
+            assertOwned: async () => { await assertOwned(); await lease.assertOwned(); }, release: () => serialize(() => lease.release()) };
+        }),
+        beginModelSwitchStorage: (input) => owned(async () => {
+          validateModelSwitchState(input); const intent = structuredClone(input);
+          if (intent.identity.historyBucket !== id || intent.identity.ownerKey !== logicalConversationIdForFence(id)) throw new Error("Prepared switch belongs to another owner/bucket");
+          if (id.length > 512 || intent.identity.ownerKey.length > 512) return { status: "unsupported" as const, reason: "id_limit" as const };
+          const lease = await this.beginHeldModelSwitchStorage(intent, borrowed, false);
+          if (lease.status === "unsupported") return lease;
+          children.add(lease.release);
+          return { status: "owned" as const, read: () => owned(() => lease.read()),
+            admit: (producer) => owned(() => lease.admit(producer)), finish: (producer, outcome) => owned(() => lease.finish(producer, outcome)),
+            advanceUnfit: () => owned(() => lease.advanceUnfit()), assertMessageUnconsumed: (digest) => owned(() => lease.assertMessageUnconsumed(digest)), authorizeMessage: (digest) => owned(() => lease.authorizeMessage(digest)),
+            accept: (artifact) => owned(() => lease.accept(artifact)), recoverArtifact: () => owned(() => lease.recoverArtifact()),
+            release: () => serialize(() => lease.release()) };
+        }),
+        rollForwardModelSwitch: (switchId, options) => owned(async () => {
+          if (!this.nativeJournalStorage) throw new Error("Managed native switch capability required");
+          return await this.rollForwardHeldModelSwitch(id, switchId, borrowed, options?.onPhase);
+        }),
+        abandonModelSwitch: (switchId) => owned(async () => {
+          await this.modelSwitchPayloads(held.rootIdentity).abandon(id, switchId, { ownerKey: logicalConversationIdForFence(id), historyBucket: id, assertOwned,
+            withRootTransaction: async (action) => { const unlock = await this.acquireRootTransaction(held.rootIdentity); try { await assertOwned(); return await action(); } finally { await unlock(); } },
+            reserve: async () => { throw new Error("Abandoning a switch cannot reserve anew"); }, adjustReservation: async () => {}, onPhase: this.nativePhase });
+        }),
+        inspectCurrentJournal: () => owned(async (): Promise<CurrentJournalPresence> => {
+          const native = this.nativeJournalStorage;
+          if (!native?.inspectCurrentJournal) return { status: "absent" };
+          const record = await this.readRecord(id, held.rootIdentity), session = record.providerSession;
+          if (session?.modelKey === undefined || session.revision === undefined || session.dirtyRunId !== undefined) return { status: "absent" };
+          // An unguarded epoch has no journal before its first admitted turn; a
+          // guarded epoch is published with its initializer at C/switch time.
+          if (!record.native && (record.sourceVersion !== STORE_VERSION || session.revision === 0)) return { status: "absent" };
+          const presence = await native.inspectCurrentJournal(record.native ? currentJournal(id, session.epoch) : { handleId: deriveProviderSessionId(id, session.epoch) });
+          await assertOwned();
+          if (presence.status === "unreadable") return { status: "unreadable", reason: presence.reason };
+          return presence.status === "missing" ? { status: "missing", epoch: session.epoch } : { status: "present" };
+        }),
+        admit: (input, options) => {
+          const missingCurrentEpoch = options?.missingCurrentEpoch;
+          let binding: ProviderSessionTurnBinding;
+          try { binding = structuredClone(input); } catch (error) { return Promise.reject(error); }
+          return owned(async () => {
+            assertSessionModelKey(binding.modelKey);
+            if (binding.reconciliation && Buffer.byteLength(normalizedRunId) > 512) throw new TypeError("Reconciled turn id exceeds 512 bytes.");
+            if (binding.reconciliation && this.inspectProviderTurn === undefined) throw new Error("Native turn reconciliation is not configured.");
+            await this.settleHeldTurn(id, borrowed);
+            await this.requireNoModelSwitch(id, held.rootIdentity);
+            const record = await this.readRecord(id, held.rootIdentity);
+            if (record.providerSession?.modelKey !== undefined && record.providerSession.modelKey !== binding.modelKey) {
+              throw new Error("Prepared provider admission requires a ready canonical model binding");
+            }
+            await closeChildren();
+            // All borrowed operations have drained. Only the P2 turn may now own
+            // this physical claim; preparation abort cannot release it afterward.
+            state = "transferred";
+            try {
+              if (binding.reconciliation) await this.drainBeforeAdmission(id, normalizedRunId, binding);
+            } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity); throw error; }
+            let turnOwned!: () => Promise<void>;
+            let native: NativeTurnHistory["native"] | undefined;
+            try {
+              const turn = await this.beginHeldProviderSessionTurn(id, normalizedRunId, binding, held, (assertion, binding) => { turnOwned = assertion; native = binding; }, missingCurrentEpoch);
+              return { ...turn, ...(native ? { native } : {}), assertOwned: () => turnOwned() };
+            } catch (error) { state = "closed"; throw error; } // P2 helper released its owner.
+          });
+        },
+        abort: () => serialize(async () => {
+          if (state !== "prepared") return;
+          state = "closed"; await closeChildren(); await this.releaseConversation(held, held.rootIdentity);
+        }),
+      };
+    } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity).catch(() => undefined); throw error; }
+  }
+
   async beginProviderSessionTurn(
     conversationId: string,
     runId: string,
     binding?: ProviderSessionTurnBinding,
+    signal?: AbortSignal,
   ): Promise<ConversationHistoryProviderSessionTurn> {
+    signal?.throwIfAborted();
     if (binding !== undefined) assertSessionModelKey(binding.modelKey);
     const normalizedId = normalizeConversationId(conversationId);
     const normalizedRunId = normalizeRunId(runId);
-    const held = await this.acquireConversation(normalizedId);
+    if (binding?.reconciliation && Buffer.byteLength(normalizedRunId) > 512) throw new TypeError("Reconciled turn id exceeds 512 bytes.");
+    if (binding?.reconciliation !== undefined) await this.drainBeforeAdmission(normalizedId, normalizedRunId, binding, signal);
+    const held = await this.acquireConversation(normalizedId, undefined, undefined, false, signal);
+    return await this.beginHeldProviderSessionTurn(normalizedId, normalizedRunId, binding, held);
+  }
+  private async beginHeldProviderSessionTurn(normalizedId: string, normalizedRunId: string, binding: ProviderSessionTurnBinding | undefined,
+    held: HeldConversation, captureOwnership?: (assertOwned: () => Promise<void>, native?: NativeTurnHistory["native"]) => void,
+    missingCurrentEpoch?: string): Promise<ConversationHistoryProviderSessionTurn> {
     const rootIdentity = held.rootIdentity;
     let turnSettled = false;
     let prepared: PreparedHistoryAppend | undefined;
+    let preparationInvalidated = false;
+    let reconciliationSettlement: { readonly nativeReusable: boolean } | undefined;
     let turnOperation = Promise.resolve();
     const serializeTurn = <T>(action: () => Promise<T>): Promise<T> => {
       const current = turnOperation.then(action, action);
@@ -622,8 +1649,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       return current;
     };
     try {
-      const existing = await this.readRecord(normalizedId, rootIdentity);
-      const existingProvider = existing.sourceVersion === STORE_VERSION ? existing.providerSession : undefined;
+      const recovery = await this.settleHeldTurn(normalizedId, held);
+      const releaseAside = await this.acquireRootTransaction(rootIdentity);
+      let historySetAside;
+      try { await held.assertOwned(); historySetAside = await this.setAsideUnreadable(`${historyKey(normalizedId)}${HISTORY_FILE_SUFFIX}`, rootIdentity); }
+      finally { await releaseAside(); }
+      let existing = await this.readRecord(normalizedId, rootIdentity);
+      // Ordinary P2 callers cannot supply the accepted native projection/current
+      // authority. Refuse before cold rotation, dirty admission or native I/O.
+      // Only owner-held preparation may transfer that proof into dispatch.
+      if (existing.native !== undefined && binding?.unpreparedNativeDispatch === true) throw new OrdinaryNativeDispatchUnavailableError();
+      if (binding?.reconciliation && existing.lastCommit?.turnId === normalizedRunId) throw new DurableTurnAlreadyCommittedError();
+      const existingProvider = existing.providerSession;
       const modelKey = binding?.modelKey ?? existingProvider?.modelKey;
       const previousModelKey = binding !== undefined && existingProvider?.modelKey !== modelKey
         ? existingProvider?.modelKey : undefined;
@@ -634,11 +1671,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const conversationKey = historyKey(normalizedId);
       const locksIdentity = await this.ensureLocksRoot();
       let fence: DirtyFence;
+      let payload: PendingTurnPayload | undefined;
       let epoch: string;
       let revision: number;
-      const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+      let releaseRoot = await this.acquireRootTransaction(rootIdentity);
+      const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
       try {
+        await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical, "prepare");
+        await this.requireNoModelSwitch(normalizedId, rootIdentity);
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
+        requireSettledFence(existingFence);
         // The read-only preflight can race another process. Guard the binding
         // again under the root transaction before any rotation or retirement.
         if (binding?.skipModelRotation === true && existingProvider !== undefined
@@ -647,15 +1689,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             : existingProvider.modelKey !== binding.modelKey)) {
           throw new ProviderSessionModelChangedError();
         }
-        const reusable = (binding === undefined || existingProvider?.modelKey === binding.modelKey)
+        let reusable = (binding === undefined || existingProvider?.modelKey === binding.modelKey)
           && this.maxMessages > 0
           && existingFence === undefined
           && existingProvider !== undefined
           && existingProvider.dirtyRunId === undefined
           && existingProvider.revision !== undefined
-          && existingProvider.revision < Number.MAX_SAFE_INTEGER;
+          && existingProvider.revision < Number.MAX_SAFE_INTEGER
+          // Owner-approved missing-journal recovery: only the exact epoch the
+          // preparation probed. A later rotation already replaced it (idempotent).
+          && !(missingCurrentEpoch !== undefined && existingProvider.epoch === missingCurrentEpoch);
         if (!reusable) {
-          await this.retireProviderSessions([
+          this.requireNativeCapability(existing, "native epoch transition", "provider admission cold rotation");
+          if (existing.native !== undefined) {
+            const source = this.nativeCanonical(existing), next = this.coldRecord(source, { version: 3, conversationId: normalizedId, messages: existing.messages,
+              ...lastCommitBinding(existing), providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(modelKey) } });
+            const operation: NativeHistoryOperation = { version: 3, disposition: "C", source, next, timestamp: 0 };
+            await this.reserveNativeCold(operation, rootIdentity); await this.publishNativeOperation(operation, rootIdentity);
+            await this.finishNativeOperation(operation, rootIdentity, () => held.assertOwned(), nativeIo); existing = await this.readRecord(normalizedId, rootIdentity); reusable = true;
+          } else await this.retireProviderSessions([
             ...(existingProvider === undefined
               ? []
               : [{ providerSessionId: deriveProviderSessionId(normalizedId, existingProvider.epoch), ...modelBinding(existingProvider.modelKey) }]),
@@ -664,18 +1716,38 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               : [{ providerSessionId: existingFence.providerSessionId ?? deriveProviderSessionId(normalizedId, existingFence.epoch), ...modelBinding(existingFence.modelKey) }]),
           ]);
         }
-        epoch = reusable ? existingProvider.epoch : createProviderSessionEpoch();
-        revision = reusable ? existingProvider.revision as number : 0;
+        epoch = reusable ? existing.providerSession!.epoch : createProviderSessionEpoch();
+        revision = reusable ? existing.providerSession!.revision as number : 0;
         const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
-        const projectedCleanRecord: HistoryFileV2 = {
+        const projectedCleanRecord = preserveNativeHistory(existing, {
           version: STORE_VERSION,
           conversationId: normalizedId,
           messages: retainHistoryMessages(existing.messages, this.maxMessages),
+          ...lastCommitBinding(existing),
           providerSession: { epoch, revision: revision + 1, ...modelBinding(modelKey) },
-        };
-        await this.validateRetentionReservation(rootIdentity, [this.projectRecord(projectedCleanRecord)]);
+        });
+        // O(1) self-feasibility only: aggregate retention is checked at commit.
+        if (this.projectRecord(projectedCleanRecord).bytes > this.maxStoreBytes) throw new Error(this.quotaDiagnostic(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`));
         await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
-        fence = await this.publishDirtyFence({
+        if (binding?.reconciliation !== undefined) {
+          if (this.inspectProviderTurn === undefined || modelKey === undefined) throw new Error("Native turn reconciliation is not configured.");
+          const admission = binding.reconciliation;
+          if (admission.purpose === "execution" ? admission.initial === undefined : admission.initial !== undefined) throw new TypeError("Invalid turn admission purpose/initial input.");
+          const purpose = admission.purpose;
+          const wire: DurableTurnFence = { version: 6, kind: purpose, conversationKey,
+            logicalConversationKey: historyKey(logicalConversationIdForFence(normalizedId)), epoch, providerSessionId, modelKey,
+            revision, runIdDigest: digestRunId(normalizedRunId), payload: { generation: "0".repeat(32), sha256: "0".repeat(64) } };
+          const inputs = admission.initial === undefined ? [] : [createPendingInitialInput({
+            id: `initial:${digestRunId(normalizedRunId)}`, persistText: admission.initial.persistText, timestamp: admission.initial.timestamp,
+            ...(admission.initial.senderLabel === undefined ? {} : { senderLabel: admission.initial.senderLabel }),
+          }, admission.initial.persistText)];
+          payload = createPendingTurnPayload({ purpose, ownerKey: admission.ownerKey, historyBucket: normalizedId, turnId: normalizedRunId,
+            handleId: providerSessionId, modelKey, baseRevision: revision, fenceDigest: durableTurnFenceDigest(wire) }, inputs, "admitted");
+          const pointer = await this.pendingPayloads(rootIdentity).publish(payload, {
+            assertOwned: () => held.assertOwned(), reserve: async (bytes) => this.admitPendingBytes(bytes),
+          });
+          fence = await this.publishDirtyFence({ ...wire, payload: pointer }, locksIdentity);
+        } else fence = await this.publishDirtyFence({
           conversationKey,
           logicalConversationKey: historyKey(logicalConversationIdForFence(normalizedId)),
           epoch,
@@ -687,19 +1759,64 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       } finally {
         await releaseRoot();
       }
-      const turnBaseRecord: HistoryFileV2 = {
+      const turnBaseRecord = preserveNativeHistory(existing, {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: existing.messages,
+        ...lastCommitBinding(existing),
         providerSession: { epoch, revision, ...modelBinding(modelKey) },
-      };
+      });
       const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
 
+      captureOwnership?.(async () => await serializeTurn(async () => {
+        if (turnSettled || prepared) throw new Error("Prepared provider turn no longer owns executable storage");
+        await held.assertOwned();
+      }), existing.native ? structuredClone(existing.native) : undefined);
       return {
+        ...(recovery.status === "clean" ? {} : { recovery }),
+        ...(payload === undefined ? {} : { reconciliation: {
+          get settlement() { return reconciliationSettlement; },
+          descriptor: pendingTurnDescriptor(payload),
+          admit: async (input: PendingTurnInput) => await serializeTurn(async () => {
+            if (turnSettled || prepared) throw new Error("Cannot admit input to a settled provider turn.");
+            const current = payload!;
+            const index = current.inputs.findIndex((entry) => entry.id === input.id);
+            if (index !== -1 && input.kind !== current.inputs[index]!.kind) throw new Error("Conflicting durable input placement.");
+            if (index !== -1 && current.inputs[index]?.kind !== "initial") {
+              if (JSON.stringify(current.inputs[index]) !== JSON.stringify(input)) throw new Error("Conflicting durable live input identity.");
+              return;
+            }
+            const inputs = [...current.inputs]; if (index === -1) inputs.push(input); else inputs[index] = { ...inputs[index]!, requestDigest: input.requestDigest };
+            const replacement = createPendingTurnPayload(current.identity, inputs, current.disposition, current.candidate);
+            const replacementFence = await this.replacePendingPayload(fence, replacement, held);
+            payload = replacement; fence = replacementFence;
+          }),
+          claim: async (disposition: PendingTurnPayload["disposition"], candidate?: PendingTurnCandidate) => await serializeTurn(async () => {
+            if (turnSettled) {
+              if (disposition === "detached") throw new Error("Cannot acknowledge detachment after history ownership release.");
+              return; // A late result cannot resurrect released evidence.
+            }
+            if (prepared && disposition !== "cancelled" && disposition !== "failed") throw new Error("Cannot replace a prepared candidate.");
+            if (prepared) preparationInvalidated = true;
+            const current = payload!;
+            // Cancellation is monotonic and dominates native/late completed results.
+            const next = current.disposition === "cancelled" ? "cancelled" : disposition;
+            const retainedCandidate = current.disposition === "cancelled"
+              ? disposition === "cancelled" && candidate?.outcome === "cancelled" ? candidate : current.candidate
+              : candidate ?? (next === "cancelled" || next === "failed"
+                ? current.candidate?.outcome === next ? current.candidate : undefined : current.candidate);
+            // Router detachment is also monotonic, but its final host candidate may update.
+            const replacement = createPendingTurnPayload(current.identity, current.inputs,
+              next === "cancelled" ? next : current.disposition === "detached" ? "detached" : next, retainedCandidate);
+            const replacementFence = await this.replacePendingPayload(fence, replacement, held, true);
+            payload = replacement; fence = replacementFence;
+          }),
+        } }),
         providerSessionId,
         ...modelBinding(modelKey),
         ...(previousModelKey === undefined ? {} : { previousModelKey }),
         ...(previousModelWasUnbound ? { previousModelWasUnbound: true } : {}),
+        ...(historySetAside ? { historySetAside: true as const } : {}),
         providerSessionRevision: revision,
         prepareCommit: async (
           messages: readonly HistoryMessage[],
@@ -711,24 +1828,39 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             throw new TypeError("providerSessionSynced must be a boolean.");
           }
           const admitted = validateAppendMessages(messages);
+          if (payload !== undefined) {
+            const settlement = await this.preparePendingSettlement(fence, payload, held, admitted);
+            payload = settlement.payload; fence = settlement.fence;
+            reconciliationSettlement = { nativeReusable: !settlement.cold };
+            prepared = await this.prepareRecord(settlement.record, held, rootIdentity, () => { turnSettled = true; }, fence,
+              settlement.cold && existing.native === undefined ? async () => await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]) : undefined,
+              false, async () => await this.removePendingConversation(conversationKey, rootIdentity, () => held.assertOwned()));
+            const pendingAppend = prepared;
+            return { commit: async () => {
+              if (preparationInvalidated) throw new Error("Prepared turn invalidated by a terminal host claim; recover before publication.");
+              await pendingAppend.commit();
+            }, abort: async () => await pendingAppend.abort() };
+          }
           if (!options.providerSessionSynced) {
+            this.requireNativeCapability(existing, "native epoch transition", "unsynced provider commit");
             // The harness normally invalidates a failed/unsynced live handle
             // first. Retire by exact durable id as a second fail-closed layer:
             // a cold/unknown registry entry must not strand its JSONL.
-            await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]);
+            if (existing.native === undefined) await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]);
           }
           const combined = [...turnBaseRecord.messages, ...admitted];
           const retained = retainHistoryMessages(combined, this.maxMessages);
-          const cleanRecord: HistoryFileV2 = {
+          const cleanRecord = preserveNativeHistory(existing, {
             version: STORE_VERSION,
             conversationId: normalizedId,
             messages: retained,
+            ...lastCommitBinding(turnBaseRecord),
             providerSession: {
               epoch: options.providerSessionSynced ? epoch : createProviderSessionEpoch(),
               revision: options.providerSessionSynced ? revision + 1 : 0,
               ...modelBinding(modelKey),
             },
-          };
+          });
           prepared = await this.prepareRecord(cleanRecord, held, rootIdentity, () => {
             turnSettled = true;
           }, fence);
@@ -751,6 +1883,281 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  private async drainBeforeAdmission(conversationId: string, runId: string, binding: ProviderSessionTurnBinding, signal?: AbortSignal): Promise<void> {
+    if (!this.inspectProviderTurn || !binding.reconciliation) throw new Error("Native turn reconciliation is not configured.");
+    const admission = binding.reconciliation;
+    const inputs = admission.initial === undefined ? [] : [createPendingInitialInput({ id: `initial:${digestRunId(runId)}`,
+      persistText: admission.initial.persistText, timestamp: admission.initial.timestamp,
+      ...(admission.initial.senderLabel === undefined ? {} : { senderLabel: admission.initial.senderLabel }) }, admission.initial.persistText)];
+    const projected = serializePendingTurnPayload(createPendingTurnPayload({ purpose: admission.purpose, ownerKey: admission.ownerKey,
+      historyBucket: conversationId, turnId: runId, handleId: "0".repeat(64), modelKey: binding.modelKey,
+      baseRevision: 0, fenceDigest: "0".repeat(64) }, inputs, "admitted")).byteLength;
+    const rootIdentity = await this.ensureRoot(), locksIdentity = await this.ensureLocksRoot();
+    const releaseRoot = await this.acquireRootTransaction(rootIdentity, signal);
+    let needsDrain;
+    try {
+      // Admission inspects only in-flight evidence (fences and pending payloads),
+      // never whole-root history/journal accounting; aggregate quotas are
+      // enforced at commit and retention.
+      const fences = await this.scanDirtyFences(locksIdentity, true), pending = await this.pendingPayloads(rootIdentity).list();
+      const physicalOwners = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...fences.incomplete.keys(), ...pending.map((entry) => entry.conversationKey)]);
+      physicalOwners.delete(historyKey(conversationId));
+      needsDrain = physicalOwners.size >= this.maxConversations
+        || pending.reduce((total, entry) => total + entry.bytes, 0) + projected > this.maxStagedBytes;
+    } finally { await releaseRoot(); }
+    signal?.throwIfAborted();
+    if (needsDrain) await this.drainInactiveTurns({}, historyKey(conversationId));
+  }
+
+  async drainPendingProviderSessionTurns(options: ConversationHistoryTurnDrainOptions = {}): Promise<ConversationHistoryTurnDrainResult> {
+    return await this.drainInactiveTurns(options);
+  }
+
+  private async drainInactiveTurns(options: ConversationHistoryTurnDrainOptions, excludedKey?: string): Promise<ConversationHistoryTurnDrainResult> {
+    if (!this.inspectProviderTurn) throw new Error("Pending-turn draining requires configured native reconciliation.");
+    const limit = options.limit ?? 32, cursor = options.cursor;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 32 || (cursor !== undefined
+      && (!Number.isFinite(cursor.mtimeMs) || cursor.mtimeMs < 0 || !/^[a-f0-9]{64}$/u.test(cursor.conversationKey)))) throw new TypeError("Invalid bounded pending-turn drain request.");
+    const rootIdentity = await this.ensureRoot(), locksIdentity = await this.ensureLocksRoot();
+    const releaseSnapshot = await this.acquireRootTransaction(rootIdentity);
+    let candidates;
+    try {
+      const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+      // The root transaction excludes new marker publication. Dead owners' torn
+      // temps carry no authoritative payload and need no parsed conversation ID.
+      await this.pendingPayloads(rootIdentity).collectInactiveTemps(new Set([...active, ...(excludedKey ? [excludedKey] : [])]), {
+        assertOwned: () => assertDirectoryIdentity(this.root, rootIdentity), reserve: async () => { throw new Error("Drain cannot publish payloads."); },
+      });
+      const fences = new Map((await this.scanDirtyFences(locksIdentity, true)).map((fence) => [fence.conversationKey, fence]));
+      const owners = new Map<string, { readonly conversationKey: string; mtimeMs: number; readonly entries: Array<{ readonly name: string; readonly mtimeMs: number }> }>();
+      for (const entry of await this.pendingPayloads(rootIdentity).list()) {
+        if (entry.conversationKey === excludedKey || active.has(entry.conversationKey)) continue;
+        const fence = fences.get(entry.conversationKey);
+        if (fence && fence.kind !== "execution" && fence.kind !== "compaction") continue;
+        if (fence?.payload && entry.generation !== fence.payload.generation) continue;
+        const prior = owners.get(entry.conversationKey);
+        if (prior) {
+          prior.entries.push({ name: entry.name, mtimeMs: entry.mtimeMs });
+          prior.mtimeMs = Math.min(prior.mtimeMs, fence?.mtimeMs ?? entry.mtimeMs);
+        } else owners.set(entry.conversationKey, { conversationKey: entry.conversationKey,
+          mtimeMs: fence?.mtimeMs ?? entry.mtimeMs, entries: [{ name: entry.name, mtimeMs: entry.mtimeMs }] });
+      }
+      candidates = [...owners.values()].sort((a, b) => a.mtimeMs - b.mtimeMs || a.conversationKey.localeCompare(b.conversationKey))
+        .filter((entry) => !cursor || entry.mtimeMs > cursor.mtimeMs || (entry.mtimeMs === cursor.mtimeMs && entry.conversationKey > cursor.conversationKey));
+    } finally { await releaseSnapshot(); }
+    let settled = 0, busy = 0, unresolved = 0;
+    let nextCursor: ConversationHistoryTurnDrainResult["cursor"];
+    for (const candidate of candidates.slice(0, limit)) {
+      nextCursor = { mtimeMs: candidate.mtimeMs, conversationKey: candidate.conversationKey };
+      let held: HeldConversation | undefined;
+      try {
+        let payload: PendingTurnPayload | undefined, inspectionError: unknown;
+        for (const entry of candidate.entries.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name))) {
+          try { payload = (await this.pendingPayloads(rootIdentity).inspect(entry)).payload; break; }
+          catch (error) {
+            await assertDirectoryIdentity(this.root, rootIdentity);
+            await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+            inspectionError = error;
+          }
+        }
+        if (!payload) throw inspectionError ?? new Error("Pending owner has no attributable generation.");
+        // Read-only discovery is not ownership. Try exact/logical rows without
+        // waiting for a foreign owner, even if it appeared after our snapshot.
+        held = await this.acquireConversation(normalizeConversationId(payload.identity.historyBucket), undefined, undefined, true);
+        const releaseCheck = await this.acquireRootTransaction(rootIdentity);
+        let fence;
+        try { fence = await this.findDirtyFence(candidate.conversationKey, locksIdentity); }
+        finally { await releaseCheck(); }
+        if (fence === undefined) {
+          const releaseCleanup = await this.acquireRootTransaction(rootIdentity);
+          try { await this.removePendingConversation(candidate.conversationKey, rootIdentity, () => held!.assertOwned()); }
+          finally { await releaseCleanup(); }
+        } else if (fence.kind === "execution" || fence.kind === "compaction") {
+          await this.settleHeldTurn(payload.identity.historyBucket, held);
+        } else { unresolved += 1; continue; }
+        settled += 1;
+      } catch (error) {
+        if (error instanceof HistoryOwnerBusyError || (isRecord(error) && error.code === "ERR_HARNESS_WRITER_BUSY")) busy += 1;
+        else if (held === undefined && (error instanceof SyntaxError || error instanceof TypeError)) unresolved += 1; // Unattributable orphan: preserve and charge it.
+        else if (isErrno(error, "ENOENT") && held === undefined) { await assertDirectoryIdentity(this.root, rootIdentity); busy += 1; }
+        else {
+          // A poisoned owner remains charged, but must not starve unrelated
+          // drainable owners. Namespace identity failures are root-wide.
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+          unresolved += 1;
+        }
+      } finally { if (held) await this.releaseConversation(held, rootIdentity); }
+    }
+    return { settled, busy, unresolved, remaining: candidates.length > limit, ...(nextCursor === undefined ? {} : { cursor: nextCursor }) };
+  }
+
+  async recoverProviderSessionTurn(conversationId: string): Promise<ConversationHistoryTurnRecovery> {
+    const normalizedId = normalizeConversationId(conversationId);
+    const held = await this.acquireConversation(normalizedId);
+    try { return await this.settleHeldTurn(normalizedId, held); }
+    finally { await this.releaseConversation(held, held.rootIdentity); }
+  }
+
+  private async replacePendingPayload(fence: DirtyFence, payload: PendingTurnPayload, held: HeldConversation, settlement = false): Promise<DirtyFence> {
+    const releaseRoot = await this.acquireRootTransaction(held.rootIdentity);
+    try {
+      await held.assertOwned();
+      const current = await this.findDirtyFence(fence.conversationKey, await this.ensureLocksRoot());
+      if (!current || serializeDirtyFence(current).compare(serializeDirtyFence(fence)) !== 0) throw new Error("Pending fence changed during owner-held publication.");
+      const pointer = await this.pendingPayloads(held.rootIdentity).publish(payload, {
+        assertOwned: () => held.assertOwned(), reserve: async (bytes) => { if (!settlement) this.admitPendingBytes(bytes); },
+      });
+      const replacement = await this.publishDirtyFence({ ...fence, payload: pointer }, await this.ensureLocksRoot());
+      // After durable pointer replacement, old generations are no longer needed.
+      try {
+        await this.pendingPayloads(held.rootIdentity).collectUnreferenced({ conversationKey: fence.conversationKey, runIdDigest: fence.runIdDigest }, [pointer], {
+          assertOwned: () => held.assertOwned(), reserve: async () => { throw new Error("Collection cannot publish payloads."); },
+        });
+      } catch (error) { recordPostCommitMaintenanceFailure(this.root, error); }
+      await held.assertOwned();
+      return replacement;
+    } finally { await releaseRoot(); }
+  }
+
+  private async readPendingTurn(fence: DirtyFence, held: HeldConversation): Promise<PendingTurnPayload> {
+    if (!fence.payload || !fence.kind || fence.kind === "retirement") throw new Error("Fence is not an execution admission.");
+    await held.assertOwned();
+    const { payload } = await this.pendingPayloads(held.rootIdentity).inspect({
+      name: pendingPayloadName(fence.conversationKey, fence.runIdDigest, fence.payload.generation),
+    }, fence.payload.sha256);
+    const wire = { version: 6, kind: fence.kind, conversationKey: fence.conversationKey,
+      logicalConversationKey: fence.logicalConversationKey!, epoch: fence.epoch, providerSessionId: fence.providerSessionId!,
+      modelKey: fence.modelKey!, revision: fence.revision, runIdDigest: fence.runIdDigest, payload: fence.payload } as const;
+    if (historyKey(payload.identity.historyBucket) !== held.marker.conversationKey
+      || payload.identity.handleId !== fence.providerSessionId || payload.identity.modelKey !== fence.modelKey
+      || payload.identity.baseRevision !== fence.revision || digestRunId(payload.identity.turnId) !== fence.runIdDigest
+      || payload.identity.purpose !== fence.kind || payload.identity.fenceDigest !== durableTurnFenceDigest(wire)) throw new Error("Pending turn/fence binding mismatch.");
+    return payload;
+  }
+
+  private async preparePendingSettlement(fence: DirtyFence, payload: PendingTurnPayload, held: HeldConversation, liveMessages?: readonly HistoryMessage[]): Promise<{
+    readonly record: CanonicalHistoryFile; readonly fence: DirtyFence; readonly payload: PendingTurnPayload; readonly cold: boolean;
+  }> {
+    if (!this.inspectProviderTurn) throw new Error("Pending native turn requires configured owner-held reconciliation.");
+    await held.assertOwned();
+    const existing = await this.readRecord(payload.identity.historyBucket, held.rootIdentity, true);
+    if ((fence.revision > 0 && (existing.providerSession === undefined || existing.providerSession.epoch !== fence.epoch
+      || existing.providerSession.revision !== fence.revision || existing.providerSession.modelKey !== fence.modelKey))
+      || (existing.providerSession?.epoch === fence.epoch && existing.providerSession.revision !== fence.revision)) {
+      throw new Error("Canonical base revision changed before native settlement.");
+    }
+    const canonicalVersion = historyRecordVersion(existing);
+    // Native ownership/matching/repair/fsync happens OUTSIDE the root transaction.
+    const evidence = await this.inspectProviderTurn({ descriptor: pendingTurnDescriptor(payload), purpose: payload.identity.purpose,
+      modelKey: payload.identity.modelKey, expectedInputs: payload.inputs.map((input) => ({ id: input.id, requestDigest: input.requestDigest, placement: input.placement })) });
+    await held.assertOwned();
+    if (existing.native !== undefined && evidence.status === "matched" && evidence.journalId !== currentJournal(existing.conversationId, existing.providerSession!.epoch).journalId) {
+      throw new Error("Native canonical native settlement journal does not match the current journal");
+    }
+    const current = await this.readRecord(payload.identity.historyBucket, held.rootIdentity, true);
+    if (historyRecordVersion(current) !== canonicalVersion) throw new Error("Canonical history changed during native inspection.");
+    let projection = projectTurnSettlement(payload, evidence, new Date(this.now()).toISOString());
+    if (projection.outcome === "completed" && payload.identity.purpose === "execution" && liveMessages?.length) {
+      const users = liveMessages.slice(0, -1), assistant = liveMessages.at(-1)!;
+      const projectedUsers = projection.messages.filter((message) => message.role === "user");
+      if (assistant.role !== "assistant" || assistant.timestamp === undefined || users.length !== projectedUsers.length
+        || users.some((message, index) => message.role !== "user" || message.content !== projectedUsers[index]!.content
+          || message.name !== projectedUsers[index]!.name || message.runId !== payload.identity.turnId
+          || (index > 0 && message.timestamp !== projectedUsers[index]!.timestamp))
+        || users[0]?.timestamp === undefined || assistant.runId !== payload.identity.turnId) {
+        throw new Error("Host completion does not match admitted canonical inputs.");
+      }
+      payload = createPendingTurnPayload(payload.identity, payload.inputs, payload.disposition, {
+        outcome: "completed", text: assistant.content, timestamp: assistant.timestamp, initialTimestamp: users[0].timestamp,
+        error: null, failureKind: null, ...(payload.candidate?.silent === undefined ? {} : { silent: payload.candidate.silent }),
+        ...(payload.candidate?.consumedInputIds === undefined ? {} : { consumedInputIds: payload.candidate.consumedInputIds }),
+      });
+      projection = projectTurnSettlement(payload, evidence, assistant.timestamp);
+    }
+    const cold = !projection.nativeReusable;
+    if (cold) this.requireNativeCapability(existing, "native epoch transition", "cold native turn settlement");
+    // Persist the resolved minimal candidate before canonical staging. A crash at
+    // rename can then recognize the receipt without inspecting native state again.
+    if (projection.candidate !== undefined) {
+      payload = createPendingTurnPayload(payload.identity, payload.inputs, payload.disposition, projection.candidate);
+      fence = await this.replacePendingPayload(fence, payload, held, true);
+    }
+    const lastCommit: DurableTurnReceipt = { version: 1, turnId: payload.identity.turnId, inputDigest: turnInputDigest(payload),
+      candidateDigest: turnCandidateDigest(payload), journalId: projection.journalId, tipId: projection.tipId,
+      baseRevision: fence.revision, committedRevision: fence.revision + 1, outcome: projection.outcome };
+    return { fence, payload, cold, record: preserveNativeHistory(existing, { version: STORE_VERSION, conversationId: payload.identity.historyBucket,
+      messages: retainHistoryMessages([...existing.messages, ...projection.messages], this.maxMessages), lastCommit,
+      providerSession: { epoch: cold ? createProviderSessionEpoch() : fence.epoch,
+        revision: cold ? 0 : fence.revision + 1, ...modelBinding(fence.modelKey) } }) };
+  }
+
+  private async settleHeldTurn(conversationId: string, held: HeldConversation): Promise<ConversationHistoryTurnRecovery> {
+    await held.assertOwned();
+    const canonical = await this.readRecord(conversationId, held.rootIdentity);
+    await this.assertSwitchOwnerReadable(conversationId, held.rootIdentity);
+    // Ready alone is not runtime switch authority. Once its canonical receipt is
+    // published, however, ordinary admission must finish retiring the outgoing
+    // journal and the intent rather than strand them.
+    if (this.nativeJournalStorage) {
+      const pending = (await this.modelSwitchPayloads(held.rootIdentity).inventory(conversationId)).pending
+        .filter((entry) => entry.state.identity.historyBucket === conversationId);
+      for (const { state } of pending) if (state.phase === "ready" && canonical.native !== undefined && recognizesModelSwitchBinding(canonical, state.identity)) {
+        await this.rollForwardHeldModelSwitch(conversationId, state.identity.switchId, held);
+      }
+    }
+    const locksIdentity = await this.ensureLocksRoot();
+    let fence: DirtyFence | undefined;
+    const releaseSnapshot = await this.acquireRootTransaction(held.rootIdentity);
+    try { fence = await this.findDirtyFence(historyKey(conversationId), locksIdentity); }
+    finally { await releaseSnapshot(); }
+    if (fence?.kind !== "execution" && fence?.kind !== "compaction") {
+      if (fence === undefined && this.inspectProviderTurn !== undefined) {
+        const releaseCleanup = await this.acquireRootTransaction(held.rootIdentity);
+        try { await this.removePendingConversation(historyKey(conversationId), held.rootIdentity, () => held.assertOwned()); }
+        finally { await releaseCleanup(); }
+      }
+      return { status: "clean" };
+    }
+    if (!this.inspectProviderTurn) throw new Error("Pending native turn requires owner-held reconciliation before mutation.");
+    const payload = await this.readPendingTurn(fence, held);
+    if (payload.identity.historyBucket !== conversationId) throw new Error("Pending history bucket mismatch.");
+    const existing = await this.readRecord(conversationId, held.rootIdentity, true);
+    if (recognizesTurnCommit(existing, conversationId, payload.identity.turnId, turnInputDigest(payload), turnCandidateDigest(payload))) {
+      if (existing.providerSession?.epoch !== fence.epoch) this.requireNativeCapability(existing, "native epoch transition", "cold receipt cleanup");
+      const releaseRoot = await this.acquireRootTransaction(held.rootIdentity);
+      try {
+        await held.assertOwned();
+        await fsyncDirectory(this.root, held.rootIdentity);
+      } finally { await releaseRoot(); }
+      if (existing.native === undefined && existing.providerSession?.epoch !== fence.epoch) await this.retireProviderSessions([{ providerSessionId: fence.providerSessionId!, ...modelBinding(fence.modelKey) }]);
+      const releaseCleanup = await this.acquireRootTransaction(held.rootIdentity);
+      try {
+        await held.assertOwned();
+        if (historyRecordVersion(await this.readRecord(conversationId, held.rootIdentity, true)) !== historyRecordVersion(existing)) throw new Error("Canonical receipt changed during native retirement.");
+        await this.removeDirtyFenceAfterCommit(fence);
+        await this.removePendingConversation(fence.conversationKey, held.rootIdentity, () => held.assertOwned());
+      } finally { await releaseCleanup(); }
+      return { status: existing.lastCommit!.outcome === "interrupted" ? "interrupted" : "recovered", turnId: payload.identity.turnId, outcome: existing.lastCommit!.outcome,
+        ...(existing.providerSession?.epoch === fence.epoch ? { providerSessionId: fence.providerSessionId!, providerSessionRevision: existing.providerSession.revision! } : {}) };
+    }
+    const settlement = await this.preparePendingSettlement(fence, payload, held);
+    const prepared = await this.prepareRecord(settlement.record, held, held.rootIdentity, undefined, settlement.fence,
+      settlement.cold && existing.native === undefined ? async () => await this.retireProviderSessions([{ providerSessionId: settlement.fence.providerSessionId!, ...modelBinding(settlement.fence.modelKey) }]) : undefined,
+      true, async () => await this.removePendingConversation(settlement.fence.conversationKey, held.rootIdentity, () => held.assertOwned()));
+    try { await prepared.commit(); }
+    catch (error) { await prepared.abort().catch(() => undefined); throw error; }
+    // A post-rename durability/cleanup failure is committed, but no new native
+    // dispatch may enter until the persisted receipt has completed settlement.
+    const releaseCheck = await this.acquireRootTransaction(held.rootIdentity);
+    try {
+      if (await this.findDirtyFence(fence.conversationKey, locksIdentity)) throw new Error("Turn committed but durability settlement is pending; wait or reset.");
+    } finally { await releaseCheck(); }
+    return { status: settlement.record.lastCommit!.outcome === "interrupted" ? "interrupted" : "recovered",
+      turnId: payload.identity.turnId, outcome: settlement.record.lastCommit!.outcome,
+      ...(settlement.cold ? {} : { providerSessionId: settlement.fence.providerSessionId!, providerSessionRevision: settlement.record.providerSession.revision }) };
+  }
+
   async stats(): Promise<DurableHistoryStoreStats> {
     const rootIdentity = await this.ensureRoot();
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
@@ -758,10 +2165,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const entries = await this.scanCommittedEntries(rootIdentity, false);
       const active = await this.scanActiveMarkers(true);
       const maintenance = PROCESS_POST_COMMIT_FAILURES.get(this.root);
+      const switches = await this.modelSwitchFootprint(rootIdentity);
+      const operations = await this.nativeOperationFootprint(rootIdentity);
       return {
         conversations: entries.length,
-        bytes: entries.reduce((sum, entry) => sum + entry.size, 0),
-        activePreparedAppends: active.length,
+        bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + await this.nativeHistoryRoot(rootIdentity).bytes(),
+        reservedBytes: switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0) + operations.reserved,
+        activePreparedAppends: active.filter((marker) => !marker.damaged).length,
         postCommitMaintenanceFailures: maintenance?.count ?? 0,
         ...(maintenance?.lastError === undefined
           ? {}
@@ -780,22 +2190,41 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   }
 
   private async prepareRecord(
-    record: HistoryFileV2,
+    record: CanonicalHistoryFile,
     held: HeldConversation,
     rootIdentity: DirectoryIdentity,
     onSettled?: () => void,
     dirtyFence?: DirtyFence,
+    afterDurableCommit?: () => Promise<void>,
+    keepOwner = false,
+    afterFenceCleanup?: () => Promise<void>,
   ): Promise<PreparedHistoryAppend> {
-    const projected = this.projectRecord(record);
-    const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+    let releaseRoot = await this.acquireRootTransaction(rootIdentity);
+    const nativeIo = this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; });
     let stage: ActiveStage | undefined;
+    // Settling a reconciled turn releases its own pending payload, so its net
+    // effect on staging is a decrease: the staging quota never blocks it (only
+    // its transient canonical stage can overshoot). Retention still applies.
+    const settles = dirtyFence?.payload !== undefined;
     try {
-      await this.validateStagingReservation(rootIdentity, projected.bytes);
+      await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, held.logical, "prepare");
+      await this.requireNoModelSwitch(record.conversationId, rootIdentity);
+      const existing = await this.readRecord(record.conversationId, rootIdentity);
+      if (existing.native !== undefined && existing.providerSession?.epoch !== record.providerSession.epoch) {
+        this.requireNativeCapability(existing, "native epoch transition", "cold publication");
+        const source = this.nativeCanonical(existing), next = this.coldRecord(source, record);
+        const projected = this.projectRecord(next); if (!settles) await this.validateStagingReservation(rootIdentity, projected.bytes);
+        stage = await this.writeStage(next, rootIdentity); await this.validateRetentionReservation(rootIdentity, [stage]);
+        return this.createNativePreparedAppend(stage, { version: 3, disposition: "C", source, next, timestamp: 0 }, held, keepOwner, onSettled, settles);
+      }
+      record = preserveNativeHistory(existing, record);
+      const projected = this.projectRecord(record);
+      if (!settles) await this.validateStagingReservation(rootIdentity, projected.bytes);
       // Write while the root transaction is held so another process cannot
       // pass the same staged-byte reservation before this temp becomes visible.
       stage = await this.writeStage(record, rootIdentity);
       await this.validateRetentionReservation(rootIdentity, [stage]);
-      return this.createPreparedAppend(stage, rootIdentity, held, onSettled, dirtyFence);
+      return this.createPreparedAppend(stage, rootIdentity, held, onSettled, dirtyFence, afterDurableCommit, keepOwner, afterFenceCleanup);
     } catch (error) {
       if (stage !== undefined) {
         await rm(stage.temporaryPath, { force: true }).catch(() => undefined);
@@ -807,10 +2236,54 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private projectRecord(record: HistoryFileV2): ActiveStage {
+  private async reserveNativeCold(operation: NativeHistoryOperation, rootIdentity: DirectoryIdentity, settles = false): Promise<void> {
+    const existing = await this.readNativeOperation(operation.source.conversationId, rootIdentity);
+    if (existing) { if (switchDigest(existing) !== switchDigest(operation)) throw new Error("Conflicting native cold reservation"); return; }
+    const bytes = Buffer.byteLength(JSON.stringify(operation) + "\n");
+    const retention = await this.retentionPlan(rootIdentity, [this.projectRecord(operation.next!)]);
+    if (retention.minimumBytes + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStoreBytes || retention.minimumCount > this.maxConversations) throw new Error(this.quotaDiagnostic("Native cold history capacity unavailable"));
+    if (!settles && await this.scanStagedBytes(rootIdentity) + bytes + MAX_NATIVE_EPOCH_BYTES > this.maxStagedBytes) throw new Error(this.quotaDiagnostic("Native cold staging capacity unavailable"));
+  }
+  private createNativePreparedAppend(stage: ActiveStage, operation: NativeHistoryOperation, held: HeldConversation, keepOwner: boolean, onSettled?: () => void, settles = false): PreparedHistoryAppend {
+    let state: "prepared" | "committed" | "aborted" = "prepared", pending = Promise.resolve();
+    const serialize = (action: () => Promise<void>) => { const current = pending.then(action, action); pending = current.catch(() => {}); return current; };
+    const release = async () => { if (!keepOwner) { await this.removeActiveMarker(held.marker); await held.release(); onSettled?.(); } };
+    return {
+      commit: async () => await serialize(async () => {
+        if (state === "committed") return; if (state === "aborted") throw new Error("Cannot commit an aborted history append.");
+        let unlock = await this.acquireRootTransaction(held.rootIdentity);
+        const nativeIo = this.nativeIoOutsideRoot(held.rootIdentity, () => unlock(), (release) => { unlock = release; });
+        try {
+          await held.assertOwned(); await this.reserveNativeCold(operation, held.rootIdentity, settles);
+          await this.publishNativeOperation(operation, held.rootIdentity);
+          try { await this.finishNativeOperation(operation, held.rootIdentity, () => held.assertOwned(), nativeIo); }
+          catch (error) {
+            const latest = await this.readRecord(operation.source.conversationId, held.rootIdentity, true);
+            if (latest.native === undefined || switchDigest(this.nativeCanonical(latest)) !== switchDigest(operation.next)) throw error;
+            // Canonical rename is the semantic commit; unresolved physical cleanup
+            // stays fenced by the durable lifecycle intent and is diagnostic.
+            recordPostCommitMaintenanceFailure(this.root, error);
+          }
+          state = "committed"; await rm(stage.temporaryPath, { force: true }); await fsyncDirectory(this.root, held.rootIdentity);
+          try { await this.applyRetention(held.rootIdentity, this.projectRecord(operation.next!), nativeIo, held.logical); }
+          catch (error) { recordPostCommitMaintenanceFailure(this.root, error); }
+          await release();
+        } finally { await unlock(); }
+      }),
+      abort: async () => await serialize(async () => {
+        if (state !== "prepared") return; state = "aborted";
+        const unlock = await this.acquireRootTransaction(held.rootIdentity);
+        try { await rm(stage.temporaryPath, { force: true }); await fsyncDirectory(this.root, held.rootIdentity); await this.removeActiveMarker(held.marker); }
+        finally { await unlock(); await held.release(); onSettled?.(); }
+      }),
+    };
+  }
+
+  private projectRecord(record: CanonicalHistoryFile): ActiveStage {
     const conversationKey = historyKey(record.conversationId);
     return {
       conversationKey,
+      logicalConversationKey: historyKey(logicalConversationIdForFence(record.conversationId)),
       destinationName: `${conversationKey}${HISTORY_FILE_SUFFIX}`,
       temporaryPath: "",
       bytes: serializeHistoryFile(record).byteLength,
@@ -821,8 +2294,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     conversationKey: string,
     locksIdentity: DirectoryIdentity,
   ): Promise<DirtyFence | undefined> {
-    return (await this.scanDirtyFences(locksIdentity, true))
-      .find((fence) => fence.conversationKey === conversationKey);
+    const fences = await this.scanDirtyFences(locksIdentity, true);
+    if (fences.damaged.has(conversationKey)) throw new OwnedFileDamagedError(fences.damaged.get(conversationKey)!);
+    if (fences.incomplete.has(conversationKey)) throw new HistoryOwnerBusyError(`History coordination write is incomplete: ${fences.incomplete.get(conversationKey)}`);
+    return fences.find((fence) => fence.conversationKey === conversationKey);
   }
 
   private async reserveDirtyFenceCapacity(
@@ -831,8 +2306,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     locksIdentity: DirectoryIdentity,
   ): Promise<void> {
     let fences = await this.scanDirtyFences(locksIdentity, true);
-    const hasConversationFence = fences.some((fence) => fence.conversationKey === conversationKey);
-    const targetCount = fences.length + (hasConversationFence ? 0 : 1);
+    const pendingKeys = new Set((await this.pendingPayloads(rootIdentity).list()).map((entry) => entry.conversationKey));
+    const targetCount = new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...fences.incomplete.keys(), ...pendingKeys, conversationKey]).size;
     if (targetCount <= this.maxConversations) return;
 
     const committedKeys = new Set(
@@ -840,9 +2315,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         .map((entry) => entry.name.slice(0, -HISTORY_FILE_SUFFIX.length)),
     );
     const activeKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
+    for (const key of (await this.nativeOperationFootprint(rootIdentity)).keys) committedKeys.add(key);
     const reclaimable = fences
       .filter((fence) => (
         fence.conversationKey !== conversationKey
+        && fence.kind !== "execution" && fence.kind !== "compaction"
         && !committedKeys.has(fence.conversationKey)
         && !activeKeys.has(fence.conversationKey)
       ))
@@ -861,16 +2338,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       await rm(fence.path);
       removed = true;
-      remaining -= 1;
+      if (!pendingKeys.has(fence.conversationKey)) remaining -= 1;
     }
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
     if (remaining > this.maxConversations) {
-      throw new Error(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`);
+      throw new Error(this.quotaDiagnostic(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`));
     }
     fences = await this.scanDirtyFences(locksIdentity, false);
-    if (fences.length + (fences.some((fence) => fence.conversationKey === conversationKey) ? 0 : 1)
+    if (new Set([...fences.map((fence) => fence.conversationKey), ...fences.damaged.keys(), ...fences.incomplete.keys(), ...pendingKeys, conversationKey]).size
       > this.maxConversations) {
-      throw new Error(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`);
+      throw new Error(this.quotaDiagnostic(`Provider-session dirty fences exceed the ${this.maxConversations}-conversation quota.`));
     }
   }
 
@@ -902,7 +2379,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async writeStage(record: HistoryFileV2, rootIdentity: DirectoryIdentity): Promise<ActiveStage> {
+  private async writeStage(record: CanonicalHistoryFile, rootIdentity: DirectoryIdentity): Promise<ActiveStage> {
     const conversationKey = historyKey(record.conversationId);
     const bytes = serializeHistoryFile(record);
     const temporaryPath = join(
@@ -917,6 +2394,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
     return {
       conversationKey,
+      logicalConversationKey: historyKey(logicalConversationIdForFence(record.conversationId)),
       destinationName: `${conversationKey}${HISTORY_FILE_SUFFIX}`,
       temporaryPath,
       bytes: bytes.byteLength,
@@ -929,6 +2407,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     held: HeldConversation,
     onSettled?: () => void,
     dirtyFence?: DirtyFence,
+    afterDurableCommit?: () => Promise<void>,
+    keepOwner = false,
+    afterFenceCleanup?: () => Promise<void>,
   ): PreparedHistoryAppend {
     let state: "prepared" | "committed" | "aborted" = "prepared";
     let operation = Promise.resolve();
@@ -943,14 +2424,16 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (state === "committed") return;
         if (state === "aborted") throw new Error("Cannot commit an aborted history append.");
         let published = false;
-        const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+        let releaseRoot = await this.acquireRootTransaction(rootIdentity);
         try {
           await assertDirectoryIdentity(this.root, rootIdentity);
           // Revalidate while holding the root transaction queue. Preparation
           // never evicts committed history, and another conversation may have
           // committed since this stage reserved its projected capacity.
           await this.validateRetentionReservation(rootIdentity, [stage]);
+          await this.setAsideUnreadable(stage.destinationName, rootIdentity);
           await rename(stage.temporaryPath, join(this.root, stage.destinationName));
+          this.invalidateCanonicalAccounting(stage.destinationName);
           published = true;
           state = "committed";
 
@@ -963,13 +2446,29 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             // the crash fence is removed. If cleanup cannot be made durable,
             // restore the visible fence and record a diagnostic so the next
             // turn rotates instead of trusting ambiguous provider state.
-            if (dirtyFence !== undefined) await this.removeDirtyFenceAfterCommit(dirtyFence);
+            if (afterDurableCommit && (dirtyFence?.kind === "execution" || dirtyFence?.kind === "compaction")) {
+              const beforeRetirement = await lstat(join(this.root, stage.destinationName));
+              await releaseRoot(); releaseRoot = async () => {};
+              try { await afterDurableCommit(); }
+              finally { releaseRoot = await this.acquireRootTransaction(rootIdentity); }
+              await held.assertOwned();
+              const afterRetirement = await lstat(join(this.root, stage.destinationName));
+              assertSecureHistoryFile(afterRetirement, join(this.root, stage.destinationName));
+              if (beforeRetirement.dev !== afterRetirement.dev || beforeRetirement.ino !== afterRetirement.ino
+                || beforeRetirement.size !== afterRetirement.size || beforeRetirement.mtimeMs !== afterRetirement.mtimeMs
+                || beforeRetirement.ctimeMs !== afterRetirement.ctimeMs) throw new Error("Canonical publication changed during native retirement.");
+            } else await afterDurableCommit?.();
+            if (dirtyFence !== undefined) {
+              await this.removeDirtyFenceAfterCommit(dirtyFence);
+              if (dirtyFence.kind === "retirement") await this.removePendingConversation(dirtyFence.conversationKey, rootIdentity, () => held.assertOwned());
+            }
+            await afterFenceCleanup?.();
             const committed = await lstat(join(this.root, stage.destinationName));
             assertSecureHistoryFile(committed, join(this.root, stage.destinationName));
             // Only prune older committed records after the replacement itself
             // has been durably published. Retention is maintenance, never part
             // of the caller-visible success boundary.
-            await this.applyRetention(rootIdentity, stage);
+            await this.applyRetention(rootIdentity, stage, this.nativeIoOutsideRoot(rootIdentity, () => releaseRoot(), (release) => { releaseRoot = release; }), held.logical);
             await assertDirectoryIdentity(this.root, rootIdentity);
           } catch (error) {
             recordPostCommitMaintenanceFailure(this.root, error);
@@ -978,13 +2477,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           if (!published) throw error;
           recordPostCommitMaintenanceFailure(this.root, error);
         } finally {
-          if (published) {
+          if (published && !keepOwner) {
             await this.removeActiveMarker(held.marker).catch((error) => {
               recordPostCommitMaintenanceFailure(this.root, error);
             });
           }
           await releaseRoot();
-          if (published) {
+          if (published && !keepOwner) {
             await held.release();
             onSettled?.();
           }
@@ -1041,7 +2540,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       const current = await readDirtyFence(fence.path);
       if (
-        current.conversationKey !== fence.conversationKey
+        current.kind !== fence.kind
+        || current.payload?.generation !== fence.payload?.generation || current.payload?.sha256 !== fence.payload?.sha256
+        || current.conversationKey !== fence.conversationKey
         || current.logicalConversationKey !== fence.logicalConversationKey
         || current.modelKey !== fence.modelKey
         || current.epoch !== fence.epoch
@@ -1063,6 +2564,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       } catch (statError) {
         if (isErrno(statError, "ENOENT")) {
           await this.publishDirtyFence({
+            ...(fence.kind === undefined ? {} : { kind: fence.kind }),
+            ...(fence.payload === undefined ? {} : { payload: fence.payload }),
             conversationKey: fence.conversationKey,
             ...(fence.logicalConversationKey === undefined
               ? {}
@@ -1087,71 +2590,124 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   ): Promise<void> {
     const plan = await this.retentionPlan(rootIdentity, projectedStages);
     if (plan.minimumCount > this.maxConversations) {
-      throw new Error(`Conversation history exceeds its ${this.maxConversations}-conversation quota.`);
+      throw new Error(this.quotaDiagnostic(`Conversation history exceeds its ${this.maxConversations}-conversation quota.`));
     }
     if (plan.minimumBytes > this.maxStoreBytes) {
-      throw new Error(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`);
+      throw new Error(this.quotaDiagnostic(`Conversation history exceeds its ${this.maxStoreBytes}-byte aggregate quota.`));
     }
   }
 
-  private async validateStagingReservation(
-    rootIdentity: DirectoryIdentity,
-    plannedBytes: number,
-  ): Promise<void> {
-    const stagedBytes = await this.scanStagedBytes(rootIdentity);
-    if (stagedBytes + plannedBytes > this.maxStagedBytes) {
-      throw new Error(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`);
-    }
+  private async validateStagingReservation(rootIdentity: DirectoryIdentity, plannedBytes: number): Promise<void> {
+    this.admitPendingBytes(await this.scanStagedBytes(rootIdentity) + plannedBytes);
+  }
+  /** Pending-turn payloads are admitted against the staging quota without a
+   * root scan; each is bounded by its per-turn cap and charged at commit. */
+  private admitPendingBytes(bytes: number): void {
+    if (bytes > this.maxStagedBytes) throw new Error(this.quotaDiagnostic(`Prepared conversation history exceeds its ${this.maxStagedBytes}-byte staging quota.`));
   }
 
-  private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage): Promise<void> {
-    // Other prepared appends protect any committed destination they will
-    // replace, but their unpublished bytes/count are not charged to this
-    // commit. Each stage revalidates and prunes for itself when it publishes.
-    const plan = await this.retentionPlan(rootIdentity, [committedStage]);
-    if (plan.minimumCount > this.maxConversations || plan.minimumBytes > this.maxStoreBytes) {
-      throw new Error("Conversation history retention reservation changed after publication.");
+  private async applyRetention(rootIdentity: DirectoryIdentity, committedStage: ActiveStage, nativeIo: NativeHistoryIo, committingOwner: HeldLogicalConversation): Promise<void> {
+    await this.resumeInactiveNativeDeletions(rootIdentity, nativeIo, committingOwner, "maintenance");
+    const attempted = new Set<string>();
+    const maxPlans = (await this.scanCommittedEntries(rootIdentity, false)).length + 1;
+    for (let iteration = 0; iteration < maxPlans; iteration++) {
+      const plan = await this.retentionPlan(rootIdentity, [committedStage], attempted);
+      if (plan.minimumCount > this.maxConversations || plan.minimumBytes > this.maxStoreBytes) throw new Error(this.quotaDiagnostic("Conversation history retention reservation changed after publication."));
+      let bytes = plan.projectedBytes, count = plan.projectedCount, replan = false;
+      // Preserve global LRU order. After any unlocked native window, rebuild
+      // all coordinates, protections and estimates before considering a victim.
+      for (const entry of plan.candidates) {
+        if (this.now() - entry.mtimeMs <= this.maxAgeMs && count <= this.maxConversations && bytes <= this.maxStoreBytes) continue;
+        const record = plan.records.get(entry.name); if (!record) continue;
+        if (record.native !== undefined) {
+          if (attempted.has(entry.name)) continue; attempted.add(entry.name);
+          let owner: HeldLogicalConversation | undefined, exact: HeldExactConversationClaim | undefined, published = false;
+          try {
+            owner = logicalConversationIdForFence(record.conversationId) === committingOwner.logicalConversationId
+              ? committingOwner : await this.acquireLogicalConversation(logicalConversationIdForFence(record.conversationId), true);
+            if (requiresExactConversationClaim(record.conversationId)) exact = await this.acquireExactConversationClaim(record.conversationId, true);
+            const operation: NativeHistoryOperation = { version: 3, disposition: "D", source: this.nativeCanonical(record), next: null, timestamp: 0 };
+            const assertOwned = async () => { await owner!.assertOwned(); if ((await this.scanActiveMarkers(false)).some((marker) => marker.conversationKey === historyKey(record.conversationId))) throw new Error("Retention victim acquired ownership"); };
+            await assertOwned(); await this.publishNativeOperation(operation, rootIdentity); published = true;
+            await this.finishNativeOperation(operation, rootIdentity, assertOwned, nativeIo);
+            replan = true;
+          } catch (error) {
+            if (!nativeIo.isRootHeld()) throw error;
+            if (!(error instanceof HistoryOwnerBusyError)) {
+              if (!published) throw error;
+              // Keep the published D intent charged/protective for later resume,
+              // but do not let this failed victim hide another free LRU victim.
+              recordPostCommitMaintenanceFailure(this.root, error);
+            }
+            replan = true;
+          }
+          finally { await exact?.release(); if (owner !== committingOwner) await owner?.release(); }
+          if (replan) break;
+          continue;
+        }
+        const retirementFence = this.retireProviderSession === undefined ? undefined
+          : await this.ensureRetirementFence(record, rootIdentity, await this.ensureLocksRoot());
+        await this.retireProviderSessions(this.providerSessionsForRetirement(record, retirementFence));
+        await rm(entry.path); this.invalidateCanonicalAccounting(entry.name); await fsyncDirectory(this.root, rootIdentity);
+        if (retirementFence) await this.removeDirtyFenceAfterCommit(retirementFence);
+        const key = historyKey(record.conversationId);
+        await this.removePendingConversation(key, rootIdentity, async () => {
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          if ((await this.scanActiveMarkers(false)).some((marker) => marker.conversationKey === key)
+            || await this.findDirtyFence(key, await this.ensureLocksRoot())) throw new Error("Retention victim acquired pending ownership.");
+        });
+        count--; bytes -= entry.size;
+      }
+      if (replan) continue;
+      if (count > this.maxConversations || bytes > this.maxStoreBytes) throw new Error(this.quotaDiagnostic("Retention victims became unavailable; quota maintenance remains pending."));
+      await assertDirectoryIdentity(this.root, rootIdentity); return;
     }
-    let projectedBytes = plan.projectedBytes;
-    let projectedCount = plan.projectedCount;
-    const now = this.now();
-    let removedAny = false;
-    for (const entry of plan.candidates) {
-      const expired = now - entry.mtimeMs > this.maxAgeMs;
-      const overCount = projectedCount > this.maxConversations;
-      const overBytes = projectedBytes > this.maxStoreBytes;
-      if (!expired && !overCount && !overBytes) continue;
-      const record = await this.readCommittedEntryRecord(entry, rootIdentity);
-      const retirementFence = this.retireProviderSession === undefined
-        ? undefined
-        : await this.ensureRetirementFence(record, rootIdentity, await this.ensureLocksRoot());
-      await this.retireProviderSessions(this.providerSessionsForRetirement(record, retirementFence));
-      await rm(entry.path);
-      await fsyncDirectory(this.root, rootIdentity);
-      if (retirementFence !== undefined) await this.removeDirtyFenceAfterCommit(retirementFence);
-      removedAny = true;
-      projectedCount -= 1;
-      projectedBytes -= entry.size;
-    }
-    if (removedAny) await assertDirectoryIdentity(this.root, rootIdentity);
+    throw new Error(this.quotaDiagnostic("Retention replanning bound reached; quota maintenance remains pending."));
   }
 
   private async retentionPlan(
     rootIdentity: DirectoryIdentity,
     projectedStages: readonly ActiveStage[],
+    excludedNames: ReadonlySet<string> = new Set(),
   ): Promise<{
     readonly projectedBytes: number;
     readonly projectedCount: number;
     readonly minimumBytes: number;
     readonly minimumCount: number;
     readonly candidates: readonly CommittedEntry[];
+    readonly records: ReadonlyMap<string, LoadedHistoryRecord | undefined>;
   }> {
     const entries = await this.scanCommittedEntries(rootIdentity, true);
     const protectedNames = new Set(
       (await this.scanActiveMarkers(true)).map((marker) => `${marker.conversationKey}${HISTORY_FILE_SUFFIX}`),
     );
+    // Pending execution/compaction owners cannot be quota/age-evicted before
+    // explicit settlement. No native inspection occurs under this transaction.
+    const fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
+    for (const fence of fences) {
+      if (fence.kind === "execution" || fence.kind === "compaction") protectedNames.add(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
+    }
+    for (const key of [...fences.damaged.keys(), ...fences.incomplete.keys()]) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    const managedRoot = await this.nativeHistoryRoot(rootIdentity).read() !== undefined;
+    let records = new Map<string, LoadedHistoryRecord | undefined>();
+    const wantsPruning = entries.length + projectedStages.filter((stage) => !entries.some((entry) => entry.name === stage.destinationName)).length > this.maxConversations
+      || entries.reduce((sum, entry) => sum + entry.size, 0) + projectedStages.reduce((sum, stage) => sum + stage.bytes, 0) > this.maxStoreBytes
+      || entries.some((entry) => this.now() - entry.mtimeMs > this.maxAgeMs);
+    if (managedRoot || wantsPruning) records = await this.accountingRecords(rootIdentity, entries);
+    for (const [name, record] of records) if (!record) protectedNames.add(name);
+    const native = this.nativeJournalStorage ? await this.managedNativeInventory(rootIdentity, records) : undefined;
+    const switches = await this.modelSwitchFootprint(rootIdentity, records, native);
+    for (const entry of switches.pending) protectedNames.add(`${historyKey(entry.state.identity.historyBucket)}${HISTORY_FILE_SUFFIX}`);
+    // Damaged switch/pending evidence protects its own conversation from eviction.
+    for (const key of switches.damaged) { protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`); this.noteDamagedEntry(`${MODEL_SWITCH_DIRECTORY}/${key}.*`); }
+    const pending = await this.pendingPayloads(rootIdentity).list();
+    for (const entry of pending) if (entry.damaged) { protectedNames.add(`${entry.conversationKey}${HISTORY_FILE_SUFFIX}`); this.noteDamagedEntry(entry.name); }
+    const operations = await this.nativeOperationFootprint(rootIdentity, native);
+    for (const key of operations.keys) protectedNames.add(`${key}${HISTORY_FILE_SUFFIX}`);
+    for (const [name, record] of records) if (record?.native !== undefined && !this.nativeJournalStorage) protectedNames.add(name);
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
-    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+    let projectedBytes = entries.reduce((sum, entry) => sum + entry.size, 0) + switches.bytes + switches.nativeBytes + operations.bytes + operations.reserved + fences.bytes + await this.nativeHistoryRoot(rootIdentity).bytes()
+      + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let projectedCount = entries.length;
     for (const active of projectedStages) {
       const replaced = byName.get(active.destinationName);
@@ -1160,15 +2716,56 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       projectedBytes += active.bytes;
     }
 
-    const candidates = entries
-      .filter((entry) => !protectedNames.has(entry.name))
-      .sort(compareRetentionEntries);
+    if (!managedRoot && records.size === 0 && (projectedCount > this.maxConversations || projectedBytes > this.maxStoreBytes)) {
+      records = await this.accountingRecords(rootIdentity, entries);
+      for (const [name, record] of records) if (!record) protectedNames.add(name);
+    }
+    const candidates: CommittedEntry[] = [];
+    let removableBytes = 0;
+    const needsPruning = projectedCount > this.maxConversations || projectedBytes > this.maxStoreBytes
+      || entries.some((entry) => this.now() - entry.mtimeMs > this.maxAgeMs);
+    if (needsPruning) for (const entry of entries.filter((item) => !protectedNames.has(item.name) && !excludedNames.has(item.name)).sort(compareRetentionEntries)) {
+      // Do not touch exact-claim SQLite transactions until this LRU victim is
+      // actually needed. Stop as soon as both quota excess and age are covered.
+      if (projectedCount - candidates.length <= this.maxConversations && projectedBytes - removableBytes <= this.maxStoreBytes
+        && this.now() - entry.mtimeMs <= this.maxAgeMs) break;
+      if (!await this.legacyLockAvailable(entry.name.slice(0, 64))) continue;
+      const record = records.get(entry.name);
+      if (record?.native !== undefined && requiresExactConversationClaim(record.conversationId)) {
+        let exact: HeldExactConversationClaim | undefined;
+        try { exact = await this.acquireExactConversationClaim(record.conversationId, true); }
+        catch (error) { if (!(error instanceof HistoryOwnerBusyError)) throw error; continue; }
+        finally { await exact?.release(); }
+      }
+      // A victim's orphan generations are collected with it: unreadable ones protect it instead.
+      if (await this.anyPendingDamaged(pending.filter((item) => `${item.conversationKey}${HISTORY_FILE_SUFFIX}` === entry.name), rootIdentity)) continue;
+      const journal = record?.native !== undefined ? currentJournal(record.conversationId, record.providerSession!.epoch) : undefined;
+      if (journal && native?.journals[journal.journalId]?.damaged) this.noteDamagedEntry(`native journal ${journal.journalId}`);
+      if (journal && ((native?.journals[journal.journalId]?.stagedBytes ?? 0) > 0 || native?.journals[journal.journalId]?.damaged
+        || await this.nativeJournalStorage!.deletionBlocked([journal], record!.native!.authority))) continue;
+      const extra = journal ? (native?.journals[journal.journalId]?.retainedBytes ?? 0)
+        + await this.modelSwitchPayloads(rootIdentity).conversationBytes(record!.conversationId) : 0;
+      candidates.push({ ...entry, size: entry.size + extra }); removableBytes += entry.size + extra;
+    }
     const minimumBytes = projectedBytes - candidates.reduce((sum, entry) => sum + entry.size, 0);
     const minimumCount = projectedCount - candidates.length;
     // Establish feasibility before deleting anything. An append that cannot fit
     // even after every eligible record is removed must not destroy older
     // history merely to discover that fact.
-    return { projectedBytes, projectedCount, minimumBytes, minimumCount, candidates };
+    return { projectedBytes, projectedCount, minimumBytes, minimumCount, candidates, records };
+  }
+
+  private async anyPendingDamaged(entries: readonly PendingPayloadEntry[], rootIdentity: DirectoryIdentity): Promise<boolean> {
+    for (const entry of entries) {
+      if (entry.name.endsWith(".tmp")) continue;
+      try { await this.pendingPayloads(rootIdentity).inspect(entry); }
+      catch (error) {
+        await assertDirectoryIdentity(this.root, rootIdentity);
+        if (entryAbsentOrThrowOperational(error)) continue;
+        this.noteDamagedEntry(entry.name); return true;
+      }
+    }
+    return false;
   }
 
   private async scanStagedBytes(rootIdentity: DirectoryIdentity): Promise<number> {
@@ -1176,17 +2773,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const activeConversationKeys = new Set(
       (await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey),
     );
-    let bytes = 0;
+    // Published pending inputs remain charged after a crash/marker removal.
+    // They are not abandoned canonical staging and require owner-held recovery.
+    const switches = await this.modelSwitchFootprint(rootIdentity);
+    const operations = await this.nativeOperationFootprint(rootIdentity);
+    const pending = await this.pendingPayloads(rootIdentity).list();
+    for (const entry of pending) if (entry.damaged) this.noteDamagedEntry(entry.name);
+    let bytes = operations.bytes + operations.reserved + (await this.scanDirtyFences(await this.ensureLocksRoot(), false)).bytes + pending.reduce((total, entry) => total + entry.bytes, 0) + switches.bytes + switches.nativeStagedBytes + await this.nativeHistoryRoot(rootIdentity).bytes()
+      + switches.pending.reduce((sum, entry) => sum + entry.remainingReservation, 0);
     let removed = false;
     for (const name of (await readdir(this.root)).sort()) {
       const match = TEMP_FILE_PATTERN.exec(name);
       if (match === null) continue;
       const path = join(this.root, name);
       const info = await lstat(path);
-      assertSecureHistoryFile(info, path);
-      if (info.size > MAX_STORE_FILE_BYTES) {
-        throw new Error(`History temporary ${path} exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
-      }
+      // A damaged stage is charged and kept, never removed or root-fatal.
+      if (damagedStage(info)) { this.noteDamagedEntry(name); bytes += info.size; continue; }
       // Every legitimate stage is created only after its active marker and
       // both are mutated under the root transaction. A stage without a marker
       // is therefore abandoned even when its filename PID is still live or
@@ -1219,26 +2821,37 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         assertSecureHistoryDirectory(info, path);
         continue;
       }
+      if (NATIVE_OPERATION_PATTERN.test(name)) continue; // owner-scoped; charged by nativeOperationFootprint
+      if (name === NATIVE_HISTORY_ROOT_FILE || NATIVE_HISTORY_ROOT_TEMP.test(name)) {
+        const stat = await lstat(join(this.root, name)); assertSecureHistoryFile(stat, join(this.root, name));
+        if (stat.size > MAX_NATIVE_HISTORY_ROOT_BYTES) throw new Error("Native root marker exceeds its serialized limit");
+        if (name === NATIVE_HISTORY_ROOT_FILE) await this.nativeHistoryRoot(rootIdentity).read();
+        continue;
+      }
+      if (name === MODEL_SWITCH_DIRECTORY) {
+        await this.switchInventory(rootIdentity); continue;
+      }
+      if (name === PENDING_TURN_DIRECTORY) {
+        await this.pendingPayloads(rootIdentity).list();
+        continue;
+      }
       if (name === TOOL_HISTORY_DIRECTORY) {
         const info = await lstat(path);
         assertSecureHistoryDirectory(info, path);
         continue;
       }
       if (HISTORY_FILE_PATTERN.test(name)) {
+        // A damaged record stays listed and charged; reading it fails (as a
+        // CanonicalParseFailure) only for its own conversation and protects it.
         const info = await lstat(path);
-        assertSecureHistoryFile(info, path);
-        if (info.size > MAX_STORE_FILE_BYTES) {
-          throw new Error(`History file ${path} exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
-        }
         entries.push({ name, path, size: info.size, mtimeMs: info.mtimeMs });
         continue;
       }
       const temporaryMatch = TEMP_FILE_PATTERN.exec(name);
       if (temporaryMatch !== null) {
         const info = await lstat(path);
-        assertSecureHistoryFile(info, path);
         if (
-          cleanStaleTemps
+          cleanStaleTemps && !damagedStage(info)
           && !activeConversationKeys.has(temporaryMatch[1] as string)
         ) {
           await rm(path);
@@ -1246,7 +2859,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         }
         continue;
       }
-      throw new Error(`History root ${this.root} contains unsupported entry ${name}.`);
+      // Unrelated names (`.DS_Store`, editor temps) are never read, charged or deleted.
     }
     if (removedTemp) await fsyncDirectory(this.root, rootIdentity);
     await assertDirectoryIdentity(this.root, rootIdentity);
@@ -1270,16 +2883,19 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     return await this.locksRootReady;
   }
 
-  private async acquireRootTransaction(rootIdentity: DirectoryIdentity): Promise<() => Promise<void>> {
-    const releaseProcess = await acquireQueue(PROCESS_ROOT_QUEUES, this.root);
+  private async acquireRootTransaction(rootIdentity: DirectoryIdentity, signal?: AbortSignal): Promise<() => Promise<void>> {
+    const releaseProcess = await acquireQueue(PROCESS_ROOT_QUEUES, this.root, signal);
     try {
       await assertDirectoryIdentity(this.root, rootIdentity);
       const locksIdentity = await this.ensureLocksRoot();
-      const lock = await acquireCrossProcessLock(join(this.root, LOCKS_DIRECTORY, ROOT_LOCK_FILE), locksIdentity);
+      const lock = await acquireCrossProcessLock(join(this.root, LOCKS_DIRECTORY, ROOT_LOCK_FILE), locksIdentity, false, signal);
+      const accounting: RootAccounting = { records: new Map(), damaged: new Set() };
+      this.rootAccounting = accounting;
       let released = false;
       return async (): Promise<void> => {
         if (released) return;
         released = true;
+        if (this.rootAccounting === accounting) this.rootAccounting = undefined;
         try {
           await lock.release();
         } finally {
@@ -1296,7 +2912,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     conversationId: string,
     logicalFence?: HeldLogicalConversation,
     exactFence?: HeldExactConversationClaim,
+    tryOnly = false,
+    signal?: AbortSignal,
   ): Promise<HeldConversation> {
+    signal?.throwIfAborted();
     const expectedLogicalId = logicalConversationIdForFence(conversationId);
     if (
       logicalFence !== undefined
@@ -1307,7 +2926,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (exactFence !== undefined && exactFence.conversationId !== conversationId) {
       throw new Error("Physical conversation does not belong to the held exact-conversation claim.");
     }
-    const heldLogical = logicalFence ?? await this.acquireLogicalConversation(expectedLogicalId);
+    const heldLogical = logicalFence ?? await this.acquireLogicalConversation(expectedLogicalId, tryOnly, signal);
     const ownsLogicalFence = logicalFence === undefined;
     const conversationKey = historyKey(conversationId);
     let heldExact = exactFence;
@@ -1317,11 +2936,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let marker: ActiveMarker | undefined;
     let rootIdentity: DirectoryIdentity | undefined;
     try {
+      signal?.throwIfAborted();
       if (requiresExactConversationClaim(conversationId) && heldExact === undefined) {
-        heldExact = await this.acquireExactConversationClaim(conversationId);
+        heldExact = await this.acquireExactConversationClaim(conversationId, tryOnly, signal);
         ownsExactFence = true;
       }
-      releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId));
+      if (tryOnly && PROCESS_APPEND_QUEUES.has(this.queueKey(conversationId))) throw new HistoryOwnerBusyError("Physical history owner is busy.");
+      releaseProcess = await acquireQueue(PROCESS_APPEND_QUEUES, this.queueKey(conversationId), signal);
       rootIdentity = await this.ensureRoot();
       const locksIdentity = await this.ensureLocksRoot();
       // Logical/exact owner rows already serialize every physical mutation.
@@ -1334,20 +2955,37 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       legacyLock = await acquireExistingCrossProcessLock(
         join(this.root, LOCKS_DIRECTORY, `${conversationKey}.sqlite`),
         locksIdentity,
+        tryOnly,
+        signal,
       );
-      const releaseRoot = await this.acquireRootTransaction(rootIdentity);
+      const releaseRoot = await this.acquireRootTransaction(rootIdentity, signal);
       try {
+        signal?.throwIfAborted();
+        await this.findDirtyFence(conversationKey, locksIdentity);
         await this.retireInactiveDirtyFences(rootIdentity, locksIdentity, conversationKey);
+        // Cancellation ends here: marker publication and recovery finish uncancelled.
+        signal?.throwIfAborted();
         marker = await this.createActiveMarker(conversationKey, locksIdentity);
       } finally {
         await releaseRoot();
       }
       let released = false;
-      return {
+      const held: HeldConversation = {
+        logical: heldLogical,
         marker,
         rootIdentity,
+        assertOwned: async (): Promise<void> => {
+          if (released) throw new Error("History conversation ownership has been released.");
+          await heldLogical.assertOwned();
+          await assertDirectoryIdentity(this.root, rootIdentity!);
+          const current = await readActiveMarker(marker!.path);
+          if (current.token !== marker!.token || current.conversationKey !== conversationKey || current.pid !== process.pid) {
+            throw new Error("History conversation ownership changed.");
+          }
+        },
         release: async (): Promise<void> => {
           if (released) return;
+          released = true;
           try {
             await legacyLock?.release();
           } finally {
@@ -1358,9 +2996,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               if (ownsLogicalFence) await heldLogical.release();
             }
           }
-          released = true;
         },
       };
+      await this.recoverNativeOperation(conversationId, held);
+      return held;
     } catch (error) {
       if (marker !== undefined && rootIdentity !== undefined) {
         const releaseRoot = await this.acquireRootTransaction(rootIdentity).catch(() => undefined);
@@ -1385,10 +3024,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   private async acquireLogicalConversation(
     logicalConversationId: string,
+    tryOnly = false,
+    signal?: AbortSignal,
   ): Promise<HeldLogicalConversation> {
+    signal?.throwIfAborted();
+    if (tryOnly && PROCESS_LOGICAL_SESSION_QUEUES.has(`${this.root}\0${historyKey(logicalConversationId)}`)) throw new HistoryOwnerBusyError("Logical history owner is busy.");
     const releaseProcess = await acquireQueue(
       PROCESS_LOGICAL_SESSION_QUEUES,
       `${this.root}\0${historyKey(logicalConversationId)}`,
+      signal,
     );
     try {
       const rootIdentity = await this.ensureRoot();
@@ -1397,19 +3041,26 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         join(this.root, LOCKS_DIRECTORY, logicalSessionShardLockName(historyKey(logicalConversationId))),
         locksIdentity,
         sessionClaimKey("logical", logicalConversationId),
+        tryOnly,
+        signal,
       );
       let released = false;
       return {
         logicalConversationId,
         rootIdentity,
+        assertOwned: async (): Promise<void> => {
+          if (released) throw new Error("History logical ownership has been released.");
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+        },
         release: async (): Promise<void> => {
           if (released) return;
+          released = true;
           try {
             await lock.release();
           } finally {
             releaseProcess();
           }
-          released = true;
         },
       };
     } catch (error) {
@@ -1420,13 +3071,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
 
   private async acquireExactConversationClaim(
     conversationId: string,
+    tryOnly = false,
+    signal?: AbortSignal,
   ): Promise<HeldExactConversationClaim> {
+    signal?.throwIfAborted();
     const rootIdentity = await this.ensureRoot();
     const locksIdentity = await this.ensureLocksRoot();
     const lock = await acquireSessionClaim(
       join(this.root, LOCKS_DIRECTORY, logicalSessionShardLockName(historyKey(conversationId))),
       locksIdentity,
       sessionClaimKey("exact", conversationId),
+      tryOnly,
+      signal,
     );
     let released = false;
     return {
@@ -1434,8 +3090,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       rootIdentity,
       release: async (): Promise<void> => {
         if (released) return;
-        await lock.release();
         released = true;
+        await lock.release();
       },
     };
   }
@@ -1454,18 +3110,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     conversationKey: string,
     locksIdentity: DirectoryIdentity,
   ): Promise<ActiveMarker> {
-    const token = randomBytes(16).toString("hex");
+    const token = randomBytes(16).toString("hex"), incarnation = await currentHistoryProcessIncarnation();
     const marker: ActiveMarker = {
       path: join(this.root, LOCKS_DIRECTORY, `${conversationKey}.${process.pid}.${token}.active`),
       conversationKey,
       pid: process.pid,
-      token,
+      token, incarnation,
     };
     const body = Buffer.from(`${JSON.stringify({
       version: 1,
       conversationKey,
       pid: process.pid,
-      token,
+      token, incarnation,
     })}\n`, "utf8");
     let handle;
     let complete = false;
@@ -1505,14 +3161,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     const locksRoot = join(this.root, LOCKS_DIRECTORY);
     const locksIdentity = await this.ensureLocksRoot();
     await assertDirectoryIdentity(locksRoot, locksIdentity);
-    const markers: ActiveMarker[] = [];
+    const markers: ActiveMarker[] = [], ownerLive = historyOwnerLiveness();
     let removed = false;
     for (const name of (await readdir(locksRoot)).sort()) {
       if (
         name === ROOT_LOCK_FILE
-        || name === TOOL_HISTORY_OWNER_FILE
-        || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
-        || isConversationShardLockName(name)
         || isLogicalSessionShardLockName(name)
       ) {
         const path = join(locksRoot, name);
@@ -1523,60 +3176,69 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await assertSessionClaimJournalIfPresent(join(locksRoot, name));
         continue;
       }
-      if (DIRTY_FENCE_PATTERN.test(name) || DIRTY_FENCE_TEMP_PATTERN.test(name)) {
-        const path = join(locksRoot, name);
-        const info = await lstat(path);
-        assertSecureHistoryFile(info, path);
-        if (info.size > MAX_DIRTY_FENCE_BYTES) {
-          throw new Error(`History dirty fence ${path} is too large.`);
-        }
-        continue;
-      }
+      // Fences are owner-scoped and classified by scanDirtyFences.
+      if (DIRTY_FENCE_PATTERN.test(name) || DIRTY_FENCE_TEMP_PATTERN.test(name)) continue;
       const match = ACTIVE_MARKER_PATTERN.exec(name);
-      if (match === null) throw new Error(`History lock root ${locksRoot} contains unsupported entry ${name}.`);
+      if (match === null) continue; // unrelated names are never read or deleted
       const path = join(locksRoot, name);
-      const info = await lstat(path);
-      assertSecureHistoryFile(info, path);
-      if (info.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
-      const markerPid = Number.parseInt(match[2] as string, 10);
-      // A crashed writer may leave a partial marker. The unique filename is
-      // enough to safely reap it once its owner PID is no longer live.
-      if (cleanDead && !isProcessAlive(markerPid)) {
-        await rm(path);
-        removed = true;
-        continue;
+      let marker: ActiveMarker = { path, conversationKey: match[1]!, pid: Number.parseInt(match[2]!, 10), token: match[3]! };
+      try {
+        marker = await readActiveMarker(path);
+      } catch (error) {
+        await this.assertLocksIdentity(locksIdentity);
+        if (entryAbsentOrThrowOperational(error)) continue;
+        // Only a successful owned-file read may prove a torn liveness marker.
+        // A dead writer cannot finish it; there is no recoverable payload here.
+        if (error instanceof TornCoordinationFileError && cleanDead && !await ownerLive(marker.pid)) {
+          await rm(path); removed = true; continue;
+        }
+        if (error instanceof TornCoordinationFileError) { markers.push(marker); continue; }
+        this.noteDamagedEntry(name); markers.push({ ...marker, damaged: true }); continue;
       }
-      const marker = await readActiveMarker(path);
-      if (
-        marker.conversationKey !== match[1]
-        || marker.pid !== markerPid
-        || marker.token !== match[3]
-      ) {
-        throw new Error(`History active marker ${path} does not match its filename.`);
-      }
-      markers.push(marker);
+      // Valid markers and owned torn markers are both reclaimable after owner death.
+      if (cleanDead && !await ownerLive(marker.pid, marker.incarnation)) { await rm(path); removed = true; }
+      else markers.push(marker);
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
     return markers;
   }
 
+  /** Probe only a needed recovery/retention owner through SQLite, never raw
+   * open/close: closing a raw fd can release this process's fcntl locks. */
+  private async legacyLockAvailable(key: string): Promise<boolean> {
+    const identity = await this.ensureLocksRoot(); let lock: CrossProcessLock | undefined;
+    try { lock = await acquireExistingCrossProcessLock(join(this.root, LOCKS_DIRECTORY, `${key}.sqlite`), identity, true); return true; }
+    catch (error) {
+      await this.assertLocksIdentity(identity);
+      if (entryAbsentOrThrowOperational(error)) return true;
+      if (!(error instanceof HistoryOwnerBusyError)) this.noteDamagedEntry(`${key}.sqlite`);
+      return false;
+    }
+    finally { await lock?.release(); }
+  }
+
+  private async assertLocksIdentity(identity: DirectoryIdentity): Promise<void> {
+    await assertDirectoryIdentity(this.root, await this.ensureRoot());
+    await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), identity);
+  }
+
+  /** A malformed or insecure conversation-keyed fence is that owner's damage:
+   * listed in `damaged` (counted, retention-protected, never removed or
+   * reclaimed) and refused by findDirtyFence. Shared lock files stay fatal. */
   private async scanDirtyFences(
     locksIdentity: DirectoryIdentity,
     cleanDeadTemps: boolean,
-  ): Promise<readonly DirtyFence[]> {
+  ): Promise<readonly DirtyFence[] & { readonly damaged: ReadonlyMap<string, string>; readonly incomplete: ReadonlyMap<string, string>; readonly bytes: number }> {
     const locksRoot = join(this.root, LOCKS_DIRECTORY);
     await assertDirectoryIdentity(locksRoot, locksIdentity);
-    const fences: DirtyFence[] = [];
-    let removed = false;
+    const fences: DirtyFence[] = [], damaged = new Map<string, string>(), incomplete = new Map<string, string>();
+    let removed = false, bytes = 0;
+    const ownerLive = historyOwnerLiveness();
     for (const name of (await readdir(locksRoot)).sort()) {
       const path = join(locksRoot, name);
       if (
         name === ROOT_LOCK_FILE
-        || name === TOOL_HISTORY_OWNER_FILE
-        || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
-        || isConversationShardLockName(name)
         || isLogicalSessionShardLockName(name)
-        || ACTIVE_MARKER_PATTERN.test(name)
       ) {
         assertSecureHistoryFile(await lstat(path), path);
         continue;
@@ -1585,38 +3247,45 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await assertSessionClaimJournalIfPresent(path);
         continue;
       }
-      const fenceMatch = DIRTY_FENCE_PATTERN.exec(name);
-      if (fenceMatch !== null) {
-        const info = await lstat(path);
+      const fenceMatch = DIRTY_FENCE_PATTERN.exec(name), tempMatch = DIRTY_FENCE_TEMP_PATTERN.exec(name);
+      const legacy = LEGACY_CONVERSATION_LOCK_PATTERN.test(name);
+      if (!fenceMatch && !tempMatch && !legacy && !ACTIVE_MARKER_PATTERN.test(name)) continue;
+      let info: Stats | undefined, remove = false;
+      try {
+        info = await lstat(path);
+        if (ACTIVE_MARKER_PATTERN.test(name)) { await readActiveMarker(path); continue; }
         assertSecureHistoryFile(info, path);
-        if (info.size > MAX_DIRTY_FENCE_BYTES) {
-          throw new Error(`History dirty fence ${path} is too large.`);
-        }
+        if (info.size > (legacy ? 64 * 1024 : MAX_DIRTY_FENCE_BYTES)) throw new Error(`History coordination entry ${name} is too large.`);
+        if (legacy) { bytes += info.size; continue; } // SQLite content is checked only by its owning connection
         const fence = await readDirtyFence(path);
-        if (fence.conversationKey !== fenceMatch[1]) {
-          throw new Error(`History dirty fence ${path} does not match its filename.`);
+        const key = (fenceMatch ?? tempMatch)![1]!;
+        if (fence.conversationKey !== key) throw new TornCoordinationFileError(`History dirty fence ${path} does not match its filename.`);
+        if (fenceMatch) fences.push({ ...fence, mtimeMs: info.mtimeMs });
+        else if (cleanDeadTemps && !await ownerLive(Number.parseInt(tempMatch![2]!, 10))) {
+          remove = true;
         }
-        fences.push({ ...fence, mtimeMs: info.mtimeMs });
-        continue;
+      } catch (error) {
+        await this.assertLocksIdentity(locksIdentity);
+        if (entryAbsentOrThrowOperational(error)) continue;
+        const temporaryOwner = tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name);
+        if (error instanceof TornCoordinationFileError && temporaryOwner && cleanDeadTemps
+          && !await ownerLive(Number.parseInt(temporaryOwner[2]!, 10))) {
+          await rm(path, { force: true }); removed = true; continue;
+        }
+        if (error instanceof TornCoordinationFileError && temporaryOwner) {
+          incomplete.set(temporaryOwner[1]!, name); bytes += info!.size; continue;
+        }
+        this.noteDamagedEntry(name);
+        // Healthy markers/fences are coordination overhead; damage stays charged.
+        // If metadata itself is unreadable, reserve the format cap, never zero.
+        bytes += info?.size ?? (legacy ? 64 * 1024 : ACTIVE_MARKER_PATTERN.test(name) ? MAX_ACTIVE_MARKER_BYTES : MAX_DIRTY_FENCE_BYTES);
+        damaged.set(legacy ? name.slice(0, 64) : (fenceMatch ?? tempMatch ?? ACTIVE_MARKER_PATTERN.exec(name))![1]!, name);
       }
-      const tempMatch = DIRTY_FENCE_TEMP_PATTERN.exec(name);
-      if (tempMatch !== null) {
-        const info = await lstat(path);
-        assertSecureHistoryFile(info, path);
-        if (info.size > MAX_DIRTY_FENCE_BYTES) {
-          throw new Error(`History dirty fence temporary ${path} is too large.`);
-        }
-        const ownerPid = Number.parseInt(tempMatch[2] as string, 10);
-        if (cleanDeadTemps && !isProcessAlive(ownerPid)) {
-          await rm(path);
-          removed = true;
-        }
-        continue;
-      }
-      throw new Error(`History lock root ${locksRoot} contains unsupported entry ${name}.`);
+      if (remove) { await rm(path, { force: true }); removed = true; }
+      // Unrelated names are never read, charged or deleted.
     }
     if (removed) await fsyncDirectory(locksRoot, locksIdentity);
-    return fences;
+    return Object.assign(fences, { damaged, incomplete, bytes });
   }
 
   private async retireInactiveDirtyFences(
@@ -1627,27 +3296,41 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (this.retireProviderSession === undefined) return;
     const activeKeys = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
     const fences = await this.scanDirtyFences(locksIdentity, true);
+    if (fences.length === 0) return;
+    const inventory = await this.switchInventory(rootIdentity);
+    const switchingKeys = new Set([...inventory.pending.map(({ state }) => historyKey(state.identity.historyBucket)), ...inventory.damaged]);
+    for (const name of await readdir(this.root)) { const match = NATIVE_OPERATION_PATTERN.exec(name); if (match) switchingKeys.add(match[1]!); }
     const committedByName = new Map(
       (await this.scanCommittedEntries(rootIdentity, true)).map((entry) => [entry.name, entry]),
     );
-    let removed = false;
+    const planned: Array<{ fence: DirtyFence & { readonly providerSessionId: string }; committedEntry: CommittedEntry | undefined; committedRecord: LoadedHistoryRecord | undefined; canonicalProvesCommit: boolean }> = [];
     for (const fence of fences) {
       if (
         fence.conversationKey === excludedConversationKey
-        || activeKeys.has(fence.conversationKey)
+        || fence.kind === "execution" || fence.kind === "compaction"
+        || activeKeys.has(fence.conversationKey) || fences.damaged.has(fence.conversationKey) || fences.incomplete.has(fence.conversationKey)
+        || switchingKeys.has(fence.conversationKey)
         || fence.providerSessionId === undefined
       ) {
         continue;
       }
       const committedEntry = committedByName.get(`${fence.conversationKey}${HISTORY_FILE_SUFFIX}`);
-      const committedRecord = committedEntry === undefined
-        ? undefined
-        : await this.readCommittedEntryRecord(committedEntry, rootIdentity);
-      const canonicalProvesCommit = committedRecord?.sourceVersion === STORE_VERSION
+      let committedRecord: LoadedHistoryRecord | undefined;
+      try { committedRecord = committedEntry === undefined ? undefined : await this.readCommittedEntryRecord(committedEntry, rootIdentity); }
+      catch (error) {
+        if (error instanceof CanonicalParseFailure || error instanceof TruncatedHistoryRecordError || error instanceof TypeError) continue;
+        throw error;
+      }
+      const canonicalProvesCommit = committedRecord?.providerSession !== undefined
         && committedRecord.providerSession?.epoch === fence.epoch
         && committedRecord.providerSession.modelKey === fence.modelKey
         && committedRecord.providerSession.dirtyRunId === undefined
         && committedRecord.providerSession.revision === fence.revision + 1;
+      if (!canonicalProvesCommit && committedRecord?.native !== undefined) continue; // unresolved native owner is protected, never root-wide blocking
+      planned.push({ fence: { ...fence, providerSessionId: fence.providerSessionId }, committedEntry, committedRecord, canonicalProvesCommit });
+    }
+    let removed = false;
+    for (const { fence, committedEntry, committedRecord, canonicalProvesCommit } of planned) {
       // The fence is the crash-recovery journal: durable transcript deletion
       // happens first, then its directory entry is fsynced, and only then may
       // the fence disappear. A crash or error at any earlier point leaves the
@@ -1655,7 +3338,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // A canonical epoch at exactly revision+1 proves the history rename won
       // and only fence cleanup crashed; preserve that valid transcript.
       if (!canonicalProvesCommit) {
-        const sameCommittedEpoch = committedRecord?.sourceVersion === STORE_VERSION
+        const sameCommittedEpoch = committedRecord?.providerSession !== undefined
           && committedRecord.providerSession?.epoch === fence.epoch;
         // Contradictory owners for one id are corruption, not a retirement hint.
         // Validate both before invoking either runtime or losing the journal.
@@ -1664,7 +3347,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           : [{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
         if (
           committedEntry !== undefined
-          && committedRecord?.sourceVersion === STORE_VERSION
+          && committedRecord?.providerSession !== undefined
           && committedRecord.providerSession?.epoch === fence.epoch
         ) {
           await this.rotateCommittedProviderEpoch(committedEntry, committedRecord, rootIdentity);
@@ -1676,14 +3359,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
 
+  private async assertNativeRecordAuthority(record: LoadedHistoryRecord, rootIdentity: DirectoryIdentity): Promise<void> {
+    if (record.native === undefined) return;
+    const rootStore = this.nativeHistoryRoot(rootIdentity), marker = await rootStore.read();
+    if (!marker) throw new NativeRootMarkerMissingError();
+    if (switchDigest(record.native?.authority) !== switchDigest(rootStore.authority(marker, logicalConversationIdForFence(record.conversationId), record.conversationId))) {
+      throw new TypeError("Canonical native authority does not match the managed root marker");
+    }
+  }
+
   private async readRecord(
     conversationId: string,
     rootIdentity: DirectoryIdentity,
     strict = false,
   ): Promise<LoadedHistoryRecord> {
+    strict ||= await this.nativeHistoryRoot(rootIdentity).read() !== undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.readRecordOnce(conversationId, rootIdentity, strict);
+        const record = await this.readRecordOnce(conversationId, rootIdentity, strict);
+        await this.assertNativeRecordAuthority(record, rootIdentity); return record;
       } catch (error) {
         if (attempt < 2 && (error instanceof ConcurrentHistoryMutationError || isErrno(error, "ENOENT"))) {
           continue;
@@ -1734,11 +3428,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (!strict && error instanceof TruncatedHistoryRecordError) {
           // Atomic replacement means our own writes cannot publish a partial
           // record. If the filesystem nevertheless presents stable truncated
-          // JSON, fail cold instead of poisoning every future turn. Keep the
-          // unreadable file in place so the next locked append replaces it
-          // atomically; a fresh provider epoch then prevents stale transcript
-          // resume without guessing at data that can no longer be parsed.
+          // JSON, fail cold instead of poisoning every future turn. The owner
+          // sets the exact bytes aside (setAsideUnreadable) before any write, so
+          // they are never overwritten; a fresh provider epoch then prevents
+          // stale transcript resume without guessing at unparseable data.
           await assertDirectoryIdentity(this.root, rootIdentity);
+          this.unreadableRecords.set(`${historyKey(conversationId)}${HISTORY_FILE_SUFFIX}`, after);
           return { sourceVersion: 0, conversationId, messages: [] };
         }
         throw error;
@@ -1756,17 +3451,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private async prepareProviderRetirement(
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
+    reset = false,
   ): Promise<DirtyFence | undefined> {
-    if (this.retireProviderSession === undefined) return undefined;
     const locksIdentity = await this.ensureLocksRoot();
     const releaseRoot = await this.acquireRootTransaction(rootIdentity);
     let fence: DirtyFence | undefined;
     try {
-      fence = await this.ensureRetirementFence(record, rootIdentity, locksIdentity);
+      await this.requireNoModelSwitch(record.conversationId, rootIdentity);
+      this.requireNativeCapability(record, reset ? "whole-conversation deletion" : "native epoch transition", reset ? "reset" : "provider retirement");
+      const existing = await this.findDirtyFence(historyKey(record.conversationId), locksIdentity);
+      if (!reset) requireSettledFence(existing);
+      if (reset && existing?.kind !== undefined && this.retireProviderSession === undefined) {
+        throw new Error("Reset of a pending native turn requires fail-closed provider retirement.");
+      }
+      if (this.retireProviderSession === undefined) return undefined;
+      fence = await this.ensureRetirementFence(record, rootIdentity, locksIdentity, reset);
     } finally {
       await releaseRoot();
     }
-    await this.retireProviderSessions(this.providerSessionsForRetirement(record, fence));
+    if (record.native === undefined) await this.retireProviderSessions(this.providerSessionsForRetirement(record, fence));
     return fence;
   }
 
@@ -1774,11 +3477,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
     locksIdentity: DirectoryIdentity,
+    reset = false,
   ): Promise<DirtyFence | undefined> {
+    this.requireNativeCapability(record, reset ? "whole-conversation deletion" : "native epoch transition", "retirement-fence issuance");
     const conversationKey = historyKey(record.conversationId);
     const existing = await this.findDirtyFence(conversationKey, locksIdentity);
-    if (existing !== undefined) return existing;
-    if (record.sourceVersion !== STORE_VERSION || record.providerSession === undefined) return undefined;
+    if (!reset) requireSettledFence(existing);
+    if (existing !== undefined) return reset ? await this.authorizeFenceReset(existing, locksIdentity) : existing;
+    if (record.providerSession === undefined) return undefined;
     await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
     const providerSessionId = deriveProviderSessionId(record.conversationId, record.providerSession.epoch);
     return await this.publishDirtyFence({
@@ -1792,12 +3498,33 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }, locksIdentity);
   }
 
+  private async authorizeFenceReset(fence: DirtyFence, locksIdentity: DirectoryIdentity): Promise<DirtyFence> {
+    if (fence.kind !== "execution" && fence.kind !== "compaction") return fence;
+    return await this.publishDirtyFence({
+      kind: "retirement", conversationKey: fence.conversationKey, logicalConversationKey: fence.logicalConversationKey!,
+      epoch: fence.epoch, providerSessionId: fence.providerSessionId!, modelKey: fence.modelKey!,
+      revision: fence.revision, runIdDigest: fence.runIdDigest,
+    }, locksIdentity);
+  }
+
+  private async removePendingConversation(conversationKey: string, rootIdentity: DirectoryIdentity,
+    assertOwned: () => Promise<void>): Promise<void> {
+    const payloads = this.pendingPayloads(rootIdentity);
+    const runs = new Set((await payloads.list()).filter((entry) => entry.conversationKey === conversationKey).map((entry) => entry.runIdDigest));
+    for (const runIdDigest of runs) {
+      await payloads.collectUnreferenced({ conversationKey, runIdDigest }, [], {
+        assertOwned,
+        reserve: async () => { throw new Error("Reset cleanup cannot publish pending payloads."); },
+      });
+    }
+  }
+
   private providerSessionsForRetirement(
     record: LoadedHistoryRecord,
     fence?: DirtyFence,
   ): readonly ProviderSessionHandle[] {
     return [
-      ...(record.sourceVersion !== STORE_VERSION || record.providerSession === undefined
+      ...(record.providerSession === undefined
         ? []
         : [{ providerSessionId: deriveProviderSessionId(record.conversationId, record.providerSession.epoch), ...modelBinding(record.providerSession.modelKey) }]),
       ...(fence === undefined
@@ -1811,10 +3538,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     rootIdentity: DirectoryIdentity,
   ): Promise<LoadedHistoryRecord> {
     await assertDirectoryIdentity(this.root, rootIdentity);
-    const before = await lstat(entry.path);
-    assertSecureHistoryFile(before, entry.path);
     let handle;
     try {
+      const before = await lstat(entry.path);
+      assertSecureHistoryFile(before, entry.path);
       handle = await open(entry.path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
       const opened = await handle.stat();
       assertSecureHistoryFile(opened, entry.path);
@@ -1825,11 +3552,18 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       const after = await handle.stat();
       assertSameIdentity(opened, after, entry.path);
-      const record = parseHistoryFile(bytes, entry.path);
-      if (`${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}` !== entry.name) {
-        throw new Error(`History file ${entry.path} does not match its conversation id.`);
-      }
+      let record: LoadedHistoryRecord;
+      try {
+        record = parseHistoryFile(bytes, entry.path); await this.assertNativeRecordAuthority(record, rootIdentity);
+        if (`${historyKey(record.conversationId)}${HISTORY_FILE_SUFFIX}` !== entry.name) throw new Error(`History file ${entry.path} does not match its conversation id.`);
+      } catch (error) { throw new CanonicalParseFailure(error); }
       return record;
+    } catch (error) {
+      // Damage of this one record (mode, links, size, identity) is owner-scoped;
+      // absence and root identity failures keep their meaning.
+      if (error instanceof CanonicalParseFailure || isErrno(error, "ENOENT")) throw error;
+      await assertDirectoryIdentity(this.root, rootIdentity);
+      throw new CanonicalParseFailure(error);
     } finally {
       await handle?.close().catch(() => undefined);
     }
@@ -1840,17 +3574,20 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     record: LoadedHistoryRecord,
     rootIdentity: DirectoryIdentity,
   ): Promise<void> {
-    if (record.sourceVersion !== STORE_VERSION || record.providerSession === undefined) return;
-    const rotated: HistoryFileV2 = {
+    if (record.providerSession === undefined) return;
+    this.requireNativeCapability(record, "native epoch transition", "inactive provider epoch rotation");
+    const rotated: CanonicalHistoryFile = {
       version: STORE_VERSION,
       conversationId: record.conversationId,
       messages: record.messages,
+      ...lastCommitBinding(record),
       providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(record.providerSession.modelKey) },
     };
     const stage = await this.writeStage(rotated, rootIdentity);
     let published = false;
     try {
       await rename(stage.temporaryPath, entry.path);
+      this.invalidateCanonicalAccounting(entry.name);
       published = true;
       await fsyncDirectory(this.root, rootIdentity);
     } finally {
@@ -1866,6 +3603,21 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       await this.retireProviderSession(providerSessionId, modelKey);
     }
+  }
+
+  /** Stable truncated records seen by readers, by canonical filename. */
+  private readonly unreadableRecords = new Map<string, Stats>();
+  /** Caller holds the owner and the root transaction. Renames an unchanged,
+   * previously read truncated record to `<name>.damaged-<n>` (a non-artifact
+   * name: never read, charged, evicted or deleted) and fsyncs the root. */
+  private async setAsideUnreadable(name: string, rootIdentity: DirectoryIdentity): Promise<boolean> {
+    const seen = this.unreadableRecords.get(name); this.unreadableRecords.delete(name);
+    let current; try { current = await lstat(join(this.root, name)); } catch (error) { if (isErrno(error, "ENOENT")) return false; throw error; }
+    if (!seen || seen.dev !== current.dev || seen.ino !== current.ino || seen.size !== current.size || seen.mtimeMs !== current.mtimeMs) return false;
+    let index = 1; for (const taken = new Set(await readdir(this.root)); taken.has(`${name}.damaged-${index}`);) index += 1;
+    await rename(join(this.root, name), join(this.root, `${name}.damaged-${index}`));
+    this.invalidateCanonicalAccounting(name); await fsyncDirectory(this.root, rootIdentity);
+    return true;
   }
 
   private recordPath(conversationId: string): string {
@@ -1888,22 +3640,31 @@ function normalizeNonNegativeInteger(value: number, name: string): number {
   return value;
 }
 
-async function acquireQueue(queues: Map<string, Promise<void>>, key: string): Promise<() => void> {
-  const prior = queues.get(key) ?? Promise.resolve();
+async function acquireQueue(queues: Map<string, Promise<void>>, key: string, signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  const prior = (queues.get(key) ?? Promise.resolve()).catch(() => undefined);
   let releaseGate!: () => void;
-  const gate = new Promise<void>((resolveGate) => {
-    releaseGate = resolveGate;
-  });
-  const tail = prior.catch(() => undefined).then(async () => await gate);
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const tail = prior.then(() => gate);
   queues.set(key, tail);
-  await prior.catch(() => undefined);
-  let released = false;
-  return (): void => {
+  let released = false, onAbort: (() => void) | undefined;
+  const release = (): void => {
     if (released) return;
-    released = true;
-    releaseGate();
-    if (queues.get(key) === tail) queues.delete(key);
+    released = true; releaseGate();
+    // An aborted tail still depends on the live predecessor; successors cannot bypass it.
+    void prior.finally(() => { if (queues.get(key) === tail) queues.delete(key); });
   };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      onAbort = () => reject(signal!.reason);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      void prior.then(resolve);
+    });
+    signal?.throwIfAborted();
+    return release;
+  } catch (error) { release(); throw error; }
+  finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
 }
 
 function recordPostCommitMaintenanceFailure(root: string, error: unknown): void {
@@ -1918,14 +3679,16 @@ function compareRetentionEntries(left: CommittedEntry, right: CommittedEntry): n
   return left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name);
 }
 
-function historyRecordVersion(record: LoadedHistoryRecord | HistoryFileV2): string {
+function historyRecordVersion(record: LoadedHistoryRecord | CanonicalHistoryFile): string {
   return createHash("sha256")
     .update("mono-agent-history-version-v1\0")
     .update(JSON.stringify({
-      sourceVersion: "sourceVersion" in record ? record.sourceVersion : STORE_VERSION,
+      sourceVersion: "sourceVersion" in record ? record.sourceVersion : record.version,
       conversationId: record.conversationId,
       messages: record.messages,
       providerSession: record.providerSession,
+      lastCommit: record.lastCommit,
+      ...nativeExtension(record),
     }), "utf8")
     .digest("hex");
 }
@@ -2034,7 +3797,8 @@ function belongsToLogicalConversation(conversationId: string, logicalConversatio
     || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
 }
 
-function logicalConversationIdForFence(conversationId: string): string {
+export function logicalConversationIdForFence(conversationId: string): string {
+  conversationId = normalizeConversationId(conversationId);
   const logicalId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
   return logicalId.length === 0 ? conversationId : logicalId;
 }
@@ -2073,11 +3837,6 @@ function sessionClaimKey(kind: "exact" | "logical", conversationId: string): str
 function logicalSessionShardLockName(logicalConversationKey: string): string {
   const shard = Number.parseInt(logicalConversationKey.slice(0, 8), 16) % LOGICAL_SESSION_LOCK_SHARDS;
   return `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
-}
-
-function isConversationShardLockName(name: string): boolean {
-  const match = CONVERSATION_SHARD_LOCK_PATTERN.exec(name);
-  return match !== null && Number.parseInt(match[1] as string, 16) < CONVERSATION_LOCK_SHARDS;
 }
 
 function isLogicalSessionShardLockName(name: string): boolean {
@@ -2158,7 +3917,30 @@ function cloneMessage(message: HistoryMessage): HistoryMessage {
   };
 }
 
-function serializeHistoryFile(record: HistoryFileV2): Buffer {
+function lastCommitBinding(record: { readonly lastCommit?: DurableTurnReceipt }): { readonly lastCommit?: DurableTurnReceipt } {
+  return record.lastCommit === undefined ? {} : { lastCommit: { ...record.lastCommit } };
+}
+
+function nativeExtension(record: { readonly conversationId: string; readonly native?: NativeTurnHistory["native"]; readonly lastSwitch?: NativeTurnHistory["lastSwitch"] }) {
+  return record.native === undefined ? {} : { native: structuredClone(record.native),
+    ...(record.lastSwitch === undefined ? {} : { lastSwitch: structuredClone(record.lastSwitch) }) };
+}
+/** Preserve authority/projection/switch receipt only for a proven same-epoch
+ * write. Never invent a native journal or drop its authority. */
+function preserveNativeHistory(existing: LoadedHistoryRecord | CanonicalHistoryFile, next: CanonicalHistoryFile): CanonicalHistoryFile {
+  if (existing.native === undefined) return next;
+  if (next.conversationId !== existing.conversationId || next.providerSession.epoch !== existing.providerSession?.epoch
+    || next.providerSession.modelKey !== existing.providerSession.modelKey) {
+    return next; // The owner-held native lifecycle planner must complete this candidate.
+  }
+  const record = { ...next, version: 3, ...nativeExtension(existing) };
+  validateNativeTurnHistory(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  return record;
+}
+
+function serializeHistoryFile(record: CanonicalHistoryFile): Buffer {
+  if (record.native !== undefined) validateNativeTurnHistory(record, (message) => validateAndCloneMessage(message as HistoryMessage));
+  else validateTurnHistoryV3(record, (message) => validateAndCloneMessage(message as HistoryMessage));
   const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
   if (bytes.byteLength > MAX_STORE_FILE_BYTES) {
     throw new Error(`Serialized conversation history exceeds the ${MAX_STORE_FILE_BYTES}-byte limit.`);
@@ -2167,6 +3949,9 @@ function serializeHistoryFile(record: HistoryFileV2): Buffer {
 }
 
 function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffer {
+  if (value.kind !== undefined) return serializeDurableTurnFence({ version: 6, kind: value.kind, conversationKey: value.conversationKey,
+    logicalConversationKey: value.logicalConversationKey!, epoch: value.epoch, providerSessionId: value.providerSessionId!, modelKey: value.modelKey!,
+    revision: value.revision, runIdDigest: value.runIdDigest, ...(value.payload === undefined ? {} : { payload: value.payload }) });
   if (value.modelKey !== undefined) {
     assertSessionModelKey(value.modelKey);
     if (value.logicalConversationKey === undefined || value.providerSessionId === undefined) {
@@ -2262,8 +4047,16 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
   if (value.version === LEGACY_STORE_VERSION && keys === "conversationId,messages,version") {
     return { sourceVersion: LEGACY_STORE_VERSION, conversationId, messages };
   }
+  if (value.version === STORE_VERSION) {
+    if (value.native !== undefined) {
+      validateNativeTurnHistory(value, (message) => validateAndCloneMessage(message as HistoryMessage));
+      if (value.native.authority.ownerKey !== logicalConversationIdForFence(conversationId)) throw new Error("Native canonical authority does not belong to the managed conversation");
+    } else validateTurnHistoryV3(value, (message) => validateAndCloneMessage(message as HistoryMessage));
+    return { sourceVersion: STORE_VERSION, conversationId, messages, providerSession: { ...value.providerSession },
+      ...lastCommitBinding(value), ...nativeExtension(value) };
+  }
   if (
-    value.version !== STORE_VERSION
+    value.version !== PROVIDER_STORE_VERSION
     || keys !== "conversationId,messages,providerSession,version"
     || !isRecord(value.providerSession)
   ) {
@@ -2299,7 +4092,7 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
     }
   }
   return {
-    sourceVersion: STORE_VERSION,
+    sourceVersion: PROVIDER_STORE_VERSION,
     conversationId,
     messages,
     providerSession: {
@@ -2316,20 +4109,26 @@ class TruncatedHistoryRecordError extends Error {}
 async function acquireCrossProcessLock(
   path: string,
   directoryIdentity: DirectoryIdentity,
+  tryOnly = false,
+  signal?: AbortSignal,
 ): Promise<CrossProcessLock> {
+  signal?.throwIfAborted();
   const directory = dirname(path);
   await ensureOwnerOnlyLockFile(path, directoryIdentity);
   for (;;) {
+    signal?.throwIfAborted();
     await assertDirectoryIdentity(directory, directoryIdentity);
     assertSecureHistoryFile(await lstat(path), path);
     let database: DatabaseSync | undefined;
     try {
+      signal?.throwIfAborted();
       database = new DatabaseSync(path);
       // MEMORY avoids world-umask-dependent journal sidecars while retaining
       // SQLite's kernel-backed cross-process RESERVED lock semantics.
       database.exec("PRAGMA journal_mode=MEMORY");
       database.exec("BEGIN IMMEDIATE");
       assertSecureHistoryFile(await lstat(path), path);
+      signal?.throwIfAborted();
       let released = false;
       return {
         release: async (): Promise<void> => {
@@ -2356,11 +4155,13 @@ async function acquireCrossProcessLock(
       } catch {
         // Closing a failed lock attempt is best-effort.
       }
+      if (isRecord(error) && typeof error.errcode === "number" && [11, 26].includes(error.errcode & 0xff)) throw new OwnedFileDamagedError(basename(path), error);
       if (!isSqliteBusy(error)) throw error;
+      if (tryOnly) throw new HistoryOwnerBusyError("Legacy history owner is busy.");
       // There is deliberately no age timeout: a live provider turn owns this
       // conversation until it settles. On process death SQLite's OS lock is
       // released automatically, while the durable dirty bit remains.
-      await delay(8 + Math.floor(Math.random() * 17));
+      await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
     }
   }
 }
@@ -2369,7 +4170,10 @@ async function acquireSessionClaim(
   path: string,
   directoryIdentity: DirectoryIdentity,
   claimKey: string,
+  tryOnly = false,
+  signal?: AbortSignal,
 ): Promise<CrossProcessLock> {
+  signal?.throwIfAborted();
   if (!/^[a-f0-9]{64}$/u.test(claimKey)) {
     throw new Error("History session claim key must be an opaque SHA-256 digest.");
   }
@@ -2381,13 +4185,16 @@ async function acquireSessionClaim(
     true,
     MAX_SESSION_CLAIM_FILE_BYTES,
   );
+  const incarnation = await currentHistoryProcessIncarnation(), ownerLive = historyOwnerLiveness();
   for (;;) {
+    signal?.throwIfAborted();
     await assertDirectoryIdentity(directory, directoryIdentity);
     assertSecureHistoryFile(await lstat(path), path);
     await assertSessionClaimJournalIfPresent(`${path}-journal`);
     let database: DatabaseSync | undefined;
     let transactionOpen = false;
     try {
+      signal?.throwIfAborted();
       database = new DatabaseSync(path);
       database.exec("PRAGMA journal_mode=DELETE");
       database.exec("PRAGMA synchronous=FULL");
@@ -2397,13 +4204,21 @@ async function acquireSessionClaim(
           claim_key TEXT PRIMARY KEY,
           pid INTEGER NOT NULL,
           token TEXT NOT NULL,
-          acquired_at_ms INTEGER NOT NULL
+          acquired_at_ms INTEGER NOT NULL,
+          incarnation TEXT
         ) WITHOUT ROWID
       `);
       database.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
+      if (!database.prepare("PRAGMA table_info(session_claims)").all().some((column) => column.name === "incarnation")) {
+        database.exec("ALTER TABLE session_claims ADD COLUMN incarnation TEXT");
+        // Publish the additive schema even when a legacy owner is still live.
+        database.exec("COMMIT"); transactionOpen = false;
+        signal?.throwIfAborted();
+        database.exec("BEGIN IMMEDIATE"); transactionOpen = true;
+      }
       const prior = database.prepare(`
-        SELECT claim_key,pid,token,acquired_at_ms FROM session_claims WHERE claim_key=?
+        SELECT claim_key,pid,token,acquired_at_ms,incarnation FROM session_claims WHERE claim_key=?
       `).get(claimKey) as Record<string, unknown> | undefined;
       if (prior !== undefined) {
         const owner = parseSessionClaimOwner(prior, path);
@@ -2412,14 +4227,15 @@ async function acquireSessionClaim(
         }
         const priorPid = owner.pid;
         const priorToken = owner.token;
-        if (isProcessAlive(priorPid)) {
+        if (await ownerLive(priorPid, owner.incarnation)) {
           database.exec("ROLLBACK");
           transactionOpen = false;
           database.close();
           database = undefined;
+          if (tryOnly) throw new HistoryOwnerBusyError("Exact history claim is busy.");
           // Ownership is explicit and exact-keyed. Polling only observes that
           // live owner; unrelated keys can claim the same database meanwhile.
-          await delay(8 + Math.floor(Math.random() * 17));
+          await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
           continue;
         }
         const removed = database.prepare(`
@@ -2437,7 +4253,7 @@ async function acquireSessionClaim(
         }
         if (count === MAX_SESSION_CLAIMS_PER_SHARD) {
           const owners = database.prepare(`
-            SELECT claim_key,pid,token,acquired_at_ms FROM session_claims ORDER BY claim_key
+            SELECT claim_key,pid,token,acquired_at_ms,incarnation FROM session_claims ORDER BY claim_key
           `).all() as Record<string, unknown>[];
           if (owners.length !== count) {
             throw new Error(`History session claim registry ${path} changed during capacity recovery.`);
@@ -2447,7 +4263,7 @@ async function acquireSessionClaim(
           `);
           for (const row of owners) {
             const owner = parseSessionClaimOwner(row, path);
-            if (isProcessAlive(owner.pid)) continue;
+            if (await ownerLive(owner.pid, owner.incarnation)) continue;
             const removed = removeDead.run(owner.claimKey, owner.pid, owner.token);
             if (Number(removed.changes) !== 1) {
               throw new Error("History session claim changed during capacity recovery.");
@@ -2461,15 +4277,15 @@ async function acquireSessionClaim(
         }
       }
       database.prepare(`
-        INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms)
-        VALUES (?,?,?,?)
-      `).run(claimKey, process.pid, token, Date.now());
+        INSERT INTO session_claims (claim_key,pid,token,acquired_at_ms,incarnation)
+        VALUES (?,?,?,?,?)
+      `).run(claimKey, process.pid, token, Date.now(), JSON.stringify(incarnation) ?? null);
       database.exec("COMMIT");
       transactionOpen = false;
       database.close();
       database = undefined;
       let released = false;
-      return {
+      const lock = {
         release: async (): Promise<void> => {
           if (released) return;
           await releaseSessionClaim(
@@ -2481,13 +4297,17 @@ async function acquireSessionClaim(
           released = true;
         },
       };
+      if (signal?.aborted) { await lock.release(); signal.throwIfAborted(); }
+      return lock;
     } catch (error) {
       if (transactionOpen) {
         try { database?.exec("ROLLBACK"); } catch { /* close releases the short transaction */ }
       }
       try { database?.close(); } catch { /* no reuse after a failed claim attempt */ }
+      if (isRecord(error) && typeof error.errcode === "number" && [11, 26].includes(error.errcode & 0xff)) throw new OwnedFileDamagedError(basename(path), error);
       if (!isSqliteBusy(error)) throw error;
-      await delay(8 + Math.floor(Math.random() * 17));
+      if (tryOnly) throw new HistoryOwnerBusyError("History claim shard is busy.");
+      await delay(8 + Math.floor(Math.random() * 17), undefined, { signal });
     }
   }
 }
@@ -2547,7 +4367,7 @@ async function releaseSessionClaim(
 function parseSessionClaimOwner(
   row: Record<string, unknown>,
   path: string,
-): { readonly claimKey: string; readonly pid: number; readonly token: string } {
+): { readonly claimKey: string; readonly pid: number; readonly token: string; readonly incarnation?: HistoryProcessIncarnation | undefined } {
   const claimKey = row.claim_key;
   const pid = Number(row.pid);
   const token = row.token;
@@ -2564,7 +4384,7 @@ function parseSessionClaimOwner(
   ) {
     throw new Error(`History session claim ${path} has an invalid owner.`);
   }
-  return { claimKey, pid, token };
+  return { claimKey, pid, token, incarnation: historyOwnerIncarnation(row.incarnation) };
 }
 
 function sessionClaimCount(database: DatabaseSync, path: string): number {
@@ -2594,7 +4414,10 @@ async function assertSessionClaimJournalIfPresent(path: string): Promise<void> {
 async function acquireExistingCrossProcessLock(
   path: string,
   directoryIdentity: DirectoryIdentity,
+  tryOnly = false,
+  signal?: AbortSignal,
 ): Promise<CrossProcessLock | undefined> {
+  signal?.throwIfAborted();
   try {
     const info = await lstat(path);
     assertSecureHistoryFile(info, path);
@@ -2602,7 +4425,7 @@ async function acquireExistingCrossProcessLock(
     if (isErrno(error, "ENOENT")) return undefined;
     throw error;
   }
-  return await acquireCrossProcessLock(path, directoryIdentity);
+  return await acquireCrossProcessLock(path, directoryIdentity, tryOnly, signal);
 }
 
 async function ensureOwnerOnlyLockFile(
@@ -2646,7 +4469,7 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
   const before = await lstat(path);
   assertSecureHistoryFile(before, path);
   if (before.size > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
-  let handle;
+  let handle, contentsRead = false;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
     const opened = await handle.stat();
@@ -2655,7 +4478,8 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
     const bytes = await handle.readFile();
     if (bytes.byteLength > MAX_ACTIVE_MARKER_BYTES) throw new Error(`History active marker ${path} is too large.`);
     const after = await handle.stat();
-    assertSameIdentity(opened, after, path);
+    assertSecureHistoryFile(after, path); assertSameIdentity(opened, after, path);
+    contentsRead = true;
     let value: unknown;
     try {
       value = JSON.parse(bytes.toString("utf8"));
@@ -2664,7 +4488,7 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
     }
     if (
       !isRecord(value)
-      || Object.keys(value).sort().join(",") !== "conversationKey,pid,token,version"
+      || !["conversationKey,pid,token,version", "conversationKey,incarnation,pid,token,version"].includes(Object.keys(value).sort().join(","))
       || value.version !== 1
       || typeof value.conversationKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.conversationKey)
@@ -2675,12 +4499,16 @@ async function readActiveMarker(path: string): Promise<ActiveMarker> {
     ) {
       throw new Error(`History active marker ${path} has an unsupported schema.`);
     }
+    if (basename(path) !== `${value.conversationKey}.${value.pid}.${value.token}.active`) throw new Error(`History active marker ${path} does not match its filename.`);
     return {
       path,
       conversationKey: value.conversationKey,
       pid: value.pid as number,
-      token: value.token,
+      token: value.token, incarnation: historyProcessIncarnationFromJson(value.incarnation),
     };
+  } catch (error) {
+    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
+    throw error;
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -2690,7 +4518,7 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
   const before = await lstat(path);
   assertSecureHistoryFile(before, path);
   if (before.size > MAX_DIRTY_FENCE_BYTES) throw new Error(`History dirty fence ${path} is too large.`);
-  let handle;
+  let handle, contentsRead = false;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | (fsConstants.O_NONBLOCK ?? 0));
     const opened = await handle.stat();
@@ -2699,12 +4527,19 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     const bytes = await handle.readFile();
     if (bytes.byteLength > MAX_DIRTY_FENCE_BYTES) throw new Error(`History dirty fence ${path} is too large.`);
     const after = await handle.stat();
-    assertSameIdentity(opened, after, path);
+    assertSecureHistoryFile(after, path); assertSameIdentity(opened, after, path);
+    contentsRead = true;
     let value: unknown;
     try {
       value = JSON.parse(bytes.toString("utf8"));
     } catch {
       throw new Error(`History dirty fence ${path} is not valid JSON.`);
+    }
+    if (isRecord(value) && value.version === 6 && value.kind !== "model-switch") {
+      validateDurableTurnFence(value);
+      return { path, kind: value.kind, conversationKey: value.conversationKey, logicalConversationKey: value.logicalConversationKey,
+        epoch: value.epoch, providerSessionId: value.providerSessionId, modelKey: value.modelKey, revision: value.revision, runIdDigest: value.runIdDigest,
+        ...(value.payload === undefined ? {} : { payload: value.payload }) };
     }
     const keys = isRecord(value) ? Object.keys(value).sort().join(",") : "";
     const legacy = isRecord(value)
@@ -2754,6 +4589,9 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
       revision: value.revision as number,
       runIdDigest: value.runIdDigest,
     };
+  } catch (error) {
+    if (contentsRead) throw new TornCoordinationFileError(error instanceof Error ? error.message : "Invalid coordination contents", { cause: error });
+    throw error;
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -2768,10 +4606,6 @@ async function createAndVerifyRoot(root: string): Promise<DirectoryIdentity> {
 
 async function createAndVerifyLocksRoot(root: string): Promise<DirectoryIdentity> {
   const identity = await createAndVerifyRoot(root);
-  for (let shard = 0; shard < CONVERSATION_LOCK_SHARDS; shard += 1) {
-    const name = `conversation-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
-    await ensureOwnerOnlyLockFile(join(root, name), identity, false);
-  }
   for (let shard = 0; shard < LOGICAL_SESSION_LOCK_SHARDS; shard += 1) {
     const name = `logical-session-shard-${shard.toString(16).padStart(2, "0")}.sqlite`;
     await ensureOwnerOnlyLockFile(
@@ -2923,4 +4757,42 @@ function isErrno(error: unknown, code: string): boolean {
 
 function modelBinding(modelKey: string | undefined): { readonly modelKey?: string } {
   return modelKey === undefined ? {} : { modelKey };
+}
+
+function requireSettledFence(fence: DirtyFence | undefined): void {
+  if (fence?.kind === "execution" || fence?.kind === "compaction") {
+    throw new Error("Pending provider turn requires explicit owner-held reconciliation");
+  }
+}
+
+function managedNativeJournalId(handleId: string): string { return createHash("sha256").update(`mono-host-journal-v1\0${handleId}`).digest("hex"); }
+/** Every v5 epoch is a deterministic guarded journal derived from its handle. */
+function currentJournal(conversationId: string, epoch: string): RuntimeNativeJournalRef {
+  const handleId = deriveProviderSessionId(conversationId, epoch); return { handleId, journalId: managedNativeJournalId(handleId) };
+}
+
+function switchCanonicalRecord(existing: LoadedHistoryRecord, state: ModelSwitchState, authority: RuntimeNativeJournalAuthority): NativeTurnHistory {
+  return { version: 3, conversationId: state.identity.historyBucket, messages: existing.messages,
+    providerSession: { epoch: state.identity.targetEpoch, revision: 0, modelKey: state.identity.toModelKey },
+    native: { authority, projection: state.artifact! }, ...lastCommitBinding(existing),
+    lastSwitch: { version: 1, switchId: state.identity.switchId, intentDigest: switchDigest(state.identity), fromEpoch: state.identity.sourceEpoch,
+      toEpoch: state.identity.targetEpoch, artifact: state.artifact! } };
+}
+
+/** Owned-file readers may wrap OS failures; preserve operational errors at bootstrap. */
+function causedErrno(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  while (error && typeof error === "object" && !seen.has(error)) {
+    seen.add(error);
+    if ("code" in error && typeof error.code === "string" && /^E[A-Z]+$/u.test(error.code)) return error.code;
+    error = "cause" in error ? error.cause : undefined;
+  }
+  return undefined;
+}
+
+/** Absence is not damage; resource/device failures retain their original cause. */
+function entryAbsentOrThrowOperational(error: unknown): boolean {
+  const code = causedErrno(error);
+  if (code && !["ENOENT", "EACCES", "EPERM", "ELOOP"].includes(code)) throw error;
+  return code === "ENOENT";
 }

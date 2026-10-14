@@ -45,6 +45,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "runtime.session.rolloverTimezone": "string",
   "runtime.session.rolloverNotice": "boolean",
   "runtime.session.isolateProactive": "boolean",
+  "runtime.session.modelSwitch.enabled": "boolean",
   "concurrency.maxConcurrentRuns": "integer",
   "concurrency.maxPendingRuns": "integer",
   "context.identityPath": "string",
@@ -787,4 +788,12 @@ it("keeps the subagent maxTurns loader ceilings aligned with the generated schem
   expect(loadSubagents({ instances: { maxTurns: instancesMaximum + 1 } })).toThrow(
     `instances.maxTurns must be an integer between 1 and ${instancesMaximum}`,
   );
+});
+
+it("publishes switching prerequisites without a stopped-writer config acknowledgement", () => {
+  const fields = allConfigReferenceFields();
+  const enabled = fields.find((field) => field.jsonPath === "runtime.session.modelSwitch.enabled")!;
+  expect(schemaForField(enabled)).toMatchObject({ type: "boolean", default: false });
+  expect(JSON.stringify(buildMonoAgentConfigSchema())).not.toContain("olderWritersStopped");
+  expect(enabled.description).toContain("Web");
 });

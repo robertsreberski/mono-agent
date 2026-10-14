@@ -85,8 +85,8 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
   it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
     const prompts: string[] = [];
     for (const [turn, expected] of [
-      ["User: Morgan was born on 17 May 2026.\nAssistant: Morgan was born on 17 May 2026.", ["User reported Morgan was born on 17 May 2026."]],
-      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 17 May 2026.", []],
+      ["User: Morgan was born on 1 January 2000.\nAssistant: Morgan was born on 1 January 2000.", ["User reported Morgan was born on 1 January 2000."]],
+      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 1 January 2000.", []],
       ["User: How do I dress for rain?\nAssistant: Wear a raincoat.", []],
     ] as const) {
       const plan = await extractCapturePlanStrict(turn, {
@@ -300,7 +300,7 @@ describe("extractCapturePlanStrict never plans open tasks", () => {
     const plan = await extractCapturePlanStrict(turn, { id: `task-${_language}`, complete: async () => JSON.stringify({
       memories: [
         { type: "task", text, salience: 0.8, isInsight: false, entityIds: ["person:morgan"], source: "user" },
-        { type: "event", text: "Morgan moved into the Maple flat on 1990-05-17.", salience: 0.8, isInsight: false,
+        { type: "event", text: "Morgan moved into the Maple flat on 2000-01-01.", salience: 0.8, isInsight: false,
           entityIds: ["person:morgan"], source: "user" },
       ],
       entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],

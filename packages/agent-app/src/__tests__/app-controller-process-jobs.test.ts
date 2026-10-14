@@ -45,6 +45,7 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../process-incarnation.js")>(),
   currentProcessIncarnation: async () => processIdentity.current,
   isSameProcessIncarnation: () => true,
+  isProcessIncarnationLive: () => true,
 }));
 
 vi.mock("../process-jobs-service.js", async (importOriginal) => ({

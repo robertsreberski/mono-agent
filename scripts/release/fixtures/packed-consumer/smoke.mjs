@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,10 +51,25 @@ if (packageNames.includes("@mono-agent/agent-app")) {
 }
 
 if (packageNames.includes("@mono-agent/agent-runtime")) {
+  for (const entry of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai"]) {
+    const api = await import(entry);
+    assert.equal(api.resolveRuntimeBridge, api.resolveEngineTurnAdapter);
+    assert.equal(api.generatePiNativeResponse, api.generateEngineTurnResponse);
+    assert.equal(api.piNativeRuntimeBridge, api.engineTurnAdapter);
+    assert.equal(typeof api.generateEngineTurnResponse, "function");
+    assert.equal(api.engineTurnAdapter.execute, api.generateEngineTurnResponse);
+    assert.equal(api.engineTurnAdapter.id, "pi");
+    assert.equal("assertEngineTurnModelRef" in api, false);
+    assert.equal(await api.resolveEngineTurnAdapter({ provider: "fictional", model: "fixture", reference: "fictional:fixture" }), api.engineTurnAdapter);
+  }
   await assertRemovedImport(
     "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js",
     "ERR_PACKAGE_PATH_NOT_EXPORTED",
   );
+}
+
+if (packageNames.includes("@mono-agent/engine")) {
+  await verifyEngineRoundTrip();
 }
 
 if (packageNames.includes("@mono-agent/observability")) {
@@ -323,4 +339,88 @@ async function runCapturedCli(command, args, cwd) {
     child.on("error", (error) => resolve({ status: 1, stdout, stderr: `${stderr}${error.message}` }));
     child.on("close", (status) => resolve({ status: status ?? 1, stdout, stderr }));
   });
+}
+
+async function verifyEngineRoundTrip() {
+  const entrypoints = {
+    "@mono-agent/engine": [
+      "JsonlSessionRepo",
+      "MemorySessionRepo",
+      "createRunDriver",
+      "projectContext",
+      "projectInheritedContext",
+      "digestTurnInput",
+      "HANDOFF_SUMMARY_FIELDS",
+      "estimateHandoffTokens",
+      "validateHandoffSummary",
+      "ENGINE_CONTEXT",
+      "calculateContextTokens",
+      "compact",
+      "estimateContextTokens",
+      "estimateTokens",
+      "getLastAssistantUsage",
+      "prepareCompaction",
+      "shouldCompact",
+      "generateSummaryWithRequest"
+    ],
+    "@mono-agent/engine/sessions.js": [
+      "resolveDurableNativeSessionRepo",
+      "resolveSession",
+      "discardUncommittedSession",
+      "commitSession",
+      "rollbackAbortedTurn",
+      "cleanupSessionOnThrow",
+      "captureSessionRecovery",
+      "recoverDurableNativeSession",
+      "reconcileNativeSessionTurn",
+      "retireDurableNativeSession",
+      "salvageDurableNativeSession",
+      "detachDurableNativeSession",
+      "createManagedNativeJournalStorage",
+      "NativeEvidenceCapacityError",
+      "assertNativeSessionAccess",
+      "normalizeDurableSessionsRoot",
+      "validateSessionTurn",
+      "isJournalStorageError",
+      "NativeSuspendedError",
+      "settleNativeSession",
+      "createSessionRegistry",
+      "nativeSessionRegistry"
+    ],
+    "@mono-agent/engine/owned-fs.js": [
+      "OwnedFileDamagedError",
+      "assertIdentity",
+      "isOwned",
+      "listOwned",
+      "publishAtomic",
+      "readOwned",
+      "sameIdentity",
+      "syncDir",
+      "unchanged"
+    ]
+  };
+  for (const [specifier, expected] of Object.entries(entrypoints)) {
+    const actual = Object.keys(await import(specifier)).sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expected.sort())) throw new Error(`Unexpected engine exports from ${specifier}: ${actual}`);
+  }
+  for (const removed of ["session-store.js", "legacy-import.js", "journal-types.js", "journal-schema.js", "run-driver.js", "retry-stream.js", "session-context.js", "context.js", "compaction-kit/compaction.js", "journal-reader.js"]) {
+    await assertRemovedImport(`@mono-agent/engine/${removed}`, "ERR_PACKAGE_PATH_NOT_EXPORTED");
+  }
+  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/engine");
+  const sessionsRoot = await mkdtemp(join(tmpdir(), "engine-packed-"));
+  const repo = new JsonlSessionRepo({ sessionsRoot });
+  try {
+    const session = await repo.create({ id: "packed-session" });
+    await session.beginTurn("synthetic:packed");
+    await session.openOperation("packed-operation", { model: { provider: "faux", id: "fictional-model" } });
+    await session.appendMessage({ role: "user", content: "Fictional packed request.", timestamp: 1 });
+    await session.closeOperation("packed-operation", "completed");
+    await session.endTurn("synthetic:packed", "completed");
+    await session.sync(); await session.close();
+    const reopened = await repo.open((await repo.list())[0]);
+    const context = projectContext(await reopened.getEntries());
+    if (context.messages.length !== 1 || context.messages[0].content !== "Fictional packed request."
+      || reopened.metadata.journalId !== session.metadata.journalId) throw new Error("Packed engine round trip failed.");
+    await reopened.close();
+  } finally { await repo.close(); await rm(sessionsRoot, { recursive: true, force: true }); }
 }

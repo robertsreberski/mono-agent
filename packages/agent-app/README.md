@@ -39,8 +39,57 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   host settlement category while bounding/redacting runtime/provider code and
   detail as untrusted evidence. Eligible durable Pi recovery retains native context
   without appending the account to Pi; cold reseed includes the account. The
-  on-disk history shape is unchanged by recovery;
+  coordinated native turns use canonical v3 receipts and owner-held,
+  storage-only reconciliation across crashes. Read-only history loading does
+  not recover or migrate. Interrupted work waits for the next explicit message;
+  recovery never reruns a model or tool. Host cancellation wins over a completed
+  native seal, and manual compaction changes metadata rather than answers.
+  Capacity admission alone does not admit input to history: cancellation during
+  binding/attachment preflight or history acquisition returns `cancelled` without
+  a history account, including through the posted-reply wrapper. The caller can
+  resend. Already-admitted turns retain cancellation/interruption reporting.
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
+  The opt-in Web model-switch host preserves owned preparation through
+  runtime/history decorators and serializes logical-conversation admission before claims. Web's
+  host-stamped `source: "web"` and persisted inbound user-message ID identify
+  explicit delivery; borrowed Web metadata on TUI/ACP does not authorize work.
+  Retries/restarts reuse that ID without authorizing another billed generation.
+  No-ID turns on never-upgraded conversations keep the original path, including
+  cold-replay model changes on cron, webhook, Slack, Telegram, TUI, ACP and Web
+  wakes, without switch preparation or authority bootstrap. On already-native
+  conversations, undeclared no-ID requests inherit the durable current model;
+  declared other-model no-ID requests also inherit it. Changing `runtime.model` does not
+  move these native conversations until a persisted Web message selects it.
+  Conversation IDs longer than 512 characters bypass switch preparation without
+  native authority or intent. Their existing native host-contract rejection is
+  unchanged with the option ON or OFF; the bound is not relaxed.
+  Same-model requests without that ID may dispatch the current owned native
+  journal without authorizing switch work; guarded model changes and unsupported
+  dispatch fallbacks refuse before rotation or dispatch. The opt-in gate
+  can reject detached same-conversation work started during a turn with retryable
+  `native_switch_busy`; it never waits on its own claim. Retryable
+  `native_switch_busy` drains only bounded inactive owners after claim release,
+  never automatically replaying the message. Enable only with
+  `runtime.session.modelSwitch: { "enabled": true }`,
+  continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
+  existing roots acquire native authority lazily under ownership. Back up host/native stores and stop every older writer
+  first. Older binaries refuse native conversations and root scans, but this
+  is not a universal old-writer admission barrier: mixed writers are prohibited.
+  Rollback means stopping writers and restoring the consistent backup, not
+  disabling the option or stripping format markers. Defaults and explicit OFF
+  leave model switching disabled, not the durable-history format upgrade. Only Web persisted
+  `started.userMessageId` authorizes a switch/new summary generation: at most two
+  billed summary calls per switch per generation, never an automatic repeat of
+  an outcome-unknown call. Pending messages are not queued or replayed. Every
+  model change, including a return to an earlier model, requires a fitting
+  structured handoff (there is no summary-less model change); native session
+  state is never reused across models. A native conversation keeps one current
+  journal, one durable handoff and the latest switch receipt. Stale native manual-compaction mappings
+  select preserving disposal as defence-in-depth; owned header/membership checks
+  remain the physical backstop; cold cleanup and reset/retention require owned
+  membership, not a cached model label. Subagent/stateless cleanup cannot delete
+  guarded host evidence; a guarded denial is not successful physical cleanup.
+  No summaries or tools automatically replay.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
@@ -456,6 +505,45 @@ name the canonical config. Readiness requires one live launchd-owned trace PID a
 the exact durable snapshot.
 Stop succeeds only after both launchd unload and worker death are proven.
 
+### macOS process identity: upgrade and rollback
+
+Locks, leases, process jobs and subagent ownership record which process owns
+them. On macOS, new records use stable evidence: the boot-session UUID plus the
+UTC process start time. A calendar-clock step or a timezone change therefore
+never makes a live owner look dead, and a reused PID is still detected. Linux,
+Windows and other platforms keep writing exactly the same records as before.
+
+A lock or lease is reclaimed only when the owner's PID is gone (`ESRCH`) or
+comparable evidence proves the PID now belongs to a different process. A live
+PID whose identity cannot be read (for example, a probe timeout) stays owned.
+Signals, releases and cleanup still require an exact identity match.
+
+What older binaries see after an upgrade:
+
+- Lock records and web-control leases keep the old `incarnation` field and add
+  a `stableIncarnation` field on macOS. Older binaries ignore the new field and
+  behave as before, so they never treat a new owner as ownerless. They also
+  keep their existing clock and timezone weakness and can still reclaim a live
+  owner after a clock step or timezone change, so stop every older agent and
+  CLI before or while you upgrade on macOS.
+- Process-job state, subagent execution ownership and worker activity snapshots
+  only carry the new evidence on macOS. Older binaries fail closed on them:
+  they report activity as unknown and refuse to open the process-job store.
+- A live owner recorded by an older binary on macOS is held by PID alone, since
+  its identity can no longer be compared. If the refusal names a lock path and a
+  PID that is not a mono-agent process (for example, a reboot reused the PID),
+  confirm no mono-agent process uses that lock, then remove the named path by
+  hand and retry.
+
+Rolling back to an older binary on macOS: stop every upgraded agent first. An
+older binary quarantines a pending process-job transaction that carries new
+evidence and then refuses to open that store. Remove the process-job
+`stateDir` only if you accept discarding its job records and output.
+Web-control state is shared by every agent on the account, so mixed versions
+are normal there. If an agent reports web coordination as unavailable, run
+`mono-agent web-control reset` from the upgraded CLI once no web request is
+active; it clears leases and cooldowns.
+
 ### Validation, recovery, and managed logs
 
 `mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI
@@ -827,7 +915,11 @@ The durable store holds one cross-process logical-session fence across discovery
 and every bucket reset, and appends take that same fence before their physical
 bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
-tool history while reporting message/tool counts and bytes separately. Doctor
+tool history while reporting message/tool counts and bytes separately. This is
+an explicit stopped-writer operator wipe of the complete attested roots, not
+per-conversation retirement: it removes native canonical records, root
+markers, switch payloads/artifacts/crash evidence, and every native journal.
+The existing quarantine manifests keep whole-root deletion restartable. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
 unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
 not inflate the count, and unrelated writes or run finalization cannot hide lost
@@ -1305,6 +1397,29 @@ MCP/subagent routing; a declared-name collision is a config error. Permission
 modes remain operator-owned and external MCP tools bypass built-in allow/deny
 policy. See [Computer use](../../docs/tools/computer-use.md) for installation,
 OS grants, privacy, and safe unattended-operation limits.
+
+The public `createConfiguredAgentRuntime` now exposes the backend's optional
+legacy `recoverSession` capability (previously not forwarded), so embedders
+building a host harness on it can use existing receipt recovery. Both it and
+native reconciliation are root-attested, leased storage-settlement operations;
+absence of backend support remains explicit. Private per-run memory-completion
+runtimes deliberately strip both recovery methods instead of exposing an
+unleased storage seam.
+
+Configured raw runtimes forward `reconcileSessionTurn` and legacy
+`recoverSession` through the same attested root-generation request-lease boundary
+as `run`. The lease remains held until storage settlement, even during disposal;
+no provider execution is needed for reconciliation. Internal configured responder
+construction keeps its existing root ownership and does not acquire a second
+lease wrapper. These native capabilities do not yet alter host history fences,
+receipts, retirement policy or enable automatic dirty-turn adoption.
+
+Custom durable runtimes must explicitly expose
+`sessionTurnReconciliation: "v1"` alongside `reconcileSessionTurn` to opt into
+host adoption. Method presence alone is not proof of session ownership. The
+host checks the selected model's owner before admission; uncertified owners
+retain legacy canonical commit behavior rather than projecting missing native
+evidence as interrupted answers.
 
 ## Architecture
 

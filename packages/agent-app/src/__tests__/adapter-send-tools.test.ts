@@ -2835,3 +2835,29 @@ describe("Telegram sends by projectId", () => {
     } finally { await bridge.stop(); }
   });
 });
+
+describe("parent-interruption wake interaction suppression", () => {
+  it("offers AskUser to ordinary Web turns but not to a turn marked by the wake", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({ tools: { allowedTools: ["AskUser"] } }));
+    const bridge = await startInteractionBridge({ port: 0, askTimeoutMs: null });
+    try {
+      const { adapterSendToolsRuntimeOptions } = await import("../app-controller-responder.js");
+      const { requestSuppressesInteractionTools } = await import("../adapter-send-tools.js");
+      const options = await adapterSendToolsRuntimeOptions({ env: {}, cwd: dir, configReadPath: configPath, interactionBridge: bridge } as never,
+        { tools: { allowedTools: ["AskUser"], disallowedTools: [] }, artifacts: { dir: join(dir, "artifacts") } } as never);
+      const extension = options.createExtension!(requestSuppressesInteractionTools);
+      const offered = async (web: Record<string, unknown>) => {
+        const result = await extension({ runId: "fictional-run", request: { conversationId: "web:fictional-thread", text: "x", metadata: { source: "web", web } } } as never);
+        await result.cleanup?.();
+        const servers = (result.runtimeOptions as { mcpServers?: Record<string, { env?: Record<string, string> }> }).mcpServers ?? {};
+        return Object.values(servers).some((server) => server.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS?.includes("AskUser") === true)
+          || (result.runtimeOptions as { hostCapabilities?: { AskUser?: unknown } }).hostCapabilities?.AskUser !== undefined;
+      };
+      expect(await offered({ threadId: "fictional-thread" })).toBe(true);
+      expect(await offered({ threadId: "fictional-thread", suppressInteractionTools: true })).toBe(false);
+      // Restriction-only: a non-boolean marker never changes the ordinary offer.
+      expect(await offered({ threadId: "fictional-thread", suppressInteractionTools: "yes" })).toBe(true);
+    } finally { await bridge.stop(); }
+  });
+});

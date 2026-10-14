@@ -23,10 +23,16 @@ export async function reconcileSubagentExecutionOwnership(
   value.revoked = true;
   if (["running", "unknown"].includes(value.owner.settlement)) {
     try {
-      if (value.owner.incarnation.bootSessionId !== capabilities.currentIncarnation.bootSessionId) value.owner.settlement = "dead";
+      // Boot ids are comparable only within one schema (Darwin v1 calendar boot
+      // time is not a v2 boot-session UUID).
+      if (differentBoot(value.owner.incarnation, capabilities.currentIncarnation)) value.owner.settlement = "dead";
       else {
+        // Liveness: only ESRCH (undefined) or comparable mismatching evidence proves
+        // death. A read failure or a legacy/incomparable record leaves the owner unknown.
         const actual = await capabilities.readIncarnation(value.owner.pid);
-        value.owner.settlement = actual === undefined || !processIncarnationsEqual(actual, value.owner.incarnation) ? "dead" : "unknown";
+        value.owner.settlement = actual === undefined
+          || (actual.schema === value.owner.incarnation.schema && !processIncarnationsEqual(actual, value.owner.incarnation))
+          ? "dead" : "unknown";
       }
     } catch { value.owner.settlement = "unknown"; }
   }
@@ -37,7 +43,7 @@ export async function reconcileSubagentExecutionOwnership(
     let absent = false;
     try {
       absent = command.pid === null && command.incarnation === null;
-      absent ||= command.incarnation !== null && command.incarnation.bootSessionId !== capabilities.currentIncarnation.bootSessionId;
+      absent ||= command.incarnation !== null && differentBoot(command.incarnation, capabilities.currentIncarnation);
       absent ||= command.pgid !== null && capabilities.groupAbsent(command.pgid);
       if (!absent && command.pid !== null && command.pgid === command.pid && command.incarnation !== null
         && await capabilities.sameIncarnation(command.pid, command.incarnation)) {
@@ -59,4 +65,8 @@ export async function reconcileSubagentExecutionOwnership(
     value.publication = { sequence: value.publication.sequence + 1, state: "pending" };
   }
   return value;
+}
+
+function differentBoot(recorded: ProcessIncarnation, current: ProcessIncarnation): boolean {
+  return recorded.schema === current.schema && recorded.bootSessionId !== current.bootSessionId;
 }

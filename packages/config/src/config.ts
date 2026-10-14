@@ -628,6 +628,8 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ...(localProviders.length === 0 ? {} : { local: localProviders }),
     ...(piNative === undefined ? {} : { piNative }),
   };
+  if (session.modelSwitch?.enabled && !piNative?.piSessionsRoot) throw new MonoAgentConfigError(
+    "invalid_json", "Model switching requires durable Pi sessions.", { path: "providers.piNative.piSessionsRoot" });
   const configuredProviders = resolveConfiguredProviders({ providers });
   const context1MModels = collectContext1MDeclarations(input.json ?? {}, configuredProviders);
   assertConfiguredProviderCoverage(model, fallbacks, configuredProviders, subagentRoutes);
@@ -1630,9 +1632,15 @@ function readSessionConfig(value: unknown): MonoAgentConfig["runtime"]["session"
   // Unset stays undefined so the harness default (false, no behavior change) is
   // preserved byte-for-byte; only parse the boolean when an operator opts in.
   const isolateProactive = jsonOptionalBoolean(session.isolateProactive, "runtime.session.isolateProactive");
+  const switchJson = jsonRecord(session.modelSwitch, "runtime.session.modelSwitch");
+  if (switchJson) assertJsonScalarFields(switchJson, "runtime.session.modelSwitch", { enabled: "boolean" });
+  const enabled = switchJson === undefined ? undefined : jsonOptionalBoolean(switchJson.enabled, "runtime.session.modelSwitch.enabled");
+  if (enabled === true && mode !== "continuous") throw new MonoAgentConfigError(
+    "invalid_json", "Model switching requires continuous sessions.", { path: "runtime.session.mode" });
   return {
     mode,
     idleTimeoutMs,
+    ...(enabled === true ? { modelSwitch: { enabled } } : {}),
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
     ...(rolloverNotice === undefined ? {} : { rolloverNotice }),
@@ -2441,7 +2449,8 @@ function readPiNativeProviderConfig(
   const cacheRetention = jsonChoice<"short" | "long">(
     piNative.cacheRetention, "providers.piNative.cacheRetention", ["short", "long"], "long",
   );
-  const piMaxRetries = jsonOptionalInteger(piNative.piMaxRetries, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
+  const piMaxRetriesValue = normalizeOptionalString(jsonString(piNative.piMaxRetries, "providers.piNative.piMaxRetries"));
+  const piMaxRetries = jsonOptionalInteger(piMaxRetriesValue, "providers.piNative.piMaxRetries", { min: 0, max: 8 });
   const maxRetryDelayMs = jsonOptionalInteger(piNative.maxRetryDelayMs, "providers.piNative.maxRetryDelayMs", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(jsonString(piNative.piSessionsRoot, "providers.piNative.piSessionsRoot"), cwd);
   return {

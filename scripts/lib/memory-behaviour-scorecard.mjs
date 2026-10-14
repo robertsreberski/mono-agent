@@ -25,7 +25,7 @@ export const TURNS = [
   { user: "My appointment is tomorrow, October 12.", memories: [candidate("The user's appointment is on 2026-10-12.")], kind: "relative-date" },
   { user: "My access token is fake-secret-123. The build finished and I said thanks.", memories: [], kind: "chatter-credentials" },
   { user: "My colleague doubts that I live in Oakspire.", memories: [candidate("The user's colleague doubts that the user lives in Oakspire.", [fact("person:owner", "home_location", "Oakspire")])], kind: "doubt" },
-  { user: "I was born May 17, 1990.", memories: [candidate("The user was born May 17, 1990.", [{ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }], OWNER)], kind: "owner-date" },
+  { user: "I was born January 1, 2000.", memories: [candidate("The user was born January 1, 2000.", [{ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date", value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" }], OWNER)], kind: "owner-date" },
   { user: "Morgan says their home is in Duskwater.", memories: [candidate("Morgan's home is in Duskwater.", [fact("person:owner", "home_location", "Duskwater")], OWNER)], ownerTurn: false, kind: "non-owner" },
   { user: "scheduled-demo", captureText: "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-10-11.",
     memories: [candidate("The Maple build completed on 2026-10-11.", [], [], "assistant")], kind: "trigger-outcome" },

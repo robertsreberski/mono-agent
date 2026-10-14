@@ -254,6 +254,8 @@ export interface MonoRuntimeAttemptResolution {
     readonly ownedForegroundProcesses?: never;
     /** Attempt plugins cannot replace the host's run-bound artifact sink. */
     readonly persistArtifact?: never;
+    /** Host conversation replay cannot be supplied by a private route resolver. */
+    readonly detachedContext?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<
@@ -283,10 +285,12 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   readonly retry?: MonoRuntimeRetryPolicy;
   /** Private host seam for actual-model provider options and route-owned runtimes. */
   readonly resolveAttempt?: MonoRuntimeAttemptResolver;
+  /** Custom routers must explicitly attest that their session owner supports native matching. */
+  readonly sessionTurnReconciliation?: "v1";
 }
 
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
-  const { fallbackChain, retry, resolveAttempt, ...hostOptions } = options;
+  const { fallbackChain, retry, resolveAttempt, sessionTurnReconciliation, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
   const retryPolicy = normalizeRetryPolicy(retry);
   // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
@@ -305,6 +309,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     : createRouterRuntime({
         host: hostWithSandbox,
         chain,
+        ...(sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation }),
         ...(retryPolicy === undefined ? {} : { retry: retryPolicy }),
         ...(protectedResolveAttempt === undefined
           ? {}
@@ -335,12 +340,31 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
+    async prepareNativeDispatch(systemPrompt, runOptions) {
+      if (typeof systemPrompt !== "string" || !systemPrompt.trim() || !runOptions || typeof runOptions !== "object") {
+        throw new RuntimeAdapterError("invalid_runtime_options", "Native preparation requires instructions and run options.");
+      }
+      assertParsedRuntimeModelReference(runOptions.model);
+      if (!runtime.prepareNativeDispatch) {
+        throw new RuntimeAdapterError("runtime_backend_unavailable", "Native prepared dispatch unavailable.");
+      }
+      return await runtime.prepareNativeDispatch(systemPrompt, {
+        ...withoutCallerSandbox(runOptions),
+        ...(runOptions.processJobs === undefined ? {} : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
+        ...(runOptions.ownedForegroundProcesses === undefined ? {} : { ownedForegroundProcesses: bridgeOwnedForegroundProcesses(runOptions.ownedForegroundProcesses) }),
+      } as unknown as KernelRunOptions) as import("./types.js").RuntimeNativePreparedDispatch;
+    },
     configureTools(next?: RuntimeToolOptions): void {
       runtime.configureTools?.(
         next === undefined
           ? undefined
           : (withoutCallerSandbox(next) as unknown as KernelToolOptions),
       );
+    },
+    ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
+    async reconcileSessionTurn(request) {
+      if (!runtime.reconcileSessionTurn) throw new RuntimeAdapterError("runtime_backend_unavailable", "Native turn reconciliation unavailable.");
+      return await runtime.reconcileSessionTurn(request);
     },
     async recoverSession(receipt, context): Promise<boolean> {
       return await runtime.recoverSession?.(receipt, context) === true;
@@ -361,14 +385,15 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       if (!runtime.salvageDurableSession) throw new RuntimeAdapterError("runtime_backend_unavailable", "Durable session salvage unavailable.");
       return runtime.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId: string, sessionsRoot: string): Promise<void> {
+    async retireDurableSession(providerSessionId: string, sessionsRoot: string, deletion?: import("./types.js").RuntimeNativeJournalDeletion): Promise<void> {
       if (typeof runtime.retireDurableSession !== "function") {
         throw new RuntimeAdapterError(
           "runtime_backend_unavailable",
           "The runtime cannot retire durable provider-session state.",
         );
       }
-      await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+      if (deletion === undefined) await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+      else await runtime.retireDurableSession(providerSessionId, sessionsRoot, deletion);
     },
     async disposeSession(providerSessionId: string): Promise<boolean> {
       return Boolean(await runtime.disposeSession?.(providerSessionId));

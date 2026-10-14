@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { loadMonoAgentConfig } from "@mono-agent/config";
+import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, monoRuntimeSupportsLiveInput } from "@mono-agent/runtime-adapter";
 import { buildSubagentsOptions } from "../dist/configured-agent.js";
 import { createSubagentInstanceRegistry } from "../dist/subagent-instances.js";
@@ -12,7 +12,7 @@ import { openProcessJobStore } from "../dist/process-jobs-store.js";
 import { PROCESS_JOBS_DEFAULTS } from "../dist/process-jobs-config.js";
 import { createAgentTool } from "../../agent-runtime/src/agent/tools/agent-tool.js";
 import { createAgentManageTool } from "../../agent-runtime/src/agent/tools/agent-manage-tool.js";
-import { generatePiNativeResponse } from "../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../agent-runtime/src/ai/providers/engine-turn.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 
 const STEER_TEXT = "steered mid-turn: prefer the smaller diff";
@@ -51,16 +51,18 @@ try {
   });
   const instances = await registry.open(origin.conversationId);
   await writeFile(resolve(root, "evidence.txt"), "smoke retained tool evidence");
-  const config = loadMonoAgentConfig({ cwd: root, env: {
-    MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentManage",
-    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: registryRoot } }),
+  const config = resolveJsonMonoAgentConfig({ cwd: root, json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: resolve(root, "IDENTITY.md") },
+    tools: { allowedTools: ["Agent", "AgentManage"] },
+    subagents: { enabled: true, instances: { root: registryRoot } },
   } });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
   let childLiveInput = "absent";
   const runtime = { recoverSession: owner.recoverSession.bind(owner), run: async (prompt, options) => {
     childLiveInput = options.liveInput === undefined ? "absent" : "supplied";
-    return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "controlled-faux-key" });
+    return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "controlled-faux-key" });
   } };
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "parent", instances }).subagents;
   subagents.backgroundSubagentController = service.internalController(origin, 0);

@@ -12,7 +12,7 @@ vendored runtime fork.
 This is an ecosystem decision, not a repository merge. The intended shape is:
 
 - **One shared kernel:** `@mono-agent/agent-runtime` owns provider execution,
-  provider sessions, runtime events, Pi-native response generation, and the
+  provider sessions, runtime events, engine-turn response generation, and the
   narrow runtime surfaces both products can reuse.
 - **Two products:** mono-agent remains the always-on personal-agent framework
   with channels, skills, MCP wiring, optional memory, and config-first
@@ -27,8 +27,9 @@ kernel.
 
 Mono-agent can add narrow, additive exports to `@mono-agent/agent-runtime` when
 Worklab needs an existing runtime surface that is already part of the package.
-For Pi-native response generation, Worklab should use
-`generatePiNativeResponse` from `@mono-agent/agent-runtime/ai` rather than a
+For engine-turn response generation, Worklab should use
+`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` (its deprecated
+`generatePiNativeResponse` alias is the same function) rather than a
 separate provider subpath or a `pi-sdk` compatibility export.
 
 Provider-package ownership follows the same rule. Worklab should remove

@@ -53,6 +53,7 @@ import {
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
+import { legacyLockHolderMessage, type LegacyLockHolder } from "./owner-private-lock.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { startManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
 import type {
@@ -434,8 +435,9 @@ async function runForeground(
   }
 
   let lease;
+  let legacyHolder: LegacyLockHolder | undefined;
   try {
-    lease = await acquireBackgroundWorkerLease(configPath);
+    lease = await acquireBackgroundWorkerLease(configPath, { onLegacyOwnerHeld: (holder) => { legacyHolder = holder; } });
   } catch (error) {
     process.stderr.write(ui.errorLine(
       `Could not acquire the worker singleton lease: ${error instanceof Error ? error.message : String(error)}`,
@@ -446,6 +448,7 @@ async function runForeground(
     process.stderr.write(ui.errorLine(
       `Another foreground or managed background worker already owns ${configPath}; refusing to start a duplicate.`,
     ));
+    if (legacyHolder !== undefined) process.stderr.write(ui.hint(legacyLockHolderMessage(legacyHolder)));
     return 1;
   }
 

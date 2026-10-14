@@ -90,7 +90,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 `disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
 
 :::caution
-**Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
+**Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the engine-turn runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
 :::
 
 ## Built-in tool names

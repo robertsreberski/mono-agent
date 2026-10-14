@@ -341,9 +341,9 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.99.2 exactly; found ^0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.99.2 exactly; found ~0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.99.2 exactly; found 0.80.8",
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 1.0.1 exactly; found ^0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 1.0.1 exactly; found ~0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 1.0.1 exactly; found 0.80.8",
       ]);
     }
   });
@@ -638,16 +638,19 @@ describe("current launch manifest", () => {
     const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
     const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
 
-    expect(piCore).toBe("0.99.2");
+    expect(piCore).toBe("1.0.1");
     expect(guidance).toContain(
-      `packages/agent-runtime\`: \`@earendil-works/pi-ai\` at \`${piAi}\`; \`pi-agent-core\` at \`${piCore}\``,
+      `packages/agent-runtime\`: \`@earendil-works/pi-ai\` at \`${piAi}\``,
+    );
+    expect(guidance).toContain(
+      `packages/engine\`: \`@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` at \`${piCore}\``,
     );
     expect(guidance).not.toContain("pi-tui");
     expect(migration).toContain(
-      `The runtime exact-pins Pi AI and Pi Agent Core at \`${piAi}\``,
+      `The runtime exact-pins Pi AI at \`${piAi}\`; \`@mono-agent/engine\` exact-pins Pi AI and Pi Agent Core at \`${piCore}\``,
     );
     expect(migration).toContain(
-      `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime`,
+      `exact Pi AI \`${piAi}\` and Pi Agent Core \`${piCore}\` compatibility pins inside the runtime and its engine dependency`,
     );
     expect(migration).not.toContain("`^0.80.x`");
   });

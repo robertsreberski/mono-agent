@@ -56,7 +56,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `agent` | Public display name; never used for paths, service ids, sessions, or provider identity | [Identity & Soul](/context/identity-and-soul/) |
 | `runtime` | Model, effort, sessions, fallbacks | [Runtime](/runtime/) |
 | `concurrency` | Per-channel admission and provider-execution bounds | [Sessions and concurrency](/runtime/sessions-concurrency/) |
-| `providers` | Provider map: local/self-hosted providers, Pi credentials, pi-native tuning | [Providers](/runtime/providers/), [Local Providers](/runtime/local-providers/) |
+| `providers` | Provider map: local/self-hosted providers, Pi credentials, engine-turn tuning | [Providers](/runtime/providers/), [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
 | `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
 | `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |

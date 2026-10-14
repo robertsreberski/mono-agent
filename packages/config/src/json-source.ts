@@ -154,6 +154,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly rolloverTimezone?: string;
       readonly rolloverNotice?: boolean;
       readonly isolateProactive?: boolean;
+      readonly modelSwitch?: {
+        readonly enabled?: boolean;
+      };
     };
   };
   readonly peers?: Readonly<Record<string, { readonly sourceId: string }>>;

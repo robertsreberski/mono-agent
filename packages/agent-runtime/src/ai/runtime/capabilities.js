@@ -18,11 +18,9 @@ export const RUNTIME_CAPABILITIES = {
   pi: {
     runtime: "pi-agent",
     ...COMMON_CAPABILITIES,
-    // The pi bridge keeps a pi-agent-core Session transcript per provider
-    // session id and seeds Agent initialState.messages on resume.
+    // The engine owns native session evidence and resume projection.
     supports_session_resume: true,
-    // The pi-native bridge does not (yet) wire native subagents / an AskAgent
-    // tool, so advertise no support rather than letting callers expect it.
+    // Subagent orchestration remains host-owned, not engine-native.
     supports_native_subagents: false,
     supports_request_tool_environment: true,
     supports_mcp_apps: true,

@@ -532,6 +532,16 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
     type: "object",
     required: ["runtime", "context"],
     allOf: [{
+      if: { required: ["runtime"], properties: { runtime: { required: ["session"], properties: {
+        session: { required: ["modelSwitch"], properties: { modelSwitch: { required: ["enabled"], properties: { enabled: { const: true } } } } },
+      } } } },
+      then: { required: ["providers"], properties: {
+        runtime: { properties: { session: { properties: {
+          mode: { const: "continuous" },
+        } } } },
+        providers: { required: ["piNative"], properties: { piNative: { required: ["piSessionsRoot"], properties: { piSessionsRoot: { type: "string", minLength: 1, pattern: "\\S" } } } } },
+      } },
+    }, {
       if: { required: ["tools"], properties: { tools: { required: ["conversationSearch"], properties: {
         conversationSearch: { required: ["datedSnippets"], properties: { datedSnippets: { const: true } } },
       } } } },
@@ -1248,6 +1258,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.minLength = 1;
     schema.maxLength = 80;
     schema.pattern = "^[^\\u0000-\\u001f\\u007f]+$";
+
   } else if (field.jsonPath === "runtime.effort") {
     schema.enum = EFFORT_LEVELS;
   } else if (field.jsonPath === "memory.backend") {
@@ -1495,6 +1506,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.session.rollover": "none",
     "runtime.session.rolloverNotice": false,
     "runtime.session.isolateProactive": false,
+    "runtime.session.modelSwitch.enabled": false,
     "context.selectedSkills": [],
     "context.skillMaxBytes": 48_000,
     "context.skillDisclosure": "full",
@@ -1691,6 +1703,9 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "runtime.session.mode") return "Conversation session mode. Every durable-history user upgrades one way: the first durable turn rewrites canonical history as v3, with or without piSessionsRoot or model switching. Stop all writers and back up canonical history and any native root first; rollback requires restoring the consistent backup.";
+  if (id === "providers.piNative.piSessionsRoot") return "Durable Pi-native session root. The first durable turn after upgrading writes mono-v2 journals, .pending-turns and the new canonical history format. This is a one-way upgrade: older binaries must not run against this root; rollback requires restoring a backup.";
+  if (id === "runtime.session.modelSwitch.enabled") return "OFF-default Web-only durable Pi-native model switching. Requires continuous sessions, piSessionsRoot. Every model change, including a return to an earlier model, uses a structured handoff (outgoing summary, then the previously validated summary plus later history, then incoming summary); there is no summary-less model change and native session state is never reused across models. Only Web persisted user-message IDs authorize switches or new summary generations (at most two billed summary calls per switch per generation); No-ID turns on non-native conversations keep the original cold-replay path; no-ID turns on native conversations inherit the current model even when a different sticky model is declared; model-specific context-window overrides for that different model do not carry. Changing runtime.model does not move existing native conversations until a persisted Web message selects the new model. Pending messages are not queued or replayed. With this on, Web turns with a persisted message ID (including a new conversation's first message) and no-ID wakes on native conversations use the primary model only: no configured fallback-chain backup or router re-attempt. Prepared requests resolve ordinary provider authentication on each actual call, including OAuth refresh; credentials are not lease-pinned. Other turns keep fallbacks.";
   if (id === "memory.capture.intentLifecycle") return "BuJo capture-only, default-off owner-supported intention state and inclusive civil end proposals. Reuses note status and due=; state changes supersede, never infer completion from a date. Tasks stay authoritative in the task app.";
   if (id === "memory.recall.intentExpiry") return "BuJo-only, default-off: exclude all dated notes and done/dropped notes from automatic sections, including unexpired/ambiguous legacy dates. Deliberate recall interprets reviewed note due= as an inclusive civil end. Requires reviewed curate audit before enablement; independent of intentLifecycle; no backfill.";
   if (id === "memory.recall.recency") return "BuJo-only, default-off bounded secondary recency ranking for relevance-qualified deliberate event/unlabelled-note hits: at most 0.02, 30-day half-life. Facts/preferences never decay; base scores, floors and automatic retrieval are unchanged.";

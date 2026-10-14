@@ -193,7 +193,7 @@ describe("memory label CLI flags", () => {
     db.upsertEntity({ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" });
     db.replaceMemoryLabels(one.id, [{ v: 1, kind: "lesson", scope: "agent", verified: true },
       { v: 1, kind: "fact", entityId: "person:morgan", key: "birth_date",
-        value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }]);
+        value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" }]);
     db.replaceMemoryLabels(two.id, [{ v: 1, kind: "lesson", scope: "agent", verified: false }]);
     db.upsertLexical({ ...one, id: "lesson:repeat", text: "Deploy pipeline uses blue green releases!",
       source: { file: "daily/2026-09-06.md", line: 99 } });
@@ -2487,7 +2487,7 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const memoryRoot = join(await tempDir(), "memory");
     await mkdir(memoryRoot, { recursive: true });
     const at = "2026-07-12T10:00:00.000Z";
-    for (const [id, text] of [["fictional-a", "Morgan was born on 1990-05-17."], ["fictional-b", "Morgan likes Maple tea."],
+    for (const [id, text] of [["fictional-a", "Morgan was born on 2000-01-01."], ["fictional-b", "Morgan likes Maple tea."],
       ["fictional-c", "The user asked about Maple tea."]]) {
       bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
         createdAt: at, refs: [] }, new Date(at));

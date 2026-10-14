@@ -14,4 +14,11 @@ export {
 } from "./runtime-brand.js";
 
 export * from "./ai/index.js";
+export { resolveEngineTurnAdapter, resolveRuntimeBridge, generateEngineTurnResponse, generatePiNativeResponse, engineTurnAdapter, piNativeRuntimeBridge } from "./ai/index.js";
 export * from "./agent/index.js";
+
+export { produceNativeHandoffSummary, HANDOFF_SUMMARY_PROMPT } from "./ai/providers/engine-turn/handoff-producer.js";
+export { detachDurableNativeSession } from "./ai/providers/engine-turn/session-lifecycle.js";
+
+// Administrative storage factory; never forwarded through runtime run options.
+export { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "./ai/providers/engine-turn/native-journal-storage.js";

@@ -87,11 +87,20 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
   };
 }
 
+const forwardedResponderKeys = {
+  liveInputOwnership: true, respond: true, compactConversation: true,
+  offerLiveInput: true, cancel: true, deliverVerbatim: true, importContext: true,
+  openReplyArtifact: true, loadMcpApp: true, requestMcpApp: true,
+} satisfies Record<keyof AgentResponder, true>;
+void forwardedResponderKeys;
+
 // Review every history capability when the shared store contract grows: this
 // decorator must preserve durable provider-session operations even for non-Slack turns.
 const forwardedHistoryKeys = {
-  providerSessionRecovery: true,
-  providerSessionModelBinding: true,
+  beginProviderSessionPreparation: true,
+  providerSessionReconciliation: true,
+  recoverProviderSessionTurn: true,
+  drainPendingProviderSessionTurns: true,
   providerSessionRetirement: true,
   contextImport: true,
   load: true,
@@ -103,6 +112,8 @@ const forwardedHistoryKeys = {
   readProviderSessionBinding: true,
 } satisfies Record<keyof ConversationHistoryStore, true>;
 void forwardedHistoryKeys;
+const forwardedExclusiveTurnKeys = { history: true, historyVersion: true, prepareCommit: true, abort: true } satisfies Record<keyof import("@mono-agent/agent-harness").ConversationHistoryExclusiveTurn, true>;
+void forwardedExclusiveTurnKeys;
 
 function wrapHistoryStore(
   store: ConversationHistoryStore,
@@ -112,8 +123,10 @@ function wrapHistoryStore(
   const providerSessionRetirement = store.providerSessionRetirement;
   const contextImport = store.contextImport;
   return {
-    ...(store.providerSessionRecovery === undefined ? {} : { providerSessionRecovery: store.providerSessionRecovery }),
-    ...(store.providerSessionModelBinding === undefined ? {} : { providerSessionModelBinding: store.providerSessionModelBinding }),
+    ...(store.beginProviderSessionPreparation === undefined ? {} : { beginProviderSessionPreparation: store.beginProviderSessionPreparation.bind(store) }),
+    ...(store.providerSessionReconciliation === undefined ? {} : { providerSessionReconciliation: store.providerSessionReconciliation }),
+    ...(store.drainPendingProviderSessionTurns === undefined ? {} : { drainPendingProviderSessionTurns: store.drainPendingProviderSessionTurns.bind(store) }),
+    ...(store.recoverProviderSessionTurn === undefined ? {} : { recoverProviderSessionTurn: store.recoverProviderSessionTurn.bind(store) }),
     ...(providerSessionRetirement === undefined
       ? {}
       : { providerSessionRetirement }),
@@ -124,24 +137,27 @@ function wrapHistoryStore(
           version: contextImport.version,
           maxTextBytes: contextImport.maxTextBytes,
           providerState: contextImport.providerState,
-          async beginExclusiveTurn(conversationId: string) {
-            const turn = await contextImport.beginExclusiveTurn(conversationId);
-            const scope = scopes.getStore();
-            if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
-              return turn;
-            }
-            const delivery = await loadExactDelivery(store, scope, conversationId, options);
-            const deliveryKey = delivery.find((message) => message.role === "assistant")?.idempotencyKey;
-            const history = delivery.length === 0
-              || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
-              ? turn.history
-              : mergeHistory(turn.history, delivery, options.maxMessages);
-            return {
-              history,
-              historyVersion: turn.historyVersion,
-              prepareCommit: turn.prepareCommit.bind(turn),
-              abort: turn.abort.bind(turn),
-            };
+          async beginExclusiveTurn(...args: Parameters<typeof contextImport.beginExclusiveTurn>) {
+            const [conversationId] = args;
+            const turn = await contextImport.beginExclusiveTurn(...args);
+            try {
+              const scope = scopes.getStore();
+              if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
+                return turn;
+              }
+              const delivery = await loadExactDelivery(store, scope, conversationId, options);
+              const deliveryKey = delivery.find((message) => message.role === "assistant")?.idempotencyKey;
+              const history = delivery.length === 0
+                || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
+                ? turn.history
+                : mergeHistory(turn.history, delivery, options.maxMessages);
+              return {
+                history,
+                historyVersion: turn.historyVersion,
+                prepareCommit: turn.prepareCommit.bind(turn),
+                abort: turn.abort.bind(turn),
+              };
+            } catch (error) { await turn.abort().catch(() => undefined); throw error; }
           },
           prepareImport: (conversationId, request) => contextImport.prepareImport(conversationId, request),
         },

@@ -1,3 +1,6 @@
+// Mailbox-level replay contract for removed, unconsumed inputs. Real Pi now
+// records liveInputTaken when an input is yielded, so its router side-effect
+// gate stops the run before this replay can reach a retry or backup.
 import { describe, expect, it } from "vitest";
 
 import { createLiveInputMailbox } from "../../../agent-harness/src/live-input.js";

@@ -1,3 +1,6 @@
+import type { PendingTurnInput } from "./durable-turn-contract.js";
+import { createPendingLiveInput } from "./durable-turn-contract.js";
+import type { RuntimePromptOverrides } from "@mono-agent/runtime-adapter";
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
@@ -17,6 +20,7 @@ export interface AppliedLiveInput {
 }
 
 export interface LiveInputMailbox extends AsyncIterable<RuntimeLiveInputMessage> {
+  durableAdmission(message: RuntimeLiveInputMessage, prompts?: RuntimePromptOverrides): PendingTurnInput;
   offer(request: AgentLiveInputRequest): AgentLiveInputOffer;
   markUnsupported(): void;
   close(reason?: "closed" | "failed"): void;
@@ -138,6 +142,12 @@ export function createLiveInputMailbox(runId: string, onClose?: () => void): Liv
   };
 
   return {
+    durableAdmission(message: RuntimeLiveInputMessage, prompts?: RuntimePromptOverrides): PendingTurnInput {
+      const entry = entries.find((candidate) => candidate.request.id === message.id);
+      if (!entry || message.id === undefined) throw new Error("Unowned durable live input.");
+      return createPendingLiveInput({ id: message.id, persistText: entry.request.text, receivedAt: entry.request.receivedAt },
+        message.body, entry.request.deliveryKey === undefined ? "live" : "wake", prompts);
+    },
     offer(request): AgentLiveInputOffer {
       const existing = entriesById.get(request.id);
       if (existing !== undefined) {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { compact, serializeConversation, BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
-import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../ai/providers/pi-native/compaction-summary.js";
+import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "../../../../engine/dist/context.js";
+import { compact, serializeConversation } from "../../../../engine/dist/compaction-kit/compaction.js";
+import { prepareSummaryInput, summaryModels, SUMMARY_FOCUS } from "../../ai/providers/engine-turn/compaction-summary.js";
 
 const user = (text) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
 const call = (id, name, path) => ({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: { file_path: path } }], timestamp: 0 });

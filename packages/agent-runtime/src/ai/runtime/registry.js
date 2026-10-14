@@ -1,5 +1,6 @@
 // @ts-check
 
+import { assertEngineTurnModelRef } from "../providers/engine-turn/model-ref.js";
 import { runtimeCapabilities } from "./capabilities.js";
 
 /**
@@ -23,20 +24,14 @@ export function listRuntimeBridges() {
  * @param {import('../types.js').RuntimeModelRef} modelRef
  * @returns {Promise<RuntimeBridge>}
  */
-export async function resolveRuntimeBridge(modelRef) {
-  // Direct kernel callers may bypass the parser, so malformed references must
-  // still fail before the sole bridge receives them.
-  if (
-    typeof modelRef?.provider !== "string"
-    || modelRef.provider.length === 0
-    || typeof modelRef.model !== "string"
-    || modelRef.model.length === 0
-    || modelRef.reference !== `${modelRef.provider}:${modelRef.model}`
-  ) {
-    throw new Error("unsupported model reference: expected <provider>:<model>");
-  }
-  const { piNativeRuntimeBridge } = await import("../providers/pi-native.js");
-  return /** @type {RuntimeBridge} */ (piNativeRuntimeBridge);
+export async function resolveEngineTurnAdapter(modelRef) {
+  assertEngineTurnModelRef(modelRef);
+  const { engineTurnAdapter } = await import("../providers/engine-turn.js");
+  return /** @type {RuntimeBridge} */ (engineTurnAdapter);
 }
+
+/** @deprecated Use resolveEngineTurnAdapter.
+ * @type {typeof resolveEngineTurnAdapter} */
+export const resolveRuntimeBridge = resolveEngineTurnAdapter;
 
 export { RUNTIME_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";

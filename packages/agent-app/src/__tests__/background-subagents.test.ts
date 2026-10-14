@@ -10,7 +10,7 @@ import { resolveJsonMonoAgentConfig } from "@mono-agent/config";
 import { createMonoRuntime, createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import { buildSubagentsOptions } from "../configured-agent.js";
 // @ts-expect-error Real Pi test seam; transport only is fake.
-import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../../agent-runtime/src/ai/providers/engine-turn.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -785,7 +785,7 @@ describe("managed background admission", () => {
       return fauxAssistantMessage([fauxText("done")]);
     }));
     try {
-      const result = await generatePiNativeResponse("system", { model: { provider: "faux", model: "parent", reference: "faux:parent" },
+      const result = await generateEngineTurnResponse("system", { model: { provider: "faux", model: "parent", reference: "faux:parent" },
         piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", cwd: f.root, allowedTools: ["Read"],
         messages: [{ role: "user", content: "Read notes while background work completes." }], liveInput: mailbox,
         onEvent: (event: any) => events.push(event), runId: origin.runId });
@@ -1970,7 +1970,7 @@ it.each(["cooperative", "late"])("certified %s detached child timeout resumes re
     const calls: any[] = []; const lateNative = deferred<void>();
     const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
       calls.push(options);
-      const result = await generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
+      const result = await generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models,
         resolvePiApiKey: async () => "faux-key" });
       if (mode === "late" && calls.length === 1) { lateNative.resolve(); await releaseLate.promise; }
       return result;
@@ -2047,7 +2047,7 @@ it("stop seals first and resumed tool-bearing turns on the same native session",
     const models = createModels(); models.setProvider(faux.provider); const calls: any[] = []; const contexts: any[] = [];
     const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: any) => {
       calls.push(options);
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
@@ -2105,7 +2105,7 @@ it("G08: retained failure acknowledgement resumes the exact Pi JSONL after warm-
     const models = createModels(); models.setProvider(faux.provider); const calls: any[] = [];
     const runtime = { run: async (prompt: string, options: any) => {
       calls.push(options);
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
@@ -2169,7 +2169,7 @@ it.each([false, true])("real Pi fake transport: detached AskParent and backgroun
     const gate = deferred<void>();
     const runtime = { run: async (prompt: string, options: any) => {
       await gate.promise;
-      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+      return generateEngineTurnResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     } };
     const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
       { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;

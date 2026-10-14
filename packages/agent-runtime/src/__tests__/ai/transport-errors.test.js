@@ -7,7 +7,7 @@ import {
   recordTransportErrorForTests,
   resetTransportErrorProbeForTests,
 } from "../../ai/providers/transport-errors.js";
-import { failureKindForPiError } from "../../ai/providers/pi-native/result-builder.js";
+import { failureKindForPiError } from "../../ai/providers/engine-turn/result-builder.js";
 import { retryableProviderFailureInfo } from "../../ai/failure.js";
 
 beforeEach(() => {

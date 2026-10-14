@@ -37,7 +37,7 @@ function store(rows: MemoryLabelHit[], facts: MemoryLabelHit[] = []): LabelRecal
 const options = { senderToken: token, hostDate: "2026-09-24" };
 const owner = { ...options, ownerTurn: true as const };
 const labelled = (key: string, text: string, id: string): MemoryLabelHit => ({
-  ...fact(id, "1990-05-17"), text: `Morgan's ${key} is ${text}.`,
+  ...fact(id, "2000-01-01"), text: `Morgan's ${key} is ${text}.`,
   label: { v: 1, kind: "fact", entityId: "person:morgan", key, value: { type: "text", text }, attribution: "user-stated" },
 });
 
@@ -82,7 +82,7 @@ describe("automatic labelled background", () => {
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2025-02-28" }, [])).toContain("age 24");
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2025-03-01" }, [])).toContain("age 25");
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2026-09-24" }, [])).toContain("age 26");
-    const conflict = formatMemoryBackground(store([], [fact("one", "1990-05-17", true), fact("two", "1991-05-17", true)]),
+    const conflict = formatMemoryBackground(store([], [fact("one", "2000-01-01", true), fact("two", "2001-01-01", true)]),
       "Morgan", "current", { hostDate: "2026-09-24" }, []);
     expect(conflict).toContain("conflicting values — ask");
     expect(conflict).not.toContain("born:");
@@ -97,7 +97,7 @@ describe("automatic labelled background", () => {
     expect(both).toContain("Do check the concise note.");
     expect(both).toContain("Do not check the concise note.");
     const duplicated: LabelRecallStore = {
-      guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "1990-05-17")],
+      guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "2000-01-01")],
       findMemoryEntitiesByNames: () => [
         { id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" },
         { id: "person:morgan-two", name: "Mórgan", createdAt: "2026-09-06T00:00:00Z" },
@@ -106,16 +106,16 @@ describe("automatic labelled background", () => {
       ],
     };
     expect(formatMemoryBackground(duplicated, "Morgan", "current", options, [])).toBeUndefined();
-    expect(formatMemoryBackground(duplicated, "person:morgan", "current", options, [])).toContain("age 36");
-    expect(formatMemoryBackground({ guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "1990-05-17")] },
-      "person:morgan", "current", options, [])).toContain("age 36");
+    expect(formatMemoryBackground(duplicated, "person:morgan", "current", options, [])).toContain("age 26");
+    expect(formatMemoryBackground({ guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "2000-01-01")] },
+      "person:morgan", "current", options, [])).toContain("age 26");
   });
 
   it("ignores non-person graph rows and uncapitalized short names", () => {
     const names: string[][] = [];
     const local: LabelRecallStore = {
       guidanceForScope: () => [], labelsForEntity: (id) => {
-        expect(id).toBe("person:morgan"); return [fact("birth", "1990-05-17")];
+        expect(id).toBe("person:morgan"); return [fact("birth", "2000-01-01")];
       },
       findMemoryEntitiesByNames: (candidates) => {
         names.push([...candidates]);
@@ -123,10 +123,10 @@ describe("automatic labelled background", () => {
           { id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }];
       },
     };
-    expect(formatMemoryBackground(local, "Morgan", "conv", options, [])).toContain("age 36");
+    expect(formatMemoryBackground(local, "Morgan", "conv", options, [])).toContain("age 26");
     expect(names[0]).toContain("morgan");
-    expect(formatMemoryBackground(store([], [fact("birth", "1990-05-17")]), "mark may morgan", "conv", options, [])).toBeUndefined();
-    expect(formatMemoryBackground(store([], [fact("birth", "1990-05-17")]), "Morgan", "conv", options, [])).toContain("age 36");
+    expect(formatMemoryBackground(store([], [fact("birth", "2000-01-01")]), "mark may morgan", "conv", options, [])).toBeUndefined();
+    expect(formatMemoryBackground(store([], [fact("birth", "2000-01-01")]), "Morgan", "conv", options, [])).toContain("age 26");
   });
 
   it("uses an atomic section budget without orphan headings or partial lines", () => {
@@ -149,20 +149,20 @@ describe("automatic labelled background", () => {
     // Non-owner turns (groups, other senders) get no automatic memory at all.
     expect(await new MemoryRetrievalService(remote).load("current", "What does Morgan drink?", { hostDate: "2026-09-24" }))
       .toBeUndefined();
-    const labelled = Object.assign(remote, store([], [fact("birth", "1990-05-17")]));
+    const labelled = Object.assign(remote, store([], [fact("birth", "2000-01-01")]));
     expect(await new MemoryRetrievalService(labelled).load("current", "What does Morgan drink?", { hostDate: "2026-09-24" }))
       .toBeUndefined();
     const owned = await new MemoryRetrievalService(labelled).load("current", "What does Morgan drink?",
       { hostDate: "2026-09-24", ownerTurn: true });
     expect(owned?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)\n\n- Morgan likes green tea. (current)");
     expect(owned?.content).toContain("Memory (background — not direct evidence)");
-    expect(owned?.content).toContain("age 36");
+    expect(owned?.content).toContain("age 26");
     expect(owned?.content).toContain(POSSIBLY_RELEVANT_HEADING);
   });
 
   it("keeps a person card and labelled guidance on a short owner name query without unsolicited lines", async () => {
     const remote: SharedRecallStore = {
-      ...store([preference("agent", "Keep Maple plans concise.", "pref")], [fact("birth", "1990-05-17")]),
+      ...store([preference("agent", "Keep Maple plans concise.", "pref")], [fact("birth", "2000-01-01")]),
       async load() { return undefined; }, async close() {},
       async recall() { return [{ score: 0.95, record: { id: "pref", text: "Keep Maple plans concise." } },
         ...[1, 2, 3, 4].map((id) => ({ score: 0.6, record: { id: `filler-${id}`, text: "Unrelated note." } }))]; },
@@ -171,20 +171,20 @@ describe("automatic labelled background", () => {
       hostDate: "2026-09-24", ownerTurn: true,
     });
     expect(block?.content).toContain("Person card:");
-    expect(block?.content).toContain("age 36");
+    expect(block?.content).toContain("age 26");
     expect(block?.content).toContain("Working preferences & lessons");
     expect(block?.content).not.toContain(POSSIBLY_RELEVANT_HEADING);
   });
 
   it("shows a named person's whole card whatever the question's language or wording", () => {
-    const person = store([], [fact("birth", "1990-05-17"), labelled("other:home-town", "Maple Harbor", "town"),
+    const person = store([], [fact("birth", "2000-01-01"), labelled("other:home-town", "Maple Harbor", "town"),
       labelled("other:employer", "Zorbel Labs", "job")]);
     for (const query of ["Where does Morgan work?", "¿Dónde trabaja Morgan?", "Gdzie pracuje Morgan?", "Morgan"]) {
       const card = formatMemoryBackground(person, query, "conv", owner, []);
       expect(card).toContain("Person card:");
       expect(card).toContain("home town: Maple Harbor (you said, recorded 2026-09-06)");
       expect(card).toContain("employer: Zorbel Labs");
-      expect(card).toContain("born: 1990-05-17");
+      expect(card).toContain("born: 2000-01-01");
       expect(card).not.toContain("other:");
       expect(card).not.toContain("{");
     }
@@ -228,7 +228,7 @@ describe("automatic labelled background", () => {
   });
 
   it("injects nothing from lexical-only recall, even with a person card", async () => {
-    const degraded: SharedRecallStore = { ...store([], [fact("birth", "1990-05-17")]),
+    const degraded: SharedRecallStore = { ...store([], [fact("birth", "2000-01-01")]),
       async load() { return undefined; }, async close() {}, async recall() { return []; },
       async recallWithOutcome() { return { hits: [{ score: 0.99, record: { id: "lex", text: "Morgan plays chess." } }],
         retrievalMode: "lexical_only" as const, degradation: { code: "embedding_unavailable" as const } }; },
@@ -242,7 +242,7 @@ describe("automatic labelled background", () => {
 describe("explicit fact sheet rendering", () => {
   it("renders reader-facing keys and value text instead of JSON", async () => {
     const { readLabelSections } = await import("../memory-label-sections.js");
-    const city: MemoryLabelHit = { ...fact("city", "1990-05-17"), text: "Morgan's home city is Thistlemoor.",
+    const city: MemoryLabelHit = { ...fact("city", "2000-01-01"), text: "Morgan's home city is Thistlemoor.",
       label: { v: 1, kind: "fact", entityId: "person:morgan", key: "other:home-city",
         value: { type: "text", text: "Thistlemoor" }, attribution: "user-stated" } };
     const sections = readLabelSections(store([], [city]), { query: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
@@ -254,10 +254,10 @@ describe("explicit fact sheet rendering", () => {
 
   it("never lets keyless person lines push a structured conflict past the cut", async () => {
     const { readLabelSections } = await import("../memory-label-sections.js");
-    const keyless = Array.from({ length: 14 }, (_, index): MemoryLabelHit => ({ ...fact(`note-${index}`, "1990-05-17"),
+    const keyless = Array.from({ length: 14 }, (_, index): MemoryLabelHit => ({ ...fact(`note-${index}`, "2000-01-01"),
       text: `Morgan visited the fictional garden ${index}.`, createdAt: `2026-09-${String(10 + index).padStart(2, "0")}T00:00:00Z`,
       label: { v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" } }));
-    const sections = readLabelSections(store([], [...keyless, fact("one", "1990-05-17", true), fact("two", "1991-05-17", true)]),
+    const sections = readLabelSections(store([], [...keyless, fact("one", "2000-01-01", true), fact("two", "2001-01-01", true)]),
       { query: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
     expect(sections?.factSheet).toHaveLength(12);
     expect(sections?.factSheet?.slice(0, 2)).toMatchObject([{ key: "birth_date", conflict: true }, { key: "birth_date", conflict: true }]);

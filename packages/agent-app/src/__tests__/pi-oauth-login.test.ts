@@ -126,6 +126,7 @@ describe("Pi OAuth terminal wrapper", () => {
       interceptedBinds: 1,
       isolatedPort: expect.any(Number),
       manualInputs: 1,
+      methodSelections: 1,
       occupation: expect.stringMatching(/^(ambient|fixture)$/u),
       tokenExchangeAttempts: 0,
     });

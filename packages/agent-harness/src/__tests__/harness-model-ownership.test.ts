@@ -112,7 +112,7 @@ describe("harness model owner lifecycle", () => {
       return { ...withoutKey, ...(ack === "wrong" ? { modelKey: model.reference } : {}) };
     });
     const historyStore: ConversationHistoryStore = { load: real.load.bind(real), append: real.append.bind(real),
-      providerSessionRetirement: "fail-closed", ...(ack === undefined ? {} : { providerSessionModelBinding: "v1" as const }),
+      providerSessionRetirement: "fail-closed", ...(ack === undefined ? {} : { readProviderSessionBinding: real.readProviderSessionBinding.bind(real) }),
       beginProviderSessionTurn: begin };
     const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
       historyStore, piSessionsRoot: join(dir, "pi"), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 },

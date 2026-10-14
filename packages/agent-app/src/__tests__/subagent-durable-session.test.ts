@@ -12,7 +12,7 @@ import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-to
 // @ts-expect-error Private kernel test seam; no new public tool export.
 import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 // @ts-expect-error Private provider seam uses the real Pi harness and durable repository.
-import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../../agent-runtime/src/ai/providers/engine-turn.js";
 
 const piPath: string = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
 const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentTools } = await import(piPath);
@@ -38,8 +38,14 @@ describe("app persistent subagent durable sessions", () => {
         const first = calls.length === 1;
         // Fault at the real native handoff: execute outside the requested epoch,
         // rather than fabricating a retained/lost registry status or result id.
-        const result = await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
-          ...(first && mode === "loss" ? { sessionId: `outside-${String(options.sessionId)}` } : {}),
+        const result = await generateEngineTurnResponse(prompt, { ...options, allowedTools: [],
+          ...(first && mode === "loss" ? {
+            sessionId: `outside-${String(options.sessionId)}`,
+            // The trusted test injector deliberately switches the native handle;
+            // keep its descriptor internally valid so this still tests loss,
+            // not the separate descriptor/handle mismatch admission guard.
+            sessionTurn: { ...(options.sessionTurn as Record<string, unknown>), handleId: `outside-${String(options.sessionId)}` },
+          } : {}),
           piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
         nativeReturned = true;
         if (first && mode === "late-timeout") await delivery; // Native answer exists; host delivery ignores abort.
@@ -126,7 +132,9 @@ describe("app persistent subagent durable sessions", () => {
       let answered = false;
       const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: Record<string, unknown>) => {
         expect(options.sessionRecovery).toBeDefined();
-        const result = await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
+        expect(options.sessionTurn).toMatchObject({ kind: "instance", historyBucket: null,
+          turnId: (options.sessionRecovery as { runId: string }).runId, handleId: options.sessionId, baseRevision: null });
+        const result = await generateEngineTurnResponse(prompt, { ...options, allowedTools: [],
           piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
         expect(result.text).toContain("Pi answered before capture failed");
         answered = true;
@@ -160,7 +168,7 @@ describe("app persistent subagent durable sessions", () => {
       const runtime = {
         run: async (prompt: string, options: Record<string, unknown>) => {
           calls.push(options);
-          return await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
+          return await generateEngineTurnResponse(prompt, { ...options, allowedTools: [],
             piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
         },
       };
@@ -219,7 +227,7 @@ describe("app persistent subagent durable sessions", () => {
       const runtime = {
         run: async (prompt: string, options: Record<string, unknown>) => {
           calls.push(options);
-          return await generatePiNativeResponse(prompt, { ...options,
+          return await generateEngineTurnResponse(prompt, { ...options,
             piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
         },
       };
@@ -296,7 +304,7 @@ describe("app persistent subagent durable sessions", () => {
       const childModels = createModels(); childModels.setProvider(child.provider);
       const parentModels = createModels(); parentModels.setProvider(parent.provider);
       const handle = await createSubagentInstanceRegistry({ root: config.subagents!.instances!.root!, retireSession: async (id, sessionsRoot) => owner.retireDurableSession!(id, sessionsRoot) }).open("parent");
-      const runtime = { run: async (prompt: string, options: any) => generatePiNativeResponse(prompt, { ...options,
+      const runtime = { run: async (prompt: string, options: any) => generateEngineTurnResponse(prompt, { ...options,
         piResolvedModel: child.getModel(), piResolvedModels: childModels, resolvePiApiKey: async () => "faux-key" }) };
       const subagents = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model }, { conversationId: "parent", runId: "p", instances: handle })!.subagents;
       child.setResponses([fauxAssistantMessage([fauxToolCall("AskParent", { question: "Which scope?" })])]);
@@ -317,7 +325,7 @@ describe("app persistent subagent durable sessions", () => {
           return fauxAssistantMessage([fauxText("I can answer that.")]);
         },
       ]);
-      const result = await generatePiNativeResponse("Coordinate the review", { model: config.runtime.model,
+      const result = await generateEngineTurnResponse("Coordinate the review", { model: config.runtime.model,
         messages: [{ role: "user", content: "Review" }], allowedTools: ["Agent", "AgentManage", "AskParent"], subagents,
         piResolvedModel: parent.getModel(), piResolvedModels: parentModels, resolvePiApiKey: async () => "faux-key" });
       expect(result.error).toBeFalsy();

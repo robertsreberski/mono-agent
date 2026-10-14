@@ -3,10 +3,10 @@ import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { CONTEXT_1M_TOKENS, supportsPiContext1M, withContext1MModels } from "../../ai/context-1m.js";
 import { resolvePiRuntimeModel } from "../../ai/providers/pi-models.js";
 import { createModels, fauxProvider, fauxText, fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
-import { shouldCompact } from "@earendil-works/pi-agent-core";
-import { effectiveContextWindow, resolveLiveCompactionPolicy, piCompactionSettings } from "../../ai/providers/pi-native/compaction-driver.js";
+import { shouldCompact } from "../../../../engine/dist/compaction-kit/compaction.js";
+import { effectiveContextWindow, resolveLiveCompactionPolicy, piCompactionSettings } from "../../ai/providers/engine-turn/compaction-driver.js";
 
 const reference = "openai-codex:gpt-6.1-sol";
 const resolved = { provider: "openai-codex", model: "gpt-6.1-sol", reference };
@@ -70,7 +70,7 @@ describe("native Pi 1M context", () => {
     try {
       for (const context1M of [true, false, true]) {
         const events = [];
-        const result = await generatePiNativeResponse("synthetic instructions", {
+        const result = await generateEngineTurnResponse("synthetic instructions", {
           model: resolved, piResolvedModel: faux.getModel(), piResolvedModels: models,
           context1MModels: { [reference]: context1M }, effort: "none", allowedTools: [],
           sessionKeepAlive: true, ...(sessionId ? { sessionId } : {}),
