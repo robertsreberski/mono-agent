@@ -17,6 +17,7 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../process-incarnation.js")>(),
   currentProcessIncarnation: async () => processIdentity,
   isSameProcessIncarnation: () => true,
+  isProcessIncarnationLive: () => true,
 }));
 
 import { resolveAppSessionsRoot } from "../app-config.js";

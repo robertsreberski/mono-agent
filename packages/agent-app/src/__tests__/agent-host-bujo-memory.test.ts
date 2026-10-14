@@ -34,6 +34,7 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
     processStartId: "vitest-agent-host-bujo",
   }),
   isSameProcessIncarnation: () => true,
+  isProcessIncarnationLive: () => true,
 }));
 
 /** Deterministic non-zero fake embeddings — no network. */
