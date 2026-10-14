@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let cancelled admissions stop waiting for pending-turn drain locks before
+  recovery publication starts.
+
 - Limit legacy session header reads to matching filenames for individual
   session creation, lookup, import and retirement.
 

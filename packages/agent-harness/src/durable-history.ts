@@ -1601,7 +1601,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             // this physical claim; preparation abort cannot release it afterward.
             state = "transferred";
             try {
-              if (binding.reconciliation) await this.drainBeforeAdmission(id, normalizedRunId, binding);
+              if (binding.reconciliation) await this.drainBeforeAdmission(id, normalizedRunId, binding, signal);
             } catch (error) { state = "closed"; await this.releaseConversation(held, held.rootIdentity); throw error; }
             let turnOwned!: () => Promise<void>;
             let native: NativeTurnHistory["native"] | undefined;
@@ -1906,22 +1906,24 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         || pending.reduce((total, entry) => total + entry.bytes, 0) + projected > this.maxStagedBytes;
     } finally { await releaseRoot(); }
     signal?.throwIfAborted();
-    if (needsDrain) await this.drainInactiveTurns({}, historyKey(conversationId));
+    if (needsDrain) await this.drainInactiveTurns({}, historyKey(conversationId), signal);
   }
 
   async drainPendingProviderSessionTurns(options: ConversationHistoryTurnDrainOptions = {}): Promise<ConversationHistoryTurnDrainResult> {
     return await this.drainInactiveTurns(options);
   }
 
-  private async drainInactiveTurns(options: ConversationHistoryTurnDrainOptions, excludedKey?: string): Promise<ConversationHistoryTurnDrainResult> {
+  private async drainInactiveTurns(options: ConversationHistoryTurnDrainOptions, excludedKey?: string, signal?: AbortSignal): Promise<ConversationHistoryTurnDrainResult> {
+    signal?.throwIfAborted();
     if (!this.inspectProviderTurn) throw new Error("Pending-turn draining requires configured native reconciliation.");
     const limit = options.limit ?? 32, cursor = options.cursor;
     if (!Number.isInteger(limit) || limit < 1 || limit > 32 || (cursor !== undefined
       && (!Number.isFinite(cursor.mtimeMs) || cursor.mtimeMs < 0 || !/^[a-f0-9]{64}$/u.test(cursor.conversationKey)))) throw new TypeError("Invalid bounded pending-turn drain request.");
     const rootIdentity = await this.ensureRoot(), locksIdentity = await this.ensureLocksRoot();
-    const releaseSnapshot = await this.acquireRootTransaction(rootIdentity);
+    const releaseSnapshot = await this.acquireRootTransaction(rootIdentity, signal);
     let candidates;
     try {
+      signal?.throwIfAborted();
       const active = new Set((await this.scanActiveMarkers(true)).map((marker) => marker.conversationKey));
       // The root transaction excludes new marker publication. Dead owners' torn
       // temps carry no authoritative payload and need no parsed conversation ID.
@@ -1948,6 +1950,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     let settled = 0, busy = 0, unresolved = 0;
     let nextCursor: ConversationHistoryTurnDrainResult["cursor"];
     for (const candidate of candidates.slice(0, limit)) {
+      signal?.throwIfAborted();
       nextCursor = { mtimeMs: candidate.mtimeMs, conversationKey: candidate.conversationKey };
       let held: HeldConversation | undefined;
       try {
@@ -1963,20 +1966,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         if (!payload) throw inspectionError ?? new Error("Pending owner has no attributable generation.");
         // Read-only discovery is not ownership. Try exact/logical rows without
         // waiting for a foreign owner, even if it appeared after our snapshot.
-        held = await this.acquireConversation(normalizeConversationId(payload.identity.historyBucket), undefined, undefined, true);
-        const releaseCheck = await this.acquireRootTransaction(rootIdentity);
+        held = await this.acquireConversation(normalizeConversationId(payload.identity.historyBucket), undefined, undefined, true, signal);
+        const releaseCheck = await this.acquireRootTransaction(rootIdentity, signal);
         let fence;
         try { fence = await this.findDirtyFence(candidate.conversationKey, locksIdentity); }
         finally { await releaseCheck(); }
+        signal?.throwIfAborted();
         if (fence === undefined) {
-          const releaseCleanup = await this.acquireRootTransaction(rootIdentity);
-          try { await this.removePendingConversation(candidate.conversationKey, rootIdentity, () => held!.assertOwned()); }
+          const releaseCleanup = await this.acquireRootTransaction(rootIdentity, signal);
+          try { signal?.throwIfAborted(); await this.removePendingConversation(candidate.conversationKey, rootIdentity, () => held!.assertOwned()); }
           finally { await releaseCleanup(); }
         } else if (fence.kind === "execution" || fence.kind === "compaction") {
           await this.settleHeldTurn(payload.identity.historyBucket, held);
         } else { unresolved += 1; continue; }
         settled += 1;
       } catch (error) {
+        signal?.throwIfAborted();
         if (error instanceof HistoryOwnerBusyError || (isRecord(error) && error.code === "ERR_HARNESS_WRITER_BUSY")) busy += 1;
         else if (held === undefined && (error instanceof SyntaxError || error instanceof TypeError)) unresolved += 1; // Unattributable orphan: preserve and charge it.
         else if (isErrno(error, "ENOENT") && held === undefined) { await assertDirectoryIdentity(this.root, rootIdentity); busy += 1; }

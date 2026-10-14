@@ -215,9 +215,10 @@ inside a custom store's `load`. Publication waits for acquisition to settle even
 when cancellation fires synchronously inside a coordinator.
 Once a transaction or publication
 starts it finishes or rolls back: cancellation does not interrupt the publication
-barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
-(including an admission-triggered drain) remain deliberately non-cancellable;
-this signal is not a transaction deadline.
+barriers, storage-only recovery, or ownership cleanup. Admission-triggered
+draining honours cancellation while waiting for pre-mutation locks and between
+owners. Reset and administrative drain waits remain non-cancellable; the
+admission signal is not a transaction deadline.
 
 Explicit reset is not online repair. Damaged canonical records (including
 truncated JSON), coordination/recovery files, enrolled native journals and

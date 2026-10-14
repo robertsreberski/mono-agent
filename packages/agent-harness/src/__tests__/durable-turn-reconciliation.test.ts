@@ -571,3 +571,31 @@ it("drain collects a dead owner's lone torn temp before root authority bootstrap
   const lease = await f.store.acquireNativeHistoryAuthority(bucket); expect(lease.status).toBe("owned");
   if (lease.status === "owned") await lease.release(); expect(f.inspect).not.toHaveBeenCalled();
 });
+
+it.each([false, true])("cancels pre-publication admission draining (prepared=%s)", async (prepared) => {
+  const f = await fixture({ maxConversations: 1 });
+  const binding = (id = bucket) => ({ modelKey, reconciliation: { purpose: "execution" as const, ownerKey: id, initial: { persistText: "Fictional input", timestamp } } });
+  const prior = await f.store.beginProviderSessionTurn("fictional-prior-owner", "fictional-prior-turn", binding("fictional-prior-owner"));
+  await prior.abort();
+  const controller = new AbortController(), reason = new Error("Fictional admission cancelled");
+  const preparation = prepared ? await f.store.beginProviderSessionPreparation(bucket, "fictional-new-turn", controller.signal) : undefined;
+  const target = f.store as unknown as { acquireRootTransaction(identity: import("node:fs").Stats, signal?: AbortSignal): Promise<() => Promise<void>> };
+  const original = target.acquireRootTransaction.bind(target);
+  let acquisitions = 0, draining = false;
+  const drainTarget = f.store as unknown as { drainBeforeAdmission(...args: unknown[]): Promise<void> };
+  const drainOriginal = drainTarget.drainBeforeAdmission.bind(drainTarget);
+  const drainSpy = vi.spyOn(drainTarget, "drainBeforeAdmission").mockImplementation(async (...args) => { draining = true; return drainOriginal(...args); });
+  const spy = vi.spyOn(target, "acquireRootTransaction").mockImplementation(async (identity, signal) => {
+    // The first acquisition checks capacity; the second snapshots the drain.
+    if (draining && ++acquisitions === 2) {
+      expect(signal).toBe(controller.signal); controller.abort(reason);
+    }
+    return original(identity, signal);
+  });
+  try {
+    const admission = preparation ? preparation.admit(binding()) : f.store.beginProviderSessionTurn(bucket, "fictional-new-turn", binding(), controller.signal);
+    await expect(admission).rejects.toBe(reason);
+    expect(acquisitions).toBeGreaterThanOrEqual(2);
+    expect(f.inspect).not.toHaveBeenCalled();
+  } finally { spy.mockRestore(); drainSpy.mockRestore(); await preparation?.abort(); }
+});
