@@ -58,8 +58,8 @@ it.each([0, 1, 2, undefined])("piMaxRetries=%s sizes exactly one request retry l
       piMaxRetries, maxRetryDelayMs: 0, messages: [{ role: "user", content: "Fictional request" }],
     }));
     expect(result.error).toContain("503");
-    expect(faux.state.callCount).toBe((piMaxRetries ?? 2) + 1);
-    expect(requests.every((options) => options.maxRetries === 0)).toBe(true);
+    expect(faux.state.callCount).toBe(1); // A settled error may be a partial paid stream.
+    expect(requests.every((options) => options.maxRetries === (piMaxRetries ?? 2))).toBe(true);
     expect(result.events.filter((event) => event.type === "tool_call_started")).toEqual([]);
   } finally { vi.restoreAllMocks(); }
 });
@@ -74,7 +74,7 @@ it.each([null, "", "   ", Infinity, "not-a-number"])("treats an unset/invalid di
     piMaxRetries, messages: [{ role: "user", content: "Fictional request" }],
   }));
   expect(result.text).toBe("Fictional answer");
-  expect(requests).toHaveLength(1); expect(requests[0].maxRetries).toBe(0);
+  expect(requests).toHaveLength(1); expect(requests[0].maxRetries).toBe(2);
 });
 
 
@@ -120,4 +120,19 @@ it("does not repeat a paid request whose stream throws with unknown outcome", as
   }));
   expect(result.error).toContain("unknown request outcome");
   expect(stream).toHaveBeenCalledOnce();
+});
+
+it.each([[2.9, 2], [-2.9, 0], [99.5, 8]])("truncates and bounds embedder retry budget %s to %s", async (piMaxRetries, expected) => {
+  const model = setup(), requests = [];
+  fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) { requests.push(options); return faux.provider.streamSimple(model, context, options); } });
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
+  const result = await generateEngineTurnResponse("Fictional rules", runOptions(model, { piMaxRetries, messages: [{ role: "user", content: "Fictional request" }] }));
+  expect(result.error).toBeNull(); expect(requests[0].maxRetries).toBe(expected);
+});
+it.each([0, -1, null, "", Infinity, undefined])("uses the default retry-delay cap for embedder value %s", async (maxRetryDelayMs) => {
+  const model = setup(), requests = [];
+  fauxModels.setProvider({ ...faux.provider, streamSimple(model, context, options) { requests.push(options); return faux.provider.streamSimple(model, context, options); } });
+  faux.setResponses([fauxAssistantMessage([fauxText("Fictional answer")])]);
+  await generateEngineTurnResponse("Fictional rules", runOptions(model, { maxRetryDelayMs, messages: [{ role: "user", content: "Fictional request" }] }));
+  expect(requests[0].maxRetryDelayMs).toBe(60_000);
 });

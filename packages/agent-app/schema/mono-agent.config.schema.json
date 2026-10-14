@@ -2214,7 +2214,7 @@
               ]
             },
             "piMaxRetries": {
-              "description": "Additional requests after settled transient assistant errors (0–8, default 2). Transport retries are disabled; probes and summaries are single-shot.",
+              "description": "Provider SDK-policy retries before a response starts (0–8, default 2): connection errors, HTTP 408/409/429/5xx and provider retry headers. Started streams are not repeated by this layer; probes and summaries are single-shot.",
               "examples": [
                 2
               ],
@@ -2222,7 +2222,7 @@
               "default": 2
             },
             "maxRetryDelayMs": {
-              "description": "Ceiling for driver assistant-request retry backoff in milliseconds (default 60000).",
+              "description": "Ceiling for provider-requested retry delays in milliseconds (default 60000). Nonpositive embedder values use the default; longer requested delays fail.",
               "examples": [
                 60000
               ],

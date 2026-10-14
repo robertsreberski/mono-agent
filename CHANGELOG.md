@@ -6,9 +6,10 @@
   automatic paid turn. Carry recovery advisories once into the next explicit
   user turn; leave background-job completion delivery unchanged.
 
-- Bound each assistant request to one retry layer sized by `piMaxRetries`,
-  with failed-response usage recorded and transport retries disabled. Keep
-  provider checks and summaries single-shot.
+- Bound each assistant request to one pre-response provider SDK retry layer
+  sized by `piMaxRetries`. Keep started streams from being repeated by that
+  layer, disable driver retries, and keep provider checks and summaries
+  single-shot.
 
 - Let the first model switch proceed while unrelated conversations are active
   or have damaged recovery data, preserving their ownership and evidence.

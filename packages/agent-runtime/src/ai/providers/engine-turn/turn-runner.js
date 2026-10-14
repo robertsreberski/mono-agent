@@ -306,14 +306,12 @@ export async function buildTurnHarness(runState, {
     tools,
     toolExecutionMode,
     silentTurnState: runState.silentTurn,
-    streamOptions: { transport, maxRetries: 0, maxRetryDelayMs,
+    streamOptions: { transport, maxRetries: Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0 ? 0 : maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // Retry only settled assistant errors in the driver: each failed response
-    // is journaled and billed before another request, and tools never replay.
-    // Transport retries stay off; thrown/unknown outcomes are terminal.
-    retry: { enabled: maxRetries > 0 && !(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0),
-      maxRetries, baseDelayMs: 1000, maxAgentDelayMs: maxRetryDelayMs },
+    // Pi providers retry SDK-policy failures only before a response starts.
+    // Never resend their settled error: it may describe a partial paid stream.
+    retry: { enabled: false, maxRetries: 0 },
     steeringMode,
     followUpMode: steeringMode,
     assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.piSessionsRoot) : undefined,

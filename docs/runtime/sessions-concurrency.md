@@ -155,8 +155,8 @@ other surface keeps today's behavior described above.
 With the opt-in on, persisted-ID Web turns (including the first message) and
 no-ID wakes on native-bound conversations use prepared native dispatch with the
 **primary model only**. These turns get no configured fallback-chain backup model
-and no router-level re-attempt; transport retries within the attempt are
-unchanged. A primary failure is returned for that message; send another message
+and no router-level re-attempt; pre-response transport retries within the attempt are bounded by
+`providers.piNative.piMaxRetries`; the driver does not retry streamed responses. A primary failure is returned for that message; send another message
 to try again. Other turns keep their configured fallbacks. A cancel that
 arrives after such a turn's preparation has started, but before admission, is
 reported and not appended to history.
@@ -631,7 +631,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 | --- | --- | --- |
 | `providers.piNative.transport` | `auto` (default), `sse`, `websocket`, `websocket-cached` | Preferred provider transport; providers without multiple transports ignore it |
 | `providers.piNative.promptCacheDiagnostics` | boolean; default `false` | Metadata-only request fingerprints in run artifacts |
-| `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Additional driver requests after settled transient assistant errors; transport retries stay off (see [Fallback](/runtime/fallback/)) |
+| `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Provider SDK-policy retries before a response starts; streamed responses are not repeated (see [Fallback](/runtime/fallback/)) |
 | `providers.piNative.maxRetryDelayMs` | default `60000` | Backoff cap between retries (ms) |
 | `providers.piNative.piSessionsRoot` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
 
@@ -846,7 +846,7 @@ before the next Send when a reset/import advanced it.
 `mono-agent restart --clear-sessions` purges `piSessionsRoot`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
 :::
 
-For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.
+For retry behavior across *different* models (provider failover, not transport retries), see [Fallback & failover](/runtime/fallback/). Transport retries here follow provider SDK policy before a response starts within a single model. A failed started stream is not automatically repeated by that layer; router fallback moves to the next model under its separate rules.
 
 ## Administrative native history
 
