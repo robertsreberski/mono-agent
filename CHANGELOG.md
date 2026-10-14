@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Remove the unused direct Pi Agent Core dependency from
+  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/harness`.
+
 - Keep Pi-native execution on Pi 1.x through the new `@mono-agent/harness`, with
   versioned native journals and distinct logical turns/execution operations.
   Import idle legacy Pi main-branch context; reopen still aborts old operations

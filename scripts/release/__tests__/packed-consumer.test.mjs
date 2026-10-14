@@ -129,6 +129,9 @@ describe("packed consumer verification", () => {
       import.meta.url,
     );
     const runtime = JSON.parse(fs.readFileSync(runtimeManifestUrl, "utf8"));
+    const harness = JSON.parse(fs.readFileSync(
+      new URL("../../../packages/harness/package.json", import.meta.url), "utf8",
+    ));
     const packedRuntime = {
       name: runtime.name,
       tarballPath: "/tmp/mono-agent-agent-runtime.tgz",
@@ -151,6 +154,11 @@ describe("packed consumer verification", () => {
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-agent-core");
     expect(runtime.dependencies).toMatchObject({
+      "@earendil-works/pi-ai": "1.0.1",
+      "@mono-agent/harness": `workspace:${harness.version}`,
+    });
+    expect(runtime.dependencies).not.toHaveProperty("@earendil-works/pi-agent-core");
+    expect(harness.dependencies).toMatchObject({
       "@earendil-works/pi-ai": "1.0.1",
       "@earendil-works/pi-agent-core": "1.0.1",
     });
@@ -309,15 +317,15 @@ describe("packed consumer verification", () => {
     const fixture = packedDependencyFixture({
       rootPiVersion: "0.80.8",
       nestedCorePiVersion: null,
-      nestedRuntimePiVersion: "1.0.1",
+      nestedHarnessPiVersion: "1.0.1",
     });
-    const runtimePackages = fixture.packages.filter(
-      (pkg) => pkg.name === "@mono-agent/agent-runtime",
+    const harnessPackages = fixture.packages.filter(
+      (pkg) => pkg.name === "@mono-agent/harness",
     );
 
-    expect(runtimePackages).toHaveLength(1);
+    expect(harnessPackages).toHaveLength(1);
     expect(() =>
-      assertPackedDependencyResolution(fixture.consumerDir, runtimePackages),
+      assertPackedDependencyResolution(fixture.consumerDir, harnessPackages),
     ).toThrow(
       "Packed consumer resolved @earendil-works/pi-ai@0.80.8 from @earendil-works/pi-agent-core@1.0.1; expected 1.0.1",
     );
@@ -348,7 +356,7 @@ describe("packed consumer verification", () => {
 function packedDependencyFixture({
   appPiRange = "1.0.1",
   nestedCorePiVersion = "1.0.1",
-  nestedRuntimePiVersion,
+  nestedHarnessPiVersion,
   rootPiVersion = "1.0.1",
 } = {}) {
   const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), "packed-dependency-policy-"));
@@ -360,8 +368,16 @@ function packedDependencyFixture({
     version: "1.2.3",
     dependencies: { "@earendil-works/pi-ai": appPiRange },
   });
-  const runtimeDir = writePackage(modulesDir, {
+  writePackage(modulesDir, {
     name: "@mono-agent/agent-runtime",
+    version: "1.2.3",
+    dependencies: {
+      "@mono-agent/harness": "1.2.3",
+      "@earendil-works/pi-ai": "1.0.1",
+    },
+  });
+  const harnessDir = writePackage(modulesDir, {
+    name: "@mono-agent/harness",
     version: "1.2.3",
     dependencies: {
       "@earendil-works/pi-agent-core": "1.0.1",
@@ -377,10 +393,10 @@ function packedDependencyFixture({
     name: "@earendil-works/pi-ai",
     version: rootPiVersion,
   });
-  if (nestedRuntimePiVersion !== undefined) {
-    writePackage(path.join(runtimeDir, "node_modules"), {
+  if (nestedHarnessPiVersion !== undefined) {
+    writePackage(path.join(harnessDir, "node_modules"), {
       name: "@earendil-works/pi-ai",
-      version: nestedRuntimePiVersion,
+      version: nestedHarnessPiVersion,
     });
   }
   if (nestedCorePiVersion !== null) {
@@ -400,10 +416,19 @@ function packedDependencyFixture({
         },
       },
       {
-        name: "@mono-agent/agent-runtime",
+        name: "@mono-agent/harness",
         packageJson: {
           dependencies: {
             "@earendil-works/pi-agent-core": "1.0.1",
+            "@earendil-works/pi-ai": "1.0.1",
+          },
+        },
+      },
+      {
+        name: "@mono-agent/agent-runtime",
+        packageJson: {
+          dependencies: {
+            "@mono-agent/harness": "1.2.3",
             "@earendil-works/pi-ai": "1.0.1",
           },
         },
