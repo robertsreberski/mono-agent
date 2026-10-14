@@ -1,16 +1,19 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 import { streamSimple as sdkStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js";
+import { streamSimple as sdkCodexStreamSimple } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
 import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 
 afterEach(() => vi.restoreAllMocks());
-async function run(fetch, overrides = {}) {
+async function run(fetch, overrides = {}, sdk = sdkStreamSimple) {
+  const codex = sdk === sdkCodexStreamSimple;
+  const codexToken = ["fictional", Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fictional-account" } })).toString("base64"), "fictional"].join(".");
   const faux = fauxProvider({ provider: "faux", models: [{ id: "fictional-model" }] });
   const models = createModels(), model = faux.getModel(), requests = [];
   models.setProvider({ ...faux.provider, streamSimple(model, context, options) {
     requests.push(options);
-    return sdkStreamSimple({ ...model, provider: "openai", api: "openai-completions", baseUrl: "https://fictional.invalid/v1" }, context,
-      { ...options, apiKey: "fictional-unused-key", fetch });
+    return sdk({ ...model, provider: codex ? "openai-codex" : "openai", api: codex ? "openai-codex-responses" : "openai-completions", baseUrl: "https://fictional.invalid/v1" }, context,
+      { ...options, apiKey: codex ? codexToken : "fictional-unused-key", fetch });
   } });
   const result = await generateEngineTurnResponse("Fictional rules", {
     model: { provider: "faux", model: "fictional-model", reference: "faux:fictional-model" },
@@ -58,4 +61,17 @@ it("keeps real health probes single-shot even if an embedder supplies a retry bu
   const fetch = vi.fn(async () => refusal(503));
   const { requests } = await run(fetch, { providerCheckMaxTokens: 4 });
   expect(fetch).toHaveBeenCalledOnce(); expect(requests[0].maxRetries).toBe(0);
+});
+
+
+it.each([400, 401, 429, 503, undefined])("keeps Codex checks single-shot over SSE despite configured websocket and retry budget (status=%s)", async (status) => {
+  const fetch = vi.fn(async () => {
+    if (status === undefined) throw new Error("Fictional connection lost before response headers");
+    return refusal(status);
+  });
+  const { result, requests } = await run(fetch, { providerCheckMaxTokens: 4, transport: "websocket", piMaxRetries: 8 }, sdkCodexStreamSimple);
+  expect(result.error).toBeTruthy();
+  expect(fetch).toHaveBeenCalledOnce();
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ transport: "sse", maxRetries: 0 });
 });

@@ -6,10 +6,11 @@
   automatic paid turn. Carry recovery advisories once into the next explicit
   user turn; leave background-job completion delivery unchanged.
 
-- Bound each assistant request to one pre-response provider SDK retry layer
-  sized by `piMaxRetries`. Keep started streams from being repeated by that
-  layer, disable driver retries, and keep provider checks and summaries
-  single-shot.
+- Use provider SDK pre-response retries sized by `piMaxRetries`, including
+  connection losses before response headers. Keep started streams from being
+  repeated by that layer and disable driver retries; configured router rules
+  still apply. Codex can fall back from websocket to SSE independently of the
+  retry budget. Force single-shot SSE for provider checks and summaries.
 
 - Let the first model switch proceed while unrelated conversations are active
   or have damaged recovery data, preserving their ownership and evidence.

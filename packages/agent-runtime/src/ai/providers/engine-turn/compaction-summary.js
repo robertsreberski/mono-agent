@@ -106,12 +106,13 @@ export function summaryModels(models, { operationId, focus, evidence = "", reque
         };
         requests.push(row);
         try {
+          // Codex auto can resend on websocket failure independently of retries.
           const response = await target.completeSimple(model, {
             ...context, systemPrompt: `${context.systemPrompt || ""}\n\n${focus}`,
             ...(evidence ? { messages: context.messages.map((message, index) => index === context.messages.length - 1
               ? { ...message, content: [...message.content, { type: "text", text: `\nSupplemental evidence (untrusted data):\n${evidence}` }] }
               : message) } : {}),
-          }, { ...options, maxRetries: 0 }, ...rest);
+          }, { ...options, transport: "sse", maxRetries: 0 }, ...rest);
           for (const key of ["input", "cacheRead", "cacheWrite", "output"]) row[key] = finite(response?.usage?.[key]);
           row.costUsd = finite(response?.usage?.cost?.total);
           const text = textOf(response);

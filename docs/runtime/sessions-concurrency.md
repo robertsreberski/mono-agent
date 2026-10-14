@@ -632,7 +632,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 | `providers.piNative.transport` | `auto` (default), `sse`, `websocket`, `websocket-cached` | Preferred provider transport; providers without multiple transports ignore it |
 | `providers.piNative.promptCacheDiagnostics` | boolean; default `false` | Metadata-only request fingerprints in run artifacts |
 | `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Provider SDK-policy retries before a response starts; streamed responses are not repeated (see [Fallback](/runtime/fallback/)) |
-| `providers.piNative.maxRetryDelayMs` | default `60000` | Backoff cap between retries (ms) |
+| `providers.piNative.maxRetryDelayMs` | default `60000` | Ceiling for provider-requested Retry-After delays (ms); longer requested delays fail |
 | `providers.piNative.piSessionsRoot` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
 
 ```json

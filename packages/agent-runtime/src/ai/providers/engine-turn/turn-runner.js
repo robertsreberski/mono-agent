@@ -297,6 +297,8 @@ export async function buildTurnHarness(runState, {
   steeringMode,
   options,
 }) {
+  const providerCheck = Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0;
+  // Codex auto transport can resend via SSE even with a zero retry budget.
   const harness = await createHarnessAdapter(session, {
     session,
     models: piModels,
@@ -306,7 +308,7 @@ export async function buildTurnHarness(runState, {
     tools,
     toolExecutionMode,
     silentTurnState: runState.silentTurn,
-    streamOptions: { transport, maxRetries: Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0 ? 0 : maxRetries, maxRetryDelayMs,
+    streamOptions: { transport: providerCheck ? "sse" : transport, maxRetries: providerCheck ? 0 : maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
     // Pi providers retry SDK-policy failures only before a response starts.
