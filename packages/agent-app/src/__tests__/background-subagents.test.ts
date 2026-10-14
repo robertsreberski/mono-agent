@@ -111,6 +111,11 @@ async function stopObservingDurableSettlement(store: Awaited<ReturnType<typeof o
   } finally { vi.useRealTimers(); }
 }
 
+// Registry latency that holds the late-settlement publication window open.
+const SLOW_REGISTRY_WRITE_MS = 150;
+// About forty registry transactions at that latency, with headroom for load.
+const SLOW_REGISTRY_TIMEOUT_MS = 45_000;
+
 function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string): Promise<void> {
   const settlement = (service as unknown as { readonly settlements: ReadonlyMap<string, Promise<void>> })
     .settlements.get(jobId);
@@ -199,6 +204,106 @@ describe("parent stop", () => {
       successorGate.resolve({ text: "next" }); await done(f.service, successor.details.jobId);
     } finally { gate.resolve({ text: "cleanup" }); }
   }, 40_000);
+  it.each([true, false])("a late parent-stopped result is published with its final disposition while registry writes are slow (retained evidence=%s)", async (retained) => {
+    // True settlement used to bump the publication while the disposition was
+    // still the cancellation grace's provisional unknown one. A publication
+    // queued in that window released the old sequence, dropped the registry's
+    // active turn and left the retained publication stale for good. Slow
+    // registry writes hold that window open deterministically.
+    const slowRegistry: typeof writeJsonAtomic = async (...args: Parameters<typeof writeJsonAtomic>) => { await realDelay(SLOW_REGISTRY_WRITE_MS); return await writeJsonAtomic(...args); };
+    const f = await managedFixture(undefined, {}, false, slowRegistry); const gate = deferred<any>(); let request: any;
+    const run = vi.fn(async (input: any) => { request ??= input; return gate.promise; }); const { agent, send } = tools(f, run);
+    const first = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: SLOW_REGISTRY_TIMEOUT_MS });
+      await send.execute("stop", { id: "helper", stop: true });
+      // The cancellation grace has published its provisional disposition.
+      await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership).toMatchObject({
+        owner: { settlement: "running" }, disposition: { continuity: "unknown", reason: "cancelled" }, publication: { state: "confirmed" } }), { timeout: SLOW_REGISTRY_TIMEOUT_MS });
+      gate.resolve({ text: "late", subagentContinuity: { turnToken: retained ? request.turnToken : "wrong", state: "retained" } });
+      await vi.waitFor(async () => {
+        const job = await f.store.get(first.details.jobId);
+        expect(job !== undefined && isTerminalProcessJobState(job.state) && !hasSubagentObligation(job)).toBe(true);
+        expect(job?.subagentOwnership).toMatchObject({ owner: { settlement: "settled" },
+          disposition: retained ? { continuity: "retained", resumeAfterStop: true } : { continuity: "unknown", reason: "cancelled" },
+          publication: { state: "confirmed", receiptPending: false, receiptRecorded: job?.subagentOwnership?.publication.sequence } });
+      }, { timeout: SLOW_REGISTRY_TIMEOUT_MS });
+      expect((await done(f.service, first.details.jobId)).state).toBe("cancelled");
+      const record = await f.instances.get("helper");
+      expect(record).toMatchObject({ status: "idle", turns: 1 });
+      expect(f.wake).toHaveBeenCalledOnce();
+      expect(run).toHaveBeenCalledOnce();
+      if (!retained) {
+        // Unknown continuity still fails closed: never resumable, nothing re-run.
+        expect(record?.recoveryBlocked).toBe(true);
+        await expect(send.execute("resume", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
+        expect(run).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(record?.recoveryBlocked).not.toBe(true); expect(record?.recovery).toBeUndefined();
+      // The slot was released exactly once: the resumed turn is admitted and runs.
+      const next = await send.execute("resume", { id: "helper", background: true, message: "next" });
+      await done(f.service, next.details.jobId);
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(f.wake).toHaveBeenCalledTimes(2);
+    } finally { gate.resolve({ text: "cleanup" }); }
+    // Inner waits: three slow-registry waits, two durable deliveries and the
+    // six-second stop receipt; the enclosing budget must exceed them.
+  }, 3 * SLOW_REGISTRY_TIMEOUT_MS + 2 * DURABLE_DELIVERY_TIMEOUT_MS + 15_000);
+  it("reopen recovers a stop certificate stranded behind an older provisional release", async () => {
+    // Reproduces the on-disk state the earlier race left: the registry settled
+    // this turn from an older release with provisional unknown continuity, while
+    // the job's newer retained stop certificate stayed pending forever.
+    const f = await managedFixture(); const gate = deferred<any>(); let request: any; const root = resolve(f.root, "children");
+    let stranded = false;
+    f.service.bindManagedSubagents!({ root,
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        const instances = await f.registry.open(publication.identity.conversationId, { existingOnly: true });
+        if (!stranded && phase === "intent" && publication.released && publication.disposition.resumeAfterStop) {
+          stranded = true;
+          const provisional = { ...publication, disposition: { status: "cancelled" as const, continuity: "unknown" as const, reason: "cancelled" as const } };
+          await instances.publishOwned("intent", provisional); await instances.publishOwned("confirm", provisional);
+          throw new Error("injected stale retained publication");
+        }
+        await instances.publishOwned(phase, publication);
+      } });
+    const run = vi.fn(async (input: any) => { request ??= input; return gate.promise; }); const { agent, send } = tools(f, run);
+    const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "first" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await send.execute("stop", { id: "helper", stop: true });
+    await vi.waitFor(async () => expect((await f.store.get(started.details.jobId))?.subagentOwnership).toMatchObject({
+      owner: { settlement: "running" }, disposition: { continuity: "unknown" }, publication: { state: "confirmed" } }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    gate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+    await vi.waitFor(() => expect(stranded).toBe(true), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await f.service.stop();
+    // The older binary had also committed the retained certificate one sequence
+    // past the provisional release that reached the registry.
+    await f.store.mutate((records) => {
+      const ownership = records.get(started.details.jobId)!.subagentOwnership!;
+      ownership.publication.sequence++; ownership.publication.state = "pending";
+    });
+    const strandedRecord = await f.instances.get("helper");
+    expect(strandedRecord).toMatchObject({ status: "idle", turns: 1, recoveryBlocked: true, recovery: { continuity: "unknown" } });
+    expect(strandedRecord?.activeTurn).toBeUndefined();
+    expect(f.wake).not.toHaveBeenCalled();
+
+    const reopened = await openProcessJobsService(f.options); services.push(reopened);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {},
+      ownerForReservation: (jobId) => ({ jobId, storeRoot: reopened.settings.stateDir }),
+      resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity),
+      checkOwnerIndex: (conversationId, known) => reopened.checkSubagentOwnerIndex!(conversationId, known) });
+    reopened.bindManagedSubagents!({ root,
+      verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
+    await reopened.activateWakes(); await done(reopened, started.details.jobId);
+    const job = await f.store.get(started.details.jobId);
+    expect(job !== undefined && !hasSubagentObligation(job)).toBe(true);
+    const record = await (await registry.open(origin.conversationId)).get("helper");
+    expect(record).toMatchObject({ status: "idle", turns: 1 }); expect(record?.recoveryBlocked).not.toBe(true); expect(record?.recovery).toBeUndefined();
+    expect(f.wake).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
+    // Inner waits: four durable waits and the six-second stop receipt.
+  }, 4 * DURABLE_DELIVERY_TIMEOUT_MS + 15_000);
   it("rearms a newer terminal publication when cancellation grace completes under an older publication", async () => {
     const f = await managedFixture(undefined, { maxRuntimeMs: 60_000 });
     const releaseUnknownConfirm = deferred<void>();
@@ -254,20 +359,25 @@ describe("parent stop", () => {
       vi.useRealTimers();
 
       providerGate.resolve({ text: "late", subagentContinuity: { turnToken: request.turnToken, state: "retained" } });
+      // Order the late true settlement before the held grace publication resumes.
+      await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.owner.settlement).toBe("settled"),
+        { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       releaseUnknownConfirm.resolve();
       const retainedSequence = await retainedConfirmHeld.promise;
+      // True settlement commits the retained stop certificate atomically, so the
+      // grace's own report publishes it before the job turns terminal; the
+      // terminal transition then completes under this older, unreleased
+      // publication.
       await vi.waitFor(async () => {
         const record = await f.store.get(first.details.jobId);
         expect(record).toMatchObject({
-          state: "cancelled",
-          childStillBusy: true,
+          state: "running",
           subagentOwnership: {
             owner: { settlement: "settled" },
             disposition: { status: "cancelled", continuity: "retained", resumeAfterStop: true },
-            publication: { state: "pending" },
+            publication: { state: "pending", sequence: retainedSequence },
           },
         });
-        expect(record!.subagentOwnership!.publication.sequence).toBeGreaterThan(retainedSequence);
       }, { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect(await f.instances.get("helper")).toMatchObject({ status: "running", turns: 0 });
       expect(f.wake).not.toHaveBeenCalled();
@@ -278,6 +388,10 @@ describe("parent stop", () => {
       await vi.waitFor(async () => expect((await f.store.get(first.details.jobId))?.subagentOwnership?.publication)
         .toMatchObject({ state: "confirmed", receiptPending: false }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       expect(await done(f.service, first.details.jobId)).toMatchObject({ state: "cancelled", childStillBusy: false });
+      // The terminal transition re-armed a newer, released publication.
+      const finalPublication = (await f.store.get(first.details.jobId))!.subagentOwnership!.publication;
+      expect(finalPublication.sequence).toBeGreaterThan(retainedSequence);
+      expect(finalPublication).toMatchObject({ state: "confirmed", receiptPending: false, receiptRecorded: finalPublication.sequence });
       const settledInstance = await f.instances.get("helper");
       expect(settledInstance).toMatchObject({ status: "idle", turns: 1 });
       expect(settledInstance?.recoveryBlocked).not.toBe(true);

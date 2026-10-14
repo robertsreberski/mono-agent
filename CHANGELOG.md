@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix a parent-stopped background subagent whose late result kept its session
+  context staying blocked in recovery, with its process job holding a running
+  slot, when registry writes were slow. The late result now settles with its
+  final resumable outcome, and reopening the agent repairs instances already
+  stuck this way. Late results without proven context still require recovery,
+  and no tool is ever re-run.
+
 - Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
   `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
   `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,
