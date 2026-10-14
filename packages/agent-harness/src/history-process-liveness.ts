@@ -1,9 +1,21 @@
 import { readHistoryProcessIncarnation, historyProcessIncarnationFromJson, type HistoryProcessIncarnation } from "./process-incarnation.js";
 
 let current: Promise<HistoryProcessIncarnation | undefined> | undefined;
-/** History alone falls back to PID-only when OS identity evidence is unavailable. */
+let retryAfter = 0;
+const FAILED_PROBE_COOLDOWN_MS = 30_000;
+/** History alone falls back to PID-only when OS identity evidence is unavailable.
+ * Coalesce probes; cache success, but retry unavailable identity after a bounded
+ * monotonic cooldown so persistent OS failures cannot spawn ps per marker. */
 export function currentHistoryProcessIncarnation(): Promise<HistoryProcessIncarnation | undefined> {
-  return current ??= readHistoryProcessIncarnation(process.pid).catch(() => { current = undefined; return undefined; });
+  if (current) return current;
+  if (performance.now() < retryAfter) return Promise.resolve(undefined);
+  return current = readHistoryProcessIncarnation(process.pid).catch(() => undefined).then((identity) => {
+    if (identity === undefined) {
+      current = undefined;
+      retryAfter = performance.now() + FAILED_PROBE_COOLDOWN_MS;
+    }
+    return identity;
+  });
 }
 
 /** A nullable SQLite JSON value or an optional marker object; unknown identity is never death proof. */
