@@ -1980,7 +1980,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         } else { unresolved += 1; continue; }
         settled += 1;
       } catch (error) {
-        signal?.throwIfAborted();
+        if (signal?.aborted) {
+          // Cancellation must not hide a publication/settlement failure or a
+          // changed shared namespace. Only the actual abort error is cancellation.
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+          throw error;
+        }
         if (error instanceof HistoryOwnerBusyError || (isRecord(error) && error.code === "ERR_HARNESS_WRITER_BUSY")) busy += 1;
         else if (held === undefined && (error instanceof SyntaxError || error instanceof TypeError)) unresolved += 1; // Unattributable orphan: preserve and charge it.
         else if (isErrno(error, "ENOENT") && held === undefined) { await assertDirectoryIdentity(this.root, rootIdentity); busy += 1; }

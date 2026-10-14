@@ -599,3 +599,19 @@ it.each([false, true])("cancels pre-publication admission draining (prepared=%s)
     expect(f.inspect).not.toHaveBeenCalled();
   } finally { spy.mockRestore(); drainSpy.mockRestore(); await preparation?.abort(); }
 });
+
+it.each(["removePendingConversation", "settleHeldTurn"] as const)("cancelled draining preserves a real %s error rather than replacing it with abort", async (method) => {
+  const f = await fixture({ maxConversations: 1 }), prior = await f.begin(); await prior.abort();
+  if (method === "removePendingConversation") await rm(f.fencePath);
+  const controller = new AbortController(), abort = new Error("Fictional cancelled admission"), failure = new Error("Fictional settlement failure");
+  const target = f.store as unknown as Record<typeof method, (...args: unknown[]) => Promise<unknown>>;
+  const original = target[method].bind(target);
+  const spy = vi.spyOn(target, method).mockImplementation(async (...args) => {
+    if (method === "removePendingConversation" || args[0] === bucket) { controller.abort(abort); throw failure; }
+    return original(...args);
+  });
+  try {
+    await expect(f.store.beginProviderSessionTurn("fictional-new-owner", "fictional-new-turn", { modelKey,
+      reconciliation: { purpose: "execution", ownerKey: "fictional-new-owner", initial: { persistText: "Fictional input", timestamp } } }, controller.signal)).rejects.toBe(failure);
+  } finally { spy.mockRestore(); }
+});
