@@ -39,8 +39,57 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   host settlement category while bounding/redacting runtime/provider code and
   detail as untrusted evidence. Eligible durable Pi recovery retains native context
   without appending the account to Pi; cold reseed includes the account. The
-  on-disk history shape is unchanged by recovery;
+  coordinated native turns use canonical v3 receipts and owner-held,
+  storage-only reconciliation across crashes. Read-only history loading does
+  not recover or migrate. Interrupted work waits for the next explicit message;
+  recovery never reruns a model or tool. Host cancellation wins over a completed
+  native seal, and manual compaction changes metadata rather than answers.
+  Capacity admission alone does not admit input to history: cancellation during
+  binding/attachment preflight or history acquisition returns `cancelled` without
+  a history account, including through the posted-reply wrapper. The caller can
+  resend. Already-admitted turns retain cancellation/interruption reporting.
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
+  The opt-in Web model-switch host preserves owned preparation through
+  runtime/history decorators and serializes logical-conversation admission before claims. Web's
+  host-stamped `source: "web"` and persisted inbound user-message ID identify
+  explicit delivery; borrowed Web metadata on TUI/ACP does not authorize work.
+  Retries/restarts reuse that ID without authorizing another billed generation.
+  No-ID turns on never-upgraded conversations keep the original path, including
+  cold-replay model changes on cron, webhook, Slack, Telegram, TUI, ACP and Web
+  wakes, without switch preparation or authority bootstrap. On already-native
+  conversations, undeclared no-ID requests inherit the durable current model;
+  declared other-model no-ID requests also inherit it. Changing `runtime.model` does not
+  move these native conversations until a persisted Web message selects it.
+  Conversation IDs longer than 512 characters bypass switch preparation without
+  native authority or intent. Their existing native host-contract rejection is
+  unchanged with the option ON or OFF; the bound is not relaxed.
+  Same-model requests without that ID may dispatch the current owned native
+  journal without authorizing switch work; guarded model changes and unsupported
+  dispatch fallbacks refuse before rotation or dispatch. The opt-in gate
+  can reject detached same-conversation work started during a turn with retryable
+  `native_switch_busy`; it never waits on its own claim. Retryable
+  `native_switch_busy` drains only bounded inactive owners after claim release,
+  never automatically replaying the message. Enable only with
+  `runtime.session.modelSwitch: { "enabled": true }`,
+  continuous sessions and `providers.piNative.piSessionsRoot`. Both fresh and
+  existing roots acquire native authority lazily under ownership. Back up host/native stores and stop every older writer
+  first. Older binaries refuse native conversations and root scans, but this
+  is not a universal old-writer admission barrier: mixed writers are prohibited.
+  Rollback means stopping writers and restoring the consistent backup, not
+  disabling the option or stripping format markers. Defaults and explicit OFF
+  leave model switching disabled, not the durable-history format upgrade. Only Web persisted
+  `started.userMessageId` authorizes a switch/new summary generation: at most two
+  billed summary calls per switch per generation, never an automatic repeat of
+  an outcome-unknown call. Pending messages are not queued or replayed. Every
+  model change, including a return to an earlier model, requires a fitting
+  structured handoff (there is no summary-less model change); native session
+  state is never reused across models. A native conversation keeps one current
+  journal, one durable handoff and the latest switch receipt. Stale native manual-compaction mappings
+  select preserving disposal as defence-in-depth; owned header/membership checks
+  remain the physical backstop; cold cleanup and reset/retention require owned
+  membership, not a cached model label. Subagent/stateless cleanup cannot delete
+  guarded host evidence; a guarded denial is not successful physical cleanup.
+  No summaries or tools automatically replay.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
@@ -827,7 +876,11 @@ The durable store holds one cross-process logical-session fence across discovery
 and every bucket reset, and appends take that same fence before their physical
 bucket lock.
 `restart --clear-sessions` purges all provider transcripts, message history, and
-tool history while reporting message/tool counts and bytes separately. Doctor
+tool history while reporting message/tool counts and bytes separately. This is
+an explicit stopped-writer operator wipe of the complete attested roots, not
+per-conversation retirement: it removes native canonical records, root
+markers, switch payloads/artifacts/crash evidence, and every native journal.
+The existing quarantine manifests keep whole-root deletion restartable. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and distinct
 unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
 not inflate the count, and unrelated writes or run finalization cannot hide lost
@@ -1305,6 +1358,29 @@ MCP/subagent routing; a declared-name collision is a config error. Permission
 modes remain operator-owned and external MCP tools bypass built-in allow/deny
 policy. See [Computer use](../../docs/tools/computer-use.md) for installation,
 OS grants, privacy, and safe unattended-operation limits.
+
+The public `createConfiguredAgentRuntime` now exposes the backend's optional
+legacy `recoverSession` capability (previously not forwarded), so embedders
+building a host harness on it can use existing receipt recovery. Both it and
+native reconciliation are root-attested, leased storage-settlement operations;
+absence of backend support remains explicit. Private per-run memory-completion
+runtimes deliberately strip both recovery methods instead of exposing an
+unleased storage seam.
+
+Configured raw runtimes forward `reconcileSessionTurn` and legacy
+`recoverSession` through the same attested root-generation request-lease boundary
+as `run`. The lease remains held until storage settlement, even during disposal;
+no provider execution is needed for reconciliation. Internal configured responder
+construction keeps its existing root ownership and does not acquire a second
+lease wrapper. These native capabilities do not yet alter host history fences,
+receipts, retirement policy or enable automatic dirty-turn adoption.
+
+Custom durable runtimes must explicitly expose
+`sessionTurnReconciliation: "v1"` alongside `reconcileSessionTurn` to opt into
+host adoption. Method presence alone is not proof of session ownership. The
+host checks the selected model's owner before admission; uncertified owners
+retain legacy canonical commit behavior rather than projecting missing native
+evidence as interrupted answers.
 
 ## Architecture
 

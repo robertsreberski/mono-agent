@@ -20,7 +20,7 @@ import { fakeEmbeddings } from "./helpers.js";
 
 const at = new Date("2026-07-12T09:00:00.000Z");
 const fact = { v: 1, kind: "fact", entityId: "person:morgan", key: "birth_date",
-  value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+  value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" };
 const preference = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
 const lesson = { v: 1, kind: "lesson", scope: "agent", verified: true };
 function evidence(userText: string, extra: Partial<MemoryCaptureEvidence> = {}): MemoryCaptureEvidence {
@@ -30,7 +30,7 @@ async function extract(text: string, labels: unknown[], context: {
   captureSpeakerKind?: "human-turn" | "trigger";
   conversationId?: string;
   captureEvidence?: MemoryCaptureEvidence;
-}, user = "User: Morgan was born 1990-05-17.", source = "user") {
+}, user = "User: Morgan was born 2000-01-01.", source = "user") {
   const people = [...new Set(labels.flatMap((label) => label && typeof label === "object" && "entityId" in label
     && typeof label.entityId === "string" ? [label.entityId] : []))];
   return await extractCapturePlanStrict(`${user}\nAssistant: Noted.`, {
@@ -97,13 +97,13 @@ describe("host-validated capture labels", () => {
       const root = mkdtempSync(join(tmpdir(), "capture-focus-only-"));
       const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
       try {
-        const user = "Morgan prefers concise notes. Morgan was born 1990-05-17.";
+        const user = "Morgan prefers concise notes. Morgan was born 2000-01-01.";
         let id = 0;
         const result = await captureTurnStrict(`User: ${user}\nAssistant: A retry fixed the failure.`, {
           db, root, llm: { id: "fake-filter", complete: async (prompt, call) => call?.label === "capture:review" ? neutralCaptureReview(prompt) : JSON.stringify({ memories: [
             { type: "note", text: "Morgan prefers concise notes.", salience: 0.8, isInsight: false, source: "user", entityIds: [], labels: [preference] },
             { type: "note", text: "A retry fixed the failed operation by using the fallback.", salience: 0.8, isInsight: false, source: "user", entityIds: [], labels: [lesson] },
-            { type: "note", text: "Morgan was born 1990-05-17.", salience: 0.8, isInsight: false, source: "user", entityIds: ["person:morgan"], labels: [fact] },
+            { type: "note", text: "Morgan was born 2000-01-01.", salience: 0.8, isInsight: false, source: "user", entityIds: ["person:morgan"], labels: [fact] },
             { type: "note", text: "A fictional CI check is pending.", salience: 0.8, isInsight: false, source: "user", entityIds: [], labels: [] },
             { type: "note", text: "Use verbose summaries for Taylor.", salience: 0.8, isInsight: false, source: "assistant", entityIds: [], labels: [preference] },
           ], entities: [{ id: "person:morgan", name: "Morgan", type: "person" }], relations: [] }) },
@@ -117,7 +117,7 @@ describe("host-validated capture labels", () => {
         expect(result.actions).toHaveLength(only === undefined ? 5 : only.length === 0 ? 0 : 2);
         expect(db.get("FOCUS-0")?.text).toBe(only?.length === 0 ? undefined : "Morgan prefers concise notes.");
         expect(db.get("FOCUS-1")?.text).toBe(only?.length === 0 ? undefined : "A retry fixed the failed operation by using the fallback.");
-        expect(db.get("FOCUS-2")?.text).toBe(only === undefined ? "Morgan was born 1990-05-17." : undefined);
+        expect(db.get("FOCUS-2")?.text).toBe(only === undefined ? "Morgan was born 2000-01-01." : undefined);
         expect(db.get("FOCUS-3")?.text).toBe(only === undefined ? "A fictional CI check is pending." : undefined);
         expect(db.get("FOCUS-4")?.text).toBe(only === undefined ? "Use verbose summaries for Taylor." : undefined);
         expect(readGraph(root).entities).toHaveLength(only === undefined ? 1 : 0);
@@ -125,28 +125,28 @@ describe("host-validated capture labels", () => {
     }
   });
   it("attributes only host-supported human facts, accepts written dates, rejects ambiguous dates and assistant recap", async () => {
-    const user = "Morgan was born on 1990-05-17.";
+    const user = "Morgan was born on 2000-01-01.";
     const trusted = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence(user) };
-    expect((await extract("Morgan was born 1990-05-17.", [fact], trusted)).candidates[0]?.labels)
+    expect((await extract("Morgan was born 2000-01-01.", [fact], trusted)).candidates[0]?.labels)
       .toEqual([fact]);
-    expect((await extract("Morgan was born 1990-05-17.", [fact], {
+    expect((await extract("Morgan was born 2000-01-01.", [fact], {
       captureSpeakerKind: "trigger", captureEvidence: evidence(user),
     })).candidates[0]?.labels).toBeUndefined();
-    expect((await extract("Morgan was born 1990-05-17.", [fact], {
+    expect((await extract("Morgan was born 2000-01-01.", [fact], {
       captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan said hello."),
     })).candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
     const ambiguous = { ...fact, value: { type: "date", date: "1990-06-05" } };
     expect((await extract("Morgan was born 05/06/1990.", [ambiguous], trusted)).candidates[0]?.labels)
       .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" }]);
-    expect((await extract("Morgan was born 17/05/1990.", [fact], trusted)).candidates[0]?.labels).toEqual([fact]);
-    expect((await extract("Morgan was born 1990-05-17.", [fact, { ...fact, value: { type: "date", date: "1990-02-30" } }], trusted))
+    expect((await extract("Morgan was born 01/01/2000.", [fact], trusted)).candidates[0]?.labels).toEqual([fact]);
+    expect((await extract("Morgan was born 2000-01-01.", [fact, { ...fact, value: { type: "date", date: "1990-02-30" } }], trusted))
       .candidates[0]?.labels).toEqual([fact]);
   });
 
   it("supports Polish and Spanish preferences; a month in words never validates a structured date", async () => {
     const cases = [
-      { text: "Morgan urodziła się 17 maja 1990.", preference: "Morgan chce zwięzłe odpowiedzi." },
-      { text: "Morgan nació el 17 de mayo de 1990.", preference: "Morgan prefiere respuestas breves." },
+      { text: "Morgan urodziła się 1 stycznia 2000.", preference: "Morgan chce zwięzłe odpowiedzi." },
+      { text: "Morgan nació el 1 de enero de 2000.", preference: "Morgan prefiere respuestas breves." },
     ];
     for (const item of cases) {
       const context = { captureSpeakerKind: "human-turn" as const, conversationId: "conv-1",
@@ -158,13 +158,13 @@ describe("host-validated capture labels", () => {
         .candidates[0]?.labels).toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" }]);
     }
     // A wrong written month with the right day and year must not validate either.
-    expect((await extract("Morgan was born on June 17, 1990.", [fact], {})).candidates[0]?.labels)
+    expect((await extract("Morgan was born on February 1, 2000.", [fact], {})).candidates[0]?.labels)
       .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }]);
-    expect((await extract("Morgan was born 17.05.1990.", [fact], {})).candidates[0]?.labels)
+    expect((await extract("Morgan was born 01.01.2000.", [fact], {})).candidates[0]?.labels)
       .toEqual([{ ...fact, attribution: "assistant-inferred" }]);
-    expect((await extract("Morgan was born 17-05-1990.", [fact], {})).candidates[0]?.labels)
+    expect((await extract("Morgan was born 01-01-2000.", [fact], {})).candidates[0]?.labels)
       .toEqual([{ ...fact, attribution: "assistant-inferred" }]);
-    expect((await extract("Morgan was born 17-06-1990.", [fact], {})).candidates[0]?.labels)
+    expect((await extract("Morgan was born 01-06-2000.", [fact], {})).candidates[0]?.labels)
       .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }]);
   });
 
@@ -183,58 +183,58 @@ describe("host-validated capture labels", () => {
     }, undefined, [], human);
     expect(plan.candidates[0]?.labels).toEqual([{ ...label, attribution: "assistant-inferred" }]);
     const slugLabel = { ...fact, entityId: "person:marie-smith" };
-    expect((await extract("Marie was born 1990-05-17.", [slugLabel], {})).candidates[0]?.labels)
+    expect((await extract("Marie was born 2000-01-01.", [slugLabel], {})).candidates[0]?.labels)
       .toEqual([{ ...slugLabel, attribution: "assistant-inferred" }]);
   });
 
   it("downgrades document and unsupported first-party attribution rather than trusting the model", async () => {
     const context = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("Hello there.") };
-    expect((await extract("Morgan was born 1990-05-17.", [{ ...fact, attribution: "document" }], context))
+    expect((await extract("Morgan was born 2000-01-01.", [{ ...fact, attribution: "document" }], context))
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
-    expect((await extract("Morgan was born 1990-05-17.", [{ ...fact, attribution: "unknown" }], context))
+    expect((await extract("Morgan was born 2000-01-01.", [{ ...fact, attribution: "unknown" }], context))
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
   });
 
   it("binds owner facts by association and user source on an owner turn, without subject grammar", async () => {
     const label = { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
-      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+      value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" };
     const owner = (userText: string) => ({ captureSpeakerKind: "human-turn" as const, conversationId: "acp:fictional",
       captureEvidence: evidence(userText, { ownerTurn: true }) });
     for (const [line, user] of [
-      ["The user was born 1990-05-17.", "I was born 1990-05-17."],
-      ["Użytkownik urodził się 17.05.1990.", "Urodziłem się 17.05.1990."],
-      ["El usuario nació el 17/05/1990.", "Nací el 17/05/1990."],
+      ["The user was born 2000-01-01.", "I was born 2000-01-01."],
+      ["Użytkownik urodził się 01.01.2000.", "Urodziłem się 01.01.2000."],
+      ["El usuario nació el 01/01/2000.", "Nací el 01/01/2000."],
     ] as const) {
       expect((await extract(line, [label], owner(user))).candidates[0]?.labels).toEqual([label]);
     }
     // The value must appear in the user's text to stay user-stated.
-    expect((await extract("The user was born 1990-05-17.", [label], owner("I was born abroad.")))
+    expect((await extract("The user was born 2000-01-01.", [label], owner("I was born abroad.")))
       .candidates[0]?.labels).toEqual([{ ...label, attribution: "assistant-inferred" }]);
     // An assistant-sourced claim about the owner is never an owner fact.
-    expect((await extract("The user was born 1990-05-17.", [label], owner("When was I born?"), undefined, "assistant"))
+    expect((await extract("The user was born 2000-01-01.", [label], owner("When was I born?"), undefined, "assistant"))
       .candidates[0]?.labels).toBeUndefined();
     // A human turn that is not the verified owner cannot bind the owner.
-    expect((await extract("The user was born 1990-05-17.", [label], {
-      captureSpeakerKind: "human-turn", captureEvidence: evidence("I was born 1990-05-17."),
+    expect((await extract("The user was born 2000-01-01.", [label], {
+      captureSpeakerKind: "human-turn", captureEvidence: evidence("I was born 2000-01-01."),
     })).candidates[0]?.labels).toBeUndefined();
     // F3: a structured owner property needs an unambiguous subject. When the line
     // is also associated with, or names, another person, keep only the coarse owner fact.
     const coarseOwner = [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }];
-    const shared = await extractCapturePlanStrict("User: Morgan and I were born 1990-05-17.", {
+    const shared = await extractCapturePlanStrict("User: Morgan and I were born 2000-01-01.", {
       id: "owner-shared", complete: async () => JSON.stringify({
-        memories: [{ type: "note", text: "The user and Morgan were born 1990-05-17.", salience: 0.8, isInsight: false,
+        memories: [{ type: "note", text: "The user and Morgan were born 2000-01-01.", salience: 0.8, isInsight: false,
           entityIds: ["person:owner", "person:morgan"], source: "user", labels: [label] }],
         entities: [{ id: "person:owner", name: "Owner", type: "person" }, { id: "person:morgan", name: "Morgan", type: "person" }],
         relations: [] }),
-    }, undefined, [], { observedAt: at.toISOString(), ...owner("Morgan and I were born 1990-05-17.") });
+    }, undefined, [], { observedAt: at.toISOString(), ...owner("Morgan and I were born 2000-01-01.") });
     expect(shared.candidates[0]?.labels?.filter((item) => item.kind === "fact" && item.entityId === "person:owner")).toEqual(coarseOwner);
-    const named = await extractCapturePlanStrict("User: Morgan was born 1990-05-17.", {
+    const named = await extractCapturePlanStrict("User: Morgan was born 2000-01-01.", {
       id: "owner-named", complete: async () => JSON.stringify({
-        memories: [{ type: "note", text: "The user noted Morgan was born 1990-05-17.", salience: 0.8, isInsight: false,
+        memories: [{ type: "note", text: "The user noted Morgan was born 2000-01-01.", salience: 0.8, isInsight: false,
           entityIds: ["person:owner"], source: "user", labels: [label] }],
         entities: [{ id: "person:owner", name: "Owner", type: "person" }, { id: "person:morgan", name: "Morgan", type: "person" }],
         relations: [] }),
-    }, undefined, [], { observedAt: at.toISOString(), ...owner("I noted Morgan was born 1990-05-17.") });
+    }, undefined, [], { observedAt: at.toISOString(), ...owner("I noted Morgan was born 2000-01-01.") });
     expect(named.candidates[0]?.labels).toEqual(coarseOwner);
     const location = { ...label, key: "home_location", value: { type: "text", text: "Maple Harbor" } };
     expect((await extract("The user is based in Maple Harbor.", [location],
@@ -358,9 +358,9 @@ describe("host-validated capture labels", () => {
   });
 
   it("retains a supported fact from a separate tail sentence and rejects malformed label arrays", async () => {
-    const text = `${"Morgan keeps fictional archive notes on a deliberately long bounded opening sentence with extensive references to safe written examples and fictional projects."} Morgan was born 1990-05-17.`;
+    const text = `${"Morgan keeps fictional archive notes on a deliberately long bounded opening sentence with extensive references to safe written examples and fictional projects."} Morgan was born 2000-01-01.`;
     const plan = await extract(text, [fact], { captureSpeakerKind: "human-turn",
-      captureEvidence: evidence("Morgan was born 1990-05-17.") });
+      captureEvidence: evidence("Morgan was born 2000-01-01.") });
     // The structured value is only in the tail; the opening sentence keeps a coarse fact.
     expect(plan.candidates[0]?.labels)
       .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" }]);
@@ -373,7 +373,7 @@ describe("host-validated capture labels", () => {
   it("supersedes with an explicit replacement label and leaves the old label as history", async () => {
     const root = mkdtempSync(join(tmpdir(), "capture-labelled-supersede-"));
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
-    const firstText = "Morgan was born 1990-05-17.";
+    const firstText = "Morgan was born 2000-01-01.";
     const correctedText = "Morgan was born 1990-05-18.";
     const corrected = { ...fact, value: { type: "date", date: "1990-05-18" } };
     let nextId = 0;
@@ -572,7 +572,7 @@ describe("host-validated capture labels", () => {
     const root = mkdtempSync(join(tmpdir(), "capture-labels-integration-"));
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
     try {
-      const user = "Morgan was born 1990-05-17.";
+      const user = "Morgan was born 2000-01-01.";
       const result = await captureTurnStrict(`User: ${user}\nAssistant: Noted.`, {
         db, root, llm: { id: "fake", complete: async () => JSON.stringify({
           memories: [{ type: "note", text: user, salience: 0.8, isInsight: false, source: "user", entityIds: ["person:morgan"], labels: [fact] }],

@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./process-incarnation": {
+      "types": "./dist/process-incarnation.d.ts",
+      "import": "./dist/process-incarnation.js"
     }
   },
   "files": [
@@ -32,6 +36,7 @@
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.25.1",
+    "@mono-agent/harness": "workspace:0.25.1",
     "@mono-agent/observability": "workspace:0.25.1",
     "@mono-agent/runtime-adapter": "workspace:0.25.1"
   },
@@ -39,6 +44,6 @@
     "access": "public"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.99.2"
+    "@earendil-works/pi-ai": "1.0.1"
   }
 }

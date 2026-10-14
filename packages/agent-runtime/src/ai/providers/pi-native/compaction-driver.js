@@ -17,7 +17,6 @@
 // on the caller-owned runState.compaction.
 
 import {
-  BACKGROUND_CONTEXT,
   calculateContextTokens,
   compact as compactPreparedContext,
   estimateContextTokens,
@@ -25,7 +24,8 @@ import {
   getLastAssistantUsage,
   prepareCompaction,
   shouldCompact,
-} from "@earendil-works/pi-agent-core";
+} from "@mono-agent/harness/compaction-kit/compaction.js";
+import { HARNESS_CONTEXT as BACKGROUND_CONTEXT } from "@mono-agent/harness/context.js";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -39,7 +39,7 @@ import {
   parseContextLimitFromError,
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
-import { buildPiSessionContext } from "./harness-adapter.js";
+import { projectContext } from "./harness-adapter.js";
 import { runHarnessPrompt } from "./turn-runner.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow
@@ -154,7 +154,7 @@ export async function estimateSessionMessageTokens(session) {
 
 async function estimateBuiltContextTokens(branchEntries) {
   try {
-    const messages = buildPiSessionContext(branchEntries);
+    const messages = projectContext(branchEntries).messages;
     return messages.reduce(
       (total, message) => total + (Number(estimateTokens(message)) || 0),
       0,
@@ -314,7 +314,7 @@ export function createGuardedCompactionHook({
         }
       }
       let settings = compactionSettings;
-      let prepared = prepareCompaction(event.branchEntries, settings);
+      let prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
       if (prepared.ok === false) {
         decision = { kind: "failed", error: prepared.error };
         return { cancel: true };
@@ -328,13 +328,21 @@ export function createGuardedCompactionHook({
           ...settings,
           reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, true),
         };
-        prepared = prepareCompaction(event.branchEntries, settings);
+        prepared = prepareCompaction(event.branchEntries, settings, { nonRetainablePrefixLength: event.nonRetainablePrefixLength ?? 0 });
         if (prepared.ok === false) {
           decision = { kind: "failed", error: prepared.error };
           return { cancel: true };
         }
         if (!prepared.value) {
           decision = { kind: "nothing_to_compact" };
+          return { cancel: true };
+        }
+      }
+      if (event.nonRetainablePrefixLength > 0) {
+        const prefix = new Set(event.branchEntries.slice(0, event.nonRetainablePrefixLength)
+          .filter((entry) => entry.type === "message").map((entry) => JSON.stringify(entry.message)));
+        if (prepared.value.retainedTail.some((message) => prefix.has(JSON.stringify(message)))) {
+          decision = { kind: "guard_skipped", reason: "inherited_prefix_not_reducible" };
           return { cancel: true };
         }
       }

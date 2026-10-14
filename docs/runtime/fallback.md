@@ -123,11 +123,17 @@ appended to it), emits `provider_retry_started` rather than a failover event, an
 appends its own `failoverHistory` entry carrying `retryIndex` — each retry keeps
 its own request id and failure subkind.
 
-Retries compose with, and multiply against, the provider-level retry inside a
-single attempt. With defaults on a `pi` primary, `runtime.retry.primaryAttempts: 2`
-and pi's own `maxRetries` of 2 mean up to **six** provider stream starts before the
-chain advances. Lower `providers.piNative.piMaxRetries` when raising
-`primaryAttempts`. The harness's one-shot session-resume retry is disjoint: it
+Retries compose with, and multiply against, two retry layers inside one Pi
+attempt. `providers.piNative.piMaxRetries` (default 2) is the single runtime
+retry knob. Zero disables both pi-ai transport retries and the harness's
+assistant-request retries: at most one provider request per assistant request
+in each router attempt. A nonzero value N retains the default three additional
+assistant-request retries, each with up to N transport retries. The maximum is
+`4 × (N + 1)` provider requests per assistant request per router attempt: 12
+with the default, or 24 across `primaryAttempts: 2` before advancing the chain.
+These are request-only retries; they never repeat a tool or the whole turn. A
+turn that makes several assistant requests can exceed this per-request bound.
+Provider checks and handoff summaries remain single-request. The harness's one-shot session-resume retry is disjoint: it
 fires on `session_not_found` / `session_busy`, which never retry at the router.
 
 ## What failover does
@@ -142,14 +148,32 @@ does not trigger failover. Mid-turn sandbox/safety failures are terminal because
 retrying them on another provider could weaken the established contract.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.
 
-On a warm turn whose primary attempt fails, the retry or backup attempt runs
-stateless with the current message and a bounded snapshot of the failed attempt,
-without the earlier conversation; the next turn reseeds from canonical history.
+On an ordinary warm turn whose primary fails, an eligible retry or backup gets
+canonical earlier conversation messages, the bounded tool-history projection,
+and the current input, just as on a cold turn. A bounded failed-attempt snapshot
+may accompany that replay. The host loads history lazily under conversation
+ownership, only after any required durable detach acknowledgement; it reuses one
+frozen replay across detached attempts and never doubles a cold-turn prefix.
+Durable, custom and in-memory history stores are supported. If warm canonical
+history is absent or cannot be loaded, no retry or backup starts: the primary
+failure returns with `detached_context_unavailable`. A tool-projection failure
+alone keeps canonical replay and emits `tool_history_projection_degraded`.
+The next turn still reseeds from canonical history.
+
+Configuring any fallback route counts as consent for that route to receive the
+conversation history, including when a local primary falls back to a cloud
+provider. Replay neutralises instruction markup but is not secret redaction.
+The replay loader and its output are not returned in results, failover history
+or router telemetry. Persistent subagents remain excluded: they have no host
+canonical replay loader, and detached answers still lose session continuity.
+Direct router callers without a loader retain their existing behaviour; private
+memory completion-only runtimes ignore the loader. Prepared native dispatch
+remains primary-only, with no routed retry or backup.
 
 Only the primary's first attempt carries the conversation's provider
 attribution id. Every retry and backup gets a fresh attribution id of its own,
@@ -175,15 +199,26 @@ the run. The run ends with that attempt's own failure (for example
 host reports the failure and waits for the next message instead of answering
 from a different model.
 
+Pi results also carry monotonic `dispatchProgress` evidence, armed only after
+historical replay seeding. Tool admission and yielded live input block another
+ordinary attempt even when no corresponding event reached the router. Other
+backends retain the normalized-event fallback. Output alone does not change
+ordinary fallback policy. Prepared native dispatch remains primary-only.
+
 The router decides from the attempt's normalized events: a `tool_use` or
 `tool_result` block, or Pi's `tool_execution_start`, whether streamed or in the
-attempt result. Pi emits `tool_use` only when a tool starts executing, so a
-model that merely requested a tool before the provider failed still fails over.
-Text or reasoning output alone also still fails over. A live input counts once
-the provider consumed it, or its delivery is uncertain; an input that was
-removed from the provider queue unconsumed is replayed to the next attempt. A
-custom route runtime that emits none of these events cannot be gated and keeps
-the earlier behaviour.
+attempt result. Pi emits `tool_use` at its conservative execution-start boundary,
+which can precede argument validation or hook blocking. A model that merely
+requested a tool before either admission boundary still fails over.
+Text or reasoning output alone also still fails over. On Pi, a live input counts
+as taken as soon as its iterator yields it, before steering or provider
+consumption. Even if it is later removed from the provider queue unconsumed,
+Pi starts no retry or backup; only never-yielded inputs can transfer. Tool
+admission is conservative too: a call reaching `before_tool` counts even when
+another hook blocks that call before execution. For marker-less custom runtimes,
+consumed or uncertain input events still block failover; a removed, unconsumed
+input remains mailbox-replay-safe. A custom runtime emitting neither progress
+markers nor these events cannot be gated and keeps the earlier behaviour.
 
 The router checks this evidence when the attempt fails and again immediately
 before it admits the next attempt — after the retry backoff and after the route

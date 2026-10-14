@@ -2,6 +2,405 @@
 
 ## Unreleased
 
+- Reclaim history claims and active markers when their recorded process
+  stable v2 incarnation no longer owns a reused PID. Use boot UUIDs and UTC
+  process starts on macOS, and boot UUIDs/start ticks on Linux; bound macOS
+  probes to five seconds. Keep v1, unknown, unavailable and other-platform
+  identity PID-only. Cache per owner/wait and preserve live ownership; torn
+  markers remain PID-only. Leave the existing app v1 identity API unchanged.
+  Stop every older writer before upgrading; legacy coordination files remain
+  readable, but pre-upgrade binaries cannot parse the new marker contents.
+
+- Refuse explicit reset of damaged canonical, coordination, pending recovery,
+  native-journal or billing evidence with non-retryable, file-naming repair
+  guidance. Ignore recovery generations removed during unlocked preflight, and
+  preserve damaged rollover members identified by their healthy logical fences.
+  Preserve the evidence and keep damaged billing redelivery blocked
+  before paid work. Document stopped-writer repair and its double-billing risk;
+  reset does not attempt online repair or reconstruct lost native enrollment.
+
+- Preserve admitted cancellation accounts when a history coordinator aborts
+  synchronously, while leaving custom-store cancellations before provider start
+  without an account. Release exclusive history ownership when posted-reply
+  delivery loading fails, preserving the original failure.
+
+- Cancel contended history admission, model-switch preparation, exclusive turns
+  and manual compaction without admitting the waiting input or calling a provider.
+  Include binding/attachment preflight cancellation and app history wrappers;
+  preserve cancellation accounts for already-admitted turns.
+  Preserve predecessor ordering, release raced ownership and keep started
+  publication, reset and drain cleanup non-cancellable. Give incomplete writes
+  stable retryable busy errors and preserve permission-denied temp cleanup errors.
+
+- Keep damaged conversation locks, active markers, dirty fences and lifecycle
+  intents charged and protected without refusing unrelated conversations.
+  Stop creating redundant conversation-shard locks while preserving older
+  writers' files. Reclaim owned torn markers and fence temps after writer death,
+  preserve operational filesystem errors, and name damaged quota blockers.
+  Document stopped-writer recovery for shared coordination.
+- Fix native-authority bootstrap to drop vanished pending entries, name damaged
+  artifacts and preserve operational filesystem errors and their causes.
+
+- Let model-switch bootstrap recover from a torn root-marker proposal and from
+  unreadable sibling history, report another conversation's damaged recovery
+  data as non-retryable `native_switch_damaged` without a drain, and settle an
+  interrupted turn on a not-yet-imported legacy Pi journal instead of refusing
+  every later message. Keyless native wakes drop the sticky model's effort and
+  keep the thread's 1M context choice where the current model supports it.
+
+- Keep saved Web wake routes when model switching is off or history is ordinary;
+  keyless native turns with switching enabled inherit their current durable model,
+  not a different sticky selection or its context-window override. Avoid carrying
+  checkpoint suffix evidence again after exact composed compaction, and reject
+  consumed switch redeliveries before advancing another message's billing state.
+
+- Report damaged pending recovery data with repair guidance instead of asking
+  for another send, and reject invalid native mutation IDs through their
+  promised asynchronous APIs.
+
+- Let background Web wakes inherit the current saved model after a refused
+  switch. Report unreadable pending journals and completed handoffs clearly,
+  preserve cancellation during detached history loading, and distinguish
+  own-journal damage from absence without scanning unrelated journals.
+
+- Keep checkpoint handoffs reusable across successive model switches, retaining
+  earlier suffix evidence within the same frozen budget.
+
+- Fix durable turn settlement under small staging quotas, allow model switches
+  alongside unrelated active conversations after root bootstrap, and isolate
+  unreadable sibling history. Keep consumed-message guards while abandoned
+  switch billing states remain retained; later completed switches collect them.
+
+- Keep long conversations switchable between models: switch evidence streams
+  the journal and keeps only the work since its last compaction checkpoint plus
+  genuinely unresolved work, so journal size alone no longer refuses a switch.
+  Outcome-unknown tool calls always stay in the handoff ledger.
+
+- Let an explicit Web message for the source model cancel a stuck pending model
+  switch without a summary call, and remove the 32-message limit on retrying a
+  pending switch. Requesting a third model while a switch is pending is refused
+  as `handoff_pending`.
+
+- Keep durable turn admission independent of the number of stored
+  conversations: aggregate history and staging quotas are checked at commit and
+  retention, and the current-journal probe reads only the journal header.
+
+- Treat transiently missing native journals as absence and writer-owned creation
+  stages as busy, while preserving refusal of genuine owner damage.
+
+- Fix new durable conversations being blocked by unowned legacy damage,
+  and avoid false owner damage when obsolete switch state is removed.
+  Reject guarded projection data without journal host authority and native
+  replacements in deletion intents.
+
+- Freeze harness storage formats and deterministic journal identities. The first
+  durable turn after upgrading writes `mono-v2` journals, `.pending-turns` and
+  the new canonical history format. This is a one-way upgrade: older binaries
+  must not run against that root; rollback requires restoring a backup.
+
+- Avoid announcing provider failover when cancellation settles during history load.
+- Keep one file-operation list when reusing a split-turn compaction summary.
+- Treat empty Pi request-retry budgets as unset, retaining the default retries.
+
+- Disable both automatic request-retry layers with `piMaxRetries: 0`, while
+  preserving the default request retry budget.
+
+- Keep prepared dispatches valid while their abort signal and owner remain valid;
+  remove the five-minute expiry and require explicit unused-lease cleanup.
+
+- Identify interrupted Web questions by stored markers, not quoted notice text.
+
+- Refuse unreadable native catalogues without retiring or cold-replaying a turn.
+
+- Keep the previous compaction summary when splitting the first retained turn.
+
+- Fix prepared OpenCode session attribution after late binding and keep pending
+  model switches readable when earlier source account metadata is present.
+
+- Let prepared native requests use ordinary provider authentication on each call,
+  including OAuth refresh and credential persistence, without pinning accounts
+  or recording account provenance.
+
+- After an agent restart, the Web wake for an interrupted turn no longer
+  offers `AskUser`. It now includes the turn's interrupted-question and
+  unapplied-message notes, so the agent does not re-ask the question.
+
+- Store opt-in Web model-switch conversations in a single-journal format:
+  one current native journal, one durable handoff and the latest switch
+  receipt, with no epoch chain. A switch creates the target journal, publishes
+  the binding, handoff and receipt, then retires the outgoing journal. Every
+  model change, including capacity or lost-journal cases, needs a structured
+  summary; there is no summary-less model change.
+
+- Use the structured handoff for every opt-in Web model change, including a
+  return to an earlier model: outgoing summary, then the previously validated
+  summary plus later history, then incoming summary. Later history without a
+  validated summary is not a handoff. Native session state is no longer
+  reused across models. Keep opt-in prepared turns on the primary model only;
+  a failure there waits for the next message instead of starting a backup.
+  Ordinary fallback, billing caps and recovery are unchanged.
+
+- Keep a durable note for interrupted `AskUser` questions; answer in a new
+  message rather than reviving the old question or replaying its tool.
+
+- Report messages admitted during an interrupted turn but not confirmed as
+  applied, once on recovery. Do not replay them; resend them if still needed.
+
+- Fix one stray file (for example `.DS_Store`) or one damaged file in the Pi
+  session folder breaking every conversation. Unrelated entries are ignored and
+  never deleted; a damaged file of unknown ownership blocks only a conversation
+  whose own session file is missing, with `native_journal_unreadable`.
+
+- Fix one stray or damaged file in the conversation history folder, its
+  pending-turn or model-switch folders, or a legacy Pi session folder stopping
+  every conversation. Unrelated names are ignored. A damaged entry (empty,
+  malformed, wrong permissions or hard-linked) is kept, still counts toward
+  storage limits and is never deleted or evicted; only its own conversation is
+  refused (pending-turn and switch damage with `ERR_OWNED_FILE_DAMAGED`).
+  Cancelling a native turn now also stops its wait for a session lock held by
+  another process. A conversation history file that reads as truncated is set
+  aside unchanged as `<file>.damaged-<n>` instead of being overwritten, with a
+  `conversation_history_set_aside` warning.
+
+- Recover opt-in Web turns and native wakes whose current model session journal
+  was deleted, moved or lost in a partial restore. The turn rotates only that
+  current stretch through the durable cold path, answers once from the
+  conversation history, warns `degraded_native_context` once and continues warm
+  afterwards. A switch with a lost journal summarizes the conversation history
+  through the usual handoff, and losing the whole session folder recovers on
+  the next message. Unreadable journals refuse with
+  `native_journal_unreadable` and are preserved, never treated as missing.
+
+- Keep the current native journal when starting consecutive opt-in Web turns;
+  forget only the advisory warm mapping until owned preparation admits the turn.
+
+- Keep monotonic Pi dispatch evidence for tool admission and live input,
+  including prepared turns, early failures and thrown cleanup errors.
+  Stop ordinary retries and backups once Pi yields a live input, even if it is
+  later removed unconsumed; only never-yielded input transfers. Count a tool
+  reaching admission conservatively even when a hook blocks its execution.
+
+- Keep earlier conversation and bounded tool history in ordinary warm-turn
+  retries and backups. Stop failover with `detached_context_unavailable` if
+  canonical history cannot be loaded, and keep detached identities private
+  even when side effects settle during detachment. Configuring a fallback
+  consents to history sharing; prepared native dispatch stays primary-only.
+
+- With Web model switching on, record the pinned dispatch account on every Web
+  turn with a persisted message ID, from a new conversation's first message on.
+  These Web turns now use the primary model only, with no configured fallback
+  backup. Non-Web turns and no-ID turns on conversations without native
+  switching state keep fallbacks; no-ID wakes on native-bound conversations are
+  primary-only too.
+
+- Add an operator guide for Web durable model switching: enable and
+  restore-backup rollback steps, A1–A4 acceptance mapped to observable
+  evidence, warning and refusal semantics, and limits.
+
+- Show plain-language `degraded_native_context` warnings in Web activity, using
+  structured harness warnings only on the turn that recovered a missing journal.
+
+- Keep native evidence during manual-compaction stale-map cleanup; reserve
+  physical deletion for owned current-epoch or reset/retention operations.
+  Bypass switch preparation for conversation IDs over 512 characters without
+  changing the existing native host-contract rejection, including with opt-in OFF.
+
+- Add OFF-default Web-only durable model switching through
+  `runtime.session.modelSwitch.enabled`, requiring explicit
+  continuous sessions and durable Pi storage.
+  Persisted Web message IDs bound summary billing; pending messages never replay.
+  Every durable-history user upgrades one way: the first durable turn rewrites
+  canonical history as v3, with or without native Pi storage or model switching.
+  Stop all writers and back up canonical history and any native root first;
+  rollback requires restoring the consistent backup.
+  Keep no-ID turns on never-upgraded conversations on the original cold-replay
+  path; inherit the current model for declared no-ID turns on native conversations.
+  Existing native conversations retain their durable model after `runtime.model`
+  changes until a persisted Web message selects the new model.
+
+- Keep undeclared no-ID wakes on native conversations' durable current model,
+  not the base or a different sticky model, including declared no-ID requests.
+  The opt-in conversation gate
+  can return retryable `native_switch_busy` for detached same-conversation work.
+
+- Keep same-model wakes on the current native journal without switch billing;
+  refuse unsupported native dispatch fallbacks, require the Web source for
+  delivery identities, and cancel conversation-gate waiters without root-wide
+  blocking or nested self-waits.
+
+- Forward owned native preparation through configured APP wrappers and preserve
+  Web message identities across redelivery; keep guarded model changes without
+  persisted identities fail-closed.
+
+- Preserve ordinary cancellation continuity after switch preparation selects
+  fallback; skip unavailable outgoing producers without billing and distinguish
+  native capture capacity and retryable root contention from generic failures.
+
+- Add before-P2 host model-switch wiring with pending-message accounting,
+  pre-intent capacity fallback and real inherited-prefix compaction preflight
+  under the Web-only opt-in.
+
+- Fix prepared model-switch recovery after canonical publication and retain
+  committed results across producer cleanup failures; refuse later-message
+  budget overflow before further summary billing.
+
+- Add durable prepared model-switch producer orchestration with explicit-message
+  billing generations and ready-only incoming admission under the
+  Web-only opt-in.
+
+- Fix routed prepared start allowances and post-admission reserves; refuse
+  non-persisting credential refresh and keep evidence filesystem failures generic.
+
+- Fix prepared dispatch credential refresh through the original shared store with
+  same-account proof, expire forgotten idle resources, and reserve start time
+  before admission. Keep preparation inert; bound materialized chain capture.
+
+- Add reusable claim-and-permit-held host preparation, pinned no-tools producers,
+  complete read-only chain capture and persisted frozen-budget/artifact access.
+  Keep configured switching inert and existing configurations unchanged.
+
+- Keep direct and routed native preparation reusable after invalid binding,
+  normalize routed authentication failures, and settle cleanup after rejection.
+  Bound preparation age and pinned OAuth validity without changing default runs.
+
+- Add opt-in native dispatch preparation with resolved tool declarations, pinned
+  authentication and single-use resource leases, without enabling configured
+  model switching or changing existing session paths.
+
+- Keep provider-session preparation owned when reconciliation is unavailable,
+  allowing validation failures to be corrected before incoming admission.
+
+- Add claim-only provider preparation leases that retain one conversation owner
+  through native switch storage and transfer it once to ready turn admission.
+  Existing configured execution remains unchanged.
+
+- Keep inherited coverage through later native compactions without a projection,
+  reject malformed projection identities before admission, and allow detached
+  route resolvers to select their own native roots.
+
+- Fix guarded native projections to pin accepted handoff identity and the native
+  root, summarize inherited prefixes before retaining current context, and reject
+  uncoordinated terminal recovery before journal repair.
+
+- Add opt-in native current-handle authority and inherited request projections,
+  preserving predecessor evidence through composed compaction and refusing
+  cached-handoff budget overruns without re-summarizing. Existing configured
+  hosts remain unchanged; coordinated model switching is not enabled yet.
+
+- Stop retention maintenance if native cleanup cannot regain the root lock.
+  Keep failed deletion intents for recovery while pruning a later free victim
+  in the same commit when root ownership remains intact.
+
+- Isolate pre-publication native cleanup to the committing logical owner and
+  keep foreign cleanup failures diagnostic. Replan around busy retention
+  victims so free history can restore quotas, while markerless ready switches
+  remain fenced without blocking authority issuance or recovery.
+
+- Keep managed daily rollover live at capacity by reusing the held logical
+  claim for older inactive days. Preserve mixed-history LRU eviction order and
+  share capacity footprints within each root transaction without carrying stale
+  snapshots across unlocked native I/O. Keep legacy retirement-fence failures
+  unchanged on unmarked roots.
+- Resume interrupted same-owner daily deletion before reserving new history.
+  Avoid sibling-claim probes within quotas, refresh capacity footprints after
+  canonical changes, and finish already-started accepted native references
+  during owner-held recovery without initiating an unstarted model switch.
+
+- Harden managed-history retention and native cleanup: reuse canonical snapshots,
+  protect unreadable and same-owner victims, replan after unlocked native I/O,
+  and reuse durable cold reservations on retry. Charge only enrolled native
+  journals, preserve switched-away references and unknown header copies, verify
+  torn bytes under writer ownership, and normalize runtime/bridge sessions roots.
+
+- Add owner-held canonical native history, strict managed-root authority and
+  ready-only native model-switch publication with measured retained-evidence
+  quotas. Keep pending switches host-only. Publish exact cold replacement epochs
+  without freezing rejected tails, and make reset/retention cleanup restartable
+  through native journals, handoffs and crash storage. Keep unrelated owners progressing and reserve
+  capacity before mutation, including when native victims are busy. Keep
+  configured switching behind the Web-only opt-in; older writers
+  must stay stopped and rollback requires restoring consistent backups.
+
+- Fix managed switch-storage owner validation and transactional pending checks,
+  preserve switching owners during logical reset and inactive fence cleanup, and
+  avoid charging published state/fence bytes twice. Report physical history bytes
+  separately from provisional reservations and retain Windows mode exemptions.
+
+- Account model-switch storage and durable capacity plans in managed-history
+  quotas under real conversation ownership, protect pending switch evidence from
+  ordinary mutation/retention, and report long conversation IDs as unsupported
+  switch storage without changing their existing cold replay behavior. Keep host
+  switching and canonical/native migration disabled.
+- Fix guarded retirement authority forwarding through chained runtimes and
+  fail closed when pinned model-switch storage disappears. Reclaim superseded
+  switch states after durable replacement and reconcile provisional reservations
+  without charging accepted artifact capacity twice.
+- Prepare bounded, ownership-checked model-switch payloads, immutable handoff
+  artifacts and durable summary-attempt admission without enabling host switching
+  or migrating managed histories.
+- Keep cancellation context separate from host authority in native deletion
+  overloads and forward explicit guarded retirement options. Keep default
+  session payloads and host switching policy unchanged.
+
+- Require a host-authorized guarded native header before opt-in v3 writes.
+  Reject old native readers and deletion before torn-tail repair on guarded
+  journals; preserve record bytes, paths and standalone defaults. Canonicalize
+  authority bytes. Validate explicit C/D deletion dispositions on all journals and prevent
+  memory metadata from forging or demoting header authority. Fail older catalogue
+  listing and legacy import closed for roots containing a guarded journal.
+  Require explicit host C/D authority for guarded deletion. Keep host switching
+  disabled and require stopped older binaries and backup restoration for rollback.
+
+- Add opt-in native evidence projection, structured handoff proposals,
+  explicit context budgets, no-tools summary production and preserving session
+  detachment. Keep default session payloads and host switching policy unchanged;
+  native switch reuse requires positive provider/API/account provenance. Require
+  stopping older writers before opting into v3 writes.
+
+- Wire owner-held, storage-only recovery for coordinated native host turns and
+  manual compaction. Durably admit canonical inputs before dispatch/steering,
+  preserve cancellation and detached-attempt claims, and commit whole matched
+  native turns once through bounded canonical v3 receipts. Read v1/v2 histories
+  without migrating on load. Report interrupted work and wait for a new message;
+  recovery never calls a model, tool, summary or continuation. Bound and drain
+  inactive pending owners without deleting unresolved evidence. Keep private
+  wake bodies, delivery keys and memory-only owner text out of pending inputs;
+  reset and authorized retention clear matching generations. Older binaries
+  must not share upgraded roots; rollback restores a pre-upgrade backup. Keep
+  host enrichment, silent-completion annotations and capture times on live
+  commits. Require explicit runtime ownership before enabling reconciliation,
+  preserve pre-dispatch failure categories and rotate overridden native success
+  to a cold epoch. Publish pending inputs atomically and let poisoned owners
+  remain protected without blocking unrelated draining or reset. Clear torn
+  pending input at known logical reset coordinates and report the count of
+  unattributable remnants instead of silently claiming complete cleanup.
+
+- Add explicitly opted-in native turn bindings, minimal final-result seals and
+  indexed evidence matching for host reconciliation, without changing legacy
+  host history policy. Share import/reopen interruption accounting so suspended
+  and last-closed operations retain accurate evidence without replay. Preserve
+  opted-in failed/cancelled/limited native turns without destructive rollback;
+  expose storage-only reconciliation through owned runtime wrappers and require
+  protected host acknowledgement before routed stateless detachment. Canonical
+  dirty-turn adoption uses the owner-held host transaction described above;
+  custom runtime owners opt in through an explicit reconciliation capability. Public
+  `createConfiguredAgentRuntime` now forwards optional legacy `recoverSession`
+  under its ownership lease, enabling existing receipt recovery for embedders;
+  private per-run memory completion runtimes expose neither recovery seam.
+
+- Add protected host and persistent-subagent native turn descriptors; bind journal
+  ownership append-only as the foundation for the opted-in recovery above.
+  Fsync native admission/outcome boundaries before effects, fail terminally on
+  poisoned storage, project idempotent interruption evidence without tool replay,
+  and replay exact durable compaction checkpoints without new summary calls.
+  Exclude aborted draft calls from provider repair pairs, account interruptions
+  per operation and suspended work without resuming it, preserve validation/host
+  contract classification, and cache repair projection for long sessions.
+  Preserve every file-fsync effect barrier while avoiding repeated directory
+  fsyncs, immutable-envelope reads and unchanged-journal scans; invalidate cached
+  identity/state on mutations and roll resumed provider suspensions back as
+  unreceipted failures.
+
 - Fix managed runtime reuse for flat npm installs with shared hoisted
   dependencies, so subsequent starts use the warm verification path.
 
@@ -45,6 +444,20 @@
 
 - Keep answer text before reply-presentation tools in the final reply across
   channels, without repeating it in the web console’s settled Activity.
+
+- Fix provider readiness probes accepting premature or context-limited output
+  as successful.
+
+- Keep Pi-native execution on Pi 1.x through the mono-agent harness, with
+  versioned native journals and distinct logical turns/execution operations.
+  Import idle legacy Pi main-branch context; reopen still aborts old operations
+  and model-change retirement remains destructive. Support large native records
+  and journals with kernel-backed writer exclusion and safe retired-lock cleanup.
+  Resume interrupted idle legacy imports without deleting published context
+  when source archival fails. Adopt owned legacy 0755 roots safely, retain only
+  selected v3 parent context, and retire matching archived evidence. Reclaim crashed
+  native creations and warn once when legacy root access is tightened; fail closed
+  rather than salvage stale legacy evidence behind unreadable native state.
 
 - Keep private memory judging bounded with concurrent, deduplicated calls,
   transient-only retries and numeric judging progress. Refuse unsafe Pi auth

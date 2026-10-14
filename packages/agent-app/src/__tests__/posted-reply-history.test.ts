@@ -13,6 +13,7 @@ import {
   createAgentHarness,
   createAgentResponder,
   createInMemoryHistoryStore,
+  createDurableHistoryStore,
   type ConversationHistoryStore,
   type HistoryMessage,
 } from "@mono-agent/agent-harness";
@@ -593,14 +594,78 @@ it("forwards provider-session binding capability arguments and returned ownershi
     history: [], abort: async () => undefined, prepareCommit: vi.fn() };
   const begin = vi.fn(async () => turn);
   const original: ConversationHistoryStore = { load: async () => [], append: async () => undefined,
-    providerSessionModelBinding: "v1", providerSessionRecovery: "v1", providerSessionRetirement: "fail-closed", beginProviderSessionTurn: begin };
+    providerSessionRetirement: "fail-closed", readProviderSessionBinding: async () => ({ modelKey: "faux:override", revision: 0 }), beginProviderSessionTurn: begin };
   const wrap = createSlackPostedReplyHistory({ maxMessages: 10 }).wrapHistoryStore;
   const wrapped = wrap(original);
-  const binding = { modelKey: "faux:override" };
-  expect(wrapped.providerSessionModelBinding).toBe("v1");
-  expect(wrapped.providerSessionRecovery).toBe("v1");
+  const binding = { modelKey: "faux:override" }, signal = new AbortController().signal;
+  expect(wrapped.readProviderSessionBinding).toBeTypeOf("function");
+  expect(wrapped.readProviderSessionBinding).toBeTypeOf("function");
   expect(wrapped.providerSessionRetirement).toBe("fail-closed");
-  expect(await wrapped.beginProviderSessionTurn!("c", "run", binding)).toBe(turn);
-  expect(begin).toHaveBeenCalledWith("c", "run", binding);
-  expect(wrap({ load: original.load, append: original.append }).providerSessionModelBinding).toBeUndefined();
+  expect(await wrapped.beginProviderSessionTurn!("c", "run", binding, signal)).toBe(turn);
+  expect(begin).toHaveBeenCalledWith("c", "run", binding, signal);
+  expect(wrap({ load: original.load, append: original.append }).readProviderSessionBinding).toBeUndefined();
+});
+
+it("posted-reply store returns all reconciliation capabilities and bound recovery/drain methods", async () => {
+  const recovery = { status: "interrupted" as const, turnId: "fictional-turn", outcome: "interrupted" as const };
+  const draining = { settled: 1, busy: 0, unresolved: 1, remaining: false };
+  const store: ConversationHistoryStore = { providerSessionReconciliation: "v1", async load() { return []; }, async append() {},
+    async recoverProviderSessionTurn(id) { expect(this).toBe(store); expect(id).toBe("fictional-owner"); return recovery; },
+    async drainPendingProviderSessionTurns(options) { expect(this).toBe(store); expect(options).toEqual({ limit: 3 }); return draining; } };
+  const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+  expect(wrapped.providerSessionReconciliation).toBe("v1");
+  expect(await wrapped.recoverProviderSessionTurn!("fictional-owner")).toBe(recovery);
+  expect(await wrapped.drainPendingProviderSessionTurns!({ limit: 3 })).toBe(draining);
+});
+
+it("forwards real owned preparation through the posted-reply store with its receiver and abort intact", async () => {
+  const root = await mkdtemp(join(tmpdir(), "posted-native-preparation-")); tempDirs.push(root);
+  const store = createDurableHistoryStore({ root: join(root, "history") });
+  const begin = vi.spyOn(store, "beginProviderSessionPreparation"), signal = new AbortController().signal;
+  const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+  expect(wrapped.beginProviderSessionPreparation).toBeTypeOf("function");
+  const owner = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-preparation", signal);
+  expect(begin).toHaveBeenCalledWith("fictional-owner", "fictional-preparation", signal);
+  try { expect((await owner.read()).source.status).toBe("unsupported"); await owner.assertOwned(); }
+  finally { await owner.abort(); }
+  const next = await wrapped.beginProviderSessionPreparation!("fictional-owner", "fictional-next-preparation"); await next.abort();
+  const unsupported = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore({ load: async () => [], append: async () => {} });
+  expect(unsupported.beginProviderSessionPreparation).toBeUndefined(); expect(unsupported.beginProviderSessionPreparation).toBeUndefined();
+});
+
+it.each(["exclusive", "provider"])("posted-reply %s acquisition cancels through the app wrapper while its predecessor is held", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "posted-cancel-acquisition-")); tempDirs.push(root);
+  const identityPath = join(root, "IDENTITY.md"); await writeFile(identityPath, "Fictional instructions");
+  const store = createDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async () => {} });
+  const id = "fictional-wrapped-owner", holder = await store.beginProviderSessionPreparation(id, "fictional-holder"), controller = new AbortController();
+  const begin = mode === "exclusive" ? vi.spyOn(store.contextImport!, "beginExclusiveTurn") : vi.spyOn(store, "beginProviderSessionTurn");
+  const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+  const runtime = observingRuntime(), harness = createAgentHarness({ identityPath, model: MODEL, runtime: runtime.runtime, historyStore: wrapped,
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true }, ...(mode === "provider" ? { piSessionsRoot: join(root, "native") } : {}) });
+  let settled = false;
+  const pending = harness.run({ conversationId: id, userMessage: "Fictional cancelled input", abortSignal: controller.signal }).then((result) => { settled = true; return result; });
+  try {
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce()); controller.abort();
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+    expect((await pending).failure?.kind).toBe("cancelled"); expect(begin.mock.calls[0]!.at(-1)).toBe(controller.signal);
+    expect(runtime.calls).toHaveLength(0); expect(await store.load(id)).toEqual([]); await holder.assertOwned();
+  } finally { await holder.abort(); await pending; await harness.dispose?.(); }
+});
+
+it.each([false, true])("delivery-load failure releases the exclusive owner and preserves the error (abort rejects=%s)", async (abortRejects) => {
+  const root = await mkdtemp(join(tmpdir(), "posted-exclusive-unwind-")); tempDirs.push(root);
+  const store = createDurableHistoryStore({ root: join(root, "history") }), failure = new Error("Fictional delivery read failure");
+  const load = store.load.bind(store), begin = store.contextImport!.beginExclusiveTurn.bind(store.contextImport);
+  let aborted = 0;
+  vi.spyOn(store, "load").mockImplementation(async (id) => { if (id === PHYSICAL) throw failure; return await load(id); });
+  vi.spyOn(store.contextImport!, "beginExclusiveTurn").mockImplementation(async (...args) => {
+    const turn = await begin(...args), abort = turn.abort.bind(turn);
+    turn.abort = async () => { aborted++; await abort(); if (abortRejects) throw new Error("Fictional cleanup failure"); };
+    return turn;
+  });
+  const bridge = createSlackPostedReplyHistory({ maxMessages: 64 }), wrapped = bridge.wrapHistoryStore(store);
+  const responder = bridge.wrapResponder({ respond: async (request) => { await wrapped.contextImport!.beginExclusiveTurn(request.conversationId); return { text: "Must not execute" }; } });
+  await expect(responder.respond(slackReplyRequest(), noopStream())).rejects.toBe(failure);
+  expect(aborted).toBe(1); expect((await store.stats()).activePreparedAppends).toBe(0);
+  const successor = await begin(PRODUCER); await successor.abort();
 });

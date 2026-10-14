@@ -35,7 +35,15 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const contractsUrl = new URL("../../../agent-contracts/dist/index.js", import.meta.url).href;
   const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
     .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl))
-    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href));
+    .replace('"@mono-agent/harness/owned-fs.js"', JSON.stringify(new URL("../../../harness/dist/owned-fs.js", import.meta.url).href))
+    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href))
+    .replace('"./durable-turn-payloads.js"', JSON.stringify(new URL("../../dist/durable-turn-payloads.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-settlement.js"', JSON.stringify(new URL("../../dist/durable-turn-settlement.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-history.js"', JSON.stringify(new URL("../../dist/durable-turn-history.js", import.meta.url).href))
+    .replaceAll('"./durable-turn-contract.js"', JSON.stringify(new URL("../../dist/durable-turn-contract.js", import.meta.url).href))
+    .replaceAll('"./native-history-root.js"', JSON.stringify(new URL("../../dist/native-history-root.js", import.meta.url).href))
+    .replaceAll('"./model-switch-payloads.js"', JSON.stringify(new URL("../../dist/model-switch-payloads.js", import.meta.url).href))
+    .replaceAll('"./durable-model-switch-contract.js"', JSON.stringify(new URL("../../dist/durable-model-switch-contract.js", import.meta.url).href));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",
@@ -46,6 +54,9 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
       join(dir, "history-process-liveness.js"),
       transpileModule(livenessSource, { compilerOptions }).outputText,
     ),
+    writeFile(join(dir, "process-incarnation.js"), transpileModule(
+      await readFile(new URL("../process-incarnation.ts", import.meta.url), "utf8"), { compilerOptions },
+    ).outputText),
     writeFile(join(dir, "package.json"), '{"type":"module"}\n'),
   ]);
   return compiledPath;
@@ -561,7 +572,7 @@ describe("DurableConversationHistoryStore", () => {
     const filePath = join(root, files[0] as string);
     expect((await lstat(filePath)).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(filePath, "utf8"))).toMatchObject({
-      version: 2,
+      version: 3,
       conversationId: "slack:D123:1700.1#2026-07-14",
       providerSession: { epoch: expect.stringMatching(/^[a-f0-9]{64}$/u) },
     });
@@ -572,6 +583,8 @@ describe("DurableConversationHistoryStore", () => {
     }
   });
 
+  // Eighty fsync-backed writes contend with the package's crash fixtures. This
+  // tests serialization/retention, not a filesystem throughput guarantee.
   it("serializes concurrent appends and retains 64 messages independently of runtime turn limits", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
@@ -593,9 +606,9 @@ describe("DurableConversationHistoryStore", () => {
     await expect(createDurableHistoryStore({ root, maxMessages: 0 }).load("conversation"))
       .resolves.toEqual([]);
     expect((await readdir(root)).some((name) => name.endsWith(".tmp"))).toBe(false);
-  }, 15_000);
+  }, 30_000);
 
-  it("recovers cold from a stable truncated record and replaces it on the next append", async () => {
+  it("recovers cold from a stable truncated record, setting its bytes aside instead of overwriting them", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
     const store = createDurableHistoryStore({ root });
@@ -604,12 +617,16 @@ describe("DurableConversationHistoryStore", () => {
     const original = await readHistoryRecord(root, "conversation");
     const originalEpoch = original.providerSession?.epoch as string;
 
-    await writeFile(recordPath, '{"version":2,"conversationId":"conversation","messages":[');
+    const truncated = '{"version":2,"conversationId":"conversation","messages":[';
+    await writeFile(recordPath, truncated);
 
     const restarted = createDurableHistoryStore({ root });
     await expect(restarted.load("conversation")).resolves.toEqual([]);
+    expect(await readFile(recordPath, "utf8")).toBe(truncated); // load stays read-only
     const coldTurn = await restarted.beginProviderSessionTurn("conversation", "run-after-truncation");
     expect(coldTurn.providerSessionId).not.toBe(originalEpoch);
+    expect(coldTurn.historySetAside).toBe(true);
+    expect(await readFile(`${recordPath}.damaged-1`, "utf8")).toBe(truncated);
     const prepared = await coldTurn.prepareCommit(
       [{ role: "user", content: "fresh after truncation" }],
       { providerSessionSynced: true },
@@ -620,11 +637,21 @@ describe("DurableConversationHistoryStore", () => {
       .resolves.toEqual([{ role: "user", content: "fresh after truncation" }]);
     const recoveredRecord = JSON.parse(await readFile(recordPath, "utf8")) as TestHistoryRecord;
     expect(recoveredRecord).toMatchObject({
-      version: 2,
+      version: 3,
       conversationId: "conversation",
       providerSession: { revision: 1 },
     });
     expect(recoveredRecord.providerSession?.epoch).not.toBe(originalEpoch);
+    const later = await restarted.beginProviderSessionTurn("conversation", "run-later");
+    expect(later.historySetAside).toBeUndefined(); await (await later.prepareCommit([], { providerSessionSynced: true })).commit();
+    // A plain append also sets a newly truncated record aside, never replacing it.
+    await writeFile(recordPath, truncated);
+    const plain = createDurableHistoryStore({ root });
+    await plain.append("conversation", [{ role: "user", content: "after second truncation" }]);
+    expect(await readFile(`${recordPath}.damaged-1`, "utf8")).toBe(truncated);
+    expect(await readFile(`${recordPath}.damaged-2`, "utf8")).toBe(truncated);
+    await expect(plain.load("conversation")).resolves.toEqual([{ role: "user", content: "after second truncation" }]);
+    expect((await plain.stats()).conversations).toBe(1);
   });
 
   it("rotates missing, legacy V1, and dirty provider epochs before use", async () => {
@@ -960,7 +987,7 @@ describe("DurableConversationHistoryStore", () => {
 
     expect(await dirtyFenceKeys(root)).toEqual([]);
     expect(await readHistoryRecord(root, "conversation")).toMatchObject({
-      version: 2,
+      version: 3,
       messages: [{ content: "kept canonical" }, { content: "cleanly committed" }],
       providerSession: { revision: 1 },
     });
@@ -1118,10 +1145,10 @@ describe("DurableConversationHistoryStore", () => {
     const initialSqliteLocks = (await readdir(locksRoot))
       .filter((name) => name.endsWith(".sqlite"))
       .sort();
-    expect(initialSqliteLocks).toHaveLength(33);
+    expect(initialSqliteLocks).toHaveLength(17);
     expect(initialSqliteLocks).toContain("root.sqlite");
     expect(initialSqliteLocks.filter((name) => /^conversation-shard-[a-f0-9]{2}\.sqlite$/u.test(name)))
-      .toHaveLength(16);
+      .toHaveLength(0);
     expect(initialSqliteLocks.filter((name) => /^logical-session-shard-[a-f0-9]{2}\.sqlite$/u.test(name)))
       .toHaveLength(16);
     expect(initialSqliteLocks.some((name) => /^[a-f0-9]{64}\.sqlite$/u.test(name))).toBe(false);
@@ -1323,9 +1350,11 @@ describe("DurableConversationHistoryStore", () => {
       await writeFile(workerPath, [
         'import { createDurableHistoryStore } from "./durable-history.mjs";',
         'import { DatabaseSync } from "node:sqlite";',
+        'import { writeFile } from "node:fs/promises";',
         'import { join } from "node:path";',
         'const [root, id, shard, legacy] = process.argv.slice(2);',
         'const turn = await createDurableHistoryStore({ root }).beginProviderSessionTurn(id, "held");',
+        'if (legacy === "true") await writeFile(join(root, ".locks", `conversation-shard-${shard}.sqlite`), "", { mode: 0o600 });',
         'const db = legacy === "true" ? new DatabaseSync(join(root, ".locks", `conversation-shard-${shard}.sqlite`)) : undefined;',
         'db?.exec("PRAGMA journal_mode=MEMORY; BEGIN IMMEDIATE");',
         'process.stdout.write(`HELD:${turn.providerSessionId}\\n`);',
@@ -1697,8 +1726,7 @@ describe("DurableConversationHistoryStore", () => {
     await chmod(join(root, fileName as string), 0o644);
     await expect(store.load("conversation")).rejects.toThrow(/0600/iu);
     await chmod(join(root, fileName), 0o600);
-    const conversationLock = (await readdir(join(root, ".locks")))
-      .find((name) => /^conversation-shard-[a-f0-9]{2}\.sqlite$/u.test(name)) as string;
+    const conversationLock = "root.sqlite";
     await chmod(join(root, ".locks", conversationLock), 0o644);
     await expect(store.append("conversation", [{ role: "assistant", content: "unsafe lock" }]))
       .rejects.toThrow(/0600/iu);
@@ -2016,7 +2044,7 @@ it("commits recovered continuity at the same epoch and next revision without rec
   const root = await tempDir();
   const retired: string[] = [];
   const store = createDurableHistoryStore({ root, retireProviderSession: async (id) => { retired.push(id); } });
-  expect(store.providerSessionRecovery).toBe("v1");
+  expect(store.readProviderSessionBinding).toBeTypeOf("function");
   const first = await store.beginProviderSessionTurn("recovered", "run-one", { modelKey: "faux:fixture" });
   await (await first.prepareCommit([{ role: "user", content: "cancelled ask" }, { role: "assistant", content: "continuity account" }], { providerSessionSynced: true })).commit();
   const next = await store.beginProviderSessionTurn("recovered", "run-two", { modelKey: "faux:fixture" });

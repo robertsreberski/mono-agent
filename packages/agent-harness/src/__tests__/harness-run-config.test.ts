@@ -373,3 +373,12 @@ describe("AgentHarness run_config synthetic event", () => {
     expect(runConfig).not.toHaveProperty("effort");
   });
 });
+
+it("strips detached-turn acknowledgement authority supplied by static or request runtime extensions", async () => {
+  const fake = createFakeRuntime(); let invoked = false;
+  const injection = { maxTokens: 64, onSessionTurnDetached: async () => { invoked = true; } };
+  const harness = createAgentHarness({ identityPath: await identityFixture(), runtime: fake.runtime, model,
+    runtimeOptions: injection, runtimeOptionsForRequest: () => ({ runtimeOptions: injection }) });
+  const result = await harness.run({ conversationId: "fictional-protected-hook", userMessage: "Fictional request.", abortSignal: new AbortController().signal });
+  expect(result.failure).toBeUndefined(); expect(result.text).toBe("ok"); expect(fake.calls).toHaveLength(1); expect(fake.calls[0]!.options.onSessionTurnDetached).toBeUndefined(); expect(invoked).toBe(false);
+});

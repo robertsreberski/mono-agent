@@ -89,3 +89,13 @@ failover.
 - [Local providers](/runtime/local-providers/)
 - [Sessions and concurrency](/runtime/sessions-concurrency/)
 - [Config blueprint](/config/blueprint/)
+
+## Web model changes are not fallback retries
+
+`runtime.session.modelSwitch.enabled` is OFF by default. Web-only durable model
+changes require continuous sessions and `providers.piNative.piSessionsRoot`.
+Stop all older writers and back up consistent host/native roots first;
+rollback restores those backups. Only persisted Web inbound message IDs authorize
+switch/summary work; pending messages are not replayed. This does not enable native
+switching on fallback routes, TUI/ACP requests or subagents. See the session-switch
+section in the runtime sessions documentation for limits and billing behavior.

@@ -1,3 +1,5 @@
+import type { ManagedProviderSessionPreparation } from "./durable-history.js";
+import type { PendingTurnInput, PendingTurnCandidate, PendingTurnPayload } from "./durable-turn-contract.js";
 import type {
   AgentLiveInputOffer,
   AgentLiveInputOwnership,
@@ -20,6 +22,8 @@ import type {
   MonoRuntimeLike,
   RuntimeModelReference,
   RuntimeRunOptions,
+  RuntimeSessionTurnDescriptor,
+  RuntimeSessionTurnReconciliationResult,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 
@@ -43,18 +47,53 @@ export interface ProviderSessionTurnCommitOptions {
   readonly providerSessionSynced: boolean;
 }
 
+/** Storage-only native inspection request. The configured owner supplies its root/model. */
+export interface ConversationHistoryTurnInspection {
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  readonly purpose: "execution" | "compaction";
+  readonly modelKey: string;
+  readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
+}
+export interface ConversationHistoryTurnRecovery {
+  readonly status: "clean" | "recovered" | "interrupted";
+  readonly turnId?: string;
+  readonly outcome?: "completed" | "failed" | "cancelled" | "interrupted";
+  readonly providerSessionId?: string;
+  readonly providerSessionRevision?: number;
+}
+export interface ConversationHistoryTurnReconciliation {
+  /** Native fsync/matching proof populated by prepareCommit; canonical commit still required. */
+  readonly settlement?: { readonly nativeReusable: boolean } | undefined;
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  /** Immutable generation durable before dispatch/native live admission. */
+  admit(input: PendingTurnInput): Promise<void>;
+  claim(disposition: PendingTurnPayload["disposition"], candidate?: PendingTurnCandidate): Promise<void>;
+}
+export type ConversationHistoryTurnInspector = (request: ConversationHistoryTurnInspection) => Promise<RuntimeSessionTurnReconciliationResult>;
+
 export interface ProviderSessionTurnBinding {
   readonly modelKey: string;
   /** Manual compaction only: reject an existing different binding without retiring it. */
   readonly skipModelRotation?: boolean;
+  /** Host dispatch selected the original path and cannot borrow native authority. */
+  readonly unpreparedNativeDispatch?: true;
+  readonly reconciliation?: {
+    readonly ownerKey: string;
+    readonly purpose: "execution" | "compaction";
+    readonly initial?: { readonly persistText: string; readonly timestamp: string; readonly senderLabel?: string };
+  };
 }
 
 /** A conversation-exclusive provider turn owned by durable history state. */
 export interface ConversationHistoryProviderSessionTurn {
+  readonly reconciliation?: ConversationHistoryTurnReconciliation;
+  readonly recovery?: ConversationHistoryTurnRecovery;
   readonly modelKey?: string;
   readonly previousModelKey?: string;
   /** A pre-model-binding provider record was replaced without guessing its model owner. */
   readonly previousModelWasUnbound?: boolean;
+  /** The unreadable canonical record was set aside (never deleted); this turn starts from empty history. */
+  readonly historySetAside?: true;
   /** Epoch-derived, filesystem-safe provider session id for this turn. */
   readonly providerSessionId: string;
   /** Durable transcript revision present before this turn starts. */
@@ -88,7 +127,8 @@ export interface ConversationHistoryContextImport {
   readonly version: 1;
   readonly maxTextBytes: number;
   readonly providerState: "absent" | "retire-fail-closed";
-  beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn>;
+  /** Cancel ownership acquisition only; an already-started mutation finishes. */
+  beginExclusiveTurn(conversationId: string, signal?: AbortSignal): Promise<ConversationHistoryExclusiveTurn>;
   prepareImport(
     conversationId: string,
     request: AgentContextImportRequest & { readonly timestamp: string },
@@ -98,11 +138,27 @@ export interface ConversationHistoryContextImport {
   }>;
 }
 
+export interface ConversationHistoryTurnDrainOptions {
+  /** Per-pass inactive physical-owner bound; defaults to and never exceeds 32. */
+  readonly limit?: number;
+  readonly cursor?: { readonly mtimeMs: number; readonly conversationKey: string };
+}
+export interface ConversationHistoryTurnDrainResult {
+  readonly settled: number;
+  readonly busy: number;
+  readonly unresolved: number;
+  readonly remaining: boolean;
+  readonly cursor?: { readonly mtimeMs: number; readonly conversationKey: string };
+}
+
 export interface ConversationHistoryStore {
-  /** Checks, persists and retires requested-primary model bindings. */
-  readonly providerSessionModelBinding?: "v1";
-  /** Accepts synced terminal continuity without changing the durable record shape. */
-  readonly providerSessionRecovery?: "v1";
+  /** Positive owned preparation contract; signal cancels acquisition only.
+   * Does not acknowledge stopped older writers. */
+  beginProviderSessionPreparation?(conversationId: string, runId: string, signal?: AbortSignal): Promise<ManagedProviderSessionPreparation>;
+  /** Opted-in owner-held, storage-only native turn settlement. load() stays read-only. */
+  readonly providerSessionReconciliation?: "v1" | undefined;
+  recoverProviderSessionTurn?(conversationId: string): Promise<ConversationHistoryTurnRecovery>;
+  drainPendingProviderSessionTurns?(options?: ConversationHistoryTurnDrainOptions): Promise<ConversationHistoryTurnDrainResult>;
   /**
    * Present only when epoch rotation/retention can fail closed while removing
    * provider-owned durable transcripts that canonical history supersedes.
@@ -143,13 +199,16 @@ export interface ConversationHistoryStore {
     conversationId: string,
     runId: string,
     binding?: ProviderSessionTurnBinding,
+    /** Acquisition only; publication and cleanup are not interrupted. */
+    signal?: AbortSignal,
   ): Promise<ConversationHistoryProviderSessionTurn>;
   /**
    * Optional read-only view of the provider-session model binding, without
-   * taking the turn lock or marking the session dirty. Manual compaction uses
+   * taking the turn lock or marking the session dirty. `native` is a routing
+   * hint only; dispatch still requires an owned current-journal proof. Manual compaction uses
    * it to decline a conversation bound to another model instead of rotating it.
    */
-  readProviderSessionBinding?(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number } | undefined>;
+  readProviderSessionBinding?(conversationId: string): Promise<{ readonly modelKey?: string; readonly revision: number; readonly native?: true } | undefined>;
 }
 
 export interface InMemoryHistoryStoreOptions {
@@ -477,7 +536,7 @@ export interface AgentHarnessOptions {
    * contract remain in-memory. Unset = in-memory only.
    */
   readonly piSessionsRoot?: string;
-  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">;
+  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
@@ -580,7 +639,7 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // piSessionsRoot are accepted structurally for compatibility but stripped
   // and replaced by the harness's coordinated decision.
   readonly runtimeOptions?: Omit<
-    Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>,
+    Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink" | "detachedContext">>,
     "effort"
   > & {
     /**

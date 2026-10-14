@@ -17,10 +17,15 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 ## Responsibility
 
+User Stop also marks a running `AskUser` question as interrupted; answer in a new message.
+
 - Discover local agents through the shared trace-source registry and probe their
   loopback operator endpoints.
 - Publish a separate sanitized ACP import contract with canonical agent-owned
   workspace and compatibility metadata, never operator credentials or paths.
+- Render the host's `degraded_native_context` runtime warning in the existing
+  conversation activity-note presentation; leave every other runtime warning
+  store-only rather than displaying raw provider diagnostics.
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.
@@ -69,6 +74,7 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   routes and honoring `?full=1` as the unshaped escape hatch.
 - Offer plain-text follow-ups to a capable active provider run, persist their
   pending/applied/queued state, and promote safe fallbacks into normal turns.
+- Keep interrupted `AskUser` questions as a plain note; replies start a new turn, not the lost callback.
 - Render a running agent's structured `AskUser` interaction by exact
   `interactionId`, including terminal cross-destination reconciliation, and
   proxy validated answer submission back to that same model run.

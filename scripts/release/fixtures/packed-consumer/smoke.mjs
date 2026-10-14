@@ -56,6 +56,10 @@ if (packageNames.includes("@mono-agent/agent-runtime")) {
   );
 }
 
+if (packageNames.includes("@mono-agent/harness")) {
+  await verifyHarnessRoundTrip();
+}
+
 if (packageNames.includes("@mono-agent/observability")) {
   await verifyLocalRecorderRoundTrip();
 }
@@ -323,4 +327,24 @@ async function runCapturedCli(command, args, cwd) {
     child.on("error", (error) => resolve({ status: 1, stdout, stderr: `${stderr}${error.message}` }));
     child.on("close", (status) => resolve({ status: status ?? 1, stdout, stderr }));
   });
+}
+
+async function verifyHarnessRoundTrip() {
+  const { JsonlSessionRepo, projectContext } = await import("@mono-agent/harness");
+  const sessionsRoot = await mkdtemp(join(tmpdir(), "harness-packed-"));
+  const repo = new JsonlSessionRepo({ sessionsRoot });
+  try {
+    const session = await repo.create({ id: "packed-session" });
+    await session.beginTurn("synthetic:packed");
+    await session.openOperation("packed-operation", { model: { provider: "faux", id: "fictional-model" } });
+    await session.appendMessage({ role: "user", content: "Fictional packed request.", timestamp: 1 });
+    await session.closeOperation("packed-operation", "completed");
+    await session.endTurn("synthetic:packed", "completed");
+    await session.sync(); await session.close();
+    const reopened = await repo.open((await repo.list())[0]);
+    const context = projectContext(await reopened.getEntries());
+    if (context.messages.length !== 1 || context.messages[0].content !== "Fictional packed request."
+      || reopened.metadata.journalId !== session.metadata.journalId) throw new Error("Packed harness round trip failed.");
+    await reopened.close();
+  } finally { await repo.close(); await rm(sessionsRoot, { recursive: true, force: true }); }
 }

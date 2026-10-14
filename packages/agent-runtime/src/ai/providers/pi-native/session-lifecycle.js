@@ -1,3 +1,5 @@
+import { validateNativeSessionAuthority, assertNativeSessionAccess, assertNativeSessionHeader, assertNativeProjectionBinding } from "./session-authority.js";
+import { inspectCurrentEvidence, inspectCurrentLifecycle } from "@mono-agent/harness";
 // @ts-check
 // Session lifecycle for the pi-native bridge.
 //
@@ -10,15 +12,16 @@
 // createSessionLiveness primitives so the await-free spans are enforced by
 // construction rather than by inline sequencing.
 
-import { JsonlSessionRepo, MemorySessionRepo, laneConfig, laneState, operationMeta, operationResult, operationState } from "@earendil-works/pi-agent-core";
+import { JsonlSessionRepo, MemorySessionRepo } from "@mono-agent/harness/session-store.js";
+import { JournalStorageError, isJournalStorageError } from "@mono-agent/harness";
 import { validRecoveryProjection } from "./terminal-recovery.js";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createHash } from "node:crypto";
-import { access, open, readdir, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { access, open } from "node:fs/promises";
+import { dirname } from "node:path";
+import { normalizeDurableSessionsRoot } from "./sessions-root.js";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
-import { buildPiSessionContext, createPiSessionAdapter, PI_CONTEXT } from "./harness-adapter.js";
+import { projectContext, createPiSessionAdapter, HARNESS_CONTEXT } from "./harness-adapter.js";
 
 async function syncPath(path) {
   const handle = await open(path, "r");
@@ -36,11 +39,9 @@ async function syncDurableTranscript(entry) {
   if (typeof path !== "string" || !path) {
     throw new Error("Durable Pi session metadata is missing its JSONL path");
   }
-  // pi-core appends through short-lived file descriptors. Re-open the live
-  // JSONL and fsync it, then fsync its containing directory so both transcript
-  // bytes and the directory entry are stable before host history commits.
-  await syncPath(path);
-  await syncPath(dirname(path));
+  // The harness owns a pinned descriptor and writer lock across this barrier.
+  // Fsync both the journal and its complete publication-directory chain.
+  await entry.repo.sync(entry.metadata);
 }
 
 async function invalidateNativeSession(entry) {
@@ -58,7 +59,7 @@ async function invalidateNativeSession(entry) {
       throw error;
     }
   }
-  await entry.repo.delete(entry.metadata, PI_CONTEXT);
+  await entry.repo.delete(entry.metadata, HARNESS_CONTEXT);
   if (entry.durable) {
     const path = entry.metadata.path;
     // Make the unlink durable before the registry forgets the busy marker.
@@ -81,7 +82,7 @@ async function closeAndDeleteSession(session, repo, knownMetadata) {
   }
   try { await session.close(); } catch { /* best-effort */ }
   if (metadata) {
-    try { await repo.delete(metadata, PI_CONTEXT); } catch { /* best-effort */ }
+    try { await repo.delete(metadata, HARNESS_CONTEXT); } catch { /* best-effort */ }
   }
 }
 
@@ -109,21 +110,24 @@ const nativeSessions = createSessionRegistry({
       return;
     }
     if (entry.durable) return;
-    await entry.repo.delete(entry.metadata, PI_CONTEXT);
+    await entry.repo.delete(entry.metadata, HARNESS_CONTEXT);
   },
 });
 const liveness = createSessionLiveness(nativeSessions);
 
 const durableNativeSessionRepos = new Map();
+// Cold catalogue lookup happens before registry adoption/reservation. Track the
+// whole await window so preserving detach cannot claim that handle is idle.
+const coldOpenCounts = new Map();
 
 export function resolveDurableNativeSessionRepo(piSessionsRoot) {
-  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) return null;
-  const root = piSessionsRoot.trim();
+  const root = normalizeDurableSessionsRoot(piSessionsRoot);
+  if (!root) return null;
   let repo = durableNativeSessionRepos.get(root);
   if (!repo) {
     repo = new JsonlSessionRepo({
-      fileSystem: new NodeExecutionEnv({ cwd: process.cwd() }),
       sessionsRoot: root,
+      onRootPermissionsTightened: () => { repo.rootPermissionWarningPending = true; },
     });
     durableNativeSessionRepos.set(root, repo);
   }
@@ -134,12 +138,12 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
  * Retire every currently materialized durable Pi transcript with this exact
  * logical id. This is intentionally stronger than live-session invalidation:
  * history rotation and retention can retire an epoch after its registry entry
- * was already evicted or after a process restart. When an active old run later
- * recreates its pathname, its post-runtime caller retries this operation. The
+ * was already evicted or after a process restart. Active writers reject late
+ * append admission and retain kernel ownership until close. The
  * canonical epoch has already rotated, so that old id is never resumable in the
  * interim. Absence is success; cleanup or verification uncertainty rejects.
  */
-export async function retireDurableNativeSession(providerSessionId, piSessionsRoot) {
+export async function retireDurableNativeSession(providerSessionId, piSessionsRoot, deletionOptions = undefined) {
   if (!isSafeSessionId(providerSessionId)) {
     throw new TypeError("providerSessionId must be a safe, non-empty session id");
   }
@@ -148,91 +152,34 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
   }
 
   // First guarantee this process cannot resume through a stale registry entry.
-  // A host cancellation can rotate canonical history while the provider is
-  // still unwinding an open Pi session. The Pi repo deliberately refuses to
-  // delete an open session, so detach the registry and unlink its current file.
-  // Pi appends by pathname and can recreate a headerless orphan if the old run
-  // writes later; the raw exact-name sweep below removes those files on the
-  // post-runtime retry. The rotated canonical epoch never refers to this id.
-  const liveEntry = nativeSessions.get(providerSessionId);
-  const providerStillUnwinding = liveEntry?.busy === true;
-  // Other processes are serialized by the history coordinator and must pass
-  // the same cold-refresh barrier before their next turn.
+  // A cancellation can rotate canonical history while a provider unwinds. The
+  // repository marks a local writer retired, drains storage I/O and removes
+  // evidence under its already-held lock; late append admission fails closed.
   await nativeSessions.refresh(providerSessionId);
-
   const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
   if (!repo) throw new Error("Durable Pi session repository is unavailable");
-  const matches = (await repo.list(undefined, PI_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
-  const changedDirectories = new Set();
-  for (const metadata of matches) {
-    if (typeof metadata?.path !== "string" || !metadata.path) {
-      throw new Error(`Durable Pi session ${providerSessionId} has invalid metadata`);
-    }
-    if (providerStillUnwinding) {
-      try {
-        await unlink(metadata.path);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-    } else {
-      await repo.delete(metadata, PI_CONTEXT);
-    }
-    changedDirectories.add(dirname(metadata.path));
-  }
-  // A prior active-session unlink can be followed by Pi recreating the same
-  // pathname with a transaction line but no header. JsonlSessionRepo.list()
-  // intentionally ignores that invalid file, so scan only Pi's fixed
-  // root/directory/filename layout to make the later retirement retry reclaim
-  // it. Safe ids are single filename components and symlink directories/files
-  // are ignored.
-  for (const path of await exactDurableSessionFiles(piSessionsRoot, providerSessionId)) {
-    try {
-      await unlink(path);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    changedDirectories.add(dirname(path));
-  }
-  for (const directory of changedDirectories) await syncPath(directory);
-  if (changedDirectories.size > 0) await syncPath(resolve(piSessionsRoot));
-
-  const remaining = (await repo.list(undefined, PI_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
-  const remainingPaths = await exactDurableSessionFiles(piSessionsRoot, providerSessionId);
-  if (!providerStillUnwinding && (remaining.length > 0 || remainingPaths.length > 0)) {
-    throw new Error(`Durable Pi session ${providerSessionId} could not be retired completely`);
-  }
-  // An active Pi write can race the final exact-name check after the sweep.
-  // Canonical history is already preparing a fresh epoch, so the retired id is
-  // unreachable; the harness retries retirement when that old run returns.
+  if (deletionOptions === undefined) await repo.retireByHandle(providerSessionId);
+  else await repo.retireByHandle(providerSessionId, deletionOptions);
 }
 
-async function exactDurableSessionFiles(piSessionsRoot, providerSessionId) {
-  const root = resolve(piSessionsRoot);
-  const suffix = `_${encodeURIComponent(providerSessionId)}.jsonl`;
-  let rootEntries;
-  try {
-    rootEntries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return [];
-    throw error;
-  }
-  const paths = [];
-  for (const directory of rootEntries) {
-    if (!directory.isDirectory()) continue;
-    const directoryPath = join(root, directory.name);
-    const entries = await readdir(directoryPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith(suffix)) {
-        paths.push(join(directoryPath, entry.name));
-      }
-    }
-  }
-  return paths;
+/** Preserving detach, separate from destructive retirement. Reject a busy or
+ * unresolved handle; the host must settle it first. Durable bytes are untouched.
+ * This does not establish cross-process canonical retirement authority.
+ */
+export async function detachDurableNativeSession(providerSessionId, piSessionsRoot) {
+  if (!isSafeSessionId(providerSessionId) || typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) throw new TypeError("Invalid durable detach identity");
+  const entry = nativeSessions.get(providerSessionId);
+  if (coldOpenCounts.has(providerSessionId) || entry?.busy || entry?.recoveryPending) throw Object.assign(new Error("Native turn must be settled before detach"), { code: "ERR_HARNESS_WRITER_BUSY" });
+  if (entry && (!entry.durable || entry.repo !== resolveDurableNativeSessionRepo(piSessionsRoot))) throw new TypeError("Native detach owner mismatch");
+  // Sessions are closed after each idle turn. Removal deliberately bypasses
+  // onEvict: invalidation deletes, while ordinary disposal syncs unnecessarily.
+  if (entry && !nativeSessions.delete(providerSessionId)) throw new Error("Native detach unavailable");
+  return { status: "detached", evidence: "preserved" };
 }
 
 // Defense in depth (R4): create-on-miss passes the caller-controlled session id
 // straight to durableRepo.create({ id }), and JsonlSessionRepo writes
-// `${createdAt}_${id}.jsonl` — so an id like "../../../../tmp/pwn" would escape
+// `<journalId>.jsonl` — so an id like "../../../../tmp/pwn" would escape
 // piSessionsRoot and name a file anywhere on disk. The harness-derived id is a
 // sha256 hex (always safe), but the public runtime API is caller-controlled.
 // Only an id that is a single safe filename component may CREATE a session;
@@ -250,15 +197,26 @@ function isSafeSessionId(id) {
     && !id.includes("\\");
 }
 
-async function reopenDurableNativeSession(repo, sessionId) {
+/** Reopen by handle. Unrelated or unattributed journal-named entries never
+ * block another handle's valid journal. `uncertain` reports that no journal was
+ * found while an unreadable entry could be this handle's own damaged journal;
+ * `owned` that a damaged entry is attributed to exactly this handle. */
+async function reopenDurableNativeSession(repo, sessionId, context = HARNESS_CONTEXT) {
+  if (!isSafeSessionId(sessionId)) return { entry: null, uncertain: false };
   try {
-    const metadata = (await repo.list(undefined, PI_CONTEXT)).find((entry) => entry?.id === sessionId);
-    if (!metadata) return null;
-    return { metadata, repo, durable: true, busy: false };
-  } catch {
-    return null;
+    const metadata = await repo.find(sessionId, context);
+    return { entry: metadata ? { metadata, repo, durable: true, busy: false } : null, uncertain: false };
+  } catch (error) {
+    // A failed lookup cannot authorize cold replay, but only attributed damage
+    // can prohibit a new conversation. A live creator is busy, not damaged.
+    return { entry: null, uncertain: true,
+      owned: error?.code === "ERR_HARNESS_JOURNAL_UNREADABLE" && error.sessionId === sessionId,
+      busy: error?.code === "ERR_HARNESS_WRITER_BUSY" };
   }
 }
+
+/** @param {any} error */
+const isJournalCorruption = (error) => error instanceof SyntaxError || error?.code === "ERR_HARNESS_JOURNAL_CORRUPT";
 
 function sessionUnavailableResult({
   resolved,
@@ -318,29 +276,65 @@ export async function resolveSession(runState, {
   start,
   piTransport,
 }) {
+  validateNativeSessionAuthority(options, providerSessionId, requestedSessionId);
+  const access = options.nativeSessionAuthority;
+  // The run's signal cancels only lock waits before a session is opened or
+  // created; cleanup and durability barriers keep the never-aborted context.
+  // Abortable waits need a real AbortSignal (not a structural look-alike).
+  const waitSignal = options.abortSignal instanceof AbortSignal ? options.abortSignal : undefined;
+  const waitContext = waitSignal ? { abortSignal: waitSignal } : HARNESS_CONTEXT;
+  if (access) await assertNativeSessionAccess(access, "open", durableRepo.root);
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
   if (requestedSessionId) {
-    let entry = liveness.adoptIfPresent(requestedSessionId);
+    let entry = liveness.adoptIfPresent(requestedSessionId), uncertain = false, owned = false, busy = false;
     if (!entry && durableRepo) {
-      entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
-      if (entry) {
-        // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
-        // cold resume could have reopened+inserted its own entry in this
-        // window. Re-read the registry and adopt any entry already present so
-        // the busy-claim below collapses back to the warm path's synchronous
-        // semantics (the loser sees the winner's shared entry with busy===true
-        // and returns session_busy). The discarded reopen is just an in-memory
-        // jsonl handle (no subprocess/socket), so dropping it is safe.
-        const concurrent = liveness.adoptIfPresent(requestedSessionId);
-        if (concurrent) {
-          entry = concurrent;
-        } else {
-          nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+      coldOpenCounts.set(requestedSessionId, (coldOpenCounts.get(requestedSessionId) ?? 0) + 1);
+      try {
+        ({ entry, uncertain, owned = false, busy = false } = await reopenDurableNativeSession(durableRepo, requestedSessionId, waitContext));
+        waitSignal?.throwIfAborted(); // a cancelled catalogue wait is not a miss
+        if (entry) {
+          // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
+          // cold resume could have reopened+inserted its own entry in this
+          // window. Re-read the registry and adopt any entry already present so
+          // the busy-claim below collapses back to the warm path's synchronous
+          // semantics (the loser sees the winner's shared entry with busy===true
+          // and returns session_busy). The discarded reopen is just an in-memory
+          // jsonl handle (no subprocess/socket), so dropping it is safe.
+          const concurrent = liveness.adoptIfPresent(requestedSessionId);
+          if (concurrent) {
+            entry = concurrent;
+          } else {
+            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+          }
         }
+      } finally {
+        const remaining = coldOpenCounts.get(requestedSessionId) - 1;
+        if (remaining) coldOpenCounts.set(requestedSessionId, remaining); else coldOpenCounts.delete(requestedSessionId);
       }
     }
+    const unreadable = () => ({ done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+      sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} catalogue could not be read; native evidence was preserved`,
+      failureKind: "native_journal_unreadable", piErrorCode: "pi_session_unreadable", piTransport }) });
     if (!entry) {
+      if (busy) return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+        sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is busy`,
+        failureKind: "session_busy", piErrorCode: "pi_session_busy", piTransport }) };
+      if (durableRepo && options.sessionTurn?.reconciliation && options.sessionTurn.baseRevision > 0) {
+        // P2 canonical revision proves an earlier native turn existed. Missing
+        // bytes cannot become an empty warm transcript. Fail before dispatch;
+        // the host must establish a cold boundary, never silently lose context.
+        // A possibly-own damaged journal is not "missing": refuse without the
+        // session-resume replay, never replacing it (unchanged recovery limit).
+        if (uncertain) return unreadable();
+        return { done: true, result: sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start,
+          sessionId: requestedSessionId, errorMessage: `Pi session ${requestedSessionId} is not live`,
+          failureKind: "session_not_found", piErrorCode: "pi_session_not_found", piTransport }) };
+      }
+      // Damage attributed to this exact handle (native or legacy) is never
+      // replaced by an empty create-on-miss session. Damage of unknown owner
+      // does not block creating every new conversation.
+      if (owned) return unreadable();
       if (durableRepo && isSafeSessionId(providerSessionId)) {
         // Create-on-miss (durable resume only): the requested id has no live
         // registry entry AND no JSONL on disk under piSessionsRoot. This is
@@ -388,8 +382,10 @@ export async function resolveSession(runState, {
           // paths release it. Keyed by requestedSessionId === providerSessionId.
           runState.reservation = reservation;
           runState.session = createPiSessionAdapter(await durableRepo.create(
-            { id: providerSessionId, cwd: cwd || process.cwd() },
-            PI_CONTEXT,
+            { id: providerSessionId, cwd: cwd || process.cwd(), ...(access ? {
+              hostAuthority: access.hostAuthority, assertOwned: () => assertNativeSessionAccess(access, "create", durableRepo.root),
+            } : {}) },
+            waitContext,
           ));
           runState.createdOnMiss = true;
         }
@@ -451,10 +447,23 @@ export async function resolveSession(runState, {
       runState.sessionEntry = claimed.entry;
       delete claimed.entry.recovery;
       try {
-        runState.session = createPiSessionAdapter(await claimed.entry.repo.open(
-          claimed.entry.metadata,
-          PI_CONTEXT,
-        ));
+        if (access) {
+          if (claimed.entry.repo !== durableRepo || !claimed.entry.durable) throw Object.assign(new Error("Invalid protected native session authority"), { code: "ERR_NATIVE_SESSION_AUTHORITY" });
+          await assertNativeSessionAccess(access, "open", durableRepo.root);
+        }
+        const raw = await claimed.entry.repo.open(claimed.entry.metadata, {
+          ...(access ? { repair: false, wait: false } : {}), signal: waitSignal,
+          validateHeader: (header) => assertNativeSessionHeader(access, header),
+        });
+        try {
+          assertNativeSessionHeader(access, raw.metadata);
+          if (access) await assertNativeProjectionBinding(raw, options.nativeSessionProjection);
+        } catch (error) { await raw.close(); throw error; }
+        runState.session = createPiSessionAdapter(raw);
+        // Import publishes a new versioned pathname; the registry must sync and
+        // retire that file, never the archived legacy pathname.
+        claimed.entry.metadata = raw.metadata;
+        if (raw.continuity === "clean_break") runState.createdOnMiss = true;
       } catch (error) {
         // The claim made this registry entry busy. An open failure means the
         // entry cannot be driven, so remove its liveness record before
@@ -463,6 +472,9 @@ export async function resolveSession(runState, {
         // reopen/recovery attempt.
         liveness.release(requestedSessionId);
         runState.sessionEntry = null;
+        // Journal damage found by the validating open (the presence probe reads
+        // only the header) is the same typed, evidence-preserving refusal.
+        if (claimed.entry.durable && isJournalCorruption(error)) return unreadable();
         throw error;
       }
     }
@@ -472,7 +484,7 @@ export async function resolveSession(runState, {
     // that primary's transcript. Only keep-alive calls use a shared repository.
     if (options.sessionKeepAlive !== true) runState.ephemeralSessionRepo = new MemorySessionRepo();
     runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
-      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, PI_CONTEXT));
+      .create({ id: providerSessionId, cwd: cwd || process.cwd() }, waitContext));
   }
   return { done: false };
 }
@@ -484,7 +496,19 @@ export async function resolveSession(runState, {
  * @param {any} runState
  * @param {{durableRepo: any}} params
  */
+/** Detach opted-in state without rewind/deletion, even after poison or cancellation. */
+export async function preserveNativeTurnEvidence(runState) {
+  try { await runState.session?.close(); }
+  catch (error) { throw isJournalStorageError(error) ? error : new JournalStorageError(error); }
+  finally {
+    runState.reservation?.release();
+    const id = runState.session?.metadata?.id;
+    if (id) nativeSessions.delete(id);
+  }
+}
+
 export async function discardUncommittedSession(runState, { durableRepo }) {
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   // Drop a freshly-created non-keep-alive session so an aborted-before-run turn
   // does not leave an orphan jsonl on disk. Guarded `session && !sessionEntry`
   // so a resumed (user-owned) session is NEVER deleted. For a resume no
@@ -522,6 +546,7 @@ export async function commitSession(runState, {
   onEvent,
 }) {
   const { session, sessionEntry, baselineLeafId, reservation } = runState;
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   if (options.sessionKeepAlive === true && ((!externalAbort && !errorMessage) || runState.retainRecoveryTail)) {
     try {
       if (sessionEntry) {
@@ -567,7 +592,7 @@ export async function commitSession(runState, {
     // the leaf captured before this turn so the failed turn never leaks into a
     // later resume. The next resume then sees the last good transcript. The
     // entry stays live (busy is cleared in finally) and its idle TTL re-arms.
-    if (baselineLeafId && (errorMessage || externalAbort)) {
+    if ((runState.hasBaselineLeaf || baselineLeafId) && (errorMessage || externalAbort)) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
@@ -594,9 +619,10 @@ export async function commitSession(runState, {
  * @param {{requestedSessionId: string|null, providerSessionId: string, durableRepo: any}} params
  */
 export async function rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo }) {
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   const { session, sessionEntry, baselineLeafId } = runState;
   if (sessionEntry) {
-    if (baselineLeafId) {
+    if (runState.hasBaselineLeaf || baselineLeafId) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     nativeSessions.delete(requestedSessionId);
@@ -617,6 +643,7 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
  * @param {{durableRepo: any}} params
  */
 export async function cleanupSessionOnThrow(runState, { durableRepo }) {
+  if (runState.preserveTurnEvidence) { await preserveNativeTurnEvidence(runState); return; }
   const { session, sessionEntry, reservation, baselineLeafId } = runState;
   // Drop a just-created FRESH durable session so a setup/run failure does not
   // leave a resumable orphan jsonl on disk (the success path drops it via the
@@ -644,7 +671,7 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
   // may land before the baseline was readable, but that handle must still be
   // released without deleting the user-owned transcript.
   if (sessionEntry && session) {
-    if (baselineLeafId) {
+    if (runState.hasBaselineLeaf || baselineLeafId) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     try { await session.close(); } catch { /* best-effort */ }
@@ -687,41 +714,80 @@ export async function recoverDurableNativeSession(receipt, context) {
   entry.busy = true;
   let raw;
   try {
-    const matches = (await entry.repo.list(undefined, PI_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
-    if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
-    raw = await entry.repo.open(matches[0], PI_CONTEXT);
-    const branch = await raw.branch("main", PI_CONTEXT);
-    if (!branch || await branch.getTipId(PI_CONTEXT) !== receipt.tipId) return false;
-    const state = (await raw.getValue(laneState("main"), PI_CONTEXT))?.value;
-    const config = (await raw.getValue(laneConfig("main"), PI_CONTEXT))?.value;
-    const terminal = (await raw.getValue(operationResult(proof.operationId), PI_CONTEXT))?.value;
-    const meta = (await raw.getValue(operationMeta(proof.operationId), PI_CONTEXT))?.value;
-    if (!state || state.currentOperationId !== null || state.lastOperationId !== proof.operationId || state.inbox.length !== 0
-      || config?.model.provider !== proof.model.provider || config?.model.modelId !== proof.model.id
-      || !terminal || !["completed", "failed", "aborted"].includes(terminal.status) || terminal.tipId !== receipt.tipId
-      || meta !== undefined || terminal.kind !== "run" || terminal.fromTipId !== proof.baselineTipId
-      || await raw.getValue(operationState(proof.operationId), PI_CONTEXT)) return false;
-    const entries = await branch.findEntries({ order: "oldestFirst" }, PI_CONTEXT);
+    const metadata = await entry.repo.find(receipt.providerSessionId, HARNESS_CONTEXT);
+    if (!metadata || metadata.path !== entry.metadata.path) return false;
+    raw = await entry.repo.open(metadata, { validateHeader: (header) => assertNativeSessionHeader(undefined, header) });
+    if (await raw.getLeafId() !== receipt.tipId) return false;
+    const terminal = await raw.getTerminal(proof.operationId);
+    if ([...raw.validator.inputs.values()].some((input) => input.state === "queued")) return false;
+    if ((await raw.getOpenTurns()).length !== 0
+      || terminal?.kind !== "operation_end"
+      || terminal.config?.model.provider !== proof.model.provider || terminal.config?.model.id !== proof.model.id
+      || !["completed", "failed", "aborted"].includes(terminal.status) || terminal.tipId !== receipt.tipId
+      || terminal.fromTipId !== proof.baselineTipId) return false;
+    const turn = await raw.getTurn(terminal.turnId);
+    if (turn?.turnId !== receipt.runId || turn.payload.finalOperationId !== proof.operationId
+      || !["completed", "failed", "aborted"].includes(turn.payload.status)) return false;
+    const { entries } = await inspectCurrentEvidence(raw);
     if (createHash("sha256").update(JSON.stringify(entries)).digest("hex") !== proof.ancestry) return false;
     const baseline = proof.baselineTipId === null ? -1 : entries.findIndex((item) => item.id === proof.baselineTipId);
     if (proof.baselineTipId !== null && baseline < 0) return false;
     const tail = entries.slice(baseline + 1);
     if (tail[0]?.type !== "message" || tail[0].message.role !== "user"
       || tail.filter((item) => item.type === "message" && item.message.role === "user").length !== 1 + proof.inputIds.length) return false;
-    if (!validRecoveryProjection(buildPiSessionContext(entries), proof.model)) return false;
-    await raw.close(PI_CONTEXT);
+    if (!validRecoveryProjection(projectContext(entries).messages, proof.model)) return false;
+    await raw.sync();
+    await raw.close(HARNESS_CONTEXT);
     raw = undefined;
     // Pending is cleared only after persistence is certain. Bypass the ordinary
     // sync guard while keeping the public busy reservation throughout the fsync.
-    await syncPath(entry.metadata.path);
-    await syncPath(dirname(entry.metadata.path));
     entry.recoveryPending = false;
     delete entry.recovery;
     return true;
   } catch {
     return false;
   } finally {
-    try { await raw?.close(PI_CONTEXT); } catch { /* already failed closed */ }
+    try { await raw?.close(HARNESS_CONTEXT); } catch { /* already failed closed */ }
     entry.busy = false;
   }
+}
+
+/** Storage-only P2 seam: match while holding nonblocking native ownership, then repair.
+ * Intentional guarded-open exception: the held canonical host owns this exact
+ * reconciliation descriptor/fence. Match before repair; never dispatch or create.
+ * Runtime current-handle/projection authority is not required to inspect a prior
+ * interrupted epoch for P2 settlement. */
+export async function reconcileNativeSessionTurn(request) {
+  const { validateSessionTurn, readTurnEvidence, matchTurnEvidence, repairInterruptedSession } = await import("@mono-agent/harness");
+  validateSessionTurn(request?.descriptor, request?.descriptor?.handleId);
+  if (!request.descriptor.reconciliation || typeof request.sessionsRoot !== "string" || !request.sessionsRoot.trim()
+    || request.purpose !== request.descriptor.reconciliation.purpose) throw new TypeError("Invalid native turn reconciliation request");
+  const id = request.descriptor.handleId;
+  if (nativeSessions.get(id)?.busy || nativeSessions.get(id)?.recoveryPending) throw Object.assign(new Error("Native turn ownership is busy"), { code: "ERR_HARNESS_WRITER_BUSY" });
+  await nativeSessions.refresh(id);
+  const repo = resolveDurableNativeSessionRepo(request.sessionsRoot);
+  let raw;
+  try {
+    const metadata = await repo.find(id);
+    // A legacy source predates turn evidence; it is imported only when the runtime opens it.
+    if (!metadata || metadata.legacy) return { status: "absent" };
+    raw = await repo.open(metadata, { repair: false, wait: false });
+    const initial = await readTurnEvidence(raw, request.descriptor.turnId);
+    const match = matchTurnEvidence(initial, request);
+    if (match.status !== "matched") return match;
+    if (raw.validator.openTurns.size && !raw.validator.openTurns.has(request.descriptor.turnId)) return { status: "mismatch", reason: "active_turn" };
+    if (inspectCurrentLifecycle(raw).turns.some((turn) => turn.start.seq > raw.validator.turns.get(request.descriptor.turnId).start.seq
+      && (turn.start.payload.binding || turn.operations.length))) return { status: "mismatch", reason: "turn_advanced" };
+    if (initial.tipId !== initial.currentTipId) return { status: "mismatch", reason: "tip" };
+    await raw.prepareReconciliation();
+    await repairInterruptedSession(raw);
+    const evidence = await readTurnEvidence(raw, request.descriptor.turnId);
+    const outcome = evidence.seal?.outcome ?? "interrupted";
+    return { ...evidence, status: "matched", outcome,
+      ...(outcome === "completed" && request.purpose === "execution" && evidence.seal?.result ? { commitCandidate: evidence.seal.result } : {}) };
+  } catch (error) {
+    if (error instanceof SyntaxError) Object.assign(error, { code: "ERR_HARNESS_JOURNAL_CORRUPT" });
+    else if (!error.code) error.code = "ERR_HARNESS_RECONCILIATION_UNCERTAIN";
+    throw error;
+  } finally { if (raw) await raw.close(); }
 }

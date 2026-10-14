@@ -15,3 +15,9 @@ export {
 
 export * from "./ai/index.js";
 export * from "./agent/index.js";
+
+export { produceNativeHandoffSummary, HANDOFF_SUMMARY_PROMPT } from "./ai/providers/pi-native/handoff-producer.js";
+export { detachDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
+
+// Administrative storage factory; never forwarded through runtime run options.
+export { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "./ai/providers/pi-native/native-journal-storage.js";

@@ -2293,7 +2293,7 @@ describe("coordinated terminal recovery", () => {
     try {
       let outcome: "cancelled" | "provider_unavailable" | "success" = "cancelled";
       if (reason === "history_not_coordinated") Object.defineProperty(f.historyStore, "beginProviderSessionTurn", { value: undefined });
-      if (reason === "store_capability") Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      if (reason === "store_capability") Object.defineProperty(f.historyStore, "readProviderSessionBinding", { value: undefined });
       if (reason === "runtime_unsupported") Object.defineProperty(f.runtime, "recoverSession", { value: undefined });
       if (reason === "tool_history_finalize_failed") f.rejectSidecar();
       if (reason === "failure_budget_spent") { await f.run("provider_unavailable", "first failure"); outcome = "provider_unavailable"; }
@@ -2506,9 +2506,12 @@ describe("coordinated terminal recovery", () => {
   it("keeps custom coordinators without the recovery capability on the retirement path", async () => {
     const f = await fixture();
     try {
-      Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      Object.defineProperty(f.historyStore, "readProviderSessionBinding", { value: undefined });
       await f.run("cancelled", "cancelled ask");
       expect(f.fake.calls[0]!.options.sessionRecovery).toBeUndefined();
+      expect(f.fake.calls[0]!.options.sessionTurn).toMatchObject({ kind: "host", historyBucket: "recovery",
+        handleId: f.fake.calls[0]!.options.sessionId, baseRevision: 0 });
+      expect(f.fake.calls[0]!.options.sessionTurn!.turnId).toEqual(expect.any(String));
       expect(f.receipts).toHaveLength(0);
       expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
     } finally { await f.close(); }
@@ -2582,4 +2585,17 @@ describe("coordinated terminal recovery", () => {
     } finally { await f.close(); }
   });
 
+});
+
+it("manual compaction routes a native-bound stale process mapping through P rather than C", async () => {
+  const { fake, makeHarness, historyStore } = await manualFixture(); const harness = makeHarness();
+  await harness.run(request("manual", "Fictional first input")); const stale = fake.calls[0]!.options.sessionId as string;
+  await historyStore.append("manual", [{ role: "assistant", content: "Fictional host epoch boundary" }]);
+  const readBinding = historyStore.readProviderSessionBinding!.bind(historyStore);
+  // Routing unit: physical guarded-byte preservation is covered separately.
+  historyStore.readProviderSessionBinding = async (id) => ({ ...(await readBinding(id))!, native: true });
+  await harness.compactConversation!("manual");
+  expect(fake.disposedSessions).toContain(stale); expect(fake.invalidatedSessions).not.toContain(stale);
+  expect(fake.retiredSessions.some((entry) => entry.providerSessionId === stale)).toBe(false);
+  await harness.dispose?.();
 });

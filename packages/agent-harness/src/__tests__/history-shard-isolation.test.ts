@@ -27,7 +27,7 @@ function collidingIds(): [string, string] {
 }
 
 for (const cancelAt of ["admission", "provider"] as const) {
-  it(`publishes cancellation at ${cancelAt} and admits a successor while a colliding provider stays open`, async () => {
+  it(`cancels at ${cancelAt} and admits a successor while a colliding provider stays open`, async () => {
     const dir = await mkdtemp(join(tmpdir(), "history-shard-isolation-"));
     const root = join(dir, "history");
     const identityPath = join(dir, "IDENTITY.md");
@@ -38,11 +38,11 @@ for (const cancelAt of ["admission", "provider"] as const) {
     const store = createDurableHistoryStore({ root, retireProviderSession: async () => {} });
     const first = await store.beginProviderSessionTurn(firstId, "long-provider");
     const controller = new AbortController();
-    const begin = store.beginProviderSessionTurn.bind(store);
+    const begin = store.beginProviderSessionTurn.bind(store); let acquisitionSettled = false;
     vi.spyOn(store, "beginProviderSessionTurn").mockImplementation(async (...args) => {
-      const pending = begin(...args);
-      if (cancelAt === "admission") setImmediate(() => controller.abort(createChannelUserCancelReason("Web")));
-      return await pending;
+      const pending = begin(...args); // Real acquisition starts before synchronous cancellation.
+      if (cancelAt === "admission") controller.abort(createChannelUserCancelReason("Web"));
+      try { return await pending; } finally { acquisitionSettled = true; }
     });
     let calls = 0;
     let successorPrompt = "";
@@ -71,11 +71,17 @@ for (const cancelAt of ["admission", "provider"] as const) {
     let completed = false;
     const flow = (async () => {
       const cancelled = await harness.run({ conversationId: secondId, userMessage: "cancel this request", abortSignal: controller.signal });
-      expect(cancelled.failure?.kind).toBe("cancelled");
+      expect(cancelled.failure?.kind).toBe("cancelled"); expect(acquisitionSettled).toBe(true);
       const successor = await harness.run({ conversationId: secondId, userMessage: "continue", abortSignal: new AbortController().signal });
       expect(successor.failure).toBeUndefined();
-      expect(successorPrompt).toContain("cancel this request");
-      expect(successorPrompt).toContain("Run stopped by the operator.");
+      if (cancelAt === "provider") {
+        expect(successorPrompt).toContain("cancel this request");
+        expect(successorPrompt).toContain("Run stopped by the operator.");
+      } else {
+        // Acquisition cancelled before admission: no continuity account or replay.
+        expect(successorPrompt).not.toContain("cancel this request");
+        expect(successorPrompt).not.toContain("Run stopped by the operator.");
+      }
       expect((await store.load(secondId)).at(-1)?.content).toContain("successor answer");
       completed = true;
     })();

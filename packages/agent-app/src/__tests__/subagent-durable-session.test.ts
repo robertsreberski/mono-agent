@@ -39,7 +39,13 @@ describe("app persistent subagent durable sessions", () => {
         // Fault at the real native handoff: execute outside the requested epoch,
         // rather than fabricating a retained/lost registry status or result id.
         const result = await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
-          ...(first && mode === "loss" ? { sessionId: `outside-${String(options.sessionId)}` } : {}),
+          ...(first && mode === "loss" ? {
+            sessionId: `outside-${String(options.sessionId)}`,
+            // The trusted test injector deliberately switches the native handle;
+            // keep its descriptor internally valid so this still tests loss,
+            // not the separate descriptor/handle mismatch admission guard.
+            sessionTurn: { ...(options.sessionTurn as Record<string, unknown>), handleId: `outside-${String(options.sessionId)}` },
+          } : {}),
           piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
         nativeReturned = true;
         if (first && mode === "late-timeout") await delivery; // Native answer exists; host delivery ignores abort.
@@ -126,6 +132,8 @@ describe("app persistent subagent durable sessions", () => {
       let answered = false;
       const runtime = { recoverSession: owner.recoverSession!.bind(owner), run: async (prompt: string, options: Record<string, unknown>) => {
         expect(options.sessionRecovery).toBeDefined();
+        expect(options.sessionTurn).toMatchObject({ kind: "instance", historyBucket: null,
+          turnId: (options.sessionRecovery as { runId: string }).runId, handleId: options.sessionId, baseRevision: null });
         const result = await generatePiNativeResponse(prompt, { ...options, allowedTools: [],
           piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
         expect(result.text).toContain("Pi answered before capture failed");

@@ -7,7 +7,7 @@
 // takes its inputs explicitly and returns the verbatim runtime-result contract
 // (diagnostics key spellings, error fields, and shape unchanged — I9).
 
-import { calculateContextTokens } from "@earendil-works/pi-agent-core";
+import { calculateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { isContextLimitError } from "../pi-errors.js";
 import { isLikelyContextTermination } from "../../../agent/compaction.js";
 import { isProviderAuthFailureText } from "../../failure.js";
@@ -129,6 +129,8 @@ export function contextUsageFromAssistantMessage(assistantMessage) {
  */
 export function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {}) {
   if (!message) return null;
+  if (message.startsWith("Handoff dispatch budget exceeded:")) return "safety_handoff_dispatch_budget";
+  if (message.startsWith("Invalid protected native session authority")) return "safety_native_session_authority";
   if (maxTurnsHit) return "usage_limit";
   if (isContextLimitError(message) || isLikelyContextTermination(message, diagnostics)) return "context_limit";
   if (isProviderAuthFailureText(message)) return "provider_auth";

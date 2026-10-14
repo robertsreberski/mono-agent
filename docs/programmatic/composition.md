@@ -102,6 +102,23 @@ LLM or embedding provider should likewise pass `{ cwd: agentRoot }`.
 
 A custom `historyStore` keeps provider sessions process-local unless it implements the crash-safe `beginProviderSessionTurn` transaction and advertises `providerSessionRetirement: "fail-closed"`. That marker is a promise that epoch rotation, dirty-fence recovery, and retention can durably retire every exact provider id before canonical history makes it unreachable. The harness withholds `piSessionsRoot` when either half is missing.
 
+For native conversations, the managed history coordinator additionally owns the
+current journal and reference-checked lifecycle disposition: P preserves/detaches
+it and unresolved turns, C replaces only the current epoch with the same model
+(or retires a switch's outgoing journal after its receipt is durable), and D
+resets/retires the conversation. The ordinary two-argument retirement callback is
+not authority to delete a guarded journal, regardless of its model key.
+Uncoordinated/stateless/subagent cleanup stays isolated; guarded denial is not
+successful cleanup. `runtime.session.modelSwitch` remains Web-only and
+OFF-default. IDs over 512 characters bypass switch preparation without claiming
+native authority or writing an intent; the original native host-contract
+rejection is unchanged even with the option OFF. Every model change takes the
+structured handoff; typed pre-intent capacity refuses with
+`handoff_budget_exceeded`. Pending/unknown billed work and insufficient safe
+publication space still refuse. The generic helper's advisory modes carry no
+native C/D authority; manual stale-map preservation is defence-in-depth, with
+owned membership/header checks as the physical backstop.
+
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 
 Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/runtime-adapter`. Pass one to share a single runtime across hosts or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks`.
@@ -125,7 +142,7 @@ Notes:
 - The BuJo memory LLM is separate from the channel runtime. `createConfiguredMemory(config, { memoryRuntime })` is the seam for tests or custom memory LLM execution; otherwise memory builds its own fallback-free runtime from `memory.llm`.
 - Model overrides use a cached `runtimeForModel(model)` owner when supplied; without it, the injected runtime receives the effective per-run model directly. Provide the factory when separate runtimes are needed, such as routers with a fixed primary. Session cleanup resolves the same owner, including after a restart.
 - `createSessionRuntimeResolver` from `@mono-agent/agent-harness` caches runtime identity by canonical model key. Durable-history retirement callbacks receive `(providerSessionId, modelKey?)`; absent keys identify legacy unbound records. The configured app wires retirement to the owning runtime.
-- A custom history coordinator opts into durable alternate-model sessions with `providerSessionModelBinding: "v1"`. Its `beginProviderSessionTurn(conversationId, runId, { modelKey })` must persist and acknowledge the binding, rotate on changes, and return `previousModelKey` for a known change. Legacy coordinators retain their default-model path; alternate-model sessions remain process-local until the coordinator supports binding.
+- A custom history coordinator opts into durable alternate-model sessions by implementing `readProviderSessionBinding`. Its `beginProviderSessionTurn(conversationId, runId, { modelKey })` must persist and acknowledge the binding, rotate on changes, and return `previousModelKey` for a known change. Legacy coordinators retain their default-model path; alternate-model sessions remain process-local until the coordinator supports binding.
 
 ## Custom memory stores
 

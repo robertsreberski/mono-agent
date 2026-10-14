@@ -157,7 +157,199 @@ metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
 A positive compaction window override replaces the declared window, and learned
 provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
 
+Native runtimes additionally expose `prepareNativeDispatch(systemPrompt, options)`. This opt-in API resolves the
+actual built-in, MCP and StructuredOutput declarations plus provider
+model/authentication **before any session lookup, open, repair or creation**.
+Its deeply frozen `snapshot` includes the augmented system prompt, input,
+declarations, model limits and nonsecret provider/API/model metadata; account
+identity is unknown, and credentials or auth headers never enter the snapshot.
+Preparation checks provider availability using ordinary authentication. Each
+actual summary, turn, retry or compaction request resolves authentication again
+through the same Models/provider path, including normal OAuth refresh and
+credential persistence. Credentials are not pinned to the lease; changing accounts
+is not a dispatch refusal. Authentication failures use ordinary provider failures.
+
+Prepared leases have no age limit: the abort signal and host ownership claim
+control admission. Hosts must call `close()` on unused leases to release
+MCP/runState resources and the concurrency permit. In-flight streams are
+authorized at request start, not renewed mid-stream. No auto-replay of a turn that may already have tool
+effects. The no-tools producer uses configured `piTransport` (default `sse`) and
+remains one attempt without provider fallback.
+
+Provider methods retain their original receiver. Runtime schema copies retain
+TypeBox metadata/symbols before freezing; host snapshots contain only serializable
+declaration data. Real Codex conversion of frozen TypeBox and StructuredOutput
+declarations is covered by an intercepted-transport test.
+
+The single-use lease's `run(binding)` accepts only late host-owned session keys,
+turn/recovery descriptors and native authority/projection. It cannot replace the
+frozen root, model, instructions, input or policy. Tools keep their original
+runState/execute closures; no second MCP initialization or request extension is
+performed. `close()` is idempotent and closes unused preparation without native
+mutation; while running it waits for settlement without rethrowing a run's
+rejection. Invalid binding validation does not consume a direct or routed lease
+or release its resources; corrected binding can still run once. Routed results
+retain normal authentication classification and a single-attempt failover history,
+without executing any backup. Cancel using the original abort signal. Hosts must hold their concurrency permit until run/close
+settles and always close the lease in a finally block. Incomplete MCP
+declarations or auth/model disagreement fail preparation, not cold-fallback
+success. Certified routers prepare only the primary's first attempt and resolve
+it once; the lease never performs router-level replay or falls through to a
+backup route. Normal native transport retry policy still applies. Custom
+resolvers need explicit `sessionTurnReconciliation: "v1"` certification.
+
+The lease also exposes `assertReady()` (non-consuming lifetime validation before
+host P2 admission), `checkHandoffSummary({ prepared, outputReserve })` (pure full
+input/output-window preflight), and `produceHandoffSummary` (one no-tools call
+per lease, using the **same selected auth/model**, no fallback/retry/persistence).
+A rejected/truncated/unknown output never repeats automatically. The host must
+persist attempt admission before invoking it; this API does not authorize billing.
+Producer input is captured synchronously. Run refuses while production is active
+without consuming dispatch; close/abort retain resources until it settles.
+
+Managed storage exposes typed read-only evidence capture of the single current
+journal (streamed; only the tail after its last checkpoint and records cited by
+unresolved work are retained, up to 16 MiB) plus the prior accepted handoff, and pure budget and handoff/checkpoint
+preparation. It never projects native envelopes across a model change. Composed
+compaction coverage must equal the inherited prior handoff exactly;
+changed/missing coverage fails.
+
+No configured host invokes this capability yet. Frozen host preparation,
+durable producer admission/summary billing, ready model-switch publication and
+safe configured lifecycle wiring remain separate work. Existing `run()` paths,
+subagent behavior and default journal/provider payload bytes remain unchanged.
+
+Native runtimes expose the explicit `sessionTurnReconciliation: "v1"` ownership
+capability. Custom routing resolvers are not certified from the presence of the
+default inner matcher's method; an options-only native router may explicitly
+attest the same owner. Private completion-only wrappers strip the capability.
+
+Hosts may opt into native evidence preservation with
+`sessionTurn.reconciliation` (version1, execution/compaction purpose, fence digest
+and original input ID). These durable kept-alive turns seal their actual final
+runtime result before close; failures, usage/context limits, cancellation and
+suspension do not rewind or delete recoverable bytes. Storage failure remains
+terminal and never advertises a resumable receipt. Legacy callers are unchanged.
+`reconcileSessionTurn` is storage-only and matches protected identity and input
+evidence before idempotent repair. Native inline binding closes the pre-binding
+crash window. Router detachment requires an awaited protected host acknowledgement
+before stateless retry/fallback. An opted-in positive canonical base revision
+never silently creates an empty missing native transcript; it fails before
+dispatch so the host can establish a cold boundary. Canonical adoption is owned
+by the separate host history transaction, not the raw runtime.
+
+### Opt-in handoff foundation
+
+`produceNativeHandoffSummary` performs exactly one no-tools completion on the
+selected model, without router fallback or automatic retry (`maxRetries: 0`
+overrides caller completion options). It checks producer input bounds, enforces
+the provider output-token ceiling, rejects empty/malformed/truncated/error/aborted
+responses, and returns usage accounting. It never invokes manual compaction or writes a
+session. Hosts own durable attempt admission, fallback ordering (outgoing,
+checkpoint plus complete suffix, incoming), accepted-output caching and billing
+limits. A lost completion is explicitly outcome-unknown, not permission to retry.
+The checkpoint route needs a previously validated structured summary; a suffix
+alone is text-only replay and returns `summary_required`.
+
+`createManagedNativeJournalStorage({ sessionsRoot })` is an administrative
+storage-only bridge, not a runtime run option. Under supplied owner-held
+authority, `createEpoch` atomically publishes the deterministic, fully
+initialized guarded journal for a switch target or same-model cold rotation;
+an existing exact journal is accepted idempotently and unknown stages are
+preserved, never generically repaired. Native inventory charges all journal and
+stage bytes in the explicitly dedicated native root. `deleteJournals` accepts C
+for a retired journal or D for reset/retention, preflights matching headers,
+preserves unknown evidence, and repeats absent-member cleanup without
+recreating journals. Unguarded journals are deletable by exact header; guarded
+ones need matching host authority. The host must retain canonical state and its
+deletion intent or receipt through every unlink/directory barrier; this factory
+does not persist host lifecycle intents. Retention eligibility probes protect
+busy/contradictory native owners; probes do not grant deletion authority. This
+factory does not prove host artifact acceptance or canonical publication: the
+host coordinator supplies those authorities and keeps pending switches fenced.
+
+`detachDurableNativeSession` drops an idle local handle without deleting native
+bytes. Busy/recovery-pending handles, cold opens and create reservations must be
+settled first. It is deliberately separate from destructive retirement/invalidation and does not establish
+cross-process canonical authority. Host switching/retention policy is unchanged.
+Coordinated opt-in v3 writers now also require the harness's guarded
+guarded native header and matching host authority reference; a caller
+acknowledgement alone cannot enable them. Older native readers/deleters reject
+that header before torn-tail repair or deletion. Once any guarded journal exists,
+older catalogue listing and legacy import fail closed for the entire root;
+this is intentional and does not make direct access to other journals safe.
+Guarded deletion needs the
+host's explicit C/D disposition and ownership assertion. The optional third
+`retireDurableSession` argument forwards that authority to exact-handle native
+retirement; the ordinary two-argument call keeps its existing behavior.
+No default runtime
+creates guarded journals or enables switching; see the
+[harness guarded journal contract](../harness/README.md#opt-in-evidence-projection-and-handoffs).
+
+Opt-in `nativeSessionAuthority` requires a protected reconciled host turn,
+kept-alive durable root, matching guarded header and exact current handle. Its
+pinned `sessionsRoot` cannot be redirected by a route resolver. The awaited
+`assertCurrent({ handleId, action: "open" | "create", sessionsRoot })` receives the
+actual normalized native root and borrows the held host owner: the host must
+prove the ready canonical binding/artifact and current creation eligibility. A retired epoch or stale mapping is not executable. Guarded
+runtime opens without authority fail before native repair, including stale warm
+metadata. The runtime pin checks normalized path equality, not a host-owned
+filesystem inode identity; `assertCurrent` must prove any stronger root identity.
+`inspectCurrentJournal` is a read-only O(1) presence probe for the host-held
+current journal: `missing` only for definitive absence (handle-only lookups are
+read-only and stage-aware), `unreadable` for a damaged header or identity,
+staged-only bytes or catalogue failure. It reads only the header; damaged
+records are refused by the validating open with the same
+`native_journal_unreadable` failure, and a torn final line is left to the
+ordinary open/repair path.
+Prepared leases are primary-only: no routed retry or backup, and producers and
+manual compaction stay primary-only too.
+Default unguarded, stateless and subagent behavior is unchanged. Their cleanup
+cannot target guarded host journals: destructive APIs require owned
+C/D disposition, and a guarded refusal is not successful physical cleanup.
+Protected unresolved turn cleanup closes/detaches without rewind or deletion,
+including persistence failures and late cancellation. Ordinary durable TTL and
+disposal evict liveness metadata, not journals. Host ownership IDs stay bounded
+to 512 characters; long-ID switch bypass does not relax native admission.
+
+`nativeSessionProjection` carries the accepted artifact reference, inherited
+messages/coverage and optional frozen `dispatchBudget`. True warm/cold resumes
+compose that prefix with the current delta without seeding copies. Composed cuts
+persist inherited coverage; raw current evidence remains separate. The first
+projected turn durably binds the accepted artifact id/hash, coverage and message
+digest. Omission/change on later calls fails before repair/admission until a
+composed checkpoint subsumes the prefix. Its default guarded cut never retains
+inherited entries and validates refusals before any summary call. With a frozen
+budget, normalized dispatch refuses oversized host/input/history and pins output
+reserve, without proactive/reactive/mid-run re-summary. Later calls omitting only
+the budget can compact the composed view normally; after a composed checkpoint,
+projection omission is allowed and later compactions preserve its coverage.
+The host must rebuild accepted messages/coverage with identical object key order:
+`evidenceDigest` hashes JSON bytes, not semantically canonical objects. If the
+inherited prefix alone exceeds the summarizer context, compaction cannot reduce
+it; configured switching must prepare a bounded projection/new epoch or refuse/
+reseed at switch time. Runtime clipping of a cached handoff is not a workaround.
+Route resolvers cannot replace these owning fields; retry/backup attempts strip them. The host, not this seam,
+validates content/hash, ancestry, account compatibility and readiness.
+`recoverDurableNativeSession` is the legacy uncoordinated terminal-receipt path:
+it rejects guarded headers before repair. `reconcileNativeSessionTurn` is the
+intentional host-owned P2 exception to guarded runtime session authority. Its
+caller owns the exact canonical fence/descriptor, matching native evidence before
+storage-only repair; it neither creates a session nor dispatches a model/tool.
+No existing
+configuration enables this path; configured switching remains separate work.
+
 ## Architecture
+
+Pi results include a monotonic `dispatchProgress` snapshot (version 1), armed
+only after replay seeding: tool admission and yielded live input are distinct
+flags. Ordinary retries/backups stop after tool or live-input progress, with
+normalized-event evidence retained for other backends. Prepared native dispatch
+remains primary-only.
+
+The provider bridge imports the model-run loop, native journal/storage and
+compaction kit from `@mono-agent/harness`. The separate `agent-harness` host
+package owns conversation/history orchestration.
 
 The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
 HTML engine) with per-request policy/admission and fail-closed robots. No
@@ -246,7 +438,7 @@ Without an outer abort, a trusted `cancelled` hint retains a known cancellation
 failure kind and otherwise falls back to `cancelled`.
 
 This outer-abort rule matches the harness run-level classifier. The standalone
-runtime keeps its zero-`@mono-agent/*` dependency boundary by recognizing the
+runtime keeps host contracts out of the low-level harness boundary by recognizing the
 shared brand structurally rather than importing `@mono-agent/agent-contracts`.
 Its deliberate extra fidelity is tool-level only: a trusted bridge hint can
 retain a cancellation subtype when no outer abort exists. The run-level harness
@@ -322,7 +514,9 @@ BINARY_BLOAT_TOOLS
 CONTEXT_1M_TOKENS
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
+HANDOFF_SUMMARY_PROMPT
 MAX_TOOL_RESULT_BYTES
+NativeEvidenceCapacityError
 PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
@@ -347,6 +541,7 @@ buildTranscriptTailSnapshot
 checkPiProviderAuth
 classifyProviderCheckFailure
 createApprovalManager
+createManagedNativeJournalStorage
 createMetricsObserver
 createObserverHub
 createPiOAuthApiKeyResolver
@@ -355,6 +550,7 @@ createRuntime
 createSessionRegistry
 describePiBuiltinProvider
 describePiProviderAuth
+detachDurableNativeSession
 disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
@@ -374,6 +570,7 @@ normalizeRuntimeModelReference
 parseRuntimeModelReference
 parseStoredAllowlist
 piNativeRuntimeBridge
+produceNativeHandoffSummary
 reasoningLevelsForPiModel
 refreshProviderSession
 renderResumeSnapshot
@@ -615,6 +812,7 @@ statsForCompletedChange
 **`@mono-agent/agent-runtime/ai/live-input-prompt.js`**
 
 ```text
+digestNativeTurnInput
 formatLiveInputGuidance
 ```
 
@@ -839,8 +1037,8 @@ Returns:
 - `configureTools(next)` — update the tool runtime context after construction.
 - `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
 - `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
-- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts; retries/backups strip that option and every returned receipt. Pending recovery blocks native resume. Failed/aborted assistant messages stay on disk and are filtered by Pi; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
-- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation or failure, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
+- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts (the run ID must be nonempty, at most 512 characters, and unique within its journal); retries/backups strip that option and every returned receipt. Root adoption tightens owned legacy permissions to 0700 and emits one path-free `pi_sessions_root_permissions_tightened` runtime warning. Pending recovery blocks native resume. Native interruption repair is storage-only and prompt-only; it does not adopt dirty host turns or replay effects. Provider suspension is reported as suspended, not resumed on reopen; no deferred continuation runs. Failed/aborted assistant messages stay on disk and are filtered except required repaired tool-call pairs; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
+- `retireDurableSession(id, sessionsRoot, deletionOptions?)` — forward explicit host C/D authority through direct or routed runtimes, then delete and verify every exact-id durable Pi transcript, including cold duplicates. Retirement refreshes the matching registry entry, rejects later append admission, and drains admitted storage I/O before removing validated published/staged journals and matching legacy archives under catalogue/writer ownership. The writer lock survives until provider unwind; late appends cannot recreate deleted journals. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`

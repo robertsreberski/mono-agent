@@ -1,3 +1,5 @@
+import { isDispatchProgress } from "../providers/pi-native/dispatch-progress.js";
+import { snapshotNativeDispatchOptions, prepareNativeDispatchBinding } from "../providers/pi-native/prepared-dispatch.js";
 // Provider fallback router.
 //
 // Wraps `createRuntime` with an ordered chain of model references. If a run
@@ -109,7 +111,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "nativeSessionAuthority", "nativeSessionProjection", "sessionTurn", "onSessionTurnDetached", "detachedContext", "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -132,9 +134,10 @@ class ResolverProtectedOptionError extends Error {
  * @param {(input: {model: RuntimeModelRef, attemptIndex: number, retryIndex: number}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
  * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
  *   retries. Per-route retry counts live on each chain entry's `attempts`.
+ * @param {"v1"} [options.sessionTurnReconciliation] Explicit ownership assertion for a custom resolver that preserves the native owner.
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
  */
-export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry } = {}) {
+export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, retry, sessionTurnReconciliation } = {}) {
   const retryPolicy = normalizeRetryPolicy(retry);
   const entries = normaliseChain(chain);
   if (entries.length === 0) {
@@ -150,47 +153,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
   // inner runtime uses — createRuntime no longer publishes it to a process global.
   const runtimeBrand = resolveRuntimeBrand(host.runtimeBrand);
 
-  return {
-    /**
-     * @param {string} systemPrompt
-     * @param {Partial<RuntimeRunOptions>} [options] Optional so a bare `{}` call
-     *   is legal; the router always overrides `model` per chain entry (see
-     *   AgentRuntimeInstance.run for the public, model-required contract).
-     * @returns {Promise<RuntimeResult>}
-     */
-    async run(systemPrompt, options = {}) {
-      if (options.manualCompaction === true) {
-        // A provider session belongs to exactly one route. Never retry/fail over
-        // a mutating manual operation against a different model or session.
-        const primary = entries[0];
-        if (!primary || !entrySupportsSessionResume(primary)
-          || (options.model && modelKey(options.model) !== modelKey(primary.model))) {
-          throw new Error("Manual compaction is unavailable for this session model.");
-        }
-        /** @type {*} */
-        let attemptOptions = { ...options, model: primary.model };
-        let attemptRuntime = inner;
-        let cleanup;
-        try {
-          const resolution = normalizeAttemptResolution(await resolveAttempt?.({
-            model: primary.model, attemptIndex: 0, retryIndex: 0,
-          }));
-          cleanup = resolution?.cleanup;
-          if (resolution) {
-            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
-            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
-            if (resolution.runtime) {
-              assertRuntimeLike(resolution.runtime);
-              attemptRuntime = resolution.runtime;
-              projectPiRuntimeToolContext(attemptRuntime, effectiveRouterToolOptions(host, configuredTools));
-            }
-          }
-          applyEntryEffort(attemptOptions, primary.effort);
-          return await attemptRuntime.run(systemPrompt, attemptOptions);
-        } finally {
-          await cleanup?.();
-        }
-      }
+  // Single ordinary attempt engine. Prepared native dispatch never enters it.
+  /** @param {string} systemPrompt @param {Partial<RuntimeRunOptions>} options
+   * @returns {Promise<RuntimeResult>} */
+  async function runAttemptLoop(systemPrompt, options) {
       options = {
         ...options,
         webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
@@ -222,6 +188,16 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       const failoverHistory = [];
       /** @type {RuntimeResult|null} */
       let lastResult = null;
+      /** @type {{descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}|undefined} */
+      let pendingDetach;
+      const markPendingDetach = (model, attemptIndex, retryIndex, result) => {
+        if (options.sessionTurn?.reconciliation) pendingDetach = {
+          descriptor: structuredClone(options.sessionTurn), model, attemptIndex, retryIndex, result,
+        };
+      };
+      let detachedAcknowledged = false;
+      /** @type {ReadonlyArray<Object>|undefined} */
+      let detachedMessages;
       /** @type {RuntimeResult|null} */
       let lastRouteSkip = null;
       const promptBase = systemPrompt;
@@ -239,6 +215,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             cancelled: false,
             usage: {},
           };
+          if (i === 0) markPendingDetach(entry.model, i, 0, lastRouteSkip);
           // A settled user abort may have no provider failure. Preserve that
           // distinction in attempt evidence used by strict native-tail recovery.
           failoverHistory.push({
@@ -277,6 +254,19 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           let attemptRuntime = inner;
           /** @type {(() => (void|Promise<void>))|undefined} */
           let attemptCleanup;
+          // Strip ownership before private resolution: detached retries/backups
+          // may select their own native root but never inherit primary authority.
+          const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
+          if (!sessionEligibleAttempt) {
+            delete callOptions.nativeSessionAuthority;
+            delete callOptions.nativeSessionProjection;
+            delete callOptions.sessionTurn;
+            delete callOptions.sessionRecovery;
+            delete callOptions.sessionId;
+            delete callOptions.providerSessionId;
+            delete callOptions.sessionKeepAlive;
+            delete callOptions.sessionIdleTimeoutMs;
+          }
           try {
             const resolved = resolveAttempt === undefined
               ? undefined
@@ -300,6 +290,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
             const failure = attemptResolutionFailureResult(error);
             lastResult = failure;
+            if (i === 0 && retryIndex === 0) markPendingDetach(entry.model, i, retryIndex, failure);
             failoverHistory.push({
               model: entry.model,
               failureKind: failure.failureKind || null,
@@ -309,33 +300,84 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             break;
           }
 
-          // Admission fence: a route runtime may settle side effects late (e.g.
-          // acknowledge a live input during backoff or while the resolver ran).
-          // Re-check the failed attempt immediately before admitting another.
-          const lateEffects = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
-          const lateReason = lateEffects === undefined ? null : sideEffectReason(lateEffects.effects);
-          if (lateEffects !== undefined && lateReason !== null) {
-            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-            const blocked = failoverBlockedResult(lateEffects.result, modelKey(lateEffects.model), lateReason);
-            emit(callOptions, { type: "runtime_warning", ...blocked.warning });
-            return { ...blocked.result, failoverHistory };
-          }
+          // Recheck late effects and cancellation after each awaited boundary.
+          // Admission itself is synchronous: no await may follow its final check.
+          const admitAttempt = () => {
+            const failed = failedAttempts.find((attempt) => sideEffectReason(attempt.effects) !== null);
+            const reason = failed === undefined ? null : sideEffectReason(failed.effects);
+            if (failed !== undefined && reason !== null) {
+              const blocked = failoverBlockedResult(failed.result, modelKey(failed.model), reason);
+              emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+              return { ...normalizeAttemptResult(blocked.result, !detachedAcknowledged), failoverHistory };
+            }
+            if (!sessionEligibleAttempt && callOptions.abortSignal?.aborted) {
+              return { ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [], cancelled: true }, !detachedAcknowledged), cancelled: true, failoverHistory };
+            }
+          };
+          // No yield on acceptance: the final fence must reach run synchronously.
+          const checkedAdmission = () => {
+            const admission = admitAttempt();
+            if (admission) return (async () => {
+              try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+              return admission;
+            })();
+          };
+          let admission = checkedAdmission();
+          if (admission) return admission;
 
           applyEntryEffort(callOptions, entry.effort);
           // Only the primary's first attempt may own a provider session. Retries
           // replay the logical turn and must not resume a transcript the failed
           // attempt may have appended to; backup routes never inherit that session.
-          const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
           if (!sessionEligibleAttempt) {
-            delete callOptions.sessionRecovery;
-            delete callOptions.sessionId;
-            delete callOptions.providerSessionId;
-            delete callOptions.sessionKeepAlive;
-            delete callOptions.sessionIdleTimeoutMs;
             // A stateless attempt must not present itself as the primary's
             // session (Pi session id, OpenCode x-opencode-session header).
             callOptions.providerAttributionSessionId = randomUUID();
           }
+          if (i === 0 && retryIndex === 0 && !sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex,
+            { text: null, error: "Primary route cannot own the protected native session", failureKind: "skipped_capability_mismatch", events: [], cancelled: false, usage: {} });
+          delete callOptions.onSessionTurnDetached;
+          delete callOptions.detachedContext;
+          if (pendingDetach && !sessionEligibleAttempt) {
+            const detachment = pendingDetach;
+            try {
+              if (typeof options.onSessionTurnDetached !== "function") throw new Error("Detached native turn acknowledgement unavailable");
+              await options.onSessionTurnDetached(pendingDetach);
+              pendingDetach = undefined;
+              detachedAcknowledged = true;
+            } catch {
+              try { await attemptCleanup?.(); } catch { /* retain native evidence */ }
+              return { ...normalizeAttemptResult(lastResult || lastRouteSkip || detachment.result, false), error: "Protected native turn could not be durably detached", failureKind: "safety_session_turn_reconciliation",
+                retryable: false, failoverHistory };
+            }
+          }
+          admission = checkedAdmission();
+          if (admission) return admission;
+
+          // Host replay is private, lazy and shared across detached attempts.
+          // Replace the prior prefix, rather than doubling cold-turn history.
+          if (!sessionEligibleAttempt && !callOptions.abortSignal?.aborted && typeof options.detachedContext === "function") {
+            try {
+              if (detachedMessages === undefined) {
+                const replay = structuredClone(await options.detachedContext());
+                if (!Array.isArray(replay)) throw new Error("Invalid detached replay");
+                detachedMessages = freezeDetachedContext(replay);
+              }
+            } catch {
+              try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+              if (callOptions.abortSignal?.aborted) return {
+                ...normalizeAttemptResult(lastResult || lastRouteSkip || { text: null, events: [] }, !detachedAcknowledged), cancelled: true, failoverHistory,
+              };
+              const warning = { warning_kind: "detached_context_unavailable", source: "router",
+                message: "Conversation history unavailable; no retry or backup model was started." };
+              const failure = normalizeAttemptResult(lastResult || lastRouteSkip || { error: "Conversation history unavailable", failureKind: "provider_unavailable", events: [] }, !detachedAcknowledged);
+              emit(callOptions, { type: "runtime_warning", ...warning });
+              return { ...failure, runtimeWarnings: [...(failure.runtimeWarnings || []), warning], failoverHistory };
+            }
+            callOptions.messages = [...detachedMessages, ...options.messages.slice(-1)];
+          }
+          admission = checkedAdmission();
+          if (admission) return admission;
           let attemptSystemPrompt = promptBase;
           if (pendingSnapshot) {
             callOptions.diagnosticsSeed = {
@@ -391,21 +433,18 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
               events: [],
               cancelled: false,
               usage: {},
+              ...(isDispatchProgress(err?.dispatchProgress) ? { dispatchProgress: err.dispatchProgress } : {}),
             };
           } finally {
             try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
           }
 
-          result = normalizeProviderAuthFailure(result);
-          if (!sessionEligibleAttempt) {
-            // Scrub once here so every return path (success, cancelled,
-            // terminal, exhausted) inherits it. Pi may report the attribution
-            // id as its session id even on a stateless call; never let host
-            // history synchronize or recover a session this attempt does not own.
-            const { providerSessionRecovery: _receipt, providerSessionId: _sessionId, ...unownedResult } = result;
-            result = unownedResult;
-          }
+          result = normalizeAttemptResult(result, sessionEligibleAttempt);
           if (Array.isArray(result.events) && result.events.some(isToolActivityEvent)) attemptEffects.tool = true;
+          if (isDispatchProgress(result.dispatchProgress)) {
+            if (result.dispatchProgress.toolAdmitted) attemptEffects.tool = true;
+            if (result.dispatchProgress.liveInputTaken) attemptEffects.liveInput = true;
+          }
 
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
@@ -439,7 +478,16 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             ...(retryIndex > 0 ? { retryIndex } : {}),
           });
           if (result.failureKind === "skipped_capability_mismatch") {
+            const blockedReason = sideEffectReason(attemptEffects);
+            if (blockedReason !== null && entries.slice(i + 1).some((next) => entrySatisfiesRequirements(next, options))) {
+              const blocked = failoverBlockedResult(result, modelKey(entry.model), blockedReason);
+              emit(callOptions, { type: "runtime_warning", ...blocked.warning });
+              terminalResult = blocked.result;
+              break;
+            }
+            failedAttempts.push({ effects: attemptEffects, model: entry.model, result });
             lastRouteSkip = result;
+            if (sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex, result);
             // A bridge-level mismatch is about this route, not the logical run.
             // Try the next entry and do not derive a transcript snapshot from it.
             break;
@@ -456,6 +504,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
             terminalResult = result;
             break;
           }
+          if (sessionEligibleAttempt) markPendingDetach(entry.model, i, retryIndex, result);
 
           // context_limit is forced retryable so the chain can reach a model with
           // a bigger window, but it is deterministic against the SAME window:
@@ -532,11 +581,107 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       } finally {
         await liveInputHub?.flush();
       }
+  }
+
+  return {
+    /**
+     * @param {string} systemPrompt
+     * @param {Partial<RuntimeRunOptions>} [options] Optional so a bare `{}` call
+     *   is legal; the router always overrides `model` per chain entry (see
+     *   AgentRuntimeInstance.run for the public, model-required contract).
+     * @returns {Promise<RuntimeResult>}
+     */
+    async run(systemPrompt, options = {}) {
+      if (options.manualCompaction === true) {
+        // A provider session belongs to exactly one route. Never retry/fail over
+        // a mutating manual operation against a different model or session.
+        const primary = entries[0];
+        if (!primary || !entrySupportsSessionResume(primary)
+          || (options.model && modelKey(options.model) !== modelKey(primary.model))) {
+          throw new Error("Manual compaction is unavailable for this session model.");
+        }
+        /** @type {*} */
+        let attemptOptions = { ...options, model: primary.model };
+        delete attemptOptions.detachedContext;
+        let attemptRuntime = inner;
+        let cleanup;
+        try {
+          const resolution = normalizeAttemptResolution(await resolveAttempt?.({
+            model: primary.model, attemptIndex: 0, retryIndex: 0,
+          }));
+          cleanup = resolution?.cleanup;
+          if (resolution) {
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptOptions(attemptOptions, resolution.options));
+            attemptOptions = /** @type {typeof attemptOptions} */ (mergeAttemptPolicyOptions(attemptOptions, resolution.policyOptions));
+            if (resolution.runtime) {
+              assertRuntimeLike(resolution.runtime);
+              attemptRuntime = resolution.runtime;
+              projectPiRuntimeToolContext(attemptRuntime, effectiveRouterToolOptions(host, configuredTools));
+            }
+          }
+          applyEntryEffort(attemptOptions, primary.effort);
+          return await attemptRuntime.run(systemPrompt, attemptOptions);
+        } finally {
+          await cleanup?.();
+        }
+      }
+      return runAttemptLoop(systemPrompt, options);
+    },
+    // Preparation is a primary-only single attempt, never a routed retry or
+    // backup. A custom resolver must explicitly certify native ownership.
+    async prepareNativeDispatch(systemPrompt, options) {
+      const primary = entries[0];
+      if (resolveAttempt !== undefined && sessionTurnReconciliation !== "v1"
+        || !primary || modelKey(options.model) !== modelKey(primary.model)
+        || !entrySupportsSessionResume(primary) || !entrySatisfiesRequirements(primary, options)) {
+        throw new Error("Router primary does not support native prepared dispatch");
+      }
+      let callOptions = snapshotNativeDispatchOptions({ ...options, model: primary.model }), attemptRuntime = inner;
+      const capturedTools = snapshotNativeDispatchOptions(effectiveRouterToolOptions(host, configuredTools));
+      /** @type {(() => (void|Promise<void>))|undefined} */ let cleanup;
+      let cleaned = false;
+      const release = async () => { if (!cleaned) { cleaned = true; await cleanup?.(); } };
+      try {
+        const resolution = normalizeAttemptResolution(await resolveAttempt?.({ model: primary.model, attemptIndex: 0, retryIndex: 0 }));
+        cleanup = resolution?.cleanup;
+        callOptions = mergeAttemptPolicyOptions(mergeAttemptOptions(callOptions, resolution?.options), resolution?.policyOptions);
+        applyEntryEffort(callOptions, primary.effort);
+        if (resolution?.runtime) {
+          assertRuntimeLike(resolution.runtime); attemptRuntime = resolution.runtime;
+          projectPiRuntimeToolContext(attemptRuntime, capturedTools);
+        }
+        if (!attemptRuntime.prepareNativeDispatch) throw new Error("Native prepared dispatch unavailable");
+        const lease = await attemptRuntime.prepareNativeDispatch(systemPrompt, callOptions);
+        let available = true, producing = false;
+        return { snapshot: lease.snapshot,
+          ...(lease.assertReady ? { assertReady: () => { if (!available || producing) throw new Error("Prepared dispatch is no longer available"); lease.assertReady(); } } : {}),
+          ...(lease.checkHandoffSummary ? { checkHandoffSummary: (input) => { if (!available) throw new Error("Prepared dispatch is no longer available"); return lease.checkHandoffSummary(input); } } : {}),
+          ...(lease.produceHandoffSummary ? { produceHandoffSummary: async (input) => { if (!available || producing) throw new Error("Prepared producer is no longer available"); const captured = structuredClone(input); producing = true; try { return await lease.produceHandoffSummary(captured); } finally { producing = false; } } } : {}),
+          run: async (input) => {
+            if (!available) throw new Error("Prepared dispatch is no longer available");
+            if (producing) throw new Error("Prepared handoff producer is still running");
+            const binding = prepareNativeDispatchBinding(input); // Rejection does not consume either lease.
+            available = false;
+            try {
+              const result = normalizeProviderAuthFailure(await lease.run(binding));
+              const retryability = retryableProviderFailureInfo({ errorText: result.error || "", stderrTail: result.stderrTail || "", failureKind: result.failureKind });
+              return { ...result, failoverHistory: result.error || result.failureKind || result.cancelled ? [{ model: primary.model,
+                failureKind: result.cancelled && !result.failureKind ? "cancelled" : (result.failureKind || null),
+                requestId: retryability.requestId, retryableSubkind: retryability.subkind }] : [] };
+            } finally { try { await lease.close(); } finally { await release(); } }
+          },
+          close: async () => { available = false; try { await lease.close(); } finally { await release(); } } };
+      } catch (error) { await release(); throw error; }
     },
     chain: () => entries.slice(),
     configureTools(next = {}) {
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
+    },
+    sessionTurnReconciliation: resolveAttempt === undefined ? inner.sessionTurnReconciliation : sessionTurnReconciliation,
+    async reconcileSessionTurn(request) {
+      if (!inner.reconcileSessionTurn) throw new Error("Native turn reconciliation unavailable");
+      return inner.reconcileSessionTurn(request);
     },
     async recoverSession(receipt, context) {
       return await inner.recoverSession?.(receipt, context) === true;
@@ -554,11 +699,12 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       if (typeof inner.salvageDurableSession !== "function") throw new Error("Durable session salvage unavailable");
       return inner.salvageDurableSession(providerSessionId, sessionsRoot);
     },
-    async retireDurableSession(providerSessionId, sessionsRoot) {
+    async retireDurableSession(providerSessionId, sessionsRoot, deletionOptions) {
       if (typeof inner.retireDurableSession !== "function") {
         throw new Error("A routed runtime cannot retire durable provider-session state");
       }
-      await inner.retireDurableSession(providerSessionId, sessionsRoot);
+      return deletionOptions === undefined ? inner.retireDurableSession(providerSessionId, sessionsRoot)
+        : inner.retireDurableSession(providerSessionId, sessionsRoot, deletionOptions);
     },
     async disposeSession(providerSessionId) {
       return Boolean(await inner.disposeSession?.(providerSessionId));
@@ -774,7 +920,7 @@ function mergeAttemptOptions(base, resolved) {
   const merged = withoutAttemptScopedOptions(base);
   if (resolved === undefined) return merged;
   for (const [key, value] of Object.entries(resolved)) {
-    if (RESOLVER_PROTECTED_OPTION_KEYS.has(key)) {
+    if (RESOLVER_PROTECTED_OPTION_KEYS.has(key) || key === "piSessionsRoot" && base.nativeSessionAuthority !== undefined) {
       throw new ResolverProtectedOptionError(key);
     }
     if (value !== undefined) merged[key] = value;
@@ -863,8 +1009,10 @@ const LIVE_INPUT_TAKEN_EVENTS = new Set([
 ]);
 
 /**
- * A live input the provider consumed (or may have consumed). An input that is
- * only leased or queued and then removed stays replayable by a later attempt.
+ * Event evidence for consumed/uncertain live input on marker-less runtimes.
+ * Their removed, unconsumed inputs remain mailbox-replay-safe. Real Pi also
+ * gates on liveInputTaken at iterator yield, even if native later removes it;
+ * only never-yielded inputs can reach another Pi attempt.
  * @param {*} event
  * @returns {boolean}
  */
@@ -1048,4 +1196,28 @@ function normalizeProviderAuthFailure(result) {
   const haystack = `${result.error || ""}\n${result.stderrTail || ""}`;
   if (!isProviderAuthFailureText(haystack)) return result;
   return { ...result, failureKind: "provider_auth" };
+}
+
+/**
+ * Normalize every attempt result, including a failed detach acknowledgement.
+ * Stateless attempts must never synchronize or recover the primary session.
+ * @param {RuntimeResult} result
+ * @param {boolean} sessionEligibleAttempt
+ * @returns {RuntimeResult}
+ */
+function normalizeAttemptResult(result, sessionEligibleAttempt) {
+  const normalized = normalizeProviderAuthFailure(result);
+  if (sessionEligibleAttempt) return normalized;
+  const { providerSessionRecovery: _receipt, providerSessionId: _sessionId, ...unownedResult } = normalized;
+  return unownedResult;
+}
+
+/** Freeze the private replay snapshot, including nested attachment data.
+ * @template T @param {T} value @returns {T} */
+function freezeDetachedContext(value) {
+  if (value && typeof value === "object") {
+    Object.values(value).forEach(freezeDetachedContext);
+    Object.freeze(value);
+  }
+  return value;
 }

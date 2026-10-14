@@ -5,6 +5,7 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { JournalReader } from "@mono-agent/harness/journal-reader.js";
 import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/pi-native/session-salvage.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,12 +71,12 @@ async function open(root, options = {}) {
         || phase === "acknowledge" && options.certificateBoundary === "certificate-after-ack";
       if (pauseBefore) {
         certificate = publication;
-        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+        await new Promise(() => { setInterval(() => {}, 1_000); }); // Only the proof parent may SIGKILL this owner.
       }
       await instances.publishOwned(phase, publication);
       if (pauseAfter) {
         certificate = publication;
-        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+        await new Promise(() => { setInterval(() => {}, 1_000); }); // Only the proof parent may SIGKILL this owner.
       }
     },
   });
@@ -85,11 +86,16 @@ async function open(root, options = {}) {
 }
 async function sessionFile(instances) {
   const instance = await instances.get("proof");
-  const directories = await readdir(instance.sessionsRoot, { withFileTypes: true });
+  const directory = resolve(instance.sessionsRoot, "mono-v2", "journals");
   const paths = [];
-  for (const directory of directories) if (directory.isDirectory()) {
-    const parent = resolve(instance.sessionsRoot, directory.name);
-    for (const file of await readdir(parent)) if (file.endsWith(`_${instance.sessionId}.jsonl`)) paths.push(resolve(parent, file));
+  for (const file of await readdir(directory, { withFileTypes: true })) {
+    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+    const path = resolve(directory, file.name);
+    const reader = await JournalReader.open(path, instance.sessionsRoot);
+    try {
+      const header = await reader.readHeader();
+      if (header.format === "mono-harness" && header.version === 2 && header.id === instance.sessionId) paths.push(path);
+    } finally { await reader.close(); }
   }
   assert.equal(paths.length, 1);
   return { path: paths[0], instance };
@@ -107,7 +113,7 @@ async function owner(root, scenario) {
     const mutate = f.store.mutate.bind(f.store);
     f.store.mutate = async (...args) => {
       const result = await mutate(...args);
-      if ((await f.store.list()).some((record) => record.subagentOwnership?.command?.state === phase)) await new Promise(() => {});
+      if ((await f.store.list()).some((record) => record.subagentOwnership?.command?.state === phase)) await new Promise(() => { setInterval(() => {}, 1_000); });
       return result;
     };
   }
@@ -188,7 +194,7 @@ async function owner(root, scenario) {
   await writeFile(resolve(root, "proof.json"), JSON.stringify(evidence));
   process.send({ ready: true });
   // Kept alive only until the foreground proof parent sends physical SIGKILL.
-  await new Promise(() => {});
+  await new Promise(() => { setInterval(() => {}, 1_000); });
 }
 async function recover(root, expectedWakes, attempt) {
   const proof = JSON.parse(await readFile(resolve(root, "proof.json"), "utf8"));

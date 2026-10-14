@@ -25,7 +25,7 @@ describe("owner association backfill", () => {
   it("uses explicit owner labels regardless of language, never prose or pronouns", () => {
     const reason = (text: string, refs: string[] = []) => ownerAssociationReason({ text, refs });
     const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
-      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
+      value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" });
     const agentPreference = encodeMemoryLabel({ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" });
     const guestPreference = encodeMemoryLabel({ v: 1, kind: "preference", scope: "conversation:guest-room", attribution: "user-stated" });
     for (const text of ["The user prefers short replies.", "User moved to Example City.",
@@ -40,10 +40,10 @@ describe("owner association backfill", () => {
   it("proposes only unlinked live owner-labelled lines and reports counts", () => {
     const path = memoryRoot();
     const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
-      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
+      value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" });
     seed(path, "fictional-a", "The user prefers short replies.");
     seed(path, "fictional-b", "Mi casa está en la ciudad.");
-    appendBullet(path, { id: "fictional-c", text: "The user was born on 1990-05-17.", type: "note", status: "open",
+    appendBullet(path, { id: "fictional-c", text: "The user was born on 2000-01-01.", type: "note", status: "open",
       salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     seed(path, "fictional-d", "Morgan likes Maple.");
     // The labelled text may be in any language.
@@ -62,8 +62,8 @@ describe("owner association backfill", () => {
   it("refuses stale, dropped and re-qualified owner labels before backup", () => {
     const path = memoryRoot();
     const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
-      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
-    appendBullet(path, { id: "fictional-a", text: "Data: 1990-05-17.", type: "note", status: "open",
+      value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" });
+    appendBullet(path, { id: "fictional-a", text: "Data: 2000-01-01.", type: "note", status: "open",
       salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     const [association] = proposeOwnerAssociations(path).associations;
     expect(previewCurateMutations(path, [], undefined, [], [association!])).toEqual(["fictional-a"]);
@@ -77,7 +77,7 @@ describe("owner association backfill", () => {
     const rewrite = { source, action: "rewrite" as const, text: "Morgan likes Maple.", accepted: true };
     expect(() => previewCurateMutations(path, [rewrite], undefined, [], [association!])).toThrow(/rewrite invalidates owner association/u);
     expect(previewCurateMutations(path, [rewrite], undefined, [], [{ ...association!, accepted: false }])).toEqual([]);
-    expect(previewCurateMutations(path, [{ ...rewrite, text: "Fecha: 1990-05-17." }], undefined, [], [association!]))
+    expect(previewCurateMutations(path, [{ ...rewrite, text: "Fecha: 2000-01-01." }], undefined, [], [association!]))
       .toEqual(["fictional-a"]);
     rewriteBullet(path, source.file, source.id, { text: "Otra ciudad." });
     expect(() => previewCurateMutations(path, [], undefined, [], [association!])).toThrow(/stale owner association/u);
@@ -94,7 +94,7 @@ describe("owner association backfill", () => {
     const path = memoryRoot();
     initializeReplayProjection(path);
     const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
-      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
+      value: { type: "date", date: "2000-01-01" }, attribution: "user-stated" });
     appendBullet(path, { id: "fictional-a", text: "The user planned the Maple project.", type: "note", status: "open",
       salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     seed(path, "fictional-b", "Morgan likes the Maple project.");

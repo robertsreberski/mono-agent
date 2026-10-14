@@ -1,3 +1,5 @@
+import { createDispatchProgress, withDispatchProgress } from "./pi-native/dispatch-progress.js";
+import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, repairInterruptedSession } from "@mono-agent/harness";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
@@ -90,6 +92,9 @@ import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./pi-native/empty-rep
 import { finalReplyText } from "./pi-native/reply-text.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
+import { appendStructuredOutputInstruction } from "./pi-native/structured-output.js";
+import { prepareNativeHandoffSummaryRequest, produceNativeHandoffSummary } from "./pi-native/handoff-producer.js";
+import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./pi-native/prepared-dispatch.js";
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
@@ -168,11 +173,14 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
   const read = async (providerId) => readCredential(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
   return /** @type {any} */ ({
     read,
+    // The callback-only fallback below can derive auth but cannot persist an
+    // OAuth rotation. Ordinary refresh requires a persisting resolver.
     async modify(providerId, fn) {
       if (!apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function") {
         return resolvePiApiKey.modifyCredential(providerId, fn);
       }
       const current = await read(providerId);
+      if (current?.type === "oauth") throw new Error("OAuth modification requires a persisting credential resolver");
       const next = await fn(current);
       if (apiKeys?.has(providerId) && next?.type === "api_key" && typeof next.key === "string") {
         apiKeys.set(providerId, next.key);
@@ -197,7 +205,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
 // resolved model. `piResolvedModels` is an advanced/test seam mirroring
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
-function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId) {
+function buildRunModels(runtime, options, runtimeWarnings) {
   let models;
   if (options.piResolvedModels) {
     models = options.piResolvedModels;
@@ -223,10 +231,7 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
       });
     }
   }
-  return withProviderCheckOutputCap(
-    withOpenCodeSessionHeaders(withContext1MModels(models, options.customProvider ? undefined : options.context1MModels), providerAttributionSessionId),
-    options.providerCheckMaxTokens,
-  );
+  return withContext1MModels(models, options.customProvider ? undefined : options.context1MModels);
 }
 
 const PROVIDER_CHECK_REQUEST_METHODS = new Set([
@@ -323,6 +328,26 @@ function splitUserContent(content) {
 }
 
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
+  return await executePiNativeResponse(systemPrompt, options);
+}
+
+/** Additive preparation only. No configured host invokes it yet. */
+export function preparePiNativeDispatch(systemPrompt, options = {}, afterSettlement = async () => {}) {
+  const frozen = snapshotNativeDispatchOptions(options);
+  return createPreparedDispatchLease((control) => executePiNativeResponse(systemPrompt, frozen, control).finally(afterSettlement), frozen.abortSignal);
+}
+
+async function executePiNativeResponse(systemPrompt, options = {}, control = undefined) {
+  const dispatchProgress = createDispatchProgress();
+  try {
+    const result = await executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress);
+    return { ...result, dispatchProgress: Object.freeze({ ...dispatchProgress }) };
+  } catch (error) {
+    throw withDispatchProgress(error, dispatchProgress);
+  }
+}
+
+async function executeTrackedPiNativeResponse(systemPrompt, options, control, dispatchProgress) {
   if (Object.hasOwn(options, "settings")) {
     throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
   }
@@ -366,6 +391,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   // `runtimeWarnings` stay as consts shared by reference. `toolStartTimes` maps
   // toolCallId -> start timestamp so per-tool execution latency can be emitted.
   const runState = {
+    dispatchProgress,
     assistantTexts: [],
     assistantThinking: [],
     textDeltaIndexes: new Set(),
@@ -435,28 +461,50 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // (host/runtime-side throws after the session mutated) can roll back too, not
     // just the success path.
     baselineLeafId: null,
+    hasBaselineLeaf: false,
     recoveryOperationId: undefined,
     recoveryInputIds: null,
     retainRecoveryTail: false,
   };
 
-  const providerSessionId = options.sessionId
+  let providerSessionId = options.sessionId
     || options.providerSessionId
     || options.providerAttributionSessionId
     || options.runId
     || randomUUID();
-  const providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
+  const validateProtectedTurn = () => {
+    if (options.sessionTurn !== undefined) {
+      try {
+        validateSessionTurn(options.sessionTurn, providerSessionId);
+        if (options.sessionTurn.reconciliation && (typeof options.piSessionsRoot !== "string" || !options.piSessionsRoot.trim()
+          || options.sessionKeepAlive !== true || options.sessionTurn.reconciliation.purpose !== (options.manualCompaction ? "compaction" : "execution"))) {
+          throw new TypeError("Reconciliation requires a durable kept-alive turn of matching purpose");
+        }
+        runState.preserveTurnEvidence = !!options.sessionTurn.reconciliation;
+        if (options.sessionRecovery && (options.sessionRecovery.runId !== options.sessionTurn.turnId
+          || (options.sessionTurn.baseRevision !== null && options.sessionRecovery.revision !== options.sessionTurn.baseRevision))) {
+          throw new TypeError("sessionTurn and sessionRecovery identities disagree");
+        }
+      } catch {
+        return { ...buildErrorResult({ assistantTexts: [], events, start, turnCount: 0, resolved, options,
+          externalAbort: false, errorMessage: "Invalid protected sessionTurn host contract", providerSessionId,
+          runtimeWarnings, isRetryable: false }), failureKind: "safety_session_turn_contract", retryable: false };
+      }
+    }
+  };
+  if (!control) { const invalid = validateProtectedTurn(); if (invalid) return invalid; }
+  let providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
   // Prefer the explicit sessionId, but fall back to providerSessionId so a caller
   // that only supplies providerSessionId still resumes the prior session instead
   // of being treated as a fresh run (which would drop prior context).
-  const requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
+  let requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
     ? options.sessionId
     : (typeof options.providerSessionId === "string" && options.providerSessionId.trim()
       ? options.providerSessionId
       : null);
   // Bridge TTL is a backstop behind the host's session policy; the grace
   // keeps host-side lazy expiry firing first.
-  const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
+  let sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
     ? Number(options.sessionIdleTimeoutMs) + 60_000
     : undefined;
   let structuredOutputFinalizationRetryAttempts = 0;
@@ -497,32 +545,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
   }
 
+  // Host-owned capabilities/content are snapshotted before any asynchronous
+  // preparation; functions retain the held owner's original closure.
+  if (options.nativeSessionAuthority || options.nativeSessionProjection) options = { ...options,
+    nativeSessionAuthority: options.nativeSessionAuthority && { ...options.nativeSessionAuthority,
+      hostAuthority: structuredClone(options.nativeSessionAuthority.hostAuthority) },
+    nativeSessionProjection: options.nativeSessionProjection && structuredClone(options.nativeSessionProjection) };
   const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
 
-  try {
-    // Resume the session (warm registry hit, durable cold reopen, or
-    // create-on-miss for a durable cross-restart first turn) or create a fresh
-    // one. resolveSession mutates runState.session / sessionEntry / createdOnMiss
-    // / reservation, and returns an early fast-fail result (session_not_found /
-    // session_busy) to return verbatim. Its liveness claims (I1 busy-claim, R8
-    // reservation, F4 cold-reopen re-read) are await-free by construction. A
-    // session miss stays cheap: no tool/MCP/harness init runs before this
-    // fast-fail.
-    const resolvedSession = await resolveSession(runState, {
-      requestedSessionId,
-      providerSessionId,
-      durableRepo,
-      sessionTtlMs,
-      cwd: options.cwd,
-      resolved,
-      options,
-      events,
-      runtimeWarnings,
-      start,
-      piTransport,
-    });
-    if (resolvedSession.done) return resolvedSession.result;
-
+  const prepareRun = async () => {
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
     // capabilities, bypassing the static model-registry lookup. Production
@@ -599,9 +630,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     // Provider retry/backoff is delegated to pi-ai via streamOptions, replacing
     // the legacy hand-rolled stream-retry loop.
-    const maxRetries = Number.isFinite(Number(options.piMaxRetries))
-      ? Math.max(0, Math.min(8, Number(options.piMaxRetries)))
-      : 2;
+    const retryValue = typeof options.piMaxRetries === "string" && options.piMaxRetries.trim() !== ""
+      ? Number(options.piMaxRetries) : options.piMaxRetries;
+    const maxRetries = Number.isFinite(retryValue) ? Math.max(0, Math.min(8, retryValue)) : 2;
     const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs))
       ? Number(options.maxRetryDelayMs)
       : 60_000;
@@ -609,7 +640,82 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // independent from piToolExecutionMode; the adapter gates invoked calls.
     const toolSteeringMode = "one-at-a-time";
 
-    const piModels = buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId);
+    const basePiModels = buildRunModels(runtime, options, runtimeWarnings);
+    const piModels = withProviderCheckOutputCap(withOpenCodeSessionHeaders(basePiModels, providerAttributionSessionId), options.providerCheckMaxTokens);
+
+    return { runtime, capabilities, effectiveThinkingLevel, reference, toolLimits, effectiveToolExecutionMode,
+      tools, structuredTool, maxRetries, maxRetryDelayMs, toolSteeringMode, basePiModels, piModels };
+  };
+
+  try {
+    const prepared = control ? await prepareRun() : undefined;
+    if (prepared) {
+      if (runtimeWarnings.some((warning) => ["mcp_init_failed", "mcp_list_tools_failed"].includes(warning.warning_kind))) {
+        throw new Error("Native dispatch preparation requires complete MCP declarations");
+      }
+      const auth = await prepareDispatchAuth(prepared.basePiModels, prepared.runtime.model, options.abortSignal);
+      if (auth.model.provider !== resolved.provider || auth.model.id !== resolved.model) throw new Error("Prepared dispatch does not match its canonical requested model");
+      prepared.runtime = { ...prepared.runtime, model: auth.model };
+      // Pin actual declarations, not names/config guesses; execute closures stay
+      // attached to this exact runState and are never initialized a second time.
+      for (const tool of prepared.tools) tool.parameters = freezeDispatchData(copyDispatchData(tool.parameters));
+      systemPrompt = appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts);
+      const binding = await control.ready({ systemPrompt, messages: structuredClone(options.messages ?? []),
+        model: { provider: auth.model.provider, id: auth.model.id, api: auth.model.api,
+          contextWindow: auth.model.contextWindow, maxTokens: auth.model.maxTokens },
+        tools: prepared.tools.map(({ name, description, parameters }) => ({ name, description, parameters: structuredClone(parameters) })),
+        compactionSummaryMaxTokens: resolveAgentCompactionPolicy(options, auth.model).summaryMaxTokens,
+        provenance: auth.provenance }, {
+        assertReady: () => options.abortSignal?.throwIfAborted(),
+        check: (input) => { options.abortSignal?.throwIfAborted(); const result = prepareNativeHandoffSummaryRequest({ ...input, model: auth.model });
+          return result.status === "ready" ? { status: "ready" } : result; },
+        run: (input) => produceNativeHandoffSummary({ ...input, model: auth.model, completeSimple: prepared.piModels.completeSimple.bind(prepared.piModels),
+          signal: options.abortSignal, completionOptions: { transport: options.piTransport ?? "sse" } }),
+      });
+      options.abortSignal?.throwIfAborted(); // Before any native lookup/open or incoming mutation.
+      options = { ...options, ...binding };
+      providerSessionId = options.sessionId || options.providerSessionId || options.providerAttributionSessionId || options.runId || providerSessionId;
+      providerAttributionSessionId = options.providerAttributionSessionId || providerSessionId;
+      requestedSessionId = options.sessionId || options.providerSessionId || null;
+      sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs)) ? Number(options.sessionIdleTimeoutMs) + 60_000 : undefined;
+      prepared.piModels = withProviderCheckOutputCap(withOpenCodeSessionHeaders(auth.models, providerAttributionSessionId), options.providerCheckMaxTokens);
+      const invalid = validateProtectedTurn(); if (invalid) return invalid;
+      options.abortSignal?.throwIfAborted();
+    }
+    // Resume the session (warm registry hit, durable cold reopen, or
+    // create-on-miss for a durable cross-restart first turn) or create a fresh
+    // one. resolveSession mutates runState.session / sessionEntry / createdOnMiss
+    // / reservation, and returns an early fast-fail result (session_not_found /
+    // session_busy) to return verbatim. Its liveness claims (I1 busy-claim, R8
+    // reservation, F4 cold-reopen re-read) are await-free by construction. A
+    // ordinary session miss stays cheap: no tool/MCP/harness init runs before
+    // this fast-fail. The explicit prepared path has already resolved its tools.
+    try {
+      const resolvedSession = await resolveSession(runState, {
+        requestedSessionId,
+        providerSessionId,
+        durableRepo,
+        sessionTtlMs,
+        cwd: options.cwd,
+        resolved,
+        options,
+        events,
+        runtimeWarnings,
+        start,
+        piTransport,
+      });
+      if (resolvedSession.done) return resolvedSession.result;
+    } finally {
+      if (durableRepo?.rootPermissionWarningPending) {
+        durableRepo.rootPermissionWarningPending = false;
+        const warning = { warning_kind: "pi_sessions_root_permissions_tightened", source: "pi",
+          message: "Owned durable sessions root permissions tightened to 0700; other-user read access removed." };
+        runtimeWarnings.push(warning); onEvent({ type: "runtime_warning", ...warning });
+      }
+    }
+
+    const { runtime, capabilities, effectiveThinkingLevel, reference, toolLimits, effectiveToolExecutionMode,
+      tools, structuredTool, maxRetries, maxRetryDelayMs, toolSteeringMode, piModels } = prepared ?? await prepareRun();
 
     // Construct the harness and recover any interrupted durable operation.
     // Stream subscription and the external abort handler are activated only
@@ -621,7 +727,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,
       systemPrompt,
-      outputSchema: options.outputSchema,
+      outputSchema: control ? undefined : options.outputSchema,
       tools,
       toolExecutionMode: effectiveToolExecutionMode,
       transport: piTransport,
@@ -631,6 +737,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       options,
     });
 
+    if (options.nativeSessionProjection) {
+      runState.session.setInheritedProjection(options.nativeSessionProjection.inherited);
+    }
     // Seed prior transcript (everything before the trailing user turn) into the
     // harness-owned session. On a true resume the session already holds the
     // transcript, so prior messages are skipped; a fresh run AND a create-on-miss
@@ -640,7 +749,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? { priorMessages: toAgentMessages(options.messages || [], runtime.model), promptText: "", promptImages: [] }
       : splitPromptMessages(options.messages, runtime.model);
     runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-    if (!requestedSessionId || runState.createdOnMiss) {
+    if (!options.nativeSessionProjection && (!requestedSessionId || runState.createdOnMiss
+      || control && options.nativeSessionAuthority && runState.sessionBaselineCount === 0)) {
       for (const message of priorMessages) {
         await harness.appendMessage(message);
         runState.sessionBaselineCount += 1;
@@ -652,9 +762,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // the last good transcript via the session tree's moveTo primitive. Only a
     // TRUE resume needs this: a create-on-miss session is fresh, so a failure
     // drops it entirely via the fresh-run path (no leaf to roll back to).
-    if (requestedSessionId && !runState.createdOnMiss) {
-      try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
+    if (requestedSessionId && (!runState.createdOnMiss || runState.sessionEntry)) {
+      try { runState.baselineLeafId = await runState.session.getLeafId(); runState.hasBaselineLeaf = true; } catch { /* best-effort */ }
     }
+
+    // One logical turn encompasses proactive/manual compaction and every prompt
+    // operation, including reactive overflow re-prompts. Bind ownership only from
+    // the protected descriptor; recovery opt-in alone never binds an owner.
+    const recoveryIdentity = options.sessionRecovery;
+    const hasHostIdentity = typeof recoveryIdentity?.runId === "string" && recoveryIdentity.runId.length > 0
+      && recoveryIdentity.runId.length <= 512 && Number.isSafeInteger(recoveryIdentity.revision) && recoveryIdentity.revision >= 0;
+    const descriptor = options.sessionTurn;
+    await harness.beginTurn(descriptor?.turnId ?? (options.manualCompaction ? undefined : hasHostIdentity ? recoveryIdentity.runId : undefined),
+      options.manualCompaction ? "synthetic" : descriptor?.kind ?? (hasHostIdentity ? "host" : "synthetic"), descriptor);
 
     if (options.manualCompaction === true) {
       // The same resolve/reopen/seed path as a turn, but without a user prompt,
@@ -692,6 +812,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       if (!terminal || terminal.status === "failed" || options.abortSignal?.aborted) {
         throw new Error("Manual compaction failed or was cancelled.");
       }
+      await harness.endTurn("completed", { text: "", error: null, failureKind: null, cancelled: false, stopReason: "compaction" });
       await commitSession(runState, {
         options,
         requestedSessionId,
@@ -739,6 +860,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // deleted; the finally clears sessionEntry.busy, removes the abort handler,
       // and closes MCP clients. For a resume no transcript was appended yet
       // (prompt never ran), so the live session needs no rollback.
+      await harness.endTurn("aborted", { text: null, error: null, failureKind: null, cancelled: true, stopReason: "aborted_before_prompt" });
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
@@ -754,10 +876,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       compaction: options.compaction,
       contextWindowOverride: options.compaction?.contextWindowOverride,
     });
-    await runProactiveCompaction(runState, {
+    if (!options.nativeSessionProjection?.dispatchBudget) await runProactiveCompaction(runState, {
       harness,
       systemPrompt,
-      options,
+      options: control ? { ...options, outputSchema: undefined } : options,
       tools,
       promptText,
       promptImages,
@@ -773,7 +895,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // the lane's compaction settings into the operation at accept time, so this
     // must happen BEFORE harness.prompt(); the same-operation compaction never
     // starts a second run and so cannot disturb the live-input epoch below.
-    midRunCompaction = await armMidRunCompaction(runState, {
+    midRunCompaction = options.nativeSessionProjection?.dispatchBudget ? { disarm: async () => {} } : await armMidRunCompaction(runState, {
       harness,
       options,
       reference,
@@ -793,12 +915,13 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // accept is ordered after it, so Pi cancels the admitted operation itself.
     // The finally below disarms mid-run compaction.
     if (options.abortSignal?.aborted) {
+      await harness.endTurn("aborted", { text: null, error: null, failureKind: null, cancelled: true, stopReason: "aborted_before_prompt" });
       await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
 
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
-    const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch });
+    const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch, dispatchProgress });
 
     // Report the live harness value, not a downstream recreation of Pi's
     // thinking-level normalization. This also captures any future adapter-side
@@ -831,6 +954,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           liveInputEpoch.confirm(operationId);
         },
       });
+      if (promptResult.suspended) {
+        await runState.session.rawSession.sync();
+        throw new NativeSuspendedError();
+      }
       runError = promptResult.runError;
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
@@ -895,7 +1022,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Reactive recovery: if the turn ended in a context overflow and we have not
     // already compacted-and-retried this run, compact once and re-prompt once
     // (and re-capture state). Learns the real window ceiling from the error.
-    ({ state, runError } = await runReactiveCompaction(runState, {
+    if (!options.nativeSessionProjection?.dispatchBudget) ({ state, runError } = await runReactiveCompaction(runState, {
       harness,
       runtime,
       resolved,
@@ -1063,12 +1190,45 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // tracks LIVENESS so disposeProviderSession / idle-TTL eviction can reach
     // native sessions, keep-alive registers the session, and a failed/aborted
     // resumed turn rolls back to its pre-turn leaf.
-    runState.retainRecoveryTail = !!durableRepo && options.sessionKeepAlive === true
+    runState.retainRecoveryTail = !runState.preserveTurnEvidence && !!durableRepo && options.sessionKeepAlive === true
       && !runState.maxTurnsHit
       && (!errorMessage || failureKindForPiError(errorMessage, diagnostics) === "provider_unavailable")
       && typeof options.sessionRecovery?.runId === "string" && options.sessionRecovery.runId.length > 0
+      && options.sessionRecovery.runId.length <= 512
       && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
       && typeof runState.recoveryOperationId === "string";
+    const silentAtSeal = runState.preserveTurnEvidence && runState.silentTurn.completed && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
+      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
+      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+    const buildFinalResult = () => buildSuccessResult({
+      finalText,
+      finalThinking,
+      events,
+      usage,
+      estimatedCost,
+      start,
+      turnCount: runState.turnCount,
+      runAssistantCount,
+      resolved,
+      options,
+      externalAbort: runState.externalAbort,
+      errorMessage,
+      errorDetails,
+      diagnostics,
+      maxTurnsHit: runState.maxTurnsHit,
+      providerSessionId,
+      runtimeWarnings,
+      capabilitiesUsed,
+      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
+      structuredResult: runState.structuredResult,
+      effectiveEffort: providerEffectiveEffort,
+    });
+    const finalResult = buildFinalResult();
+    await harness.endTurn(runState.externalAbort ? "aborted" : finalResult.error || finalResult.failureKind ? "failed" : "completed", {
+      text: finalResult.text, error: finalResult.error ?? null, failureKind: finalResult.failureKind ?? null,
+      cancelled: finalResult.cancelled === true, stopReason: diagnostics.pi_stop_reason ?? null,
+      ...(silentAtSeal ? { turnDisposition: "silent" } : {}),
+    });
     await commitSession(runState, {
       options,
       requestedSessionId,
@@ -1094,33 +1254,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? await captureSessionRecovery(runState, { options, providerSessionId, modelKey: `${resolved.provider}:${resolved.model}`, model: runtime.model, pending: !!errorMessage || runState.externalAbort })
       : undefined;
     if (runState.retainRecoveryTail) runState.externalAbort ||= !!options.abortSignal?.aborted;
-    const silentCertified = runState.silentTurn.completed
-      && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
-      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
-      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
-    return { ...buildSuccessResult({
-      finalText,
-      finalThinking,
-      events,
-      usage,
-      estimatedCost,
-      start,
-      turnCount: runState.turnCount,
-      runAssistantCount,
-      resolved,
-      options,
-      externalAbort: runState.externalAbort,
-      errorMessage,
-      errorDetails,
-      diagnostics,
-      maxTurnsHit: runState.maxTurnsHit,
-      providerSessionId,
-      runtimeWarnings,
-      capabilitiesUsed,
-      usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
-      structuredResult: runState.structuredResult,
-      effectiveEffort: providerEffectiveEffort,
-    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
+    const silentCertified = runState.preserveTurnEvidence ? silentAtSeal && !runState.externalAbort
+      : runState.silentTurn.completed && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
+        && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
+        && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+    return { ...(runState.preserveTurnEvidence ? finalResult : buildFinalResult()), cancelled: runState.externalAbort, ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
     ...(silentCertified ? { turnDisposition: "silent" } : {}) };
   } catch (err) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
@@ -1128,7 +1266,47 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
-    await cleanupSessionOnThrow(runState, { durableRepo });
+    if (runState.preserveTurnEvidence) {
+      try {
+        if (err instanceof NativeSuspendedError) await repairInterruptedSession(runState.session.rawSession);
+        else await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed", {
+          text: runState.assistantTexts.join("") || null, error: runState.externalAbort ? null : normalizePiErrorMessage(err?.message || String(err)),
+          failureKind: runState.externalAbort ? null : isJournalStorageError(err) ? "safety_journal_storage_failed"
+            : failureKindForPiError(normalizePiErrorMessage(err?.message || String(err)), {}, { maxTurnsHit: runState.maxTurnsHit }),
+          cancelled: runState.externalAbort, stopReason: "error",
+        });
+      } catch (sealError) {
+        if (isJournalStorageError(sealError)) err = sealError;
+        // Unsealed evidence is preserved; storage uncertainty is always terminal.
+      }
+      try { await cleanupSessionOnThrow(runState, { durableRepo }); }
+      catch (closeError) { if (isJournalStorageError(closeError)) err = closeError; }
+    } else if (err instanceof NativeSuspendedError) {
+      // Fresh suspension keeps disposal/reopen ownership without completion.
+      // A resumed suspension has no host receipt: use failed-turn rollback,
+      // not a retained recovery tail or deferred continuation.
+      try {
+        if (runState.sessionEntry) {
+          // A resumed suspension is a failed unreceipted host turn: seal it
+          // without projecting completion, then let normal commit roll back.
+          runState.retainRecoveryTail = false;
+          runState.sessionEntry.recoveryPending = false; delete runState.sessionEntry.recovery;
+          const raw = runState.session.rawSession;
+          for (const operation of (await raw.getOpenOperations()).reverse()) await raw.closeOperation(operation.operationId, "failed");
+          for (const turn of await raw.getOpenTurns()) await raw.endTurn(turn.turnId, "failed");
+          await raw.sync();
+        }
+        await commitSession(runState, { options, requestedSessionId, providerSessionId, durableRepo, sessionTtlMs,
+          externalAbort: false, errorMessage: runState.sessionEntry ? "Native provider suspended without a recovery receipt" : undefined, onEvent });
+
+      } catch (cleanupError) {
+        err = cleanupError;
+        await cleanupSessionOnThrow(runState, { durableRepo });
+      }
+    } else {
+      try { await harness?.endTurn?.(runState.externalAbort ? "aborted" : "failed"); } catch { /* preserve original error; reopen repairs unsealed work */ }
+      await cleanupSessionOnThrow(runState, { durableRepo });
+    }
     // The throw path still holds the original Error, so its cause chain is the
     // authoritative source here — no correlation guesswork needed.
     const errorMessage = annotateProviderErrorMessage(
@@ -1139,7 +1317,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       errorText: errorMessage,
       failureKind: "provider_unavailable",
     }).retryable;
-    return buildErrorResult({
+    const failure = buildErrorResult({
       assistantTexts: runState.assistantTexts,
       events,
       start,
@@ -1157,6 +1335,16 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       piTransport,
       effectiveEffort: harness?.getThinkingLevel?.(),
     });
+    if (err?.code === "ERR_NATIVE_SESSION_AUTHORITY" || err?.code === "ERR_HANDOFF_DISPATCH_BUDGET") {
+      return { ...failure, failureKind: err.code === "ERR_NATIVE_SESSION_AUTHORITY" ? "safety_native_session_authority" : "safety_handoff_dispatch_budget",
+        retryable: false, providerSessionRecovery: undefined };
+    }
+    if (isJournalStorageError(err)) {
+      return { ...failure, failureKind: "safety_journal_storage_failed", retryable: false, providerSessionRecovery: undefined,
+        ...(runState.preserveTurnEvidence ? { providerSessionId: undefined } : {}) };
+    }
+    return err instanceof NativeSuspendedError
+      ? { ...failure, failureKind: "safety_native_suspended", retryable: false, providerSessionRecovery: undefined } : failure;
   } finally {
     // Safety net for a throw between arming and the prompt: disarm is
     // idempotent, and it must run before the harness closes so the session's
@@ -1180,4 +1368,5 @@ export const piNativeRuntimeBridge = {
   capabilities: runtimeCapabilities("pi"),
   supports: (ref) => Boolean(ref?.provider && ref?.model),
   execute: generatePiNativeResponse,
+  prepareNativeDispatch: preparePiNativeDispatch,
 };

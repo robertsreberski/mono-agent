@@ -1,3 +1,4 @@
+export { digestNativeTurnInput, formatLiveInputGuidance } from "@mono-agent/agent-runtime/ai/live-input-prompt.js";
 export {
   assertParsedRuntimeModelReference,
   createMonoRuntime,
@@ -134,6 +135,12 @@ export type {
   MonoRuntimeCompactionRecord,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  RuntimeNativeJournalAuthority,
+  RuntimeNativeJournalDescriptor,
+  RuntimeNativeJournalRef,
+  RuntimeNativeEpochContext,
+  RuntimeNativeJournalStorage,
+  RuntimeNativeJournalDeletion,
   DurableSessionSalvage,
   MonoRuntimeParsedPricingModel,
   MonoRuntimePricing,
@@ -152,8 +159,21 @@ export type {
   RuntimeModelReference,
   PiTransport,
   RuntimePromptOverrides,
+  RuntimeDispatchProgress,
   RuntimeResult,
   RuntimeRunOptions,
+  RuntimeSessionTurnDescriptor,
+  RuntimeNativeSessionAuthority,
+  RuntimeNativeSessionProjection,
+  RuntimeNativeDispatchSnapshot,
+  RuntimeNativeDispatchBinding,
+  RuntimeNativePreparedDispatch,
+  RuntimeNativeEvidenceView, RuntimeNativePreparationStorage, RuntimePreparedHandoff, RuntimeHandoffBudget,
+  RuntimeHandoffSummary, RuntimeHandoffProducerRequest, RuntimeHandoffProducerResult, RuntimeHandoffFit, RuntimeHandoffOptions, RuntimeHandoffProposal,
+  RuntimeSessionTurnReconciliationRequest,
+  RuntimeSessionTurnReconciliationResult,
+  RuntimeSessionTurnResultSeal,
+  RuntimeSessionTurnDetachedAttempt,
   RuntimeSubagentActivityEvent,
   RuntimeSubagentActivityPhase,
   RuntimeSubagentIdentity,
@@ -172,3 +192,6 @@ export type {
 
 export { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 export type { OwnedForegroundProcessRequest, OwnedForegroundProcessController, OwnedForegroundProcesses } from "./owned-foreground-processes.js";
+
+export { NativeEvidenceCapacityError } from "@mono-agent/agent-runtime";
+export { createManagedNativeJournalStorage } from "./native-journal-storage.js";

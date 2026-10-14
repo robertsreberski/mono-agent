@@ -149,6 +149,7 @@ import {
   type CronReplyReservationResult,
   type StoredWebPushEvent,
   isTerminalProcessJobState,
+  INTERRUPTED_QUESTION_NOTE,
   type WebProcessJobCardCursor,
   type WebProcessJobCardRef,
   type WebPushIdentity,
@@ -2733,11 +2734,15 @@ export class WebService {
           web: {
             threadId: started.thread.id,
             turnId: started.turnId,
+            // Persisted inbound message identity, independent of run/HTTP attempt.
+            ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined && "userMessageId" in started
+              ? { userMessageId: started.userMessageId } : {}),
             // Host-only unprefixed owner text for memory; the dispatched text
             // still includes project context, tags and conversation markers.
             ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined ? { ownerText } : {}),
             ...modelMetadata,
             ...(consoleTools ? { consoleProjects: { schema: 1 } } : {}),
+            ...(this.interactionFreeTurns.has(started.turnId) ? { suppressInteractionTools: true } : {}),
             ...(!scheduledWake && hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
               ? { conversationTitle: { schema: 1, writable: true } }
               : {}),
@@ -3094,6 +3099,7 @@ export class WebService {
   }
 
   private readonly parentInterruptionWakes = new Set<string>();
+  private readonly interactionFreeTurns = new Set<string>();
 
   private async deliverParentInterruptionWake(
     input: { readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string },
@@ -3105,12 +3111,22 @@ export class WebService {
     const delivery = previous.catch(() => undefined).then(async () => {
       if (this.stopped || this.connections.get(input.sourceId)?.processGeneration !== connection.processGeneration) return;
       this.store.expireParentInterruptionWake(input.sourceId, input.turnId);
-      const prompt = "The agent process ended during a previous turn. The turn was not replayed. Inspect background jobs and subagents with AgentManage inspect before continuing; this notice does not establish their outcomes.";
+      const notes = this.store.parentInterruptionNotes(input.turnId);
+      const prompt = [
+        "The agent process ended during a previous turn. The turn was not replayed. Inspect background jobs and subagents with AgentManage inspect before continuing; this notice does not establish their outcomes.",
+        ...(notes.questionInterrupted
+          ? [INTERRUPTED_QUESTION_NOTE, "Do not re-ask the interrupted question; the user will answer in a new message."]
+          : []),
+        ...(notes.unconfirmedLiveInputs > 0
+          ? [`Some messages sent during the previous turn (${String(notes.unconfirmedLiveInputs)} total) were not confirmed as applied and were not replayed. Resend them if still needed.`]
+          : []),
+      ].join("\n\n");
       const active = this.activeTurns.get(input.threadId);
       if (active !== undefined && this.clientProcessGeneration.get(active.client) === connection.processGeneration
         && connection.info.supportsLiveInput && this.withProjectPrefix(input.threadId, prompt).length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         if (!this.store.claimParentInterruptionWake(input.sourceId, input.turnId, active.turnId)) return;
         try {
+          // The prompt guards the old question; do not suppress AskUser for the active user's unrelated task.
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`, id: input.wakeKey,
             text: this.withProjectPrefix(input.threadId, prompt),
@@ -3150,7 +3166,10 @@ export class WebService {
         this.store.failTurn(started.turnId, { message: "Interruption wake expired before dispatch.", code: "wake_expired" });
         return;
       }
+      // The wake inspects jobs and subagents; it must never ask the user (restriction-only marker).
+      this.interactionFreeTurns.add(started.turnId);
       const { completion, admitted } = this.launchTurn(started, connection.client, prompt);
+      void completion.finally(() => { this.interactionFreeTurns.delete(started.turnId); }).catch(() => undefined);
       void completion.catch((error: unknown) => {
         this.options.logger?.warn?.("Parent interruption follow-up settlement failed.", {
           turnId: started.turnId, errorCode: errorCode(error) ?? "unknown",

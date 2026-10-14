@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -712,4 +715,45 @@ describe("a model reference is bounded where it is rendered, never where it is p
     }
     expect(disagreements).toEqual([]);
   });
+});
+
+it.each([false, true])("forwards storage-only turn reconciliation through the typed facade (routed=%s)", async (routed) => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-turn-contract-"));
+  const model = parseMonoRuntimeModelReference("openai:fictional-model");
+  const runtime = createMonoRuntime({ workspace: root, ...(routed ? { chain: [model] } : {}) });
+  const request = { sessionsRoot: join(root, "uncreated-native"), purpose: "execution" as const,
+    descriptor: { kind: "host" as const, ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "fictional-turn", handleId: "fictional-handle", baseRevision: 0,
+      reconciliation: { version: 1 as const, purpose: "execution" as const, fenceDigest: "a".repeat(64), initialInputId: "fictional-input" } },
+    expectedModel: { provider: "openai", id: "fictional-model" }, expectedInputs: [{ id: "fictional-input", requestDigest: "b".repeat(64), placement: "initial" as const }] };
+  try {
+    expect(await runtime.reconcileSessionTurn!(request)).toEqual({ status: "absent" });
+    await expect(runtime.reconcileSessionTurn!({ ...request, descriptor: { ...request.descriptor, baseRevision: null } })).rejects.toThrow("reconciliation");
+  } finally { await runtime.disposeAllSessions?.(); await rm(root, { recursive: true, force: true }); }
+});
+
+describe("explicit native reconciliation ownership", () => {
+  it("does not certify custom route owners from the default inner matcher", async () => {
+    const model = parseMonoRuntimeModelReference("openai:fictional-model");
+    const direct = createMonoRuntime(), routed = createMonoRuntime({ fallbackChain: [{ model }], resolveAttempt: () => ({ runtime: { async run() { return { text: "Fictional answer." }; } } }) });
+    const owned = createMonoRuntime({ fallbackChain: [{ model }], resolveAttempt: () => ({ options: {} }), sessionTurnReconciliation: "v1" });
+    expect(direct.sessionTurnReconciliation).toBe("v1");
+    expect(routed.reconcileSessionTurn).toBeTypeOf("function"); expect(routed.sessionTurnReconciliation).toBeUndefined();
+    expect(owned.sessionTurnReconciliation).toBe("v1");
+    await direct.disposeAllSessions?.(); await routed.disposeAllSessions?.(); await owned.disposeAllSessions?.();
+  });
+});
+
+it.each([false, true])("forwards host-only guarded retirement authority without dispatch (routed=%s)", async (routed) => {
+  const { JsonlSessionRepo } = await import("@mono-agent/harness");
+  const { readFile } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "adapter-guarded-retire-"));
+  try {
+    const hostAuthority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" } as const;
+    const assertOwned = vi.fn(async () => {}), repo = new JsonlSessionRepo({ sessionsRoot: root });
+    const store = await repo.create({ id: "guarded-adapter-retire", hostAuthority, assertOwned }); await store.close();
+    const runtime = createMonoRuntime(routed ? { chain: [parseMonoRuntimeModelReference("faux:fixture")] } : {});
+    await expect(runtime.retireDurableSession!(store.metadata.id, root)).rejects.toThrow("authority");
+    await runtime.retireDurableSession!(store.metadata.id, root, { hostAuthority, disposition: "D", assertOwned });
+    await expect(readFile(store.metadata.path)).rejects.toMatchObject({ code: "ENOENT" }); expect(assertOwned).toHaveBeenCalled();
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

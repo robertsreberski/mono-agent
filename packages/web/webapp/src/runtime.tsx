@@ -171,8 +171,15 @@ const convertPart = (
       return { type: "data-cron-reply-context", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
-      // Compaction is a user-visible transcript event, so expose its canonical
+      // Only the cold-context downgrade is a visible warning note; every other
+      // runtime warning stays store-only. Compaction also exposes its canonical
       // kind without leaking raw provider diagnostics into the transcript.
+      if (part.event === "runtime_warning" && part.data !== null && typeof part.data === "object" && !Array.isArray(part.data)) {
+        const warning = part.data as Record<string, unknown>;
+        if (warning.warningKind === "degraded_native_context" && typeof warning.message === "string" && warning.message.trim().length > 0) {
+          return { type: "data-note", data: { text: warning.message } };
+        }
+      }
       if (isContextCompactionPart(part)) {
         return { type: "data-context-compaction", data: jsonObject(part.data) };
       }

@@ -3,6 +3,10 @@
 Use this package to turn a structural communication request into one recorded,
 policy-bound runtime turn with explicit success or failure.
 
+This is the host conversation/history orchestration package. The separate
+`@mono-agent/harness` package owns the model-run loop, native journal, storage
+and compaction kit; provider glue lives in `@mono-agent/agent-runtime`.
+
 ## Category
 
 <!-- package-metadata:start -->
@@ -123,6 +127,231 @@ selection through the host's model/context-policy hook, including explicit false
 on the configured primary. It allocates no turn tools and changes no shared
 history format. Ordinary turn options receive the same validated policy.
 
+Coordinated native turns use immutable `.pending-turns/` generations under the
+private history root, measured before publication and charged to staged-byte
+quota even after a crash. Admission does no whole-root accounting: it checks
+only the turn's own projected record and payload against the quotas and the
+in-flight coordination artifacts/payloads, not the complete canonical/native
+inventory. Aggregate history and staging quotas are enforced at commit and
+retention. Settling a reconciled turn (commit, recovery or drain) releases its
+own payload, so the staging quota never refuses it; concurrent in-flight turns
+can therefore overshoot staging transiently, by at most one payload cap each.
+Preparation, commit and retention may scan all recognized history/recovery
+artifacts under the shared root lock; managed roots also read canonical records
+and native inventory. Retention can repeat planning after native-I/O windows.
+Quotas are not fixed scan-time bounds: large or damaged roots can delay unrelated
+publication. See [shared-root limits and offline recovery](../../docs/runtime/sessions-concurrency.md#stopped-writer-recovery-of-shared-coordination).
+Damaged per-conversation locks, active markers, dirty fences/temps and lifecycle
+intents stay charged and protected and refuse only their owner. Owned, bounded
+torn markers and fence temps are reclaimed only after their filename PID dies;
+torn/schema-invalid markers never supply incarnation proof. Valid markers can
+prove PID reuse with v2 identity. Linux and macOS use stable incarnation;
+other platforms and unavailable reads are PID-only, treating a live PID as live. Stop every older binary
+before the upgraded writer runs: new marker contents are not old-reader compatible.
+Operational filesystem errors propagate rather than becoming damage. First
+native-root bootstrap still refuses damaged recovery evidence anywhere in the
+root when it cannot prove those owners drained. Shared root and
+logical-session coordination damage remains root-fatal. Redundant conversation
+shard locks are no longer created or validated; older writers' files stay intact.
+
+Terminal live `claim` candidate replacement also reuses already-admitted inputs,
+so it is staging-exempt but remains bounded by the pending-payload format limit.
+New input admission and canonical commit quotas remain enforced.
+Payloads contain explicitly selected canonical input,
+identity and candidate fields, not `deliveryKey`, memory-only `ownerText`, private
+wake bodies or arbitrary controllers. Execution, compaction and retirement
+fences stay at 1 KiB; payload generations are bounded at 16 MiB.
+
+`reconcileProviderSessionTurn` on the durable-store options installs the
+storage-only native matcher (and requires fail-closed retirement). The positive
+`providerSessionReconciliation: "v1"` capability enables host admission and
+claims; configured native hosts wire it automatically. `load()` stays read-only.
+`recoverProviderSessionTurn()` and admission/append/exclusive/import entrances
+settle dirty execution before mutation, matching the entire ordered operation
+set outside root transactions. Native fsync precedes canonical rename, directory
+sync and fence/payload cleanup. A bounded v3 last-commit receipt survives message
+eviction and epoch rotation; repeat settlement cannot duplicate the commit.
+New requests must use new turn IDs. V1/v2 remain readable.
+
+A durable host cancellation overrides a completed native seal. Detachment without
+a final host candidate is interrupted, never promoted from the primary result.
+Interrupted work is accounted and waits for a new message; recovery invokes no
+provider, tool, summary or deferred continuation. Manual compaction changes
+metadata/receipt only, not canonical user/assistant messages. This does not make
+external tool effects exactly-once or introduce a durable queue.
+
+Live successful commits retain the host-built enriched text, silent-completion
+annotation and capture timestamps. Recovery uses the durable candidate if
+available and never reruns enrichment. A host failure before native admission
+retains its failure category; a host cancellation/failure overriding native
+completion establishes a cold epoch so native-only answer text cannot resume.
+Native cold retirement also runs outside the root transaction under the exact
+owner, followed by canonical revalidation and cleanup.
+
+Physical/logical reset clears receipts and all matching pending generations,
+including validated dirty-only/orphan-only buckets, while preserving siblings.
+Malformed unattributable orphan evidence remains charged and preserved, but
+cannot prevent resetting unrelated validated logical owners. Logical reset clears
+torn entries at its base key and every validated child key. Any remaining
+unattributable entry count is reported through `postCommitMaintenanceFailures`
+and `lastPostCommitMaintenanceError` at reset completion, not silently forgotten.
+A never-bound rollover child cannot be inferred from its hashed filename; exact
+reset clears those known physical coordinates. Discovery never guesses an owner. Post-rename cleanup failures remain
+visible in store diagnostics. Retention protects unsettled execution fences and
+clears generations only after authorized settlement/deletion.
+
+History admission, owned preparation and exclusive-history acquisition accept an
+optional `AbortSignal`. Request cancellation (including manual compaction) stops
+in-process queue waits and SQLite root, logical/exact-claim and legacy
+conversation-lock polling. A cancelled waiter cannot bypass a live predecessor;
+raced acquisitions release their locks/claims before rejecting. Harness capacity
+admission alone does not admit input to history: cancellation during binding or
+attachment preflight, or while acquiring history, returns `cancelled` without
+an input/account, any new history acquisition to publish one, or a provider/summary
+call. The caller can resend. Admitted history turns retain their cancellation and
+interruption accounts; custom uncoordinated stores admit at provider start:
+a cancel before the provider call leaves no account, including cancellation
+inside a custom store's `load`. Publication waits for acquisition to settle even
+when cancellation fires synchronously inside a coordinator.
+Once a transaction or publication
+starts it finishes or rolls back: cancellation does not interrupt the publication
+barriers, storage-only recovery, or ownership cleanup. Reset and drain waits
+(including an admission-triggered drain) remain deliberately non-cancellable;
+this signal is not a transaction deadline.
+
+Explicit reset is not online repair. Damaged canonical records (including
+truncated JSON), coordination/recovery files, enrolled native journals and
+switch billing state refuse with `ERR_HISTORY_RESET_DAMAGED`, `retryable: false`,
+artifact basenames and [offline repair guidance](../../docs/runtime/sessions-concurrency.md#offline-repair-of-damaged-conversations).
+Nothing damaged is moved or cleared. The same explicit-reset rule applies before
+and after native switching is enabled; existing ordinary-admission cold JSON
+handling is unchanged. A removed liveness blocker could expose old history before
+reset, unreadable canonical/native evidence can hide journal enrollment, and
+missing billing evidence could allow a paid summary to repeat. These cannot be
+repaired safely merely by renaming files online. Stop every writer and back up
+both roots before the documented per-class procedure. Never discard
+`.model-switches/<key>*` until outstanding/unknown paid summaries are excluded:
+that removes the double-billing guard and redelivery could pay again.
+
+A healthy logical fence identifies a damaged rollover child for reset refusal.
+If both the child's canonical and fence are damaged, logical reset cannot
+attribute the child without guessing IDs. It can finish for known members while
+leaving that child's history and fence untouched; offline repair is required.
+
+Owned coordination files must retain mode `0600`. Conventional umasks such as
+`0022` or `0077` are supported; an exotic umask that removes owner read/write
+permissions can leave an unverifiable marker/temp if the writer dies before
+permission normalization. Such evidence remains protected damage even with a
+dead filename PID; it is not reaped using PID evidence alone. Restore/repair it
+with all writers stopped rather than weakening secure-file validation.
+
+`drainPendingProviderSessionTurns()` visits at most 32 inactive physical owners
+per pass, oldest first, and returns a cursor for further passes. It tries owner
+claims without waiting for foreign ownership. Busy/unresolved owners remain
+charged; admission drains once when capacity requires it and otherwise rejects
+clearly instead of quota-deleting evidence.
+
+Older binaries must not run against a P2b history root. Rollback means stopping
+writers and restoring a consistent pre-P2b backup, losing later turns. There is
+no downgrade/strip tool; offline conversion is outside this scope.
+
+Internal prepared-switch orchestration now runs the outgoing no-tools producer,
+then the free exact checkpoint plus complete suffix, then incoming reduction,
+under the conversation claim but outside root transactions. Durable delivery
+identities authorize at most one call per producer per explicit-message
+generation; unknown attempts stay charged and never auto-repeat. Accepted
+content rolls forward storage-only before incoming P2 admission. The incoming
+owner is exposed before post-admission refusal so the host can account/abort it
+and wait, never automatically replay the blocked message. A ready pending intent
+rolls forward before attempting to begin storage again, even after canonical
+rename changed the source. After fence removal, the current `lastSwitch` receipt
+can reconstruct the ready result without another call. Outgoing-producer cleanup
+failures are diagnostic (`onCleanupError`), never replacements for a committed
+result or the original error.
+
+These internal helpers require `messageId` to be the durable host delivery
+identity across retries, never a run ID or message-text hash. Bounded shape checks
+cannot establish that semantic identity. Every production path, including later
+explicit-message generations, remeasures the prepared host and current input
+against the original frozen caps before authorization/billing. The input estimate
+retains the same conservative normalization reserve as intent creation. Failure
+preserves the pending intent and its charged attempts, not cold-replay success.
+Ready storage-only roll-forward is never blocked by the next message's size;
+normalized dispatch remains the final bound and late refusal never rebills a
+summary or automatically replays an admitted message. The configured app enables
+this path only through its OFF-default Web model-switch option and
+activation-critical lifecycle forwarding.
+
+The internal constructor path prepares the complete host context,
+request extensions and permit before P2 under the same conversation claim. It
+sizes aggregate reservations before paid work, falls back to the existing path
+for unsupported capabilities, refuses typed pre-intent capacity with
+`handoff_budget_exceeded`, and surfaces corruption/ownership/pending failures. It preflights the real future
+compaction-summary envelope and derived output cap against the maximum accepted
+inherited prefix before intent or billing, then checks the exact projection before
+acceptance. Pending messages are reported without appending, admission or queuing;
+post-P2 failures are accounted without automatic replay. Ordinary same-model
+reopening inherits accepted content without a switch-only account/window gate.
+The constructor's `nativeModelSwitch` member is **@internal / unstable**. It is
+structurally callable by a programmatic consumer, not a supported public opt-in;
+the configured app supplies it only for its validated Web-only opt-in and
+forwards Web's persisted inbound message ID across retries, never a run ID or text
+hash. No-ID turns on non-native conversations retain the original cold path;
+already-native conversations inherit their durable model unless a persisted Web
+message moves them. Declared different-model no-ID turns refuse only there.
+
+An unavailable outgoing provider/auth skips its unbilled slot and advances to
+the exact previously validated checkpoint (only when one exists), incoming
+producer, then pending. Legacy API/model provenance
+comes from validated owned native binding bytes without resolving credentials;
+account identity remains unknown. Prepared requests use ordinary provider
+authentication on each actual call; no account provenance is recorded or matched.
+Canonical history uses a single version 3, with native metadata selecting the
+guarded shape.
+
+`NativeHistoryAuthorityBusyError` is a typed retryable pre-intent root contention
+outcome. The host surfaces `native_switch_busy` with `retryable: true` and releases
+its claim/resources. It never falls back or waits holding a claim: concurrent
+contenders could otherwise keep each other from draining. The caller must drain
+or serialize host owners and explicitly retry; no message is queued or billed.
+When bootstrap finds another conversation's recovery data damaged, the same error
+has `damaged: true` and `retryable: false`; the host surfaces non-retryable
+`native_switch_damaged` and no drain runs, because only repair or restore helps.
+
+Conversation IDs longer than 512 characters bypass switch preparation before
+any authority claim or switch intent. This preserves the original path, not a
+new dispatch guarantee: the existing native host-turn contract rejects these
+ownership IDs with the option OFF too. The 512-character bound is unchanged.
+There is no summary-less model change: capacity, a lost journal or a missing
+prior summary never select canonical replay on a different model.
+
+Lifecycle cleanup separates preserve/detach (P), reference-checked current-only
+cold cleanup (C), authorized reset/retention (D), and uncoordinated
+stateless/subagent cleanup (U). The execution helper excludes the owned current
+journal and protected pending turns from generic deletion. Manual compaction
+uses advisory P for native-bound stale mappings as defence-in-depth, based on a
+pre-claim read-only hint; owned membership/header checks remain the physical
+backstop. The helper's `preserve`, `legacy-current` and `isolated` modes carry no
+native C/D deletion authority. Ordinary mappings retain best-effort legacy cleanup. Guarded denial of an uncoordinated deletion is not
+successful physical cleanup. Storage-only recovery retains unresolved evidence
+and charges its bytes until settlement; reset/retention use the managed
+deletion transaction. These guarantees do not imply live operator acceptance.
+
+Every model change behind the internal constructor capability, including a
+return to an earlier model, takes the approved structured handoff order:
+outgoing summary, the exact previously validated structured summary plus the
+complete later suffix, incoming summary, then `handoff_pending`. A suffix alone,
+without a validated prior summary, is text-only replay and is not a handoff. Native envelopes are never reused across
+models, and accepted artifacts are always neutral structured handoffs. Ordinary
+same-model reopening of an accepted handoff remains provider/API/account-ungated.
+
+Summary billing, frozen budgets and inherited-prefix growth checks apply. The
+configured host preflights the worst-case structured-summary inherited prefix
+before intent, so it never starts paid work whose accepted projection cannot
+later be compacted. This substrate does not expose config or activate APP;
+persisted delivery forwarding
+and root drain/serialization remain prerequisites for a supported opt-in.
+
 ## Architecture
 
 Memory reads receive the host-confirmed `retainedContext` signal from history
@@ -138,13 +367,15 @@ provider receipts intact. Continuation synthesis does not load memory. A failing
 
 Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.
 
-The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
+The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must provide `readProviderSessionBinding` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
 Durable provider turns hold exact-key logical/session claims rather than lifetime
 physical shard transactions, so an unrelated shard collision cannot block turn
-admission or cancellation publication. Concurrent history writers must be
-claim-aware (v0.20.0 or later); stop older writers before sharing the directory.
-This compatibility floor is not enforced against old binaries. Root maintenance
+admission or cancellation publication. Stop every older writer before running
+this upgraded version, including claim-aware v0.20–v0.25 writers. They cannot
+parse incarnation-bearing markers and upgraded history formats. This one-way
+boundary is not a universal old-binary admission barrier. Upgraded readers still
+accept legacy PID-only rows/markers left by stopped writers. Root maintenance
 and existing per-conversation legacy locks retain their safety boundaries.
 
 The harness is the request-to-runtime composition boundary:
@@ -202,6 +433,249 @@ The harness is the request-to-runtime composition boundary:
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
+| `src/durable-model-switch-contract.ts` / `src/model-switch-billing.ts` / `src/model-switch-payloads.ts` | Private additive switch wire, artifact and summary-admission storage; not managed-history migration or enabled host switching |
+
+### Internal model-switch storage foundation
+
+The private payload component requires a held logical conversation claim,
+existing short root transaction, and caller-owned quota reservation/accounting.
+`DurableConversationHistoryStore.modelSwitchStorageSource()` and
+`beginModelSwitchStorage()` provide an administrative storage lease backed by
+its real logical/physical claims and short SQLite root transactions. They do
+not advertise runtime switching capability or migrate canonical history. Source
+coordinates are revalidated after native version 3 settlement and require settled provider
+fences inside the root transaction; unnormalized buckets and stale/mismatched
+logical-owner coordinates reject before intent publication. IDs longer than 512 characters return
+`switch storage unsupported` (`id_limit`), allowing the caller to keep today's
+cold-epoch-with-replay path instead of failing a switch request. Capacity
+unavailability must likewise be treated as unsupported switch storage by future
+host policy, falling back to cold replay before intent publication; no production
+caller is enabled here; runtime dispatch/switch policy integration is separate.
+
+Managed root enumeration recognizes only secure owned `.model-switches`
+contents. Aggregate/staged quotas include physical artifacts, generations and
+crash leftovers plus remaining durable reservations (including the native-epoch
+estimate). Published current state/fence bytes consume the
+pending publication plan rather than being charged twice; orphan generations
+and crash temps remain fully charged. `stats().bytes` reports physical canonical
+and switch-storage bytes; `stats().reservedBytes` reports remaining provisional
+plans separately. Retention protects every fenced physical bucket, including
+inactive provider retirement fences. Logical reset prechecks all matching
+physical buckets for pending switches before resetting any sibling.
+A pending intent blocks ordinary provider admission, append/import and reset
+before retirement; ready-only native/canonical roll-forward settles accepted
+content, while pending production remains an explicit-message host concern. Releasing the storage lease releases
+ownership only, never the fence or evidence. Do not begin such a lease on a real
+root without stopped older writers and explicit migration authority.
+It does not issue root authority, settle turns, run a producer, bind a model,
+enable incoming dispatch, or migrate `DurableConversationHistoryStore`.
+The ordinary canonical version-3 paths and configured host switching policy remain
+unchanged. Do not use these private modules to upgrade a real root manually.
+
+Canonical version 3 records with native metadata on validated managed-marker roots are strictly
+readable. They hold one current native journal (derived from the epoch), the
+native authority, the accepted handoff projection and the latest switch receipt,
+with no epoch ancestry. Same-epoch synced writes and owner-held execution/compaction
+recovery retain that metadata, including when messages are evicted; turn receipts
+still settle exactly once. Native reconciliation must match the authoritative
+current journal. Optimistic versions and switch-source digests include the
+native metadata, not just messages and the provider binding. Unknown versions are ordinary parse or owner-scoped damage failures, not
+special pre-release refusal states. Damaged owner evidence stays charged and
+preserved while unrelated conversations continue. Unresolved inherited ledger entries, such as an
+outcome-unknown tool effect from an earlier model, are carried into every new
+handoff ledger, deduplicated by stable identity; if they cannot fit, the handoff
+refuses rather than leaving them to prose.
+
+`beginProviderSessionPreparation(conversationId, runId, signal?)` is an additive,
+claim-only storage substrate used by the configured app's Web-only
+opt-in. It settles old
+work and returns detached history/source/native metadata without an incoming
+execution fence. Its authority/switch/roll-forward methods borrow the same owner
+rather than reacquiring it; child release never releases the preparation.
+Mutations are serialized. Inside phase/native callbacks, call only `assertOwned`;
+other preparation/child methods wait behind the running action. Do not call
+same-conversation standalone store APIs while the preparation is held: those
+APIs wait for its claim. Long native I/O and future producer work stay outside
+root transactions. Missing reconciliation capability is a validation failure
+before transfer, leaving preparation owned for correction or abort.
+`admit(binding)` consumes the claim exactly once only after pending switch
+settlement and a matching canonical model binding; a ready artifact alone is not
+ready admission. It does not cold-rotate a different bound model. First/unbound
+ordinary admission remains supported. Preparation abort releases only an
+untransferred claim; afterward the existing P2 turn owns commit/abort. The
+returned turn's `assertOwned` proves storage ownership, not artifact readiness,
+account compatibility or native execution authority. Held child capabilities
+expire on transfer/abort. These APIs do not dispatch summaries, create a native
+projection or enable configuration. `read()` also returns detached pending state,
+including its required persisted `frozenBudget` and `initialMessageDigest`, never
+a budget inferred from its digest.
+`createModelSwitchState(coordinates, reservation, frozenBudget, initialMessageDigest)`
+validates that exact budget/digest and message identity before publication.
+`readHandoff(switchId, reference)` reads only the hash-validated accepted
+pending/current artifact and its actual budget under this same claim.
+
+`captureNativeEvidence(legacyProvenance)` freezes the settled current coordinate,
+then reads the current journal (or nothing, when it is definitively missing, so
+canonical history is the evidence) plus the prior accepted handoff, without
+native writer opens, repair or publication. Legacy account ownership stays null regardless
+of caller credential metadata. The evidence view retains validation identity;
+cloning it cannot turn raw data into a validated projection.
+
+The internal `prepareHarnessRuntime` substrate now runs context/memory/skills
+preparation and request extension/policy/MCP/decorations once under the existing
+provider permit and outgoing claim, then resolves native tools/auth before P2.
+It returns frozen context and native metadata, a non-consuming lifetime check,
+an ordinary-auth no-tools producer, and one late-bound run accepting the transferred
+P2 owner. Extension cleanup, capability release, native close and permit release
+settle once, including close/abort during production. Metadata identity carrying
+out-of-band capability bindings is preserved, not serialized/cloned. No configured
+caller uses this substrate yet: producer order/billing/restart and ready admission
+orchestration belong to the next integration step.
+
+Lifecycle inventory for this boundary: prepared-resource close/abort and
+settled-current capture use preserving detach (P); existing store C/D storage
+transactions are unchanged. No configured cleanup caller is newly wired. The next
+activation boundary must wire critical stale/model mapping, resume/terminal/P2
+cleanup and APP forwarding before enabling an OFF-by-default opt-in. Exhaustive
+remaining manual/native fresh/stateless, reset/retention/purge and subagent P/C/D/U
+regressions remain separate inventory work; guarded refusal is not successful
+cleanup. Existing configurations and default paths remain unchanged.
+
+With explicit `nativeJournalStorage`, host-only append/exclusive/import,
+unsynced/cancelled/interrupted provider settlement and stale-current admission
+use a durable `.native-history-op.<owner-hash>.json` C intent. The exact target
+handle/epoch and initializer plan are persisted before native creation. Canonical
+publication replaces only the current epoch; reference-checked cleanup deletes
+only the retired journal and never promotes a rejected current tail. Aborting
+preparation does not create/delete native epochs. Recovery holds the actual owner
+claim and performs native I/O outside root transactions. A completed-switch
+receipt is validated without restoring an obsolete target or recreating missing
+evidence.
+
+D reset/retention intents retain canonical authority until the native journal,
+switch artifacts/generations, pending payloads and
+publication barriers complete. Reset then writes a clean v3 record; retention
+removes the canonical owner only afterward. Interrupted deletion resumes under
+owner claims, including when only its intent remains. The shared immutable root
+marker stays. Retention counts physical native/artifact reclamation and protects
+busy native writers at reservation instead of allowing post-commit quota growth.
+Lifecycle intents and unfinished native publication are charged; stats distinguish
+physical bytes from outstanding native reservations. Pending switches and
+unsettled execution/compaction owners remain protected, and logical reset
+prechecks matching buckets before mutating any sibling. Retention reads each
+canonical and computes switch/native footprints once per root transaction.
+Older daily buckets can be evicted under the committing logical claim; busy
+exact claims and active markers remain protected. Mixed-root victims keep their
+LRU order, and every unlocked native-I/O window requires a fresh plan. Under-quota legacy
+append does not deserialize unrelated canonicals. Native accounting includes
+only canonical managed membership and exact journals enrolled by durable intents,
+not unrelated v1-v3 provider journals. If a canonical is unreadable, independently
+validated schema-2 headers for its exact bucket and pinned root remain charged;
+other roots/buckets and legacy provider files do not justify credits. A retry
+reuses its published cold reservation.
+A published receipt on a still-fenced switch is accepted ready evidence: it must
+roll forward, not be abandoned for C. Ready artifacts whose receipt is not yet
+published remain fenced and do not initiate a configured switch. Same-owner
+interrupted D intents are resumed before new daily capacity reservations, under
+the held logical claim; pruning probes exact sibling claims only for needed LRU
+victims. Canonical rename/removal invalidates capacity footprints even within an
+otherwise-held root transaction.
+
+Without the administrative native capability, native cold/deletion mutation
+refuses before side effects. Unresolved native fences never block unrelated owners; managed
+roots preserve unreadable evidence rather than overwrite it as v3. V1/v2/v3
+behavior stays unchanged. A model change must use accepted switch storage;
+ordinary cold replacement retains the bound model and makes no compatibility or
+account claim. Incoming dispatch, switch policy and configured runtime wiring
+are not enabled by these storage APIs.
+
+The administrative `acquireNativeHistoryAuthority(id)`
+requires a bound source and
+drained host ownership. It issues a bounded, immutable private root marker and
+an owner-held authority lease; lease release releases ownership only. Marker
+proposals stay charged until the next issuance removes owned leftovers (even torn
+ones) under the root transaction and publishes a fresh marker; a proposal's root
+ID is never used before publication. A damaged published marker stays fatal for
+the root. Bootstrap isolates unreadable sibling canonical records; only a readable
+native record without the marker refuses. Managed-marker roots use strict canonical reads: torn files cannot
+lose native authority by being overwritten without native metadata. Unmarked legacy roots retain
+their existing torn-file policy. This API is not used by configured hosts and
+does not grant permission to migrate real roots.
+Older binaries must stay stopped; the marker is not proof that every older
+admission path checks it. Rollback requires consistent host/native backups, not
+stripping the marker. The lease itself does not create a journal or enable dispatch.
+An explicit administrative `nativeJournalStorage` capability couples measured
+native inventory/reservations to `rollForwardModelSwitch(id, switchId)`. Initial admission checks the actual frozen source,
+new-journal/reference peaks and canonical publication capacity before publishing
+an intent. Ready-only recovery holds logical/conversation ownership across native
+I/O, outside short host root transactions. It creates the deterministic target
+journal, publishes the canonical binding, handoff and receipt, proves the
+receipt, retires the outgoing journal and only then releases the intent fence,
+keeping exactly one durable handoff. Recovered receipt cleanup never repairs or
+creates missing native evidence.
+Physical native bytes replace provisional native credits without process-local
+refund counters; committed native bytes do not consume the unpublished-stage
+quota. The configured app supplies incoming dispatch and model-switch policy
+through its Web-only opt-in. These storage APIs alone are not a
+standalone real-root rollout.
+
+Pending switching stays entirely in host intent/attempt storage: no incoming
+binding is published before accepted handoff content exists. An explicit message
+for the intent's source model abandons a non-ready intent storage-only
+(`abandonModelSwitch`): only its fence is removed, its authorizations and
+attempts stay retained and charged until a later completed switch or deletion
+collects them, and the turn runs on the current journal without a paid call.
+A new intent whose initiating message a retained intent already consumed is
+refused (`ModelSwitchMessageConsumedError`) before any paid call.
+Explicit-message authorizations have no lifetime count cap; the serialized state
+limit bounds them. Native journals
+carry no `model_change` frames; the canonical receipt is the only switch record.
+
+Its native version 3 canonical validators bind single-journal ownership/provenance
+and stable switch coordinates. Binding receipts describe their own transitions independently of
+later cold epochs/projection references; receipt recognition alone is not
+projection readiness or dispatch authority. Bounded v6 fences carry only
+references/hashes, never current user text, routing metadata, controllers,
+credentials or host instructions. Payloads/artifacts are limited to 16 MiB;
+fences to 1 KiB. Reservations include canonical, artifact, native-epoch and
+pending-generation space.
+Retained-byte inspection charges the current immutable generation and crash
+leftovers. After the new fence is durable, validated superseded states are
+reclaimed only if their complete admission/authorization journals remain in the
+winner; unknown, future or replaced evidence and crash temps remain charged.
+Fence replacement does not retain earlier fence generations. A pinned storage
+directory disappearing fails closed, not as an absent intent.
+
+The owner must implement idempotent absolute `adjustReservation(bytes)` under
+its root transaction, with physical retained bytes charged separately. Initial
+artifact capacity covers publication without a second artifact reservation;
+after durable acceptance its physical bytes replace the provisional artifact
+cap. Every durable mutation/recovery resets remaining provisional accounting,
+so transient state/fence publication reservations cannot accumulate. Fixed
+canonical/native estimates remain conservative, as do
+unrecognized crash leftovers; managed-root integration must reconcile those
+other estimates at their corresponding publication/cleanup boundaries.
+
+Summary admission must be durably published before any paid call, which occurs
+outside the root transaction. The final policy allows at most two billed calls per switchId without new
+user action: one outgoing producer, a free exact-checkpoint attempt (only from
+a previously validated structured summary), then one incoming producer. Each later explicit user message authorizes one
+new attempt per producer, with a new two-call cap for that message generation. An unknown outcome remains admitted/charged:
+reopen, maintenance, duplicate authorization and cached-output recovery never
+silently permit another request. Authorizations and attempt identities remain
+bounded without dropping earlier identities. The caller must prove that any
+new generation came from an actual authorized message, not a wake/recovery.
+
+A caller-validated, fitted P3a proposal is stored once as a content-addressed
+immutable artifact before publishing ready state. Storage validates frozen
+coverage/target/budget coordinates; it does not replace P3a fit, mandatory
+latest-turn or complete-ledger validation. Cached accepted output rolls forward
+without another producer or new text. An existing intent cannot be replaced by
+a newly requested target; a later separate switch starts only after the receipt
+is published and the intent cleared. No PID, age or file
+name is deletion authority. SIGKILL tests cover intent publication, summary
+start/returned-before-cache, artifact publication and ready-fence replacement,
+with two fresh-process recoveries per interruption.
 
 With continuous sessions, `piSessionsRoot`, and a fail-closed durable history
 store, the harness and responder also expose `compactConversation()`: a
@@ -221,6 +695,39 @@ Persistent-child Session guidance surfaces a blocked-recovery marker and safe
 job identity, not private owner roots, verification paths or acknowledgement
 binding material. It directs inspection before continuation and prohibits replay.
 
+Prepared host leases expire after five idle minutes using unref'd timers; idle
+MCP/runState/extension resources and the provider permit are released without a
+caller close. Active producers settle before cleanup; active host admission
+settles before host extension/permit release (idle native resources may expire
+while admission waits). Use the internal `run(() => admitP2AndReturnBinding())`
+entry to require at least 30
+seconds of start allowance **before** invoking admission; already-admitted binding
+callers must call `assertReady()` before admission themselves. Native dispatch
+requires at least five seconds after admission, rechecks immediately before
+consuming the native lease, then rechecks the absolute deadline before session
+mutation. A slow admission/normalization can still exhaust the allowance: it
+fails without a provider call, preserving the admitted dirty P2 fence for explicit
+host abort/recovery. Native idle expiry can already have closed native resources
+while that storage work waits; it never releases or completes the admitted P2
+fence. This reserve does not promise bounded storage or scheduler latency, and
+the blocked message must not be automatically replayed.
+
+Prepared-path running abort deliberately differs from ordinary R10: it retains
+its permit and frozen extension/native resources until actual provider settlement,
+rather than releasing after extension cleanup while a cancellation-ignoring
+provider is still running. This prevents reuse/destruction of producer resources
+under an unresolved turn. Callers must await settlement and reconcile P2; a
+cancellation signal or `close()` is not proof of provider termination. Default
+execution retains ordinary R10; configured preparation is limited to persisted
+Web deliveries and already-native current-journal turns under the explicit opt-in.
+
+Read-only native evidence is streamed from the single current journal of any
+physical size; at most 16 MiB of it (the effective tail after the last
+checkpoint plus records cited by unresolved work) is retained. Capacity refusal
+is explicit `ERR_NATIVE_EVIDENCE_CAPTURE_LIMIT`, never truncation. A journal that
+changes between the two streamed passes is refused. These are preparation limits, not
+permission to erase oversized evidence or cold-fallback after switch intent.
+
 ## Public API
 
 ### Start here
@@ -235,7 +742,13 @@ binding material. It directs inspection before continuation and prohibits replay
 | `CONVERSATION_HISTORY_VERSION_MAX_BYTES` | Maximum UTF-8 size of an opaque custom-store history version token (512 bytes) |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
+| `ProcessIncarnation` / `currentProcessIncarnation()` / `readProcessIncarnation()` / `isSameProcessIncarnation()` | Share OS boot/start identity across agent-app ownership consumers; raw readers retain their existing unavailable/error behavior. Durable history does not use these v1 readers: it uses `readHistoryProcessIncarnation()` (v2) with a conservative PID-only fallback |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
+
+Lightweight ownership/maintenance entrypoints can import the incarnation API
+from `@mono-agent/agent-harness/process-incarnation` without loading the runtime
+composition barrel. Agent-app retains its existing local re-exports through this
+subpath; there is one implementation and no new package dependency.
 
 The exhaustive inventory below is generated from the package entrypoint.
 
@@ -295,6 +808,12 @@ ConversationHistoryContextImport
 ConversationHistoryExclusiveTurn
 ConversationHistoryProviderSessionTurn
 ConversationHistoryStore
+ConversationHistoryTurnDrainOptions
+ConversationHistoryTurnDrainResult
+ConversationHistoryTurnInspection
+ConversationHistoryTurnInspector
+ConversationHistoryTurnReconciliation
+ConversationHistoryTurnRecovery
 CreateSkillsCacheOptions
 DEFAULT_SOUL_TEXT
 DurableConversationHistoryStore
@@ -302,8 +821,10 @@ DurableHistoryStoreOptions
 DurableHistoryStoreStats
 ExternalRunSummary
 FileContextInput
+HISTORY_PROCESS_INCARNATION_SCHEMA
 HOST_TURN_CONTEXT_GUIDANCE
 HistoryMessage
+HistoryProcessIncarnation
 InMemoryHistoryStoreOptions
 LiveInputMailbox
 LiveSessionManager
@@ -313,11 +834,16 @@ LoadSelectedSkillsInput
 LoadedSkill
 LoadedSkillContext
 LoadedSkillFile
+ManagedProviderSessionPreparation
 MarkdownContextBlock
 MemoryWriteMode
+NativeHistoryAuthorityBusyError
 NoopRunRecorder
+PROCESS_INCARNATION_SCHEMA
 PreparedHistoryAppend
+ProcessIncarnation
 ProviderSessionHandle
+ProviderSessionPreparationSnapshot
 ProviderSessionTurnBinding
 ProviderSessionTurnCommitOptions
 RuntimeSessionEvictReason
@@ -325,6 +851,7 @@ RuntimeSessionRecord
 RuntimeSessionSnapshot
 RuntimeSessionStore
 RuntimeSessionStoreOptions
+SameProcessIncarnation
 SessionRuntimeResolver
 SkillActivationError
 SkillIndexEntry
@@ -380,10 +907,13 @@ createSessionRuntimeResolver
 createSkillsCache
 createToolHistoryArtifactSink
 createToolPolicy
+currentProcessIncarnation
 failClosedToolPolicy
 formatHostCapabilities
+historyProcessIncarnationFromJson
 isProcessAlive
 isReadSkillCompatibleName
+isSameProcessIncarnation
 isStdioMcpServerSpec
 loadContextFromFiles
 loadSelectedSkills
@@ -391,7 +921,12 @@ loadSkillFilesFromDirectory
 loadSkillIndexFromDirectory
 loadToolPolicyFromJsonFile
 loadToolPolicyFromJsonFileSync
+logicalConversationIdForFence
 normalizeInlineText
+processIncarnationFromJson
+processIncarnationsEqual
+readHistoryProcessIncarnation
+readProcessIncarnation
 renderSkillIndexEntries
 renderSkillIndexSection
 skillInstructionsToContextBlocks
@@ -401,6 +936,23 @@ toolHistoryRecordId
 toolPolicyToRuntimeOptions
 ```
 
+**`@mono-agent/agent-harness/process-incarnation`**
+
+```text
+HISTORY_PROCESS_INCARNATION_SCHEMA
+HistoryProcessIncarnation
+PROCESS_INCARNATION_SCHEMA
+ProcessIncarnation
+SameProcessIncarnation
+currentProcessIncarnation
+historyProcessIncarnationFromJson
+isSameProcessIncarnation
+processIncarnationFromJson
+processIncarnationsEqual
+readHistoryProcessIncarnation
+readProcessIncarnation
+```
+
 <!-- public-api-inventory:end -->
 
 ### Continuous sessions
@@ -408,14 +960,44 @@ toolPolicyToRuntimeOptions
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every harness-prepared cold/fresh run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
 The primary's first attempt owns the provider session. Retries and failovers run
-stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+stateless with canonical replay and bounded transcript-tail context. With coordinated durable Pi history,
 any answer from a retry or backup retires the primary epoch. The next turn
 cold-reseeds from canonical history; after a primary first-attempt success,
 subsequent turns resume the new session and are eligible for provider caching.
 
-On a warm turn whose primary attempt fails, the retry or backup attempt runs
-stateless with the current message and a bounded snapshot of the failed attempt,
-without the earlier conversation; the next turn reseeds from canonical history.
+On an ordinary warm turn whose primary fails, an eligible retry or backup gets
+canonical earlier conversation messages, the bounded tool-history projection,
+and the current input, just as on a cold turn. A bounded failed-attempt snapshot
+may accompany that replay. The host loads history lazily under conversation
+ownership, only after any required durable detach acknowledgement; it reuses one
+frozen replay across detached attempts and never doubles a cold-turn prefix.
+Durable, custom and in-memory history stores are supported. If warm canonical
+history is absent or cannot be loaded, no retry or backup starts: the primary
+failure returns with `detached_context_unavailable`. A tool-projection failure
+alone keeps canonical replay and emits `tool_history_projection_degraded`.
+The next turn still reseeds from canonical history.
+
+Configuring any fallback route counts as consent for that route to receive the
+conversation history, including when a local primary falls back to a cloud
+provider. Replay neutralises instruction markup but is not secret redaction.
+The replay loader and its output are not returned in results, failover history
+or router telemetry. Persistent subagents remain excluded: they have no host
+canonical replay loader, and detached answers still lose session continuity.
+Direct router callers without a loader retain their existing behaviour; private
+memory completion-only runtimes ignore the loader. Prepared native dispatch
+remains primary-only, with no routed retry or backup.
+Before admission, the preparation owner probes the current native journal
+(`inspectCurrentJournal`). A definitively absent journal (no published/staged
+file, or no catalogued handle before the first switch) is passed to admission as
+`missingCurrentEpoch`: only that exact canonical epoch takes the existing
+same-model cold path (ordinary version 3 retire/new epoch, native version 3
+durable C intent), the turn dispatches once on canonical replay and reports `degraded_native_context` once.
+A switch request with a lost journal records a canonical `journal_missing` gap
+and summarizes canonical history through the same handoff order; it is never a
+summary-less change. Unreadable bytes, staged-only bytes or catalogue failure
+refuse with `native_journal_unreadable` and preserve evidence. The probe reads
+only the journal header; record damage is refused the same way when the journal
+is opened or captured.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next
@@ -455,7 +1037,7 @@ the next retry to proceed. Hosts may override the provider-settlement window thr
 smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
 cancellation does not spend it, success does not reset it, and reconstruction may
-allow one extra attempt. Custom stores opt in with `providerSessionRecovery: "v1"`.
+allow one extra attempt. Custom stores expose the model-bound store contract through `readProviderSessionBinding`.
 A declined recovery reports a `terminal_recovery_skipped` runtime warning with
 `source: "harness"`, the terminal `outcome`, and the first failing gate in `reason`.
 The next cold turn reports `cancelled_turn_reseed` or `failed_turn_reseed` unless
@@ -477,12 +1059,28 @@ anchors that same exact-id claim before discovery, preserving the contract for
 its exact physical bucket without touching sibling or deeper lookalikes.
 
 Registry transactions are short and crash-journaled: the active `(digest, pid,
-random token)` row, not the shared shard database, remains for the provider turn.
+incarnation, random token)` row, not the shard database, remains for the provider turn.
 Unrelated logical ids therefore proceed concurrently even when they map to the
 same shard. Normal release deletes the row; crash recovery replaces it only
-after its PID is proven dead, never because it merely looks old. At capacity, a
-bounded pass reclaims distinct rows under the same liveness rule before rejecting
-a new owner. SQLite DELETE rollback journals are transient owner-only files,
+after its PID is dead or the recorded v2 boot-session/process-start identity no
+longer matches, never because it merely looks old. The nullable incarnation column
+and optional marker field accept legacy PID-only evidence; v1/unknown schemas
+also remain PID-only. An unreadable OS
+identity keeps a live PID protected. At capacity, a bounded pass uses the same
+proof. This is read compatibility only: every older writer must be stopped before
+the upgrade, whose new coordination contents old binaries cannot parse.
+
+History caches its current incarnation once per process; a foreign owner is read
+once per claim wait or marker scan, with only `kill(0)` on subsequent polls.
+Linux and macOS use stable v2 identity; other platforms and unavailable reads
+remain PID-only, treating a live PID as live. Darwin uses `kern.bootsessionuuid`
+and UTC `ps` start time, with a five-second kill deadline on each probe, rather
+than mutable calendar boottime/local-time evidence. Linux uses boot UUID/start
+ticks. Darwin `sysctl`/`ps` calls are not repeated per poll. App's persisted v1 API
+is unchanged and must not be silently upgraded in place. A PID reused after a matching
+snapshot during the same wait can remain busy until a fresh acquisition; legacy
+or unreadable identity also retains the PID-reuse limit. Doctor's PID-only view
+is diagnostic, not ownership authority. SQLite DELETE rollback journals are transient owner-only files,
 bounded at 2 MiB, and recovered by SQLite rather than age-deleted after a crash.
 Shard files are never unlinked, deleted row pages are reused, and each shard
 fails closed above 1,024 live or indeterminate claims or a 1 MiB file, bounding
@@ -497,9 +1095,9 @@ directory/owner filename and never enumerate database journals or temp files.
 The content database uses SQLite `DELETE` journaling, `synchronous=FULL`, owner
 modes `0700`/`0600`, and fsync-per-record durability on a dedicated worker. One
 process-global handle owns each root and a held owner transaction excludes other
-processes. Acquisition retries for at most 10 seconds, reaps a proven-dead PID
-using the durable-history liveness pattern, succeeds when a normal old writer
-releases in time, and otherwise fails deterministically with
+processes. Acquisition retries for at most 10 seconds, relies on SQLite's kernel
+lock release after owner death (PID liveness is diagnostic only), succeeds when
+the previous writer releases in time, and otherwise fails deterministically with
 `history_writer_in_use`. Configured lazy acquisition permits that bounded
 restart-handoff wait once, then caches the failure for every already-created
 turn and for new turns during an initial 30-second failure backoff. Failed
@@ -618,3 +1216,21 @@ pnpm --filter @mono-agent/agent-harness run build
 pnpm --filter @mono-agent/agent-harness run typecheck
 pnpm --filter @mono-agent/agent-harness run test
 ```
+
+
+Cleanup before publication resumes only the committing logical owner's D intent;
+foreign D recovery is post-commit maintenance and its failure cannot block an
+unrelated append/admission. Native cleanup is skipped without capability. A busy
+logical retention victim is excluded and replanned around within a bounded pass,
+without granting it quota credit. Ready artifacts without native capability or a
+root marker remain fenced/non-dispatchable, but do not block authority issuance
+or owner-held recovery. Foreign/garbled native tails fail closed: bounded drain
+reports that owner unresolved and continues other owners; it never repairs those
+bytes or promotes them into accepted reference evidence.
+
+Maintenance can continue after an owner-local native failure only if it regained
+the root transaction. A fresh victim's failed published D remains charged and
+recoverable, while another free LRU victim can be pruned in the same commit.
+Accepted limits: a native victim's logical owner may be busy in another process after
+admission credits it, leaving maintenance pending; the replan budget is fixed
+from the entry count at maintenance start, not extended by concurrent arrivals.

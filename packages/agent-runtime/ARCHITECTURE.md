@@ -308,10 +308,11 @@ in-flight turn and clears that conversation's queue.
 **Honest per-provider session behavior** — parity is *behavioral* (every
 provider exposes queue-after-turn), not durability/cost:
 
-The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
-bridge was removed once native reached parity); it owns the session and
-pi-ai-managed retry. Mono-agent disables Pi's native overflow recovery but arms
-native checkpoint compaction for the main prompt. Its guarded
+The Pi provider integration uses `@mono-agent/harness` for model-run admission,
+native journals, storage, retry and compaction. Pi Agent Core supplies the
+unforked `runAgentLoop`; Pi AI supplies models and provider requests. The
+separate `@mono-agent/agent-harness` host package owns conversation/history
+orchestration. The provider glue arms checkpoint compaction for the main prompt. Its guarded
 `session_before_compact` hook enforces policy before each turn and between
 completed model/tool rounds. Mid-run summaries are separate paid provider
 requests inside the same agent run; savings and growth guards limit attempts.
@@ -321,19 +322,19 @@ meaningful transcript growth after a mid-run cut restores eligibility. Runs repo
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 
-`ai/providers/pi-native/compaction-summary.js` prepares copies for Pi's public
+`ai/providers/pi-native/compaction-summary.js` prepares copies for the attributed harness
 `compact()`: bounded tool-result heads/tails, confirmed built-in file operations,
 and supplemental summary focus. Its model facade changes only summary context;
 model, options, request context and other model methods are forwarded. Each
 completion is accounted once at return or rejection. The driver attaches these
 rows to terminal compaction events, preserving spend even when a preview rejects
 persistence. File metadata and generated prose are measured separately. Native
-cut rules and reserve math remain Pi-owned. Payload diagnostics correlate
+cut rules and reserve math retain the attributed Pi 0.99.2 baseline. Payload diagnostics correlate
 assistant usage independently of these operation-scoped summary requests.
 
 | Active bridge | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
-| **pi** | Yes (pi `AgentHarness` + JSONL session repo) | session repo | Yes only with `piSessionsRoot` and the durable history/session transaction contract |
+| **pi** | Yes (mono-agent harness + v2 native journal) | session repo | Yes only with `piSessionsRoot` and the durable history/session transaction contract |
 
 The current registry contains only Pi. A confirmed warm session omits host replay.
 An unconfirmed durable reopen refreshes the handle and supplies canonical history:
@@ -349,6 +350,6 @@ isolated and stateless, with the same cancellation/reset/failed-commit barriers.
 Think of `@mono-agent/agent-runtime` as the portable agent process engine
 underneath a host app. The host decides what a task means, which agent should
 run, how state changes, and how results are persisted. The runtime decides how
-to talk to Claude, Pi, Codex, and OpenCode execution surfaces; how tools are
+to talk to models through Pi provider dependencies; how tools are
 exposed; how provider failures are normalized; and how enough telemetry is
 returned for a host to make reliable orchestration decisions.

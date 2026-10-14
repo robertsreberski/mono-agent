@@ -38,7 +38,7 @@ describe("embedding instruction upgrade", () => {
     const store = createBujoMemoryStore({ root, tier: "journal", embeddings: upgraded.provider, dim: 4 });
     try {
       const hits = await store.recall("When was Morgan born?", { trackAccess: false });
-      expect(hits.map((hit) => hit.record.text)).toContain("Morgan was born on 1990-05-17.");
+      expect(hits.map((hit) => hit.record.text)).toContain("Morgan was born on 2000-01-01.");
     } finally {
       await store.close();
     }
@@ -48,7 +48,7 @@ describe("embedding instruction upgrade", () => {
     upgraded.sent.length = 0;
     await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: upgraded.provider, dim: 4 });
     expect(readManagedIndexManifest(root)?.active.embeddingModel).toBe("ollama:bge-m3:latest#instructions=none");
-    expect(upgraded.sent).toContain("Morgan was born on 1990-05-17.");
+    expect(upgraded.sent).toContain("Morgan was born on 2000-01-01.");
     upgraded.sent.length = 0;
     const rebuilt = createBujoMemoryStore({ root, tier: "journal", embeddings: upgraded.provider, dim: 4 });
     try {
@@ -68,7 +68,7 @@ describe("embedding instruction upgrade", () => {
     const legacy = recording("bge-m3:latest", "search");
     const seed = openMemoryDb({ path: join(root, "memory.db"), embeddings: legacy.provider, dim: 4 });
     await seed.upsert({
-      id: "M1", type: "note", status: "open", text: "Morgan was born on 1990-05-17.", salience: 0.5,
+      id: "M1", type: "note", status: "open", text: "Morgan was born on 2000-01-01.", salience: 0.5,
       isInsight: false, createdAt: NOW, accessCount: 0, tags: [], source: {},
     });
     seed.close();
@@ -183,7 +183,7 @@ function seededRoot(): string {
       id: "MORGAN-BORN",
       type: "note",
       status: "open",
-      text: "Morgan was born on 1990-05-17.",
+      text: "Morgan was born on 2000-01-01.",
       salience: 0.7,
       isInsight: false,
       createdAt: NOW,

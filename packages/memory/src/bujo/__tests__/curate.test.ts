@@ -660,11 +660,11 @@ describe("operator entity merges", { timeout: 20_000 }, () => {
     const { rewriteBullet } = await import("../daily.js");
     const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
     initializeReplayProjection(path);
-    seed(path, "fictional-a", "The user was born on 1990-05-17.");
+    seed(path, "fictional-a", "The user was born on 2000-01-01.");
     seed(path, "fictional-b", "Morgan likes the Maple project.");
     const line = inspectCurateSource(path).lines[0]!;
     rewriteBullet(path, line.file, line.id, { refs: [encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:the-user",
-      key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "unknown" })] });
+      key: "birth_date", value: { type: "date", date: "2000-01-01" }, attribution: "unknown" })] });
     appendGraphBatch(path, { ...morganGraph, associations: [
       { memoryId: "fictional-a", entityId: "person:the-user", provenance: "capture", createdAt: at },
       { memoryId: "fictional-b", entityId: "concept:morgan", provenance: "capture", createdAt: at },

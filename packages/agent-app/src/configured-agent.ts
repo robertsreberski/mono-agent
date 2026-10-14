@@ -1,3 +1,7 @@
+import type { ConversationHistoryTurnInspection } from "@mono-agent/agent-harness";
+import { persistedWebDeliveryId, serializeNativeSwitchHarness } from "./configured-native-switch.js";
+import { implicitModelRuntimeOptions } from "./request-model-override.js";
+import { completionOnlyRuntime } from "./configured-runtime-capabilities.js";
 import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
@@ -36,7 +40,7 @@ import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalStr
 import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { isProviderAuthFailureText } from "@mono-agent/agent-runtime/ai/failure.js";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
-import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
+import { MonoAgentConfigError, assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete, LlmCompleteOptions } from "@mono-agent/memory/bujo";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
@@ -47,6 +51,7 @@ import type {
 } from "@mono-agent/observability";
 import {
   createMonoRuntime,
+  createManagedNativeJournalStorage,
   createPiOAuthApiKeyResolver,
   createSrtSandboxEngine,
   describeMonoRuntimeSupport,
@@ -471,6 +476,8 @@ function createConfiguredAgentRuntimeBase(
           // Resolve custom/local Pi options from the ACTUAL route selected by
           // the fallback router. Secrets stay inside this private return value
           // and are never copied into route metadata or events.
+          // This resolver changes endpoint options only, never the native owner.
+          sessionTurnReconciliation: "v1",
           resolveAttempt: ({ model }) => ({
             options: runtimeOptionsForLocalProvider(model, config.providers?.local),
           }),
@@ -485,7 +492,23 @@ function configuredSandboxEngine(
   return explicit ?? createSrtSandboxEngine();
 }
 
-function wrapOwnedConfiguredRuntime(
+// Explicit ownership boundary: new runtime/prepared methods require disposition.
+const ownedRuntimeKeys = {
+  run: true, prepareNativeDispatch: true,
+  configureTools: true, syncSession: true, sessionTurnReconciliation: true,
+  reconcileSessionTurn: true, recoverSession: true, refreshSession: true,
+  // Deliberately omitted: switch dispatch does not need default-path salvage.
+  salvageDurableSession: false, retireDurableSession: true, disposeSession: true,
+  invalidateSession: true, disposeAllSessions: true,
+} satisfies Record<keyof MonoRuntimeLike, boolean>;
+const ownedPreparedKeys = {
+  snapshot: true, assertReady: true, checkHandoffSummary: true,
+  produceHandoffSummary: true, run: true, close: true,
+} satisfies Record<keyof import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch, true>;
+void ownedRuntimeKeys; void ownedPreparedKeys;
+
+/** @internal Package-private ownership wrapper test seam; absent from root exports. */
+export function wrapOwnedConfiguredRuntime(
   runtime: MonoRuntimeLike,
   config: MonoAgentConfig,
   agentRoot: string | undefined,
@@ -513,56 +536,111 @@ function wrapOwnedConfiguredRuntime(
       await releaseAgentRootOwnershipWhenIdle(ownership);
     }
   };
+  const withReconciliationLease = async <T>(action: () => Promise<T>): Promise<T> => {
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const { ownership } = await secured();
+    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, config.runtime.workspace);
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    try { await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace); return await action(); }
+    finally { lease.releaseAfterSettlement(); }
+  };
+  // A prepared lease owns the same protection generation as ordinary run(),
+  // but its lifetime ends at dispatch/close, not when preparation returns.
+  const secureOptions = async (runOptions: RuntimeRunOptions) => {
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const { ownership } = await secured();
+    const registry = await loadProcessJobsRootRegistryProtection(
+      ownership.agentRoot,
+      config.runtime.workspace,
+    );
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
+    if (disposed) throw new Error("Configured runtime has been disposed.");
+    const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
+    try {
+      const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
+      const protectedRoots = processJobsProtectionPolicyRoots(attested);
+      let effectiveOptions = runOptions;
+      if (protectedRoots.length > 0) {
+        const verdict = configuredRoutesOnlyPiNative(config, runOptions.model);
+        if (!verdict.ok) {
+          throw new Error(
+            `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
+          );
+        }
+        const sandboxEngine = runOptions.sandboxEngine
+          ?? configuredSandboxEngine
+          ?? createSrtSandboxEngine();
+        if (!await sandboxEngine.isAvailable().catch(() => false)) {
+          throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+        }
+        const sandboxPolicy = mergeSandboxPolicies(
+          runOptions.sandboxPolicy,
+          processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
+        );
+        if (sandboxPolicy === undefined) {
+          throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
+        }
+        effectiveOptions = {
+          ...runOptions,
+          sandboxPolicy,
+          sandboxEngine,
+        };
+      }
+      return { effectiveOptions, release: () => lease.releaseAfterSettlement() };
+    } catch (error) {
+      lease.releaseAfterSettlement();
+      throw error;
+    }
+  };
   return {
     async run(systemPrompt, runOptions) {
-      if (disposed) throw new Error("Configured runtime has been disposed.");
-      const { ownership } = await secured();
-      const registry = await loadProcessJobsRootRegistryProtection(
-        ownership.agentRoot,
-        config.runtime.workspace,
-      );
-      ownership.coordinator.synchronizeGeneration(registry.generation);
-      const boundary = await attestProcessJobsRootRegistrySnapshot(registry, config.runtime.workspace);
-      if (disposed) throw new Error("Configured runtime has been disposed.");
-      const lease = ownership.coordinator.acquireRequestLease(boundary.generation);
-      try {
-        const attested = await attestProcessJobsRootRegistrySnapshot(boundary, config.runtime.workspace);
-        const protectedRoots = processJobsProtectionPolicyRoots(attested);
-        let effectiveOptions = runOptions;
-        if (protectedRoots.length > 0) {
-          const verdict = configuredRoutesOnlyPiNative(config, runOptions.model);
-          if (!verdict.ok) {
-            throw new Error(
-              `${PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR} Rejected the configured runtime chain: ${verdict.reason}.`,
-            );
-          }
-          const sandboxEngine = runOptions.sandboxEngine
-            ?? configuredSandboxEngine
-            ?? createSrtSandboxEngine();
-          if (!await sandboxEngine.isAvailable().catch(() => false)) {
-            throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-          }
-          const sandboxPolicy = mergeSandboxPolicies(
-            runOptions.sandboxPolicy,
-            processJobsSandboxPolicy({ coreConfig: config, protectedRoots }),
-          );
-          if (sandboxPolicy === undefined) {
-            throw new Error(PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR);
-          }
-          effectiveOptions = {
-            ...runOptions,
-            sandboxPolicy,
-            sandboxEngine,
-          };
-        }
-        return await runtime.run(systemPrompt, effectiveOptions);
-      } finally {
-        lease.releaseAfterSettlement();
-      }
+      const secured = await secureOptions(runOptions);
+      try { return await runtime.run(systemPrompt, secured.effectiveOptions); }
+      finally { secured.release(); }
     },
+    ...(runtime.prepareNativeDispatch === undefined ? {} : {
+      async prepareNativeDispatch(systemPrompt: string, runOptions: RuntimeRunOptions) {
+        const secured = await secureOptions(runOptions);
+        let nativeLease: import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch | undefined;
+        try {
+          const prepared = await runtime.prepareNativeDispatch!(systemPrompt, secured.effectiveOptions);
+          nativeLease = prepared;
+          let released = false, started = false, closed = false;
+          const release = () => { if (!released) { released = true; secured.release(); } };
+          return {
+            snapshot: prepared.snapshot,
+            ...(prepared.assertReady === undefined ? {} : { assertReady: prepared.assertReady.bind(prepared) }),
+            ...(prepared.checkHandoffSummary === undefined ? {} : { checkHandoffSummary: prepared.checkHandoffSummary.bind(prepared) }),
+            ...(prepared.produceHandoffSummary === undefined ? {} : { produceHandoffSummary: prepared.produceHandoffSummary.bind(prepared) }),
+            async run(binding) {
+              if (started || closed) throw new Error("Prepared dispatch has already been consumed.");
+              started = true;
+              try { return await prepared.run(binding); }
+              finally { release(); }
+            },
+            async close() {
+              closed = true;
+              try { await prepared.close(); }
+              finally { release(); }
+            },
+          } satisfies import("@mono-agent/runtime-adapter").RuntimeNativePreparedDispatch;
+        } catch (error) {
+          try { await nativeLease?.close(); } catch { /* Preserve preparation failure. */ }
+          finally { secured.release(); }
+          throw error;
+        }
+      },
+    }),
     ...(runtime.configureTools === undefined
       ? {}
       : { configureTools: runtime.configureTools.bind(runtime) }),
+    ...(runtime.sessionTurnReconciliation === undefined ? {} : { sessionTurnReconciliation: runtime.sessionTurnReconciliation }),
+    ...(runtime.reconcileSessionTurn === undefined ? {} : { reconcileSessionTurn: (request) => withReconciliationLease(() => runtime.reconcileSessionTurn!(request)) }),
+    ...(runtime.recoverSession === undefined ? {} : { recoverSession: (receipt, context) => withReconciliationLease(() => runtime.recoverSession!(receipt, context)) }),
     ...(runtime.syncSession === undefined ? {} : { syncSession: runtime.syncSession.bind(runtime) }),
     ...(runtime.refreshSession === undefined ? {} : { refreshSession: runtime.refreshSession.bind(runtime) }),
     ...(runtime.retireDurableSession === undefined
@@ -835,6 +913,10 @@ export function buildSubagentsOptions(
       ...(request.liveInput !== undefined && steeringSupported ? { liveInput: request.liveInput } : {}),
       ...childCapabilityOptions,
       ...(recovery ? { sessionRecovery: recovery } : {}),
+      ...(request.instance && request.turnToken ? { sessionTurn: {
+        kind: "instance" as const, ownerKey: request.instance.id, historyBucket: null,
+        turnId: request.turnToken, handleId: request.instance.sessionId, baseRevision: null,
+      } } : {}),
       ...(config.providers?.piNative?.cacheRetention === undefined ? {} : { cacheRetention: config.providers.piNative.cacheRetention }),
       ...(config.providers?.piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: config.providers.piNative.promptCacheDiagnostics }),
       ...(commandTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs: commandTimeoutMs } }),
@@ -1071,6 +1153,18 @@ async function createConfiguredAgentHarnessInternal(
 ): Promise<AgentHarness> {
   const config = options.config;
   assertNoRetiredMonoAgentConfig(config);
+  const switchConfig = config.runtime.session.modelSwitch;
+  if (switchConfig?.enabled === true) {
+    if (config.runtime.session.mode !== "continuous") throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires continuous sessions.", { path: "runtime.session.mode" });
+    if (!config.providers?.piNative?.piSessionsRoot) throw new MonoAgentConfigError("invalid_json",
+      "Web model switching requires durable providers.piNative.piSessionsRoot.", { path: "providers.piNative.piSessionsRoot" });
+  }
+  // Config opt-in is not inferred from runtime capabilities; native storage
+  // authority remains lazy and owner-held.
+  const nativeModelSwitch = switchConfig?.enabled === true
+    ? { native: createManagedNativeJournalStorage({ sessionsRoot: config.providers!.piNative!.piSessionsRoot! }) }
+    : undefined;
   const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;
@@ -1343,9 +1437,20 @@ async function createConfiguredAgentHarnessInternal(
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: historyRoot,
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
+    ...(nativeModelSwitch === undefined ? {} : { nativeJournalStorage: nativeModelSwitch.native }),
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
+          ...(runtime.sessionTurnReconciliation !== "v1" || runtime.reconcileSessionTurn === undefined ? {} : {
+            reconcileProviderSessionTurn: async (request: ConversationHistoryTurnInspection) => {
+              const owner = runtimeForSession(request.modelKey);
+              if (owner.sessionTurnReconciliation !== "v1" || owner.reconcileSessionTurn === undefined) throw new Error("Session owner cannot reconcile native turn evidence.");
+              const selected = parseMonoRuntimeModelReference(request.modelKey);
+              return await owner.reconcileSessionTurn({ descriptor: request.descriptor, purpose: request.purpose,
+                expectedInputs: request.expectedInputs, sessionsRoot: piSessionsRoot,
+                expectedModel: { provider: selected.provider, id: selected.model } });
+            },
+          }),
           retireProviderSession: async (providerSessionId: string, modelKey?: string): Promise<void> => {
             const owner = runtimeForSession(modelKey);
             if (owner.retireDurableSession === undefined) {
@@ -1376,7 +1481,7 @@ async function createConfiguredAgentHarnessInternal(
   });
 
   try {
-    const harness = createAgentHarness({
+    const harnessOptions: AgentHarnessOptions = {
     identityPath: config.context.identityPath,
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
@@ -1503,9 +1608,27 @@ async function createConfiguredAgentHarnessInternal(
       }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    };
+    const harness = nativeModelSwitch === undefined
+      ? createAgentHarness(harnessOptions)
+      : createAgentHarness(harnessOptions, {
+      nativeModelSwitch: {
+        ...nativeModelSwitch,
+        sessionsRoot: piSessionsRoot ?? "",
+        deliveryId: persistedWebDeliveryId,
+        // Reuse endpoint/effort/1M selection without changing request metadata
+        // identity (which carries out-of-band host capabilities).
+        implicitModel: async (request, modelKey) => ({ model: parseMonoRuntimeModelReference(modelKey), runtimeOptions: await implicitModelRuntimeOptions({ baseModel: model,
+          ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
+          ...(config.runtime.effort === undefined ? {} : { baseEffort: config.runtime.effort }),
+          ...(config.runtime.fallbacks === undefined ? {} : { fallbackRoutes: config.runtime.fallbacks }),
+          ...(config.providers?.local === undefined ? {} : { localProviders: config.providers.local }) }, request.metadata, modelKey) }),
+      },
     });
     ownershipTransferred = true;
-    return harnessWithAgentRootOwnership(harness, ownership);
+    const owned = harnessWithAgentRootOwnership(harness, ownership);
+    return nativeModelSwitch === undefined ? owned : serializeNativeSwitchHarness(owned, ownership.agentRoot, historyStore);
+
   } catch (error) {
     await toolHistory?.release?.().catch(() => undefined);
     throw error;
@@ -2269,8 +2392,11 @@ function wrapPerRunOwnedConfiguredRuntime(
   agentRoot: string | undefined,
   protectionPosture: ProcessJobsProtectionPosture | undefined,
 ): MonoRuntimeLike {
+  // Memory completion has no storage-settlement caller. Do not advertise
+  // inherited recovery methods that would bypass this per-run ownership lease.
+  const completionRuntime = completionOnlyRuntime(runtime);
   return {
-    ...runtime,
+    ...completionRuntime,
     async run(systemPrompt, runOptions) {
       const ownership = await acquireAgentRootOwnership(agentRoot);
       let requestLease: ReturnType<AgentRootOwnership["coordinator"]["acquireRequestLease"]> | undefined;

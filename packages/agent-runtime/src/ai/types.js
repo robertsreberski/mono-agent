@@ -204,6 +204,9 @@
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
+ * @property {() => Promise<ReadonlyArray<Object>>} [detachedContext] Protected lazy host replay prefix; never returned or included in telemetry.
+ * @property {(attempt: {descriptor: any, model: RuntimeModelRef, attemptIndex: number, retryIndex: number, result: RuntimeResult}) => Promise<void>} [onSessionTurnDetached] Protected awaited host claim before stateless replay.
+ * @property {{kind: "host"|"instance", ownerKey: string, historyBucket: string|null, turnId: string, handleId: string, baseRevision: number|null, reconciliation?: {version: 1, purpose: "execution"|"compaction", fenceDigest: string, initialInputId: string|null}}} [sessionTurn] Protected host-owned native ownership/turn binding; no recovery authority.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {boolean} [manualCompaction] Internal promptless Pi compaction mode; never sent to fallback routes.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
@@ -376,7 +379,17 @@
  */
 
 /**
+ * Monotonic Pi dispatch evidence, armed only after replay seeding.
+ * @typedef {Object} RuntimeDispatchProgress
+ * @property {1} version
+ * @property {boolean} armed
+ * @property {boolean} toolAdmitted
+ * @property {boolean} liveInputTaken
+ */
+
+/**
  * @typedef {Object} RuntimeResult
+ * @property {RuntimeDispatchProgress} [dispatchProgress] Absence/malformed evidence never certifies no progress.
  * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
@@ -395,6 +408,7 @@
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
  * @property {string|null} [failureKind]
+ * @property {boolean} [retryable] Explicit terminal safety rejection overrides route retryability.
  * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
  * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
@@ -529,15 +543,54 @@
  */
 
 /**
+ * @typedef {Object} NativeDispatchSnapshot
+ * @property {number} [compactionSummaryMaxTokens] Effective real-compaction output policy, captured after request extensions.
+ * @property {{provider: string, id: string, api: string, contextWindow: number, maxTokens: number}} model
+ * @property {{provider: string, api: string, model: string, account: string|null}} provenance
+ * @property {string} systemPrompt Actual augmented instructions.
+ * @property {ReadonlyArray<{name: string, description: string, parameters: Record<string, any>}>} tools Actual selected built-in/MCP/StructuredOutput declarations.
+ * @property {ReadonlyArray<any>} messages Frozen request including current decorated input.
+ */
+/**
+ * @typedef {Object} NativeDispatchBinding
+ * @property {string} [sessionId]
+ * @property {string} [providerSessionId]
+ * @property {string} [providerAttributionSessionId]
+ * @property {boolean} [sessionKeepAlive]
+ * @property {number} [sessionIdleTimeoutMs]
+ * @property {RuntimeRunOptions['sessionTurn']} [sessionTurn]
+ * @property {RuntimeRunOptions['sessionRecovery']} [sessionRecovery]
+ * @property {any} [nativeSessionAuthority]
+ * @property {any} [nativeSessionProjection]
+ */
+/**
+ * @typedef {{prepared: {status: "prepared", checkpoints: ReadonlyArray<Record<string, any>>, ledger: ReadonlyArray<Record<string, any>>, recent: ReadonlyArray<Record<string, any>>, older: ReadonlyArray<Record<string, any>>, coverage: ReadonlyArray<Record<string, any>>}, outputReserve: number}} NativeHandoffProducerRequest
+ * @typedef {Readonly<Record<"intent"|"constraints"|"decisions"|"completedWork"|"failures"|"openWork"|"nextActions"|"references", ReadonlyArray<string>>>} NativeHandoffSummary
+ * @typedef {{status: "ready", summary: NativeHandoffSummary, usage?: any, durationMs?: number}|{status: "summary_rejected", reason: string, usage?: any, durationMs?: number}|{status: "budget_failure", reason: string}} NativeHandoffProducerResult
+ */
+/**
+ * @typedef {Object} NativePreparedDispatch
+ * @property {() => void} [assertReady] Check availability before host P2 admission, without consuming the lease.
+ * @property {NativeDispatchSnapshot} snapshot Deep-frozen nonsecret dispatch metadata.
+ * @property {(input: NativeHandoffProducerRequest) => {status: "ready"}|{status: "budget_failure", reason: string}} [checkHandoffSummary] Pure preflight; no billing or native mutation.
+ * @property {(input: NativeHandoffProducerRequest) => Promise<NativeHandoffProducerResult>} [produceHandoffSummary] One ordinary-auth no-tools call per lease; host owns durable admission.
+ * @property {(binding?: NativeDispatchBinding) => Promise<RuntimeResult>} run Single use; no router replay/failover, tools are not rebuilt.
+ * @property {() => Promise<void>} close Idempotent; while running waits for its normal cleanup. Host owns concurrency/abort.
+ */
+
+/**
  * @typedef {Object} AgentRuntimeInstance
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<NativePreparedDispatch>} [prepareNativeDispatch]
+ * @property {"v1"} [sessionTurnReconciliation] Explicit native evidence ownership capability.
+ * @property {(request: {sessionsRoot: string, descriptor: any, purpose: "execution"|"compaction", expectedModel: {provider: string, id: string, api?: string}, expectedInputs: ReadonlyArray<{id: string, requestDigest: string, placement: "initial"|"live"}>, expectedBaseTip?: string|null}) => Promise<any>} reconcileSessionTurn Storage-only protected native reconciliation.
  * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
  * @property {(providerSessionId: string, sessionsRoot: string) => ReturnType<typeof import('./providers/pi-native/session-salvage.js').salvageDurableNativeSession>} [salvageDurableSession] Read-only best-effort snapshot of a durable Pi transcript.
- * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
+ * @property {(providerSessionId: string, sessionsRoot: string, deletion?: {hostAuthority:{version:1,rootId:string,authorityId:string,ownerKey:string,historyBucket:string},disposition:'C'|'D',assertOwned:()=>Promise<void>}) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
  * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions

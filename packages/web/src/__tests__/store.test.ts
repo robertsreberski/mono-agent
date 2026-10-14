@@ -25,6 +25,7 @@ import {
   WEB_THREAD_SEARCH_MAX,
   WEB_THREAD_SEARCH_MIN_QUERY,
   WebStore,
+  INTERRUPTED_QUESTION_NOTE,
   applyDeltaOps,
   diffParts,
   type StoredTurnFinish,
@@ -1132,7 +1133,7 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("projects an applied human steer as one inline marker, not a Steered tool row", async () => {
+  it("Duplicate consumption/receipt settles once as one applied row and inline marker", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -1179,6 +1180,8 @@ describe("WebStore", () => {
       receivedAt: "2026-09-12T10:00:01.000Z",
       quote: { text: "the sync approach", messageId: turn.userMessageId },
     });
+    expect(assistant?.parts.filter((part) => part.type === "steer")).toHaveLength(1);
+    expect(detail.messages.filter((message) => message.id === reserved.message.id)).toHaveLength(1);
     // The steered user row keeps its standalone identity for search and quotes.
     expect(detail.messages.find((message) => message.id === reserved.message.id)).toMatchObject({
       role: "user",
@@ -1355,6 +1358,42 @@ describe("WebStore", () => {
   // the console reads interactionId/answered from the persisted part to re-render an
   // answered card after a reload, and without it every answered card degraded to
   // "Question unavailable".
+  it.each(["restart", "agent-restart", "cancelled", "failed", "existing-note"])("Pending AskUser becomes a durable interruption note (%s)", async (cause) => {
+    const base = await temporaryRoot(); cleanup.push(base); const stateDir = join(base, "state");
+    const open = () => WebStore.open({ stateDir, clock: () => new Date("2000-01-01T00:00:00.000Z") });
+    let store = await open(); store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one"), turn = store.beginTurn({ threadId: thread.id, text: "Fictional question task.", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "tool_call_started", id: "fictional-ask", name: "mcp__host__ask_user", arguments: { message: "Fictional question." } } }]);
+    if (cause === "existing-note") store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: "The question was interrupted. Answer in a new message; no tool was replayed." }]);
+    if (cause === "agent-restart") store.interruptTurnForRestart(turn.turnId);
+    else if (cause !== "restart") store.failTurn(turn.turnId, { message: "Fictional interruption.", cancelled: cause === "cancelled" });
+    store.close(); store = await open();
+    const message = store.getMessage(turn.assistantMessageId)!;
+    // Quoted provider text is not a stored interruption marker.
+    expect(message.parts.filter((part) => part.type === "text" && part.text === INTERRUPTED_QUESTION_NOTE)).toHaveLength(cause === "existing-note" ? 2 : 1);
+    expect(message.parts.filter((part) => part.type === "text" && part.interruptedQuestion)).toHaveLength(1);
+    expect(message.parts.find((part) => part.type === "tool-call")).toEqual({ type: "tool-call", toolCallId: "fictional-ask", toolName: "mcp__host__ask_user", args: { message: "Fictional question." }, status: "failed" });
+    store.interruptTurn(turn.turnId); store.close(); store = await open();
+    expect(store.getMessage(turn.assistantMessageId)).toEqual(message); store.close();
+  });
+
+  it.each(["answered", "expired", "result", "completed"])("does not interrupt an AskUser card with %s evidence", async (kind) => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date("2000-01-01T00:00:00.000Z") });
+    store.replaceAgents([agent()]); const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Fictional task.", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "fictional-ask", name: "AskUser" } },
+      ...(kind === "completed" ? [] : [{ kind: "event" as const, event: { type: "tool_call_completed" as const, id: "fictional-ask", name: "AskUser",
+        ...(kind === "result" ? { content: "Fictional terminal result." } : { structuredContent: { status: kind, answered: kind === "answered", interactionId: "fictional-ask" } }) } }]),
+    ]);
+    const before = store.getMessage(turn.assistantMessageId)!.parts.find((part) => part.type === "tool-call");
+    if (kind === "completed") store.completeTurn(turn.turnId, "Fictional reply."); else store.interruptTurn(turn.turnId);
+    const parts = store.getMessage(turn.assistantMessageId)!.parts;
+    expect(parts.find((part) => part.type === "tool-call")).toEqual(before);
+    expect(JSON.stringify(parts)).not.toContain("The question was interrupted."); store.close();
+  });
+
   it("persists an MCP tool's structuredContent beside its text result", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -7441,4 +7480,32 @@ describe("wake attempt reconciliation", () => {
     expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "completed", disposition: "follow_up" });
     reopened.close();
   });
+});
+
+it("uses stored interruption markers, not quoted notice text, including user Stop", async () => {
+  const base = await temporaryRoot(); cleanup.push(base);
+  let store = await WebStore.open({ stateDir: join(base, "state") });
+  try {
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const quoted = store.beginTurn({ threadId: thread.id, text: "Fictional task", attachmentIds: [] });
+    store.applyStreamFrames(quoted.turnId, [{ kind: "append", delta: INTERRUPTED_QUESTION_NOTE }]);
+    store.failTurn(quoted.turnId, { message: "Stopped", cancelled: true });
+    expect(store.parentInterruptionNotes(quoted.turnId).questionInterrupted).toBe(false);
+    const interrupted = store.beginTurn({ threadId: thread.id, text: "Fictional question", attachmentIds: [] });
+    store.applyStreamFrames(interrupted.turnId, [
+      { kind: "append", delta: INTERRUPTED_QUESTION_NOTE },
+      { kind: "event", event: { type: "tool_call_started", id: "fictional-ask", name: "AskUser", arguments: { message: "Which option?" } } },
+    ]);
+    store.failTurn(interrupted.turnId, { message: "Stopped", cancelled: true });
+    expect(store.parentInterruptionNotes(interrupted.turnId).questionInterrupted).toBe(true);
+    const parts = store.getMessage(interrupted.assistantMessageId)!.parts;
+    expect(parts.filter((part) => part.type === "text" && part.interruptedQuestion)).toEqual([
+      { type: "text", text: INTERRUPTED_QUESTION_NOTE, interruptedQuestion: true },
+    ]);
+    expect(parts.find((part) => part.type === "tool-call")).toMatchObject({ status: "failed" });
+    store.close(); store = await WebStore.open({ stateDir: join(base, "state") });
+    expect(store.parentInterruptionNotes(interrupted.turnId).questionInterrupted).toBe(true);
+    expect(store.parentInterruptionNotes(quoted.turnId).questionInterrupted).toBe(false);
+  } finally { store.close(); }
 });

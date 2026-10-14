@@ -678,16 +678,20 @@ it("compacts durable web conversations through the production responder composit
     async invalidateSession() { return true; },
     async disposeSession() { return true; },
   };
-  const router = (model: RuntimeModelReference, withFallback: boolean): MonoRuntimeLike => ({
-    ...createMonoRuntime({ fallbackChain: [{ model }, ...(withFallback ? [{ model: other }] : [])],
-      resolveAttempt: () => ({ runtime: provider }) }),
+  const router = (model: RuntimeModelReference, withFallback: boolean): MonoRuntimeLike => {
+    const routed = createMonoRuntime({ fallbackChain: [{ model }, ...(withFallback ? [{ model: other }] : [])],
+      resolveAttempt: () => ({ runtime: provider }) });
+    // Custom route ownership is not certified by the default inner matcher.
+    // Method presence alone must not opt this scripted provider into P2.
+    return { ...routed,
     // The scripted provider is the durable Pi session owner; the router's
     // default inner runtime has no knowledge of this test's provider handle.
     syncSession: provider.syncSession!.bind(provider),
     refreshSession: provider.refreshSession!.bind(provider),
     retireDurableSession: provider.retireDurableSession!.bind(provider),
     invalidateSession: provider.invalidateSession!.bind(provider),
-  });
+    };
+  };
   const runtime = router(primary, true);
   const security = await controllerSecurity(dir, dir);
   const controller: ResponderControllerPort = {

@@ -249,6 +249,15 @@ function resolveAskUserToolSettings(
   };
 }
 
+/**
+ * Restriction-only per-request marker. A Web parent-interruption wake sets
+ * `metadata.web.suppressInteractionTools`; it can only remove AskUser, never add tools.
+ */
+export function requestSuppressesInteractionTools(metadata: Record<string, unknown> | undefined): boolean {
+  const web = metadata?.web;
+  return typeof web === "object" && web !== null && (web as Record<string, unknown>).suppressInteractionTools === true;
+}
+
 export function adapterSendToolNames(settings: AdapterSendToolsSettings): readonly string[] {
   const names: string[] = [];
   // AskUser leads the list: it is a decision tool the model should reach for

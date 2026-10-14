@@ -1,3 +1,6 @@
+import { loadToolHistoryProjection, type prepareHarnessContext } from "./context-preparation.js";
+import { randomUUID } from "node:crypto";
+import { createPendingInitialInput, createPendingLiveInput, assertDetachedTurnDescriptor } from "../durable-turn-contract.js";
 import { sessionModelKey } from "../session-runtime.js";
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import {
@@ -6,6 +9,8 @@ import {
   type RuntimeMessage,
   type RuntimeResult,
   type RuntimeRunOptions,
+  type RuntimeNativePreparedDispatch, type RuntimeNativeDispatchSnapshot, type RuntimeNativeDispatchBinding,
+  type RuntimeHandoffProducerRequest, type RuntimeHandoffProducerResult, type RuntimeHandoffFit,
 } from "@mono-agent/runtime-adapter";
 
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
@@ -17,6 +22,7 @@ import type {
   AgentHarnessProgressCapability,
   AgentHarnessRequest,
   AgentHarnessRuntimeOptionsExtension,
+  ConversationHistoryTurnReconciliation,
 } from "../types.js";
 import type { SessionRuntimeResolver } from "../session-runtime.js";
 import type { LiveInputMailbox } from "../live-input.js";
@@ -41,10 +47,128 @@ interface HarnessRuntimeRouting {
   readonly modelKey: string;
   readonly runtimeForSession: SessionRuntimeResolver;
   readonly recoveryRevision?: number | undefined;
+  readonly turnRevision?: number | undefined;
+  readonly reconciliation?: ConversationHistoryTurnReconciliation | undefined;
+  readonly detachedHistoryOverride?: readonly HistoryMessage[];
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
-export async function runHarnessRuntime(
+type PreparedContext = Awaited<ReturnType<typeof prepareHarnessContext>>;
+export interface HarnessPreparedBinding extends RuntimeNativeDispatchBinding {
+  readonly reconciliation: ConversationHistoryTurnReconciliation;
+  readonly turnRevision: number;
+  readonly recoveryRevision?: number;
+  readonly assertOwned: () => Promise<void>;
+}
+export interface PreparedHarnessRuntime {
+  readonly snapshot: RuntimeNativeDispatchSnapshot;
+  readonly context: PreparedContext;
+  assertReady(): void;
+  checkHandoffSummary(input: RuntimeHandoffProducerRequest): RuntimeHandoffFit;
+  produceHandoffSummary(input: RuntimeHandoffProducerRequest): Promise<RuntimeHandoffProducerResult>;
+  run(binding: HarnessPreparedBinding | (() => Promise<HarnessPreparedBinding>)): Promise<RuntimeResult>;
+  close(): Promise<void>;
+}
+export interface HarnessRuntimePreparationInput {
+  readonly options: AgentHarnessOptions; readonly runLimiter?: Semaphore; readonly sessionsEnabled: boolean;
+  readonly request: AgentHarnessRequest; readonly recorder: RunRecorder; readonly runId: string;
+  readonly durablePiSessionsRoot: string; readonly routing: HarnessRuntimeRouting;
+  readonly attachmentContext: AttachmentRequestContext;
+  readonly continuationCapabilities: AgentHarnessContinuationClaimCapability[];
+  readonly turnContinuityCollector: UncommittedTurnCollector;
+  readonly liveInputMailbox?: LiveInputMailbox; readonly onProviderStart?: () => void;
+  readonly assertOwned: () => Promise<void>;
+  /** Called once under the permit and outgoing conversation claim. No P2 admission. */
+  readonly prepareContext: (request: AgentHarnessRequest, options: AgentHarnessOptions) => Promise<PreparedContext>;
+}
+interface PreparationControl {
+  assertOwned(): Promise<void>;
+  prepareContext(request: AgentHarnessRequest, options: AgentHarnessOptions): Promise<PreparedContext>;
+  abort(reason: unknown): void;
+  ready(lease: RuntimeNativePreparedDispatch, context: PreparedContext): Promise<HarnessPreparedBinding>;
+}
+/** Copy request/config data, retaining privileged functions/controllers by identity. */
+function copyPreparationData<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(copyPreparationData) as T;
+  if (value && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyPreparationData(item)])) as T;
+  }
+  return value;
+}
+function freezePreparationData<T>(value: T): T {
+  if (value && typeof value === "object") { Object.values(value).forEach(freezePreparationData); Object.freeze(value); }
+  return value;
+}
+/** Opt-in substrate only. No caller/config activation. Hold the permit until all
+ * native and extension resources settle, including close/abort during production.
+ * The original claim is used during preparation; run receives the transferred P2 owner. */
+export function prepareHarnessRuntime(input: HarnessRuntimePreparationInput): Promise<PreparedHarnessRuntime> {
+  // Metadata identity carries out-of-band capability bindings; do not clone it.
+  const request = { ...copyPreparationData(input.request), ...(input.request.metadata ? { metadata: input.request.metadata } : {}) }, options: AgentHarnessOptions = { ...input.options,
+    model: { ...input.options.model },
+    ...(input.options.runtimeOptions ? { runtimeOptions: copyPreparationData(input.options.runtimeOptions) } : {}),
+    ...(input.options.toolPolicy ? { toolPolicy: copyPreparationData(input.options.toolPolicy) } : {}),
+    ...(input.options.sandboxPolicy ? { sandboxPolicy: copyPreparationData(input.options.sandboxPolicy) } : {}),
+    ...(input.options.session ? { session: copyPreparationData(input.options.session) } : {}),
+    ...(input.options.selectedSkills ? { selectedSkills: [...input.options.selectedSkills] } : {}) };
+  let resolvePrepared!: (value: PreparedHarnessRuntime) => void, rejectPrepared!: (error: unknown) => void;
+  const prepared = new Promise<PreparedHarnessRuntime>((resolve, reject) => { resolvePrepared = resolve; rejectPrepared = reject; });
+  let admitting = false, deferredAbort: unknown;
+  let resume!: (binding: HarnessPreparedBinding) => void, stop!: (reason: unknown) => void, state = "preparing", producing = false;
+  const binding = new Promise<HarnessPreparedBinding>((resolve, reject) => { resume = resolve; stop = reject; });
+  void binding.catch(() => {});
+  const abort = (reason: unknown) => { if (state === "preparing" || state === "prepared") { state = "closed"; if (admitting) deferredAbort = reason; else stop(reason); } };
+  const outcome = executeHarnessRuntime({ assertOwned: input.assertOwned, prepareContext: input.prepareContext, abort,
+    ready: async (lease, context) => {
+      if (state === "closed") throw new Error("Host preparation closed before readiness");
+      if (!lease.assertReady || !lease.checkHandoffSummary || !lease.produceHandoffSummary) throw new Error("Prepared handoff producer capability unavailable");
+      const assertStart = (): void => { request.abortSignal.throwIfAborted(); lease.assertReady!(); };
+      state = "prepared";
+      const start = (value: HarnessPreparedBinding): Promise<RuntimeResult> => {
+        if (state !== "prepared" || producing || admitting) return Promise.reject(new Error("Host preparation is no longer available"));
+        if (!value || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => !["reconciliation", "turnRevision", "recoveryRevision", "assertOwned", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs", "sessionTurn", "sessionRecovery", "nativeSessionAuthority", "nativeSessionProjection"].includes(key as string))
+          || typeof value.assertOwned !== "function" || value.reconciliation?.descriptor.reconciliation?.purpose !== "execution"
+          || value.turnRevision !== value.reconciliation.descriptor.baseRevision) return Promise.reject(new TypeError("Host preparation accepts only owned P2/session binding"));
+        let captured; try { assertStart(); captured = copyPreparationData(value); } catch (error) { return Promise.reject(error); }
+        state = "running"; resume(captured); return outcome;
+      };
+      resolvePrepared({ snapshot: lease.snapshot, context,
+        assertReady: () => { if (state !== "prepared" || producing || admitting) throw new Error("Host preparation is no longer available"); assertStart(); },
+        checkHandoffSummary: (request) => { if (state !== "prepared") throw new Error("Host preparation is no longer available"); return lease.checkHandoffSummary!(request); },
+        produceHandoffSummary: async (request) => { if (state !== "prepared" || producing || admitting) throw new Error("Host producer is no longer available");
+          const captured = structuredClone(request); producing = true;
+          try { await input.assertOwned(); if (state !== "prepared") throw new Error("Host preparation closed before production");
+            const result = await lease.produceHandoffSummary!(captured); await input.assertOwned(); return result; }
+          finally { producing = false; } },
+        run: (value) => {
+          if (typeof value !== "function") return start(value);
+          // Preferred before-P2 entry: reject before invoking host admission.
+          if (state !== "prepared" || producing || admitting) return Promise.reject(new Error("Host preparation is no longer available"));
+          try { assertStart(); } catch (error) { return Promise.reject(error); }
+          admitting = true;
+          return Promise.resolve().then(() => input.assertOwned()).then(value).then((bound) => {
+            admitting = false; return start(bound);
+          }).finally(() => { admitting = false;
+            if (deferredAbort !== undefined) stop(deferredAbort);
+          });
+        },
+        close: async () => { abort(new Error("Host preparation closed")); await outcome.catch(() => {}); },
+      });
+      return await binding;
+    } }, options, input.runLimiter, input.sessionsEnabled, request, input.recorder,
+    undefined as unknown as BuiltAgentContext, undefined, input.runId, undefined, undefined, input.durablePiSessionsRoot,
+    false, { ...input.routing }, [], [], false, false, undefined, copyPreparationData(input.attachmentContext), input.continuationCapabilities,
+    input.turnContinuityCollector, input.liveInputMailbox, input.onProviderStart);
+  void outcome.then(() => { if (state === "preparing" || state === "closed") rejectPrepared(new Error("Host preparation did not complete")); }, rejectPrepared)
+    .finally(() => { state = "closed"; });
+  return prepared;
+}
+type ExecutionArguments = Parameters<typeof executeHarnessRuntime> extends [unknown, ...infer Rest] ? Rest : never;
+/** Existing paths never enter preparation and retain their original ordering. */
+export function runHarnessRuntime(...args: ExecutionArguments): Promise<RuntimeResult> { return executeHarnessRuntime(undefined, ...args); }
+
+async function executeHarnessRuntime(preparation: PreparationControl | undefined,
+
   options: AgentHarnessOptions,
   runLimiter: Semaphore | undefined,
   sessionsEnabled: boolean,
@@ -76,6 +200,8 @@ export async function runHarnessRuntime(
     hostOnEvent?.(event);
   };
     let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
+    let nativeLease: RuntimeNativePreparedDispatch | undefined;
+    let preparedContext: PreparedContext | undefined;
     let requestExtensionCleanup: Promise<void> | undefined;
     let mcpProgressCapability: AgentHarnessProgressCapability | undefined;
     let mcpContinuationCapabilities: readonly AgentHarnessContinuationClaimCapability[] = [];
@@ -142,6 +268,7 @@ export async function runHarnessRuntime(
       return settlementCleanup;
     };
     const onAbortCleanupAndRelease = (): void => {
+      if (preparation) { preparation.abort(request.abortSignal.reason ?? new Error("Host preparation aborted")); return; }
       void cleanupRequestExtension().catch(() => undefined).finally(releaseSlot);
     };
     try {
@@ -149,7 +276,14 @@ export async function runHarnessRuntime(
         await runLimiter.acquire(request.abortSignal);
         acquired = true;
       }
+      if (preparation) {
+        await preparation.assertOwned();
+        preparedContext = freezePreparationData(structuredClone(await preparation.prepareContext(request, options)));
+        ({ context, memory, skillDisclosureEntries, history, historyOmitted, historyAsMessages, toolHistoryProjection } = preparedContext);
+        await preparation.assertOwned();
+      }
       requestExtension = await options.runtimeOptionsForRequest?.({ request, runId, context });
+      if (preparation && requestExtension) requestExtension = { ...requestExtension };
       const policyOptions = toolPolicyToRuntimeOptions(
         requestExtension?.toolPolicyOverride
         ?? options.toolPolicy
@@ -179,6 +313,11 @@ export async function runHarnessRuntime(
       delete merged.sessionIdleTimeoutMs;
       delete merged.sessionId;
       delete merged.providerSessionId;
+      delete merged.nativeSessionAuthority;
+      delete merged.nativeSessionProjection;
+      delete merged.sessionTurn;
+      delete merged.onSessionTurnDetached;
+      delete merged.detachedContext;
       // Lifecycle persistence is host-owned and cannot be injected or replaced
       // by static/request extensions.
       delete merged.toolLifecycleSink;
@@ -301,12 +440,40 @@ export async function runHarnessRuntime(
           memory,
         )),
       };
-      const runtimeOptions: RuntimeRunOptions = {
+      let reconciliation = routing.reconciliation;
+      if (!preparation && reconciliation !== undefined && routing.turnRevision !== undefined && durablePiSessionsRoot !== undefined) {
+        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
+        // Replace the provisional pre-context digest before any native dispatch.
+        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+      }
+      let contextOwned = true;
+      let detachedReplay: Promise<readonly RuntimeMessage[]> | undefined;
+      const detachedContext = (): Promise<readonly RuntimeMessage[]> => {
+        if (!contextOwned || request.abortSignal.aborted) return Promise.reject(new Error("Detached context ownership ended"));
+        detachedReplay ??= (async () => {
+          if (!historyOmitted) return freezePreparationData(coldReplayMessages(history, toolHistoryProjection));
+          if (routing.detachedHistoryOverride === undefined && options.historyStore === undefined) {
+            throw new Error("Warm detached context requires canonical history");
+          }
+          const canonical = routing.detachedHistoryOverride ?? await options.historyStore!.load(request.conversationId);
+          if (!contextOwned || request.abortSignal.aborted) throw new Error("Detached context ownership ended");
+          const projection = loadToolHistoryProjection(options, request.conversationId, runId, canonical, emitRuntimeEvent);
+          return freezePreparationData(coldReplayMessages(canonical, projection?.text));
+        })();
+        return detachedReplay;
+      };
+      let runtimeOptions: RuntimeRunOptions = {
         ...merged,
+        ...(routing.turnRevision !== undefined && sessionsEnabled && !sessionIsolated
+          && durablePiSessionsRoot !== undefined && (resumeSessionId ?? providerAttributionSessionId) !== undefined
+          ? { sessionTurn: reconciliation?.descriptor ?? { kind: "host" as const, ownerKey: options.toolHistory?.logicalConversationId(request.conversationId) ?? request.conversationId,
+              historyBucket: request.conversationId, turnId: runId,
+              handleId: (resumeSessionId ?? providerAttributionSessionId)!, baseRevision: routing.turnRevision } } : {}),
         sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
           && sessionsEnabled && !sessionIsolated && durablePiSessionsRoot !== undefined
           ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
+        ...(!preparation ? { detachedContext } : {}),
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
@@ -375,6 +542,36 @@ export async function runHarnessRuntime(
           emitRuntimeEvent(event);
         },
       };
+      if (reconciliation !== undefined || preparation) {
+        const nativeOptions = runtimeOptions, live = nativeOptions.liveInput;
+        runtimeOptions = { ...nativeOptions,
+          onSessionTurnDetached: async (attempt) => {
+            assertDetachedTurnDescriptor(attempt.descriptor, reconciliation!.descriptor);
+            await reconciliation!.claim("detached");
+          },
+          ...(live === undefined ? {} : { liveInput: { async *[Symbol.asyncIterator]() {
+            for await (const message of live) {
+              const input = useManagedLiveInput && liveInputMailbox ? liveInputMailbox.durableAdmission(message, nativeOptions.prompts)
+                : createPendingLiveInput({ id: message.id ?? `wake:${randomUUID()}`, persistText: "", receivedAt: message.receivedAt ?? new Date().toISOString() }, message.body, "wake", nativeOptions.prompts);
+              try { await reconciliation!.admit(input); } // Durable before yielding to native bridge.
+              catch (error) { try { message.reject?.(); } catch { /* No native handoff occurred. */ } throw error; }
+              yield { ...message, id: input.id };
+            }
+          } } }),
+        };
+      }
+      if (preparation) {
+        if (!runtime.prepareNativeDispatch) throw new Error("Native prepared dispatch capability unavailable");
+        nativeLease = await runtime.prepareNativeDispatch(context.systemPrompt, runtimeOptions);
+        await preparation.assertOwned();
+        const bound = await preparation.ready(nativeLease, preparedContext!);
+        await bound.assertOwned(); reconciliation = bound.reconciliation;
+        const id = reconciliation.descriptor.reconciliation!.initialInputId!;
+        await reconciliation.admit(createPendingInitialInput({ id, persistText: request.userMessage, timestamp: new Date().toISOString() }, currentUserMessage.content));
+        const { assertOwned: _owned, reconciliation: _reconciliation, turnRevision: _revision, recoveryRevision, ...keys } = bound;
+        runtimeOptions = { ...runtimeOptions, ...keys, sessionTurn: reconciliation.descriptor,
+          ...(recoveryRevision === undefined ? {} : { sessionRecovery: { runId, revision: recoveryRevision } }) };
+      }
       // The provider call is starting: this run has left the admission-pending
       // tier (it now holds a provider slot rather than waiting for one), so
       // release its maxPendingRuns slot. Idempotent at the run() scope, so the
@@ -417,7 +614,24 @@ export async function runHarnessRuntime(
       // attachment persistence, compaction, admission wait).
       const bridgeStartMs = Date.now();
       try {
-        const result = await runtime.run(context.systemPrompt, runtimeOptions);
+        // Normalized initial input and owned-P2 checks may themselves take time.
+        // Recheck signal/availability immediately before consumption; the host
+        // retains the dirty fence for explicit recovery if admission fails.
+        nativeLease?.assertReady?.();
+        const result = nativeLease ? await nativeLease.run({ sessionId: runtimeOptions.sessionId, providerSessionId: runtimeOptions.providerSessionId,
+          ...(runtimeOptions.providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId: runtimeOptions.providerAttributionSessionId }), sessionKeepAlive: runtimeOptions.sessionKeepAlive,
+          sessionIdleTimeoutMs: runtimeOptions.sessionIdleTimeoutMs, sessionTurn: runtimeOptions.sessionTurn, sessionRecovery: runtimeOptions.sessionRecovery,
+          ...(runtimeOptions.nativeSessionAuthority ? { nativeSessionAuthority: runtimeOptions.nativeSessionAuthority } : {}),
+          ...(runtimeOptions.nativeSessionProjection ? { nativeSessionProjection: runtimeOptions.nativeSessionProjection } : {}) })
+          : await runtime.run(context.systemPrompt, runtimeOptions);
+        contextOwned = false;
+        if (reconciliation !== undefined) {
+          const outcome = result.cancelled ? "cancelled" : result.error || result.failureKind ? "failed" : "completed";
+          await reconciliation.claim(outcome, outcome !== "completed" ? undefined : { outcome, text: result.text ?? null, timestamp: new Date().toISOString(),
+            error: null, failureKind: null,
+            ...(result.turnDisposition === "silent" ? { silent: "finish_silently" as const } : {}),
+            consumedInputIds: liveInputMailbox?.applied().map((input) => input.id) ?? [] });
+        }
         // Prepared context is not evidence of dispatch. Only a successful
         // invocation with a retained provider session can establish receipts.
         if (sessionsEnabled && !sessionIsolated && !result.cancelled && !result.error && !result.failureKind
@@ -428,6 +642,7 @@ export async function runHarnessRuntime(
         }
         return result;
       } finally {
+        contextOwned = false;
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",
           durationMs: Date.now() - bridgeStartMs,
@@ -441,7 +656,7 @@ export async function runHarnessRuntime(
       // settled normally or an abort already released it.
       request.abortSignal.removeEventListener("abort", onAbortCleanupAndRelease);
       try {
-        await cleanupRequestExtension();
+        try { await nativeLease?.close(); } finally { await cleanupRequestExtension(); }
       } finally {
         try {
           await cleanupAfterSettlement();

@@ -89,6 +89,7 @@ function toolResultOutcome(result) {
  * subset of the orchestrator's runState.
  * @typedef {object} StreamSubscriberState
  * @property {string[]} assistantTexts
+ * @property {import('../../types.js').RuntimeDispatchProgress} [dispatchProgress]
  * @property {string[]} assistantThinking
  * @property {Set<unknown>} textDeltaIndexes
  * @property {Set<unknown>} thinkingDeltaIndexes
@@ -191,6 +192,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         });
       }
     } else if (event.type === "tool_execution_start") {
+      if (runState.dispatchProgress?.armed) runState.dispatchProgress.toolAdmitted = true;
       runState.toolExecutionsThisTurn += 1;
       if (event.toolName) runState.lastToolName = event.toolName;
       if (event.toolCallId) runState.toolStartTimes.set(event.toolCallId, Date.now());

@@ -780,6 +780,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const sessionKeys = {
       sessionId: "host-session", providerSessionId: "provider-session",
       sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+      sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "host-session", baseRevision: 1 },
     };
     await router.run("sys", { messages: [], ...sessionKeys, providerAttributionSessionId: "epoch" });
     expect(executeMock).toHaveBeenCalledTimes(4);
@@ -814,7 +815,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       });
       const result = await router.run("sys", {
         messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
-        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 }, sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "coordinated-id", baseRevision: 1 },
       });
       expect(result.providerSessionId).toBeUndefined();
       expect(result.providerSessionRecovery).toBeUndefined();
@@ -824,7 +825,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       const options = executeMock.mock.calls.at(-1)[1];
       expect(options.model).toEqual(outcome === "primary retry" ? primary : backup);
       expect(options.providerAttributionSessionId).toMatch(UUID_PATTERN);
-      for (const key of ["sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+      for (const key of ["sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
         expect(options).not.toHaveProperty(key);
       }
       expect(result.failoverHistory).toHaveLength(1);
@@ -850,9 +851,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
     const result = await router.run("sys", {
       messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
-      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
+      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 }, sessionTurn: { kind: "host", ownerKey: "fictional-owner", historyBucket: "fictional-bucket", turnId: "run", handleId: "coordinated-id", baseRevision: 1 },
     });
-    for (const key of ["sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+    for (const key of ["sessionTurn", "sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
       expect(executeMock.mock.calls[0][1]).not.toHaveProperty(key);
     }
     expect(result.providerSessionId).toBeUndefined();
@@ -1387,6 +1388,125 @@ it("attributes a primary user cancellation without changing its result or trying
   expect(events.filter((event) => event.type.startsWith("provider_failover") || event.type === "provider_retry_started")).toEqual([]);
 });
 
+it("rejects an attempt resolver overriding the protected native turn descriptor", async () => {
+  const primary = modelRef("openai-codex", "primary");
+  const descriptor = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "run", handleId: "owned", baseRevision: 0 };
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { sessionTurn: descriptor } }) });
+  const result = await router.run("sys", { model: primary, messages: [], sessionTurn: descriptor });
+  expect(result.error).toContain("cannot override sessionTurn"); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it.each(["safety_journal_storage_failed", "safety_session_turn_contract"])("never retries or fails over a terminal native failure (%s)", async (failureKind) => {
+  executeMock.mockResolvedValue({ error: "503 network timeout while persisting evidence", failureKind, events: [] });
+  const primary = modelRef("openai-codex", "primary"); const router = createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, modelRef("anthropic", "backup")] });
+  const result = await router.run("sys", { model: primary, messages: [] });
+  expect(result.failureKind).toBe(failureKind); expect(executeMock).toHaveBeenCalledTimes(1);
+});
+
+it.each(["retry", "backup"])("awaits protected detached-turn acknowledgement before %s and strips its authority", async (kind) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  const failure = { text: "Fictional partial.", error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false };
+  executeMock.mockResolvedValueOnce(failure).mockResolvedValueOnce({ text: "Fictional stateless answer.", events: [] });
+  let release, entered; const acknowledged = new Promise((resolve) => { release = resolve; }); const waiting = new Promise((resolve) => { entered = resolve; });
+  const onSessionTurnDetached = vi.fn(async (attempt) => { expect(attempt.result).toMatchObject(failure); entered(); await acknowledged; });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const router = createRouterRuntime({ chain: [{ model: primary, attempts: kind === "retry" ? 2 : 1 }, { model: backup }], retry: { backoffMs: 0, maxBackoffMs: 0 } });
+  const run = router.run("Fictional system.", { messages: [], sessionId: "handle", sessionKeepAlive: true, sessionTurn, onSessionTurnDetached });
+  await waiting; expect(executeMock).toHaveBeenCalledTimes(1); release(); expect((await run).text).toBe("Fictional stateless answer.");
+  expect(onSessionTurnDetached).toHaveBeenCalledOnce(); expect(onSessionTurnDetached.mock.calls[0][0]).toMatchObject({ descriptor: sessionTurn, attemptIndex: 0, retryIndex: 0 });
+  for (const [, options] of executeMock.mock.calls) expect(options.onSessionTurnDetached).toBeUndefined();
+  expect(executeMock.mock.calls[1][1].sessionTurn).toBeUndefined(); expect(executeMock.mock.calls[1][1].sessionId).toBeUndefined();
+});
+it.each([false, true])("fails closed if the protected detached acknowledgement is unavailable or rejects (throws=%s)", async (throws) => {
+  executeMock.mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false,
+    providerSessionId: "handle", providerSessionRecovery: { runId: "turn", revision: 1, providerSessionId: "handle", modelKey: "openai-codex:primary", tipId: "tip" } });
+  const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const result = await router.run("sys", { messages: [], sessionId: "handle", sessionTurn,
+    ...(throws ? { onSessionTurnDetached: async () => { throw new Error("Fictional host persistence failure."); } } : {}) });
+  expect(result).toMatchObject({ failureKind: "safety_session_turn_reconciliation", retryable: false }); expect(executeMock).toHaveBeenCalledTimes(1);
+  expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
+});
+it("rejects private provider injection of detached acknowledgement authority", async () => {
+  const primary = modelRef("openai-codex", "primary"); const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { onSessionTurnDetached: async () => {} } }) });
+  expect((await router.run("sys", { model: primary, messages: [] })).error).toContain("cannot override onSessionTurnDetached"); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("acknowledges an absent/skipped primary before a stateless backup can answer", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  executeMock.mockResolvedValueOnce({ text: "Fictional backup answer.", events: [] });
+  const onSessionTurnDetached = vi.fn(async (attempt) => { expect(executeMock).not.toHaveBeenCalled(); expect(attempt.result.failureKind).toBe("skipped_capability_mismatch"); });
+  const router = createRouterRuntime({ chain: [{ model: primary, requires: { supports_native_subagents: true } }, { model: backup }] });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const result = await router.run("sys", { messages: [], sessionTurn, onSessionTurnDetached }); expect(result.text).toBe("Fictional backup answer."); expect(onSessionTurnDetached).toHaveBeenCalledOnce();
+});
+
+it("awaits detachment when an eligible injected primary itself returns capability mismatch", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"); let acknowledge;
+  const barrier = new Promise((resolve) => { acknowledge = resolve; });
+  const primaryRun = vi.fn(async () => ({ text: null, error: "Fictional capability mismatch", failureKind: "skipped_capability_mismatch", events: [] }));
+  const backupRun = vi.fn(async () => ({ text: "Fictional backup answer", events: [] }));
+  const onSessionTurnDetached = vi.fn(async (attempt) => { expect(attempt.result.failureKind).toBe("skipped_capability_mismatch"); await barrier; });
+  const router = createRouterRuntime({ chain: [{ model: primary }, { model: backup }], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex === 0 ? primaryRun : backupRun, configureTools: vi.fn() } }) });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0, reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const running = router.run("sys", { messages: [], sessionTurn, onSessionTurnDetached });
+  await vi.waitFor(() => expect(onSessionTurnDetached).toHaveBeenCalledOnce()); expect(backupRun).not.toHaveBeenCalled(); acknowledge();
+  expect((await running).text).toBe("Fictional backup answer"); expect(primaryRun).toHaveBeenCalledOnce(); expect(backupRun.mock.calls[0][1].sessionTurn).toBeUndefined(); expect(backupRun.mock.calls[0][1].onSessionTurnDetached).toBeUndefined();
+});
+
+it.each(["nativeSessionAuthority", "nativeSessionProjection"])("protects %s against private route resolution", async (key) => {
+  const primary = modelRef("openai-codex", "primary");
+  const supplied = { fixture: "host-owned" };
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { [key]: { fixture: "foreign" } } }) });
+  const result = await router.run("Rules", { model: primary, messages: [], [key]: supplied });
+  expect(result.error).toContain(`cannot override ${key}`); expect(executeMock).not.toHaveBeenCalled();
+});
+
+it.each(["primary retry", "backup", "skipped primary"])("strips inherited projection/authority on %s without dropping primary ownership", async (variant) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  if (variant !== "skipped primary") executeMock.mockResolvedValueOnce({ text: null, error: "temporary unavailable", failureKind: "provider_unavailable", events: [] });
+  executeMock.mockResolvedValueOnce({ text: "fictional answer", events: [] });
+  const router = createRouterRuntime({ chain: [{ model: primary, attempts: variant === "primary retry" ? 2 : 1,
+    ...(variant === "skipped primary" ? { requires: { supports_native_subagents: true } } : {}) }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } });
+  const nativeSessionAuthority = { fixture: "host-owned-authority" }, nativeSessionProjection = { fixture: "host-owned-projection" };
+  await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true, nativeSessionAuthority, nativeSessionProjection });
+  if (variant !== "skipped primary") expect(executeMock.mock.calls[0][1]).toMatchObject({ nativeSessionAuthority, nativeSessionProjection });
+  const detached = executeMock.mock.calls.at(-1)[1];
+  expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+});
+
+it("protects piSessionsRoot when native current-handle authority is supplied", async () => {
+  const primary = modelRef("openai-codex", "primary"), router = createRouterRuntime({ chain: [primary],
+    resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/foreign-native" } }) });
+  const result = await router.run("Rules", { model: primary, messages: [], nativeSessionAuthority: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toContain("cannot override piSessionsRoot"); expect(executeMock).not.toHaveBeenCalled();
+});
+it("preserves ordinary resolver native-root selection without native authority", async () => {
+  const primary = modelRef("openai-codex", "primary"); executeMock.mockResolvedValueOnce({ text: "ordinary reply", events: [] });
+  const router = createRouterRuntime({ chain: [primary], resolveAttempt: async () => ({ options: { piSessionsRoot: "/fictional/ordinary-native" } }) });
+  expect((await router.run("Rules", { model: primary, messages: [] })).text).toBe("ordinary reply");
+  expect(executeMock.mock.calls[0][1].piSessionsRoot).toBe("/fictional/ordinary-native");
+});
+
+it.each(["backup", "retry", "unsupported primary"])("permits a detached %s resolver to choose its own native root", async (variant) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("openai-codex", "backup");
+  if (variant === "unsupported primary") runtimeCapabilitiesMock.mockReturnValue({ supports_session_resume: false });
+  else executeMock.mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", cancelled: false, events: [] });
+  executeMock.mockResolvedValueOnce({ text: "detached root selected", events: [] });
+  const chain = variant === "backup" ? [primary, backup] : [{ model: primary, attempts: variant === "retry" ? 2 : 1 }];
+  const router = createRouterRuntime({ chain, retry: { backoffMs: 0, maxBackoffMs: 0 }, resolveAttempt: async ({ attemptIndex, retryIndex }) => ({
+    options: attemptIndex > 0 || retryIndex > 0 || variant === "unsupported primary" ? { piSessionsRoot: "/fictional/detached-native" } : {} }) });
+  const result = await router.run("Rules", { model: primary, messages: [], sessionId: "primary-session", sessionKeepAlive: true,
+    nativeSessionAuthority: { fixture: "host-owned" }, nativeSessionProjection: { fixture: "host-owned" }, piSessionsRoot: "/fictional/owned-native" });
+  expect(result.error).toBeFalsy(); expect(result.text).toBe("detached root selected");
+  const detached = executeMock.mock.calls.at(-1)[1]; expect(detached.piSessionsRoot).toBe("/fictional/detached-native");
+  expect(detached).not.toHaveProperty("nativeSessionAuthority"); expect(detached).not.toHaveProperty("nativeSessionProjection");
+  expect(detached).not.toHaveProperty("sessionTurn"); expect(detached).not.toHaveProperty("providerSessionId");
+});
+
 describe("createRouterRuntime — detached identity scrub", () => {
   const primary = modelRef("openai-codex", "primary");
   const backup = modelRef("anthropic", "backup");
@@ -1646,4 +1766,196 @@ describe("createRouterRuntime — tools are never re-run", () => {
     expect(result.failureKind).toBe("provider_unavailable_exhausted");
     expect(result.runtimeWarnings).toBeUndefined();
   });
+});
+
+it("rechecks failed-attempt tool evidence after awaiting native detachment", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  let primaryOnEvent;
+  const primaryRun = vi.fn(async (_prompt, options) => {
+    primaryOnEvent = options.onEvent;
+    return { error: "Connection error.", failureKind: "provider_unavailable", events: [] };
+  });
+  const backupRun = vi.fn(async () => ({ text: "Must not run", events: [] }));
+  const cleanup = vi.fn(); const events = [];
+  const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) =>
+    ({ runtime: { run: attemptIndex === 0 ? primaryRun : backupRun, configureTools() {} }, ...(attemptIndex === 1 ? { cleanup } : {}) }) });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const result = await router.run("Fictional system", { messages: [], sessionTurn, onEvent: (event) => events.push(event),
+    onSessionTurnDetached: async () => { await Promise.resolve(); primaryOnEvent({ type: "tool_execution_start", toolName: "Read" }); } });
+  expect(result.failureKind).toBe("provider_unavailable"); expect(backupRun).not.toHaveBeenCalled(); expect(cleanup).toHaveBeenCalledOnce();
+  expect(events).toContainEqual(expect.objectContaining({ type: "runtime_warning", warning_kind: "provider_failover_blocked" }));
+});
+
+describe("private detached host replay", () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup");
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const failure = { error: "Connection error.", failureKind: "provider_unavailable", events: [], providerSessionId: "primary-id", providerSessionRecovery: { runId: "turn" } };
+  const messages = [{ role: "user", content: "Fictional current input" }];
+
+  it.each([false, true])("replaces the prior prefix once on warm/cold attempts (cold=%s)", async (cold) => {
+    const replay = [{ role: "user", content: "Fictional earlier context" }];
+    const detachedContext = vi.fn(async () => replay), ack = vi.fn(async () => {});
+    executeMock.mockResolvedValueOnce(failure).mockResolvedValueOnce(failure).mockResolvedValueOnce({ text: "answer", events: [] });
+    const router = createRouterRuntime({ chain: [primary, { model: backup, attempts: 2 }], retry: { backoffMs: 0, maxBackoffMs: 0 } });
+    const result = await router.run("sys", { messages: [...(cold ? replay : []), ...messages], sessionTurn, onSessionTurnDetached: ack, detachedContext });
+    expect(detachedContext).toHaveBeenCalledOnce(); expect(ack).toHaveBeenCalledOnce();
+    expect(ack.mock.invocationCallOrder[0]).toBeLessThan(detachedContext.mock.invocationCallOrder[0]);
+    for (const [, options] of executeMock.mock.calls.slice(1)) {
+      expect(options.messages).toEqual([...replay, ...messages]);
+      expect(Object.isFrozen(options.messages[0])).toBe(true);
+      expect(options).not.toHaveProperty("detachedContext");
+    }
+    expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
+    expect(JSON.stringify(result)).not.toContain("Fictional earlier context");
+    expect(executeMock.mock.calls[1][1].providerAttributionSessionId).not.toBe(executeMock.mock.calls[2][1].providerAttributionSessionId);
+  });
+
+  it.each(["success", "terminal", "exhausted", "tool", "ack fails", "resolver fails", "capabilities skip"])("never loads without an admitted next attempt: %s", async (kind) => {
+    const detachedContext = vi.fn(async () => []);
+    executeMock.mockResolvedValueOnce(kind === "success" ? { text: "answer", events: [] }
+      : kind === "terminal" ? { error: "Denied", failureKind: "usage_limit", events: [] }
+      : kind === "tool" ? { ...failure, events: [{ type: "tool_use", name: "Read" }] } : failure);
+    const router = createRouterRuntime({ chain: kind === "exhausted" ? [primary] : kind === "capabilities skip" ? [primary, { model: backup, requires: { imaginary: true } }] : [primary, backup],
+      ...(kind === "resolver fails" ? { resolveAttempt: ({ attemptIndex }) => { if (attemptIndex > 0) throw new Error("Fictional resolver failure"); } } : {}) });
+    await router.run("sys", { messages, detachedContext, sessionTurn, onSessionTurnDetached: async () => { if (kind === "ack fails") throw new Error("Fictional ack failure"); } });
+    expect(detachedContext).not.toHaveBeenCalled(); expect(executeMock).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed without exposing loader error content", async () => {
+    executeMock.mockResolvedValueOnce(failure);
+    const events = [], ack = vi.fn(async () => {}), detachedContext = vi.fn(async () => { throw new Error("Fictional private loader detail"); });
+    const router = createRouterRuntime({ chain: [primary, backup] });
+    const result = await router.run("sys", { messages, sessionTurn, onEvent: (event) => events.push(event), onSessionTurnDetached: ack, detachedContext });
+    expect(executeMock).toHaveBeenCalledOnce(); expect(ack).toHaveBeenCalledOnce(); expect(detachedContext).toHaveBeenCalledOnce();
+    expect(result.failureKind).toBe(failure.failureKind); expect(result.error).toBe(failure.error);
+    expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
+    expect(result.runtimeWarnings).toContainEqual(expect.objectContaining({ warning_kind: "detached_context_unavailable" }));
+    expect(JSON.stringify([result, events])).not.toContain("Fictional private loader detail");
+  });
+
+  it("protects the loader from resolver injection", async () => {
+    const injected = vi.fn(async () => []), hostLoader = vi.fn(async () => []);
+    const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: () => ({ options: { detachedContext: injected } }) });
+    const result = await router.run("sys", { messages, detachedContext: hostLoader });
+    expect(executeMock).not.toHaveBeenCalled(); expect(injected).not.toHaveBeenCalled(); expect(hostLoader).not.toHaveBeenCalled();
+    expect(result.error).toContain("detachedContext");
+  });
+
+  it.each(["tool", "live input"])("scrubs a failure when %s settles during the detach ack", async (effect) => {
+    let onEvent, consumer;
+    const run = vi.fn(async (_prompt, options) => {
+      onEvent = options.onEvent;
+      if (options.liveInput) consumer = options.liveInput[Symbol.asyncIterator]();
+      return failure;
+    });
+    const ack = vi.fn(async () => { await Promise.resolve(); if (effect === "tool") onEvent({ type: "tool_execution_start", toolName: "Read" }); else { const next = await consumer.next(); next.value.acknowledge(); } });
+    const loader = vi.fn(async () => []), backupRun = vi.fn(), cleanup = vi.fn();
+    const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex === 0 ? run : backupRun, configureTools() {} }, cleanup }) });
+    const result = await router.run("sys", { messages, sessionTurn, onSessionTurnDetached: ack, detachedContext: loader,
+      ...(effect === "live input" ? { liveInput: { async *[Symbol.asyncIterator]() { yield { body: "Fictional steer", id: "fictional-input", acknowledge: () => "recorded" }; } } } : {}) });
+    expect(ack).toHaveBeenCalledOnce(); expect(loader).not.toHaveBeenCalled(); expect(backupRun).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery");
+    expect(result.runtimeWarnings[0].reason).toBe(effect === "tool" ? "tool_already_executed" : "live_input_consumed");
+  });
+
+  it("blocks a protected primary at the side-effect gate without ack", async () => {
+    executeMock.mockResolvedValueOnce({ ...failure, events: [{ type: "tool_use", name: "Read" }] });
+    const ack = vi.fn(), loader = vi.fn();
+    const result = await createRouterRuntime({ chain: [primary, backup] }).run("sys", { messages, sessionTurn, onSessionTurnDetached: ack, detachedContext: loader });
+    expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled(); expect(loader).not.toHaveBeenCalled();
+    expect(result.providerSessionId).toBe("primary-id"); expect(result.providerSessionRecovery).toEqual(failure.providerSessionRecovery);
+  });
+
+  it.each(["tool_use", "tool_result"])("gates a capability mismatch after %s", async (type) => {
+    executeMock.mockResolvedValueOnce({ ...failure, failureKind: "skipped_capability_mismatch", events: [{ type, name: "Read" }] });
+    const ack = vi.fn();
+    const result = await createRouterRuntime({ chain: [primary, backup] }).run("sys", { messages, sessionTurn, onSessionTurnDetached: ack });
+    expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled();
+    expect(result.failureKind).toBe("skipped_capability_mismatch"); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+  });
+
+  it("fences side effects that settle while the loader awaits", async () => {
+    let onEvent;
+    const run = vi.fn(async (_prompt, options) => { onEvent = options.onEvent; return failure; });
+    const backupRun = vi.fn(), ack = vi.fn(async () => {});
+    const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => ({ runtime: { run: attemptIndex ? backupRun : run, configureTools() {} } }) });
+    const result = await router.run("sys", { messages, sessionTurn, onSessionTurnDetached: ack, detachedContext: async () => { await Promise.resolve(); onEvent({ type: "tool_execution_start", toolName: "Read" }); return []; } });
+    expect(backupRun).not.toHaveBeenCalled(); expect(result).not.toHaveProperty("providerSessionId"); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+  });
+});
+
+it.each(["before primary", "resolver", "ack", "loader"])("prevents detached dispatch after cancellation at %s", async (phase) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), controller = new AbortController();
+  const failure = { error: "Connection error.", failureKind: "provider_unavailable", events: [], providerSessionId: "primary-id", providerSessionRecovery: { runId: "turn" } };
+  const backupRun = vi.fn(async () => ({ text: "Must not run", events: [] })), cleanup = vi.fn();
+  const loader = vi.fn(async () => { if (phase === "loader") controller.abort(); return [{ role: "user", content: "Fictional earlier context" }]; });
+  const ack = vi.fn(async () => { if (phase === "ack") controller.abort(); });
+  const sessionTurn = { kind: "host", ownerKey: "owner", historyBucket: "bucket", turnId: "turn", handleId: "handle", baseRevision: 0,
+    reconciliation: { version: 1, purpose: "execution", fenceDigest: "a".repeat(64), initialInputId: "input" } };
+  const primaryRun = vi.fn(async () => failure);
+  const router = createRouterRuntime({ chain: [primary, backup], resolveAttempt: ({ attemptIndex }) => {
+    if (phase === "resolver" && attemptIndex === 1) controller.abort();
+    return { runtime: { configureTools() {}, run: attemptIndex ? backupRun : primaryRun }, cleanup };
+  } });
+  if (phase === "before primary") controller.abort();
+  const result = await router.run("sys", { messages: [{ role: "user", content: "Fictional current input" }], abortSignal: controller.signal, sessionTurn, onSessionTurnDetached: ack, detachedContext: loader });
+  expect(result.cancelled).toBe(true); expect(backupRun).not.toHaveBeenCalled();
+  expect(loader).toHaveBeenCalledTimes(phase === "loader" ? 1 : 0);
+  expect(ack).toHaveBeenCalledTimes(phase === "ack" || phase === "loader" ? 1 : 0);
+  expect(cleanup).toHaveBeenCalledTimes(2);
+  if (phase === "before primary") expect(primaryRun).toHaveBeenCalledOnce();
+  if (phase === "ack" || phase === "loader") { expect(result).not.toHaveProperty("providerSessionId"); expect(result).not.toHaveProperty("providerSessionRecovery"); }
+});
+
+
+it("preserves pre-aborted eligible-primary behavior for direct callers", async () => {
+  const primary = modelRef("openai-codex", "primary"), controller = new AbortController(); controller.abort();
+  executeMock.mockResolvedValueOnce({ text: "Fictional provider result", providerSessionId: "primary-id", events: [] });
+  const result = await createRouterRuntime({ chain: [primary] }).run("sys", { messages: [], abortSignal: controller.signal });
+  expect(executeMock).toHaveBeenCalledOnce(); expect(result.text).toBe("Fictional provider result"); expect(result.providerSessionId).toBe("primary-id"); expect(result.cancelled).not.toBe(true);
+});
+
+it.each(["toolAdmitted", "liveInputTaken"])("gates ordinary retry/backup on %s evidence without streamed events", async (field) => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), ack = vi.fn();
+  const progress = { version: 1, armed: true, toolAdmitted: false, liveInputTaken: false, [field]: true };
+  executeMock.mockResolvedValueOnce({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: progress, providerSessionId: "primary-id" });
+  const result = await createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [], onSessionTurnDetached: ack });
+  expect(executeMock).toHaveBeenCalledOnce(); expect(ack).not.toHaveBeenCalled(); expect(result.failureKind).toBe("provider_unavailable");
+  expect(result.runtimeWarnings[0].reason).toBe(field === "toolAdmitted" ? "tool_already_executed" : "live_input_consumed");
+});
+
+it("keeps ordinary failover after an untouched attempt and blocks a backup's marker-admitted tool", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), last = modelRef("openai", "last");
+  const empty = { version: 1, armed: true, toolAdmitted: false, liveInputTaken: false };
+  const failure = { error: "Connection error.", failureKind: "provider_unavailable", events: [] };
+  executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: empty });
+  executeMock.mockResolvedValueOnce({ ...failure, dispatchProgress: { ...empty, toolAdmitted: true } });
+  const result = await createRouterRuntime({ chain: [primary, { model: backup, attempts: 2 }, last], retry: { backoffMs: 0, maxBackoffMs: 0 } }).run("sys", { messages: [] });
+  expect(executeMock).toHaveBeenCalledTimes(2); expect(result.runtimeWarnings[0].reason).toBe("tool_already_executed");
+});
+
+it("gives an unconsumed live input a fresh consumer on the backup", async () => {
+  let consumers = 0;
+  const liveInput = { [Symbol.asyncIterator]() { consumers++; return (async function* () { yield { body: "Fictional steer", id: "fictional-input", acknowledge: () => "recorded" }; })(); } };
+  executeMock.mockImplementationOnce(async (_prompt, options) => { options.liveInput[Symbol.asyncIterator](); return { error: "Connection error.", failureKind: "provider_unavailable", events: [] }; });
+  executeMock.mockImplementationOnce(async (_prompt, options) => { const iterator = options.liveInput[Symbol.asyncIterator](), next = await iterator.next(); next.value.acknowledge(); await iterator.return(); return { text: "Fictional backup", events: [] }; });
+  const result = await createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] }).run("sys", { messages: [], liveInput });
+  expect(result.error).toBeFalsy(); expect(result.text).toBe("Fictional backup"); expect(consumers).toBe(2);
+});
+
+it("keeps prepared dispatch and handoff producers primary-only after an empty-progress failure", async () => {
+  const primary = modelRef("openai-codex", "primary"), backup = modelRef("anthropic", "backup"), ack = vi.fn(), loader = vi.fn();
+  const producer = vi.fn(async () => ({ status: "summary_rejected", reason: "Fictional provider failure" }));
+  const run = vi.fn(async () => ({ error: "Connection error.", failureKind: "provider_unavailable", events: [], dispatchProgress: { version: 1, armed: true, toolAdmitted: false, liveInputTaken: false } }));
+  const prepared = vi.fn(async () => ({ snapshot: {}, checkHandoffSummary: () => ({ status: "ready" }), produceHandoffSummary: producer, run, close: vi.fn() }));
+  const resolver = vi.fn(() => ({ runtime: { run: vi.fn(), configureTools() {}, nativePreparedDispatch: "v1", prepareNativeDispatch: prepared } }));
+  const router = createRouterRuntime({ chain: [{ model: primary, attempts: 3 }, backup], resolveAttempt: resolver, sessionTurnReconciliation: "v1" });
+  const lease = await router.prepareNativeDispatch("sys", { model: primary, messages: [], onSessionTurnDetached: ack, detachedContext: loader });
+  expect(await lease.checkHandoffSummary({})).toEqual({ status: "ready" }); await lease.produceHandoffSummary({});
+  const result = await lease.run();
+  expect(result.failureKind).toBe("provider_unavailable"); expect(result.failoverHistory).toHaveLength(1);
+  expect(resolver).toHaveBeenCalledOnce(); expect(prepared).toHaveBeenCalledOnce(); expect(producer).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
+  expect(ack).not.toHaveBeenCalled(); expect(loader).not.toHaveBeenCalled(); expect(executeMock).not.toHaveBeenCalled();
 });

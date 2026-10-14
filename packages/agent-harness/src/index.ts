@@ -4,11 +4,12 @@ export type { LiveSessionManager, LiveSessionManagerOptions, LiveSessionRunLifec
 export { createLiveInputMailbox } from "./live-input.js";
 export type { AppliedLiveInput, LiveInputMailbox } from "./live-input.js";
 export { createInMemoryHistoryStore } from "./history.js";
-export { createDurableHistoryStore, DurableConversationHistoryStore } from "./durable-history.js";
+export { createDurableHistoryStore, DurableConversationHistoryStore, NativeHistoryAuthorityBusyError } from "./durable-history.js";
+export * from "./process-incarnation.js";
 export { isProcessAlive } from "./history-process-liveness.js";
 export { createToolHistoryArtifactSink } from "./tool-history-artifacts.js";
 export type { ToolHistoryArtifactSinkInput } from "./tool-history-artifacts.js";
-export type { DurableHistoryStoreOptions, DurableHistoryStoreStats } from "./durable-history.js";
+export type { DurableHistoryStoreOptions, DurableHistoryStoreStats, ManagedProviderSessionPreparation, ProviderSessionPreparationSnapshot } from "./durable-history.js";
 export {
   acquireToolHistoryWriter,
   ToolHistoryReader,
@@ -86,6 +87,12 @@ export type {
   AgentHarnessTurnHistoryEnricher,
   AgentSessionMode,
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryTurnInspection,
+  ConversationHistoryTurnInspector,
+  ConversationHistoryTurnRecovery,
+  ConversationHistoryTurnDrainOptions,
+  ConversationHistoryTurnDrainResult,
+  ConversationHistoryTurnReconciliation,
   ConversationHistoryExclusiveTurn,
   ConversationHistoryContextImport,
   ConversationHistoryStore,
@@ -157,3 +164,5 @@ export { createSessionRuntimeResolver } from "./session-runtime.js";
 export type { ProviderSessionHandle, SessionRuntimeResolver } from "./session-runtime.js";
 
 export { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "./context/turn-envelope.js";
+
+export { logicalConversationIdForFence } from "./durable-history.js";

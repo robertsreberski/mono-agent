@@ -1,3 +1,4 @@
+import { assertNativeSessionAccess } from "./session-authority.js";
 // @ts-check
 // Turn execution for the pi-native bridge.
 //
@@ -11,11 +12,12 @@ import {
   createStructuredOutputTool,
   getPiBuiltinTools,
   initPiMcpTools,
+  closePiMcpClients,
 } from "../../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
-import { createPiHarnessAdapter } from "./harness-adapter.js";
+import { createHarnessAdapter } from "./harness-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { createStreamSubscriber } from "./stream-subscriber.js";
 
@@ -101,121 +103,128 @@ export async function buildTurnTools(runState, {
   // no-default destructured keys drop out of structural inference), so the
   // caller's full bag is passed through an `any` boundary — matching how the
   // pre-split (non-@ts-check) orchestrator called these.
-  const builtIns = capabilities.tool_use === false
-    ? []
-    : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
-      // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
-      disallowedTools: options.disallowedTools,
-      skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
-      // Full skill objects so ReadSkill can honor pi's neutral Skill shape
-      // ({name, filePath, ...}) and derive each skill's root from its own
-      // filePath when no shared skillsRoot is threaded.
-      skills: options.skills || [],
-      // Progressive skill disclosure: when the harness threads the skills root
-      // (the directory holding `<name>/SKILL.md`) the ReadSkill tool resolves
-      // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
-      // remains the back-compat fallback; a per-skill filePath is the third path.
-      skillsRoot: options.skillsRoot,
-      dataDir: options.dataDir,
-      cwd: options.cwd,
-      onEvent,
-      persistArtifact,
-      onTruncate,
-      toolLimits,
-      toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
-      imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
-      toolPolicy: options.toolPolicy,
-      sandboxPolicy: options.sandboxPolicy,
-      sandboxEngine,
-      approvalManager,
-      approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
-      nodeReplController,
-      webController,
-      processJobsController: options.processJobs,
-      ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
-      processJobsAvailability: options.processJobsAvailability,
-      toolExecutionMode,
-      subagents: options.subagents,
-      askParentController: options.askParentController,
-      finishSilentlyController: options.finishSilentlyController,
-      silentTurnState: runState.silentTurn,
-      toolExposure: options.toolExposure,
-      // The child inherits the parent's route and workspace unless its profile
-      // pins a model; the tool closure reads these to build each child request.
-      subagentContext: {
-        model: options.model,
-        effort: options.effort,
+  let pendingMcpClients = [];
+  try {
+    const builtIns = capabilities.tool_use === false
+      ? []
+      : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
+        // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
+        disallowedTools: options.disallowedTools,
+        skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
+        // Full skill objects so ReadSkill can honor pi's neutral Skill shape
+        // ({name, filePath, ...}) and derive each skill's root from its own
+        // filePath when no shared skillsRoot is threaded.
+        skills: options.skills || [],
+        // Progressive skill disclosure: when the harness threads the skills root
+        // (the directory holding `<name>/SKILL.md`) the ReadSkill tool resolves
+        // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
+        // remains the back-compat fallback; a per-skill filePath is the third path.
+        skillsRoot: options.skillsRoot,
+        dataDir: options.dataDir,
         cwd: options.cwd,
-        parentRunId: runCtx?.runId,
-        // Same policy + engine this turn's own tools are confined by, so a
-        // child is never less sandboxed than the parent that spawned it.
+        onEvent,
+        persistArtifact,
+        onTruncate,
+        toolLimits,
+        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
+        imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
+        toolPolicy: options.toolPolicy,
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine,
-        // The same skills this turn was disclosed. A child runs OUTSIDE the
-        // harness, so without this it gets no index and — because ReadSkill is
-        // only built when `skills` is non-empty — no way to read one either. It
-        // then rediscovers by trial and error whatever its parent could simply
-        // have looked up. Pass-through only: whether the child actually receives
-        // them is the host's decision, not this layer's.
-        skills: options.skills,
-        skillsRoot: options.skillsRoot,
-        toolEnvironment: options.toolEnvironment,
-        webSearchConfig: options.webSearchConfig,
-        webRequestCoordinator: options.webRequestCoordinator,
-        webFetchConfig: options.webFetchConfig,
+        approvalManager,
+        approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
+        nodeReplController,
+        webController,
+        processJobsController: options.processJobs,
+        ownedForegroundProcessController: options.ownedForegroundProcesses?.forAttempt(),
+        processJobsAvailability: options.processJobsAvailability,
+        toolExecutionMode,
+        subagents: options.subagents,
+        askParentController: options.askParentController,
+        finishSilentlyController: options.finishSilentlyController,
+        silentTurnState: runState.silentTurn,
+        toolExposure: options.toolExposure,
+        // The child inherits the parent's route and workspace unless its profile
+        // pins a model; the tool closure reads these to build each child request.
+        subagentContext: {
+          model: options.model,
+          effort: options.effort,
+          cwd: options.cwd,
+          parentRunId: runCtx?.runId,
+          // Same policy + engine this turn's own tools are confined by, so a
+          // child is never less sandboxed than the parent that spawned it.
+          sandboxPolicy: options.sandboxPolicy,
+          sandboxEngine,
+          // The same skills this turn was disclosed. A child runs OUTSIDE the
+          // harness, so without this it gets no index and — because ReadSkill is
+          // only built when `skills` is non-empty — no way to read one either. It
+          // then rediscovers by trial and error whatever its parent could simply
+          // have looked up. Pass-through only: whether the child actually receives
+          // them is the host's decision, not this layer's.
+          skills: options.skills,
+          skillsRoot: options.skillsRoot,
+          toolEnvironment: options.toolEnvironment,
+          webSearchConfig: options.webSearchConfig,
+          webRequestCoordinator: options.webRequestCoordinator,
+          webFetchConfig: options.webFetchConfig,
+        },
+        ctx: runCtx,
+      }));
+
+    const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
+      runState.structuredResult = value;
+    });
+    const reservedNames = new Set(builtIns.map((/** @type {{name: string}} */ toolDef) => toolDef.name));
+    if (structuredTool) reservedNames.add(structuredTool.name);
+
+    // REUSED MCP tool bridge: same initPiMcpTools sandboxing path (see the cast
+    // note above — the option bag crosses the same untyped pi-bridge boundary).
+    const mcpInit = capabilities.tool_use === false
+      ? { clients: [], tools: [], warnings: [] }
+      : await initPiMcpTools(options.mcpServers || {}, reservedNames, /** @type {any} */ ({
+        cwd: options.cwd,
+        persistArtifact,
+        qaOutputDir,
+        onTruncate,
+        limits: toolLimits,
+        mcpCallNoTotalTimeoutTools: options.mcpCallNoTotalTimeoutTools,
+        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
+        sandboxPolicy: options.sandboxPolicy,
+        sandboxEngine,
+        ctx: runCtx,
+        mcpApps: options.mcpApps,
+        onRichOutput: () => { runState.silentTurn.visibleContent = true; },
+        runId: runCtx?.runId,
+      }));
+    // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
+    // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
+    // summary's runtimeWarnings instead of being buried as a transient event the summary drops.
+    pendingMcpClients = mcpInit.clients;
+    for (const warning of mcpInit.warnings || []) {
+      onEvent(warning);
+      runtimeWarnings.push(warning);
+    }
+
+    const tools = [
+      ...builtIns,
+      ...mcpInit.tools.map((tool) => ({ ...tool, executionMode: "sequential" })),
+      ...(structuredTool ? [structuredTool] : []),
+    ];
+    return {
+      tools,
+      structuredTool,
+      mcpClients: mcpInit.clients,
+      closeRunTools: async () => {
+        await Promise.allSettled([
+          nodeReplController?.close(),
+          webController?.close(),
+        ].filter(Boolean));
       },
-      ctx: runCtx,
-    }));
-
-  const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
-    runState.structuredResult = value;
-  });
-  const reservedNames = new Set(builtIns.map((/** @type {{name: string}} */ toolDef) => toolDef.name));
-  if (structuredTool) reservedNames.add(structuredTool.name);
-
-  // REUSED MCP tool bridge: same initPiMcpTools sandboxing path (see the cast
-  // note above — the option bag crosses the same untyped pi-bridge boundary).
-  const mcpInit = capabilities.tool_use === false
-    ? { clients: [], tools: [], warnings: [] }
-    : await initPiMcpTools(options.mcpServers || {}, reservedNames, /** @type {any} */ ({
-      cwd: options.cwd,
-      persistArtifact,
-      qaOutputDir,
-      onTruncate,
-      limits: toolLimits,
-      mcpCallNoTotalTimeoutTools: options.mcpCallNoTotalTimeoutTools,
-      toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
-      sandboxPolicy: options.sandboxPolicy,
-      sandboxEngine,
-      ctx: runCtx,
-      mcpApps: options.mcpApps,
-      onRichOutput: () => { runState.silentTurn.visibleContent = true; },
-      runId: runCtx?.runId,
-    }));
-  // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
-  // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
-  // summary's runtimeWarnings instead of being buried as a transient event the summary drops.
-  for (const warning of mcpInit.warnings || []) {
-    onEvent(warning);
-    runtimeWarnings.push(warning);
+    };
+  } catch (error) {
+    await Promise.allSettled([nodeReplController?.close(), webController?.close(), closePiMcpClients(pendingMcpClients)].filter(Boolean));
+    throw error;
   }
-
-  const tools = [
-    ...builtIns,
-    ...mcpInit.tools.map((tool) => ({ ...tool, executionMode: "sequential" })),
-    ...(structuredTool ? [structuredTool] : []),
-  ];
-  return {
-    tools,
-    structuredTool,
-    mcpClients: mcpInit.clients,
-    closeRunTools: async () => {
-      await Promise.allSettled([
-        nodeReplController?.close(),
-        webController?.close(),
-      ].filter(Boolean));
-    },
-  };
 }
 
 /**
@@ -288,7 +297,7 @@ export async function buildTurnHarness(runState, {
   steeringMode,
   options,
 }) {
-  const harness = await createPiHarnessAdapter(session, {
+  const harness = await createHarnessAdapter(session, {
     session,
     models: piModels,
     model,
@@ -300,13 +309,17 @@ export async function buildTurnHarness(runState, {
     streamOptions: { transport, maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // Harness retries are separate from pi-ai transport retries. A health probe
-    // must not issue another request even for a retryable terminal error.
-    ...(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0
-      ? { retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } }
-      : {}),
+    // One runtime knob controls both layers. Zero disables request retries;
+    // otherwise retain the inherited three driver retries and transport budget.
+    // Health probes also disable this layer (their transport budget is zero).
+    retry: { enabled: maxRetries > 0 && !(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0),
+      maxRetries: maxRetries === 0 ? 0 : 3, baseDelayMs: 1000 },
     steeringMode,
     followUpMode: steeringMode,
+    assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.piSessionsRoot) : undefined,
+    inheritedProjection: options.nativeSessionProjection?.inherited,
+    inheritedProjectionRef: options.nativeSessionProjection?.artifact,
+    handoffDispatchBudget: options.nativeSessionProjection?.dispatchBudget,
     promptCacheDiagnostics: options.promptCacheDiagnostics,
     cacheRetention: options.cacheRetention,
     onEvent: options.onEvent,
@@ -323,12 +336,12 @@ export async function buildTurnHarness(runState, {
   // every resolved execute(), so without this the model would be told a failed,
   // timed-out, or empty delegation succeeded.
   harness.on("tool_result", (event) => toolResultErrorOverride(event?.details));
-  // Pi 0.85 records in-flight work durably. mono-agent tools do not yet use the
-  // new replay-memo contract, so abort an interrupted operation instead of
-  // risking a duplicate external effect. Do this before subscribing so stale
-  // recovery events cannot contaminate the new run's transcript counters.
+  // Reconcile native evidence without executing a provider/tool or claiming a
+  // successful receipt. Do this before subscription: repair is old evidence,
+  // not output or spend from the next user turn. Deferred suspension is
+  // accounted as suspended-not-resumed, never continued.
   try {
-    await harness.abortOpenOperations();
+    await harness.repairOpenOperations();
   } catch (error) {
     try { await harness.close(); } catch { /* best-effort */ }
     throw error;
@@ -354,6 +367,12 @@ export function activateTurnHarness(runState, {
   sdk,
   reference,
 }) {
+  if (runState.dispatchProgress) {
+    // Conservative admission: later hooks may block execution, but reaching
+    // this boundary still forbids another attempt.
+    harness.on("before_tool", () => { runState.dispatchProgress.toolAdmitted = true; });
+    runState.dispatchProgress.armed = true;
+  }
   harness.subscribe(createStreamSubscriber(runState, {
     onEvent,
     options,
@@ -378,10 +397,10 @@ export function activateTurnHarness(runState, {
  * the harness mid-run; the consumer is tied to run completion (an internal
  * runComplete flag) so it stops steering once the run finishes and does not
  * swallow a follow-up meant for a later turn. Returns a `stop()` teardown.
- * @param {{harness: any, options: any, onEvent: (event: any) => void, promptEpoch?: any}} deps
+ * @param {{harness: any, options: any, onEvent: (event: any) => void, promptEpoch?: any, dispatchProgress?: any}} deps
  * @returns {{stop: () => Promise<void>}}
  */
-export function startLiveInput({ harness, options, onEvent, promptEpoch }) {
+export function startLiveInput({ harness, options, onEvent, promptEpoch, dispatchProgress }) {
   if (!options.liveInput) return { stop: async () => {} };
   const iterator = typeof options.liveInput[Symbol.asyncIterator] === "function"
     ? options.liveInput[Symbol.asyncIterator]()
@@ -396,12 +415,16 @@ export function startLiveInput({ harness, options, onEvent, promptEpoch }) {
     try {
       while (!runComplete && !options.abortSignal?.aborted) {
         const next = await Promise.race([
-          iterator.next(),
+          Promise.resolve(iterator.next()).then((next) => {
+            if (!next.done && dispatchProgress?.armed) dispatchProgress.liveInputTaken = true;
+            return next;
+          }),
           stopped.then(() => ({ done: true, value: undefined })),
         ]);
         if (next.done || runComplete || options.abortSignal?.aborted) break;
         try {
-          const entryId = await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
+          const entryId = await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts),
+            options.sessionTurn?.reconciliation ? { inputId: next.value.id } : undefined);
           if (typeof entryId !== "string" || entryId.length === 0) {
             next.value.accepted?.();
             next.value.uncertain?.({ reason: "delivery_uncertain" });
@@ -656,11 +679,11 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
  * @param {{onOperationAdmitted?: (operationId: string) => void}} [hooks]
  *   `onOperationAdmitted` fires as soon as Pi admits the run, before any
  *   provider request, so the live-input epoch can own the operation up front.
- * @returns {Promise<{runError: any, operationId?: string}>}
+ * @returns {Promise<{runError: any, operationId?: string, suspended?: boolean}>}
  */
 export async function runHarnessPrompt(harness, promptText, promptImages, hooks) {
   let runError = null;
-  let operationId;
+  let operationId, suspended = false;
   try {
     // Pass structured images (when present) so multimodal input reaches the
     // model as image blocks rather than stringified text. AgentHarness.prompt
@@ -675,10 +698,10 @@ export async function runHarnessPrompt(harness, promptText, promptImages, hooks)
     const result = Object.keys(promptOptions).length > 0
       ? await harness.prompt(promptText, promptOptions)
       : await harness.prompt(promptText);
-    operationId = result?.operationId;
+    operationId = result?.operationId; suspended = result?.status === "suspended";
   } catch (err) {
     runError = err;
   }
   await harness.waitForIdle();
-  return { runError, ...(operationId === undefined ? {} : { operationId }) };
+  return { runError, ...(operationId === undefined ? {} : { operationId }), ...(suspended ? { suspended: true } : {}) };
 }

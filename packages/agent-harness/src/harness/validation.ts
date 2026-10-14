@@ -3,6 +3,12 @@ import { assertAgentContinuationOriginContext } from "@mono-agent/agent-contract
 import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
 
 export function validateOptions(options: AgentHarnessOptions): void {
+  const history = options.historyStore;
+  if (history?.providerSessionReconciliation === "v1" && (history.providerSessionRetirement !== "fail-closed"
+    || typeof history.beginProviderSessionTurn !== "function" || typeof history.recoverProviderSessionTurn !== "function")) {
+    throw new TypeError("Provider-session reconciliation requires coordinated recovery and fail-closed retirement.");
+  }
+
   if (typeof options.identityPath !== "string" || options.identityPath.trim().length === 0) {
     throw new TypeError("identityPath must be a non-empty path.");
   }

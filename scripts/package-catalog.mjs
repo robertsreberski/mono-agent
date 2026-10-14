@@ -112,6 +112,14 @@ export const packageCatalog = [
     tier: "plugin",
   },
   {
+    dir: "harness",
+    name: "@mono-agent/harness",
+    category: "runtime",
+    responsibility: "Owns the model-run loop, native journal, storage and compaction kit over Pi model dependencies.",
+    allowedDependencyCategories: [],
+    publishable: true,
+  },
+  {
     dir: "memory",
     name: "@mono-agent/memory",
     category: "context",

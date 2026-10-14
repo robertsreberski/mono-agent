@@ -41,14 +41,10 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (keep them exact)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` at `0.99.2`; `pi-agent-core` at `0.99.2`.
-  Pi 1.0 is held back deliberately: `pi-agent-core` 1.0.0 removed the
-  experimental harness (`AgentHarness`, session repositories, lanes,
-  compaction, `NodeExecutionEnv`) that `src/ai/providers/pi-native/` is built
-  on, and points to `@earendil-works/pi-durable`, whose API, storage format and
-  event model differ. `.github/renovate.json` caps the Pi stack at `<1.0.0`;
-  lift that cap only together with a planned harness (pi-durable or other)
-  migration, never as a mechanical version bump.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` at `1.0.1`; `pi-agent-core` at `1.0.1`.
+  Pi 1.x removed the experimental upstream harness. The runtime-owned harness
+  migration permits lifting the former Renovate `<1.0.0` cap; future updates
+  still require the exact-pin and packed-consumer resolution checks.
   Pi 0.85 replaces the old constructor/session surface with
   `AgentHarness.create()`, explicit operation `Context` arguments, and
   lane-scoped prompt, navigation, compaction, and event APIs. Keep that
@@ -103,15 +99,18 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
   snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact Pi AI `0.99.2` and Pi Agent Core `0.99.2`
+  fixture or the runtime's exact Pi AI `1.0.1` and Pi Agent Core `1.0.1`
   compatibility pins as development-only pins; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
-- Pi 0.85's JSONL v4 store reads legacy v3 transcripts during open and writes
-  the upgraded representation when the resumed session next persists a turn.
-  Preserve an end-to-end legacy-resume regression test instead of adding a
-  second mono-agent-owned file migration.
-- A packed consumer should resolve Pi AI `0.99.2` from both the runtime and Pi
+- Pi Core 1.0 removes AgentHarness and SessionRepo. The Pi-native adapter now
+  uses the mono-agent harness over the pinned `runAgentLoop`, not a fork of that loop.
+  Compaction helpers retain the attributed old cut/estimator for parity.
+  The mono-agent harness in `@mono-agent/harness` uses `mono-v2/journals`: import
+  idle legacy v3/v4 main context with source-bound restartable staging, fsync the
+  new transcript/publication before archiving the source, and cold-replay legacy files
+  with open operations. Never test migration against real session directories.
+- A packed consumer should resolve Pi AI `1.0.1` from both the runtime and Pi
   Agent Core. The release guard verifies both resolution paths independently so
   Core's upstream floating range cannot be rewired by a host dependency.
 

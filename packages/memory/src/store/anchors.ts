@@ -15,7 +15,7 @@ export const ANCHOR_BOOST = 0.15;
 export const NAME_ANCHOR_BOOST = 0.08;
 
 // Whole numbers, dates, times and numeric identifiers stay one token
-// (`1988-11-02`, `17/05/1990`, `08:30`, `4471`) so an anchor never matches a
+// (`1988-11-02`, `01/01/2000`, `08:30`, `4471`) so an anchor never matches a
 // component number of a different date. Other words are letter/number runs.
 const WORD = /\p{N}+(?:[-/.:]\p{N}+)*|[\p{L}\p{M}\p{N}]+/gu;
 

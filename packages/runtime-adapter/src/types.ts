@@ -293,7 +293,17 @@ function optionalLiteral(
   return !(key in value) || (typeof value[key] === "string" && choices.includes(value[key]));
 }
 
+/** Monotonic per-execution evidence, armed only after canonical replay seeding. */
+export interface RuntimeDispatchProgress {
+  readonly version: 1;
+  readonly armed: boolean;
+  readonly toolAdmitted: boolean;
+  readonly liveInputTaken: boolean;
+}
+
 export interface RuntimeResult {
+  /** Missing, malformed or unarmed evidence cannot certify no progress. */
+  readonly dispatchProgress?: RuntimeDispatchProgress;
   /** Certified only by a successful, terminal FinishSilently attempt. */
   readonly turnDisposition?: "silent" | "visible";
   readonly subagentQuestion?: { question: string; options?: string[] };
@@ -312,6 +322,7 @@ export interface RuntimeResult {
   readonly error?: string | null;
   readonly errorDetails?: unknown;
   readonly failureKind?: string | null;
+  readonly retryable?: boolean;
   readonly providerSessionId?: string | null;
   readonly providerSessionRecovery?: { runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string };
   readonly runtimeWarnings?: unknown;
@@ -448,6 +459,123 @@ export interface RuntimeMcpAppHost {
   }): Promise<AgentReplyPartFailure>;
 }
 
+/** Host-owned native turn identity; distinct from terminal-recovery authority. */
+export interface RuntimeSessionTurnDescriptor {
+  readonly kind: "host" | "instance";
+  readonly ownerKey: string;
+  /** Physical canonical-history bucket; null for instance-owned execution. */
+  readonly historyBucket: string | null;
+  readonly turnId: string;
+  readonly handleId: string;
+  readonly baseRevision: number | null;
+  /** Explicit native evidence preservation; host adoption is separately coordinated. */
+  readonly reconciliation?: {
+    readonly version: 1;
+    readonly purpose: "execution" | "compaction";
+    readonly fenceDigest: string;
+    readonly initialInputId: string | null;
+  };
+}
+
+export interface RuntimeSessionTurnReconciliationRequest {
+  readonly sessionsRoot: string;
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  readonly purpose: "execution" | "compaction";
+  readonly expectedModel: { readonly provider: string; readonly id: string; readonly api?: string };
+  readonly expectedBaseTip?: string | null;
+  /** Exactly one original initial input, plus every native live admission,
+   * including cancelled/unconsumed entries; additional fenced host offers are
+   * permitted but do not prove native execution. Digests use native formatted
+   * content (live guidance, not raw body); replay of the original is initial. */
+  readonly expectedInputs: readonly { readonly id: string; readonly requestDigest: string; readonly placement: "initial" | "live" }[];
+}
+
+export interface RuntimeSessionTurnResultSeal {
+  readonly text: string | null;
+  readonly error: string | null;
+  readonly failureKind: string | null;
+  readonly cancelled: boolean;
+  readonly stopReason: string | null;
+  readonly turnDisposition?: "silent";
+}
+
+export type RuntimeSessionTurnReconciliationResult =
+  | { readonly status: "absent" }
+  | { readonly status: "mismatch"; readonly reason: string }
+  | {
+      readonly status: "matched";
+      readonly journalId: string;
+      readonly handleId: string;
+      readonly turnId: string;
+      readonly baselineTipId: string | null;
+      readonly tipId: string | null;
+      readonly currentTipId: string | null;
+      readonly outcome: "completed" | "failed" | "cancelled" | "interrupted";
+      readonly seal: { readonly version: 1; readonly outcome: "completed" | "failed" | "cancelled" | "interrupted"; readonly result: RuntimeSessionTurnResultSeal | null } | null;
+      readonly binding: RuntimeSessionTurnDescriptor & { readonly version: 1; readonly model: { readonly provider: string; readonly id: string; readonly api: string } };
+      readonly inputs: readonly { readonly id: string; readonly messageId: string; readonly requestDigest: string; readonly placement: "initial" | "replay" | "live"; readonly complete: boolean }[];
+      readonly admittedInputs: readonly { readonly id: string; readonly state: "queued" | "cancelled" | "consumed"; readonly placement: "live"; readonly requestDigest: string }[];
+      readonly finalOperationId: string | null;
+      readonly consumedInputIds: readonly string[];
+      readonly operations: readonly {
+        readonly operationId: string; readonly type: "prompt" | "compaction";
+        readonly cause: string; readonly parentOperationId: string | null;
+        readonly baselineTipId: string | null; readonly tipId: string | null;
+        readonly startSeq: number; readonly endSeq: number | null;
+        readonly status: "completed" | "failed" | "aborted" | "interrupted" | null;
+        readonly suspended: boolean;
+      }[];
+      readonly commitCandidate?: RuntimeSessionTurnResultSeal;
+      readonly interruptionEvidence: readonly {
+        readonly cause: string; readonly operationIds: readonly string[];
+        readonly calls: readonly { readonly callId: string; readonly name: string; readonly operationId: string; readonly messageId: string; readonly admission: string; readonly cause: string }[];
+        readonly tipId: string | null; readonly timestamp: number;
+      }[];
+    };
+
+/** Positive current-handle authority, borrowed from the held canonical owner.
+ * assertCurrent must validate ready binding/artifact and reject retired epochs,
+ * stale mappings, lost claims and capacity-refused creation. No default opts in. */
+export interface RuntimeNativeSessionAuthority {
+  readonly version: 1;
+  readonly currentHandleId: string;
+  /** Pinned dedicated native root; runtime checks normalized path equality.
+   * assertCurrent receives that path; host must prove any stronger root identity. */
+  readonly sessionsRoot: string;
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertCurrent: (request: { readonly handleId: string; readonly action: "open" | "create"; readonly sessionsRoot: string }) => Promise<void>;
+}
+/** Host-accepted immutable projection. Historical tools remain data; native
+ * envelopes are never reused across a model change. */
+export interface RuntimeNativeSessionProjection {
+  readonly version: 1;
+  readonly artifact: { readonly id: string; readonly hash: string };
+  readonly inherited: {
+    readonly messages: readonly Record<string, unknown>[];
+    readonly coverage: { readonly version: 1; readonly sources: readonly {
+      readonly journalId: string; readonly sourceTipId: string | null;
+      readonly sourceSeq: number; readonly sourceDigest: string;
+    }[] };
+  };
+  /** Only the switch/incoming request carries this frozen budget. Later turns
+   * may compact normally using the same inherited content/coverage. */
+  readonly dispatchBudget?: {
+    readonly policy: "mono-handoff-v1"; readonly contextWindow: number;
+    readonly outputReserve: number; readonly inputTokens: number;
+    readonly hostCap: number; readonly hostContextDigest: string;
+    readonly safety: number; readonly historyAllowance: number;
+  };
+}
+
+/** Awaited host claim before a router may detach a protected native attempt. */
+export interface RuntimeSessionTurnDetachedAttempt {
+  readonly descriptor: RuntimeSessionTurnDescriptor;
+  readonly model: RuntimeModelReference;
+  readonly attemptIndex: number;
+  readonly retryIndex: number;
+  readonly result: RuntimeResult;
+}
+
 export interface RuntimeRunOptions {
   /** Stable configured profile, never executable authority or retained controllers. */
   readonly toolExposure?: { readonly persistentSubagents?: boolean; readonly askParent?: boolean };
@@ -459,6 +587,13 @@ export interface RuntimeRunOptions {
   readonly finishSilentlyController?: { eligible(): boolean };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
+  /** Protected host-owned journal/turn binding, not permission to recover canonical history. */
+  readonly sessionTurn?: RuntimeSessionTurnDescriptor | undefined;
+  readonly nativeSessionAuthority?: RuntimeNativeSessionAuthority;
+  readonly nativeSessionProjection?: RuntimeNativeSessionProjection;
+  /** Protected, lazy host replay prefix for stateless attempts; never telemetry. */
+  readonly detachedContext?: () => Promise<readonly RuntimeMessage[]>;
+  readonly onSessionTurnDetached?: (attempt: RuntimeSessionTurnDetachedAttempt) => Promise<void>;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
@@ -603,11 +738,134 @@ export interface DurableSessionSalvage {
   readonly additionalOutcomesUnknown: boolean;
 }
 
+/** Host-only storage authority; never a model-facing runtime option. */
+export interface RuntimeNativeJournalAuthority {
+  readonly version: 1;
+  readonly rootId: string;
+  readonly authorityId: string;
+  readonly ownerKey: string;
+  readonly historyBucket: string;
+}
+export interface RuntimeNativeJournalDeletion {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly disposition: "C" | "D";
+  readonly assertOwned: () => Promise<void>;
+}
+
+/** Private administrative journal coordinates, never model-facing run options. */
+export interface RuntimeNativeJournalDescriptor {
+  readonly journalId: string; readonly epoch: string; readonly handleId: string;
+  readonly ownerKey: string; readonly historyBucket: string;
+  readonly sourceTipId: string | null; readonly sourceSeq: number; readonly sourceDigest: string;
+  readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
+}
+/** One exact native journal; deletion never infers membership from a catalogue. */
+export interface RuntimeNativeJournalRef { readonly handleId: string; readonly journalId: string }
+/** Deterministic host-owned guarded epoch for a switch target or a cold rotation. */
+export interface RuntimeNativeEpochContext {
+  readonly hostAuthority: RuntimeNativeJournalAuthority;
+  readonly assertOwned: () => Promise<void>;
+  readonly targetHandleId: string; readonly timestamp: number;
+}
+export interface RuntimeNativeJournalStorage {
+  /** Idempotent: an exact initializer prefix is accepted, anything else refuses. */
+  createEpoch(context: RuntimeNativeEpochContext): Promise<void>;
+  /** Read-only retention eligibility probe, not deletion authority. */
+  deletionBlocked(journals: readonly RuntimeNativeJournalRef[], authority: RuntimeNativeJournalAuthority): Promise<boolean>;
+  /** Exact listed journals only; definitively absent members are idempotent success. */
+  deleteJournals(journals: readonly RuntimeNativeJournalRef[], context: RuntimeNativeJournalDeletion): Promise<void>;
+  freeze(coordinates: Omit<RuntimeNativeJournalDescriptor, "journalId" | "sourceTipId" | "sourceSeq" | "sourceDigest" | "provenance"> & { readonly provenance?: RuntimeNativeJournalDescriptor["provenance"] }): Promise<RuntimeNativeJournalDescriptor>;
+  inventory(managedJournalIds?: readonly string[], unreadableOwners?: { readonly rootId: string; readonly conversationKeys: readonly string[] }): Promise<{ readonly bytes: number; readonly stagedBytes: number; readonly journals: Readonly<Record<string, { readonly retainedBytes: number; readonly stagedBytes: number; readonly damaged?: true }>> }>;
+  /** Read-only presence probe for the canonical current journal, called under the
+   * held host claim. `missing` only when no published or staged bytes exist for
+   * the exact coordinate; any doubt (unreadable header/record, staged-only bytes,
+   * catalogue failure) is `unreadable` and never authorizes a cold boundary. */
+  inspectCurrentJournal?(coordinates: { readonly handleId: string; readonly journalId?: string }): Promise<RuntimeNativeJournalPresence>;
+}
+export type RuntimeNativeJournalPresence = { readonly status: "present" | "missing" } | { readonly status: "unreadable"; readonly reason: string };
+
+/** Complete immutable evidence, validated against exact native bytes. Cloning
+ * loses validation identity; pass the original view to preparation helpers. */
+export interface RuntimeNativeEvidenceView {
+  readonly version: 1; readonly ownerKey: string; readonly historyBucket: string;
+  readonly gaps: readonly Record<string, unknown>[];
+  /** The prior accepted handoff this journal inherits, or null. */
+  readonly prior: Readonly<Record<string, unknown>> | null;
+  readonly segments: readonly { readonly descriptor: Omit<RuntimeNativeJournalDescriptor, "epoch">;
+    readonly header: Readonly<Record<string, unknown>>; readonly records: readonly Readonly<Record<string, unknown>>[];
+    readonly entries: readonly Readonly<Record<string, unknown>>[]; readonly repairs: readonly Readonly<Record<string, unknown>>[];
+    readonly turns: readonly Readonly<Record<string, unknown>>[]; readonly allCalls: readonly Readonly<Record<string, unknown>>[];
+    readonly calls: readonly Readonly<Record<string, unknown>>[]; readonly inputs: readonly Readonly<Record<string, unknown>>[] }[];
+}
+export type RuntimeHandoffBudget = NonNullable<RuntimeNativeSessionProjection["dispatchBudget"]>;
+export interface RuntimePreparedHandoff {
+  readonly status: "prepared"; readonly checkpoints: readonly Readonly<Record<string, unknown>>[];
+  readonly ledger: readonly Readonly<Record<string, unknown>>[]; readonly recent: readonly Readonly<Record<string, unknown>>[];
+  readonly older: readonly Readonly<Record<string, unknown>>[];
+  readonly prior: Readonly<Record<string, unknown>> | null;
+  readonly coverage: readonly RuntimeNativeEvidenceView["segments"][number]["descriptor"][];
+}
+export type RuntimeHandoffSummary = Readonly<Record<"intent" | "constraints" | "decisions" | "completedWork" | "failures" | "openWork" | "nextActions" | "references", readonly string[]>>;
+export interface RuntimeHandoffProducerRequest { readonly prepared: RuntimePreparedHandoff; readonly outputReserve: number }
+export type RuntimeHandoffFit = { readonly status: "ready" } | { readonly status: "budget_failure"; readonly reason: string };
+export type RuntimeHandoffProducerResult = { readonly status: "ready"; readonly summary: RuntimeHandoffSummary; readonly usage?: unknown; readonly durationMs?: number }
+  | { readonly status: "summary_rejected"; readonly reason: string; readonly usage?: unknown; readonly durationMs?: number }
+  | { readonly status: "budget_failure"; readonly reason: string };
+export interface RuntimeHandoffOptions {
+  readonly target: RuntimeNativeJournalDescriptor["provenance"]; readonly budget: RuntimeHandoffBudget;
+  readonly timestamp: number; readonly hostContext: Readonly<Record<string, unknown>>;
+  readonly summary?: RuntimeHandoffSummary; readonly producer?: "outgoing" | "checkpoint" | "incoming";
+}
+export type RuntimeHandoffProposal = { readonly status: "ready"; readonly artifact: Readonly<Record<string, unknown>>;
+  readonly contentHash: string; readonly messages: readonly Readonly<Record<string, unknown>>[]; readonly coverage: RuntimePreparedHandoff["coverage"] }
+  | { readonly status: "budget_failure" | "summary_rejected"; readonly reason: string }
+  | { readonly status: "summary_required"; readonly prepared: RuntimePreparedHandoff };
+export interface RuntimeNativePreparationStorage extends RuntimeNativeJournalStorage {
+  /** Null source: the current journal is definitively missing; canonical gaps carry the history. */
+  captureEvidence(source: RuntimeNativeJournalDescriptor | null, context: { readonly ownerKey: string; readonly historyBucket: string;
+    readonly hostAuthority?: RuntimeNativeJournalAuthority; readonly assertOwned: () => Promise<void>;
+    readonly gaps?: readonly Record<string, unknown>[]; readonly prior?: Readonly<Record<string, unknown>> | null }): Promise<RuntimeNativeEvidenceView>;
+  createBudget(input: { readonly contextWindow: number; readonly outputReserve: number; readonly inputTokens: number; readonly hostContext: Readonly<Record<string, unknown>> }): RuntimeHandoffBudget;
+  /** Pure real-compaction input/output preflight; no provider or native writes. */
+  checkInheritedPrefix?(messages: readonly Readonly<Record<string, unknown>>[], model: RuntimeNativeDispatchSnapshot["model"], compaction?: RuntimeRunOptions["compaction"], prefixTokenCap?: number): Promise<RuntimeHandoffFit>;
+  prepareHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimePreparedHandoff | { readonly status: "budget_failure"; readonly reason: string };
+  buildHandoff(view: RuntimeNativeEvidenceView, options: RuntimeHandoffOptions): RuntimeHandoffProposal;
+}
+
+/** Actual resolved native request, never credentials/auth headers. */
+export interface RuntimeNativeDispatchSnapshot {
+  readonly compactionSummaryMaxTokens?: number;
+  readonly model: { readonly provider: string; readonly id: string; readonly api: string; readonly contextWindow: number; readonly maxTokens: number };
+  readonly provenance: { readonly provider: string; readonly api: string; readonly model: string; readonly account: string | null };
+  readonly systemPrompt: string;
+  readonly tools: readonly { readonly name: string; readonly description: string; readonly parameters: Readonly<Record<string, unknown>> }[];
+  readonly messages: readonly RuntimeMessage[];
+}
+/** Only session binding is supplied after preparation. Instructions, input,
+ * root, model, policy and resolved tools cannot be replaced at run time. */
+export type RuntimeNativeDispatchBinding = Partial<Pick<RuntimeRunOptions, "sessionId" | "providerSessionId" | "providerAttributionSessionId"
+  | "sessionKeepAlive" | "sessionIdleTimeoutMs" | "sessionTurn" | "sessionRecovery" | "nativeSessionAuthority" | "nativeSessionProjection">>;
+export interface RuntimeNativePreparedDispatch {
+  readonly snapshot: RuntimeNativeDispatchSnapshot;
+  assertReady?(): void;
+  checkHandoffSummary?(input: RuntimeHandoffProducerRequest): RuntimeHandoffFit;
+  produceHandoffSummary?(input: RuntimeHandoffProducerRequest): Promise<RuntimeHandoffProducerResult>;
+  /** Single primary attempt; no router replay/failover or repeated tool setup. */
+  run(binding?: RuntimeNativeDispatchBinding): Promise<RuntimeResult>;
+  /** Idempotent. During a running dispatch waits for normal cleanup; abort via
+   * the original signal. Host must retain its concurrency permit until settled. */
+  close(): Promise<void>;
+}
+
 export interface MonoRuntimeLike {
+  prepareNativeDispatch?(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeNativePreparedDispatch>;
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;
   /** Flush provider-owned durable transcript state before host history commit. */
   syncSession?(providerSessionId: string): Promise<boolean>;
+  /** Explicit native evidence ownership, never inferred from method presence. */
+  readonly sessionTurnReconciliation?: "v1" | undefined;
+  reconcileSessionTurn?(request: RuntimeSessionTurnReconciliationRequest): Promise<RuntimeSessionTurnReconciliationResult>;
   recoverSession?(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: { appliedInputIds: readonly string[] }): Promise<boolean>;
   /**
    * Guarantee that the next resume cannot reuse process-local provider state.
@@ -620,7 +878,7 @@ export interface MonoRuntimeLike {
    * supplied durable sessions root. Absence is success; uncertainty rejects.
    */
   salvageDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<DurableSessionSalvage>;
-  retireDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<void>;
+  retireDurableSession?(providerSessionId: string, sessionsRoot: string, deletion?: RuntimeNativeJournalDeletion): Promise<void>;
   disposeSession?(providerSessionId: string): Promise<boolean>;
   /** Permanently discard live and durable provider transcript state. */
   invalidateSession?(providerSessionId: string): Promise<boolean>;
