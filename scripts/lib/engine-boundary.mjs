@@ -1,4 +1,4 @@
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const oldPackage = `@mono-agent/${"harness"}`;
 const oldDirectory = `packages/${"harness"}`;
@@ -22,13 +22,13 @@ export function activeStaleReferenceLines(file, text, reference) {
 }
 
 export function engineRuntimeImports(root, file, text) {
-  const runtime = resolve(root, "packages/agent-runtime");
+  const engine = resolve(root, "packages/engine");
   const imports = [...text.matchAll(/\b(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/gu)].map((match) => match[1]);
   return imports.filter((specifier) => {
-    if (/^@mono-agent\/agent-runtime(?:\/|$)/u.test(specifier)) return true;
+    if (/^@mono-agent\//u.test(specifier)) return true;
     if (!specifier.startsWith(".")) return false;
     const target = resolve(dirname(file), specifier);
-    const path = relative(runtime, target);
-    return path === "" || !path.startsWith("..") && !path.startsWith("/");
+    const path = relative(engine, target);
+    return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
   });
 }

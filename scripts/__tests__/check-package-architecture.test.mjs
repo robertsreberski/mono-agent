@@ -125,11 +125,12 @@ describe("engine ownership and historical reference guard", () => {
   });
   it("checks static, dynamic and relative engine imports, not just manifests", () => {
     const root = "/fictional", file = root + "/packages/engine/src/index.js";
-    for (const specifier of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai", "../../agent-runtime/src/index.js"]) {
+    for (const specifier of ["@mono-agent/agent-runtime", "@mono-agent/agent-runtime/ai", "@mono-agent/engine", "@mono-agent/engine/sessions.js", "@mono-agent/agent-contracts", "@mono-agent/agent-harness/owned.js",
+      "../../agent-runtime/src/index.js", "../../engine-extra/src/index.js", "../../scripts/helper.js", "../../.."]) {
       for (const source of [`import { run } from "${specifier}";`, `export { run } from "${specifier}";`, `await import("${specifier}");`]) {
         expect(engineRuntimeImports(root, file, source)).toEqual([specifier]);
       }
     }
-    expect(engineRuntimeImports(root, file, 'import "./session-store.js"; import "@earendil-works/pi-agent-core";')).toEqual([]);
+    expect(engineRuntimeImports(root, file, 'import "./session-store.js"; import "../src/session-store.js"; import "@earendil-works/pi-agent-core"; import "node:fs";')).toEqual([]);
   });
 });
