@@ -11,7 +11,7 @@ import { NATIVE_HISTORY_ROOT_FILE } from "../native-history-root.js";
 import { fixture, ready, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import { ModelSwitchPayloadStore } from "../model-switch-payloads.js";
 import { retireRunResultSession } from "../harness/session-retirement.js";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
 import { boundedSwitchBytes, validateModelSwitchFence, switchConversationKey, MAX_NATIVE_EPOCH_BYTES } from "../durable-model-switch-contract.js";
 import { createHash } from "node:crypto";
 const roots: string[] = [];
@@ -128,7 +128,7 @@ it("never recreates a cold epoch lost behind a published canonical receipt; reco
 it("two switches keep exactly one current journal and one durable handoff; D clears them", async () => {
   const f = await setup();
   const turn = await f.store.beginProviderSessionTurn(bucket, "fictional-B-turn", { modelKey: "faux:B" });
-  const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js");
+  const { JsonlSessionRepo } = await import("../../../engine/dist/session-store.js");
   const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
   const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === turn.providerSessionId)!;
   const native = await repo.open(metadata, { repair: false, wait: false });
@@ -155,7 +155,7 @@ it("two switches keep exactly one current journal and one durable handoff; D cle
   await f.store.reset(bucket); expect(await journalNames(f)).toEqual([]); expect(await readdir(join(f.base, "history", ".model-switches"))).toEqual([]);
 });
 it("protects a busy v5 native victim at reservation instead of allowing unbounded quota growth", async () => {
-  const f = await setup(); const { JsonlSessionRepo } = await import("@mono-agent/harness/session-store.js");
+  const f = await setup(); const { JsonlSessionRepo } = await import("../../../engine/dist/session-store.js");
   const repo = new JsonlSessionRepo({ sessionsRoot: join(f.base, "native") });
   const metadata = (await repo.listOwned()).find((entry: { id: string }) => entry.id === managedHandle(f.before.providerSession.epoch))!;
   const writer = await repo.open(metadata, { repair: false, wait: false });

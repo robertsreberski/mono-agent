@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { JsonlSessionRepo } from "../../../engine/dist/session-store.js";
 import type { RuntimeNativePreparationStorage, RuntimeHandoffSummary } from "@mono-agent/runtime-adapter";
 import { fixture, openStore, bucket } from "./fixtures/managed-native-switch-fixture.mjs";
 import { createDurableHistoryStore } from "../durable-history.js";

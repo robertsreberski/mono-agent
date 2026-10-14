@@ -46,9 +46,9 @@ importers:
       '@mono-agent/docs-mcp':
         specifier: workspace:0.25.1
         version: link:extras/docs-mcp
-      '@mono-agent/harness':
+      '@mono-agent/engine':
         specifier: workspace:0.25.1
-        version: link:packages/harness
+        version: link:packages/engine
       '@mono-agent/memory':
         specifier: workspace:0.25.1
         version: link:packages/memory
@@ -232,9 +232,9 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.25.1
         version: link:../agent-contracts
-      '@mono-agent/harness':
+      '@mono-agent/engine':
         specifier: workspace:0.25.1
-        version: link:../harness
+        version: link:../engine
       '@mono-agent/observability':
         specifier: workspace:0.25.1
         version: link:../observability
@@ -254,9 +254,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
         version: 1.31.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
-      '@mono-agent/harness':
+      '@mono-agent/engine':
         specifier: workspace:0.25.1
-        version: link:../harness
+        version: link:../engine
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
@@ -319,7 +319,7 @@ importers:
         specifier: ^5.5.0
         version: 5.5.0
 
-  packages/harness:
+  packages/engine:
     dependencies:
       '@earendil-works/pi-agent-core':
         specifier: 1.0.1

@@ -77,7 +77,7 @@ function assertResolvedVersion({
   }
 
   // pi-agent-core declares pi-ai with a floating compatible-minor range while
-  // harness owns Core and an exact known-compatible Pi AI copy. Verify resolution
+  // engine owns Core and an exact known-compatible Pi AI copy. Verify resolution
   // from Core too so a host package or later Pi patch cannot silently rewire it.
   if (name === "@earendil-works/pi-agent-core") {
     const piAi = "@earendil-works/pi-ai";

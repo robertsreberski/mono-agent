@@ -22,9 +22,9 @@ export async function findContextBuilderBypasses(root) {
   const bypasses = [];
   for (const file of files) {
     const path = relative(root, file).split("\\").join("/");
-    if (["packages/harness/src/session-context.js", "packages/harness/src/request-projection.js"].includes(path)) continue;
+    if (["packages/engine/src/session-context.js", "packages/engine/src/request-projection.js"].includes(path)) continue;
     let text = await readFile(file, "utf8");
-    if (["packages/harness/src/index.js", "packages/agent-runtime/src/ai/providers/pi-native/harness-adapter.js"].includes(path)) {
+    if (["packages/engine/src/index.js", "packages/agent-runtime/src/ai/providers/pi-native/harness-adapter.js"].includes(path)) {
       text = text.replace(/export \{ buildHarnessSessionContext \} from [^;]+;/g, "");
     }
     if (/\bbuildHarnessSessionContext\b/.test(text)) bypasses.push(path);

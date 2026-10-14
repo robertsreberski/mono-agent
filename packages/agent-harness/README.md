@@ -4,7 +4,7 @@ Use this package to turn a structural communication request into one recorded,
 policy-bound runtime turn with explicit success or failure.
 
 This is the host conversation/history orchestration package. The separate
-`@mono-agent/harness` package owns the model-run loop, native journal, storage
+`@mono-agent/engine` package owns the model-run loop, native journal, storage
 and compaction kit; provider glue lives in `@mono-agent/agent-runtime`.
 
 ## Category

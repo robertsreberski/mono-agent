@@ -49,8 +49,8 @@
 // previous attempt.
 
 import { randomUUID } from "node:crypto";
-import { estimateTokens, shouldCompact } from "@mono-agent/harness/compaction-kit/compaction.js";
-import { projectContext } from "./harness-adapter.js";
+import { estimateTokens, shouldCompact } from "@mono-agent/engine";
+import { projectContext } from "@mono-agent/engine";
 import {
   createCompactionAccounting,
   createCompactionEmitter,

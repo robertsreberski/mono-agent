@@ -16,10 +16,14 @@
   before rolling back. Hold live owners recorded by older
   macOS binaries by PID, and name the lock path and PID when one blocks.
 
-- Remove the unused direct Pi Agent Core dependency from
-  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/harness`.
+- Publish the new execution and storage package as `@mono-agent/engine`, with
+  three focused entrypoints: root, `sessions.js` and `owned-fs.js`. Published
+  runtime storage capabilities and journal formats stay compatible.
 
-- Keep Pi-native execution on Pi 1.x through the new `@mono-agent/harness`, with
+- Remove the unused direct Pi Agent Core dependency from
+  `@mono-agent/agent-runtime`; keep loop execution in `@mono-agent/engine`.
+
+- Keep Pi-native execution on Pi 1.x through the new `@mono-agent/engine`, with
   versioned native journals and distinct logical turns/execution operations.
   Import idle legacy Pi main-branch context; reopen still aborts old operations
   and model-change retirement remains destructive outside durable model

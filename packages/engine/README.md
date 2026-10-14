@@ -1,6 +1,6 @@
-# @mono-agent/harness
+# @mono-agent/engine
 
-The mono-agent harness owns model execution and native journal storage. It is
+The mono-agent engine owns model execution and native journal storage. It is
 not `@mono-agent/agent-harness`, which owns host conversation/history orchestration.
 
 ## Category
@@ -20,12 +20,14 @@ Runtime package in the mono-agent lockstep release.
 
 Own the model-run loop, journal schema and storage, legacy Pi v3/v4 import, retry
 stream and attributed compaction kit. Pi AI supplies models/providers and Pi
-Agent Core supplies `runAgentLoop`; the harness does not fork those dependencies.
+Agent Core supplies `runAgentLoop`; the engine does not fork those dependencies.
+The `sessions.js` contract owns storage outcomes, not runtime result objects,
+warnings or run-option policy. Process-wide provider fan-out stays in runtime.
 
 ## Install / Usage
 
 ```bash
-pnpm add @mono-agent/harness
+pnpm add @mono-agent/engine
 ```
 
 Node.js 24.15.0 or newer is required. Hosts normally use the provider glue in
@@ -65,6 +67,7 @@ unconsumed native offers before sealing; none carries into the next turn.
 | `src/journal-types.js`, `src/journal-schema.js` | Versioned wire contract and incremental reference validation |
 | `src/session-store.js` | Memory and durable journal repositories |
 | `src/journal-reader.js`, `src/journal-lock.js` | Offset-backed incremental validation and SQLite kernel locks |
+| `src/session-lifecycle.js`, `src/native-journal-storage.js`, `src/session-registry.js` | Storage lifecycle, managed evidence and registry factories |
 | `src/legacy-import.js` | Idle effective-main legacy Pi v3/v4 import |
 | `src/run-driver.js`, `src/retry-stream.js` | Model operations over Pi's loop |
 | `src/session-context.js` | Adapter-shaped native context projection |
@@ -130,9 +133,10 @@ requires a host-owned input ID; compaction requires null and cannot start a prom
 operation. The first durable start carries the owner/bucket/handle/revision/model
 binding; later binding records remain. Opted-in ends carry a versioned minimal
 runtime-result seal, or an unavailable-result interruption account, never success
-inferred from an earlier operation. `readTurnEvidence` reads ordered per-turn
-references and `matchTurnEvidence` checks ownership, purpose, model, fence,
-baseline and exact consumed input digests before callers repair. Repositories
+inferred from an earlier operation. The `sessions.js` entrypoint exposes
+`reconcileNativeSessionTurn`, which uses the internal `readTurnEvidence` and
+`matchTurnEvidence` helpers to check ordered references, ownership, purpose,
+model, fence, baseline and exact consumed input digests before storage repair. Repositories
 support `open(metadata, { repair: false })` for matched-owner inspection without
 accounting or torn-tail truncation; after a match, `prepareReconciliation()`
 syncs the validated prefix and permits storage-only repair. Mismatches close
@@ -147,7 +151,9 @@ incoming turn and retires only the outgoing journal after canonical publication.
 
 ### Opt-in evidence projection and handoffs
 
-`createEvidenceView` validates at most one host-supplied current-journal
+`createManagedNativeJournalStorage` from `sessions.js` returns the managed-storage
+capability object. Its `captureEvidence` method uses the internal
+`createEvidenceView` helper to validate at most one host-supplied current-journal
 descriptor (header, frozen record digest/tip, ownership binding), explicit
 canonical-only gaps and the prior accepted handoff. Composed compaction coverage
 must equal the prior handoff's coverage exactly. It does not authorize ancestry:
@@ -158,16 +164,19 @@ resume.
 native journal entries. A validated view feeds handoffs only: native envelopes
 are never projected across a model change, including a return to an earlier model.
 
-`scanEvidenceSegment` streams a frozen journal twice with the secure reader:
+The internal `scanEvidenceSegment` helper streams a frozen journal twice with
+the secure reader:
 every record is validated and digested, but only the effective tail (from the
 last compaction checkpoint's kept messages, or the whole epoch, which starts
 after the prior handoff) and the records cited by unresolved work are retained.
-`prepareHandoff` selects up to three whole recent logical turns of that tail
+The capability object's `prepareHandoff` method selects up to three whole recent
+logical turns of that tail
 and a mechanical ledger of genuinely unresolved work: outcome-unknown or
 unplaced calls from the whole epoch (including started rewound effects; never
 dropped), turns and calls interrupted since the last completed model turn, and
 unconsumed inputs. Failures the model already saw before a later completed turn
-are history, not ledger entries. `buildHandoff` accepts a strict
+are history, not ledger entries. The capability object's `buildHandoff` method
+accepts a strict
 structured summary, or the prior handoff's previously validated structured
 summary plus the complete suffix after the last checkpoint. A suffix without a validated prior
 summary is text-only replay and returns `summary_required`; a compaction
@@ -181,12 +190,16 @@ summaries and unfit mandatory history fail explicitly; there is no
 chunked summarization or clipping. Returned artifacts are proposals: the host
 publishes the sole immutable content authority and caches its exact bytes/hash.
 
-`createHandoffBudget` reserves `max(16384, estimated host tokens + 4096)` for the
+The capability object's `createBudget` method wraps the internal
+`createHandoffBudget` helper, reserving `max(16384, estimated host tokens + 4096)`
+for the
 frozen host context (including resolved tool declarations), current input,
 output and `max(4096, 5% of the target window)` safety. The deterministic estimate
-is conservative, not a provider-tokenizer guarantee. Hosts must call
-`checkHandoffDispatch` on the complete normalized request before dispatch;
-late host/input overruns refuse rather than repair a cached handoff.
+is conservative, not a provider-tokenizer guarantee. Pass the frozen budget as
+the run driver's `handoffDispatchBudget` option. The driver uses the internal
+`checkHandoffDispatch` helper to validate the complete normalized request before
+dispatch; late host/input overruns refuse rather than repair a cached handoff.
+These evidence/handoff helpers are private modules, not additional root exports.
 
 `projectInheritedContext` and the opt-in run-driver `inheritedProjection`
 compose a host-accepted prefix with the current journal's delta. The prefix is
@@ -268,143 +281,52 @@ grant replay permission.
 
 ### Start here
 
-- `MemorySessionRepo` / `JsonlSessionRepo`: native storage, not canonical history.
-- `createRunDriver`: operations inside logical turns, using host-owned tools.
-- `JournalValidator`: validate versioned journal records without stripping native metadata.
-- `projectContext`: the native request-context seam for journal entries;
-  `buildHarnessSessionContext` remains a compatibility primitive.
-- `createEvidenceView`: validated read-only current-journal evidence and canonical gaps for handoffs.
-- `prepareHandoff` / `buildHandoff`: pure structured artifact proposals.
-- `createHandoffBudget` / `checkHandoffDispatch`: explicit fit/refusal contracts.
-- `inspectCurrentEvidence` / `inspectCurrentLifecycle`: unfiltered current-journal
-  inspection; lifecycle-only reads are synchronous and perform no payload I/O.
+The engine has exactly three entrypoints. All exports are named explicitly;
+implementation modules and the former granular subpaths are private.
+
+- Root: `MemorySessionRepo` / `JsonlSessionRepo`, `createRunDriver` and request
+  projection, input digests, handoff summary validation/estimation, the eight
+  runtime compaction helpers, and the frozen `ENGINE_CONTEXT` singleton.
+- `sessions.js`: native ownership, registry factories, lifecycle, recovery,
+  reconciliation, managed-storage capabilities and `settleNativeSession`.
+  Resolve returns ready/unavailable storage outcomes; commit reports persistence
+  failures; capture returns a receipt or not-durable outcome. Runtime façades
+  preserve the existing runtime results, warnings and option policy. The native
+  registry is registered in runtime's process-wide fan-out, not in the engine.
+- `owned-fs.js`: the nine host-used owned-file primitives, separate from the
+  run-loop entrypoint.
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
 
 Every symbol exported by each public code entrypoint is listed below.
 
-**`@mono-agent/harness`**
+**`@mono-agent/engine`**
 
 ```text
-HANDOFF_POLICY
+ENGINE_CONTEXT
 HANDOFF_SUMMARY_FIELDS
-JOURNAL_FORMAT
-JOURNAL_KINDS
-JOURNAL_VERSION
-JournalStorageError
-JournalValidator
 JsonlSessionRepo
 MemorySessionRepo
-NativeSuspendedError
-SessionStore
-buildHandoff
-buildHarnessSessionContext
-buildOpenWorkLedger
-checkHandoffDispatch
-createEvidenceView
-createHandoffBudget
-createRunDriver
-createTurnBinding
-digestTurnInput
-estimateHandoffTokens
-evidenceDigest
-inspectCurrentEvidence
-inspectCurrentLifecycle
-isJournalStorageError
-managedJournalId
-matchTurnEvidence
-prepareHandoff
-projectContext
-projectInheritedContext
-projectInterruptions
-readTurnEvidence
-recordInterruption
-renderHandoffMessage
-repairInterruptedSession
-scanEvidenceSegment
-selectTurnInterruptionAccounts
-validateComposedCoverage
-validateHandoffSummary
-validateJournalHeader
-validateSessionTurn
-```
-
-**`@mono-agent/harness/compaction-kit/compaction.js`**
-
-```text
-DEFAULT_COMPACTION_SETTINGS
-SUMMARIZATION_SYSTEM_PROMPT
 calculateContextTokens
 compact
-compactWithRequest
-completeSimpleWithRetries
-createSummaryRequestOptions
+createRunDriver
+digestTurnInput
 estimateContextTokens
+estimateHandoffTokens
 estimateTokens
-findCutPoint
-findTurnStartIndex
-generateSummary
 generateSummaryWithRequest
-generateSummaryWithUsage
 getLastAssistantUsage
 prepareCompaction
-serializeConversation
+projectContext
+projectInheritedContext
 shouldCompact
+validateHandoffSummary
 ```
 
-**`@mono-agent/harness/context.js`**
+**`@mono-agent/engine/owned-fs.js`**
 
 ```text
-HARNESS_CONTEXT
-```
-
-**`@mono-agent/harness/journal-reader.js`**
-
-```text
-JournalReader
-```
-
-**`@mono-agent/harness/journal-schema.js`**
-
-```text
-JournalValidator
-digestTurnInput
-validateJournalHeader
-validateSessionTurn
-validateTurnSeal
-```
-
-**`@mono-agent/harness/journal-types.js`**
-
-```text
-JOURNAL_FORMAT
-JOURNAL_KINDS
-JOURNAL_VERSION
-JournalEntry
-JournalHeader
-JournalKind
-LegacyImport
-Provenance
-SourceIdentity
-```
-
-**`@mono-agent/harness/legacy-import.js`**
-
-```text
-archiveLegacySession
-assertLegacyIdentity
-importDescriptor
-importSourceMetadata
-legacyJournalId
-listLegacySessions
-readLegacySession
-```
-
-**`@mono-agent/harness/owned-fs.js`**
-
-```text
-Identity
 OwnedFileDamagedError
 assertIdentity
 isOwned
@@ -416,32 +338,31 @@ syncDir
 unchanged
 ```
 
-**`@mono-agent/harness/retry-stream.js`**
+**`@mono-agent/engine/sessions.js`**
 
 ```text
-BACKOFF_ABORT
-createRetryStream
-```
-
-**`@mono-agent/harness/run-driver.js`**
-
-```text
-createRunDriver
-```
-
-**`@mono-agent/harness/session-context.js`**
-
-```text
-buildHarnessSessionContext
-```
-
-**`@mono-agent/harness/session-store.js`**
-
-```text
-JsonlSessionRepo
-MemorySessionRepo
-SessionStore
-journalEntrySuffix
+NativeEvidenceCapacityError
+NativeSuspendedError
+assertNativeSessionAccess
+captureSessionRecovery
+cleanupSessionOnThrow
+commitSession
+createManagedNativeJournalStorage
+createSessionRegistry
+detachDurableNativeSession
+discardUncommittedSession
+isJournalStorageError
+nativeSessionRegistry
+normalizeDurableSessionsRoot
+reconcileNativeSessionTurn
+recoverDurableNativeSession
+resolveDurableNativeSessionRepo
+resolveSession
+retireDurableNativeSession
+rollbackAbortedTurn
+salvageDurableNativeSession
+settleNativeSession
+validateSessionTurn
 ```
 
 <!-- public-api-inventory:end -->
@@ -466,7 +387,7 @@ implementations, approvals, delivery, consumer restarts or releases. The
 ## Verification
 
 ```bash
-pnpm --filter @mono-agent/harness run build
-pnpm --filter @mono-agent/harness test
-pnpm --filter @mono-agent/harness run typecheck
+pnpm --filter @mono-agent/engine run build
+pnpm --filter @mono-agent/engine test
+pnpm --filter @mono-agent/engine run typecheck
 ```

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { estimateTokens } from "@mono-agent/harness/compaction-kit/compaction.js";
+import { estimateTokens } from "../../../../engine/dist/compaction-kit/compaction.js";
 import {
   estimateCurrentContextTokens,
   piSummaryReserveTokens,
@@ -8,7 +8,7 @@ import {
   runReactiveCompaction,
   tryCompact,
 } from "../../ai/providers/pi-native/compaction-driver.js";
-import { buildHarnessSessionContext } from "../../ai/providers/pi-native/harness-adapter.js";
+import { buildHarnessSessionContext } from "../../../../engine/dist/session-context.js";
 
 // A session double whose buildContext / getEntries / (message count) are
 // scriptable, so the trigger math is exercised deterministically.

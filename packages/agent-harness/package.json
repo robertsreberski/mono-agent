@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.25.1",
-    "@mono-agent/harness": "workspace:0.25.1",
+    "@mono-agent/engine": "workspace:0.25.1",
     "@mono-agent/observability": "workspace:0.25.1",
     "@mono-agent/runtime-adapter": "workspace:0.25.1"
   },

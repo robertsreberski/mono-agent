@@ -2,12 +2,12 @@ import { mkdtemp, readFile, rm, writeFile, mkdir, appendFile, copyFile, chmod } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, expect, afterEach } from "vitest";
-import { JsonlSessionRepo } from "@mono-agent/harness";
+import { JsonlSessionRepo } from "../index.js";
 const roots = [];
 async function root() { const r = await mkdtemp(join(tmpdir(), "harness-salvage-")); roots.push(r); return r; }
 afterEach(async () => { for (const r of roots.splice(0)) await rm(r, { recursive:true, force:true }); });
 it("salvages owned paired tool evidence without executing an unfinished turn", async () => {
-  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r });
   const s = await repo.create({ id: "salvage-fixture" });
   await s.beginTurn("interrupted", {});
@@ -23,7 +23,7 @@ it("salvages owned paired tool evidence without executing an unfinished turn", a
 });
 
 it("salvages large v2 journals read-only with bounded result excerpts", async () => {
-  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const s = await repo.create({ id: "large-salvage" });
   await s.beginTurn("synthetic:large-salvage");
   for (let i = 0; i < 12; i++) await s.appendMessage({ role: "user", content: "x".repeat(3 * 1024 * 1024), timestamp: i });
@@ -38,7 +38,7 @@ it("salvages large v2 journals read-only with bounded result excerpts", async ()
 });
 
 it("salvages the requested v2 ID despite unrelated malformed, insecure and non-file journals", async () => {
-  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.create({ id: "requested" });
   await session.close(); const bytes = await readFile(session.metadata.path); const directory = join(r, "mono-v2", "journals");
   await writeFile(join(directory, "malformed.jsonl"), "not-json\n", { mode: 0o600 });
@@ -49,9 +49,9 @@ it("salvages the requested v2 ID despite unrelated malformed, insecure and non-f
 });
 
 it.each(["insecure", "corrupt", "non-file"])("fails closed instead of salvaging a clean-break legacy source when v2 is %s", async (damage) => {
-  const { salvageDurableNativeSession } = await import("../../ai/providers/pi-native/session-salvage.js");
+  const { salvageDurableNativeSession } = await import("../session-salvage.js");
   const r = await root(); await mkdir(join(r, "legacy")); const source = join(r, "legacy", "fixture_fixture-session.jsonl");
-  await copyFile(new URL("../../../../harness/src/__tests__/fixtures/legacy-v4.jsonl", import.meta.url), source);
+  await copyFile(new URL("./fixtures/legacy-v4.jsonl", import.meta.url), source);
   await appendFile(source, JSON.stringify({ kind: "value", op: "set", seq: 6, namespace: "pi.op.meta", key: "open", value: {} }) + "\n");
   const legacyBytes = await readFile(source); const repo = new JsonlSessionRepo({ sessionsRoot: r }); const session = await repo.open((await repo.list())[0]);
   expect(session.continuity).toBe("clean_break"); const path = session.metadata.path; await session.close();

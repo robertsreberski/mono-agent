@@ -1,5 +1,5 @@
 import { lstat, readdir, rm } from "node:fs/promises";
-import { assertIdentity, isOwned, publishAtomic, readOwned, syncDir } from "@mono-agent/harness/owned-fs.js";
+import { assertIdentity, isOwned, publishAtomic, readOwned, syncDir } from "@mono-agent/engine/owned-fs.js";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { boundedSwitchBytes, switchDigest, switchHash, switchKeys, switchObject } from "./durable-model-switch-contract.js";

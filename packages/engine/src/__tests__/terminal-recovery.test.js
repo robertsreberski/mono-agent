@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
-import { validRecoveryProjection } from "../../ai/providers/pi-native/terminal-recovery.js";
-import { captureSessionRecovery } from "../../ai/providers/pi-native/session-lifecycle.js";
+import { validRecoveryProjection } from "../terminal-recovery.js";
+import { captureSessionRecovery } from "../session-lifecycle.js";
 const model = fauxProvider({ provider: "faux", models: [{ id: "fixture", reasoning: true }] }).getModel();
 const assistant = (content, options) => ({ ...fauxAssistantMessage(content, options), provider: model.provider, model: model.id, api: model.api });
 const call = assistant([fauxToolCall("Read", { file_path: "file" }, { id: "read-1" })]);
@@ -31,14 +31,14 @@ describe("terminal native projection", () => {
     const session = { getLeafId: async () => "tip", getEntries: async () => [], close: async () => undefined };
     vi.spyOn(session, method).mockRejectedValue(new Error(`${method} failed`));
     await expect(captureSessionRecovery({ sessionEntry: entry, recoveryInputIds: [], session },
-      { options: { sessionRecovery: { runId: "run", revision: 1 } }, providerSessionId: "id", modelKey: "faux:fixture", model, pending: true })).rejects.toThrow(`${method} failed`);
+      { identity: { runId: "run", revision: 1, providerSessionId: "id", modelKey: "faux:fixture" }, model, pending: true })).rejects.toThrow(`${method} failed`);
     expect(entry.recoveryPending).toBe(false);
     expect(entry.recovery).toBeUndefined();
   });
   it.each([undefined, ""])("releases pending recovery when the tip is unavailable (%j)", async (tip) => {
     const entry = { durable: true, recoveryPending: true };
     await expect(captureSessionRecovery({ registeredSessionEntry: entry, recoveryInputIds: [], session: { getLeafId: async () => tip } },
-      { options: { sessionRecovery: { runId: "run", revision: 0 } }, providerSessionId: "id", modelKey: "faux:fixture", model, pending: true })).rejects.toThrow("recovery tip is unavailable");
+      { identity: { runId: "run", revision: 0, providerSessionId: "id", modelKey: "faux:fixture" }, model, pending: true })).rejects.toThrow("recovery tip is unavailable");
     expect(entry.recoveryPending).toBe(false);
     expect(entry.recovery).toBeUndefined();
   });

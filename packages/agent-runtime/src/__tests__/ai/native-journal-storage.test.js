@@ -1,3 +1,4 @@
+import { MAX_CAPTURE_BYTES } from "../../../../engine/dist/native-journal-storage.js";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { appendFile, chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -7,9 +8,9 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
 import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
-import { createManagedNativeJournalStorage, NativeEvidenceCapacityError, MAX_CAPTURE_BYTES } from "../../ai/providers/pi-native/native-journal-storage.js";
+import { createManagedNativeJournalStorage, NativeEvidenceCapacityError } from "../../ai/providers/pi-native/native-journal-storage.js";
 const roots = [], repos = [];
 const authority = { version: 1, rootId: "1".repeat(64), authorityId: "2".repeat(64), ownerKey: "fictional-owner", historyBucket: "fictional-bucket" };
 const from = { provider: "openai", api: "responses", model: "gpt-5.5", account: null };

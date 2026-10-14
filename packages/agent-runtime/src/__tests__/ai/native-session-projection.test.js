@@ -2,16 +2,19 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, rm, readFile, readdir, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { createHandoffBudget, digestTurnInput } from "@mono-agent/harness";
-import { assertNativeProjectionBinding } from "../../ai/providers/pi-native/session-authority.js";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { digestTurnInput } from "@mono-agent/engine";
+import { createHandoffBudget } from "../../../../engine/dist/handoff.js";
+import { assertNativeProjectionBinding } from "../../../../engine/dist/session-authority.js";
+import * as turnRunner from "../../ai/providers/pi-native/turn-runner.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
-import { createPiSessionAdapter, createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
+import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
+import { createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
 import { tryCompact, createGuardedCompactionHook, createCompactionAccounting } from "../../ai/providers/pi-native/compaction-driver.js";
 import { recoverDurableNativeSession, reconcileNativeSessionTurn, resolveDurableNativeSessionRepo,
   discardUncommittedSession, commitSession, rollbackAbortedTurn, cleanupSessionOnThrow } from "../../ai/providers/pi-native/session-lifecycle.js";
-import { JsonlSessionRepo } from "@mono-agent/harness/session-store.js";
+import { JsonlSessionRepo } from "../../../../engine/dist/session-store.js";
 
 const roots = [];
 afterEach(async () => { await refreshProviderSession(handle); for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });
@@ -78,6 +81,28 @@ it.each(["predecessor", "lost-claim", "projection-without-authority", "foreign-h
   const result = await generatePiNativeResponse("Current fictional rules", opts);
   expect(result.failureKind).toBe("safety_native_session_authority"); expect(result.retryable).toBe(false); expect(provider).not.toHaveBeenCalled();
   if (before) expect(await journal(f.root)).toEqual(before);
+});
+
+it("rechecks authority at dispatch after resolve-time open succeeds, before any provider or tool effect", async () => {
+  const f = await setup(), effect = vi.fn(async () => ({ content: [{ type: "text", text: "Fictional effect" }] }));
+  let openChecks = 0;
+  f.assertCurrent.mockImplementation(async ({ action }) => {
+    // Creation remains authorized; the claim is lost only after resolve's open.
+    if (action === "open" && ++openChecks > 1) throw new Error("Fictional authority lost before dispatch");
+  });
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall("FictionalEffect", {}, { id: "fictional-effect" })]),
+    fauxAssistantMessage([fauxText("must not dispatch")])]);
+  const tools = vi.spyOn(turnRunner, "buildTurnTools").mockResolvedValue({
+    tools: [{ name: "FictionalEffect", description: "Fictional effect", parameters: { type: "object", properties: {} }, execute: effect }],
+    structuredTool: null, mcpClients: [], closeRunTools: async () => {},
+  });
+  try {
+    const result = await generatePiNativeResponse("Current fictional rules", f.options());
+    expect(result.failureKind).toBe("safety_native_session_authority");
+    expect(openChecks).toBe(2);
+    expect(f.faux.state.callCount).toBe(0);
+    expect(effect).not.toHaveBeenCalled();
+  } finally { tools.mockRestore(); }
 });
 
 it.each(["host_cap", "input_allowance", "mandatory_history"])("fails frozen %s with zero provider/summary calls and no compaction repair", async (reason) => {

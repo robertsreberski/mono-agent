@@ -254,8 +254,8 @@ it("source enforcement catches JS/TS imports and re-exports in other packages an
   const fake = await mkdtemp(join(root, "node_modules", ".p3a-source-check-"));
   try {
     const paths = ["packages/other/src/bypass.ts", "packages/other/src/session-context.js", "packages/another/src/index.js", "apps/chat/src/bypass.tsx"];
-    for (const path of paths) { const directory = path.slice(0, path.lastIndexOf("/")); await mkdir(join(fake, directory), { recursive: true }); await writeFile(join(fake, path), 'import { buildHarnessSessionContext as bypass } from "@mono-agent/harness";'); }
-    await writeFile(join(fake, paths[2]), 'export { buildHarnessSessionContext } from "@mono-agent/harness";');
+    for (const path of paths) { const directory = path.slice(0, path.lastIndexOf("/")); await mkdir(join(fake, directory), { recursive: true }); await writeFile(join(fake, path), 'import { buildHarnessSessionContext as bypass } from "@mono-agent/engine";'); }
+    await writeFile(join(fake, paths[2]), 'export { buildHarnessSessionContext } from "@mono-agent/engine";');
     expect(await findContextBuilderBypasses(fake)).toEqual(paths.sort());
   } finally { await rm(fake, { recursive: true, force: true }); }
 });

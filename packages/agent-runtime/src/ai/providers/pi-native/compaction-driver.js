@@ -24,8 +24,8 @@ import {
   getLastAssistantUsage,
   prepareCompaction,
   shouldCompact,
-} from "@mono-agent/harness/compaction-kit/compaction.js";
-import { HARNESS_CONTEXT as BACKGROUND_CONTEXT } from "@mono-agent/harness/context.js";
+} from "@mono-agent/engine";
+import { ENGINE_CONTEXT as BACKGROUND_CONTEXT } from "@mono-agent/engine";
 import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -39,7 +39,7 @@ import {
   parseContextLimitFromError,
 } from "../pi-errors.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
-import { projectContext } from "./harness-adapter.js";
+import { projectContext } from "@mono-agent/engine";
 import { runHarnessPrompt } from "./turn-runner.js";
 
 // Per-process cache of real context-window ceilings discovered from overflow

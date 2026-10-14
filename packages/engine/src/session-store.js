@@ -9,7 +9,7 @@ import { repairInterruptedSession } from "./interruption.js";
 import { JournalStorageError, isJournalStorageError } from "./storage-error.js";
 import { JournalReader } from "./journal-reader.js";
 import { JournalLocks } from "./journal-lock.js";
-import { isOwned, publishAtomic, sameIdentity, syncDir, unchanged } from "./owned-fs.js";
+import { isOwned, publishAtomic, sameIdentity, syncDir, unchanged } from "./owned-fs-impl.js";
 import { archiveLegacySession, listLegacySessions, readLegacySession, legacyJournalId, importDescriptor, importSourceMetadata, assertLegacyIdentity } from "./legacy-import.js";
 
 import { assertEvidenceView } from "./evidence-view.js";

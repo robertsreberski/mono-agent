@@ -16,7 +16,7 @@ it.each([3, 4])("matches frozen harness bytes for default context/checkpoints/v%
     await mkdir(`${storage}-import/legacy`, { recursive: true, mode: 0o700 });
     await copyFile(legacy, `${storage}-import/legacy/fixture_fixture-session.jsonl`);
     const capture = JSON.parse(execFileSync(process.execPath, ["--no-warnings", worker,
-      join(root, "packages/harness/src"), join(root, "packages/agent-runtime/src"), storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 }));
+      join(root, "packages/engine/src"), join(root, "packages/agent-runtime/src"), storage, legacy], { cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024 }));
     expect(capture.wirePayloads).toHaveLength(2);
     expect(capture.runtime.midRun.requests).toHaveLength(2); // existing split-turn native compaction
     expect(capture.runtime.recovery.recovered).toBe(true);

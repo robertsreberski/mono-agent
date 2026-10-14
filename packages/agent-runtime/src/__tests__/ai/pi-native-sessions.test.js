@@ -28,8 +28,11 @@ import {
   getCurrentSystemPrompt,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { digestTurnInput, createTurnBinding } from "@mono-agent/harness";
-import * as sessionAdapter from "../../ai/providers/pi-native/harness-adapter.js";
+import { digestTurnInput } from "@mono-agent/engine";
+import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
+import * as sessionAdapter from "../../../../engine/dist/session-adapter.js";
+import * as harnessAdapter from "../../ai/providers/pi-native/harness-adapter.js";
+import { ENGINE_CONTEXT } from "@mono-agent/engine";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 import {
@@ -298,11 +301,10 @@ describe("pi-native sessions", () => {
         sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
       sessionId = result.providerSessionId;
       expect(result.providerSessionRecovery).toBeDefined();
-      const { HARNESS_CONTEXT } = await import("../../ai/providers/pi-native/harness-adapter.js");
       const repo = resolveDurableNativeSessionRepo(root);
-      const raw = await repo.open((await repo.list(undefined, HARNESS_CONTEXT))[0], HARNESS_CONTEXT);
+      const raw = await repo.open((await repo.list(undefined, ENGINE_CONTEXT))[0], ENGINE_CONTEXT);
       await raw.appendMessage({ role: "user", content: "unexpected append", timestamp: Date.now() });
-      await raw.close(HARNESS_CONTEXT);
+      await raw.close(ENGINE_CONTEXT);
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
     } finally {
       if (sessionId) await retireDurableNativeSession(sessionId, root);
@@ -315,7 +317,7 @@ describe("pi-native sessions", () => {
     const sessionId = `capture-close-${resumed}-${Date.now()}`;
     const model = setup();
     const controller = new AbortController();
-    const { HARNESS_CONTEXT, createPiSessionAdapter } = sessionAdapter;
+    const { createPiSessionAdapter } = sessionAdapter;
     const base = { cwd: root, piSessionsRoot: root, sessionKeepAlive: true, sessionId, compaction: { enabled: false } };
     const repo = resolveDurableNativeSessionRepo(root);
     /** @type {any} */ let baseline = undefined;
@@ -326,9 +328,9 @@ describe("pi-native sessions", () => {
         faux.setResponses([fauxAssistantMessage([fauxText("warm answer")])]);
         const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm ask" }] }));
         expect(warm.error).toBeNull();
-        const raw = await repo.open((await repo.list(undefined, HARNESS_CONTEXT))[0], HARNESS_CONTEXT);
+        const raw = await repo.open((await repo.list(undefined, ENGINE_CONTEXT))[0], ENGINE_CONTEXT);
         baseline = await raw.getLeafId();
-        await raw.close(HARNESS_CONTEXT);
+        await raw.close(ENGINE_CONTEXT);
       }
       // Reject at the adapter boundary before upstream closes. The outer catch
       // must still roll back and close this real Pi handle through the legacy path.
@@ -350,9 +352,9 @@ describe("pi-native sessions", () => {
       assertPresent(closeSpy);
       expect(closeSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // capture and legacy cleanup
       if (resumed) {
-        const raw = await repo.open((await repo.list(undefined, HARNESS_CONTEXT))[0], HARNESS_CONTEXT);
+        const raw = await repo.open((await repo.list(undefined, ENGINE_CONTEXT))[0], ENGINE_CONTEXT);
         expect(await raw.getLeafId()).toBe(baseline);
-        await raw.close(HARNESS_CONTEXT);
+        await raw.close(ENGINE_CONTEXT);
       } else {
         expect(countJsonlFiles(root)).toBe(0);
       }
@@ -394,7 +396,7 @@ describe("pi-native sessions", () => {
       fileOpenSpy = vi.mocked(fsPromises.open);
       assertPresent(fileOpenSpy);
       fileOpenSpy.mockClear();
-      const { SessionStore } = await import("@mono-agent/harness");
+      const { SessionStore } = await import("../../../../engine/dist/session-store.js");
       nativeSyncSpy = vi.spyOn(SessionStore.prototype, "sync");
       const bytes = readFileSync(findJsonlFiles(root)[0], "utf8");
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
@@ -952,7 +954,7 @@ describe("pi-native sessions", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "legacy-permissions-"));
     const directory = join(root, "legacy"); mkdirSync(directory);
     const source = join(directory, "fixture_fixture-session.jsonl");
-    await fsPromises.copyFile(new URL(`../../../../harness/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
+    await fsPromises.copyFile(new URL(`../../../../engine/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url), source);
     await fsPromises.chmod(root, 0o755);
     /** @type {any} */ let context = undefined; const warnings = [];
     faux.setResponses([(next) => { context = next; return fauxAssistantMessage([fauxText("New fictional reply.")]); }, fauxAssistantMessage([fauxText("Next fictional reply.")])]);
@@ -966,7 +968,7 @@ describe("pi-native sessions", () => {
       expect(transcriptOf(context)[0]).toContain("Summarize the fictional project.");
       expect((await fsPromises.stat(root)).mode & 0o777).toBe(0o700);
       for (const path of [join(root, "mono-v2"), join(root, "mono-v2", "locks")]) expect((await fsPromises.stat(path)).mode & 0o777).toBe(0o700);
-      expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../harness/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
+      expect(readFileSync(`${source}.migrated`)).toEqual(readFileSync(new URL(`../../../../engine/src/__tests__/fixtures/legacy-v${version}.jsonl`, import.meta.url)));
       const resumed = await generatePiNativeResponse("Fictional verification.", runOptions(model, {
         messages: [{ role: "user", content: "Continue again." }], sessionKeepAlive: true, sessionId: "fixture-session", piSessionsRoot: root,
         onEvent: (event) => { if (event.type === "runtime_warning") warnings.push(event); },
@@ -996,7 +998,7 @@ describe("pi-native sessions", () => {
     const model = setup(); const root = mkdtempSync(join(tmpdir(), "legacy-clean-break-"));
     const directory = join(root, "legacy"); mkdirSync(directory);
     const source = join(directory, "fixture_fixture-session.jsonl");
-    await fsPromises.copyFile(new URL("../../../../harness/src/__tests__/fixtures/legacy-v4.jsonl", import.meta.url), source);
+    await fsPromises.copyFile(new URL("../../../../engine/src/__tests__/fixtures/legacy-v4.jsonl", import.meta.url), source);
     await fsPromises.appendFile(source, JSON.stringify({ kind: "value", op: "set", seq: 6, namespace: "pi.op.meta", key: "open", value: {} }) + "\n");
     const original = readFileSync(source); const controller = new AbortController();
     faux.setResponses([failure === "provider" ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Fictional failure" }) : fauxAssistantMessage([fauxText("Failed turn draft.")])]);
@@ -2135,8 +2137,8 @@ it("uses a protected descriptor without opting into terminal recovery", async ()
 });
 
 it("classifies native journal fsync failure terminally instead of provider-unavailable", async () => {
-  const model = setup(); const root = mkdtempSync(join(tmpdir(), "storage-terminal-")); const original = sessionAdapter.createHarnessAdapter;
-  const spy = vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, options) => {
+  const model = setup(); const root = mkdtempSync(join(tmpdir(), "storage-terminal-")); const original = harnessAdapter.createHarnessAdapter;
+  const spy = vi.spyOn(harnessAdapter, "createHarnessAdapter").mockImplementation(async (session, options) => {
     const raw = session.rawSession; const append = raw.io.append, sync = raw.io.sync; let fail = false;
     raw.io.append = async (text) => { if (JSON.parse(text).kind === "input_consumed") fail = true; return append(text); };
     raw.io.sync = async () => { if (fail) throw Object.assign(new Error("503 network timeout in fictional fsync"), { code: "ENOSPC" }); return sync(); };
@@ -2206,14 +2208,14 @@ it.each([[false, false], [false, true], [true, false], [true, true]])("rolls a l
 
 it("classifies a resumed suspension sealing fsync failure terminally rather than throwing into provider retry", async () => {
   const model = setup(); const root = mkdtempSync(join(tmpdir(), "suspended-storage-")); const id = "suspended-storage";
-  const original = sessionAdapter.createHarnessAdapter;
+  const original = harnessAdapter.createHarnessAdapter;
   const deferred = { id: "fictional-deferred", provider: model.provider, modelId: model.id, api: model.api };
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional baseline.")]), fauxAssistantMessage([], { stopReason: "deferred", deferred })]);
   let spy;
   try {
     const options = runOptions(model, { sessionId: id, sessionKeepAlive: true, piSessionsRoot: root, messages: [{ role: "user", content: "Fictional input." }] });
     expect((await generatePiNativeResponse("Fictional verification.", options)).error).toBeNull();
-    spy = vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
+    spy = vi.spyOn(harnessAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
       const raw = session.rawSession; const append = raw.io.append, sync = raw.io.sync; let failedSeal = false;
       raw.io.append = async (text) => { const record = JSON.parse(text); if (record.kind === "turn_end" && record.payload.status === "failed") failedSeal = true; return append(text); };
       raw.io.sync = async () => { if (failedSeal) throw Object.assign(new Error("503 timeout in fictional failed-seal fsync"), { code: "ENOSPC" }); return sync(); };
@@ -2287,8 +2289,8 @@ describe("protected native turn reconciliation", () => {
       expect(await reconcileNativeSessionTurn(second.request)).toMatchObject({ status: "matched", outcome: "failed" });
       expect(await reconcileNativeSessionTurn(first.request)).toMatchObject({ status: "mismatch", reason: "turn_advanced" });
       const raw = await repo.open(metadata, { repair: false }); expect((await raw.getEntries()).filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(2); await raw.close();
-      const third = protectedOptions(model, root, "poison"); let spy; const original = sessionAdapter.createHarnessAdapter;
-      spy = vi.spyOn(sessionAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
+      const third = protectedOptions(model, root, "poison"); let spy; const original = harnessAdapter.createHarnessAdapter;
+      spy = vi.spyOn(harnessAdapter, "createHarnessAdapter").mockImplementation(async (session, config) => {
         const adapter = await original(session, config);
         session.rawSession.io.sync = async () => { throw Object.assign(new Error("Fictional fsync failure"), { code: "ENOSPC" }); }; return adapter;
       });
