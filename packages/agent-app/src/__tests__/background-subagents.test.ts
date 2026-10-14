@@ -1968,7 +1968,10 @@ describe("detached persistent subagents", () => {
       { timeoutMs: mode === "timeout" ? 1_500 : 60_000 });
     const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "work" });
     if (mode === "cancel") await f.service.cancel(receipt.details.jobId);
-    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 8000 });
+    // The 1.5s deadline (or the cancel) and the 5.1s cancellation grace are fixed
+    // product timers; durable delivery comes after them. That is the path
+    // DURABLE_DELIVERY_TIMEOUT_MS is sized for; 8s left about one second.
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     const job = await f.service.get(receipt.details.jobId);
     expect(job).toMatchObject({ state: mode === "timeout" ? "timed_out" : "cancelled", childStillBusy: true });
     expect(JSON.stringify(f.wake.mock.calls[0])).toContain('childStillBusy');
@@ -1986,7 +1989,8 @@ describe("detached persistent subagents", () => {
     await expect(next.send.execute("reply", { id: "helper", message: "Small", close: true })).rejects.toThrow("subagent_recovery_required");
     expect((await f.instances.get("helper"))?.recovery).toMatchObject({ continuity: "unknown" });
     await f.instances.close("helper");
-  }, 30_000);
+    // Inner waits: two durable deliveries plus the fixed deadline and grace.
+  }, 2 * DURABLE_DELIVERY_TIMEOUT_MS + 10_000);
 
   it("carries typed native session loss through the actual Agent finish seam", async () => {
     const f = await fixture();
