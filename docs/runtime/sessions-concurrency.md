@@ -1,11 +1,11 @@
 ---
-title: "Sessions, concurrency & Pi-native tuning"
+title: "Sessions, concurrency & engine-turn tuning"
 description: "Distinguish session boundaries, configure queueing and concurrency, and manage durable Pi transcripts."
 sidebar:
   order: 5
 ---
 
-This page covers how the runtime keeps provider sessions warm per conversation, how it bounds in-flight work with admission and execution limits, and the Pi-native transport knobs for transport selection, retries, and durable on-disk sessions. Every option here is `config` coverage with a matching `MONO_AGENT_*` env var unless noted.
+This page covers how the runtime keeps provider sessions warm per conversation, how it bounds in-flight work with admission and execution limits, and the engine-turn transport knobs for transport selection, retries, and durable on-disk sessions. Every option here is `config` coverage with a matching `MONO_AGENT_*` env var unless noted.
 
 ## The five "session" meanings
 
@@ -16,7 +16,7 @@ Mono-agent uses "session" for five related but different boundaries:
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, unsafe or unsettled cancelled/failed turns, harness disposal, or process restart when only in-memory |
 | Canonical logical-session history | Durable message-history files plus the separate `tool-history/tool-lifecycles.sqlite` sidecar | Cold context replay and retained, searchable managed-tool invocation/result evidence; settled failed/cancelled non-isolated turns have bounded message accounts, while tool records may still outlive isolated, never-started, or hard-crashed runs with no account | A conversation reset clears every message and tool-history bucket visible in that logical session; `mono-agent restart --clear-sessions` clears all persisted conversation state |
-| Durable Pi transcript | Pi-native JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for Pi-native provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
+| Durable Pi transcript | engine-turn JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for engine-turn provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
 | Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, durable submission receipts, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted, requeues only unmarked offers, renders dispatch-marked live input uncertain without retry, and retains submission receipts for read-only recovery |
 
 Boundary rules:
@@ -474,7 +474,7 @@ In `continuous` mode the runtime holds one warm provider session per conversatio
 ```
 
 
-Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (see [Pi-native tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
+Warm in-memory sessions are lost on restart. To resume across restarts, use the default durable history store together with `providers.piNative.piSessionsRoot` (see [engine-turn tuning](#pi-native-tuning) below). The history store, not a conversation-id hash, owns the resumable provider epoch.
 
 `rolloverNotice` is adapter-local and default-off. It does not enable rollover by itself and does not add a new IPC channel or change provider resume behavior. When daily rollover is already enabled and a base conversation crosses into a new day bucket, the responder streams `New session bucket started: <bucket>.` before the model answer and includes the same prelude in the returned final text for final-only transports.
 
@@ -625,7 +625,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 
 ## Pi-native tuning
 
-`providers.piNative` tunes the Pi-native provider path: transport selection, retry behavior on transient provider failures, and optional durable session storage. These apply to every provider route. All fields are optional.
+`providers.piNative` tunes the engine-turn provider path: transport selection, retry behavior on transient provider failures, and optional durable session storage. These apply to every provider route. All fields are optional.
 
 | Key | Range / Default | Meaning |
 | --- | --- | --- |
@@ -884,7 +884,7 @@ APIs grant no authority to migrate a real root.
 ## Persistent child sessions
 
 `Agent({persist: true})` creates a conversation-scoped child, and `AgentManage`
-resumes that child's own Pi-native durable session. Its registry lives at
+resumes that child's own engine-turn durable session. Its registry lives at
 `<subagents root>/<sha256(conversationId)>/instances.json`; provider transcripts
 live in the sibling `sessions/` directory. The default root is
 `<artifacts.dir>/../subagents`, independent of the main `piSessionsRoot`.

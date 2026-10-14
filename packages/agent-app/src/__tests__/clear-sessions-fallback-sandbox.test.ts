@@ -33,7 +33,7 @@ vi.mock("../../../agent-runtime/src/agent/tools/shared/process-runner.js", async
 // deciding only when the actual Pi turn builder creates Read/Write/Bash with
 // the fallback attempt's projected sandbox context.
 // @ts-expect-error -- package-private JavaScript deciding sink has no public declaration.
-import { buildTurnTools } from "../../../agent-runtime/src/ai/providers/pi-native/turn-runner.js";
+import { buildTurnTools } from "../../../agent-runtime/src/ai/providers/engine-turn/turn-runner.js";
 import { loadAppCoreConfig } from "../app-config.js";
 import { createConfiguredAgentResponder } from "../configured-agent.js";
 import { configuredRuntimeFallbackModels } from "../runtime-routes.js";

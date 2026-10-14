@@ -1,4 +1,4 @@
-import { createDispatchProgress, withDispatchProgress } from "./pi-native/dispatch-progress.js";
+import { createDispatchProgress, withDispatchProgress } from "./engine-turn/dispatch-progress.js";
 import { validateSessionTurn, isJournalStorageError, NativeSuspendedError, settleNativeSession } from "@mono-agent/engine/sessions.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
@@ -48,7 +48,7 @@ import { annotateProviderErrorMessage, installTransportErrorProbe } from "./tran
 import {
   runStructuredOutputFinalizationRetry,
   shouldRetryStructuredOutputFinalization,
-} from "./pi-native/structured-output.js";
+} from "./engine-turn/structured-output.js";
 import {
   abortedResult,
   buildDiagnostics,
@@ -61,7 +61,7 @@ import {
   usageFromMessages,
   hasMeasuredUsage,
   withSubagentUsage,
-} from "./pi-native/result-builder.js";
+} from "./engine-turn/result-builder.js";
 import {
   captureSessionRecovery,
   cleanupSessionOnThrow,
@@ -70,15 +70,15 @@ import {
   resolveDurableNativeSessionRepo,
   resolveSession,
   rollbackAbortedTurn,
-} from "./pi-native/session-lifecycle.js";
+} from "./engine-turn/session-lifecycle.js";
 import {
   resolveLiveCompactionPolicy,
   estimateSessionMessageTokens,
   tryCompact,
   runProactiveCompaction,
   runReactiveCompaction,
-} from "./pi-native/compaction-driver.js";
-import { armMidRunCompaction } from "./pi-native/mid-run-compaction.js";
+} from "./engine-turn/compaction-driver.js";
+import { armMidRunCompaction } from "./engine-turn/mid-run-compaction.js";
 import {
   activateTurnHarness,
   buildTurnHarness,
@@ -87,14 +87,14 @@ import {
   runHarnessPrompt,
   startLiveInput,
   thinkingLevelForEffort,
-} from "./pi-native/turn-runner.js";
-import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./pi-native/empty-reply.js";
-import { finalReplyText } from "./pi-native/reply-text.js";
-import { resolvePiTransport } from "./pi-native/transport.js";
-import { withOpenCodeSessionHeaders } from "./pi-native/provider-attribution.js";
-import { appendStructuredOutputInstruction } from "./pi-native/structured-output.js";
-import { prepareNativeHandoffSummaryRequest, produceNativeHandoffSummary } from "./pi-native/handoff-producer.js";
-import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./pi-native/prepared-dispatch.js";
+} from "./engine-turn/turn-runner.js";
+import { runEmptyReplyRetry, shouldRetryEmptyReply } from "./engine-turn/empty-reply.js";
+import { finalReplyText } from "./engine-turn/reply-text.js";
+import { resolvePiTransport } from "./engine-turn/transport.js";
+import { withOpenCodeSessionHeaders } from "./engine-turn/provider-attribution.js";
+import { appendStructuredOutputInstruction } from "./engine-turn/structured-output.js";
+import { prepareNativeHandoffSummaryRequest, produceNativeHandoffSummary } from "./engine-turn/handoff-producer.js";
+import { createPreparedDispatchLease, snapshotNativeDispatchOptions, prepareDispatchAuth, freezeDispatchData, copyDispatchData } from "./engine-turn/prepared-dispatch.js";
 
 /**
  * Resolve mono-agent's programmatic mode once per run. Tool builders mark
@@ -327,7 +327,7 @@ function splitUserContent(content) {
   return { text: texts.join("\n"), images };
 }
 
-export async function generatePiNativeResponse(systemPrompt, options = {}) {
+export async function generateEngineTurnResponse(systemPrompt, options = {}) {
   return await executePiNativeResponse(systemPrompt, options);
 }
 
@@ -1357,11 +1357,18 @@ async function executeTrackedPiNativeResponse(systemPrompt, options, control, di
   }
 }
 
-export const piNativeRuntimeBridge = {
+export const engineTurnAdapter = {
   id: "pi",
   kind: "pi",
   capabilities: runtimeCapabilities("pi"),
   supports: (ref) => Boolean(ref?.provider && ref?.model),
-  execute: generatePiNativeResponse,
+  execute: generateEngineTurnResponse,
   prepareNativeDispatch: preparePiNativeDispatch,
 };
+
+/** @deprecated Use generateEngineTurnResponse.
+ * @type {typeof generateEngineTurnResponse} */
+export const generatePiNativeResponse = generateEngineTurnResponse;
+/** @deprecated Use engineTurnAdapter.
+ * @type {typeof engineTurnAdapter} */
+export const piNativeRuntimeBridge = engineTurnAdapter;

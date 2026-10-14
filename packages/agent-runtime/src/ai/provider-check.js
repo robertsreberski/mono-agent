@@ -3,7 +3,7 @@
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 
-import { generatePiNativeResponse } from "./providers/pi-native.js";
+import { generateEngineTurnResponse } from "./providers/engine-turn.js";
 
 const SYSTEM_PROMPT = "Provider connectivity check. Reply OK.";
 const USER_PROMPT = "OK";
@@ -22,12 +22,12 @@ const USER_PROMPT = "OK";
  *   runtimeOptions?: Record<string, unknown>,
  *   environment?: Readonly<Record<string, string|undefined>>,
  *   abortSignal?: AbortSignal,
- *   execute?: typeof generatePiNativeResponse,
+ *   execute?: typeof generateEngineTurnResponse,
  * }} input
  * @returns {Promise<{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}>}
  */
 export async function runPiProviderCheck(input) {
-  const execute = input.execute ?? generatePiNativeResponse;
+  const execute = input.execute ?? generateEngineTurnResponse;
   const runtimeOptions = providerConstructionOptions(input.runtimeOptions);
   let result;
   try {

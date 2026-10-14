@@ -27,7 +27,7 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
 | `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
-| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the engine-turn runtime it does **not** filter external MCP-server tools (see below). |
 
 Configure MCP paths and server selections in the JSON `tools` block. Reserved runtime `MONO_AGENT_MCP_*` values used by child processes are protocol plumbing, not config.
 
@@ -159,7 +159,7 @@ Consequences:
 
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
+- On the **engine-turn runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
 - App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy. `MemoryJournal` requires both memory-read enablement/capability and normal app-tool policy.
 
 The `MemoryRecall` description directs proactive recall of intentionally captured

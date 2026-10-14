@@ -1,16 +1,7 @@
 // @ts-check
 
-// Context-compaction policy + heuristics for the pi-native bridge.
-//
-// The hand-rolled in-loop compaction manager (transformContext/afterToolCall)
-// was retired with the legacy pi-sdk Agent path — the sole pi bridge uses
-// pi-agent-core's AgentHarness, which owns compaction via harness.compact().
-// What remains here are two pure helpers the bridge still consumes:
-//   - resolveAgentCompactionPolicy: derives the context-window compaction
-//     trigger and the tool-output payload limits from typed policies + the running
-//     model. Pure (no Agent loop), so the bridge computes it directly.
-//   - isLikelyContextTermination: classifies a provider error/termination as a
-//     context-pressure event.
+// Pure runtime compaction policy and context-pressure heuristics.
+// The engine owns compaction execution over native session evidence.
 
 /**
  * @typedef {Object} AgentCompactionPolicy

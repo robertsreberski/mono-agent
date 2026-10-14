@@ -7,10 +7,10 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCal
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createRuntime } from "../../runtime.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
-import { preparePiNativeDispatch, generatePiNativeResponse } from "../../ai/providers/pi-native.js";
-import { resolveDurableNativeSessionRepo } from "../../ai/providers/pi-native/session-lifecycle.js";
+import { preparePiNativeDispatch, generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
+import { resolveDurableNativeSessionRepo } from "../../ai/providers/engine-turn/session-lifecycle.js";
 import { refreshProviderSession } from "../../ai/runtime/sessions.js";
-import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData } from "../../ai/providers/pi-native/prepared-dispatch.js";
+import { createPreparedDispatchLease, prepareDispatchAuth, copyDispatchData, freezeDispatchData } from "../../ai/providers/engine-turn/prepared-dispatch.js";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { Type } from "@earendil-works/pi-ai";
 
@@ -208,7 +208,7 @@ it("does not inspect, repair or detach an existing native session during prepara
   const f = await fixture(), handle = "fictional-warm-handle";
   cleanups.push(() => refreshProviderSession(handle));
   f.faux.setResponses([fauxAssistantMessage([fauxText("Earlier fictional reply")])]);
-  expect((await generatePiNativeResponse("Earlier rules", { ...f.options, sessionId: handle, sessionKeepAlive: true })).error).toBeNull();
+  expect((await generateEngineTurnResponse("Earlier rules", { ...f.options, sessionId: handle, sessionKeepAlive: true })).error).toBeNull();
   const repo = resolveDurableNativeSessionRepo(f.root), metadata = (await repo.list())[0], original = await readFile(metadata.path);
   const listed = vi.spyOn(repo, "list"), opened = vi.spyOn(repo, "open"), created = vi.spyOn(repo, "create");
   const lease = await prepare(f, { sessionId: handle, sessionKeepAlive: true }); await lease.close();

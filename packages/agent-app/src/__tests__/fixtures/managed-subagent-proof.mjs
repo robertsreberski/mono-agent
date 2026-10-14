@@ -12,7 +12,7 @@ import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances
 import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent-tool.js";
-import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../../../agent-runtime/src/ai/providers/engine-turn.js";
 import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
@@ -67,7 +67,7 @@ try {
   // process-global configuration seam is gone, so tools read the workspace from it.
   const toolContext = createToolContext({ workspace: root });
   const driver = { configureTools: (next) => updateToolContext(toolContext, { ...next, workspace: root }),
-    run: (prompt, options) => generatePiNativeResponse(prompt, { ...options, toolContext, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
+    run: (prompt, options) => generateEngineTurnResponse(prompt, { ...options, toolContext, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
   };
   runtime = createMonoRuntime({ fallbackChain: [{ model: config.runtime.model }], resolveAttempt: () => ({ runtime: driver }) });
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model },

@@ -1,13 +1,13 @@
 import { SessionStore } from "../../../../engine/dist/session-store.js";
 import { createTurnBinding } from "../../../../engine/dist/turn-evidence.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../ai/providers/engine-turn.js";
 import { it, expect, vi, afterEach } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { produceNativeHandoffSummary } from "../../ai/providers/pi-native/handoff-producer.js";
-import { detachDurableNativeSession, retireDurableNativeSession, resolveDurableNativeSessionRepo, reconcileNativeSessionTurn } from "../../ai/providers/pi-native/session-lifecycle.js";
+import { produceNativeHandoffSummary } from "../../ai/providers/engine-turn/handoff-producer.js";
+import { detachDurableNativeSession, retireDurableNativeSession, resolveDurableNativeSessionRepo, reconcileNativeSessionTurn } from "../../ai/providers/engine-turn/session-lifecycle.js";
 
 const summary = { intent: ["Fictional intent"], constraints: ["No approval"], decisions: [], completedWork: [], failures: [], openWork: ["Verify unknown effects"], nextActions: [], references: [] };
 const prepared = { status: "prepared", older: [], recent: [], ledger: [{ outcome: "unknown" }], coverage: [] };
@@ -59,7 +59,7 @@ it("refuses preserving detach during real native dispatch, then detaches the idl
     return faux.provider.streamSimple(selected, context, options);
   } });
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional complete response")])]);
-  const result = await generatePiNativeResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
+  const result = await generateEngineTurnResponse("Fictional rules", { model: { provider: "detach-fixture", model: "fixture", reference: "detach-fixture:fixture" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "busy-fixture", piSessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
   expect(result.error).toBeNull(); expect(/** @type {any} */ (await attempt).error.code).toBe("ERR_HARNESS_WRITER_BUSY");
@@ -85,7 +85,7 @@ it.each(["find", "create"])("refuses detach during in-flight cold %s before an i
   const spy = vi.spyOn(repo, phase).mockImplementationOnce(async (...args) => { reached(); await gate; return original(...args); });
   const faux = fauxProvider({ provider: "cold-fixture", models: [{ id: "fixture" }] }); const models = createModels(); models.setProvider(faux.provider);
   faux.setResponses([fauxAssistantMessage([fauxText("Fictional cold response")])]);
-  const running = generatePiNativeResponse("Fictional rules", { model: { provider: "cold-fixture", model: "fixture", reference: "cold-fixture:fixture" },
+  const running = generateEngineTurnResponse("Fictional rules", { model: { provider: "cold-fixture", model: "fixture", reference: "cold-fixture:fixture" },
     piResolvedModel: faux.getModel(), piResolvedModels: models, allowedTools: [], effort: "none", sessionId: "cold-fixture", piSessionsRoot: root,
     sessionKeepAlive: true, compaction: { enabled: false }, messages: [{ role: "user", content: "Fictional input" }] });
   try {

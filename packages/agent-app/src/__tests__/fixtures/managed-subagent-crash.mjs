@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { JournalReader } from "../../../../engine/dist/journal-reader.js";
-import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/pi-native/session-salvage.js";
+import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/engine-turn/session-salvage.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
@@ -20,8 +20,7 @@ import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { readProcessIncarnation, processIncarnationsEqual } from "../../../dist/process-incarnation.js";
 import { createAgentTool } from "../../../../agent-runtime/src/agent/tools/agent-tool.js";
-import { generatePiNativeResponse } from "../../../../agent-runtime/src/ai/providers/pi-native.js";
-import { createToolContext, updateToolContext } from "../../../../agent-runtime/src/agent/tools/shared/tool-context.js";
+import { createRuntime } from "../../../../agent-runtime/src/runtime.js";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from "../../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { keepVerificationScratch, pruneVerificationScratch, removeVerificationScratch } from "./verification-scratch.mjs";
 
@@ -132,11 +131,10 @@ async function owner(root, scenario) {
   const config = await loadMonoAgentConfig({ cwd: root, jsonPath: configPath });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
-  // The driver owns one explicit tool context for this fixture run: the retired
-  // process-global configuration seam is gone, so tools read the workspace from it.
-  const toolContext = createToolContext({ workspace: root });
-  const driver = { configureTools: (next) => updateToolContext(toolContext, { ...next, workspace: root }),
-    run: (prompt, options) => generatePiNativeResponse(prompt, { ...options, toolContext, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
+  // Dispatch through createRuntime; configureTools owns the per-instance workspace.
+  const engine = createRuntime({ workspace: root });
+  const driver = { configureTools: (next) => engine.configureTools({ ...next, workspace: root }),
+    run: (prompt, options) => engine.run(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),
   };
   const runtime = createMonoRuntime({ fallbackChain: [{ model: config.runtime.model }], resolveAttempt: () => ({ runtime: driver }) });
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "crash", instances: f.instances }).subagents;

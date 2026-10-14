@@ -25,7 +25,7 @@
 
 // @ts-check
 
-import { resolveRuntimeBridge } from "./ai/runtime/registry.js";
+import { assertEngineTurnModelRef } from "./ai/providers/engine-turn/model-ref.js";
 import { createObserverHub } from "./ai/observer.js";
 import {
   disposeAllProviderSessions,
@@ -36,11 +36,11 @@ import {
 } from "./ai/runtime/sessions.js";
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
-import { recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
-import { salvageDurableNativeSession } from "./ai/providers/pi-native/session-salvage.js";
+import { recoverDurableNativeSession, reconcileNativeSessionTurn, retireDurableNativeSession } from "./ai/providers/engine-turn/session-lifecycle.js";
+import { salvageDurableNativeSession } from "./ai/providers/engine-turn/session-salvage.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
-import { snapshotNativeDispatchOptions } from "./ai/providers/pi-native/prepared-dispatch.js";
+import { snapshotNativeDispatchOptions } from "./ai/providers/engine-turn/prepared-dispatch.js";
 import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
 
 /**
@@ -206,7 +206,8 @@ export function createRuntime(host = {}) {
     if (!options.model) throw new Error("createRuntime.run requires options.model");
     const capturedToolContext = prepare ? snapshotNativeDispatchOptions({ toolContext }).toolContext : toolContext;
     const webSearchState = createWebSearchRunState(options.webSearchConfig, options.webSearchState);
-    const bridge = await resolveRuntimeBridge(options.model);
+    assertEngineTurnModelRef(options.model);
+    const { engineTurnAdapter: bridge, preparePiNativeDispatch } = await import("./ai/providers/engine-turn.js");
     const callObservers = Array.isArray(options.observers) ? options.observers : [];
     const hub = createObserverHub({
       observers: [...hostObservers, ...callObservers],
@@ -267,7 +268,6 @@ export function createRuntime(host = {}) {
     const flush = () => flushed ??= (async () => { await lifecycleGate.flush(); await hub.flush(); })();
     if (prepare) {
       try {
-        const { preparePiNativeDispatch } = await import("./ai/providers/pi-native.js");
         return await preparePiNativeDispatch(systemPrompt, request, flush);
       } catch (error) { await flush(); throw error; }
     }

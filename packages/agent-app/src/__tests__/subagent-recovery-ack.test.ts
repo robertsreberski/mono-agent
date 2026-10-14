@@ -9,7 +9,7 @@ import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 // @ts-expect-error Private kernel tool boundary.
 import { createAgentManageTool } from "../../../agent-runtime/src/agent/tools/agent-manage-tool.js";
 // @ts-expect-error Real native engine; only provider transport is fake.
-import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
+import { generateEngineTurnResponse } from "../../../agent-runtime/src/ai/providers/engine-turn.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { acquireContinuationStoreLock } from "../continuation-store-fs.js";
 import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
@@ -54,7 +54,7 @@ it.each(["detached", "foreground", "registry", "read", "write", "parse"])("G11: 
     const models = createModels(); models.setProvider(faux.provider); let input: any;
     faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentManage", request)]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("No continuation was started.")]); }]);
-    const result = await generatePiNativeResponse("Use AgentManage once, do not retry refusal.", { model, cwd: f.root,
+    const result = await generateEngineTurnResponse("Use AgentManage once, do not retry refusal.", { model, cwd: f.root,
       sessionId: "privacy-parent", sessionKeepAlive: true, piSessionsRoot: resolve(f.root, "parent-sessions"),
       messages: [{ role: "user", content: "Attempt the explicit acknowledgement once." }], allowedTools: ["Agent", "AgentManage"], subagents,
       piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
@@ -93,7 +93,7 @@ it("G11: abandoned foreground lock I/O failure is path-free at the real Pi Agent
     const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined }); const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentManage", { id: spec.id, inspect: true })]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
-    const result = await generatePiNativeResponse("Inspect once.", { model, cwd: f.root, sessionId: "abandoned-privacy", sessionKeepAlive: true,
+    const result = await generateEngineTurnResponse("Inspect once.", { model, cwd: f.root, sessionId: "abandoned-privacy", sessionKeepAlive: true,
       piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Inspect." }], allowedTools: ["Agent", "AgentManage"],
       subagents: { instances: f.handle, run, backgroundSubagentController: { startInternal } }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key);
@@ -111,7 +111,7 @@ it("G11: required session retirement failure is path-free at the real Pi Agent b
     const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined }); const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage([fauxToolCall("Agent", { name: "helper", persist: true, id: spec.id, prompt: "Continue once." })]),
       (value: any) => { input = value; return fauxAssistantMessage([fauxText("Unavailable.")]); }]);
-    const result = await generatePiNativeResponse("Create once.", { model, cwd: f.root, sessionId: "retirement-privacy", sessionKeepAlive: true,
+    const result = await generateEngineTurnResponse("Create once.", { model, cwd: f.root, sessionId: "retirement-privacy", sessionKeepAlive: true,
       piSessionsRoot: resolve(f.root, "parent-sessions"), messages: [{ role: "user", content: "Create." }], allowedTools: ["Agent", "AgentManage"],
       subagents: { instances: f.handle, definitions: [spec.definition], run }, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
     expect(result.error).toBeFalsy(); expect(JSON.stringify(input)).toContain("subagent_owner_unavailable");

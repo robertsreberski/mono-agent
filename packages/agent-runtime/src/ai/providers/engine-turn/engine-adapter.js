@@ -1,6 +1,5 @@
 // @ts-check
-// Compatibility boundary between mono-agent's Pi-native bridge and the
-// mono-owned harness built on the pinned Pi agent loop.
+// Runtime integration for the mono-agent engine over the pinned Pi loop.
 
 import { createRunDriver } from "@mono-agent/engine";
 

@@ -1,52 +1,7 @@
 // @ts-check
-// Mid-run context compaction for the pi-native bridge.
-//
-// WHY: the bridge used to check the compaction trigger exactly once per run,
-// before `harness.prompt()`. Inside one long prompt, tool results and repeated
-// model turns then grew the request without limit until the run ended or the
-// provider overflowed. For the Codex models the declared 272,000-token window is
-// a PRICE step (above it the whole request bills at 2x input/cache and 1.5x
-// output), so drifting across it mid-run is a real cost event, not only a
-// robustness problem. The trigger itself is unchanged; this module only makes
-// the existing trigger observable BETWEEN completed model/tool rounds.
-//
-// MECHANISM (validated against @earendil-works/pi-agent-core 0.87.0 in
-// node_modules, citations are to its `dist/`):
-//
-//   * Pi already evaluates compaction at every durable run boundary:
-//     `runCheckpoint` calls `prepareCompactionThreshold`, and when the lane's
-//     captured compaction settings are enabled and `shouldCompact()` is true it
-//     schedules a `reason: "threshold"` structural task whose boundary is
-//     `resume_checkpoint` — i.e. the run CONTINUES afterwards
-//     (harness/runtime/drive/checkpoint.js:59-108,
-//     harness/runtime/drive/structural.js:836-870,
-//     harness/runtime/drive/structural.js:224-283).
-//   * That checkpoint is only reached once a whole tool batch is complete
-//     (harness/runtime/drive/tool-placement.js:132-160 `complete`), so a
-//     compaction can never cut across an unfinished tool call, and it is
-//     evaluated once per round rather than per tool result.
-//   * The decision point is Pi's `before_compaction` hook, which is AWAITED and
-//     resolved first-wins (harness/hooks.js:235-254 `firstStructural`,
-//     harness/runtime/drive/structural.js:492-511). Returning `{compaction}`
-//     makes Pi commit OUR summary (`fromHook: true`), returning `{decline}` for
-//     a threshold task simply resumes the run. Returning `undefined` would hand
-//     the compaction to Pi's own summariser, so we never do.
-//   * `lane.compact()` (manual compaction) is NOT usable here: it rejects with
-//     `LaneBusy` while an operation is active
-//     (harness/runtime/lane.js:481-493 `acceptCompaction`).
-//   * The compaction runs inside the SAME operation as the prompt (same runId),
-//     so the admitted prompt operation id and the live-input epoch are
-//     untouched: no second `run_start`, no queued steer consumed, no new user
-//     message.
-//   * Compaction settings are captured into the operation state at accept time
-//     (harness/runtime/lane.js:52-59 `capturedSettings`, :443-448), so they must
-//     be armed BEFORE `harness.prompt()` and cannot be flipped mid-flight.
-//
-// COST: every attempt that gets past the guards pays for a summary request, so
-// the guards below are deliberately strict — one attempt in flight, at most one
-// evaluation per completed round, a re-check of the real trigger before paying,
-// and required fresh assistant progress plus meaningful growth after any
-// previous attempt.
+// Arm the engine driver to evaluate compaction between completed model/tool
+// rounds. Runtime owns trigger policy, billing headroom and savings guards;
+// the engine owns checkpoint preparation and durable placement.
 
 import { randomUUID } from "node:crypto";
 import { estimateTokens, shouldCompact } from "@mono-agent/engine";
@@ -134,7 +89,7 @@ function piThresholdWindow(harness) {
  * The retained tail is a contiguous SUFFIX of the pre-compaction context (Pi
  * builds it from the same branch path — harness/compaction/compaction.js:
  * 457-462), and the rebuilt context is exactly `[summary, ...retainedTail]`
- * (harness-adapter.js projectContext), so the run-owned messages that
+ * (engine-adapter.js projectContext), so the run-owned messages that
  * survive are the last `min(retained, runOwned)` of them.
  * @param {Array<any>} contextBefore
  * @param {number} baseline

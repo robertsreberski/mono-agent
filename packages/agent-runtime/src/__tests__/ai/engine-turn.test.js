@@ -1,6 +1,6 @@
 // Pi-native AgentHarness bridge integration.
 //
-// Drives generatePiNativeResponse end-to-end through pi-ai's own `fauxProvider`:
+// Drives generateEngineTurnResponse end-to-end through pi-ai's own `fauxProvider`:
 // a real provider is added to a `Models` collection, so the REAL AgentHarness +
 // REAL `streamSimple` dispatch run with scripted assistant responses and no
 // network/API key. This exercises the production harness path while keeping the
@@ -31,18 +31,18 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createDynamicCredentialStore,
-  generatePiNativeResponse,
+  generateEngineTurnResponse,
   resolvePiToolExecutionMode,
   splitPromptMessages,
-} from "../../ai/providers/pi-native.js";
-import { createHarnessAdapter } from "../../ai/providers/pi-native/harness-adapter.js";
+} from "../../ai/providers/engine-turn.js";
+import { createHarnessAdapter } from "../../ai/providers/engine-turn/engine-adapter.js";
 import { createPiSessionAdapter } from "../../../../engine/dist/session-adapter.js";
 import { ENGINE_CONTEXT } from "@mono-agent/engine";
-import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
+import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/engine-turn/result-builder.js";
 import {
   createLiveInputPromptEpoch,
   startLiveInput,
-} from "../../ai/providers/pi-native/turn-runner.js";
+} from "../../ai/providers/engine-turn/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
 import { refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
@@ -668,7 +668,7 @@ describe("pi-native AgentHarness bridge", () => {
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
 
   it("classifies a configured Pi provider with no resolved credential as provider_auth", async () => {
-    const result = await generatePiNativeResponse("system", {
+    const result = await generateEngineTurnResponse("system", {
       model: {
         provider: "openai-codex",
         model: "gpt-5.6-sol",
@@ -695,7 +695,7 @@ describe("pi-native AgentHarness bridge", () => {
     // a ambient OPENCODE_API_KEY can never turn this into a live request.
     vi.stubEnv("OPENCODE_API_KEY", "");
     try {
-      const result = await generatePiNativeResponse("system", {
+      const result = await generateEngineTurnResponse("system", {
         model: {
           provider: "opencode-go",
           model: "deepseek-v4.1-flash",
@@ -729,7 +729,7 @@ describe("pi-native AgentHarness bridge", () => {
     // first missing required setting.
     // Stored credentials are also disabled by the null resolver below.
     const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };
-    const result = await generatePiNativeResponse("system", {
+    const result = await generateEngineTurnResponse("system", {
       model: { provider, model, reference: `${provider}:${model}` },
       messages: [{ role: "user", content: "hello" }],
       effort,
@@ -762,11 +762,11 @@ describe("pi-native AgentHarness bridge", () => {
       },
     ]);
 
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       providerAttributionSessionId: "conversation-epoch",
       messages: [{ role: "user", content: "first" }],
     }));
-    const second = await generatePiNativeResponse("system", runOptions(model, {
+    const second = await generateEngineTurnResponse("system", runOptions(model, {
       providerAttributionSessionId: "conversation-epoch",
       messages: [{ role: "user", content: "second" }],
     }));
@@ -793,10 +793,10 @@ describe("pi-native AgentHarness bridge", () => {
       },
     ]);
 
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "first" }],
     }));
-    const second = await generatePiNativeResponse("system", runOptions(model, {
+    const second = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "second" }],
     }));
 
@@ -817,7 +817,7 @@ describe("pi-native AgentHarness bridge", () => {
     };
     faux.setResponses([fauxAssistantMessage([fauxText("max response")])]);
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       effort: "max",
       messages: [{ role: "user", content: "use native max" }],
       resolvePiApiKey: async () => "faux-key",
@@ -840,7 +840,7 @@ describe("pi-native AgentHarness bridge", () => {
     faux.setResponses([fauxAssistantMessage([fauxText("done")])]);
     const onEvent = vi.fn();
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "report effort" }],
       effort,
       onEvent,
@@ -864,7 +864,7 @@ describe("pi-native AgentHarness bridge", () => {
     ]);
     const onEvent = vi.fn();
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "say hi" }],
       effort: "medium",
       onEvent,
@@ -926,7 +926,7 @@ describe("pi-native AgentHarness bridge", () => {
     faux.setResponses([fauxAssistantMessage([fauxText("current reply")])]);
     const onEvent = vi.fn();
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [
         { role: "user", content: "prior turn" },
         { role: "assistant", content: "prior reply" },
@@ -981,7 +981,7 @@ describe("pi-native AgentHarness bridge", () => {
       return originalStreamSimple(requestModel, context, options);
     };
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "say hi" }],
       piTransport: "sse",
     }));
@@ -1006,7 +1006,7 @@ describe("pi-native AgentHarness bridge", () => {
       },
     ]);
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [
         {
           role: "user",
@@ -1038,7 +1038,7 @@ describe("pi-native AgentHarness bridge", () => {
       ]);
       const onEvent = vi.fn();
 
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Read"],
         messages: [{ role: "user", content: "read the notes" }],
@@ -1118,7 +1118,7 @@ describe("pi-native AgentHarness bridge", () => {
         yield { id: "steer-1", body: "Also mention the deadline.", accepted, acknowledge, uncertain, reject };
       })();
 
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Read"],
         messages: [{ role: "user", content: "read the notes" }],
@@ -1170,7 +1170,7 @@ describe("pi-native AgentHarness bridge", () => {
       yield { id: "input-1", body: "New instruction", accepted: releaseFirst, acknowledge,
         uncertain: releaseFirst };
     })();
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check" }],
       allowedTools: ["Read", "FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1194,7 +1194,7 @@ describe("pi-native AgentHarness bridge", () => {
       ]);
       const onEvent = vi.fn();
 
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Bash"],
         messages: [{ role: "user", content: "run both" }],
@@ -1248,7 +1248,7 @@ describe("pi-native AgentHarness bridge", () => {
       ]);
       const onEvent = vi.fn();
 
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["NodeRepl"],
         messages: [{ role: "user", content: "calculate in Node" }],
@@ -1281,7 +1281,7 @@ describe("pi-native AgentHarness bridge", () => {
       ]);
       const onEvent = vi.fn();
 
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Write"],
         messages: [{ role: "user", content: "write the notes" }],
@@ -1321,7 +1321,7 @@ describe("pi-native AgentHarness bridge", () => {
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const onEvent = vi.fn();
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       // A stdio child that exits immediately fails the MCP handshake ("Connection closed"),
       // mirroring the adapter-send -32000 flake that was previously invisible in the run summary.
@@ -1356,7 +1356,7 @@ describe("pi-native AgentHarness bridge", () => {
     const closeSpy = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
     const onEvent = vi.fn();
     try {
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "try it" }],
         mcpServers: { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         onEvent,
@@ -1389,7 +1389,7 @@ describe("pi-native AgentHarness bridge", () => {
       fauxAssistantMessage([fauxText("final")]),
     ]);
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "give structured output" }],
       outputSchema: {
         type: "object",
@@ -1410,7 +1410,7 @@ describe("pi-native AgentHarness bridge", () => {
       fauxAssistantMessage([fauxToolCall("StructuredOutput", { answer: 42 }, { id: "so-max-one" })]),
     ]);
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "give structured output" }],
       maxTurns: 1,
       outputSchema: {
@@ -1433,7 +1433,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("certifies a sole terminal FinishSilently call at the max-turn ceiling", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })])]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check the scheduled job" }],
       allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1469,7 +1469,7 @@ describe("pi-native AgentHarness bridge", () => {
         ]),
         fauxAssistantMessage([fauxText("Visible answer")]),
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Check" }],
         allowedTools: ["FinishSilently", "WebFetch"],
         toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1487,7 +1487,7 @@ describe("pi-native AgentHarness bridge", () => {
       exposedTools = getCurrentTools(context.messages).map((tool) => tool.name);
       return fauxAssistantMessage([fauxText("Visible answer")]);
     }]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Hello" }],
       allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1504,7 +1504,7 @@ describe("pi-native AgentHarness bridge", () => {
       [fauxToolCall("FinishSilently", {}, { id: "silent-mixed" }), fauxToolCall("Read", { file_path: "unused" }, { id: "read-mixed" })],
     ]) {
       faux.setResponses([fauxAssistantMessage(content), fauxAssistantMessage([fauxText("Visible answer")])]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Check" }],
         allowedTools: ["FinishSilently", "Read"],
         toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1527,7 +1527,7 @@ describe("pi-native AgentHarness bridge", () => {
       ]),
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-accepted" })]),
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check" }],
       allowedTools: ["Read", "FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1554,7 +1554,7 @@ describe("pi-native AgentHarness bridge", () => {
         () => { requests++; return fauxAssistantMessage([]); },
         (context) => { requests++; retryContext = structuredClone(context); return fauxAssistantMessage(reply ? [fauxText(reply)] : [fauxThinking("Still private")]); },
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Draft an email" }],
         toolContext: createToolContext({ workspace: sessionsRoot }),
         mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
@@ -1588,7 +1588,7 @@ describe("pi-native AgentHarness bridge", () => {
       kind === "provider failure" ? { stopReason: "error", errorMessage: "Provider unavailable" }
         : kind === "max turns" ? { stopReason: "toolUse" } : {});
     }]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Draft an email" }],
       abortSignal: controller.signal,
       ...(kind === "max turns" ? { maxTurns: 1, allowedTools: ["Read"], toolContext: createToolContext({ workspace: sessionsRoot }) } : {}),
@@ -1610,7 +1610,7 @@ describe("pi-native AgentHarness bridge", () => {
       () => { requests++; return fauxAssistantMessage([]); },
       () => { requests++; controller.abort(); return fauxAssistantMessage([]); },
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Draft an email" }], abortSignal: controller.signal,
     }));
     expect(requests).toBe(2);
@@ -1624,7 +1624,7 @@ describe("pi-native AgentHarness bridge", () => {
       fauxAssistantMessage([]),
       fauxAssistantMessage([], { stopReason: "error", errorMessage: "Finalization provider unavailable" }),
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Draft an email" }],
     }));
     expect(result.error).toContain("Finalization provider unavailable");
@@ -1644,7 +1644,7 @@ describe("pi-native AgentHarness bridge", () => {
         fauxAssistantMessage([fauxText("Approve option A"), fauxToolCall("SuggestReplies", {}, { id: "choices-1" })]),
         fauxAssistantMessage(finalText ? [fauxText(finalText)] : []),
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Compare the options" }],
         toolContext: createToolContext({ workspace: sessionsRoot }),
         mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
@@ -1668,7 +1668,7 @@ describe("pi-native AgentHarness bridge", () => {
         fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silence-after-file" })]),
         fauxAssistantMessage([fauxText("Visible answer")]),
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "Check" }],
         allowedTools: ["FinishSilently"],
         toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1699,7 +1699,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("never certifies silence on runtime failure or cancellation", async () => {
     const model = setup();
     faux.setResponses([() => { throw new Error("Provider unavailable"); }]);
-    const failed = await generatePiNativeResponse("system", runOptions(model, {
+    const failed = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check" }],
       allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1709,7 +1709,7 @@ describe("pi-native AgentHarness bridge", () => {
     expect(failed.turnDisposition).toBeUndefined();
 
     const controller = new AbortController(); controller.abort();
-    const cancelled = await generatePiNativeResponse("system", runOptions(model, {
+    const cancelled = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check" }],
       allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1726,7 +1726,7 @@ describe("pi-native AgentHarness bridge", () => {
       fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-denied" })]),
       fauxAssistantMessage([fauxText("Visible answer")]),
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "Check" }],
       allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
@@ -1748,7 +1748,7 @@ describe("pi-native AgentHarness bridge", () => {
       },
     ]);
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       piMaxRetries: 4,
     }));
@@ -1764,7 +1764,7 @@ describe("pi-native AgentHarness bridge", () => {
       () => { throw new Error("boom provider failure"); },
     ]);
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       onEvent,
     }));
@@ -1783,7 +1783,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("distinguishes successful measured cache zeros from absent failed usage", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
     expect(result.usage).toMatchObject({
@@ -1797,7 +1797,7 @@ describe("pi-native AgentHarness bridge", () => {
     const model = setup();
     const failed = fauxAssistantMessage([], { stopReason: "error", errorMessage: "partial failure" });
     faux.setResponses([failed]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
     expect(result.error).toBe("partial failure");
@@ -1810,7 +1810,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("resumes a durable session and seeds the next run with the prior transcript", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
-    const first = await generatePiNativeResponse("system", runOptions(model, {
+    const first = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-1" }],
       sessionKeepAlive: true,
       piSessionsRoot: sessionsRoot,
@@ -1827,7 +1827,7 @@ describe("pi-native AgentHarness bridge", () => {
         return fauxAssistantMessage([fauxText("reply-2")]);
       },
     ]);
-    const second = await generatePiNativeResponse("system", runOptions(model, {
+    const second = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "turn-2" }],
       sessionKeepAlive: true,
       sessionId: first.providerSessionId,
@@ -1859,7 +1859,7 @@ describe("pi-native AgentHarness bridge", () => {
     faux.setResponses([
       () => { invoked = true; return fauxAssistantMessage([fauxText("never")]); },
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       sessionId: "no-such-native-session",
     }));
@@ -1877,7 +1877,7 @@ describe("pi-native AgentHarness bridge", () => {
     ]);
     const controller = new AbortController();
     controller.abort();
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       abortSignal: controller.signal,
     }));
@@ -1911,7 +1911,7 @@ describe("pi-native AgentHarness bridge", () => {
       removeEventListener() {},
     };
 
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       abortSignal: signal,
     }));
@@ -1935,7 +1935,7 @@ describe("pi-native AgentHarness bridge", () => {
         fauxAssistantMessage([fauxText("done")]),
       ]);
       const onEvent = vi.fn();
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Grep"],
         messages: [{ role: "user", content: "search" }],
@@ -1961,7 +1961,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("reports context_compaction_applied as false when enabled but not triggered", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
     expect(result.error).toBeNull();
@@ -1972,7 +1972,7 @@ describe("pi-native AgentHarness bridge", () => {
   it("reports context_compaction_applied as null when disabled via typed policy", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       compaction: { enabled: false },
     }));
@@ -1995,7 +1995,7 @@ describe("pi-native typed policy objects", () => {
         fauxAssistantMessage([fauxText("done")]),
       ]);
       const onEvent = vi.fn();
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Grep"],
         messages: [{ role: "user", content: "search" }],
@@ -2033,7 +2033,7 @@ describe("pi-native typed policy objects", () => {
         },
         fauxAssistantMessage([fauxText("done")]),
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root, toolContext: createToolContext({ workspace: root }), allowedTools: ["Bash", "Exec"],
         messages: [{ role: "user", content: "run" }],
         ...(bashTimeoutMs === undefined ? {} : { toolLimits: { bashTimeoutMs } }),
@@ -2079,7 +2079,7 @@ describe("pi-native typed policy objects", () => {
   it("honors a typed compaction policy object (enabled:false -> context_compaction_applied null)", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
-    const result = await generatePiNativeResponse("system", runOptions(model, {
+    const result = await generateEngineTurnResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       compaction: { enabled: false },
     }));
@@ -2108,7 +2108,7 @@ describe("pi-native typed policy objects", () => {
         fauxAssistantMessage([fauxToolCall("Bash", { command: "echo hi", workdir: root }, { id: "b-1" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Bash"],
         messages: [{ role: "user", content: "run it" }],
@@ -2151,7 +2151,7 @@ describe("pi-native typed policy objects", () => {
         }, { id: "b-spill" })]),
         fauxAssistantMessage([fauxText("done")]),
       ]);
-      const result = await generatePiNativeResponse("system", runOptions(model, {
+      const result = await generateEngineTurnResponse("system", runOptions(model, {
         cwd: root,
         allowedTools: ["Bash"],
         messages: [{ role: "user", content: "run it" }],
@@ -2204,7 +2204,7 @@ describe("pi-native auto-compaction", () => {
       () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]); },
       fauxAssistantMessage([fauxText("done")]),
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(base, {
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       model: { provider: "faux", model: "proactive", reference: "faux:proactive" },
       messages: bigHistory(60, 2000),
@@ -2227,7 +2227,7 @@ describe("pi-native auto-compaction", () => {
       summaryContext = context;
       return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]);
     }]);
-    const result = await generatePiNativeResponse("HOST-PLACEHOLDER-PROMPT", runOptions(base, {
+    const result = await generateEngineTurnResponse("HOST-PLACEHOLDER-PROMPT", runOptions(base, {
       manualCompaction: true,
       piResolvedModel: { ...base, contextWindow: 128_000 },
       model: { provider: "faux", model: "manual", reference: "faux:manual" },
@@ -2249,7 +2249,7 @@ describe("pi-native auto-compaction", () => {
     const id = "d".repeat(64);
     const history = bigHistory(60, 2000);
     faux.setResponses([fauxAssistantMessage([fauxText("SUMMARY durable cut")])]);
-    const compacted = await generatePiNativeResponse("system", runOptions(base, {
+    const compacted = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true, messages: history, sessionId: id, providerSessionId: id,
       sessionKeepAlive: true, piSessionsRoot: sessionsRoot,
       resolvePiApiKey: async () => "faux-key",
@@ -2262,7 +2262,7 @@ describe("pi-native auto-compaction", () => {
       resumedContext = context;
       return fauxAssistantMessage([fauxText("continued")]);
     }]);
-    const reply = await generatePiNativeResponse("system", runOptions(base, {
+    const reply = await generateEngineTurnResponse("system", runOptions(base, {
       messages: [...history, { role: "user", content: "after-cut" }],
       sessionId: id, providerSessionId: id, sessionKeepAlive: true,
       piSessionsRoot: sessionsRoot, resolvePiApiKey: async () => "faux-key",
@@ -2283,7 +2283,7 @@ describe("pi-native auto-compaction", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return fauxAssistantMessage([fauxText("SUMMARY too late")]);
     }]);
-    const result = await generatePiNativeResponse("system", runOptions(base, {
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true,
       messages: bigHistory(60, 2000),
       abortSignal: controller.signal,
@@ -2297,7 +2297,7 @@ describe("pi-native auto-compaction", () => {
   it("does not answer a user turn when a manual summary fails or there is nothing to cut", async () => {
     const base = setup();
     faux.setResponses([]);
-    const skipped = await generatePiNativeResponse("system", runOptions(base, {
+    const skipped = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true,
       messages: [{ role: "user", content: "short" }],
       resolvePiApiKey: async () => "faux-key",
@@ -2305,7 +2305,7 @@ describe("pi-native auto-compaction", () => {
     expect(skipped.manualCompaction).toMatchObject({ status: "skipped" });
     expect(skipped.manualCompaction.reason).toBe("nothing_to_compact");
     faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "summary failed" })]);
-    const failed = await generatePiNativeResponse("system", runOptions(base, {
+    const failed = await generateEngineTurnResponse("system", runOptions(base, {
       manualCompaction: true,
       messages: bigHistory(60, 2000),
       resolvePiApiKey: async () => "faux-key",
@@ -2329,7 +2329,7 @@ describe("pi-native auto-compaction", () => {
       },
     ]);
 
-    const result = await generatePiNativeResponse("system", runOptions(base, {
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       providerAttributionSessionId: "compaction-epoch",
       messages: bigHistory(60, 2000),
@@ -2354,7 +2354,7 @@ describe("pi-native auto-compaction", () => {
       () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY")]); },
       fauxAssistantMessage([fauxText("recovered")]),
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(base, {
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       model: { provider: "faux", model: "reactive", reference: "faux:reactive" },
       messages: bigHistory(60, 2000),
@@ -2379,7 +2379,7 @@ describe("pi-native auto-compaction", () => {
       () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(base, {
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       model: { provider: "faux", model: "guard", reference: "faux:guard" },
       messages: bigHistory(60, 2000),
@@ -2404,7 +2404,7 @@ describe("pi-native auto-compaction", () => {
       () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
     ]);
-    const result = await generatePiNativeResponse("system", runOptions(base, {
+    const result = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       model: { provider: "faux", model: "loop", reference: "faux:loop" },
       messages: bigHistory(60, 2000),
@@ -2431,7 +2431,7 @@ describe("pi-native auto-compaction", () => {
       fauxAssistantMessage([fauxText("SUMMARY")]),
       fauxAssistantMessage([fauxText("recovered-1")]),
     ]);
-    const run1 = await generatePiNativeResponse("system", runOptions(base, {
+    const run1 = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       model: runRef,
       messages: bigHistory(60, 2000),
@@ -2448,7 +2448,7 @@ describe("pi-native auto-compaction", () => {
       fauxAssistantMessage([fauxText("SUMMARY")]),
       fauxAssistantMessage([fauxText("done-2")]),
     ]);
-    const run2 = await generatePiNativeResponse("system", runOptions(base, {
+    const run2 = await generateEngineTurnResponse("system", runOptions(base, {
       piResolvedModel: windowed,
       model: runRef,
       messages: bigHistory(110, 2000),
@@ -2495,7 +2495,7 @@ describe("pi-native auto-compaction", () => {
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("done")]); },
     ]);
-    const result = await generatePiNativeResponse(bigSystemPrompt, runOptions(base, {
+    const result = await generateEngineTurnResponse(bigSystemPrompt, runOptions(base, {
       piResolvedModel: windowed,
       model: { provider: "faux", model: "overhead-on", reference: "faux:overhead-on" },
       messages,
@@ -2534,7 +2534,7 @@ describe("pi-native auto-compaction", () => {
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("turn-output")]); },
       () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
     ]);
-    const result = await generatePiNativeResponse(bigSystemPrompt, runOptions(base, {
+    const result = await generateEngineTurnResponse(bigSystemPrompt, runOptions(base, {
       piResolvedModel: windowed,
       model: { provider: "faux", model: "overhead-off", reference: "faux:overhead-off" },
       messages,

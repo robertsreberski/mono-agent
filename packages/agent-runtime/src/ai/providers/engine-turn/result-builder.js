@@ -1,7 +1,7 @@
 // @ts-check
 // Result assembly for the pi-native bridge.
 //
-// Pure moves out of pi-native.js: usage aggregation, the usage/cost/capabilities
+// Pure moves out of engine-turn.js: usage aggregation, the usage/cost/capabilities
 // event emission, the failure-kind classifier, and the success / error / aborted
 // result-object factories. No session or run state lives here — every builder
 // takes its inputs explicitly and returns the verbatim runtime-result contract
@@ -19,7 +19,7 @@ import { structuredOutputRetryDiagnostics } from "./structured-output.js";
  * `carried` seeds the accumulator with usage this run already produced but that
  * a mid-run compaction has since summarized out of the transcript: those tokens
  * were billed and are still this run's, so dropping them would under-report the
- * run (see pi-native/mid-run-compaction.js).
+ * run (see engine-turn/mid-run-compaction.js).
  * @param {Array<any>} [messages]
  * @param {{input?: number, output?: number, cacheRead?: number, cacheWrite?: number, cost?: number}|null} [carried]
  * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
-import { buildTurnTools, thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner.js";
+import { buildTurnTools, thinkingLevelForEffort } from "../../ai/providers/engine-turn/turn-runner.js";
 
 describe("thinkingLevelForEffort", () => {
   it("keeps the documented ultra mapping specific to reasoning-capable Pi models", () => {
