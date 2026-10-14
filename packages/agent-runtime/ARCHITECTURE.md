@@ -76,8 +76,8 @@ Capability metadata remains available without loading provider code.
 flowchart LR
   AuthoredRef["provider:model string"] --> Parse["parseRuntimeModelReference()"]
   Parse --> ModelRef["options.model: RuntimeModelRef"]
-  ModelRef --> Resolve["resolveRuntimeBridge(): validate reference"]
-  Resolve --> Pi["pi-native.js: AgentHarness"]
+  ModelRef --> Resolve["Lazy engine adapter: validate reference"]
+  Resolve --> Pi["engine-turn.js: engine run driver"]
   Pi --> Provider["Pi provider catalog"]
   Caps["runtimeCapabilities()"] --> Used["capabilitiesUsed: observed features"]
 ```
@@ -150,8 +150,8 @@ sequenceDiagram
   participant Observer as Observer hub
 
   Host->>Runtime: run(systemPrompt, options)
-  Runtime->>Registry: resolveRuntimeBridge(model)
-  Registry-->>Runtime: bridge.execute()
+  Runtime->>AdapterModule: lazy import; validate model
+  AdapterModule-->>Runtime: engineTurnAdapter
   Runtime->>Observer: create hub from host + call observers
   Runtime->>Bridge: execute(systemPrompt, normalized options)
 
@@ -200,7 +200,7 @@ flowchart TB
   RuntimeFactory --> Registry["ai/runtime/registry.js"]
   Registry --> Providers["ai/providers/*"]
 
-  Providers --> Pi["pi-native.js<br/>pi-models/messages/events"]
+  Providers --> Pi["engine-turn.js<br/>pi-models/messages/events"]
 
   AgentExports --> Tools["agent/tools/*"]
   Tools --> ToolContext["shared/tool-context.js<br/>per-instance ToolContext<br/>workspace, repoRoot, rg, sandbox, brand"]
@@ -239,7 +239,7 @@ Key responsibilities by subsystem:
 - `agent/compaction.js`: derives adaptive compaction budgets and clamped output
   limits directly from typed `toolLimits` / `compaction` inputs and the model;
   estimates fixed request overhead and classifies context-pressure errors. Pi
-  drives proactive compaction and reactive recovery through `AgentHarness.compact()`.
+  drives proactive compaction and reactive recovery through `engine driver compact()`.
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval
@@ -324,7 +324,7 @@ meaningful transcript growth after a mid-run cut restores eligibility. Runs repo
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 
-`ai/providers/pi-native/compaction-summary.js` prepares copies for the attributed harness
+`ai/providers/engine-turn/compaction-summary.js` prepares copies for the attributed harness
 `compact()`: bounded tool-result heads/tails, confirmed built-in file operations,
 and supplemental summary focus. Its model facade changes only summary context;
 model, options, request context and other model methods are forwarded. Each

@@ -18,6 +18,15 @@ the configuration schema.
 
 ## Unreleased mono-agent engine
 
+
+The canonical adapter API is `resolveEngineTurnAdapter`,
+`generateEngineTurnResponse` and `engineTurnAdapter`. The old exports
+`resolveRuntimeBridge`, `generatePiNativeResponse` and `piNativeRuntimeBridge`
+remain identity-preserving deprecated aliases at the root and AI entrypoints,
+without runtime warnings. Runtime dispatch lazily loads the adapter directly;
+the optional resolver shares the same malformed-reference validation. Config,
+wire identifiers and the `"pi"` adapter id are unchanged.
+
 The runtime exact-pins Pi AI at `1.0.1`; `@mono-agent/engine` exact-pins
 Pi AI and Pi Agent Core at `1.0.1` (the terminal TUI renderer is retired, so no
 Pi TUI pin remains). Pi Core removed its high-level
@@ -100,7 +109,7 @@ binaries against the same root.
   on every filesystem, shell, web, or MCP call. Missing execution context fails
   closed. Read brand fields from your context or pass `runtimeBrand` explicitly
   to stateless formatting helpers.
-- `resolveRuntimeBridge(model)` directly loads Pi after validation. The optional
+- `resolveEngineTurnAdapter(model)` directly loads Pi after validation. The optional
   unused resolver-options parameter and internal `BridgeSpec` type are removed;
   `listRuntimeBridges()` retains the sole Pi descriptor.
 
@@ -596,7 +605,7 @@ This baseline carries the whole 0.15.x contract forward and adds:
 The compatibility entrypoints `./ai/backend.js` and `./ai/registry.js` were
 removed after repository-wide reachability checks found no supported caller.
 The old `findProviderForModel` / `listProviders` aliases and provider/backend
-constant objects were removed at the same time. Import `resolveRuntimeBridge`
+constant objects were removed at the same time. Import `resolveEngineTurnAdapter`
 or `listRuntimeBridges` from `@mono-agent/agent-runtime` (or its `./ai` barrel)
 instead. Runtime behavior and the canonical bridge descriptors are unchanged.
 
@@ -605,7 +614,7 @@ instead. Runtime behavior and the canonical bridge descriptors are unchanged.
 ### 1. Pi is now native-only (`pi-sdk.js` → `pi-native.js`)
 
 The hand-rolled Pi bridge that drove the low-level `Agent` was replaced by a
-bridge built on `@earendil-works/pi-agent-core`'s high-level `AgentHarness`. The
+bridge built on the `@mono-agent/engine` run driver. The
 registry resolves `pi` → the native bridge unconditionally; there is no
 `piEngine` flag.
 
@@ -614,7 +623,7 @@ registry resolves `pi` → the native bridge unconditionally; there is no
 - **Deep imports** of `@mono-agent/agent-runtime/ai/providers/pi-sdk.js` **no
   longer resolve**: the compatibility shim was removed and the explicit exports
   map has no provider wildcard. **Action:** import
-  `generatePiNativeResponse` / `piNativeRuntimeBridge` from
+  `generateEngineTurnResponse` / `engineTurnAdapter` from
   `@mono-agent/agent-runtime/ai`, or select Pi through the public runtime
   registry. `pi-errors.js` is internal and is not an exported replacement; use
   the normalized `RuntimeResult.failureKind` or the public failure helpers at
@@ -634,14 +643,14 @@ These were Pi-bridge knobs the native path does not consume.
 
 ### 3. Pi context compaction: guarded pre-turn, mid-run and overflow recovery
 
-`AgentHarness` supports automatic checkpoint and overflow compaction. The pi
+`engine run driver` supports automatic checkpoint and overflow compaction. The pi
 bridge arms checkpoints for the main prompt with its guarded
 `session_before_compact` hook, while keeping native overflow recovery disabled
 in favor of bridge-owned recovery (the legacy low-level `transformContext` /
 `afterToolCall` hooks and `createAgentCompactionManager` were removed):
 
 - Before each turn the bridge estimates the running model's context usage and
-  calls `AgentHarness.compact()` when near the window (proactive). During the
+  calls `engine driver compact()` when near the window (proactive). During the
   prompt, Pi checkpoints run the same guards between completed model/tool rounds
   without starting a second agent run. Summaries remain separate paid provider
   requests. If a turn still overflows, the bridge compacts and re-prompts at most
@@ -790,7 +799,7 @@ both resolution paths independently.
 
 Pi 0.87.0 removes `shouldStopAfterTurn` from the low-level loop config,
 replaced by `finishTurn` alongside `prepareRequest` — but none of the new loop
-hooks is surfaced on `AgentHarnessOptions`, so the pi-native bridge keeps its
+hooks is surfaced on `engine run driverOptions`, so the engine-turn adapter keeps its
 local maxTurns ceiling and no host action is needed. Unknown OpenAI-compatible
 endpoints no longer receive strict tool schemas unless they advertise support;
 capable built-ins keep strict tools, and mono-agent's custom-provider path never
@@ -806,7 +815,7 @@ so hosts need no action:
   rebuilds the same contracts over `provider.auth.oauth`, so `resolvePiApiKey`,
   `resolvePiOAuthApiKey`, and `loginPiOAuth` keep their existing signatures and
   behaviour, including the refresh-on-expiry trigger.
-- `AgentHarnessOptions.env` was removed in favour of a per-turn `toolContext`.
+- `engine run driverOptions.env` was removed in favour of a per-turn `toolContext`.
   The runtime passes neither: it uses none of Pi's built-in file/shell tools.
 
 ### 11. Exports map: wildcards removed (explicit deep-path map)
@@ -844,7 +853,7 @@ The package exposes **14 named deep `.js` subpaths**:
 **Action:** if you deep-import a subpath not in this list, switch to the closest
 supported one, a barrel (`./ai` / `./agent`), or the public runtime registry.
 `pi-sdk.js` is gone and remains intentionally unexported (section 1). Import
-`generatePiNativeResponse` from `@mono-agent/agent-runtime/ai` instead of adding
+`generateEngineTurnResponse` from `@mono-agent/agent-runtime/ai` instead of adding
 a compatibility subpath.
 
 ---
@@ -876,7 +885,7 @@ Worklab's runtime fork:
    rather than floating ranges. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
-   `generatePiNativeResponse` or the runtime registry. Use
+   `generateEngineTurnResponse` or the runtime registry. Use
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
    catalog and OAuth integration. Those façades keep Pi provider objects and the

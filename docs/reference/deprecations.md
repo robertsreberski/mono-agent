@@ -16,7 +16,14 @@ documentation together, then remove the completed row from this table.
 
 ## Scheduled removals
 
-No deprecated surface currently has a scheduled removal.
+The runtime retains these identity-preserving aliases without runtime warnings
+or a scheduled removal. New integrations should use the canonical names.
+
+| Deprecated surface | Canonical replacement |
+| --- | --- |
+| `resolveRuntimeBridge` | `resolveEngineTurnAdapter` |
+| `generatePiNativeResponse` | `generateEngineTurnResponse` |
+| `piNativeRuntimeBridge` | `engineTurnAdapter` |
 
 ## Removed surfaces
 
@@ -37,7 +44,7 @@ programmatic surfaces are simply no longer exported.
 | `mono-agent-tui` and direct `@mono-agent/tui` imports | Remove the renderer integration and compose against the maintained package that owns the required capability; no compatibility exports were relocated |
 | CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
-| Runtime compatibility exports `./ai/backend.js`, `./ai/registry.js`, `findProviderForModel`, `listProviders`, and backend capability/provider constants | `resolveRuntimeBridge` and `listRuntimeBridges` |
+| Runtime compatibility exports `./ai/backend.js`, `./ai/registry.js`, `findProviderForModel`, `listProviders`, and backend capability/provider constants | `resolveEngineTurnAdapter` and `listRuntimeBridges` |
 | Memory helpers `reflect`, `ReflectDeps`, `ReflectResult`, and no-op `applyDecay` | Supported capture, consolidate, reconcile, and store APIs |
 | BuJo English automatic-recall helpers (`composeRecallBlock`, `selectAutomaticRecallHits`, `hasConflictingAutomaticRecallEvidence`, `isConversationRelativeQuery`, `AUTO_RECALL_MAX_HITS`, `AUTO_RECALL_RELATIVE_SCORE`) | `selectPossiblyRelevantRecallHits` for score-only context; `BujoMemoryStore.recallWithOutcome()` for explicit retrieval |
 | First-party Phoenix/OTLP package, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status/probing, and `@mono-agent/observability/run-export` | Bounded local JSONL artifacts, `mono-agent runs` / `runs audit` / `runs report`, trace-source discovery, and provider-neutral `RunExporter` composition. Perform any final legacy export before upgrading with the complete working version set already in use. |

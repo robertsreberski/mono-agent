@@ -44,7 +44,7 @@ Guided init searches every bundled model for the Pi catalog — Anthropic, GitHu
 - [Providers](/runtime/providers/) — declare which providers the agent supports, widen selection to full catalogs, and configure Pi auth and transport.
 - [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and configure actual tool approval and sandbox controls.
 - [Fallback chains](/runtime/fallback/) — canonical `runtime.fallbacks`, exact route effort, legacy compatibility, and visible failover history.
-- [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint for `<provider>:<model>` references, plus pi-native transport tuning and Pi credential resolution.
+- [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint for `<provider>:<model>` references, plus engine-turn transport tuning and Pi credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
 - [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the managed Read/Write/Edit/Glob/Grep/Exec/Bash/NodeRepl/WebFetch/WebSearch tools and the automatic guards (loss-aware process execution, tool-output truncation, web retry, cost tracking, context compaction).
 

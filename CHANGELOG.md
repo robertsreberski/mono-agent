@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add canonical `resolveEngineTurnAdapter`, `generateEngineTurnResponse` and
+  `engineTurnAdapter` runtime exports. Keep `resolveRuntimeBridge`,
+  `generatePiNativeResponse` and `piNativeRuntimeBridge` as deprecated,
+  identity-preserving aliases without runtime warnings; dispatch stays lazy
+  and retains model-reference validation.
+
 - Publish the new execution and storage package as `@mono-agent/engine`, with
   three focused entrypoints: root, `sessions.js` and `owned-fs.js`. Published
   runtime storage capabilities and journal formats stay compatible.
