@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import ts from "typescript";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it, vi } from "vitest";
 import {
   listRuntimeBridges,
   resolveEngineTurnAdapter,
@@ -29,9 +30,15 @@ describe("AI runtime bridge registry", () => {
     expect(bridge.execute).toBe(engineTurnAdapter.execute);
   });
 
-  it("rejects a malformed model reference before dispatch", async () => {
-    await expect(resolveEngineTurnAdapter({ model: "x", reference: "missing:x" }))
-      .rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+  it("rejects malformed references before loading the adapter", async () => {
+    const load = vi.fn(() => { throw new Error("Malformed references must not load the adapter"); });
+    vi.doMock("../../ai/providers/engine-turn.js", load);
+    try {
+      for (const resolve of [resolveEngineTurnAdapter, resolveRuntimeBridge]) {
+        await expect(resolve({ model: "x", reference: "missing:x" })).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+      }
+      expect(load).not.toHaveBeenCalled();
+    } finally { vi.doUnmock("../../ai/providers/engine-turn.js"); }
   });
 
   it("exposes Pi-owned capabilities", () => {
@@ -72,12 +79,19 @@ it.each([
   }
 });
 
-it("emits identity-preserving alias types with deprecation tags", () => {
+it("emits identity-preserving alias types with deprecation tags without prior build output", () => {
+  const files = ["ai/runtime/registry.js", "ai/providers/engine-turn.js"].map((file) => fileURLToPath(new URL(`../../${file}`, import.meta.url)));
+  const program = ts.createProgram(files, { allowJs: true, declaration: true, emitDeclarationOnly: true, skipLibCheck: true,
+    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
   for (const [file, aliases] of [
     ["ai/runtime/registry.d.ts", [["resolveRuntimeBridge", "resolveEngineTurnAdapter"]]],
     ["ai/providers/engine-turn.d.ts", [["generatePiNativeResponse", "generateEngineTurnResponse"], ["piNativeRuntimeBridge", "engineTurnAdapter"]]],
   ]) {
-    const declaration = readFileSync(new URL(`../../../types/${file}`, import.meta.url), "utf8");
+    let declaration = "";
+    const source = program.getSourceFile(files.find((path) => path.endsWith(file.replace(".d.ts", ".js"))));
+    const result = program.emit(source, (_file, text) => { declaration = text; }, undefined, true);
+    expect(result.emitSkipped).toBe(false);
+    expect(result.diagnostics).toEqual([]);
     for (const [oldName, canonical] of aliases) {
       expect(declaration).toContain(`@deprecated Use ${canonical}.`);
       expect(declaration).toContain(`export const ${oldName}: typeof ${canonical};`);

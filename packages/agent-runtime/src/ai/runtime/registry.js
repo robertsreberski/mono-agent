@@ -1,5 +1,6 @@
 // @ts-check
 
+import { assertEngineTurnModelRef } from "../providers/engine-turn/model-ref.js";
 import { runtimeCapabilities } from "./capabilities.js";
 
 /**
@@ -24,8 +25,8 @@ export function listRuntimeBridges() {
  * @returns {Promise<RuntimeBridge>}
  */
 export async function resolveEngineTurnAdapter(modelRef) {
-  const { engineTurnAdapter, assertEngineTurnModelRef } = await import("../providers/engine-turn.js");
   assertEngineTurnModelRef(modelRef);
+  const { engineTurnAdapter } = await import("../providers/engine-turn.js");
   return /** @type {RuntimeBridge} */ (engineTurnAdapter);
 }
 

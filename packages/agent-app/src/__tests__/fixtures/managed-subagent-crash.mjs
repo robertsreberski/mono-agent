@@ -131,8 +131,7 @@ async function owner(root, scenario) {
   const config = await loadMonoAgentConfig({ cwd: root, jsonPath: configPath });
   const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
   const models = createModels(); models.setProvider(faux.provider);
-  // The driver owns one explicit tool context for this fixture run: the retired
-  // process-global configuration seam is gone, so tools read the workspace from it.
+  // Dispatch through createRuntime; configureTools owns the per-instance workspace.
   const engine = createRuntime({ workspace: root });
   const driver = { configureTools: (next) => engine.configureTools({ ...next, workspace: root }),
     run: (prompt, options) => engine.run(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" }),

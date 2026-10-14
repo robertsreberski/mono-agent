@@ -13,7 +13,7 @@ syncBuiltinESMExports(); Math.random = () => 0.125;
 let clock = 1700000000000; Date.now = () => clock;
 Object.defineProperty(performance, "now", { value: () => 0 });
 const [source, runtimeSource, root, legacy] = process.argv.slice(2);
-const providerAdapter = existsSync(`${runtimeSource}/ai/providers/engine-turn.js`) ? "engine-turn" : ["pi", "native"].join("-");
+const providerAdapter = existsSync(`${runtimeSource}/ai/providers/engine-turn.js`) ? "engine-turn" : "pi-native" /* Archived provider filename only. */;
 const historicPackage = "@mono-agent/harness"; // Archived P2b imports only.
 registerHooks({ resolve(specifier, context, nextResolve) {
   for (const name of ["@mono-agent/engine", historicPackage]) if (specifier === name || specifier.startsWith(`${name}/`)) return {

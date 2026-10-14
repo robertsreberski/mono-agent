@@ -1,5 +1,5 @@
 // @ts-check
-// Runtime adapter for the engine run driver over the pinned Pi agent loop.
+// Runtime integration for the mono-agent engine over the pinned Pi loop.
 
 import { createRunDriver } from "@mono-agent/engine";
 

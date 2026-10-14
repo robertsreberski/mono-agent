@@ -4,12 +4,16 @@ const executeMock = vi.fn();
 const adapterLoadMock = vi.fn();
 const assertEngineTurnModelRefMock = vi.fn();
 
+vi.mock("../ai/providers/engine-turn/model-ref.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); } };
+});
+
 vi.mock("../ai/providers/engine-turn.js", async (importOriginal) => {
   adapterLoadMock();
   const actual = await importOriginal();
   return {
     ...actual,
-    assertEngineTurnModelRef: (ref) => { assertEngineTurnModelRefMock(ref); actual.assertEngineTurnModelRef(ref); },
     engineTurnAdapter: { id: "stub", execute: (...args) => executeMock(...args) },
   };
 });
@@ -35,6 +39,11 @@ beforeEach(() => {
 
 
 describe("createRuntime", () => {
+  it("rejects malformed references without importing the engine adapter", async () => {
+    await expect(createRuntime().run("Fictional rules", { model: {} })).rejects.toThrow("unsupported model reference: expected <provider>:<model>");
+    expect(adapterLoadMock).not.toHaveBeenCalled();
+  });
+
   it("does not eagerly import the engine adapter", () => {
     expect(adapterLoadsAtRuntimeImport).toBe(0);
   });

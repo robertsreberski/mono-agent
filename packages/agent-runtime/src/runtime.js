@@ -25,6 +25,7 @@
 
 // @ts-check
 
+import { assertEngineTurnModelRef } from "./ai/providers/engine-turn/model-ref.js";
 import { createObserverHub } from "./ai/observer.js";
 import {
   disposeAllProviderSessions,
@@ -205,8 +206,8 @@ export function createRuntime(host = {}) {
     if (!options.model) throw new Error("createRuntime.run requires options.model");
     const capturedToolContext = prepare ? snapshotNativeDispatchOptions({ toolContext }).toolContext : toolContext;
     const webSearchState = createWebSearchRunState(options.webSearchConfig, options.webSearchState);
-    const { engineTurnAdapter: bridge, assertEngineTurnModelRef, preparePiNativeDispatch } = await import("./ai/providers/engine-turn.js");
     assertEngineTurnModelRef(options.model);
+    const { engineTurnAdapter: bridge, preparePiNativeDispatch } = await import("./ai/providers/engine-turn.js");
     const callObservers = Array.isArray(options.observers) ? options.observers : [];
     const hub = createObserverHub({
       observers: [...hostObservers, ...callObservers],

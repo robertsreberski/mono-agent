@@ -516,7 +516,10 @@ export function reportGuardedCompactionOutcome({
   return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
 }
 
-// Guard the engine compaction cut before summary generation.
+// Run a single guarded compaction. Requires the harness idle (callers
+// waitForIdle first). Never throws — classifies engine compaction errors into a warning
+// and reports back whether anything was compacted. Fires onCompactionRecorded on
+// success so a host can persist the compaction row.
 export async function tryCompact(harness, {
   trigger,
   onEvent,
@@ -661,7 +664,7 @@ function isReactiveCompactionCandidate(errorMessage, diagnostics) {
  * Express the kernel's compaction policy as a pi `CompactionSettings` so the
  * proactive trigger runs through pi's own `shouldCompact()`.
  *
- * EQUIVALENCE (exact, proven by pi-native-compaction-parity.test.js): pi fires
+ * EQUIVALENCE (exact, proven by engine-turn-compaction-parity.test.js): pi fires
  * when `contextTokens > contextWindow - reserveTokens` (STRICT `>`), while the
  * kernel policy fires when `estimate >= triggerTokens` (`>=`). Both `estimate`
  * and `triggerTokens` are non-negative INTEGERS — pi's `estimateTokens` /
