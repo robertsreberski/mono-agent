@@ -119,32 +119,24 @@ async function bootstrapFixture() {
   await fs.writeFile(path, "{broken", { mode: 0o600 });
   return { root, store, directory, name, path };
 }
-it("bootstrap removes an entry that vanishes after discovery from its pending set", async () => {
-  const f = await bootstrapFixture(), inspect = PendingTurnPayloadStore.prototype.inspect;
-  vi.spyOn(PendingTurnPayloadStore.prototype, "inspect").mockImplementation(async function (this: PendingTurnPayloadStore, entry, digest) {
-    await fs.rm(f.path); return inspect.call(this, entry, digest);
-  });
+it("bootstrap preserves malformed unrelated pending evidence without opening it", async () => {
+  const f = await bootstrapFixture(), inspect = vi.spyOn(PendingTurnPayloadStore.prototype, "inspect");
   const lease = await f.store.acquireNativeHistoryAuthority(sibling);
   expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
-});
-it("bootstrap names the malformed pending artifact by basename", async () => {
-  const f = await bootstrapFixture();
-  await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED", message: expect.stringContaining(`(${f.name})`) });
+  expect(inspect).not.toHaveBeenCalled();
   expect(await fs.readFile(f.path, "utf8")).toBe("{broken");
 });
-it.each(["EMFILE", "EIO"])("bootstrap propagates wrapped %s without losing its cause or reporting damage", async (code) => {
-  const f = await bootstrapFixture(), cause = Object.assign(new Error("Injected operational error"), { code }), error = new OwnedFileDamagedError(f.name, cause);
-  vi.spyOn(PendingTurnPayloadStore.prototype, "inspect").mockRejectedValue(error);
-  await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toBe(error);
-  expect(error.cause).toBe(cause);
+it.each(["EMFILE", "EIO"])("bootstrap does not probe unrelated pending contents that could fail with %s", async (code) => {
+  const f = await bootstrapFixture(), error = new OwnedFileDamagedError(f.name, Object.assign(new Error("Injected operational error"), { code }));
+  const inspect = vi.spyOn(PendingTurnPayloadStore.prototype, "inspect").mockRejectedValue(error);
+  const lease = await f.store.acquireNativeHistoryAuthority(sibling);
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
+  expect(inspect).not.toHaveBeenCalled();
 });
-it("bootstrap rechecks the pinned pending directory before isolating an inspection failure", async () => {
-  const f = await bootstrapFixture();
-  vi.spyOn(PendingTurnPayloadStore.prototype, "inspect").mockImplementation(async () => {
-    await fs.rename(f.directory, `${f.directory}-old`); await fs.mkdir(f.directory, { mode: 0o700 });
-    throw new OwnedFileDamagedError(f.name);
-  });
+it("bootstrap still refuses damaged shared pending-directory permissions", async () => {
+  const f = await bootstrapFixture(); await fs.chmod(f.directory, 0o755);
   await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toThrow("Pending turn storage identity or permissions unavailable");
+  await fs.chmod(f.directory, 0o700);
 });
 
 for (const [kind, artifact] of Object.entries(artifacts)) {
@@ -236,10 +228,11 @@ for (const kind of ["active", "temporary"]) {
   }, 15_000);
 }
 
-it.each(["active", "temporary"] as const)("a live writer's torn %s stays protected and makes bootstrap busy, not damaged", async (kind) => {
+it.each(["active", "temporary"] as const)("bootstrap preserves a live unrelated writer's torn %s without requiring it idle", async (kind) => {
   const f = await bootstrapFixture(); await fs.rm(f.path);
   const torn = artifacts[kind](f.root).replace(".1073741824.", `.${process.pid}.`); await fs.writeFile(torn, "{", { mode: 0o600 });
-  await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_BUSY", retryable: true });
+  const lease = await f.store.acquireNativeHistoryAuthority(sibling);
+  expect(lease.status).toBe("owned"); if (lease.status === "owned") await lease.release();
   expect(await fs.readFile(torn, "utf8")).toBe("{");
 });
 
@@ -253,4 +246,11 @@ it.each(["root", "logical"])("malformed %s coordination names its database inste
     expect(names.some((name) => (failure as Error).message.includes(name))).toBe(true);
   }
   for (const name of names) expect(await fs.readFile(join(directory, name), "utf8")).toBe("{fictional-damaged-database}");
+});
+
+it("bootstrap refuses its own damaged orphan by basename", async () => {
+  const f = await bootstrapFixture();
+  const name = f.name.replace(key("fictional-orphan"), key(sibling));
+  await fs.rename(f.path, join(f.directory, name));
+  await expect(f.store.acquireNativeHistoryAuthority(sibling)).rejects.toMatchObject({ code: "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED", message: expect.stringContaining(`(${name})`) });
 });

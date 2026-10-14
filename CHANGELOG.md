@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Let the first model switch proceed while unrelated conversations are active
+  or have damaged recovery data, preserving their ownership and evidence.
+
 - Let cancelled admissions stop waiting for pending-turn drain locks before
   recovery publication starts.
 

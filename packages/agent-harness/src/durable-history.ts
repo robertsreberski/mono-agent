@@ -184,7 +184,7 @@ export class ModelSwitchPendingError extends Error {
 export class NativeHistoryAuthorityBusyError extends Error {
   readonly code: string; readonly retryable: boolean;
   constructor(readonly damaged = false, artifact?: string) {
-    super(damaged ? `Another conversation's saved recovery data is damaged${artifact ? ` (${basename(artifact)})` : ""}; repair or restore it before retrying.` : "Another conversation is still running or awaiting recovery; send again when it finishes.");
+    super(damaged ? `This conversation's saved recovery data is damaged${artifact ? ` (${basename(artifact)})` : ""}; repair or restore it before retrying.` : "This conversation is still running or awaiting recovery; finish its recovery before retrying.");
     this.name = "NativeHistoryAuthorityBusyError"; this.code = damaged ? "ERR_NATIVE_HISTORY_AUTHORITY_DAMAGED" : "ERR_NATIVE_HISTORY_AUTHORITY_BUSY"; this.retryable = !damaged;
   }
 }
@@ -481,21 +481,19 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         await assertOwned();
         const rootStore = this.nativeHistoryRoot(rootIdentity);
         if (!await rootStore.read()) {
-          const active = await this.scanActiveMarkers(true), fences = await this.scanDirtyFences(await this.ensureLocksRoot(), false);
-          const pending = new Map((await this.pendingPayloads(rootIdentity).list()).map((entry) => [entry.name, entry]));
-          let damaged = fences.damaged.values().next().value ?? [...pending.values()].find((entry) => entry.damaged)?.name
-            ?? active.find((entry) => entry.damaged)?.path;
-          for (const entry of [...pending.values()].filter((entry) => !entry.name.endsWith(".tmp") && !entry.damaged && !active.some((marker) => marker.conversationKey === entry.conversationKey))) {
+          // The marker issues per-conversation authority; it does not migrate
+          // or rebind other owners. This owner's claim and settlement above
+          // suffice. Retention still protects and charges unrelated evidence.
+          for (const entry of (await this.pendingPayloads(rootIdentity).list()).filter((entry) => entry.conversationKey === historyKey(id))) {
+            if (entry.damaged || entry.name.endsWith(".tmp")) throw new NativeHistoryAuthorityBusyError(true, entry.name);
             try { await this.pendingPayloads(rootIdentity).inspect(entry); }
             catch (error) {
               await assertDirectoryIdentity(this.root, rootIdentity);
-              await this.pendingPayloads(rootIdentity).list(); // recheck the pinned subdirectory before isolating damage
-              if (entryAbsentOrThrowOperational(error)) { pending.delete(entry.name); continue; }
-              damaged = entry.name;
+              await this.pendingPayloads(rootIdentity).list();
+              if (entryAbsentOrThrowOperational(error)) continue;
+              throw new NativeHistoryAuthorityBusyError(true, entry.name);
             }
-          }
-          if (damaged || active.some((entry) => entry.path !== held.marker.path) || fences.length || fences.incomplete.size || pending.size) {
-            throw new NativeHistoryAuthorityBusyError(damaged !== undefined, damaged);
+            throw new NativeHistoryAuthorityBusyError();
           }
           // A readable native record without the marker refuses; an unreadable sibling stays isolated to its owner.
           for (const entry of await this.scanCommittedEntries(rootIdentity, false)) {

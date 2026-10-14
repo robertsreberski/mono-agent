@@ -149,8 +149,8 @@ prove PID reuse with v2 identity. Linux and macOS use stable incarnation;
 other platforms and unavailable reads are PID-only, treating a live PID as live. Stop every older binary
 before the upgraded writer runs: new marker contents are not old-reader compatible.
 Operational filesystem errors propagate rather than becoming damage. First
-native-root bootstrap still refuses damaged recovery evidence anywhere in the
-root when it cannot prove those owners drained. Shared root and
+native-root bootstrap settles only the requesting conversation; unrelated
+active turns and damaged recovery evidence remain protected and charged. Shared root and
 logical-session coordination damage remains root-fatal. Redundant conversation
 shard locks are no longer created or validated; older writers' files stay intact.
 
