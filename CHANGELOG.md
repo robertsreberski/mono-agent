@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound each assistant request to one retry layer sized by `piMaxRetries`,
+  with failed-response usage recorded and transport retries disabled. Keep
+  provider checks and summaries single-shot.
+
 - Let the first model switch proceed while unrelated conversations are active
   or have damaged recovery data, preserving their ownership and evidence.
 

@@ -306,14 +306,14 @@ export async function buildTurnHarness(runState, {
     tools,
     toolExecutionMode,
     silentTurnState: runState.silentTurn,
-    streamOptions: { transport, maxRetries, maxRetryDelayMs,
+    streamOptions: { transport, maxRetries: 0, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },
-    // One runtime knob controls both layers. Zero disables request retries;
-    // otherwise retain the inherited three driver retries and transport budget.
-    // Health probes also disable this layer (their transport budget is zero).
+    // Retry only settled assistant errors in the driver: each failed response
+    // is journaled and billed before another request, and tools never replay.
+    // Transport retries stay off; thrown/unknown outcomes are terminal.
     retry: { enabled: maxRetries > 0 && !(Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0),
-      maxRetries: maxRetries === 0 ? 0 : 3, baseDelayMs: 1000 },
+      maxRetries, baseDelayMs: 1000, maxAgentDelayMs: maxRetryDelayMs },
     steeringMode,
     followUpMode: steeringMode,
     assertSessionCurrent: options.nativeSessionAuthority ? () => assertNativeSessionAccess(options.nativeSessionAuthority, "open", options.piSessionsRoot) : undefined,

@@ -123,17 +123,17 @@ appended to it), emits `provider_retry_started` rather than a failover event, an
 appends its own `failoverHistory` entry carrying `retryIndex` — each retry keeps
 its own request id and failure subkind.
 
-Retries compose with, and multiply against, two retry layers inside one Pi
-attempt. `providers.piNative.piMaxRetries` (default 2) is the single runtime
-retry knob. Zero disables both pi-ai transport retries and the harness's
-assistant-request retries: at most one provider request per assistant request
-in each router attempt. A nonzero value N retains the default three additional
-assistant-request retries, each with up to N transport retries. The maximum is
-`4 × (N + 1)` provider requests per assistant request per router attempt: 12
-with the default, or 24 across `primaryAttempts: 2` before advancing the chain.
-These are request-only retries; they never repeat a tool or the whole turn. A
-turn that makes several assistant requests can exceed this per-request bound.
-Provider checks and handoff summaries remain single-request. The harness's one-shot session-resume retry is disjoint: it
+Router attempts compose with one assistant-request retry layer inside each Pi
+attempt. `providers.piNative.piMaxRetries` (default 2) permits N additional
+requests after a settled transient assistant error; zero disables retries.
+Transport retries are disabled. The maximum is `N + 1` provider requests per
+assistant request per router attempt: 3 with the default, or 6 across
+`primaryAttempts: 2` before advancing the chain. Each settled failed response
+is journaled and included in usage accounting before the next request.
+Thrown requests with unknown outcomes are not retried by this layer.
+These retries never repeat a tool or the whole turn. A turn that makes several
+assistant requests can exceed this per-request bound. Provider checks,
+compaction summaries and handoff summaries remain single-request. The harness's one-shot session-resume retry is disjoint: it
 fires on `session_not_found` / `session_busy`, which never retry at the router.
 
 ## What failover does

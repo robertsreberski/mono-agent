@@ -13,8 +13,8 @@ import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 //     is "open the session from a repo and hand it to a new harness". There is
 //     no separate live-session registry here.
 //   * The provider transport (pi-ai streamSimple) is invoked by the harness;
-//     retry/backoff is delegated to pi-ai via streamOptions.maxRetries instead
-//     of the legacy manual loop.
+//     request retry/backoff is owned by the engine driver; transport retries
+//     are disabled so every settled attempt is journaled and accounted.
 //   * Tool sandboxing, approval gates, allowlist/bloat filtering, and the MCP
 //     tool bridge are reused shared pieces — they are wired into the harness
 //     via its `tools` option, never reimplemented.

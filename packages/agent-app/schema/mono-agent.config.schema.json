@@ -2214,7 +2214,7 @@
               ]
             },
             "piMaxRetries": {
-              "description": "Configures piNative.piMaxRetries for the providers section.",
+              "description": "Additional requests after settled transient assistant errors (0–8, default 2). Transport retries are disabled; probes and summaries are single-shot.",
               "examples": [
                 2
               ],
@@ -2222,7 +2222,7 @@
               "default": 2
             },
             "maxRetryDelayMs": {
-              "description": "Configures piNative.maxRetryDelayMs for the providers section.",
+              "description": "Ceiling for driver assistant-request retry backoff in milliseconds (default 60000).",
               "examples": [
                 60000
               ],

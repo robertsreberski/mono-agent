@@ -1738,7 +1738,7 @@ describe("pi-native AgentHarness bridge", () => {
         && part.is_error === true && part.content.includes("ineligible_turn")))).toBe(true);
   });
 
-  it("forwards maxRetries to the provider stream options", async () => {
+  it("disables transport retries even when the driver retry budget is nonzero", async () => {
     const model = setup();
     let seenOptions = null;
     faux.setResponses([
@@ -1754,7 +1754,7 @@ describe("pi-native AgentHarness bridge", () => {
     }));
 
     expect(result.error).toBeNull();
-    expect(seenOptions?.maxRetries).toBe(4);
+    expect(seenOptions?.maxRetries).toBe(0);
   });
 
   it("surfaces a provider stream error in the unified failure shape", async () => {

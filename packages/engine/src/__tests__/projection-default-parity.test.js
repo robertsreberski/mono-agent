@@ -10,6 +10,13 @@ it.each([3, 4])("matches frozen harness bytes for default context/checkpoints/v%
   try {
     const golden = JSON.parse(await readFile(new URL(`./fixtures/projection-golden-v${version}.json`, import.meta.url), "utf8"));
     expect(golden.format).toBe("release-freeze");
+    // Preserve the historical freeze, except for the explicitly changed retry
+    // contract: compaction summaries now disable transport retries too.
+    for (let index = 0; index < golden.capture.runtime.midRun.requests.length; index += 1) {
+      const request = JSON.parse(golden.capture.runtime.midRun.requests[index]);
+      request.options.maxRetries = 0;
+      golden.capture.runtime.midRun.requests[index] = JSON.stringify(request);
+    }
     const worker = fileURLToPath(new URL("./fixtures/projection-parity-worker.mjs", import.meta.url));
     const legacy = fileURLToPath(new URL(`./fixtures/legacy-v${version}.jsonl`, import.meta.url));
     const storage = join(scratch, "session");

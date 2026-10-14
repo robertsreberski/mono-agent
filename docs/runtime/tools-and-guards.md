@@ -490,7 +490,7 @@ See [Local-first web research](/tools/web-research/) for the backend, extraction
 isolation, and config contract.
 
 :::tip
-This is distinct from provider-transport retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
+This is distinct from assistant-request retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
 :::
 
 ## Tool scheduling (code-only)

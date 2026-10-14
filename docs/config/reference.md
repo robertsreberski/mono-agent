@@ -124,8 +124,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `providers` | `object` | `--` | unset | `{"openai-codex":{},"ollama":{"baseUrl":"http://localhost:11434"}}` | Provider-id map that widens or narrows the selectable Pi model catalog. |
 | `providers.piAuthPath` | `string` | `--` | unset | `~/.pi/agent/auth.json` | Configures piAuthPath for the providers section. |
 | `providers.piNative.cacheRetention` | `string` | `--` | long | `long` | Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit. |
-| `providers.piNative.maxRetryDelayMs` | `integer` | `--` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
-| `providers.piNative.piMaxRetries` | `integer` | `--` | 2 | `2` | Configures piNative.piMaxRetries for the providers section. |
+| `providers.piNative.maxRetryDelayMs` | `integer` | `--` | 60000 | `60000` | Ceiling for driver assistant-request retry backoff in milliseconds (default 60000). |
+| `providers.piNative.piMaxRetries` | `integer` | `--` | 2 | `2` | Additional requests after settled transient assistant errors (0–8, default 2). Transport retries are disabled; probes and summaries are single-shot. |
 | `providers.piNative.piSessionsRoot` | `string` | `--` | unset | `example` | Durable Pi-native session root. The first durable turn after upgrading writes mono-v2 journals, .pending-turns and the new canonical history format. This is a one-way upgrade: older binaries must not run against this root; rollback requires restoring a backup. |
 | `providers.piNative.promptCacheDiagnostics` | `boolean` | `--` | false | `true` | Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials. |
 | `providers.piNative.transport` | `string` | `--` | auto | `sse` | Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it. |

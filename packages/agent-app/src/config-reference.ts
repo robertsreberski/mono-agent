@@ -1817,6 +1817,12 @@ function descriptionFor(id: string): string {
   if (id === "agent.name") {
     return "Public display identity used for trace labels and default A2A metadata; never used in paths or service ids.";
   }
+  if (id === "providers.piNative.piMaxRetries") {
+    return "Additional requests after settled transient assistant errors (0–8, default 2). Transport retries are disabled; probes and summaries are single-shot.";
+  }
+  if (id === "providers.piNative.maxRetryDelayMs") {
+    return "Ceiling for driver assistant-request retry backoff in milliseconds (default 60000).";
+  }
   if (id === "runtime.fallbacks") {
     return "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.";
   }

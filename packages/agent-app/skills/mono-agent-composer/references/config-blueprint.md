@@ -76,7 +76,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
       "transport": "auto",                // auto | sse | websocket | websocket-cached
       // "cacheRetention": "short",      // opt out of default Anthropic 1h; long writes 2× / short 1.25×, reads 0.1×
       "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
-      "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
+      "piMaxRetries": 2,                   // 0-8; additional settled-error requests; transport retries off
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
       "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
     },
