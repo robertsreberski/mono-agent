@@ -1981,10 +1981,12 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         settled += 1;
       } catch (error) {
         if (signal?.aborted) {
-          // Cancellation must not hide a publication/settlement failure or a
-          // changed shared namespace. Only the actual abort error is cancellation.
+          // Cancellation wins ordinary contention, but cannot hide a real
+          // publication/settlement failure or a changed shared namespace.
           await assertDirectoryIdentity(this.root, rootIdentity);
           await assertDirectoryIdentity(join(this.root, LOCKS_DIRECTORY), locksIdentity);
+          if (error instanceof HistoryOwnerBusyError || (isRecord(error) && error.code === "ERR_HARNESS_WRITER_BUSY")
+            || (held === undefined && isErrno(error, "ENOENT"))) throw signal.reason;
           throw error;
         }
         if (error instanceof HistoryOwnerBusyError || (isRecord(error) && error.code === "ERR_HARNESS_WRITER_BUSY")) busy += 1;
